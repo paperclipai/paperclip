@@ -61,7 +61,10 @@ import { issueThreadInteractionService, type InteractionResolutionMutationOption
 import { lockToolConnectionRuntimeInputs, toolAccessService } from "./tool-access.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { captureRunIdentity } from "./run-identity.js";
-import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
+import {
+  managedGitHubResponsibleUserId,
+  resolveManagedGitHubIdentitySelection,
+} from "./git-credentials.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
 
 type ConnectionRunClaims = Pick<RuntimeToolsTokenClaims, "sub" | "company_id" | "run_id" | "responsible_user_id">;
@@ -213,9 +216,13 @@ export function connectionIntentService(db: Db) {
     if (failedAuthRun ? run.status !== "failed" || !isAiAuthenticationRepairable(run) : run.status !== "running") {
       throw forbidden("Runtime tool token is no longer active");
     }
+    let executionIdentity: { cause: string; responsibleUserId: string | null } | null = null;
     if (run.activeIdentityContextId && !failedAuthRun) {
       const current = await captureRunIdentity(db, { companyId: run.companyId, agentId: run.agentId, runId: run.id }, { readScope: "identity" });
       run = { ...run, responsibleUserId: current.run.responsibleUserId };
+      executionIdentity = current.context
+        ? { cause: current.context.cause, responsibleUserId: current.context.responsibleUserId }
+        : null;
     }
     if (!run.responsibleUserId) throw forbidden("This task needs a responsible user to connect a service");
     const snapshot = record(run.contextSnapshot);
@@ -254,7 +261,7 @@ export function connectionIntentService(db: Db) {
     if (issue.status === "done" || issue.status === "cancelled") {
       throw conflict("Connection requests cannot be created on a closed task");
     }
-    return { run, issue, agent };
+    return { run, issue, agent, executionIdentity };
   }
 
   async function connectionInventory(companyId: string) {
@@ -299,6 +306,10 @@ export function connectionIntentService(db: Db) {
     purpose?: "ai" | "channel";
     sourceRunId?: string | null;
     inventory?: Awaited<ReturnType<typeof connectionInventory>>;
+    // The run's accepted execution identity, when one exists. GitHub readiness
+    // has to see the cause, not just the responsible user, to answer the same
+    // question the credential path answers.
+    executionIdentity?: { cause: string; responsibleUserId: string | null } | null;
   }) {
     const managed = input.purpose === "ai" ? await managedAgent(input.companyId, input.agentId, input.serviceSlug, { sourceRunId: input.sourceRunId }) : null;
     if (managed) {
@@ -328,8 +339,16 @@ export function connectionIntentService(db: Db) {
       && (["mcp_remote", "local_stdio"].includes(connection.transport) || Boolean(restConnectorFor(connection)))
       && !isToolConnectionAttentionHealth(connection.healthStatus) ? connection : null;
     if (input.serviceSlug === "github") {
+      // Mirror resolveGitHubOperationCredentials exactly: same responsible-user
+      // nulling for a company-default cause, and no standing delegation. Any
+      // divergence here reports a connection as ready and then denies the token,
+      // leaving the caller with nothing it can raise a card against.
       const selection = await resolveManagedGitHubIdentitySelection(db, input.companyId, {
-        agentId: input.agentId, responsibleUserId: input.responsibleUserId,
+        agentId: input.agentId,
+        responsibleUserId: input.executionIdentity
+          ? managedGitHubResponsibleUserId(input.executionIdentity)
+          : input.responsibleUserId,
+        allowStandingDelegation: false,
       });
       return usable(matching.find((connection) => connection.id === selection.grant?.connectionId));
     }
@@ -442,7 +461,7 @@ export function connectionIntentService(db: Db) {
   }
 
   async function search(claims: ConnectionRunClaims, query: string, options: { retryProviderChoice?: boolean } = {}): Promise<ConnectionsSearchResult> {
-    const { run, agent, issue } = await loadRunContext(claims);
+    const { run, agent, issue, executionIdentity } = await loadRunContext(claims);
     const settings = await instanceSettingsService(db).getExperimental();
     const [company] = await db.select({ prefix: companies.issuePrefix }).from(companies).where(eq(companies.id, run.companyId));
     if (!company) throw notFound("Company was not found");
@@ -497,8 +516,12 @@ export function connectionIntentService(db: Db) {
         `${app.description ?? ""} ${app.searchCapabilities} ${catalog.map(tool => `${tool.toolName} ${tool.description ?? ""}`).join(" ")}`);
       if (!score) continue;
       const ready = await usableConnectionForAgent({ companyId: run.companyId, agentId: agent.id,
-        responsibleUserId: run.responsibleUserId!, serviceSlug: service, purpose: aiOnly ? "ai" : service === "agentmail" ? "channel" : undefined, inventory });
+        responsibleUserId: run.responsibleUserId!, serviceSlug: service, purpose: aiOnly ? "ai" : service === "agentmail" ? "channel" : undefined, inventory, executionIdentity });
       const denied = !aiOnly && !ready && matching.length > 0 && await administrativeDenial(run.companyId, agent.id, service, inventory);
+      // Naming the cause keeps the downgrade actionable: the connection is fine,
+      // so "review identity and access" would send the caller to reconnect it.
+      const identityWithheld = !ready && !denied && matching.length > 0
+        && service === "github" && executionIdentity?.cause === "company_default";
       const methods = await Promise.all(app.methods.map(async method => {
         const declaredPurpose = definition ? discoveryMethods(definition).find(candidate => candidate.key === method.key)?.purpose : undefined;
         const purpose = declaredPurpose === "channel" ? "chat" : declaredPurpose === "ai" ? "ai" : "tool";
@@ -522,6 +545,7 @@ export function connectionIntentService(db: Db) {
         state: ready ? "ready" : (denied && !isRemoteMcpConnectorId(service)) || !app.available || !app.methods.length ? "unavailable"
           : matching.length ? "needs_user_action" : "available",
         reason: ready ? "Connection is installed and usable by this agent" : denied ? "Ask the responsible user to grant this agent access with connection_request" : !app.available ? "Connection is disabled or unavailable"
+          : identityWithheld ? "This execution has no attributable responsible user, so no managed GitHub identity can be exported; reconnecting will not change that. A person must take responsibility for this task."
           : matching.some((connection) => isToolConnectionAttentionHealth(connection.healthStatus)) ? "Connection needs attention"
           : matching.length ? "Review identity and access for this agent" : "Connect this service to continue",
         connectionId: ready?.id ?? null,
@@ -829,6 +853,7 @@ export function connectionIntentService(db: Db) {
       serviceSlug: app.slug,
       purpose: options.purpose,
       sourceRunId: context.run.id,
+      executionIdentity: context.executionIdentity,
     });
     if (ready && !accessRequest && (!options.connectionId || ready.id === options.connectionId)) {
       return {

@@ -23,8 +23,11 @@ import {
   projects,
   runIdentityContexts,
   toolApplications,
+  toolCatalogEntries,
   toolConnectionInstalls,
   toolConnections,
+  toolProfileBindings,
+  toolProfiles,
   userSecretDefinitions,
 } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
@@ -37,6 +40,7 @@ import {
   captureRunIdentity,
 } from "../services/run-identity.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
+import { connectionIntentService } from "../services/connection-intents.js";
 import {
   filterResolvedGitHubConnectionsForRun,
   resolveManagedGitHubIdentitySelection,
@@ -873,6 +877,80 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       expect(
         (await post().set("Authorization", `Bearer ${token}`)).status,
       ).toBe(403);
+    });
+
+    // A readiness check that answers a different question from the credential
+    // path tells the caller everything is fine and then denies the token, with
+    // no card it can raise. Both must resolve through the same selector.
+    async function seedDiscoverableGitHub(cause: string) {
+      const input = await seed();
+      await db.delete(runIdentityContexts).where(eq(runIdentityContexts.runId, input.runId));
+      await db.update(heartbeatRuns)
+        .set({ activeIdentityContextId: null, responsibleUserId: null })
+        .where(eq(heartbeatRuns.id, input.runId));
+      await initializeRunIdentity(db, { ...input, responsibleUserId: "A", cause });
+      await db.update(issues)
+        .set({ assigneeAgentId: input.agentId, status: "in_progress" })
+        .where(eq(issues.id, input.issueId));
+      const granted = await grant(input, "A");
+      const [profile] = await db.insert(toolProfiles).values({
+        companyId: input.companyId, name: "GitHub writes",
+        profileKey: "github-writes", defaultAction: "allow", status: "active",
+      }).returning();
+      await db.insert(toolProfileBindings).values({
+        companyId: input.companyId, profileId: profile!.id,
+        targetType: "agent", targetId: input.agentId,
+      });
+      await db.insert(toolCatalogEntries).values({
+        companyId: input.companyId, connectionId: granted.connectionId,
+        toolName: "create-pull-request", name: "create-pull-request",
+        versionHash: "fixture-v1", status: "active", entryKind: "tool",
+      });
+      const claims = {
+        sub: input.agentId, company_id: input.companyId,
+        run_id: input.runId, responsible_user_id: "A",
+      };
+      const githubResult = async () =>
+        (await connectionIntentService(db).search(claims, "github")).results
+          .find((result) => result.service === "github");
+      return { input, granted, claims, githubResult };
+    }
+
+    it("reports GitHub ready only when the credential path will actually issue a token", async () => {
+      const clean = await seedDiscoverableGitHub("instruction");
+      expect(await clean.githubResult()).toMatchObject({
+        state: "ready",
+        connectionId: clean.granted.connectionId,
+      });
+      await expect(
+        resolveGitHubOperationCredentials(db, {
+          companyId: clean.input.companyId,
+          agentId: clean.input.agentId,
+          runId: clean.input.runId,
+        }),
+      ).resolves.toMatchObject({ status: "available", login: "A" });
+    });
+
+    it("withholds GitHub readiness for a company-default execution instead of promising a token it cannot issue", async () => {
+      const tainted = await seedDiscoverableGitHub("company_default");
+      const credentials = await resolveGitHubOperationCredentials(db, {
+        companyId: tainted.input.companyId,
+        agentId: tainted.input.agentId,
+        runId: tainted.input.runId,
+      });
+      expect(credentials).toMatchObject({
+        status: "unavailable",
+        reason: "No managed GitHub identity is available for this run",
+      });
+      const readiness = await tainted.githubResult();
+      // The disagreement THE-207 burned two wakes on: `ready` next to
+      // `github_identity_unavailable` in the same run.
+      expect(readiness?.state).not.toBe("ready");
+      expect(readiness?.connectionId).toBeNull();
+      // `needs_user_action` is what lets a scoped access card be raised, and the
+      // reason has to name the cause: reconnecting GitHub would change nothing.
+      expect(readiness).toMatchObject({ state: "needs_user_action" });
+      expect(readiness?.reason).toContain("no attributable responsible user");
     });
   },
 );

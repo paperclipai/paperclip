@@ -433,6 +433,7 @@ async function resolveResponsibleUserIdForIssueCreate(
     originRunId?: string | null;
     actorRunId?: string | null;
     actorResponsibleUserId?: string | null;
+    actorIdentityIsCompanyDefault?: boolean;
     trustExplicitResponsibleUserId?: boolean;
   },
 ) {
@@ -460,13 +461,16 @@ async function resolveResponsibleUserIdForIssueCreate(
     if (routineRun?.responsibleUserId) return routineRun.responsibleUserId;
   }
 
-  const actorResponsibleUserId = readStringFromRecord(
-    input,
-    "actorResponsibleUserId",
-  );
+  // A company-default responsible user is the fallback the creating execution
+  // was given because nobody could be attributed, so it is not an attribution to
+  // copy onto a new task. Recording it would make the next execution read it
+  // back as settled human responsibility and resolve a clean cause for it.
+  const actorResponsibleUserId = input.actorIdentityIsCompanyDefault
+    ? null
+    : readStringFromRecord(input, "actorResponsibleUserId");
   if (actorResponsibleUserId) return actorResponsibleUserId;
 
-  if (input.actorRunId) {
+  if (input.actorRunId && !input.actorIdentityIsCompanyDefault) {
     const actorRun = await reader
       .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
       .from(heartbeatRuns)
@@ -2048,6 +2052,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "title" |
   watchdogActorRunId?: string | null;
   actorRunId?: string | null;
   actorResponsibleUserId?: string | null;
+  actorIdentityIsCompanyDefault?: boolean;
   trustExplicitResponsibleUserId?: boolean;
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
@@ -9646,6 +9651,8 @@ export function issueService(db: Db) {
                 : undefined),
         goalId: issueData.goalId ?? parent.goalId,
         actorResponsibleUserId: issueData.actorResponsibleUserId ?? null,
+        actorIdentityIsCompanyDefault:
+          issueData.actorIdentityIsCompanyDefault === true,
         trustExplicitResponsibleUserId:
           issueData.trustExplicitResponsibleUserId === true,
         requestDepth: clampIssueRequestDepth(
@@ -10082,6 +10089,7 @@ export function issueService(db: Db) {
         watchdogActorRunId,
         actorRunId,
         actorResponsibleUserId,
+        actorIdentityIsCompanyDefault,
         trustExplicitResponsibleUserId,
         idempotencyKey: rawIdempotencyKey,
         allowDuplicate,
@@ -10488,6 +10496,8 @@ export function issueService(db: Db) {
             originRunId: issueData.originRunId ?? null,
             actorRunId: actorRunId ?? null,
             actorResponsibleUserId: actorResponsibleUserId ?? null,
+            actorIdentityIsCompanyDefault:
+              actorIdentityIsCompanyDefault === true,
             trustExplicitResponsibleUserId:
               trustExplicitResponsibleUserId === true,
           },

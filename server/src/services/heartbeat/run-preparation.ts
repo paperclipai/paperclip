@@ -3175,6 +3175,12 @@ export function createHeartbeatRunPreparation(db: Db) {
     triggerDetail?: WakeupOptions["triggerDetail"] | null;
     existingRunResponsibleUserId?: string | null;
   }) {
+    // Most paths below return a responsible user this run inherited: from the
+    // task, the parent task, the retried run, a routine's configuration, or the
+    // company fallback. Only a person acting on this run attributes it to them,
+    // and only that can release an inherited `company_default` boundary. Clear
+    // any value carried in on a copied snapshot before re-deciding.
+    delete input.contextSnapshot.executionIdentityAttributable;
     const contextResponsibleUserId = readNonEmptyString(
       input.contextSnapshot.responsibleUserId,
     );
@@ -3213,6 +3219,7 @@ export function createHeartbeatRunPreparation(db: Db) {
         )?.authorUserId;
         if (author) {
           delete input.contextSnapshot.executionIdentityCause;
+          input.contextSnapshot.executionIdentityAttributable = true;
           return author;
         }
       }
@@ -3235,7 +3242,10 @@ export function createHeartbeatRunPreparation(db: Db) {
       return input.existingRunResponsibleUserId;
     if (input.routineEnvContext.responsibleUserId)
       return input.routineEnvContext.responsibleUserId;
-    if (isManualUserRun(input) && requestedUserId) return requestedUserId;
+    if (isManualUserRun(input) && requestedUserId) {
+      input.contextSnapshot.executionIdentityAttributable = true;
+      return requestedUserId;
+    }
     if (input.issueContext?.responsibleUserId)
       return input.issueContext.responsibleUserId;
     const parentResponsibleUserId = await resolveParentIssueResponsibleUserId(

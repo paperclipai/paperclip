@@ -936,7 +936,7 @@ export class PaperclipRunnerToolAuthority {
       case "request_human_input": return this.#requestHumanInput(input,
         (await captureRunIdentity(this.db, this.binding, { readScope: "identity" })).context?.id ?? null);
       case "create_task": return this.#createTask(input,
-        (await captureRunIdentity(this.db, this.binding, { readScope: "identity" })).context?.id ?? null);
+        (await captureRunIdentity(this.db, this.binding, { readScope: "identity" })).context ?? null);
       case "reassign_task": return this.#reassignTask(input);
       case "set_task_title": return this.#setTaskTitle(input);
       case "set_task_monitor": return this.#setTaskMonitor(input);
@@ -1569,7 +1569,13 @@ export class PaperclipRunnerToolAuthority {
     if (!member) throw forbidden("Person is not an active company member");
   }
 
-  async #createTask(input: Record<string, unknown>, identityContextId: string | null, receiptOnly = false): Promise<unknown> {
+  async #createTask(input: Record<string, unknown>, identity: { id: string; cause: string } | null, receiptOnly = false): Promise<unknown> {
+    // A company-default cause means this execution was handed a fallback
+    // responsible user because nobody could be attributed to it. Rooting the new
+    // task in that context, or copying that user onto it, makes the fallback the
+    // task's permanent identity and every execution it ever gets inherits it.
+    const identityIsCompanyDefault = identity?.cause === "company_default";
+    const identityContextId = identityIsCompanyDefault ? null : (identity?.id ?? null);
     const idempotencyKey = requiredString(input.idempotencyKey);
     if (input.status !== undefined && input.status !== "backlog" && input.status !== "todo") {
       throw new Error("paperclip_runner_tool_input_invalid");
@@ -1691,6 +1697,7 @@ export class PaperclipRunnerToolAuthority {
         originFingerprint: inputFingerprint,
         actorAgentId: this.binding.agentId,
         actorRunId: this.binding.runId,
+        actorIdentityIsCompanyDefault: identityIsCompanyDefault,
         idempotencyKey: durableIdempotencyKey,
         onDeduplicated: () => { deduplicated = true; },
       };

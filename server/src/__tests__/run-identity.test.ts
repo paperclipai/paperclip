@@ -3,7 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agentWakeupRequests, agents, companies, applyPendingMigrations, createDb, closeRegisteredClients, heartbeatRuns, heartbeatRunEvents, issueComments, issueThreadInteractions, issues, secretAccessEvents } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { acceptSteeredIdentity, reconcileSteeredIdentity, captureRunIdentity, initializeRunIdentity, listRunIdentityContexts, rejectSteeredIdentity, reserveSteeredIdentity } from "../services/run-identity.js";
+import { acceptSteeredIdentity, reconcileSteeredIdentity, captureRunIdentity, initializeRunIdentity, listRunIdentityContexts, rejectSteeredIdentity, repairCompanyDefaultIdentityRoot, reserveSteeredIdentity } from "../services/run-identity.js";
 
 const externalDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -323,6 +323,144 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId, status: "running" });
     const retry = await initializeRunIdentity(db, { companyId: input.companyId, runId, parentRunId: input.runId, responsibleUserId: "A", cause: "retry" });
     expect(retry.cause).toBe("company_default");
+  });
+
+  async function seedCompanyDefaultAncestor() {
+    const input = await seed();
+    const root = await initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: "fallback", cause: "company_default" });
+    expect(root).toMatchObject({ cause: "company_default", responsibleUserId: "fallback" });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId, status: "running" });
+    return { ...input, root, descendantRunId: runId };
+  }
+
+  it("releases an inherited company default when a person acts on the descendant run", async () => {
+    const input = await seedCompanyDefaultAncestor();
+    const descendant = await initializeRunIdentity(db, {
+      companyId: input.companyId, runId: input.descendantRunId, parentContextId: input.root.id,
+      responsibleUserId: "operator", cause: "issue_commented", responsibleUserIdIsAttributable: true,
+    });
+    // Cause and responsible user move together: the operator who acted is the
+    // one the credential path will see, not the fallback it refused.
+    expect(descendant).toMatchObject({ cause: "issue_commented", responsibleUserId: "operator" });
+    expect(descendant.parentContextId).toBe(input.root.id);
+  });
+
+  it("keeps the inherited company default when the descendant only re-reads the fallback user", async () => {
+    const input = await seedCompanyDefaultAncestor();
+    // A clean cause is not evidence of consent. The seed resolver reaches this
+    // shape whenever it inherits a user from the task, a parent, a retried run
+    // or a routine, so without positive attribution the boundary has to hold.
+    const descendant = await initializeRunIdentity(db, {
+      companyId: input.companyId, runId: input.descendantRunId, parentContextId: input.root.id,
+      responsibleUserId: "fallback", cause: "issue_commented",
+    });
+    expect(descendant).toMatchObject({ cause: "company_default", responsibleUserId: "fallback" });
+  });
+
+  it("does not let an attributable descendant inherit the ancestor's responsible user", async () => {
+    const input = await seedCompanyDefaultAncestor();
+    const descendant = await initializeRunIdentity(db, {
+      companyId: input.companyId, runId: input.descendantRunId, parentContextId: input.root.id,
+      responsibleUserId: "operator", cause: "issue_assigned", responsibleUserIdIsAttributable: true,
+    });
+    expect(descendant.responsibleUserId).not.toBe("fallback");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.descendantRunId));
+    expect(run.responsibleUserId).toBe("operator");
+  });
+
+  it("still refuses a sponsored-guest run whose own seed also falls through to the company default", async () => {
+    const input = await seedCompanyDefaultAncestor();
+    const descendant = await initializeRunIdentity(db, {
+      companyId: input.companyId, runId: input.descendantRunId, parentContextId: input.root.id,
+      responsibleUserId: "fallback", cause: "company_default", responsibleUserIdIsAttributable: true,
+    });
+    expect(descendant.cause).toBe("company_default");
+  });
+
+  // Releasing the boundary on an attributable wake is not enough on its own: a
+  // task rooted in a company default still hands it to every wake nobody acted
+  // on, forever. Repair exists so an already-poisoned task can be returned to
+  // the shape a task created outside a company-default execution has.
+  async function seedPoisonedTask() {
+    const input = await seedCompanyDefaultAncestor();
+    // The root's own activation already pointed the task's continuation at it.
+    await db.update(issues)
+      .set({ originIdentityContextId: input.root.id, responsibleUserId: "fallback" })
+      .where(eq(issues.id, input.issueId));
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId, companyId: input.companyId, issueId: input.issueId,
+      kind: "ask_user_questions", status: "pending", createdByAgentId: input.agentId,
+      payload: {}, sourceIdentityContextId: input.root.id,
+    });
+    const [task] = await db.select().from(issues).where(eq(issues.id, input.issueId));
+    expect(task.continuationIdentityContextId).toBe(input.root.id);
+    return { ...input, interactionId };
+  }
+
+  it("detaches a poisoned task so a wake nobody acted on stops inheriting the fallback", async () => {
+    const input = await seedPoisonedTask();
+    const report = await repairCompanyDefaultIdentityRoot(db, { companyId: input.companyId, issueId: input.issueId });
+    expect(report).toMatchObject({
+      detachedOrigin: true, detachedContinuation: true,
+      clearedResponsibleUserId: true, detachedInteractionIds: [input.interactionId],
+    });
+    const [task] = await db.select().from(issues).where(eq(issues.id, input.issueId));
+    expect(task.originIdentityContextId).toBeNull();
+    expect(task.continuationIdentityContextId).toBeNull();
+    // The back-written fallback goes with the root that supplied it, so the next
+    // seed cannot read it back off the task as settled human responsibility.
+    expect(task.responsibleUserId).toBeNull();
+    const [interaction] = await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, input.interactionId));
+    expect(interaction.sourceIdentityContextId).toBeNull();
+    // This is the wake that could never recover before: no person acted on it,
+    // so it has nothing to supersede the boundary with — it just has no
+    // poisoned ancestor left to inherit one from.
+    const descendant = await initializeRunIdentity(db, {
+      companyId: input.companyId, runId: input.descendantRunId,
+      responsibleUserId: "owner", cause: "issue_status_changed",
+    });
+    expect(descendant).toMatchObject({ cause: "issue_status_changed", parentContextId: null });
+  });
+
+  it("keeps the detached contexts in history instead of rewriting the lineage", async () => {
+    const input = await seedPoisonedTask();
+    await repairCompanyDefaultIdentityRoot(db, { companyId: input.companyId, issueId: input.issueId });
+    // Supersede, don't delete: the fallback execution still happened and the
+    // record of who was accountable for it has to survive the repair.
+    const history = await listRunIdentityContexts(db, input.companyId, input.runId);
+    expect(history.map((row) => row.id)).toContain(input.root.id);
+    expect(history.find((row) => row.id === input.root.id)).toMatchObject({
+      cause: "company_default", responsibleUserId: "fallback",
+    });
+  });
+
+  it("leaves a clean lineage alone and reports no change when re-run", async () => {
+    const input = await seedPoisonedTask();
+    await repairCompanyDefaultIdentityRoot(db, { companyId: input.companyId, issueId: input.issueId });
+    // Idempotent: a repair that is unsafe to re-run is unsafe to offer at all.
+    expect(await repairCompanyDefaultIdentityRoot(db, { companyId: input.companyId, issueId: input.issueId }))
+      .toMatchObject({
+        detachedOrigin: false, detachedContinuation: false,
+        clearedResponsibleUserId: false, detachedInteractionIds: [], detachedContextIds: [],
+      });
+    const clean = await seed();
+    const root = await initializeRunIdentity(db, { ...clean, messageIds: [], responsibleUserId: "operator", cause: "issue_assigned" });
+    await db.update(issues).set({ originIdentityContextId: root.id }).where(eq(issues.id, clean.issueId));
+    expect(await repairCompanyDefaultIdentityRoot(db, { companyId: clean.companyId, issueId: clean.issueId }))
+      .toMatchObject({ detachedOrigin: false, detachedContinuation: false, clearedResponsibleUserId: false });
+    const [task] = await db.select().from(issues).where(eq(issues.id, clean.issueId));
+    expect(task.originIdentityContextId).toBe(root.id);
+    expect(task.responsibleUserId).toBe("owner");
+  });
+
+  it("does not repair a task belonging to another company", async () => {
+    const input = await seedPoisonedTask();
+    expect(await repairCompanyDefaultIdentityRoot(db, { companyId: randomUUID(), issueId: input.issueId })).toBeNull();
+    const [task] = await db.select().from(issues).where(eq(issues.id, input.issueId));
+    expect(task.originIdentityContextId).toBe(input.root.id);
   });
 
 });

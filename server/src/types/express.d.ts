@@ -32,6 +32,13 @@ declare global {
         onBehalfOfUserId?: string | null;
         authorizingUserId?: string;
         identityContextId?: string | null;
+        /**
+         * The accepted execution identity's cause. `company_default` means the
+         * responsible user is a company fallback rather than an attribution, so
+         * it must not be propagated to anything a later execution will read back
+         * as settled human responsibility.
+         */
+        identityContextCause?: string | null;
         source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant" | "cloud_control" | "none";
       };
     }

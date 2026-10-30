@@ -14,6 +14,7 @@ import {
   issueComments,
   issueRelations,
   issues,
+  runIdentityContexts,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -47,6 +48,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     await db.delete(issueRelations);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(runIdentityContexts);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companyMemberships);
@@ -510,6 +512,78 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
         prevExecutionRunId: failedRunId,
         clearAssignee: true,
       },
+    });
+  });
+
+  it("restricts identity-root repair to board users and audits the detachment", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const [root] = await db.insert(runIdentityContexts).values({
+      companyId,
+      runId: currentRunId,
+      revision: 1,
+      responsibleUserId: "fallback-user",
+      cause: "company_default",
+      correlationId: "dispatch",
+      acceptedAt: new Date(),
+    }).returning();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Rooted in a company default",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      originIdentityContextId: root!.id,
+      continuationIdentityContextId: root!.id,
+      responsibleUserId: "fallback-user",
+    });
+
+    // An agent cannot lift the boundary its own executions are held by, however
+    // well it understands why it is there.
+    await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/admin/repair-identity-root`)
+      .expect(403);
+    await request(createApp({
+      type: "board",
+      userId: "outside-user",
+      companyIds: [],
+      memberships: [],
+      isInstanceAdmin: false,
+      source: "session",
+    }))
+      .post(`/api/issues/${issueId}/admin/repair-identity-root`)
+      .expect(404);
+
+    const res = await request(createApp(boardActor(companyId)))
+      .post(`/api/issues/${issueId}/admin/repair-identity-root`)
+      .send();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      issueId,
+      detachedOrigin: true,
+      detachedContinuation: true,
+      clearedResponsibleUserId: true,
+      detachedContextIds: [root!.id],
+    });
+
+    const [repaired] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(repaired.originIdentityContextId).toBeNull();
+    expect(repaired.continuationIdentityContextId).toBeNull();
+    expect(repaired.responsibleUserId).toBeNull();
+    // The context itself survives: the fallback execution happened, and who was
+    // accountable for it is not the repair's to erase.
+    const [context] = await db.select().from(runIdentityContexts)
+      .where(eq(runIdentityContexts.id, root!.id));
+    expect(context).toMatchObject({ cause: "company_default", responsibleUserId: "fallback-user" });
+
+    const audit = await db
+      .select({ action: activityLog.action, actorId: activityLog.actorId, details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.admin_repair_identity_root"))
+      .then((rows) => rows[0]);
+    expect(audit).toMatchObject({
+      actorId: "board-user",
+      details: { issueId, actorUserId: "board-user", detachedOrigin: true },
     });
   });
 

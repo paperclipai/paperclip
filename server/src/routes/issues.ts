@@ -48,6 +48,7 @@ import {
   reserveSteeredIdentity,
   acceptSteeredIdentity,
   rejectSteeredIdentity,
+  repairCompanyDefaultIdentityRoot,
 } from "../services/run-identity.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
@@ -12698,6 +12699,15 @@ export function issueRoutes(
       );
       let deduplicationReason: "idempotency_key" | "recent_open_title" | null =
         null;
+      // A company-default execution has no human to attribute the new task to.
+      // Stamping its context as the origin would make the fallback the task's
+      // permanent identity root, and passing its responsible user would record
+      // that fallback as the task's settled attribution. Both are inherited by
+      // every later execution, so neither is propagated: the new task starts
+      // without a root and the next execution resolves its own, falling back to
+      // company default again if there is still nobody to attribute it to.
+      const originIsCompanyDefault =
+        req.actor.identityContextCause === "company_default";
       const createInput = {
         ...createBody,
         workspaceSelectionActor: req.actor,
@@ -12705,13 +12715,16 @@ export function issueRoutes(
         ...(taskBridgeOriginForActor(req) ?? {}),
         id: issueId,
         originRunId: createBody.originRunId ?? actor.runId,
-        originIdentityContextId: req.actor.identityContextId ?? null,
+        originIdentityContextId: originIsCompanyDefault
+          ? null
+          : (req.actor.identityContextId ?? null),
         executionPolicy,
         ...(sourceTrust ? { sourceTrust } : {}),
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
         actorRunId: actor.runId,
         actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+        actorIdentityIsCompanyDefault: originIsCompanyDefault,
         trustExplicitResponsibleUserId: actor.actorType === "user",
         watchdogActorRunId: actor.runId,
         assertCanReuseIssue: (existing: typeof issueRows.$inferSelect) => assertCanReuseCreatedIssue(req, existing),
@@ -16462,6 +16475,53 @@ export function issueRoutes(
       latestCommentId: recent[0]?.id ?? null,
       hasMore: recent.length > 4,
     }));
+  });
+
+  // Board-only: detaching a task from a company-default identity root changes
+  // which executions can resolve a managed credential, so a person has to ask
+  // for it. An agent cannot repair the boundary its own executions are held by.
+  router.post("/issues/:id/admin/repair-identity-root", async (req, res) => {
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board access required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      throw forbidden("Board user context required");
+    }
+
+    const id = req.params.id as string;
+    const existing = await getAccessibleResource(
+      req,
+      res,
+      svc.getById(id),
+      "Issue not found",
+    );
+    if (!existing) return;
+
+    const result = await repairCompanyDefaultIdentityRoot(db, {
+      companyId: existing.companyId,
+      issueId: id,
+    });
+    if (!result) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.admin_repair_identity_root",
+      entityType: "issue",
+      entityId: id,
+      details: { ...result, actorUserId: req.actor.userId },
+    });
+
+    res.json(result);
   });
 
   router.get("/issues/:id/comments", async (req, res) => {

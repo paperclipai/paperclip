@@ -355,6 +355,25 @@ export function createGitRemoteAuthProvider(
   };
 }
 
+/**
+ * A `company_default` cause records that the responsible user was filled in by
+ * the company fallback rather than chosen by an operator. Their accountability
+ * is an internal field, not authorization to export their token, so managed
+ * GitHub resolution must see no responsible user at all. Readiness checks and the
+ * credential path both go through here, so a reported `ready` cannot promise a
+ * token the credential path will then refuse.
+ */
+export function managedGitHubResponsibleUserId(
+  context:
+    | { cause?: string | null; responsibleUserId?: string | null }
+    | null
+    | undefined,
+) {
+  return context?.cause === "company_default"
+    ? null
+    : (context?.responsibleUserId ?? null);
+}
+
 export async function resolveManagedGitHubIdentitySelection(
   db: Db,
   companyId: string,

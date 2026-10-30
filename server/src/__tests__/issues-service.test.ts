@@ -3329,6 +3329,40 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(issue.responsibleUserId).toBe(actorResponsibleUserId);
   });
 
+  it("does not record a company-default fallback as a new task's responsible user", async () => {
+    const companyId = randomUUID();
+    const fallbackUserId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: fallbackUserId,
+    });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Coder", role: "engineer", adapterType: "codex_local",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId, agentId, status: "running",
+      responsibleUserId: fallbackUserId,
+    });
+
+    const issue = await svc.create(companyId, {
+      title: "Filed by a company-default execution",
+      actorRunId: runId,
+      actorResponsibleUserId: fallbackUserId,
+      actorIdentityIsCompanyDefault: true,
+    });
+
+    // Recording the fallback here is what makes it permanent: the next execution
+    // reads it back off the task as settled human responsibility and resolves a
+    // clean cause for it, exporting a token the identity path had refused. The
+    // task starts with no responsible user so the next run resolves its own.
+    expect(issue.responsibleUserId).toBeNull();
+  });
+
   it("does not stamp the assignee default environment onto new issues", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

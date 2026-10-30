@@ -2385,6 +2385,8 @@ export function heartbeatService(
           readNonEmptyString(context.executionIdentityCause) ??
           readNonEmptyString(context.wakeReason) ??
           "dispatch",
+        responsibleUserIdIsAttributable:
+          context.executionIdentityAttributable === true,
       });
       // Initialization has persisted the active context, including an explicit
       // absence of identity inherited from an automatic continuation.
@@ -2395,8 +2397,14 @@ export function heartbeatService(
         responsibleUserId,
       };
       context.executionIdentityRunId = run.id;
+      // A company-default responsible user is a fallback, not an attribution, so
+      // it must not be promoted onto the task. Writing it back would let the next
+      // run read it off the issue as a settled human attribution and resolve a
+      // clean cause for it, exporting that person's credentials under a label the
+      // identity path had explicitly refused.
       if (
         responsibleUserId &&
+        identityContext.cause !== "company_default" &&
         issueContext &&
         !issueContext.responsibleUserId
       ) {

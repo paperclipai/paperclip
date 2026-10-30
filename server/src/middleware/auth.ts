@@ -404,11 +404,13 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           code: conversation ? "conversation_turn_cancelled" : "agent_run_cancelled" });
         return;
       }
+      let identityContextCause: string | null = null;
       if (identityRun?.activeIdentityContextId && identityRun.status === "running") {
         const captured = await captureRunIdentity(db, { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id },
           { readScope: "request_authentication" });
         identityRun.activeIdentityContextId = captured.context?.id ?? null;
         identityRun.responsibleUserId = captured.context?.responsibleUserId ?? null;
+        identityContextCause = captured.context?.cause ?? null;
       }
       if (claims.authorizing_user_id) {
         // This signed projection exists only for internal native tools. Recheck
@@ -457,6 +459,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         onBehalfOfUserId,
         ...(claims.authorizing_user_id ? { authorizingUserId: claims.authorizing_user_id } : {}),
         identityContextId: identityRun?.activeIdentityContextId ?? null,
+        identityContextCause,
         onBehalfOfMemberships,
         source: "agent_jwt",
       };
