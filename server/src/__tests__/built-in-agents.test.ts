@@ -217,13 +217,27 @@ describeEmbeddedPostgres("built-in agents", () => {
 
   it("validates the static registry and rejects invalid definitions", () => {
     const definitions = listBuiltInAgentDefinitions();
-    expect(definitions.map((definition) => definition.key).sort()).toEqual(["briefs", "learning", "reflection-coach", "summarizer"]);
+    expect(definitions.map((definition) => definition.key).sort()).toEqual(["briefs", "judge", "learning", "reflection-coach", "summarizer"]);
     const summarizer = definitions.find((definition) => definition.key === "summarizer");
     expect(summarizer).toMatchObject({
       defaultAdapterType: "claude_local",
       defaultAdapterConfig: { model: "claude-haiku-4-5" },
     });
     expect(summarizer?.defaultRuntimeConfig).toBeUndefined();
+    const judge = definitions.find((definition) => definition.key === "judge");
+    expect(judge).toMatchObject({
+      displayName: "Judge Agent",
+      featureKeys: ["judge"],
+      defaultRole: "general",
+      defaultBudgetMonthlyCents: 5000,
+    });
+    expect(judge?.allowedAdapterTypes).toContain("claude_local");
+    expect(judge?.allowedAdapterTypes).toContain("pi_local");
+    expect(judge?.defaultInstructions).toContain("verdict");
+    const learning = definitions.find((definition) => definition.key === "learning");
+    expect(learning?.defaultBudgetMonthlyCents).toBeGreaterThan(0);
+    expect(learning?.defaultInstructions).toContain("receipt");
+    expect(learning?.allowedAdapterTypes).toContain("pi_local");
     expect(() => validateBuiltInAgentDefinitions([
       {
         key: "briefs",
@@ -591,6 +605,22 @@ describeEmbeddedPostgres("built-in agents", () => {
       agentId: ready.agentId,
       pauseReason: "manual",
     });
+  });
+
+  it("grants the learning built-in a read-side peer grant and no write-side grant", async () => {
+    const companyId = await seedCompany();
+    const builtIns = builtInAgentService(db);
+    const state = await builtIns.ensure(companyId, "learning", {
+      adapterType: "process",
+      adapterConfig: { command: "true" },
+    });
+
+    const grantKeys = await permissionKeysForAgent(state.agentId!);
+    expect(grantKeys).toContain("agents:suggest-changes");
+    expect(grantKeys).toContain("skills:suggest-changes");
+    expect(grantKeys).not.toContain("agents:configure");
+    expect(grantKeys).not.toContain("skills:create");
+    expect(grantKeys).not.toContain("tasks:assign");
   });
 
   it("requires configured built-ins with typed precondition failures and paused warnings", async () => {
