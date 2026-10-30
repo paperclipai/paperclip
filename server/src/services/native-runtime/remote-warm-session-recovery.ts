@@ -32,9 +32,13 @@ export function isSettledRemoteWarmControlState(control: Record<string, unknown>
   if (!matchesSession(events[terminalIndex])) return false;
   return events.slice(terminalIndex + 1).every(event => {
     const envelope = record(record(event).envelope);
-    const payload = record(envelope.payload);
+    const notification = record(envelope.payload);
+    const payload = record(notification.payload);
     return record(event).eventType === "session.goal.snapshot" && matchesSession(event) &&
-      envelope.sourceInstanceId === identity.runnerInstanceId && envelope.sourceKind === "runner" &&
+      Object.entries(identity).every(([key, value]) => envelope[key] === value) &&
+      notification.schema === "paperclip.prp.event.v1" && notification.eventType === "session.goal.snapshot" &&
+      notification.sourceInstanceId === identity.runnerInstanceId && notification.sourceKind === "runner" &&
+      notification.runId === identity.runId && notification.normalizedSessionId === identity.normalizedSessionId &&
       payload.schema === "paperclip.session_goal.snapshot.v1" && payload.goal === null && payload.workingNow === false;
   });
 }
