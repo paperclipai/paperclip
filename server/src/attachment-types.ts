@@ -157,13 +157,17 @@ export function isAllowedContentType(contentType: string): boolean {
 }
 
 /**
- * The one attachment size ceiling for this deployment. Every upload path —
- * assets, task attachments, cases, and company import — bounds itself by this
- * value, so an operator raises or lowers the limit in exactly one place.
+ * Ceiling for the small, memory-buffered upload paths (company logo, case
+ * attachments). A request body lives on the heap for the whole request, so this
+ * number is a memory-exhaustion guard, not a product limit.
+ *
+ * Assets, task attachments, cases, and company import all bound themselves by
+ * this value, so an operator raises or lowers the in-memory limit in exactly
+ * one place. Issue attachments are the one exception — see
+ * `MAX_ISSUE_ATTACHMENT_BYTES`.
  */
 export const MAX_ATTACHMENT_BYTES =
   Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
-
 const ATTACHMENT_SIZE_UNITS: readonly string[] = ["KB", "MB", "GB"];
 
 /**
@@ -190,3 +194,15 @@ export function formatAttachmentSize(bytes: number): string {
   const rounded = value.toFixed(1).replace(/\.0$/, "");
   return `${rounded} ${ATTACHMENT_SIZE_UNITS[unitIndex]}`;
 }
+
+/**
+ * Ceiling for `POST /companies/:companyId/issues/:issueId/attachments`.
+ *
+ * That route spools the upload to disk and streams it into object storage, so
+ * the cost of raising this is transient disk, not resident heap. It exists
+ * because rendered media deliverables (a 12-15 minute 1080p H.264 episode is
+ * 30-70 MB) are the normal content of an issue attachment and the 10 MB
+ * in-memory cap makes them structurally unattachable.
+ */
+export const MAX_ISSUE_ATTACHMENT_BYTES =
+  Number(process.env.PAPERCLIP_ISSUE_ATTACHMENT_MAX_BYTES) || 512 * 1024 * 1024;
