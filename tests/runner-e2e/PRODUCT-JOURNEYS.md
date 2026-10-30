@@ -26,6 +26,7 @@ never start a server or depend on a tenant filesystem.
 | `task-create` | Company and signed-in board user | Create a task through the shared production composer, assign it to yourself, reopen and reload it, verify the saved prompt and no agent work |
 | `ask-question` | Company, configured agent capability, positive model allowance and exactly one permitted work run | Reuse the existing cross-model Ask question prompt; require one successful run with matching company/task/agent/model/environment, one saved exact answer, and visible readback after reload |
 | `task-properties` | Company, signed-in board user, task-write capability, prepared run-owned backlog task | Open its properties, assign it to the signed-in user, reload, check both UI and saved assignment; verify no agent run |
+| `task-document-persistence` | Company, signed-in board user, task-write capability, prepared run-owned backlog task; no model allowance or runs | Create a general document through Artifacts, edit its title and body, reopen and reload it; independently verify exact canonical content, preserved original and latest revisions, board-user authorship, and no agent work |
 | `plan-revise-accept` | Native agent; three work runs | Reuse the classic Plan story: canonical draft, browser revision request, new revision-bound confirmation, approval and exact saved final response |
 | `build-revise` | Native agent; two work runs; qualified Docker artifact oracle | Browser-download both ZIP versions, independently exercise source/CLI behavior, verify different hashes and preserve the original download |
 | `protected-actions` | Native agent; four work runs; authenticated reachable review-service fixture | Approve one action and decline another on separate owned tasks; verify zero calls before either decision, one after approval, zero after decline and a truthful saved explanation |
@@ -36,6 +37,14 @@ never start a server or depend on a tenant filesystem.
 The shared Studio helper waits for the original saved file body before typing.
 An editor control can mount before the file query completes; editing that empty
 draft can otherwise lose the original content when the file arrives.
+
+The task-document journey uses the normal default-chat Artifacts pane and the
+shared document editor. Classic mode retains its editor in the task body. The
+general editor excludes Plans, which retain their conversation and approval
+flow. Setup creates only an owned backlog task, never the document or its
+revisions. The oracle accepts additional autosave revisions, but requires both
+measured versions to remain exact and independently readable. Shared coverage
+does not establish a live pass or admit the journey to a target's daily plan.
 
 Supported acquisitions are managed self-hosted (`local`), registered existing
 Cloud (`local` or `daytona` when present), and new Cloud. New Cloud must start

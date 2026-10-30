@@ -10,7 +10,7 @@ import type {
   Issue,
   IssueDocument,
 } from "@paperclipai/shared";
-import { isSystemIssueDocumentKey } from "@paperclipai/shared";
+import { isArtifactReviewDocumentKey, isSystemIssueDocumentKey } from "@paperclipai/shared";
 import { useLocation } from "@/lib/router";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
@@ -291,6 +291,7 @@ function AccountIssueDocumentsSection({
   subject,
   canDeleteDocuments,
   canManageDocumentLocks = false,
+  generalDocumentsOnly = false,
   feedbackVotes = [],
   feedbackDataSharingPreference = "prompt",
   feedbackTermsUrl = null,
@@ -309,6 +310,8 @@ function AccountIssueDocumentsSection({
   subject?: DocumentSubjectConfig;
   canDeleteDocuments: boolean;
   canManageDocumentLocks?: boolean;
+  /** The chat shell keeps Plans in the conversation and file reviews on their work products. */
+  generalDocumentsOnly?: boolean;
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
@@ -493,12 +496,15 @@ function AccountIssueDocumentsSection({
   });
 
   const sortedDocuments = useMemo(() => {
-    return (documents ?? []).filter((doc) => !documentSubject.hideSystemDocuments || !isSystemIssueDocumentKey(doc.key)).sort((a, b) => {
+    return (documents ?? []).filter((doc) =>
+      (!generalDocumentsOnly || (!isPlanKey(doc.key) && !isArtifactReviewDocumentKey(doc.key)))
+      && (!documentSubject.hideSystemDocuments || !isSystemIssueDocumentKey(doc.key)),
+    ).sort((a, b) => {
       if (a.key === "plan" && b.key !== "plan") return -1;
       if (a.key !== "plan" && b.key === "plan") return 1;
       return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
     });
-  }, [documentSubject.hideSystemDocuments, documents]);
+  }, [documentSubject.hideSystemDocuments, documents, generalDocumentsOnly]);
 
   const feedbackVoteByTargetId = useMemo(() => {
     const map = new Map<string, FeedbackVoteValue>();
@@ -510,9 +516,12 @@ function AccountIssueDocumentsSection({
   }, [feedbackVotes]);
 
   const hasRealPlan = sortedDocuments.some((doc) => doc.key === "plan");
-  const isEmpty = sortedDocuments.length === 0 && !documentSubject.legacyPlanDocument;
+  const legacyPlanDocument = generalDocumentsOnly ? null : documentSubject.legacyPlanDocument;
+  const isEmpty = sortedDocuments.length === 0 && !legacyPlanDocument;
   const newDocumentKeyError =
-    draft?.isNew && draft.key.trim().length > 0 && !DOCUMENT_KEY_PATTERN.test(draft.key.trim())
+    draft?.isNew && generalDocumentsOnly && isPlanKey(draft.key.trim())
+      ? "Create and revise Plans in the task conversation."
+      : draft?.isNew && draft.key.trim().length > 0 && !DOCUMENT_KEY_PATTERN.test(draft.key.trim())
       ? "Use lowercase letters, numbers, -, or _, and start with a letter or number."
       : null;
 
@@ -592,6 +601,15 @@ function AccountIssueDocumentsSection({
     const normalizedBody = currentDraft.body.trim();
     const normalizedTitle = currentDraft.title.trim();
     const activeConflict = documentConflict?.key === normalizedKey ? documentConflict : null;
+
+    if (generalDocumentsOnly && isPlanKey(normalizedKey)) {
+      setError("Create and revise Plans in the task conversation.");
+      return false;
+    }
+    if (generalDocumentsOnly && isArtifactReviewDocumentKey(normalizedKey)) {
+      setError("Review this document through its work product.");
+      return false;
+    }
 
     if (activeConflict && !options?.overrideConflict) {
       if (options?.trackAutosave) {
@@ -725,7 +743,7 @@ function AccountIssueDocumentsSection({
     // Kept on this device; it saves when the connection allows.
     if (result.kind === "waiting") return false;
     return handleSaveFailure(result.error);
-  }, [documentConflict, documentSubject, draftScope, invalidateIssueDocuments, resetAutosaveState, runAutosave, sortedDocuments, syncDocumentCaches, upsertDocument]);
+  }, [documentConflict, documentSubject, draftScope, generalDocumentsOnly, invalidateIssueDocuments, resetAutosaveState, runAutosave, sortedDocuments, syncDocumentCaches, upsertDocument]);
 
   const reloadDocumentFromServer = useCallback((key: string) => {
     if (documentConflict?.key !== key) return;
@@ -1108,7 +1126,7 @@ function AccountIssueDocumentsSection({
         </div>
       )}
 
-      {!hasRealPlan && documentSubject.legacyPlanDocument ? (
+      {!hasRealPlan && legacyPlanDocument ? (
         <div
           id="document-plan"
           className={cn(
@@ -1123,7 +1141,7 @@ function AccountIssueDocumentsSection({
             </Badge>
           </div>
           <div className={documentBodyPaddingClassName}>
-            {renderFoldableBody(documentSubject.legacyPlanDocument.body, documentBodyContentClassName, externalReferences, { documentKey: "plan" })}
+            {renderFoldableBody(legacyPlanDocument.body, documentBodyContentClassName, externalReferences, { documentKey: "plan" })}
           </div>
         </div>
       ) : null}

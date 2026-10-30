@@ -11,6 +11,10 @@ credential staging and whole-company cleanup own setup and teardown.
 fixture graph through `FixtureRegistry.setupAll(requested)`. Omitting the
 argument preserves the existing all-fixtures behavior. A verified onboarding
 context may seed the graph; independent setup is labeled as recipe provenance.
+The model-free task-document journey reuses the run-owned backlog-task fixture.
+It creates and changes the document only through the production browser editor;
+setup never seeds the saved outcome. Task ownership also covers its documents
+and revisions during cleanup.
 
 ## Connection creation fixtures
 

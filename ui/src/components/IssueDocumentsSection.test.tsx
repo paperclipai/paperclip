@@ -314,6 +314,40 @@ describe("IssueDocumentsSection", () => {
     container.remove();
   });
 
+  it("keeps native Plans out of the general-document authoring surface", async () => {
+    mockIssuesApi.listDocuments.mockResolvedValue([
+      createIssueDocument({ body: "Native Plan content" }),
+      createIssueDocument({ id: "note", key: "notes", title: "Task note", body: "General document content" }),
+      createIssueDocument({ id: "file-review", key: "artifact-review-output", body: "Work product review content" }),
+    ]);
+    markdownEditorMockState.emitMountValue = "A new general note";
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}><IssueDocumentsSection
+      issue={{ ...createIssue(), legacyPlanDocument: { key: "plan", source: "issue_description", body: "Legacy Plan content" } }}
+      canDeleteDocuments={false} generalDocumentsOnly
+    /></QueryClientProvider>));
+    await flush();
+    expect(container.textContent).toContain("General document content");
+    expect(container.textContent).not.toContain("Native Plan content");
+    expect(container.textContent).not.toContain("Legacy Plan content");
+    expect(container.textContent).not.toContain("Work product review content");
+    const newDocument = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("New document"))!;
+    await act(async () => newDocument.click());
+    const keyInput = container.querySelector<HTMLInputElement>('input[placeholder="Document key"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(keyInput, "plan");
+      keyInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const create = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Create document"))!;
+    await act(async () => create.click());
+    await flush();
+    expect(container.textContent).toContain("Create and revise Plans in the task conversation.");
+    expect(mockIssuesApi.upsertDocument).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    client.clear();
+  });
+
   it("unfolds a Classic confirmation link and loads its bound revision rather than the latest text", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

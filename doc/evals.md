@@ -66,7 +66,9 @@ not establish Slack, staging authentication, warm lifecycle, or live qualificati
 
 [Reusable Product journeys](../tests/runner-e2e/PRODUCT-JOURNEYS.md) add explicit
 deployment targets and starting-state recipes. The shared task-properties
-journey uses no model; Cloud onboarding supplies reusable verified state. Cloud
+journey and task-document create/edit/reopen journey use no model; Cloud
+onboarding supplies reusable verified state. The document journey checks exact
+saved content and both revision records through independent API reads. Cloud
 fleet operations and trusted CI remain private. Local eval gateway qualification
 does not qualify Cloud routes, and these selections stay outside `--all`.
 

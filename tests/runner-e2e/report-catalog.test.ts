@@ -88,6 +88,7 @@ describe("trusted report catalog discovery", () => {
     const product = { ...known, suite: { ...known.suite, id: "product-journeys" } };
     expect(journeyCapabilities(product).map(capability => capability.id)).toEqual(["questions-and-approvals/questions"]);
     expect(journeyCapabilities({ ...product, task: { ...known.task, id: "task-create" } }).map(capability => capability.id)).toEqual(["tasks/create"]);
+    expect(journeyCapabilities({ ...product, task: { ...known.task, id: "task-document-persistence" } }).map(capability => capability.id)).toEqual(["documents-artifacts/documents"]);
   });
 
   it("aggregates unknown suites and renders their cases, missing results, and screenshot gallery", () => {
