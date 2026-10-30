@@ -71,14 +71,16 @@ describe("run dispatch obligations", () => {
   it("batches repeated tenant writes and passes only their company to queued dispatch", async () => {
     const f = fixture(); await f.worker.ready;
     for (let index = 0; index < 100; index++) {
-      await f.notify({ companyId: "company-a" });
+      const source = { companyId: "company-a", issueId: `issue-${index % 2}`,
+        runId: `run-${index}`, agentId: `agent-${index}`, interactionBody: "not a dispatch key" };
+      await f.notify(source);
       await vi.advanceTimersByTimeAsync(10);
     }
     expect(f.promote.mock.calls.length).toBeLessThanOrEqual(2);
     expect(f.dispatch.mock.calls.length).toBeLessThanOrEqual(2);
     await f.settle();
     expect(f.dispatch).toHaveBeenLastCalledWith({ companyId: "company-a" });
-    expect(f.dispatch.mock.calls.slice(1).every(([scope]) => scope?.companyId === "company-a")).toBe(true);
+    for (const [scope] of f.dispatch.mock.calls.slice(1)) expect(scope).toEqual({ companyId: "company-a" });
     expect(f.coordinator.nextWakeAt()).toBeNull();
     const count = f.dispatch.mock.calls.length;
     await vi.advanceTimersByTimeAsync(20 * 60_000); expect(f.dispatch).toHaveBeenCalledTimes(count);
