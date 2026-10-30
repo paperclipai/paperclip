@@ -2928,8 +2928,20 @@ export function secretService(db: Db | DbTransaction) {
     provider: SecretProvider,
     metadata: Record<string, unknown> | null | undefined,
   ): Record<string, unknown> | null {
-    if (!metadata || provider !== "aws_secrets_manager") return null;
+    if (!metadata) return null;
     const safe: Record<string, unknown> = {};
+    if (provider === "infisical") {
+      for (const key of ["secretPath", "environment"]) {
+        const value = metadata[key];
+        if (typeof value === "string") safe[key] = value;
+      }
+      for (const key of ["version", "hasComment", "tagCount"]) {
+        const value = metadata[key];
+        if (typeof value === "boolean" || typeof value === "number") safe[key] = value;
+      }
+      return Object.keys(safe).length > 0 ? safe : null;
+    }
+    if (provider !== "aws_secrets_manager") return null;
     for (const key of ["createdDate", "lastAccessedDate", "lastChangedDate", "deletedDate"]) {
       const value = metadata[key];
       if (typeof value === "string" || value === null) safe[key] = value;
