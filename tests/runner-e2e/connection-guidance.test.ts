@@ -62,6 +62,17 @@ describe("neutral decline evidence", () => {
     expect(passes(input)).toBe(true);
     expect(input.replies).toEqual([]);
   });
+  it("checks both the visible explanation and preserved native Markdown when links become chips", () => {
+    const input = native();
+    const body = "Contacts are unavailable. See [Connection outcome](/QA/issues/QA-123#document-outcome).";
+    Object.assign(input.nativeFinalReply, { sourceBody: body, body: "Contacts are unavailable. See QA-123.", origin: "https://fixture.test",
+      content: [{ text: "Contacts are unavailable. See " }, { href: "/QA/issues/QA-123#document-outcome" }, { text: "." }] });
+    input.nativeFinalReply.finalEvent.body = body;
+    expect(passes(input)).toBe(true);
+    Object.assign(input.nativeFinalReply, { sourceBody: body.replace("Connection outcome", "PRIVATE_MARKER") });
+    input.nativeFinalReply.finalEvent.body = body.replace("Connection outcome", "PRIVATE_MARKER");
+    expect(passes(input)).toBe(false);
+  });
   it("excludes an earlier successful native reply when a later successful run exists", () => {
     const input = native();
     input.runs.push({ ...input.runs[0], id: "latest", startedAt: "2026-10-06T22:00:04Z", finishedAt: "2026-10-06T22:00:06Z" });

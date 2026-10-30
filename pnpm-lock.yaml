@@ -68,6 +68,9 @@ importers:
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
+      mdast-util-from-markdown:
+        specifier: 2.0.3
+        version: 2.0.3
       turbo:
         specifier: 2.11.10
         version: 2.11.10

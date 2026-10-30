@@ -73,3 +73,18 @@ it("accepts a proven native final before the selected comment is projected, and 
     expect(taskReplyBelongsToRun(observed, pendingProjection, "owned-agent", [])).toBe(false);
   }
 });
+
+it("binds complete Markdown content and the exact link destination despite a decorated issue label", () => {
+  const body = "I **couldn't retrieve** the pages. See [Connection outcome](/QA/issues/QA-123#document-outcome).";
+  const comment = { id: "selected", authorAgentId: "owned-agent", createdByRunId: "final-run", body };
+  const published = { ...run, resultJson: { presentationDecision: { commentId: "selected" } } };
+  const bubble: TaskReplyObservation = { ...observed, anchor: "selected", origin: "https://fixture.test",
+    body: "I couldn't retrieve the pages. See QA-123.",
+    content: [{ text: "I couldn't retrieve the pages. See " }, { href: "https://fixture.test/QA/issues/QA-123#document-outcome" }, { text: "." }] };
+  expect(taskReplyBelongsToRun(bubble, published, "owned-agent", [comment])).toBe(true);
+  const copy = events(); copy[0]!.payload.prpEvent.payload.text = body;
+  expect(taskReplyBelongsToRun({ ...bubble, anchor: "final-run:turn" }, run, "owned-agent", [], copy)).toBe(true);
+  for (const content of [undefined, [{ text: bubble.body }], [...bubble.content!, { text: " extra" }],
+    [{ text: "I couldn't retrieve the pages. See " }, { href: "/other-task" }, { text: "." }]])
+    expect(taskReplyBelongsToRun({ ...bubble, content }, published, "owned-agent", [comment])).toBe(false);
+});
