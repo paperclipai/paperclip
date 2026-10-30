@@ -67,6 +67,10 @@ export function parseHermesGatewayStdoutLine(line: string, ts: string): Transcri
       const delta = asString(data?.delta) || asString(data?.text_delta);
       return delta ? [{ kind: "assistant", ts, text: stripAnsi(delta), delta: true }] : [];
     }
+    if (eventName === "message.interim") {
+      const interim = asString(data?.text);
+      return interim ? [{ kind: "assistant", ts, text: stripAnsi(interim) }] : [];
+    }
     if (eventName === "run.failed" || eventName === "run.error") {
       const message = asString(data?.error) || asString(data?.message) || "Hermes run failed";
       return [{ kind: "stderr", ts, text: message }];
