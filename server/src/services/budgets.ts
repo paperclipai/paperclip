@@ -1,3 +1,4 @@
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { addCents, compareCents, normalizeCents } from "@paperclipai/shared";
@@ -301,6 +302,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.paused) return;
     await notifyCompanyRetentionWork(db, policy.companyId);
+    await notifyExternalObjectRefresh(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.issueMonitors);
@@ -361,6 +363,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.pauseReason !== "budget") return;
     await notifyCompanyRetentionWork(db, policy.companyId);
+    await notifyExternalObjectRefresh(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.issueMonitors);

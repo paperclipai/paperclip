@@ -47,10 +47,10 @@ and fences automatic result persistence. It does not modify that draft PR.
 | Mutation | Owner and activation |
 | --- | --- |
 | Issue title/description, comment and document references | Existing sync methods register company intent before mention replacement and object upsert. Routes, runtime tools, adapters and plugin paths reuse these methods. |
-| Comment/document disappearance | Sync registers reconstruction before deleting obsolete mentions. |
+| Comment/document disappearance | Sync derives the retained mention owners and registers only those companies before deleting obsolete mentions. |
 | Last mention removal and reattachment | Mention replacement invalidates company deadlines. Retained objects stay available for reattachment. |
 | Issue deletion | Issue service registers its company before cascading mention deletion. |
-| Company status/archive/deletion | Company services register company reconstruction before their status or deletion writes. |
+| Company status/archive/deletion, including budget pause/resume | Company and budget services register company reconstruction before status or deletion writes. |
 | Feature enable/disable | Instance settings registers global reconstruction before the experimental-settings write. |
 | Plugin manifest/status/uninstall | Plugin registry registers reconstruction before lifecycle writes. Installed plugins acquire support through the ordinary ready transition. |
 | Plugin company configuration and enabled setting | Registry writes register only the affected company. There is no plugin-readiness poll. |

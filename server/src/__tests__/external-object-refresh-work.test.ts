@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { activityLog, companies, createDb, externalObjects, issues, plugins } from "@paperclipai/db";
+import { activityLog, approvals, applyPendingMigrations, budgetIncidents, budgetPolicies, companies, costEvents, createDb, externalObjects, issues, issueComments, plugins } from "@paperclipai/db";
 import { externalObjectService, type ExternalObjectResolveResult } from "../services/external-objects.js";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { documentService } from "../services/documents.js";
+import { budgetService } from "../services/budgets.js";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { companyService } from "../services/companies.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -34,14 +36,19 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
   const errors = vi.fn();
   const companyIds: string[] = [];
   beforeAll(async () => {
+    if (url) await applyPendingMigrations(url);
     if (!url) temp = await startEmbeddedPostgresTestDatabase("external-refresh-work-");
     db = createDb(url ?? temp!.connectionString, { maxConnections: 6 });
     await db.execute(sql`truncate table ${companies} cascade`);
-  });
+  }, 90_000);
   afterEach(async () => {
     await coordinator?.stop(); coordinator = undefined;
     vi.useRealTimers(); vi.restoreAllMocks();
     for (const id of companyIds.splice(0)) {
+      await db.delete(budgetIncidents).where(eq(budgetIncidents.companyId, id));
+      await db.delete(budgetPolicies).where(eq(budgetPolicies.companyId, id));
+      await db.delete(approvals).where(eq(approvals.companyId, id));
+      await db.delete(costEvents).where(eq(costEvents.companyId, id));
       await db.delete(activityLog).where(eq(activityLog.companyId, id));
       await db.delete(issues).where(eq(issues.companyId, id));
       await db.delete(externalObjects).where(eq(externalObjects.companyId, id));
@@ -254,6 +261,58 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
     await registry.upsertCompanySettings(plugin!.id, f.companyId, { enabled: true, settingsJson: {} });
     await settle(async () => (await row(f.companyId)).isTerminal); await quiet();
     expect(calls).toHaveBeenCalledOnce();
+  });
+
+  it("reactivates refresh after ordinary budget pause and budget raise", async () => {
+    clock(); const svc = service(); provider.mockResolvedValue(active); await start(svc);
+    const f = await fixture(); await svc.syncIssue(f.issueId);
+    await settle(async () => (await row(f.companyId))?.lastResolvedAt !== null);
+    await db.insert(costEvents).values({ companyId: f.companyId, usageKind: "decision", provider: "fixture",
+      biller: "fixture", billingType: "metered_api", model: "simulated", costCents: 200, occurredAt: new Date() });
+    const budgets = budgetService(db);
+    await budgets.upsertPolicy(f.companyId, { scopeType: "company", scopeId: f.companyId,
+      amount: 100, hardStopEnabled: true }, null);
+    expect((await db.select().from(companies).where(eq(companies.id, f.companyId)))[0]!.status).toBe("paused");
+    await quiet();
+    const reads = vi.spyOn(db, "select"); provider.mockClear();
+    await vi.advanceTimersByTimeAsync(900_000); expect(reads).not.toHaveBeenCalled(); expect(provider).not.toHaveBeenCalled();
+    provider.mockResolvedValue(terminal);
+    await budgets.upsertPolicy(f.companyId, { scopeType: "company", scopeId: f.companyId, amount: 300 }, null);
+    await settle(async () => (await row(f.companyId)).isTerminal); await quiet();
+    expect(provider).toHaveBeenCalledOnce();
+  });
+
+  it.each(["comment", "document"] as const)("keeps hard-deleted %s activation scoped to its retained mention owner", async kind => {
+    clock(); const svc = service(); provider.mockResolvedValue(active); await start(svc);
+    const a = await fixture(); const b = await fixture(); await svc.syncIssue(b.issueId);
+    let id: string;
+    if (kind === "comment") {
+      const [comment] = await db.insert(issueComments).values({ companyId: a.companyId, issueId: a.issueId,
+        body: `https://example.com/${a.companyId}` }).returning();
+      id = comment!.id; await svc.syncComment(id);
+    } else {
+      const result = await documentService(db).upsertIssueDocument({ issueId: a.issueId,
+        key: "notes", format: "markdown", body: `https://example.com/${a.companyId}` });
+      id = result.document.id; await svc.syncDocument(id);
+    }
+    await settle(async () => (await row(a.companyId))?.lastResolvedAt !== null && (await row(b.companyId))?.lastResolvedAt !== null);
+    await settle(() => coordinator!.nextWakeAt() !== null);
+    const reads: Array<{ query: string; params: unknown[] }> = [];
+    const debug = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query, params) => {
+      if (/^select/i.test(query) && query.includes('from "external_objects"') && query.includes('inner join "companies"'))
+        reads.push({ query, params: [...params] });
+    };
+    try {
+      if (kind === "comment") { await db.delete(issueComments).where(eq(issueComments.id, id)); await svc.syncComment(id); }
+      else { await documentService(db).deleteIssueDocument(a.issueId, "notes"); await svc.syncDocument(id); }
+      await settle(() => reads.length > 0);
+      for (const read of reads) {
+        expect(read.query).toContain('"external_objects"."company_id" =');
+        expect(read.params).toContain(a.companyId); expect(read.params).not.toContain(b.companyId);
+      }
+    } finally { db.$client.options.debug = debug; }
+    expect(provider).toHaveBeenCalledTimes(2);
   });
 
   it("keeps warm standby startup SQL-free and resumes a first committed producer", async () => {

@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { eq } from "drizzle-orm";
 import {
   companies,
+  applyPendingMigrations,
   createDb,
   activityLog,
   externalObjectMentions,
@@ -711,9 +712,10 @@ describeEmbeddedPostgres("externalObjectService", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
+    if (externalDatabaseUrl) await applyPendingMigrations(externalDatabaseUrl);
     if (!externalDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-external-objects-");
     db = createDb(externalDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 6 });
-  }, 20_000);
+  }, 90_000);
 
   afterEach(async () => {
     await db.delete(activityLog);

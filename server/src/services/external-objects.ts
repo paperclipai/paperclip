@@ -571,6 +571,14 @@ export function externalObjectService(
     return dbOrTx === db ? db.transaction(runSync) : runSync(dbOrTx);
   }
 
+  async function deleteMissingSourceMentions(kind: "comment" | "document", recordId: string, tx: any) {
+    const source = and(eq(externalObjectMentions.sourceKind, kind), eq(externalObjectMentions.sourceRecordId, recordId));
+    const owners: Array<{ companyId: string }> = await tx.selectDistinct({ companyId: externalObjectMentions.companyId })
+      .from(externalObjectMentions).where(source);
+    for (const owner of owners) await notifyExternalObjectRefresh(tx, owner.companyId);
+    await tx.delete(externalObjectMentions).where(source);
+  }
+
   async function syncComment(commentId: string, dbOrTx: any = db) {
     const runSync = async (tx: any) => {
       if (!(await isEnabled())) return;
@@ -585,10 +593,7 @@ export function externalObjectService(
         .where(eq(issueComments.id, commentId))
         .then((rows: Array<{ id: string; companyId: string; issueId: string; body: string }>) => rows[0] ?? null);
       if (!comment) {
-        await notifyExternalObjectRefresh(tx);
-        await tx
-          .delete(externalObjectMentions)
-          .where(and(eq(externalObjectMentions.sourceKind, "comment"), eq(externalObjectMentions.sourceRecordId, commentId)));
+        await deleteMissingSourceMentions("comment", commentId, tx);
         return;
       }
       await replaceSourceMentions({
@@ -620,10 +625,7 @@ export function externalObjectService(
         .where(eq(documents.id, documentId))
         .then((rows: Array<{ documentId: string; companyId: string; issueId: string; key: string; body: string }>) => rows[0] ?? null);
       if (!document) {
-        await notifyExternalObjectRefresh(tx);
-        await tx
-          .delete(externalObjectMentions)
-          .where(and(eq(externalObjectMentions.sourceKind, "document"), eq(externalObjectMentions.sourceRecordId, documentId)));
+        await deleteMissingSourceMentions("document", documentId, tx);
         return;
       }
       await replaceSourceMentions({
