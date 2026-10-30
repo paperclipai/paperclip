@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { runAdapterExecutionTargetShellCommand, type AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { kimiMetadataProbeDigest, kimiMetadataProbeNodeDigest, probeKimiMetadata, validateKimiMetadata } from "../vendor/paperclip-runner/live/index.js";
 import { unprocessable } from "../errors.js";
-import { runSshCommand } from "@paperclipai/adapter-utils/ssh";
+import { createSshCommandManagedRuntimeRunner, runSshCommand } from "@paperclipai/adapter-utils/ssh";
 import { QUALIFIED_ACPX_PROFILES } from "../vendor/paperclip-runner/index.js";
 import { resolveKimiCandidateAdmission } from "./native-runtime/acpx-qualification.js";
 
@@ -38,13 +38,31 @@ export async function probeKimiExecutionTarget(apiKey: string, target: AdapterEx
   if (target.transport === "sandbox" && target.runnerTask) {
     throw unprocessable("Kimi Code metadata verification is unavailable in this hosting environment.", { code: "KIMI_INSTALLATION_INVALID" });
   }
+  let locations = ["/opt/paperclip-runner/provider-pack", '"$HOME/.local/share/paperclip-runner/provider-pack"'];
+  const selectedPackRoot = process.env.PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH?.trim();
+  if (selectedPackRoot) {
+    try {
+      // Test uses the same complete-pack installer as native execution. It
+      // needs no native run/session or DB context and opens no model session.
+      const { prepareRemoteProviderPackOnTarget, resolveRemoteProviderPackSource } = await import("./native-runtime/native-session-executor.js");
+      const selected = resolveRemoteProviderPackSource(selectedPackRoot);
+      if (selected.manifest.payload.target.platform !== "linux" || selected.manifest.payload.target.architecture !== "x64") throw INSTALLATION_INVALID();
+      const runner = target.transport === "ssh" ? createSshCommandManagedRuntimeRunner({ spec: target.spec, defaultCwd: target.remoteCwd }) : target.runner;
+      if (!runner) throw INSTALLATION_INVALID();
+      const prepared = await prepareRemoteProviderPackOnTarget({ target, runner,
+        configuredProviderPackRoot: selected.configuredRoot, manifest: selected.manifest });
+      locations = [`'${prepared.root.replaceAll("'", "'\\''")}'`];
+    } catch { throw INSTALLATION_INVALID(); }
+  }
+  // Preparation retains the normal installer's bounded stages. The existing
+  // metadata/HTTP budget begins only after that preparation has completed.
   const deadlineAt = Date.now() + 35_000;
   let digest: string;
   try { digest = await kimiMetadataProbeDigest(); }
   catch { throw INSTALLATION_INVALID(); }
   const nodeDigest = kimiMetadataProbeNodeDigest();
   if (!/^sha256:[a-f0-9]{64}$/.test(digest) || !/^sha256:[a-f0-9]{64}$/.test(nodeDigest)) throw INSTALLATION_INVALID();
-  for (const location of ["/opt/paperclip-runner/provider-pack", '"$HOME/.local/share/paperclip-runner/provider-pack"']) {
+  for (const location of locations) {
     const remainingMs = deadlineAt - Date.now();
     if (remainingMs <= 3_000) throw REQUEST_FAILED();
     const command = [

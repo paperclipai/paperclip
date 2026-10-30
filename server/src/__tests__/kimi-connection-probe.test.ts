@@ -7,9 +7,12 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import { KIMI_DISTRIBUTION_CLOSURE_SHA256, KIMI_NODE_DISTRIBUTIONS, KIMI_NODE_VERSION, KIMI_RUNTIME_VERSION } from "../../../packages/paperclip-runner/src/drivers/acpx/kimi-closure-pins.js";
 import { QUALIFIED_ACPX_PROFILES } from "../../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
 
-const mocks = vi.hoisted(() => ({ command: vi.fn(), local: vi.fn(), digest: vi.fn(), ssh: vi.fn(), wire: [] as Array<{ file: string; args: string[]; stdin: boolean }> }));
+const mocks = vi.hoisted(() => ({ command: vi.fn(), local: vi.fn(), digest: vi.fn(), ssh: vi.fn(), prepare: vi.fn(), select: vi.fn(), wire: [] as Array<{ file: string; args: string[]; stdin: boolean }> }));
 vi.mock("@paperclipai/adapter-utils/execution-target", () => ({ runAdapterExecutionTargetShellCommand: mocks.command }));
 vi.mock("@paperclipai/adapter-utils/ssh", () => ({ runSshCommand: mocks.ssh }));
+vi.mock("../services/native-runtime/native-session-executor.js", () => ({
+  prepareRemoteProviderPackOnTarget: mocks.prepare, resolveRemoteProviderPackSource: mocks.select,
+}));
 vi.mock("node:child_process", async importOriginal => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return { ...actual,
@@ -143,6 +146,70 @@ describe("Kimi setup on a selected execution target", () => {
 });
 
 describe("remote Kimi installation fallback and failure admission", () => {
+  it("prepares the selected current pack before testing an older SDK image", async () => {
+    // Actual credential-free artifacts from the failed source-16 qualification:
+    // the immutable SDK image carries this older helper, while the controller
+    // and complete selected Linux pack require the newer bytes.
+    const imageHelper = "9e87ba56ce4663aa36f310a7eb6224bebb7d838be479c1741c3393577f2953c7";
+    const selectedHelper = "22bf5125adbda95208d26762d4889de2b365a351b403ac92863f8f838f6d36fc";
+    const installedRoot = "/workspace/.paperclip-runtime/paperclip-runner/provider-pack";
+    const runner = { execute: vi.fn() };
+    const selected = { configuredRoot: "/controller/complete-linux-pack",
+      manifest: { payload: { target: { platform: "linux", architecture: "x64" } } } };
+    mocks.select.mockReturnValue(selected);
+    mocks.prepare.mockResolvedValue({ root: installedRoot, manifest: selected.manifest, source: "uploaded" });
+    mocks.digest.mockResolvedValue(`sha256:${selectedHelper}`);
+    vi.stubEnv("PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH", "/controller/complete-linux-pack");
+    vi.stubEnv("PAPERCLIP_RUNNER_REMOTE_BINARY_PATH", "/controller/linux-runnerd");
+    mocks.command.mockImplementation(async (_id, _target, command) => {
+      expect(command).toContain(selectedHelper);
+      if (command.includes("pack=/opt/paperclip-runner/provider-pack")) {
+        expect(imageHelper).not.toBe(selectedHelper);
+        return { ...response(), stdout: "", exitCode: 126 };
+      }
+      if (command.includes('pack="$HOME/.local/share/paperclip-runner/provider-pack"')) {
+        return { ...response(), stdout: "", exitCode: 127 };
+      }
+      expect(command).toContain(`pack='${installedRoot}'`);
+      return response();
+    });
+    const target = { ...remote, runner } as AdapterExecutionTarget;
+    await expect(probeKimiExecutionTarget(apiKey, target, model)).resolves.toEqual(verified());
+    expect(mocks.select).toHaveBeenCalledWith(selected.configuredRoot);
+    expect(mocks.prepare).toHaveBeenCalledWith({ target, runner, configuredProviderPackRoot: selected.configuredRoot, manifest: selected.manifest });
+    expect(mocks.command).toHaveBeenCalledOnce();
+    expect(mocks.prepare.mock.invocationCallOrder[0]).toBeLessThan(mocks.command.mock.invocationCallOrder[0]!);
+    expect(mocks.local).not.toHaveBeenCalled();
+  });
+
+  it.each(["unreadable-source", "wrong-platform", "missing-transport", "failed-install"])("does not transmit credentials or use the baked image after %s", async failure => {
+    vi.stubEnv("PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH", "/controller/selected-pack");
+    mocks.select.mockReturnValue({ configuredRoot: "/controller/selected-pack",
+      manifest: { payload: { target: { platform: failure === "wrong-platform" ? "darwin" : "linux", architecture: "x64" } } } });
+    if (failure === "unreadable-source") mocks.select.mockImplementation(() => { throw new Error(apiKey); });
+    if (failure === "failed-install") mocks.prepare.mockRejectedValue(new Error(apiKey));
+    const target = { ...remote, ...(failure === "missing-transport" ? {} : { runner: { execute: vi.fn() } }) } as AdapterExecutionTarget;
+    const error = await probeKimiExecutionTarget(apiKey, target, model).catch(error => error);
+    expect(error).toMatchObject({ status: 422, details: { code: "KIMI_INSTALLATION_INVALID" } });
+    expect(error.message).not.toContain(apiKey);
+    expect(mocks.command).not.toHaveBeenCalled();
+    expect(mocks.local).not.toHaveBeenCalled();
+    if (failure !== "failed-install") expect(mocks.prepare).not.toHaveBeenCalled();
+  });
+
+  it("retains pending company authority before selected-pack preparation", async () => {
+    vi.stubEnv("PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH", "/controller/selected-pack");
+    vi.stubEnv("PAPERCLIP_ACPX_CANDIDATE_ADMISSION", JSON.stringify({ schema: "paperclip.acpx-candidate-admission.v1",
+      companyId: "other-company", agent: "kimi", model, profileDigest: QUALIFIED_ACPX_PROFILES.kimi.commandDigest,
+      platform: "linux", architecture: "x64", expiresAt: Date.now() + 60_000,
+      nativeClosureDigest: `sha256:${KIMI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"]}` }));
+    await expect(rawProbeKimiExecutionTarget(apiKey, remote, model, { companyId }))
+      .rejects.toMatchObject({ details: { code: "KIMI_QUALIFICATION_REQUIRED" } });
+    expect(mocks.select).not.toHaveBeenCalled();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(mocks.command).not.toHaveBeenCalled();
+  });
+
   it.each(["missing", "different-cli-bytes", "installation", "profile", "closure"])("tries only the fixed home pack after %s", async variant => {
     const first = variant === "missing" ? { ...response(), stdout: "", exitCode: 127 }
       : variant === "different-cli-bytes" ? { ...response(), stdout: "", exitCode: 126 }

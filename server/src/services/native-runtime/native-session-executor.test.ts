@@ -386,6 +386,8 @@ import {
   REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
   verifyRemoteRunnerReattachment,
   readRemoteProviderPackManifest,
+  prepareRemoteProviderPackOnTarget,
+  resolveRemoteProviderPackSource,
   readBundledRemoteProviderPackManifest,
   providerSessionIdentityFromDurableProviderState,
   durableProviderCheckpointFailureReason,
@@ -1929,6 +1931,39 @@ describe("remote provider pack manifest", () => {
     expect(readRemoteProviderPackManifest(root).payload.pins.opencode).toBe(
       "1.18.34",
     );
+    // Both execution and setup Test consume this same normal installer. Reuse
+    // the complete controller fixture here instead of inventing a thin pack.
+    const selectedPack = resolveRemoteProviderPackSource(root);
+    for (const mode of ["staged", "preinstalled", "uploaded", "failed-final", "missing-transport"] as const) {
+      let transferred = false;
+      const syncIn = vi.fn(async (operations: { files: { sourcePath?: string; targetPath: string; kind: string }[] }[]) => {
+        expect(operations[0]?.files[0]).toMatchObject({ sourcePath: root,
+          targetPath: "/workspace/.paperclip-runtime/paperclip-runner/provider-pack", kind: "directory" });
+        transferred = true;
+      });
+      const execute = vi.fn(async (command: { command: string; args?: string[]; timeoutMs?: number }) => {
+        expect(command.timeoutMs).toBeGreaterThan(0);
+        expect(command.timeoutMs).toBeLessThanOrEqual(30_000);
+        const verification = command.args?.[0] === "-e";
+        const packRoot = command.args?.[2];
+        const valid = mode === "staged" || mode === "preinstalled" && packRoot === "/opt/paperclip-runner/provider-pack"
+          || transferred && mode !== "failed-final";
+        return { exitCode: verification && !valid ? 1 : 0, timedOut: false, signal: null,
+          stdout: command.args?.[0] === "--version" ? "1.18.34\n"
+            : command.args?.some(value => value.includes("for candidate in")) ? "/opt/paperclip-runner/provider-pack\n" : "",
+          stderr: verification && !valid ? "manifest mismatch" : "" };
+      });
+      const runner = { execute, ...(mode === "missing-transport" ? {} : { syncIn }) };
+      const preparation = prepareRemoteProviderPackOnTarget({
+        target: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", runner } as never,
+        runner, configuredProviderPackRoot: selectedPack.configuredRoot, manifest: selectedPack.manifest,
+      });
+      if (mode === "failed-final") await expect(preparation).rejects.toThrow("provider pack verification");
+      else if (mode === "missing-transport") await expect(preparation).rejects.toThrow("transport cannot stage a provider pack");
+      else await expect(preparation).resolves.toMatchObject({ source: mode, root: "/workspace/.paperclip-runtime/paperclip-runner/provider-pack",
+        manifest: selectedPack.manifest });
+      expect(syncIn).toHaveBeenCalledTimes(mode === "uploaded" || mode === "failed-final" ? 1 : 0);
+    }
     const cursorPath = "provider-assets/cursor/linux-x64";
     await mkdir(join(root, cursorPath), { recursive: true });
     await writeFile(join(root, cursorPath, "runtime"), "pinned Cursor runtime");

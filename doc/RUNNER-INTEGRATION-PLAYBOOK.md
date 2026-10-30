@@ -372,6 +372,13 @@ Include both agent configuration and task-level model selection where supported.
 These checks establish correct routing and authority. They do not turn a discovery
 list into a model allowlist: explicit compatible models still follow section 6.1.
 
+For Kimi Code, when `PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH` selects a
+controller pack, remote Test prepares and verifies that current pack through the
+normal installer before its 35-second metadata/catalog budget starts.
+Installation adds to total Test time. Without a selected pack, remote targets
+retain manual setup and preinstalled-runtime verification. Neither path sends a
+model prompt.
+
 ## 7. Deliver instructions, tools, and credentials
 
 ### 7.1 Prove instruction delivery at the native boundary
