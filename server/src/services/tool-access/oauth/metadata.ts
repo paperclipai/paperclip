@@ -309,3 +309,113 @@ export function authServerMetadataUrls(
     return true;
   });
 }
+
+/**
+ * Microsoft Entra ID (Azure AD v2.0) requires resources to match the scope prefix
+ * and rejects requests containing an RFC 8707 `resource` parameter with AADSTS9010010
+ * (error=invalid_target) when scopes are provided.
+ *
+ * Microsoft v1 endpoints (`/oauth2/authorize`, `/oauth2/token`) use `resource` to select
+ * the target API rather than v2-style scopes, so only v2.0 endpoints omit `resource`.
+ */
+export function isMicrosoftV2OAuthUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    const isMicrosoftHost =
+      host === "login.microsoftonline.com" ||
+      host === "login.microsoft.com" ||
+      host === "login.windows.net" ||
+      host.endsWith(".login.microsoftonline.com");
+    if (!isMicrosoftHost) return false;
+
+    return /\/v2\.0(\/|$)/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Backward compatibility alias for `isMicrosoftV2OAuthUrl`.
+ */
+export const isMicrosoftOAuthUrl = isMicrosoftV2OAuthUrl;
+
+/**
+ * Checks if a target resource belongs to a Microsoft-owned domain.
+ */
+export function isMicrosoftResourceUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return (
+      host === "azure.com" ||
+      host.endsWith(".azure.com") ||
+      host === "microsoft.com" ||
+      host.endsWith(".microsoft.com") ||
+      host === "visualstudio.com" ||
+      host.endsWith(".visualstudio.com") ||
+      host === "office.com" ||
+      host.endsWith(".office.com") ||
+      host === "windows.net" ||
+      host.endsWith(".windows.net") ||
+      host === "microsoftonline.com" ||
+      host.endsWith(".microsoftonline.com")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Determines whether the RFC 8707 `resource` parameter should be omitted.
+ *
+ * Microsoft Entra ID v2.0 requires target resources to match the scope prefix
+ * and rejects requests containing an RFC 8707 `resource` parameter with AADSTS9010010
+ * (error=invalid_target) when scopes are provided.
+ *
+ * Security guard: We only omit `resource` when the authorization/token endpoint is a
+ * Microsoft v2 endpoint AND the target resource is a verified Microsoft-owned resource,
+ * and any full-URI scopes align with the resource host. This prevents an attacker-controlled
+ * MCP server from advertising a Microsoft authorization server to capture tokens for
+ * Microsoft APIs without RFC 8707 audience restriction.
+ */
+export function shouldOmitMicrosoftResourceIndicator(params: {
+  oauthUrl: string | null | undefined;
+  resource: string | null | undefined;
+  scopes?: string[] | null;
+}): boolean {
+  if (!params.oauthUrl || !params.resource) return false;
+  if (!isMicrosoftV2OAuthUrl(params.oauthUrl)) return false;
+  if (!isMicrosoftResourceUrl(params.resource)) return false;
+
+  if (params.scopes && params.scopes.length > 0) {
+    let resourceHost: string;
+    try {
+      resourceHost = new URL(params.resource).hostname.toLowerCase();
+    } catch {
+      return false;
+    }
+
+    for (const scope of params.scopes) {
+      if (scope.startsWith("http://") || scope.startsWith("https://")) {
+        try {
+          const scopeHost = new URL(scope).hostname.toLowerCase();
+          if (
+            scopeHost !== resourceHost &&
+            !resourceHost.endsWith(`.${scopeHost}`) &&
+            !scopeHost.endsWith(`.${resourceHost}`)
+          ) {
+            return false;
+          }
+        } catch {
+          // ignore unparseable scope string
+        }
+      }
+    }
+  }
+
+  return true;
+}
+
+

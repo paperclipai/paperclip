@@ -44,6 +44,8 @@ const OAUTH_PROVIDER_ERROR_CODES = new Set([
   "consent_required",
   "interaction_required",
   "login_required",
+  // RFC 8707 §3 — resource indicators.
+  "invalid_target",
 ]);
 
 /** What an `error` that is absent, malformed, or off the allowlist becomes. */
@@ -78,6 +80,8 @@ const OAUTH_PROVIDER_ERROR_MESSAGES: Record<string, string> = {
   invalid_request:
     "The authorization server rejected the request as malformed.",
   invalid_scope: "The authorization server rejected the requested permissions.",
+  invalid_target:
+    "The authorization server rejected the requested resource target.",
   invalid_software_statement:
     "The authorization server rejected Paperclip's client registration details.",
   login_required:
