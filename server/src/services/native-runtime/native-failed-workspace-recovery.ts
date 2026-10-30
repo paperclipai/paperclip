@@ -1,3 +1,4 @@
+import { remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import type { CancelledWorkspacePreservationScope } from "../cancelled-workspace-preservation-notifications.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
@@ -14,10 +15,16 @@ import { hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js"
 import { logger } from "../../middleware/logger.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 
+
+function workspaceRecoveryReference(profile: Record<string, unknown> | null | undefined) {
+  const remote = remoteWorkspaceRunReferenceSchema.safeParse(profile?.remoteWorkspace);
+  return readNativeWorkspaceSyncReference(profile?.nativeWorkspaceSync) ?? (remote.success ? remote.data : null);
+}
+
 export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "nativeIssueId" | "issueId" | "contextSnapshot" | "runnerProfileJson">,
   options: { allowPreterminal?: boolean; requireCancelledStop?: boolean; restartRecovery?: NativeRestartRecoveryClaim } = {}) {
-  if (readNativeWorkspaceSyncReference(selected.runnerProfileJson?.nativeWorkspaceSync)?.state !== "prepared") return;
+  if (workspaceRecoveryReference(selected.runnerProfileJson)?.state !== "prepared") return;
   const issueId = selected.nativeIssueId ?? selected.issueId ?? selected.contextSnapshot?.issueId;
   if (typeof issueId !== "string") return;
   return db.transaction(async tx => {
@@ -32,7 +39,7 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
     )).for("update");
     if (options.requireCancelledStop && coordinator?.phase !== "terminal_failure") return;
     const claim = options.restartRecovery;
-    const reference = readNativeWorkspaceSyncReference(selected.runnerProfileJson?.nativeWorkspaceSync)!;
+    const reference = workspaceRecoveryReference(selected.runnerProfileJson)!;
     const ownsClaim = Boolean(options.allowPreterminal && coordinator?.phase === "observed" && claim
       && claim.runId === selected.id && claim.leaseOwner === coordinator.leaseOwner
       && claim.controllerGeneration === coordinator.controllerGeneration && claim.providerAttempt === coordinator.attempt
@@ -47,7 +54,7 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
     )).for("update");
     if (!run || run.runtimeMode !== "native" || (!options.allowPreterminal && run.status !== "failed")) return;
     if (options.requireCancelledStop && (run.status !== "cancelled" || !hasAcknowledgedNativeStopIntent(run))) return;
-    const currentReference = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
+    const currentReference = workspaceRecoveryReference(run.runnerProfileJson);
     if (!currentReference || currentReference.state !== "prepared"
       || (claim?.kind === "reattach_remote_runner" && (claim.remote.kind === "plugin_task" || claim.remote.providerLeaseId !== currentReference.providerLeaseId
         || claim.remote.remoteCwd !== currentReference.remoteCwd))) return;
@@ -136,7 +143,7 @@ export async function preserveCancelledNativeWorkspaces(db: Db) {
     )), eq(heartbeatRuns.runtimeMode, "native"),
       eq(heartbeatRuns.status, "cancelled"), eq(nativeRunFinalizations.phase, "terminal_failure"),
       isNull(nativeRunFinalizations.resultId), isNull(nativeRunFinalizations.leaseOwner),
-      sql`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared'`,
+      sql`(${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared' OR ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'->>'state' = 'prepared')`,
       sql`${heartbeatRuns.resultJson}->'nativeCancellation'->>'dispatchState' = 'acknowledged'`,
       cursor ? gt(heartbeatRuns.id, cursor) : undefined,
     )).orderBy(asc(heartbeatRuns.id)).limit(5);
@@ -162,7 +169,7 @@ export async function preserveCancelledNativeWorkspaces(db: Db) {
 
 function pendingCancelledWorkspace() {
   return sql`${heartbeatRuns.runtimeMode} = 'native' AND ${heartbeatRuns.status} = 'cancelled'
-    AND ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared'
+    AND (${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' = 'prepared' OR ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'->>'state' = 'prepared')
     AND ${heartbeatRuns.resultJson}->'nativeCancellation'->>'dispatchState' = 'acknowledged'
     AND (${heartbeatRuns.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
       AND ${heartbeatRuns.resultJson}->>'workspaceRestoreFailure' IN (${workspaceRestoreFailureCodesSql})) IS NOT TRUE`;
@@ -175,7 +182,7 @@ export function registerCancelledWorkspacePreservationWork(db: Db,
   type Candidate = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId"
     | "runtimeMode" | "driverKind" | "status" | "resultJson" | "runnerProfileJson">;
   const eligible = (run: Candidate) => run.nativeIssueId !== null && hasAcknowledgedNativeStopIntent(run)
-    && readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync)?.state === "prepared"
+    && workspaceRecoveryReference(run.runnerProfileJson)?.state === "prepared"
     && !hasRequiredWorkspaceRecovery(run.resultJson) && !nativeRunHasNoWorkspaceAccess(run);
   const scopeCondition = (scope?: CancelledWorkspacePreservationScope) => scope ? and(
     eq(heartbeatRuns.companyId, scope.companyId), scope.runId ? eq(heartbeatRuns.id, scope.runId) : undefined) : undefined;

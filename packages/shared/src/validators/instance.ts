@@ -44,6 +44,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableAiConnectionRouters: z.boolean().default(false),
   enableManagedSandboxOnly: z.boolean().default(false),
   enableIsolatedWorkspaces: z.boolean().default(false),
+  remoteWorkspaceStorageEnabled: z.boolean().default(false),
   enableIsolatedWorkspacesByDefault: z.boolean().default(false),
   enableStreamlinedLeftNavigation: z.boolean().default(true),
   enableStreamlinedUi: z.boolean().default(true),

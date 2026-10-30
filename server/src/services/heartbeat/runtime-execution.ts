@@ -1,5 +1,7 @@
 import { usesNativeUsageDelivery } from "../native-runtime/native-usage-accounting.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { readRemoteWorkspaceAuthority, saveRemoteWorkspace } from "../remote-workspaces.js";
+import { environmentService } from "../environments.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { inspectPluginWorkspaceForFinalization } from "../native-runtime/native-plugin-workspace-finalization.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -233,6 +235,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const { issueRef, issueContext, context, issueId, taskKey, executionContinuation } = input.task;
   const { nativeRuntimeResolution, nativeExecution, nativeRunnerInstanceId, adapter, runtimeForAdapter, getNativeFreshSessionHandoff, getFreshSessionHandoff, runOptions } = input.runtime;
   const { persistedExecutionWorkspace, executionWorkspace, executionTarget, workspaceOperationRecorder, nativeWorkspaceSync, workspaceRestoreSource, remoteExecution } = input.workspace;
+  const remoteWorkspaceAuthority = readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata);
   const { runtimeConfig, resolvedConfig, resolvedInstanceSettings, configuredTaskEnvironment, adapterEnv, agentIdentity, observability, managedAiRuntime, runtimeEnv, useHostGitHub, githubSelection } = input.config;
   const { runtimeSessionParamsForAdapter, configuredModel, sessionConfigMetadata, goalCheckpointSession } = input.session;
   const { nativeInstructionWorkingCopy, collectStoppedInstructions, nativeInstructionReservation, releaseInstructionCopy } = input.instructions;
@@ -288,7 +291,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     pluginWorkspaceFinalization = workspaceRecord
       ? await inspectPluginWorkspaceForFinalization(db, options.pluginWorkerManager, workspaceRecord, agent.id, run.id)
       : null;
-    if (pluginWorkspaceFinalization || workspaceRecord?.strategyType !== "git_worktree") return null;
+    if (pluginWorkspaceFinalization || readRemoteWorkspaceAuthority(workspaceRecord?.metadata)
+      || workspaceRecord?.strategyType !== "git_worktree") return null;
 
     const worktreePath =
       readNonEmptyString(workspaceRecord.providerRef) ??
@@ -943,6 +947,19 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     // finalize row.
     const completeWorkspace = async (ownership?: NativeWorkspaceFinalizationOwnership) => {
       try {
+        if (remoteWorkspaceAuthority && persistedExecutionWorkspace) {
+          if (!ownership || !executionTarget) throw new Error("remote_workspace_ownership_required");
+          const current = await executionWorkspacesSvc.getStoredById(agent.companyId, persistedExecutionWorkspace.id);
+          const authority = readRemoteWorkspaceAuthority(current?.metadata);
+          const lease = authority?.location
+            ? await environmentService(db).getLeaseById(authority.location.leaseId) : null;
+          if (!current || !lease || lease.companyId !== run.companyId || lease.heartbeatRunId !== run.id) {
+            throw new Error("workspace_sync_out_unrecoverable");
+          }
+          await recordWorkspaceFinalize("succeeded", { owningService: "native_workspace_finalizer", storage: "remote" },
+            async () => { await saveRemoteWorkspace({ db, workspace: current, runId: run.id, lease,
+              target: executionTarget, assertOwned: ownership.assertHeld }); });
+        }
         if (nativeWorkspaceSync) {
           const exported = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
             eq(workspaceOperations.companyId, run.companyId),
@@ -977,7 +994,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               db,
               runId: run.id,
               workspaceFinalizeStatus,
-              preserveProviderAttempt: Boolean(nativeWorkspaceSync),
+              preserveProviderAttempt: Boolean(nativeWorkspaceSync || remoteWorkspaceAuthority),
             }));
             await dispatchPendingNativeStatusWakeups({
               companyId: run.companyId,
@@ -1000,7 +1017,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         throw error;
       }
     };
-    if (nativeWorkspaceSync) {
+    if (nativeWorkspaceSync || remoteWorkspaceAuthority) {
       const owned = await measureRunPhase("execution.workspace_ownership", () => withNativeWorkspaceFinalizationOwnership({
         db, companyId: run.companyId, runId: run.id,
       }, completeWorkspace));
@@ -1030,7 +1047,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       input.effects.onNativeOwnershipHeld();
       throw adapterErr;
     }
-    if (nativeRuntimeResolution.kind === "native" && nativeWorkspaceSync?.reference.state === "prepared"
+    if (nativeRuntimeResolution.kind === "native" && (nativeWorkspaceSync?.reference.state === "prepared" || remoteWorkspaceAuthority?.dirty)
       && !(nativeExecution && "access" in nativeExecution.workspace && nativeExecution.workspace.access === "none")) {
       input.effects.onProviderResourceDisposition("stop_and_retain");
     }
@@ -1123,7 +1140,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         .where(eq(nativeRunFinalizations.runId, run.id))
         .limit(1)
         .then((rows) => rows[0]?.resultId ?? null);
-      if (proposedResult && nativeWorkspaceSync) {
+      if (proposedResult && (nativeWorkspaceSync || remoteWorkspaceAuthority)) {
         const workspaceFailureMessage =
           adapterErr instanceof Error ? adapterErr.message : "";
         const unrecoverable =

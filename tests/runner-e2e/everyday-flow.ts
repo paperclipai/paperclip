@@ -26,6 +26,8 @@ import { hasPersistedSource, isSavedSourceCheckpoint } from "./everyday-interrup
 import { collectRunEvents } from "./run-observations.js";
 import { gradeRemoteRestart, observeRemoteRestartBoundary, projectRemoteRestartEvents, projectRemoteRestartRun, waitForRemoteRestartBoundary, type RemoteRestartEvidence } from "./everyday-remote-restart.js";
 import { controllerOutageForExecution, type ControllerOutageReceipt } from "./controller-outage.js";
+import { gradeRemoteWorkspaceStorage, isRemoteWorkspaceStorageExecution, remoteWorkspaceProofDigest,
+  REMOTE_WORKSPACE_PROOF_FILE, type RemoteWorkspaceStorageEvidence, type RemoteWorkspaceStorageCheckpoint } from "./remote-workspace-storage.js";
 import { setupAggregatorFixture } from "./aggregator-fixture.js";
 import { gradeProviderChoice, gradeProviderOutcome, requireProviderAccessCard } from "./connection-routing-evidence.js";
 import { setupConnectionReview } from "./connection-reviews.js";
@@ -84,6 +86,7 @@ export interface EverydayEvidence {
   downloads: Row[];
   allowedInterruptedRuns: string[];
   remoteRestart?: RemoteRestartEvidence;
+  remoteWorkspaceStorage?: RemoteWorkspaceStorageEvidence;
 }
 interface Input {
   page: Page;
@@ -174,7 +177,10 @@ export async function runEverydayFlow(input: Input) {
   let review: Awaited<ReturnType<typeof setupConnectionReview>> | undefined;
   let project = fixtures.project;
   const caseId = execution.task.id;
-  const requireRemoteRestart = controllerOutageForExecution(execution, process.env) !== undefined;
+  const controllerOutage = controllerOutageForExecution(execution, process.env);
+  const requireRemoteRestart = controllerOutage !== undefined;
+  const remoteWorkspaceStorage = isRemoteWorkspaceStorageExecution(execution);
+  if (remoteWorkspaceStorage) ev.remoteWorkspaceStorage = { browserReadPhases: [] };
   const providerChoice = caseId === "provider-decline" || caseId === "provider-second";
   const nativeProviderCase = caseId === "provider-native";
   let aggregatorFixture: Awaited<ReturnType<typeof setupAggregatorFixture>> | undefined;
@@ -541,6 +547,44 @@ export async function runEverydayFlow(input: Input) {
     return observeRemoteRestartBoundary(run, rows, leases, { companyId: fixtures.company.id,
       agentId: fixtures.agent.id, issueId: parent!.id, environmentId: fixtures.environment.id }, recovered);
   }
+  async function remoteWorkspaceStorageCheckpoint(phase: "initial" | "final") {
+    const point = await pollUntil({
+      label: `remote workspace ${phase} saved version`, deadlineAt: input.deadlineAt,
+      load: async (): Promise<{ point?: RemoteWorkspaceStorageCheckpoint; content?: string }> => {
+        const view = await api.get<Row>(`/api/issues/${parent!.id}/workspace`);
+        const authority = view.workspace?.metadata?.remoteWorkspace;
+        if (!authority?.snapshotId || authority.dirty || authority.writerRunId) return {};
+        const runs = await api.get<StoryRun[]>(`/api/issues/${parent!.id}/runs`);
+        const latest = runs.filter(run => run.runtimeMode === "native" && run.status === "succeeded" && run.nativeIssueId === parent!.id)
+          .sort((a, b) => String(b.finishedAt).localeCompare(String(a.finishedAt)))[0];
+        if (!latest) return {};
+        const run = await api.get<StoryRun>(`/api/heartbeat-runs/${latest.id}`);
+        const receipt = run.runnerProfileJson?.remoteWorkspace as Row | undefined;
+        if (!receipt || receipt.state !== "saved" || receipt.snapshotId !== authority.snapshotId) return {};
+        const file = await api.get<Row>(`/api/issues/${parent!.id}/file-resources/content?workspace=execution&path=${REMOTE_WORKSPACE_PROOF_FILE}`);
+        if (file.content?.encoding !== "utf8" || typeof file.content.data !== "string") throw new Error("Remote workspace file oracle did not return text bytes");
+        return { content: file.content.data, point: {
+          workspaceId: view.workspace.id, snapshotId: authority.snapshotId, runId: run.id,
+          runSnapshotId: receipt.snapshotId, runSaveState: receipt.state,
+          authoritySchema: authority.schema, authorityDirty: authority.dirty,
+          authorityWriter: authority.writerRunId, providerType: view.workspace.providerType,
+          proofSha256: remoteWorkspaceProofDigest(file.content.data), fileSource: file.resource?.source?.kind,
+        } };
+      },
+      accept: observed => Boolean(observed.point),
+    });
+    ev.remoteWorkspaceStorage![phase] = point.point!;
+    await input.evidence(`remote-workspace-${phase}.json`, point.point);
+    const browserPhase = phase === "initial" ? "before-restart" : "after-restart";
+    await page.goto(`${taskUrl(parent!)}?browse=1&q=${REMOTE_WORKSPACE_PROOF_FILE}`);
+    await expect(page.getByRole("combobox", { name: "Search workspace files" })).toBeVisible();
+    await expect(page.getByLabel("Workspace file source", { exact: true })).toHaveText("Live workspace");
+    await page.getByRole("treeitem").filter({ hasText: REMOTE_WORKSPACE_PROOF_FILE }).last().click();
+    await expect(page.getByText(point.content!.trim(), { exact: true })).toBeVisible();
+    await input.capture(`remote-workspace-${browserPhase}`, `Remote workspace file ${browserPhase}`, `remote-workspace-${browserPhase}.png`);
+    ev.remoteWorkspaceStorage!.browserReadPhases.push(browserPhase);
+    await openParent();
+  }
   async function prepareStopBoundary() {
     // Providers can finish a short first turn before the browser can click
     // Stop. If that happens, submit one ordinary user follow-up through the
@@ -590,6 +634,7 @@ export async function runEverydayFlow(input: Input) {
       "live-fixtures.ts",
       "connection-reviews.ts",
       "catalog.ts",
+      "remote-workspace-storage.ts",
     ];
     if (execution.suite.id === CONNECTION_GUIDANCE_SUITE) {
       harnessFiles.push("connection-guidance-cases.ts", "connection-guidance-evidence.ts");
@@ -629,7 +674,15 @@ export async function runEverydayFlow(input: Input) {
         throw new Error(`Artifact sandbox qualification failed before task creation: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
       }
     }
-    if (!project && !caseId.startsWith("service-") && !decliningConnection && !providerChoice) {
+    if (remoteWorkspaceStorage) {
+      if (project) throw new Error("Remote workspace storage qualification requires a projectless task");
+      await api.patch("/api/instance/settings/experimental", { remoteWorkspaceStorageEnabled: true });
+      const settings = await api.get<Row>("/api/instance/settings/experimental");
+      check("remote-workspace-feature-enabled", settings.remoteWorkspaceStorageEnabled === true,
+        "The ordinary instance settings API enables remote workspace storage before task creation.");
+      if (settings.remoteWorkspaceStorageEnabled !== true) throw new Error("Remote workspace storage was not enabled");
+    }
+    if (!remoteWorkspaceStorage && !project && !caseId.startsWith("service-") && !decliningConnection && !providerChoice) {
       project = await api.post(
         `/api/companies/${fixtures.company.id}/projects`,
         {
@@ -879,6 +932,7 @@ export async function runEverydayFlow(input: Input) {
         // A completed, downloaded first version is an observable remote persistence checkpoint.
         await settled();
         await download(parent!.id, "base", "before-restart");
+        if (remoteWorkspaceStorage) await remoteWorkspaceStorageCheckpoint("initial");
         if (!ev.downloads.length || ev.checks.some((c) => !c.passed))
           throw new Error(
             "Remote fault boundary unexercised: no verified saved project",
@@ -932,7 +986,7 @@ export async function runEverydayFlow(input: Input) {
             ev.remoteRestart ??= { before, expectedReplacements: input.restartCount ?? 1, replacements: [] };
             await input.evidence(`remote-restart-${restartIndex + 1}-before.json`, before);
           } else ev.allowedInterruptedRuns.push(active.id);
-          const outage = await input.restart(requireRemoteRestart ? { companyId: fixtures.company.id, issueId: parent!.id, runId: active.id } : undefined, requireRemoteRestart ? 125_000 : undefined);
+          const outage = await input.restart(requireRemoteRestart ? { companyId: fixtures.company.id, issueId: parent!.id, runId: active.id } : undefined, controllerOutage?.holdMs);
           if (requireRemoteRestart) ev.remoteRestart!.outage = outage || undefined;
           note("controller-restarted");
           await openParent();
@@ -1556,6 +1610,11 @@ export async function runEverydayFlow(input: Input) {
           : final.run.status === "succeeded" && final.run.nativePhase === "committed"
             && !gradeRemoteRestart({ ...ev.remoteRestart, final })[1]!.passed ? "Original remote turn completed with failed tools or conflicting/repeated execution receipts" : undefined });
       await input.evidence("remote-restart-final.json", final);
+    }
+    if (remoteWorkspaceStorage) {
+      await remoteWorkspaceStorageCheckpoint("final");
+      ev.checks.push(...gradeRemoteWorkspaceStorage(ev.remoteWorkspaceStorage!));
+      await input.evidence("remote-workspace-storage.json", ev.remoteWorkspaceStorage);
     }
     ev.checks.push(
       ...storyLifecycleChecks({

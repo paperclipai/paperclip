@@ -1,7 +1,18 @@
 # Remote workspaces with disposable webservers
 
 Date: 2026-10-30
-Status: Proposed implementation plan; no feature implementation or deployment performed.
+Status: Implementation in progress on `codex/remote-workspace-authority` in the
+`463c/paperclip` worktree. No production deployment or volume removal performed.
+
+Execution record (2026-10-30): portable archive/storage, native preparation and
+finalization, remote file access, source retention, and opt-in configuration are
+implemented. Focused archive/storage checks pass against disposable Postgres;
+remote file service/browser checks pass. The synthetic prepare/save/restore case
+also passed against the private disposable S3 test bucket. These are component
+and service proofs, not a live native Runner continuity pass. Migration/retention,
+full regression checks, current-master integration, and the new explicit Daytona
+Product E2E workflow remain on the critical path. The dedicated disposable Docker
+Postgres avoids the host's exhausted embedded-Postgres semaphore quota.
 
 This replaces the earlier workspace plan that retained a webserver checkout as
 the main working copy. It implements the workspace portion of the broader

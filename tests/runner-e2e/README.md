@@ -18,6 +18,39 @@ one completion and successful workspace finalization, plus verified downloaded
 work. It permits one attempt per cell and retains failed evidence. This is
 development API-key acceptance, distinct from staging subscription recovery.
 
+The explicit-only `remote-workspace-storage` suite reuses that controller-restart
+journey for one native Codex Daytona cell. It enables remote workspace storage
+through the ordinary instance API and creates a projectless task. The agent
+creates only synthetic source, an unpushed Git commit, and an untracked random
+reference in its task workspace. Independent public API reads require committed
+snapshot references and matching saved run receipts before and after replacement.
+The browser opens the original reference through Files on both sides. A later
+native admission must keep the same workspace and reference while publishing a
+new saved version. This is same-task continuation, not a separate-task sharing
+test. The ordinary original-process/lease and artifact oracles still apply.
+
+This cell needs an explicitly provisioned disposable S3-compatible bucket, stable
+instance encryption material, an immutable Daytona image, and the usual provider
+credentials. It defaults to one second offline; the separate continuity suite
+retains its 125-second requirement. It permits one attempt and 1,000-cent company
+and lead budgets, with three expected provider admissions and a 30-minute attempt
+limit. The synthetic initial Git repository has no external remote. Runtime
+credentials remain outside the task snapshot root. Catalog discovery and local
+grader calibration do not establish a live pass.
+
+```sh
+PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_BUCKET=<owned-disposable-bucket> \
+PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_REGION=us-east-1 \
+pnpm test:e2e:runner -- --id remote-workspace-storage.runner-codex.daytona.recover-controller --max-automatic-retries 0
+```
+
+Optional `PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_ENDPOINT` and
+`PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_FORCE_PATH_STYLE=true` select a test S3
+endpoint. Each attempt has a distinct `runner-e2e/<instance-id>/` prefix. The
+server rejects mixed selections and never adopts ambient production storage
+configuration. Provider environment variables and immutable image selection use
+the standard launcher contract below.
+
 The explicit-only [GitHub review bot journey](GITHUB-REVIEW-JOURNEY.md) tests
 attended bot setup and an automatic PR review against an attached deployment.
 Private account bindings and setup receipts live in the private eval repository.

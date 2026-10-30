@@ -1,5 +1,14 @@
 # Runner E2E fixture authoring
 
+`remote-workspace-storage` reuses the ordinary Everyday fixture graph without a
+project. The selected profile has no host cwd. Public settings enable the feature
+before the browser creates work; the model creates the synthetic source and Git
+state itself. The evaluator never writes workspace outcomes or snapshot rows.
+The existing controller replacement wrapper owns restart, the independent
+continuity oracle owns execution identity, and public workspace/file/run reads
+own saved-version and file evidence. The dedicated S3 opt-in requires its explicit
+bucket and per-instance prefix. It is isolated from ordinary fixture storage.
+
 [Chat feature evals](CHAT-FEATURES.md) load two authored YAML requests and seed
 only company, agents and project context through public APIs. Both agents use
 production role instructions; evaluator outcomes are never injected. Real browser

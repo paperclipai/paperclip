@@ -11,7 +11,7 @@ import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ChevronDown, ChevronRight, Cloud, Download, FileCode2, FolderOpen, Loader2, RefreshCcw, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { cn, formatDateTime } from "@/lib/utils";
 import { fileResourcesApi } from "@/api/file-resources";
 import { projectsApi } from "@/api/projects";
 import { ApiError } from "@/api/client";
@@ -1135,6 +1135,14 @@ export function WorkspaceFileBrowser({
         folderPath={folderPath}
         onOpenFolder={openFolder}
       />
+
+      {data?.state === "available" && data.workspace?.source ? (
+        <p aria-label="Workspace file source" className="text-(length:--text-micro) text-muted-foreground">
+          {data.workspace.source.kind === "live" ? "Live workspace" : (
+            <>Saved copy{data.workspace.source.savedAt ? <> from <time dateTime={data.workspace.source.savedAt}>{formatDateTime(data.workspace.source.savedAt)}</time></> : null}</>
+          )}
+        </p>
+      ) : null}
 
       <div aria-live="polite" className="sr-only">
         {announcement}

@@ -54,6 +54,12 @@ using the recorded Claude and Codex models in disposable development fixtures.
 It requires same-process adoption, saved files and finalization without replay;
 local regression checks and catalog discovery are separate from live acceptance.
 
+The explicit-only [remote workspace storage journey](../tests/runner-e2e/README.md)
+adds one Codex Daytona selection to that existing restart flow. It verifies
+sandbox-owned synthetic files, committed object-storage snapshots, browser file
+access, and later same-task native admission. It requires explicit disposable
+object storage and remains separate from volume-free webserver qualification.
+
 The explicit-only [GitHub review bot journey](../tests/runner-e2e/GITHUB-REVIEW-JOURNEY.md)
 converts the Ponytail walkthrough into attended App setup, scoped installation,
 automatic PR review, and independent two-service checks. It supports attached

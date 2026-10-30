@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { captureDirectorySnapshot, directorySnapshotSha256, serializeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { agentWakeupRequests, heartbeatRunEvents, companyObservability, issueRecoveryActions, agents, authUsers, companyMemberships, companies, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, executionWorkspaces, executionWorkspaceRepositoryAccess, heartbeatRuns, issues, issueAccessGrants, plugins, projects, projectWorkspaces, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, heartbeatRunEvents, companyObservability, issueRecoveryActions, agents, authUsers, companyMemberships, companies, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, environments, executionWorkspaces, executionWorkspaceRepositoryAccess, heartbeatRuns, issues, issueAccessGrants, plugins, projects, projectWorkspaces, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -57,6 +57,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       : await startEmbeddedPostgresTestDatabase("paperclip-workspace-preparation");
     db = createDb(database.connectionString);
     await db.execute(sql`set client_min_messages = warning`);
+    if (external) await db.execute(sql`truncate table environments restart identity cascade`);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {
     await db?.$client.end();
@@ -108,6 +109,71 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     };
     return { input, source, issue, run, envOrchestrator };
   }
+  it.each(["empty", "git"] as const)("reserves a %s remote workspace without materializing a controller checkout", async kind => {
+    const { input, source, issue, envOrchestrator } = await fixture();
+    const [savedEnvironment] = await db.insert(environments).values({ name: `Remote ${randomUUID()}`,
+      driver: "sandbox", status: "active", config: { provider: "daytona" } }).returning();
+    const environment = { ...input.environment.localEnvironment, id: savedEnvironment.id,
+      driver: "sandbox" as const, config: { provider: "daytona" } };
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, input.agent.id));
+    input.agent.adapterType = "paperclip_runner";
+    input.environment.selectedEnvironmentForConfig = environment;
+    input.environment.selectedEnvironmentId = environment.id;
+    input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled = true;
+    input.policy.useIsolatedTaskDirectory = kind === "empty";
+    if (kind === "git") {
+      await db.update(projectWorkspaces).set({ cwd: null, sourceType: "git", repoUrl: "https://github.com/example/remote.git", repoRef: "main" })
+        .where(eq(projectWorkspaces.id, issue.projectWorkspaceId!));
+    }
+    await rm(source, { recursive: true });
+    const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun").mockRejectedValue(new Error("host source resolver called"));
+    const repositoryPreparation = vi.spyOn(input.services.executionWorkspacesSvc, "prepareTaskRepositoriesForAdmission");
+    vi.spyOn(envOrchestrator, "acquireForRun").mockImplementation(async args => {
+      expect(args.persistedExecutionWorkspace).toMatchObject({ providerType: "cloud_sandbox" });
+      expect(args.persistedExecutionWorkspace).toMatchObject({ cwd: expect.stringMatching(/^\/workspaces\//) });
+      throw new Error("reached remote acquisition");
+    });
+    const configured = { DATABASE_URL: database.connectionString, PAPERCLIP_STORAGE_PROVIDER: "s3",
+      PAPERCLIP_SECRETS_MASTER_KEY: "remote-workspace-preparation-fixture" };
+    const previous = new Map(Object.keys(configured).map(key => [key, process.env[key]]));
+    Object.assign(process.env, configured);
+    try {
+      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("reached remote acquisition");
+      expect(resolve).not.toHaveBeenCalled();
+      expect(repositoryPreparation).not.toHaveBeenCalled();
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.sourceIssueId, issue.id));
+      expect(workspace.metadata?.remoteWorkspace).toMatchObject({ source: { kind }, writerRunId: input.run.id });
+      await expect(access(workspace.cwd!)).rejects.toThrow();
+    } finally {
+      for (const [key, value] of previous) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
+  });
+
+  it("rejects a configured local folder before remote acquisition", async () => {
+    const { input, envOrchestrator } = await fixture();
+    input.agent.adapterType = "paperclip_runner";
+    input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
+      driver: "sandbox", config: { provider: "daytona" } };
+    input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled = true;
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("Import the configured local folder");
+    expect(acquire).not.toHaveBeenCalled();
+  });
+
+  it("rejects concurrent shared writers before resolving a remote source", async () => {
+    const { input, envOrchestrator } = await fixture();
+    input.agent.adapterType = "paperclip_runner";
+    input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
+      driver: "sandbox", config: { provider: "daytona" } };
+    input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled = true;
+    input.policy.issueExecutionWorkspaceSettings = { sharedWorkspaceConcurrency: "allow" };
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("one active writer");
+    expect(acquire).not.toHaveBeenCalled();
+  });
+
   it.each([
     { inherited: false, mode: "isolated_workspace" as const, fresh: false },
     { inherited: false, mode: "isolated_workspace" as const, fresh: true },

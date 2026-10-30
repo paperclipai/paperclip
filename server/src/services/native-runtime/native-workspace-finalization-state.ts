@@ -1,5 +1,6 @@
-import { environmentLeases, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+import { environmentLeases, executionWorkspaces, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { and, eq, exists, sql } from "drizzle-orm";
+import { readRemoteWorkspaceAuthority } from "../remote-workspaces.js";
 import { nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 
@@ -14,6 +15,7 @@ export async function nativeWorkspaceExportPendingForLease(db: Db, lease: Worksp
     issueId: heartbeatRuns.issueId, nativeIssueId: heartbeatRuns.nativeIssueId,
     runtimeMode: heartbeatRuns.runtimeMode, driverKind: heartbeatRuns.driverKind,
     reference: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'`,
+    remoteReference: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'`,
     executionScope: sql<Record<string, unknown>>`jsonb_build_object(
       'schema', ${input}->'schema', 'binding', ${input}->'binding', 'workspace', ${input}->'workspace',
       'provider', jsonb_build_object('kind', ${input}#>'{provider,kind}'))`,
@@ -22,6 +24,16 @@ export async function nativeWorkspaceExportPendingForLease(db: Db, lease: Worksp
     eq(heartbeatRuns.runtimeMode, "native"),
   )).limit(1);
   if (!run || nativeRunHasNoWorkspaceAccess({ ...run, runnerProfileJson: { nativeExecutionInput: run.executionScope } })) return false;
+  const binding = run.executionScope?.binding as Record<string, unknown> | undefined;
+  if (run.remoteReference != null && typeof binding?.executionWorkspaceId === "string"
+    && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(binding.executionWorkspaceId)) {
+    const [workspace] = await db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces).where(and(
+      eq(executionWorkspaces.companyId, lease.companyId), eq(executionWorkspaces.id, binding.executionWorkspaceId),
+    )).limit(1);
+    const remote = readRemoteWorkspaceAuthority(workspace?.metadata);
+    if (remote) return remote.dirty && remote.writerRunId === run.id
+      && remote.location?.leaseId === lease.id && remote.location.providerLeaseId === lease.providerLeaseId;
+  }
   const reference = readNativeWorkspaceSyncReference(run.reference);
   return reference?.state === "prepared" && reference.leaseId === lease.id
     && reference.providerLeaseId === lease.providerLeaseId;

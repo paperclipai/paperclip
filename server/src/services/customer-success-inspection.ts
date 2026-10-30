@@ -337,6 +337,31 @@ export async function readCustomerSuccessResource(
           if (q.operation === "files.read")
             return await files.readContent(q.resourceId!, input, opts);
           const resolved = await files.prepareDownload(q.resourceId!, input, opts);
+          if ("stream" in resolved) {
+            try {
+              const size = resolved.resource.byteSize;
+              if (size == null) return unavailable("file_size_unavailable");
+              if (size === 0 && !q.range) return binary(Buffer.alloc(0), 0);
+              const start = q.range?.start ?? 0;
+              const end = q.range?.end ?? size - 1;
+              if (start >= size || end >= size || end - start + 1 > MAX_INSPECTION_BYTES) {
+                throw unprocessable("Request a bounded byte range");
+              }
+              const chunks: Buffer[] = [];
+              let position = 0;
+              let received = 0;
+              for await (const chunk of resolved.stream) {
+                const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                const from = Math.max(0, start - position);
+                const to = Math.min(bytes.length, end + 1 - position);
+                if (to > from) { chunks.push(bytes.subarray(from, to)); received += to - from; }
+                position += bytes.length;
+                if (position > end) break;
+              }
+              if (received !== end - start + 1) return unavailable("file_changed_during_read");
+              return binary(Buffer.concat(chunks), size, start);
+            } finally { resolved.stream.destroy(); await resolved.cleanup(); }
+          }
           const file = await fs.open(resolved.realPath, constants.O_RDONLY | constants.O_NOFOLLOW);
           try {
             const stat = await file.stat();

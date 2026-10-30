@@ -226,6 +226,7 @@ export function assertIsolatedServerEnvironment(
     temporaryRoot: string;
     paperclipHome: string;
     configPath: string;
+    workspaceStorage?: NodeJS.ProcessEnv;
   },
 ) {
   const home = env.PAPERCLIP_HOME;
@@ -254,10 +255,14 @@ export function assertIsolatedServerEnvironment(
     ...AMBIENT_PAPERCLIP_CREDENTIAL_KEYS,
     ...AMBIENT_EXTERNAL_STATE_KEYS,
   ]) {
-    if (env[key])
+    if (env[key] && !(AMBIENT_EXTERNAL_STATE_KEYS.includes(key as typeof AMBIENT_EXTERNAL_STATE_KEYS[number])
+      && expected.workspaceStorage?.[key] === env[key] && expected.workspaceStorage?.PAPERCLIP_STORAGE_PROVIDER === "s3"))
       throw new Error(
         `Paperclip server environment unexpectedly contains ${key}`,
       );
+  }
+  if (expected.workspaceStorage && Object.entries(expected.workspaceStorage).some(([key, value]) => env[key] !== value)) {
+    throw new Error("Paperclip server storage does not match its explicit synthetic workspace qualification");
   }
   for (const key of GENERATED_SERVER_SECRET_KEYS) {
     if (!env[key])

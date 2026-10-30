@@ -36,6 +36,7 @@ import { lifecycleLiveTasks, lifecycleLiveDefinitionDigest } from "./lifecycle-l
 import { publicMcpTasks, publicMcpExpandedDigest, publicMcpSetupDigest, publicMcpWorkflowDigest, publicMcpWorkerInstructions, publicMcpWorkerSkillDigest } from "./public-mcp-cases.js";
 import { graderVersion as publicMcpGraderVersion } from "./public-mcp-grading.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
+import { REMOTE_WORKSPACE_STORAGE_SUITE, remoteWorkspaceStoragePrompt } from "./remote-workspace-storage.js";
 import { CONNECTION_GUIDANCE_SUITE, CONNECTION_GUIDANCE_BUDGET_CENTS, connectionGuidanceTasks, connectionGuidanceDefinitionDigest } from "./connection-guidance-cases.js";
 
 import { firstTaskTasks } from "./first-task-cases.js";
@@ -1158,6 +1159,27 @@ const repositoryModelProfiles = [
 ];
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
+  {
+    id: REMOTE_WORKSPACE_STORAGE_SUITE, label: "Remote workspace storage and controller replacement", manualOnly: true,
+    description: "Keep synthetic files and local Git work in the sandbox, commit saved versions to object storage, and preserve the original active execution through controller replacement.",
+    groups: [], profiles: [(() => {
+      const profile = productionStoryProfile(repositoryModelProfiles[0]!.native);
+      return { ...profile, buildAgent(input: AgentFixtureBuildInput) {
+        const agent = profile.buildAgent(input);
+        const adapterConfig = { ...(agent.adapterConfig as Record<string, unknown>) };
+        delete adapterConfig.cwd;
+        return { ...agent, adapterConfig };
+      } };
+    })()], environments: [daytonaWarmEnvironment],
+    tasks: everydayTasks.filter(task => task.id === "recover-controller").map(task => ({ ...task,
+      label: "Recover sandbox-owned files after controller replacement", automaticRetryPolicy: "single_attempt" as const,
+      buildPrompt: (nonce: string) => remoteWorkspaceStoragePrompt(task.buildPrompt(nonce)),
+    })), expectedMatrixSize: 1,
+    definitionMetadata: { version: 1, scheduling: "explicit-only", controllerDowntimeMs: 1_000,
+      maximumAttemptsPerCell: 1, budgetMonthlyCents: 1000, instructions: "production", remoteWorkspaceStorage: true,
+      grading: "same-active-execution-committed-snapshots-browser-files-and-later-admission",
+      source: "projectless-synthetic-files-and-model-created-git", authentication: "api-key", stagingQualification: false },
+  },
   {
     id: "daytona-restart-continuity", label: "Daytona controller outage continuity", manualOnly: true,
     description: "Keep the original active native runner, task tools and saved files through more than two minutes without a controller, then commit the result without replay.",

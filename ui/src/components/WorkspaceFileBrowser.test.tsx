@@ -371,6 +371,18 @@ describe("WorkspaceFileBrowser", () => {
     });
   });
 
+  it.each(["live", "saved"] as const)("identifies %s workspace files without presenting saved bytes as live", kind => {
+    const response = availableResponse([createItem()]);
+    response.workspace!.source = { kind, savedAt: kind === "saved" ? "2026-10-30T12:00:00.000Z" : null,
+      snapshotId: kind === "saved" ? "f6d9bb44-e06d-45bb-a7c3-72a5ac6f6ef5" : null };
+    useQueryMock.mockReturnValue(ok(response));
+    renderBrowser();
+    const source = container.querySelector('[aria-label="Workspace file source"]');
+    expect(source?.textContent).toContain(kind === "live" ? "Live workspace" : "Saved copy from");
+    expect(source?.querySelector("time")?.getAttribute("datetime") ?? null).toBe(response.workspace!.source.savedAt);
+    if (kind === "saved") expect(source?.textContent).not.toContain("Live workspace");
+  });
+
   it("groups nested paths into collapsible folder rows instead of repeating full paths", () => {
     useQueryMock.mockReturnValue(
       ok(availableResponse([

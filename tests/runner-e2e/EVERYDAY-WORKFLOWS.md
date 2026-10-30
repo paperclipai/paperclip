@@ -38,6 +38,15 @@ pinned Daytona image and the existing credential/budget admission.
 
 ## Workflow suite
 
+The separate explicit-only `remote-workspace-storage` suite uses the existing
+`recover-controller` flow with an empty remote task folder, model-created local
+Git history, and an untracked synthetic reference. It skips the host-path project
+fixture, enables the feature through the public API, waits for saved snapshot/run
+receipts, opens the file through the browser before and after replacement, and
+compares the original bytes after later native admission. It has one Codex
+Daytona cell and explicit disposable object storage; it does not change the
+52-cell Everyday matrix. See the runner README for its launch contract.
+
 This manual suite tests useful work through the production browser, public API,
 native runner, and normal agent instructions. It complements the tightly
 scripted runner contract fixtures. It does not add a scheduled or default paid
