@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { APIRequestContext } from "@playwright/test";
 import { ConnectionApi } from "./connection-target.js";
+import { createServer } from "node:http";
 
 afterEach(() => vi.unstubAllGlobals());
 it("uses same-origin session cookies without sending fixture credentials through the traced request transport", async () => {
@@ -38,4 +39,33 @@ it("withholds provider bodies and thrown transport details on sensitive failures
   await expect(api.postSensitive("/api/connection", {})).rejects.toThrow("api_status_400");
   vi.stubGlobal("fetch", async () => { throw new Error("SECRET transport"); });
   await expect(api.postSensitive("/api/connection", {})).rejects.toThrow("sensitive_api_request_failed");
+});
+
+it.each(["cancel", "deadline"])("retires the actual sensitive HTTP request on %s", async mode => {
+  let entered!: () => void, retired!: () => void;
+  const received = new Promise<void>(resolve => { entered = resolve; });
+  const closed = new Promise<void>(resolve => { retired = resolve; });
+  const server = createServer((_req, response) => { response.once("close", retired); entered(); });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  try {
+    const address = server.address() as { port: number };
+    const request = { storageState: async () => ({ cookies: [] }) } as unknown as APIRequestContext;
+    const controller = new AbortController();
+    const send = new ConnectionApi(request, `http://127.0.0.1:${address.port}`).postSensitive("/api/owned", { fixture: true },
+      { signal: controller.signal, timeoutMs: mode === "deadline" ? 150 : 3000 });
+    const rejected = expect(send).rejects.toThrow("sensitive_api_request_failed");
+    await received;
+    if (mode === "cancel") controller.abort();
+    await rejected;
+    await closed;
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
+it("does not dispatch a sensitive mutation if cancellation happens while loading cookies", async () => {
+  const controller = new AbortController();
+  const request = { storageState: async () => { controller.abort(); return { cookies: [] }; } } as unknown as APIRequestContext;
+  const send = vi.fn(); vi.stubGlobal("fetch", send);
+  await expect(new ConnectionApi(request, "https://qa.example.test").postSensitive("/api/owned", {}, { signal: controller.signal }))
+    .rejects.toThrow("sensitive_api_request_failed");
+  expect(send).not.toHaveBeenCalled();
 });
