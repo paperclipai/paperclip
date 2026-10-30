@@ -58,6 +58,13 @@ self-hosted/Cloud targets and separately selected local/Daytona agents. Account
 and credential bindings stay in the private eval repo; registration and oracle
 tests do not establish a completed live pass or unattended CI qualification.
 
+The deployment-targeted `question-answer-resume` journey reuses the classic
+two-question scenario and native continuation oracle on an attached target.
+It checks the actual board answers, one to three bound work runs, an agent-authored
+task document and browser readback after reload. Its provider owns target setup,
+usage and cleanup. Registration and local calibration do not establish a fresh
+Cloud pass or inclusion in a recurring selection.
+
 The explicit-only [necessary free-text question journey](../tests/runner-e2e/README.md#necessary-free-text-question)
 checks one essential input, the rendered prompt and context, the real answer,
 one bound continuation, and an exact saved confirmation. Its four development

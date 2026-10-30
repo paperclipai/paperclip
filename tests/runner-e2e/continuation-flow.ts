@@ -1,6 +1,7 @@
 import { gradeNecessaryQuestion } from "./necessary-question.js";
 import { necessaryQuestionContract } from "./continuation-cases.js";
 import { validResumeQuestionForm } from "./question-resume-scoring.js";
+import { answerResumeQuestionThroughUi } from "./question-resume-ui.js";
 import { gradeLifecycleBaseline, type LifecycleCheckpoint } from "./lifecycle-baseline.js";
 import { lifecycleLiveCase, lifecycleLiveContinuation, gradeLifecycleNarrative } from "./lifecycle-live-cases.js";
 import { prepareLegacyContinuationSkill, prepareContinuationBudget } from "./continuation-fixtures.js";
@@ -224,29 +225,7 @@ export async function runContinuationFlow(input: {
       expect(isSingleClaudeQuestion(set.questions), "one choice question with only the optional provider Other field").toBe(true);
     } else expect(set.questions, "ask only the requested next question").toHaveLength(1);
     const before = new Set(runs.map((r) => r.id));
-    if (choice) {
-      expect(set.questions[0].answerMode, "choices must use radio controls").toBe("single_select");
-      const options = questions[0].payload.questionSet?.questions[0]?.options
-        ?? questions[0].payload.questions[0]?.options ?? [];
-      expect(new Set(options.map((o: Row) => String(o.label).trim().toLowerCase())).size).toBeGreaterThanOrEqual(2);
-      await page.getByRole("radio", { name: new RegExp(`^${choice}\\b`, "i") }).last().click();
-    } else {
-      expect(set.questions[0].answerMode, "open answers must render a text field, not a choice question").toBe("text");
-      await page.getByTestId("question-text-answer-composer").last()
-        .locator('[contenteditable="true"],textarea').first().fill(scenario.answer);
-    }
-    // Claude may add a separate optional Other field after its choice page.
-    // Navigate every rendered page before submitting; do not invent an answer.
-    for (let index = 1; index < set.questions.length; index += 1) {
-      await page.getByRole("button", { name: "Next", exact: true }).last().click();
-    }
-    await page
-      .getByRole("button", {
-        name: set.submitLabel ?? "Submit answers",
-        exact: true,
-      })
-      .last()
-      .click();
+    await answerResumeQuestionThroughUi(page, questions[0], choice ? { choice } : { text: scenario.answer });
     await settle(before, false, questions[0].id);
   }
   async function reply(body: string) {
