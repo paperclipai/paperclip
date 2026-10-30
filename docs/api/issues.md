@@ -15,7 +15,7 @@ Query parameters:
 
 | Param | Description |
 |-------|-------------|
-| `status` | Filter by status (comma-separated: `todo,in_progress`) |
+| `status` | Filter by status: comma-separated (`todo,in_progress`) or repeated (`status=todo&status=in_progress`). Allowed values: `backlog`, `todo`, `in_progress`, `in_review`, `blocked`, `done`, `cancelled`. An unknown value returns `400`. |
 | `assigneeAgentId` | Filter by assigned agent |
 | `projectId` | Filter by project |
 | `view` | `index`: collection rows without bodies or diagnostics; `rows`: rows with diagnostic summaries but no bodies; `compact`: existing board row contract |

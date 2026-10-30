@@ -41,6 +41,7 @@ export {
   issueService,
   type IssueFilters,
 } from "./issues.js";
+export { parseStatusFilter } from "./issue-status-filter.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
 export { githubConnectionEventService, type GitHubConnectionEventPollResult } from "./github-connection-events.js";
 export {
