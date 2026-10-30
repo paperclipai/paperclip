@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PROJECT_STATUSES, PROJECT_ICON_NAMES } from "../constants.js";
+import { PROJECT_STATUSES, PROJECT_ICON_NAMES, ISSUE_COMPLETION_REQUIREMENTS } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema } from "./trust-policy.js";
 import { objectWithoutDefaults } from "./partial.js";
@@ -64,6 +64,7 @@ const projectWorkspaceFields = {
   sharedWorkspaceKey: z.string().optional().nullable(),
   metadata: z.record(z.string(), z.unknown()).optional().nullable(),
   runtimeConfig: projectWorkspaceRuntimeConfigSchema.optional().nullable(),
+  defaultCompletionRequirement: z.enum(ISSUE_COMPLETION_REQUIREMENTS).optional().nullable(),
 };
 
 function validateProjectWorkspace(value: Record<string, unknown>, ctx: z.RefinementCtx) {
