@@ -179,7 +179,7 @@ function useTaskSidePanelFileRouting() {
   const state = useMemo(() => readFileViewerStateFromSearch(location.search), [location.search]);
   const browseState = useMemo(() => readBrowseStateFromSearch(location.search), [location.search]);
   const navigateSearch = useCallback((nextSearch: string, replace = false) => {
-    if (!shouldNavigateFileViewerSearch(nextSearch, location.search)) return;
+    if (!shouldNavigateFileViewerSearch(nextSearch, location.search, location.pathname)) return;
     navigate(
       { pathname: location.pathname, hash: location.hash, search: nextSearch },
       { ...FILE_VIEWER_NAVIGATE_OPTIONS, replace, state: location.state },

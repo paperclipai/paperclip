@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 
-import { act, type ReactNode } from "react";
+import { act, Profiler, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, IssueDocument } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { fileResourcesApi } from "@/api/file-resources";
+import { projectsApi } from "@/api/projects";
 import {
   taskPanelAgentTasksTab,
   taskPanelArtifactsTab,
@@ -99,9 +101,15 @@ vi.mock("@/components/chat/AgentWorkPanels", () => ({
   AgentArtifactsPanel: ({ agentId }: { agentId: string }) => <div>{`Agent artifacts ${agentId}`}</div>,
 }));
 
-vi.mock("@/components/WorkspaceFileBrowser", () => ({
-  WorkspaceFileBrowser: () => <div>Files browser</div>,
-}));
+const filesFixture = vi.hoisted(() => ({ realBrowser: false }));
+vi.mock("@/components/WorkspaceFileBrowser", async () => {
+  const actual = await vi.importActual<typeof import("@/components/WorkspaceFileBrowser")>("@/components/WorkspaceFileBrowser");
+  return {
+    WorkspaceFileBrowser: (props: Parameters<typeof actual.WorkspaceFileBrowser>[0]) => filesFixture.realBrowser
+      ? <actual.WorkspaceFileBrowser {...props} />
+      : <div>Files browser</div>,
+  };
+});
 
 vi.mock("./TaskAttachmentPanel", () => ({ TaskAttachmentPanel: ({ attachmentId }: { attachmentId: string }) => <div>Text file {attachmentId}</div> }));
 
@@ -144,6 +152,7 @@ describe("TaskSidePanel", () => {
   beforeEach(() => {
     coordinator.enabled = false;
     window.localStorage.clear();
+    filesFixture.realBrowser = false;
     browserFixture.data = [];
     browserFixture.control.mockClear();
     fixture.documents = [];
@@ -334,6 +343,49 @@ describe("TaskSidePanel", () => {
     await render(panel({ fileTabsEnabled: true, openAttachment: { id: "file-1", title: "notes.txt", requestId: 1 } }));
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("notes.txt");
     expect(routeFixture.navigate).toHaveBeenCalledWith(expect.objectContaining({ search: "" }), expect.anything());
+  });
+
+  it("settles Files updates and preserves sidebar navigation after a folder change", async () => {
+    filesFixture.realBrowser = true;
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    vi.spyOn(projectsApi, "list").mockResolvedValue([]);
+    vi.spyOn(fileResourcesApi, "list").mockResolvedValue({
+      kind: "workspace_file_list",
+      state: "available",
+      workspace: null,
+      query: { workspace: "auto", mode: "all", q: null, limit: 100, offset: 0 },
+      items: [],
+      scannedCount: 0,
+      truncated: false,
+    });
+    routeFixture.location.search = "?browse=1&folder=ui%2Fsrc%2Fcomponents";
+    window.history.replaceState(null, "", `${routeFixture.location.pathname}${routeFixture.location.search}`);
+    routeFixture.navigate.mockImplementation((target: { pathname: string; search: string }) => {
+      window.history.replaceState(null, "", `${target.pathname}${target.search}`);
+    });
+    let commits = 0;
+    await render(
+      <Profiler id="files" onRender={() => {
+        if (++commits > 30) throw new Error("Files panel did not settle");
+      }}>
+        {panel({ fileTabsEnabled: true })}
+      </Profiler>,
+    );
+    expect(container.querySelector('input[aria-label="Search workspace files"]')).not.toBeNull();
+    const folder = container.querySelector<HTMLButtonElement>('nav[aria-label="Current folder"] button[title="ui/src"]');
+    expect(folder).not.toBeNull();
+    await act(async () => folder?.click());
+    expect(new URLSearchParams(window.location.search).get("folder")).toBe("ui/src");
+    expect(window.location.pathname).toBe("/issues/PAP-1");
+
+    window.history.pushState(null, "", "/dashboard");
+    routeFixture.navigate.mockClear();
+    const rootFolder = container.querySelector<HTMLButtonElement>('nav[aria-label="Current folder"] button[title="ui"]');
+    expect(rootFolder).not.toBeNull();
+    await act(async () => rootFolder?.click());
+    expect(window.location.pathname).toBe("/dashboard");
+    expect(window.location.search).toBe("");
+    expect(routeFixture.navigate).not.toHaveBeenCalled();
   });
 
   it("keeps a live browser mounted across tab switches and only hides it on close", async () => {

@@ -1596,6 +1596,8 @@ Linux. It measures workspace reads, not end-to-end agent latency.
 
 The cache intentionally trades up to a few seconds of changed-file freshness for stable server latency. The file browser retains an explicit refresh action, does not start its query while the panel or browser tab is hidden, and presents overloads as retryable failures rather than an empty workspace. A full queue returns `503` with code `workspace_git_scan_saturated`; a scan exceeding its wall-clock limit returns `504` with code `workspace_git_scan_timeout`. Both responses include `Retry-After: 1`.
 
+The task Files panel reports browse state only when its values change. File and folder URL updates stay on the current pathname, so a pending panel update cannot undo sidebar navigation.
+
 Sandbox Git sync treats only the selected repository root as a clone source. A selected subfolder uses directory sync within that folder, applies the enclosing repository's ignore rules, and does not transfer parent files or Git history.
 
 Environment overrides:
