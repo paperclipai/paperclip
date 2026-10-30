@@ -1181,6 +1181,62 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it.each([
+    { label: "after", clearOffsetMs: 60_000, providerQuotaMonitored: 0 },
+    { label: "before", clearOffsetMs: -60_000, providerQuotaMonitored: 1 },
+  ])("re-arms a provider-quota monitor only when it was not manually cleared $label the failing run", async ({ clearOffsetMs, providerQuotaMonitored }) => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runCreatedAt = new Date();
+    await db.update(issues).set({
+      executionState: {
+        status: "idle",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: {
+          status: "cleared",
+          nextCheckAt: null,
+          lastTriggeredAt: null,
+          attemptCount: 27,
+          notes: null,
+          scheduledBy: null,
+          clearedAt: new Date(runCreatedAt.getTime() + clearOffsetMs).toISOString(),
+          clearReason: "manual",
+        },
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      error: "Provider quota exceeded for this model.",
+      errorCode: "adapter_failed",
+      createdAt: runCreatedAt,
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.providerQuotaMonitored).toBe(providerQuotaMonitored);
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    if (providerQuotaMonitored) {
+      expect(updatedIssue?.monitorNextCheckAt).toBeInstanceOf(Date);
+    } else {
+      expect(updatedIssue?.monitorNextCheckAt).toBeNull();
+    }
+  });
+
   it("skips provider-quota monitor scheduling for todo issues without aborting reconciliation", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.update(issues).set({ status: "todo" }).where(eq(issues.id, sourceIssueId));

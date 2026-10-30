@@ -93,7 +93,7 @@ import {
   nativeRunnerOwnershipNotHeldCondition,
 } from "../native-runtime/native-runner-ownership.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
-import { forbidden, notFound } from "../../errors.js";
+import { forbidden, HttpError, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import {
   isPidAlive,
@@ -4423,6 +4423,13 @@ export function recoveryService(
     if (!targetAgentId || input.latestRun.agentId !== targetAgentId)
       return null;
 
+    const monitorState = parseIssueExecutionState(input.issue.executionState)?.monitor;
+    if (monitorState?.status === "cleared" && monitorState.clearReason === "manual") {
+      const clearedAt = monitorState.clearedAt ? Date.parse(monitorState.clearedAt) : NaN;
+      if (Number.isFinite(clearedAt) && clearedAt > input.latestRun.createdAt.getTime())
+        return null;
+    }
+
     const previousPolicy = normalizeIssueExecutionPolicy(
       input.issue.executionPolicy ?? null,
     );
@@ -4459,10 +4466,20 @@ export function recoveryService(
       actor: { agentId: null, userId: null },
       monitorExplicitlyUpdated: true,
     });
-    const updated = await issuesSvc.update(input.issue.id, {
-      ...transition.patch,
-      executionPolicy: policy,
-    });
+    const updated = await issuesSvc
+      .update(input.issue.id, {
+        ...transition.patch,
+        executionPolicy: policy,
+        expectedExecutionPolicy: input.issue.executionPolicy ?? null,
+      })
+      .catch((error: unknown) => {
+        if (
+          error instanceof HttpError &&
+          parseObject(error.details).code === "execution_policy_changed"
+        )
+          return null;
+        throw error;
+      });
     if (!updated) return null;
 
     await logActivity(db, {
