@@ -699,8 +699,8 @@ function AccountIssueDocumentsSection({
         if (options?.clearAfterSave) return null;
         return {
           key: saved.key,
-          title: saved.title ?? "",
-          // Keep text typed while this save was in flight.
+          // Keep title and body edits made while this save was in flight.
+          title: value.title === currentDraft.title ? saved.title ?? "" : value.title,
           body: value.body === currentDraft.body ? saved.body : value.body,
           baseRevisionId: saved.latestRevisionId,
           isNew: false,
@@ -992,10 +992,17 @@ function AccountIssueDocumentsSection({
     }
     const existing = sortedDocuments.find((doc) => doc.key === draft.key);
     if (!existing) return;
+    // Retire a matching new-form backup only after its text is saved remotely
+    // or retained as an edit. A different newer buffer keeps its backup.
     if (existing.body === draft.body && (existing.title ?? "") === draft.title) {
       clearStoredDocumentDraft(draftScope, draft.key);
+      clearStoredNewDocumentDraft(newDraftScope, draft);
     } else if (draftScope) {
       saveStructuredDraft(documentDraftStorageKey(draftScope, draft.key), draft);
+      const stored = loadStoredDocumentDraft(draftScope, draft.key);
+      if (stored?.body === draft.body && stored.title === draft.title && stored.baseRevisionId === draft.baseRevisionId) {
+        clearStoredNewDocumentDraft(newDraftScope, draft);
+      }
     }
   }, [draftScope, draft, newDraftScope, sortedDocuments]);
 
