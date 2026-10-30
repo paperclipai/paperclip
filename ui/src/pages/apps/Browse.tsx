@@ -391,6 +391,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   useEffect(() => { setQuery(""); setPage(1); setSource("paperclip"); setExpandedSearch(false); setArcadeToConfigure(null); setAggregatorToConnect(null); setAggregatorToManage(null); setInitialAggregatorProvider(undefined); setConnectionToRemove(null); }, [selectedCompanyId]);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    if (params.get("source") === "installed") setSource("installed");
     if (params.get("source") === "composio") {
       setAggregatorToConnect((params.get("targetToolkit") ? findComposioCatalogApp(params.get("targetToolkit")!) : null) ?? null);
       setInitialAggregatorProvider("composio");

@@ -147,6 +147,7 @@ import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@
 import { agentRouteRef } from "../lib/utils";
 import { syncAgentRouteAfterRename } from "./agent-detail/agent-route";
 import { InstructionsBundleSettings } from "./agent-detail/InstructionsBundleSettings";
+import { AgentAllowedConnectors } from "./agent-detail/AgentAllowedConnectors";
 import { AgentAvatar } from "../components/AgentAvatar";
 import { AgentChip, AgentMetricTile, AgentPanel, AgentSectionHeading } from "../components/agent-detail/AgentPanels";
 import { AgentHistoryDialog } from "./agent-detail/AgentHistoryDialog";
@@ -2173,7 +2174,7 @@ export function ConfigurationTab({
             : "Disabled unless explicitly granted.";
 
   return (
-    <div className="agent-settings-form space-y-6">
+    <div className={cn("agent-settings-form", content === "permissions" ? "flex flex-col gap-(--agent-detail-module-gap)" : "space-y-6")}>
       {content !== "permissions" ? <AgentConfigForm
         mode="edit"
         agent={agent}
@@ -2198,6 +2199,8 @@ export function ConfigurationTab({
 
 
       {content === "permissions" ? <TrustPresetSection
+        layout="cards"
+        aside={companyId ? <AgentAllowedConnectors agentId={agent.id} companyId={companyId} /> : null}
         projectAccessEditor={<AgentProjectAccessSettings agent={agent} />}
         permissions={agent.permissions}
         disabled={updatePermissions.isPending}
@@ -2221,10 +2224,9 @@ export function ConfigurationTab({
         }
       /> : null}
 
-      {content === "permissions" ? <div>
-        <h3 className="text-sm font-medium mb-3">Permissions</h3>
-        <div className="border border-border rounded-lg p-4 space-y-4">
-          <div className="flex items-center justify-between gap-4 text-sm">
+      {content === "permissions" ? <AgentPanel title="Capabilities" aria-label="Capabilities">
+        <div className="flex flex-col pb-3">
+          <div className="flex min-h-11 items-center justify-between gap-4 px-(--agent-detail-module-inset) py-2 text-sm">
             <div className="space-y-1">
               <div>Can create new agents</div>
               <p className="text-xs text-muted-foreground">
@@ -2243,7 +2245,7 @@ export function ConfigurationTab({
               disabled={updatePermissions.isPending}
             />
           </div>
-          <div className="flex items-center justify-between gap-4 text-sm">
+          <div className="flex min-h-11 items-center justify-between gap-4 px-(--agent-detail-module-inset) py-2 text-sm">
             <div className="space-y-1">
               <div>Can create/import skills</div>
               <p className="text-xs text-muted-foreground">
@@ -2262,7 +2264,7 @@ export function ConfigurationTab({
               disabled={updatePermissions.isPending}
             />
           </div>
-          <div className="flex items-center justify-between gap-4 text-sm">
+          <div className="flex min-h-11 items-center justify-between gap-4 px-(--agent-detail-module-inset) py-2 text-sm">
             <div className="space-y-1">
               <div>Can assign tasks</div>
               <p className="text-xs text-muted-foreground">
@@ -2282,7 +2284,7 @@ export function ConfigurationTab({
             />
           </div>
         </div>
-      </div> : null}
+      </AgentPanel> : null}
     </div>
   );
 }
