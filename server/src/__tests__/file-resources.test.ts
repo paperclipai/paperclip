@@ -228,6 +228,31 @@ describeEmbeddedPostgres("workspace file resources", () => {
     await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ projectId: graph.targetProjectId, workspaceId: graph.targetProjectWorkspaceId, path: "secret.txt" }).expect(404);
   });
 
+  it("accepts issue identifiers and returns 404 for unknown or malformed issue ids", async () => {
+    const { projectRoot, executionRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, executionRoot });
+    await fs.writeFile(path.join(projectRoot, "notes.txt"), "IDENTIFIER_OK", "utf8");
+    const [company] = await db.select().from(companies).where(eq(companies.id, graph.companyId));
+    const identifier = `${company!.issuePrefix}-1`;
+    await db.update(issues).set({ issueNumber: 1, identifier }).where(eq(issues.id, graph.issueId));
+    const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
+
+    for (const ref of [identifier, identifier.toLowerCase()]) {
+      const content = await request(app).get(`/api/issues/${ref}/file-resources/content`).query({ workspace: "project", path: "notes.txt" }).expect(200);
+      expect(content.body.content.data).toBe("IDENTIFIER_OK");
+      await request(app).get(`/api/issues/${ref}/file-resources/list`).query({ workspace: "project" }).expect(200);
+    }
+
+    await db.update(issues).set({ visibility: "private", responsibleUserId: "owner" }).where(eq(issues.id, graph.issueId));
+    await request(app).get(`/api/issues/${identifier}/file-resources/content`).query({ workspace: "project", path: "notes.txt" }).expect(404);
+
+    for (const ref of [`${company!.issuePrefix}-999999`, "not-a-uuid"]) {
+      await request(app).get(`/api/issues/${ref}/file-resources/content`).query({ workspace: "project", path: "notes.txt" }).expect(404);
+      await request(app).get(`/api/issues/${ref}/file-resources/list`).query({ workspace: "project" }).expect(404);
+      await request(app).post(`/api/issues/${ref}/file-resources/availability`).send({ queries: [{ workspace: "project", path: "notes.txt" }] }).expect(404);
+    }
+  });
+
   it("resolves and reads a project file without exposing absolute paths", async () => {
     const { root, projectRoot, executionRoot } = await makeWorkspace();
     const graph = await seedGraph(db, { projectRoot, executionRoot });
@@ -1471,6 +1496,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
       slowResolveStarted = resolve;
     });
     const resolveLimitedService: WorkspaceFileResourceService = {
+      resolveIssueId: vi.fn(async (issueId: string) => issueId),
       getIssue: vi.fn(async () => ({ companyId: graph.companyId })),
       availability: vi.fn(async () => {
         throw new Error("not used");
@@ -1535,6 +1561,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
       slowContentStarted = resolve;
     });
     const contentLimitedService: WorkspaceFileResourceService = {
+      resolveIssueId: vi.fn(async (issueId: string) => issueId),
       getIssue: vi.fn(async () => ({ companyId: graph.companyId })),
       availability: vi.fn(async () => {
         throw new Error("not used");
@@ -1611,6 +1638,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
       slowDownloadStarted = resolve;
     });
     const service: WorkspaceFileResourceService = {
+      resolveIssueId: vi.fn(async (issueId: string) => issueId),
       getIssue: vi.fn(async () => ({ companyId: graph.companyId })),
       availability: vi.fn(async () => {
         throw new Error("not used");
@@ -1700,6 +1728,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
       slowListStarted = resolve;
     });
     const service: WorkspaceFileResourceService = {
+      resolveIssueId: vi.fn(async (issueId: string) => issueId),
       getIssue: vi.fn(async () => ({ companyId: graph.companyId })),
       availability: vi.fn(async () => {
         throw new Error("not used");
@@ -1976,6 +2005,7 @@ describeEmbeddedPostgres("file resource route guards", () => {
       slowReadStarted = resolve;
     });
     const service: WorkspaceFileResourceService = {
+      resolveIssueId: vi.fn(async (issueId: string) => issueId),
       getIssue: vi.fn(async () => ({ companyId })),
       availability: vi.fn(async () => {
         throw new Error("not used");
@@ -2049,6 +2079,7 @@ describeEmbeddedPostgres("file resource route guards", () => {
       slowAvailabilityStarted = resolve;
     });
     const service: WorkspaceFileResourceService = {
+      resolveIssueId: vi.fn(async (issueId: string) => issueId),
       getIssue: vi.fn(async () => ({ companyId })),
       availability: vi.fn(async () => {
         slowAvailabilityStarted?.();
