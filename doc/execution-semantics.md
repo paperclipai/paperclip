@@ -2686,6 +2686,24 @@ publication and prevents expiration. Snapshot and result writes recheck the
 coordinator generation and lease after lock waits, including the existing limited
 post-result maintenance exception.
 
+Goal-less native turns publish their task-session pointer with the first accepted,
+successful terminal checkpoint, before provider or instruction cleanup can delay
+the heartbeat completion callback. The pointer uses the native normalized UUID
+and the checkpoint's provider display identity. Its prepared configuration metadata
+comes from normal admission; neither streaming events nor ordinary checkpoints
+add task-session writes. Goal checkpoints retain their existing publication path.
+
+The snapshot transaction validates the exact accepted result and current owner,
+then updates only the authenticated run's existing task-session projection. Its
+private `nativeTaskSessionPublication` receipt shares the 4 KiB recovery-metadata
+budget. Coordinator, issue and run locks precede the ownership clock check; the
+issue's `NO KEY UPDATE` lock remains compatible with result insertion's parent
+`KEY SHARE`. Reset/deletion, a newer task-session epoch or a competing execution
+prevents publication. Later maintenance and heartbeat completion honor the receipt,
+so they cannot restore a cleared pointer or overwrite its successor. Unsupported
+legacy bindings keep the existing completion path. The receipt is excluded from
+public run projections and contains no session parameters or credentials.
+
 For per-turn direct sandbox recovery, the executor reads the retained Runner's
 suspended lifecycle through the recorded sandbox lease and validates its complete
 identity and lack of pending delivery/cleanup. Only a lifecycle projection is

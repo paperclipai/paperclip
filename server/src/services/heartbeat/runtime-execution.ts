@@ -561,6 +561,20 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           sessionGoalControl.requestId,
         ));
       if (completedGoalControl) sessionGoalControl = null;
+      // Goal checkpoints already publish their task session. Goal-less turns
+      // need the same durable pointer before cleanup can delay host completion.
+      const taskSessionPublication = taskKey && !sessionGoalControl &&
+        context.resumeSessionGoalHeartbeat !== true && !completedGoalControl
+        ? {
+            taskKey,
+            adapterType: agent.adapterType,
+            sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
+              { ...runtimeSessionParamsForAdapter, cwd: executionWorkspace.cwd },
+              configuredModel,
+              sessionConfigMetadata,
+            ),
+          }
+        : undefined;
       const nativeDispatchAtMs = Date.now();
       const runCreatedAtMs = run.createdAt.getTime();
       const runStartedAtMs = (run.startedAt ?? run.createdAt).getTime();
@@ -610,6 +624,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               resumeSessionGoalHeartbeat:
                 context.resumeSessionGoalHeartbeat === true ||
                 completedGoalControl,
+              taskSessionPublication,
               onGoalCheckpoint: async (snapshot) => {
                 if (!taskKey) return;
                 const params =
