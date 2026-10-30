@@ -207,11 +207,17 @@ of exempt prose, update this policy as well as the task inputs.
 For ordinary source PRs (including the audited prose inputs above), a separate `Select Vitest files` job refines the
 general and serialized test lanes before their runners are allocated. It runs
 on the gate-approved test fleet, loads the real Vitest projects, and follows
-imports across workspace packages. Only projects with their own source changes
-are narrowed; unchanged consumer projects retain their complete coarse lane
-coverage without paying for another graph traversal. Filesystem, subprocess, network, CommonJS,
+imports across workspace packages. Every project in the coarse plan is assessed,
+including unchanged consumers. Projects without affected tests drop out of the
+matrix; an unchanged directory alone does not prove independence. Filesystem, subprocess, network, CommonJS,
 dynamic-loader, unresolved, and unapproved external-package consumers are
 retained conservatively, including indirect consumers through local helpers.
+Module-relative filesystem reads add explicit dependency edges when the path and
+read API can be resolved without running code. This includes directory listings
+and transitive helper reads. Dynamic paths, writes, escaped filesystem APIs,
+mutable or shadowed bindings, generated inputs and paths outside the checkout
+remain opaque. Setup-file reads invalidate the whole project when their input
+changes. Symlink reads follow the physical target. Missing inputs retain coverage.
 The selector explicitly tracks setup/configuration dependencies as well as test
 imports. Ordinary source names such as `session-config-metadata.test.ts` or
 `setup-state.ts` remain eligible; the words `config` and `setup` alone do not
@@ -220,6 +226,14 @@ inputs. Other resolved setup/config dependencies invalidate their entire project
 The small pure-dependency allowlist lives in
 `scripts/ci/vitest-selection-graph.mjs`; new external packages remain opaque
 until reviewed. This is deliberately broader than `vitest related` alone.
+The reviewed Drizzle SQL/schema entry points have no ambient repository inputs.
+Their full import closures are content-hashed in
+`scripts/ci/reviewed-test-dependencies.mjs`; changed installed contents revoke the
+exception. Database drivers and migration readers remain opaque. OS information,
+in-memory streams, timers and compression do not read repository files themselves;
+filesystem or process operations using their outputs retain their normal guards.
+The syntax audit distinguishes data keys and erased types from runtime globals.
+It examines the called member, not string arguments earlier in a chained call.
 For conservative retention, explicit complete local mock factories cut the
 mocked implementation's I/O edges. Partial mocks, spies, automocks, mock bypasses,
 and dynamic or escaped mocking APIs do not. Edits to a mocked module still use
@@ -238,7 +252,8 @@ jobs; empty lanes allocate none. Serialized files remain serialized, and chat's
 line shards, native Runner lanes, Rust, builds, typechecking and E2E retain their
 existing selection/execution rules. The job summary reports files and jobs
 selected per lane, and the `vitest-selection` artifact records the manifest and
-dependency audit. Selected jobs execute exact Vitest test specifications, so
+dependency audit, including file-read edges and the first opaque dependency that
+retained each test. Selected jobs execute exact Vitest test specifications, so
 similarly named `.test.ts` and `.test.tsx` files cannot overlap between shards.
 The wrapper consumes and validates the selection before launching Vitest, then
 removes selection environment variables from the test process. Nested runner

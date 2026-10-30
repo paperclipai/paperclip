@@ -1,10 +1,12 @@
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { isBuiltin } from "node:module";
 import { parseSync } from "oxc-parser";
 import { createVitest } from "vitest/node";
+import { repositoryFileInputs } from "./repository-file-inputs.mjs";
+import { dependencyReviews } from "./reviewed-test-dependencies.mjs";
 
 // Everything else is opaque by default. Do not add IO clients, module loaders,
 // filesystem helpers or process launchers here to improve selection counts.
@@ -18,7 +20,8 @@ const purePackages = new Set([
   "i18next", "react-i18next",
 ]);
 const pureBuiltins = new Set(["assert", "assert/strict", "path", "path/posix", "path/win32",
-  "url", "util", "util/types", "buffer", "events", "string_decoder", "crypto"]);
+  "url", "util", "util/types", "buffer", "events", "string_decoder", "crypto",
+  "os", "timers", "timers/promises", "stream", "stream/promises", "stream/web", "async_hooks", "zlib"]);
 // Reviewed setup performs only temporary-home IO and Supertest socket setup,
 // not reads of arbitrary repository inputs. Pin contents, not just paths: any
 // edit disables this exception until its effects are reviewed again. Continue
@@ -56,6 +59,15 @@ export function sourceDependencies(file, source) {
     if (literal(node)) imports.add(node.value);
     else reasons.add("dynamic module name");
   };
+  const calleeName = (node) => {
+    if (node?.type === "Identifier") return node.name;
+    if (node?.type === "MetaProperty") return `${node.meta.name}.${node.property.name}`;
+    if (node?.type === "MemberExpression") {
+      const member = node.computed ? (literal(node.property) ? node.property.value : "") : node.property.name;
+      return `${calleeName(node.object)}.${member}`;
+    }
+    return "";
+  };
   for (const statement of ast.program.body) {
     const call = statement.type === "ExpressionStatement" ? statement.expression : null;
     const callee = call?.type === "CallExpression" ? call.callee : null;
@@ -68,18 +80,28 @@ export function sourceDependencies(file, source) {
   }
   function visit(node, parent = null) {
     if (!node || typeof node !== "object") return;
+    if (node.type?.startsWith("TS") && !["TSImportEqualsDeclaration", "TSEnumDeclaration", "TSEnumMember",
+      "TSModuleDeclaration", "TSModuleBlock", "TSExportAssignment", "TSParameterProperty"].includes(node.type)) {
+      if (node.expression) visit(node.expression, node);
+      return;
+    }
+    const dataKey = parent && ((["Property", "ObjectProperty", "MethodDefinition", "PropertyDefinition"].includes(parent.type)
+      && parent.key === node && !parent.computed && !parent.shorthand)
+      || (parent.type === "MemberExpression" && parent.property === node && !parent.computed
+        && !["globalThis", "window", "self"].includes(parent.object.name)));
     if ((node.type === "ImportDeclaration" && node.importKind !== "type")
       || (["ExportNamedDeclaration", "ExportAllDeclaration"].includes(node.type) && node.exportKind !== "type")) {
       if (node.source) importSource(node.source);
     }
     if (node.type === "ImportExpression") importSource(node.source);
     if (node.type === "TSImportEqualsDeclaration") reasons.add("CommonJS import");
-    if (node.type === "Identifier" && /^(require|fetch|eval|Function|WebSocket|XMLHttpRequest|Worker)$/.test(node.name)) {
+    if (node.type === "Identifier" && !dataKey && /^(require|fetch|eval|Function|WebSocket|XMLHttpRequest|Worker)$/.test(node.name)) {
       reasons.add("external input or dynamic code");
     }
     if ((node.type === "Identifier" && node.name === "getBuiltinModule")
       || (literal(node) && node.value === "getBuiltinModule")) reasons.add("dynamic builtin loader");
-    if ((node.type === "Identifier" && /^(importActual|unmock|doUnmock|doMock|arguments)$/.test(node.name))
+    if ((node.type === "Identifier" && (/^(importActual|unmock|doUnmock|doMock)$/.test(node.name)
+      || (mockBindings.size > 0 && node.name === "arguments" && !dataKey)))
       || (literal(node) && /^(importActual|unmock|doUnmock|doMock)$/.test(node.value))) reasons.add("mock bypass");
     if (node.type === "Identifier" && mockBindings.has(node.name) && parent
       && parent.type !== "ImportSpecifier"
@@ -87,7 +109,7 @@ export function sourceDependencies(file, source) {
       reasons.add("escaped or dynamic mocking API");
     }
     if (node.type === "CallExpression") {
-      const name = source.slice(node.callee.start, node.callee.end);
+      const name = calleeName(node.callee);
       if (/^(?:vi|vitest)\.(?:mock|doMock|importActual|importMock)$/.test(name)) {
         importSource(node.arguments[0]);
       }
@@ -107,10 +129,10 @@ export function sourceDependencies(file, source) {
     }
   }
   visit(ast.program);
-  return { imports: [...imports], reasons: [...reasons], mocks };
+  return { imports: [...imports], reasons: [...reasons], mocks, fileInputs: repositoryFileInputs(file, ast.program) };
 }
 
-export async function selectProjectTests({ root = process.cwd(), project, changed, onlyOwnChanges = false }) {
+export async function selectProjectTests({ root = process.cwd(), project, changed }) {
   root = realpathSync(root);
   const started = performance.now();
   const absoluteChanges = changed.map((file) => path.resolve(root, file));
@@ -123,22 +145,33 @@ export async function selectProjectTests({ root = process.cwd(), project, change
     const inventory = await ctx.globTestSpecifications();
     if (!inventory.length) throw new Error(`Empty inventory: ${project}`);
     const relative = (spec) => path.relative(root, spec.moduleId).split(path.sep).join("/");
-    if (onlyOwnChanges && !absoluteChanges.some((file) => file.startsWith(`${owner.config.root}${path.sep}`))) {
-      // Keep coarse dependency coverage, but avoid spending a graph traversal
-      // on an unchanged consumer project merely to retain most of its IO tests.
-      const files = inventory.map(relative).sort();
-      return { project, inventory: files, selected: files, related: [], alwaysRun: files, coveredChanges: [],
-        opaqueModules: {}, retainedReason: "Unchanged project retains complete lane coverage", seconds: (performance.now() - started) / 1000 };
-    }
     const tracked = new Set(execFileSync("git", ["ls-files", "--cached", "-z"], {
       cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
     }).split("\0").filter(Boolean));
     const audit = new Map();
+    const reviewedDependency = dependencyReviews();
     const parsed = new Map();
     const parse = (file) => {
       if (!parsed.has(file)) parsed.set(file, sourceDependencies(file, readFileSync(file, "utf8")));
       return parsed.get(file);
     };
+    const fileInputs = new Map();
+    const declaredInputs = (file, source) => {
+      const paths = [];
+      try {
+        for (const input of source.fileInputs.inputs) {
+          const resolved = realpathSync(input);
+          const relative = path.relative(root, resolved).split(path.sep).join("/");
+          const directory = statSync(resolved).isDirectory();
+          if (!inside(root, resolved) || (!directory && !tracked.has(relative))) return [];
+          paths.push({ path: resolved, directory });
+        }
+      } catch { return []; }
+      fileInputs.set(file, paths);
+      return source.fileInputs.covered;
+    };
+    const touchesInputs = (inputs, change) => inputs.some(input => change === input.path
+      || (input.directory && change.startsWith(`${input.path}${path.sep}`)));
     const resolve = async (specifier, importer) => {
       try {
         const resolved = await environment.pluginContainer.resolveId(specifier, importer);
@@ -153,12 +186,13 @@ export async function selectProjectTests({ root = process.cwd(), project, change
       if (setup.has(file)) return;
       setup.add(file);
       const source = parse(file);
+      const coveredBuiltins = declaredInputs(file, source);
       const review = reviewedSetup.get(path.relative(root, file).split(path.sep).join("/"));
       const reviewed = review?.hash === createHash("sha256").update(readFileSync(file)).digest("hex");
       if (!reviewed && source.reasons.length) throw new Error(`Opaque setup dependency: ${file}`);
       for (const specifier of source.imports) {
         if (isBuiltin(specifier)) {
-          if (!reviewed && !pureBuiltins.has(specifier.replace(/^node:/, ""))) throw new Error(`Opaque setup builtin: ${specifier}`);
+          if (!reviewed && !pureBuiltins.has(specifier.replace(/^node:/, "")) && !coveredBuiltins.includes(specifier)) throw new Error(`Opaque setup builtin: ${specifier}`);
           continue;
         }
         if (reviewed && review.external.includes(specifier)) continue;
@@ -175,7 +209,8 @@ export async function selectProjectTests({ root = process.cwd(), project, change
       else if (!resolved) throw new Error(`Unresolved setup module: ${file}`);
     }
     for (const file of owner.vite.config.configFileDependencies ?? []) setup.add(realpathSync(file));
-    const setupChanged = absoluteChanges.some((file) => setup.has(file));
+    const setupChanged = absoluteChanges.some(file => setup.has(file)
+      || [...setup].some(module => touchesInputs(fileInputs.get(module) ?? [], file)));
     const raw = await ctx.getRelevantTestSpecifications();
     const modules = environment.moduleGraph.idToModuleMap;
     const resolvedDependencies = new Map();
@@ -192,6 +227,7 @@ export async function selectProjectTests({ root = process.cwd(), project, change
     for (const [id, module] of modules) {
       if (!inside(root, id) || !/\.[cm]?[jt]sx?$/.test(id)) continue;
       const source = parse(id);
+      const coveredBuiltins = declaredInputs(id, source);
       const reasons = [...source.reasons];
       if (!tracked.has(path.relative(root, id).split(path.sep).join("/"))) reasons.push("generated or untracked source");
       const local = [];
@@ -203,7 +239,8 @@ export async function selectProjectTests({ root = process.cwd(), project, change
       if (!Array.isArray(transformed?.deps)) reasons.push("unknown transform shape");
       for (const dependencyId of [...(transformed?.deps ?? []), ...(transformed?.dynamicDeps ?? [])]) {
         if (isBuiltin(dependencyId)) {
-          if (!pureBuiltins.has(dependencyId.replace(/^node:/, ""))) reasons.push(`builtin ${dependencyId}`);
+          if (!pureBuiltins.has(dependencyId.replace(/^node:/, ""))
+            && !coveredBuiltins.some(source => source.replace(/^node:/, "") === dependencyId.replace(/^node:/, ""))) reasons.push(`builtin ${dependencyId}`);
           continue;
         }
         const dependency = dependencyPath(dependencyId);
@@ -214,7 +251,8 @@ export async function selectProjectTests({ root = process.cwd(), project, change
           if (!modules.get(dependency)?.transformResult) reasons.push(`untracked dependency ${path.relative(root, dependency)}`);
         } else {
           const external = dependency?.split(`${path.sep}node_modules${path.sep}`).at(-1).split(path.sep).join("/");
-          if (!dependency || !dependency.includes(`${path.sep}node_modules${path.sep}`) || !purePackages.has(packageName(external))) {
+          if (!dependency || !dependency.includes(`${path.sep}node_modules${path.sep}`)
+            || (!purePackages.has(packageName(external)) && !reviewedDependency(dependency, external))) {
             reasons.push(`opaque dependency ${external ? packageName(external) : dependencyId}`);
           }
         }
@@ -223,6 +261,8 @@ export async function selectProjectTests({ root = process.cwd(), project, change
       if (reasons.length) audit.set(id, [...new Set(reasons)]);
     }
     const retained = [];
+    const inputRelated = [];
+    const retentionReasons = {};
     for (const spec of inventory) {
       const mocked = new Set();
       // Honor only unconditional, explicitly supplied mock factories without an
@@ -241,19 +281,28 @@ export async function selectProjectTests({ root = process.cwd(), project, change
         const file = queue.pop();
         if (visited.has(file)) continue;
         visited.add(file);
-        if (audit.has(file)) { opaque = true; break; }
+        if (absoluteChanges.some(change => touchesInputs(fileInputs.get(file) ?? [], change))) inputRelated.push(spec);
+        if (audit.has(file)) {
+          retentionReasons[relative(spec)] = { module: path.relative(root, file), reasons: audit.get(file) };
+          opaque = true; break;
+        }
         for (const dependency of localImports.get(file) ?? []) if (!mocked.has(dependency)) queue.push(dependency);
       }
       if (opaque) retained.push(spec);
     }
-    const selected = [...new Set([...raw, ...retained].map(relative))].sort();
+    const selected = [...new Set([...raw, ...inputRelated, ...retained].map(relative))].sort();
     return {
       project,
       inventory: inventory.map(relative).sort(),
       selected,
       related: raw.map(relative).sort(),
+      inputRelated: [...new Set(inputRelated.map(relative))].sort(),
       alwaysRun: retained.map(relative).sort(),
-      coveredChanges: changed.filter((file, index) => modules.has(absoluteChanges[index]) || setup.has(absoluteChanges[index])),
+      retentionReasons,
+      coveredChanges: changed.filter((file, index) => modules.has(absoluteChanges[index]) || setup.has(absoluteChanges[index])
+        || [...fileInputs.values()].some(inputs => touchesInputs(inputs, absoluteChanges[index]))),
+      fileInputs: Object.fromEntries([...fileInputs].filter(([, inputs]) => inputs.length)
+        .map(([file, inputs]) => [path.relative(root, file), inputs.map(input => ({ ...input, path: path.relative(root, input.path) }))])),
       opaqueModules: Object.fromEntries([...audit].map(([file, reasons]) => [path.relative(root, file), reasons])),
       setupChanged,
       seconds: (performance.now() - started) / 1000,
