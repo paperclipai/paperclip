@@ -100,14 +100,6 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
     });
   }
 
-  it("captures the old configured-empty aggregate SQL cost", async () => {
-    const svc = service(); await fixture();
-    const selects = vi.spyOn(db, "select");
-    for (let i = 0; i < 3; i++) await svc.refreshDueObjectsForActiveCompanies();
-    expect(selects).toHaveBeenCalledTimes(6);
-    expect(provider).not.toHaveBeenCalled();
-  });
-
   it("activates saved work when the ordinary feature and company settings enable it", async () => {
     clock(); const settings = instanceSettingsService(db);
     await settings.updateExperimental({ enableExternalObjects: true });

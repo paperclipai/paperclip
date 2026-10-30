@@ -106,9 +106,11 @@ result; it releases only its own claim and cannot publish that late result.
 Startup does not await provider work. Shutdown closes the active GitHub HTTP
 request, and its saved due row can resume immediately after restart.
 
-The two explicit `refreshDueObjects*` helpers remain manual diagnostic/test entry
-points. They have no production scheduler caller. Their regression fixtures also
-preserve the prior selection/lease semantics. The scheduled check retains its
+The old `refreshDueObjects*` batch helpers are removed. Existing selection,
+lease, concurrent manual refresh, terminal-history and not-found recovery tests
+now enter through the registered scheduler owner. The removed baseline control
+recorded six SQL reads over three empty aggregate ticks; the current quiet-work
+acceptance measures zero recurring SQL after settlement. The scheduled check retains its
 post-refresh scoped read to revalidate current company, reference and resolver
 eligibility and recover an authoritative lease after a competing writer; all such
 reads target one object rather than rebuilding a company.

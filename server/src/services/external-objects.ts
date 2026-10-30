@@ -1109,56 +1109,6 @@ export function externalObjectService(
     return results;
   }
 
-  async function refreshDueObjectsUnchecked(companyId: string, limit = 50, now = new Date()) {
-    const staleRefreshStartedBefore = new Date(now.getTime() - DEFAULT_REFRESH_LEASE_SECONDS * 1000);
-    const refreshable = refreshableObjectWhere();
-    const due = await db
-      .select({ id: externalObjects.id })
-      .from(externalObjects)
-      .where(
-        and(
-          eq(externalObjects.companyId, companyId),
-          refreshable,
-          lte(externalObjects.nextRefreshAt, now),
-          or(
-            isNull(externalObjects.refreshStartedAt),
-            lte(externalObjects.refreshStartedAt, staleRefreshStartedBefore),
-          ),
-        ),
-      )
-      .limit(limit);
-    const results = [];
-    for (const row of due) {
-      results.push(await refreshObject(row.id, {
-        companyId,
-        actor: { actorType: "system", actorId: "external-object-resolver", agentId: null, runId: null },
-        now,
-      }));
-    }
-    return results;
-  }
-
-  async function refreshDueObjects(companyId: string, limit = 50, now = new Date()) {
-    if (!(await isEnabled())) return [];
-    return refreshDueObjectsUnchecked(companyId, limit, now);
-  }
-
-  async function refreshDueObjectsForActiveCompanies(limitPerCompany = 50, now = new Date()) {
-    if (!(await isEnabled())) return { companies: 0, checked: 0, refreshed: 0 };
-    const activeCompanies = await db
-      .select({ id: companies.id })
-      .from(companies)
-      .where(eq(companies.status, "active"));
-    let checked = 0;
-    let refreshed = 0;
-    for (const company of activeCompanies) {
-      const results = await refreshDueObjectsUnchecked(company.id, limitPerCompany, now);
-      checked += results.length;
-      refreshed += results.filter((result) => result.refreshed).length;
-    }
-    return { companies: activeCompanies.length, checked, refreshed };
-  }
-
   function registerRefreshWork(
     coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
     canRun: () => boolean,
@@ -1234,8 +1184,6 @@ export function externalObjectService(
     getProjectSummary,
     refreshObject,
     refreshIssueObjects,
-    refreshDueObjects,
-    refreshDueObjectsForActiveCompanies,
     registerRefreshWork,
   };
 }

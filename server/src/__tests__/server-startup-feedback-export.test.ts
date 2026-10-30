@@ -209,7 +209,6 @@ const {
   const externalObjectsServiceMock = {
     registerRefreshWork: vi.fn((coordinator: { register: typeof deliveryWorkRegisterMock }, _canRun: () => boolean) =>
       coordinator.register("external-object-refresh", { run: async () => undefined, hasPending: async () => false })),
-    refreshDueObjectsForActiveCompanies: vi.fn(async () => ({ companies: 0, checked: 0, refreshed: 0 })),
   };
   const externalObjectsServiceFactoryMock = vi.fn(() => externalObjectsServiceMock);
   const routineServiceMock = {
@@ -1404,7 +1403,6 @@ describe("startServer feedback export wiring", () => {
       expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledTimes(1);
       expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledWith(expect.any(Object), expect.any(Function));
       expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.externalObjectRefresh)).toBe(true);
-      expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).not.toHaveBeenCalled();
       expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).toHaveBeenCalledTimes(1);
       expect(executionWorkspaceServiceMock.sweepTerminalWorkspaces).toHaveBeenCalledTimes(1);
       expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
@@ -1434,7 +1432,6 @@ describe("startServer feedback export wiring", () => {
     });
     await startServer();
     expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledOnce();
-    expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).not.toHaveBeenCalled();
   });
 
   it("keeps external object refresh active when heartbeat scheduling is disabled", async () => {
@@ -1467,7 +1464,6 @@ describe("startServer feedback export wiring", () => {
       expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledTimes(1);
       expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledWith(expect.any(Object), expect.any(Function));
       expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.externalObjectRefresh)).toBe(true);
-      expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).not.toHaveBeenCalled();
       expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
