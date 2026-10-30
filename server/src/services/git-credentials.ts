@@ -409,8 +409,14 @@ export async function resolveManagedGitHubIdentitySelection(
     context.explicitGrantId ? eq(connectionGrants.id, context.explicitGrantId) : undefined,
     or(eq(connectionGrants.kind, "agent"), eq(connectionGrants.kind, "user")),
   ));
+  const perAgentConnectionIds = new Set(githubConnections
+    .filter((connection) => connection.credentialPolicy === "per_agent")
+    .map((connection) => connection.id));
   const dedicated = context.agentId
-    ? grants.filter((grant) => grant.kind === "agent" && grant.subjectAgentId === context.agentId)
+    ? grants.filter((grant) =>
+        grant.kind === "agent"
+        && grant.subjectAgentId === context.agentId
+        && (grant.status === "active" || perAgentConnectionIds.has(grant.connectionId)))
     : [];
   // Connections are already restricted above to the owner-selected install
   // targets. Within that consent boundary the server-resolved responsible user

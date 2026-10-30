@@ -128,7 +128,7 @@ a reconnect requirement.
 
 ## Dedicated accounts and diagnostics
 
-An explicit dedicated-agent grant overrides personal selection. Revoked, disabled, unavailable, or ambiguous dedicated grants do not fall back to a person's account. Removing the dedicated configuration restores personal selection.
+An explicit dedicated-agent grant overrides personal selection. Revoked, disabled, unavailable, or ambiguous dedicated grants do not fall back to a person's account while the connection uses the `per_agent` credential policy. An inactive dedicated grant on any other connection policy is ignored, so switching the connection to `per_user`, or removing the dedicated configuration, restores personal selection. An active dedicated grant still overrides personal selection on any connection policy.
 
 Connection setup and permissions display: “This agent uses this GitHub account for everyone's work, instead of the person giving instructions.”
 
