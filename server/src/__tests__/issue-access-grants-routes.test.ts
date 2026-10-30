@@ -216,7 +216,7 @@ describeEmbeddedPostgres("issue access grant and locked edge routes", { concurre
 
   it("uses actor privacy for stalled-chain owners in blocked list, count and ordinary list routes", async () => {
     const f = await seedFixture();
-    const [source] = await db.insert(issues).values({ companyId: f.companyId, title: "Stalled source", status: "blocked" }).returning();
+    const [source] = await db.insert(issues).values({ companyId: f.companyId, title: "Stalled source", status: "blocked", createdByUserId: f.memberId }).returning();
     const [leaf] = await db.insert(issues).values({
       companyId: f.companyId, title: "Restricted review leaf", status: "in_review", visibility: "open",
       projectId: f.privateProject.id, assigneeAgentId: f.assignedAgent.id,

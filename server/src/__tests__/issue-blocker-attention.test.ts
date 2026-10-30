@@ -787,11 +787,11 @@ describeEmbeddedPostgres("issue blocker attention", () => {
   it("shows an authorized private blocker reviewer and hides it after grant revocation", async () => {
     vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
     const userId = randomUUID();
-    const { companyId, agentId } = await createCompany("BCP");
+    const { companyId, agentId, pausedAgentId } = await createCompany("BCP");
     const { parentId, leafId } = await stalledChain(companyId, "BCP", {
       title: "Private review leaf",
       status: "in_review",
-      assigneeAgentId: agentId,
+      assigneeAgentId: pausedAgentId,
       executionState: { status: "pending", currentParticipant: { type: "agent", agentId } },
       visibility: "private",
     });
@@ -824,6 +824,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     const sourceIds: string[] = [];
     for (const kind of ["review", "descriptor", "paused", "board", "external"] as const) {
       const sourceId = await insertIssue({ companyId, identifier: `BCH-${kind}-source`, title: `Source ${kind}`, status: "blocked" });
+      await db.update(issues).set({ createdByUserId: userId }).where(eq(issues.id, sourceId));
       sourceIds.push(sourceId);
       const leafId = await insertIssue({
         companyId, identifier: `BCH-${kind}-leaf`, title: `Leaf ${kind}`,

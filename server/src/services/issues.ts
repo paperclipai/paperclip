@@ -5746,7 +5746,10 @@ async function listIssueBlockedInboxAttentionMap(
   const [graphIssueRows, graphRelationRows, companyAgentRows] =
     await Promise.all([
       dbOrTx
-        .select({ ...getTableColumns(issues), ownerReadable: readCondition ?? sql<boolean>`true` })
+        .select({ ...getTableColumns(issues), ownerReadable: readCondition
+          ? inArray(issues.id, dbOrTx.select({ id: issues.id }).from(issues)
+              .where(and(eq(issues.companyId, companyId), readCondition)))
+          : sql<boolean>`true` })
         .from(issues)
         .where(
           and(
