@@ -204,6 +204,7 @@ export type IssueThreadInteractionServiceOptions = {
   resolvePullRequestState?: (
     companyId: string,
     reference: GitHubPullRequestReference,
+    signal?: AbortSignal,
   ) => Promise<PullRequestMergeState>;
   wakeup?: InteractionWakeup;
   pullRequestCacheTtlMs?: number;
@@ -2045,10 +2046,11 @@ export function issueThreadInteractionService(
   async function resolvePullRequestState(
     companyId: string,
     reference: GitHubPullRequestReference,
+    signal?: AbortSignal,
   ): Promise<PullRequestMergeState> {
     if (opts.resolvePullRequestState)
-      return opts.resolvePullRequestState(companyId, reference);
-    return defaultPullRequestStateResolver?.(companyId, reference) ?? "unknown";
+      return opts.resolvePullRequestState(companyId, reference, signal);
+    return defaultPullRequestStateResolver?.(companyId, reference, signal) ?? "unknown";
   }
 
   async function resolvePullRequestStates(
@@ -2057,6 +2059,7 @@ export function issueThreadInteractionService(
       companyId: string;
       reference: GitHubPullRequestReference;
     }>,
+    signal?: AbortSignal,
   ) {
     const states = new Map<string, PullRequestMergeState>();
     const pending = entries.slice();
@@ -2064,11 +2067,13 @@ export function issueThreadInteractionService(
     await Promise.all(
       Array.from({ length: workerCount }, async () => {
         while (pending.length > 0) {
+          signal?.throwIfAborted();
           const entry = pending.shift();
           if (!entry) return;
           const state = await resolvePullRequestState(
             entry.companyId,
             entry.reference,
+            signal,
           );
           states.set(entry.key, state);
         }
@@ -2076,11 +2081,7 @@ export function issueThreadInteractionService(
     );
     return states;
   }
-  async function mergedPullRequestConfirmationCandidates(scope?: MergeConfirmationScope) {
-    const text = sql`concat_ws(' ', ${issueThreadInteractions.title}, ${issueThreadInteractions.summary},
-      ${issueThreadInteractions.payload}->>'prompt', ${issueThreadInteractions.payload}->>'acceptLabel',
-      ${issueThreadInteractions.payload}->>'detailsMarkdown', ${issueThreadInteractions.payload}->'target'->>'key',
-      ${issueThreadInteractions.payload}->'target'->>'label', ${issueThreadInteractions.payload}->'target'->>'href')`;
+  async function mergedPullRequestConfirmationPage(scope?: MergeConfirmationScope, after?: string) {
     const rows = await db.select({ interaction: issueThreadInteractions, issue: {
       id: issues.id, companyId: issues.companyId, projectId: issues.projectId, goalId: issues.goalId,
       status: issues.status, assigneeAgentId: issues.assigneeAgentId,
@@ -2092,14 +2093,24 @@ export function issueThreadInteractionService(
       scope ? eq(issueThreadInteractions.companyId, scope.companyId) : undefined,
       scope?.issueId ? eq(issueThreadInteractions.issueId, scope.issueId) : undefined,
       scope?.interactionId ? eq(issueThreadInteractions.id, scope.interactionId) : undefined,
-      sql`${text} ~* '(merge|merging)'`,
-      sql`${text} ~* '(github\\.com/[^ /]+/[^ /]+/pull/[1-9][0-9]*|[a-z0-9_.-]+/[a-z0-9_.-]+#[1-9][0-9]*)'`,
+      after ? sql`${issueThreadInteractions.id} > ${after}::uuid` : undefined,
       sql`NOT EXISTS (SELECT 1 FROM ${toolActionRequests} WHERE ${toolActionRequests.interactionId} = ${issueThreadInteractions.id})`,
-    ));
-    return rows.flatMap(row => {
+    )).orderBy(asc(issueThreadInteractions.id)).limit(100);
+    return { rows: rows.flatMap(row => {
       const references = getMergeConfirmationPullRequestReferences(row.interaction);
       return references.length ? [{ ...row, references }] : [];
-    });
+    }), after: rows.at(-1)?.interaction.id, complete: rows.length < 100 };
+  }
+
+  async function mergedPullRequestConfirmationCandidates(scope?: MergeConfirmationScope) {
+    const candidates: Awaited<ReturnType<typeof mergedPullRequestConfirmationPage>>["rows"] = [];
+    let after: string | undefined;
+    while (true) {
+      const page = await mergedPullRequestConfirmationPage(scope, after);
+      candidates.push(...page.rows);
+      if (page.complete) return candidates;
+      after = page.after;
+    }
   }
 
   async function getIdempotentInteraction(args: {
@@ -3012,6 +3023,7 @@ export function issueThreadInteractionService(
       await emitInteractionResolvedTelemetry(db, interaction);
       return interaction;
     },
+    mergedPullRequestConfirmationPage,
     mergedPullRequestConfirmationCandidates,
     sweepMergedPullRequestConfirmations: async (
       mergedHints: Array<{
@@ -3064,7 +3076,7 @@ export function issueThreadInteractionService(
 
       const refreshedStates = await resolvePullRequestStates([
         ...uniqueReferences.values(),
-      ]);
+      ], signal);
       if (scope && [...refreshedStates.values()].some(state => state === "unknown")) {
         throw new Error("Merge confirmation provider state is unavailable");
       }

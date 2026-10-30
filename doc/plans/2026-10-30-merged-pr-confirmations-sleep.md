@@ -13,10 +13,12 @@ it receives no GitHub payloads. No database migration is required.
 ## Durable truth and producers
 
 Pending `request_confirmation` interaction rows remain the durable work source.
-The candidate query excludes terminal and hidden issues, linked tool actions,
-and text without merge intent or a PR reference. The existing fail-closed parser
-then excludes additional actions, governed actions, and document/attachment targets.
-No accepted or cancelled history keeps a deadline alive.
+The candidate query pages pending cards in bounded groups of 100 and excludes
+terminal and hidden issues and linked tool actions. The existing fail-closed
+parser is the sole text eligibility source: it requires merge intent and a PR
+reference and excludes additional actions, governed actions, and document/attachment targets.
+No accepted or cancelled history keeps a deadline alive. A full page without any
+merge candidates still advances its keyset cursor; later candidates are not lost.
 
 Ordinary creation registers the topic before inserting a confirmation in its
 transaction. Existing confirmation-resolution notifications invalidate its issue
@@ -53,6 +55,14 @@ This is candidate-backed external observation. It does not eliminate all polling
 register a Cloud wake alarm, or prove that the host/database suspends. Existing
 sleep-safety blockers remain in force.
 
+Startup registers this observation without waiting for live GitHub requests.
+The internal resolver invocation accepts an optional host-owned abort signal;
+that signal is not part of external-object records or plugin/RPC payloads.
+The GitHub owner combines cancellation with a ten-second request budget and
+passes it to the actual object fetch and repository-visibility probes, including
+response body reads. Shutdown aborts the request and waits for its cancellation;
+no post-abort acceptance is committed. A timeout leaves the durable card pending.
+
 ## Acceptance evidence
 
 Focused tests use real PostgreSQL, the actual service producers, transaction
@@ -68,6 +78,22 @@ provider failure across drain; standby/resume; restart; tenant-scoped and duplic
 merge hints; latest/superseded cards during provider observation; hidden/terminal
 issues; URL targets; no-continuation policy; and shutdown during an in-flight read.
 Existing startup and normalized GitHub event tests exercise the changed consumers.
+Controlled local HTTP tests hold headers, partial response bodies, 404 probes,
+and public-visibility probes. They observe server-side response close after
+shutdown within one second, rather than only racing a promise. A shortened
+request budget times out a real request; the saved card then accepts after
+restart when that same HTTP fixture serves a merged response. Existing GitHub
+provider and external-object service tests preserve their authorization behavior.
+
+## Verification follow-up
+
+The original head passed full-workspace typecheck and build. A later required
+Linux CI shard failed the unchanged managed-skill maintenance CLI fixture in
+`managed-skill-content.test.ts`: it returned `unavailable_or_corrupt_package`
+where `local_storage` was expected. Both the isolated case and the complete
+unchanged 17-test file pass against fresh local PostgreSQL. The Linux cause is
+not established; this is retained as an unresolved CI failure, not called a flake.
+The current-head required CI result remains the completion gate.
 
 ## Existing limitations outside this migration
 

@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import { createPullRequestMergeStateResolver } from "../services/github-pull-request-merge.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { eq, sql } from "drizzle-orm";
@@ -260,6 +262,92 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await vi.advanceTimersByTimeAsync(2 * MERGE_CONFIRMATION_RECONCILE_MS); expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
     await start(); await waitFor(async () => expect((await stored(card.id)).status).toBe("accepted")); await quiet();
     expect(wakeup).toHaveBeenCalledTimes(1); expect(errors).toEqual([]);
+  });
+
+  it.each(["headers", "body", "not-found probe", "public visibility probe"] as const)("cancels an actual unresponsive HTTP %s read promptly at stop", async phase => {
+    vi.useRealTimers();
+    const card = await create();
+    let observed!: () => void, closed!: () => void;
+    const requested = new Promise<void>(resolve => { observed = resolve; });
+    const disconnected = new Promise<void>(resolve => { closed = resolve; });
+    const signals: AbortSignal[] = [];
+    const server = createServer((request, response) => {
+      if (phase === "not-found probe" && request.url?.includes("/pulls/")) { response.writeHead(404).end(); return; }
+      response.on("close", closed);
+      if (phase === "body") { response.writeHead(200, { "content-type": "application/json" }); response.write('{"merged":'); }
+      observed();
+    });
+    await new Promise<void>(resolve => { server.listen(0, "127.0.0.1", resolve); });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected test HTTP address");
+    const resolveState = createPullRequestMergeStateResolver(db, {
+      requestTimeoutMs: 10_000,
+      credentialProvider: () => phase === "public visibility probe" ? { token: "fixture", source: "server_env", secretName: null } : null,
+      fetch: (url, init) => { signals.push(init!.signal!); return fetch(`http://127.0.0.1:${address.port}${new URL(url).pathname}`, init); },
+    });
+    const real = issueThreadInteractionService(db, { resolvePullRequestState: resolveState, wakeup });
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    try {
+      const startupAt = performance.now();
+      const worker = registerMergeConfirmationWork(coordinator, real, () => true);
+      expect(performance.now() - startupAt).toBeLessThan(100);
+      await Promise.race([requested, delay(2000).then(() => { throw new Error("HTTP observation did not start"); })]);
+      const stoppingAt = performance.now();
+      await coordinator.stop(); coordinator = undefined;
+      expect(performance.now() - stoppingAt).toBeLessThan(1000);
+      await worker.ready;
+      await Promise.race([disconnected, delay(1000).then(() => { throw new Error("HTTP request remained open after stop"); })]);
+      expect(signals.at(-1)?.aborted).toBe(true);
+      expect((await stored(card.id)).status).toBe("pending"); expect(wakeup).not.toHaveBeenCalled(); expect(errors).toEqual([]);
+    } finally {
+      await coordinator?.stop(); coordinator = undefined;
+      server.closeAllConnections(); await new Promise<void>(resolve => { server.close(() => resolve()); });
+    }
+  });
+
+  it("times out a real unresponsive HTTP read and recovers its durable candidate on restart", async () => {
+    vi.useRealTimers(); const card = await create();
+    let serveMerge = false, closed!: () => void;
+    const disconnected = new Promise<void>(resolve => { closed = resolve; });
+    const server = createServer((_request, response) => {
+      if (serveMerge) { response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ merged: true, state: "closed" })); return; }
+      response.on("close", closed);
+    });
+    await new Promise<void>(resolve => { server.listen(0, "127.0.0.1", resolve); });
+    const address = server.address(); if (!address || typeof address === "string") throw new Error("Expected test HTTP address");
+    const real = issueThreadInteractionService(db, { resolvePullRequestState: createPullRequestMergeStateResolver(db, {
+      requestTimeoutMs: 100, tokenProvider: () => null,
+      fetch: (url, init) => fetch(`http://127.0.0.1:${address.port}${new URL(url).pathname}`, init),
+    }), wakeup });
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    try {
+      const startedAt = performance.now();
+      await registerMergeConfirmationWork(coordinator, real, () => true).ready;
+      expect(performance.now() - startedAt).toBeLessThan(2000);
+      await Promise.race([disconnected, delay(1000).then(() => { throw new Error("Timed out HTTP request remained open"); })]);
+      expect(errors).toHaveLength(1); expect((await stored(card.id)).status).toBe("pending"); expect(wakeup).not.toHaveBeenCalled();
+      expect(coordinator.nextWakeAt()).not.toBeNull();
+      await coordinator.stop(); coordinator = undefined; serveMerge = true;
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      await registerMergeConfirmationWork(coordinator, real, () => true).ready;
+      expect((await stored(card.id)).status).toBe("accepted"); expect(wakeup).toHaveBeenCalledTimes(1);
+    } finally {
+      await coordinator?.stop(); coordinator = undefined;
+      server.closeAllConnections(); await new Promise<void>(resolve => { server.close(() => resolve()); });
+    }
+  });
+
+  it("pages beyond a full pending-card page without duplicating the merge parser in SQL", async () => {
+    const card = await create();
+    const id = BigInt(`0x${card.id.replaceAll("-", "")}`);
+    await db.insert(issueThreadInteractions).values(Array.from({ length: 100 }, (_, index) => {
+      const hex = (id - BigInt(index + 1)).toString(16).padStart(32, "0");
+      return { id: `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`,
+        companyId, issueId, kind: "request_confirmation", title: "Approve the plan?", payload: { version: 1 as const, prompt: "Approve the plan?" } };
+    }));
+    await start(); expect(provider).not.toHaveBeenCalled();
+    await waitFor(async () => expect((await stored(card.id)).status).toBe("accepted")); await quiet();
+    expect(provider).toHaveBeenCalledTimes(1); expect(wakeup).toHaveBeenCalledTimes(1); expect(errors).toEqual([]);
   });
 
   it("limits normalized merge hints to the owning company and matching PR and tolerates duplicates", async () => {

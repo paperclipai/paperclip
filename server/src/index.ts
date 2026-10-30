@@ -1601,8 +1601,8 @@ async function startServerWithDatabaseTeardown(
         : config.workspaceCompactionDelayHours * 60 * 60 * 1000,
       terminalWorkspaceInspectionBackoffMs: TERMINAL_WORKSPACE_RETRY_MS,
     });
-    await registerMergeConfirmationWork(deliveryWork, mergedPullRequestConfirmations,
-      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    registerMergeConfirmationWork(deliveryWork, mergedPullRequestConfirmations,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
     const gitRestorePointWorker = registerGitRestorePointWork(deliveryWork, gitRestorePointRetentionService(db as any, {
       storage: storageService,
       retentionDays: config.gitRestorePointRetentionDays,
