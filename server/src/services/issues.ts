@@ -4,6 +4,7 @@ import { notifyAttentionRetentionWork } from "./retention-work-notifications.js"
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyMergeConfirmationWork } from "./merged-pr-confirmation-notifications.js";
 import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
+import { notifyNativeHarnessBackupExpiration } from "./native-harness-backup-expiration-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notifications.js";
 import { notifyNativeRunProjection } from "./native-run-projection-notifications.js";
@@ -11507,6 +11508,9 @@ export function issueService(db: Db) {
           patch.statusVersion = sql`${issues.statusVersion} + 1` as unknown as number;
         }
         await notifyStatusCardIssueChange(tx, receiptExisting.companyId);
+        if (patch.status !== undefined || patch.completedAt !== undefined || patch.cancelledAt !== undefined) {
+          await notifyNativeHarnessBackupExpiration(tx, { companyId: receiptExisting.companyId, issueId: id });
+        }
         if ((patch.status !== undefined && patch.status !== receiptExisting.status)
           || patch.completedAt !== undefined || patch.cancelledAt !== undefined
           || issueData.parentId !== undefined || issueData.executionWorkspaceId !== undefined) {

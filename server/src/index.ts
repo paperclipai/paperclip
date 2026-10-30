@@ -2,6 +2,7 @@ import { attentionRetentionService, registerAttentionRetentionWork } from "./ser
 import { registerRoutineExecutionStatusWork } from "./services/routine-execution-status-work.js";
 import { routineExecutionStatusService } from "./services/routine-run-status.js";
 import { registerMergeConfirmationWork } from "./services/merged-pr-confirmation-work.js";
+import { registerNativeHarnessBackupExpirationWork } from "./services/native-runtime/native-harness-backup-expiration-work.js";
 import { registerProviderTraceRetentionWork } from "./services/provider-trace-retention-work.js";
 import { registerRunEvidenceMigrationWork } from "./services/run-evidence-migration-work.js";
 import { registerSkillVersionRetentionWork } from "./services/skill-version-retention-work.js";
@@ -36,8 +37,6 @@ import {
   skillVersionRetentionService,
 } from "./services/skill-version-retention.js";
 import {
-  NATIVE_HARNESS_BACKUP_EXPIRATION_INTERVAL_MS,
-  NATIVE_HARNESS_BACKUP_EXPIRATION_STARTUP_DELAY_MS,
   nativeHarnessBackupExpirationService,
 } from "./services/native-runtime/native-harness-backup-expiration.js";
 import { registerNativeRunnerEvidenceRetentionWork } from "./services/native-runtime/native-runner-evidence-retention-work.js";
@@ -1297,30 +1296,6 @@ async function startServerWithDatabaseTeardown(
     evidenceRetentionDays: config.nativeRunnerEvidenceRetentionDays,
     shouldContinue: () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby(),
   });
-  let nativeHarnessBackupExpirationInFlight = false;
-  let nativeHarnessBackupExpirationContinuation: ReturnType<typeof setTimeout> | undefined;
-  const sweepNativeHarnessBackups = () => {
-    if (!config.nativeHarnessBackupExpirationEnabled || nativeHarnessBackupExpirationInFlight || isIdleTaskDrainActive() || heartbeatSchedulerStopped || isWarmStandby()) return;
-    nativeHarnessBackupExpirationInFlight = true;
-    trackHeartbeatSchedulerWork(nativeHarnessBackupExpiration.tick()
-      .then((result) => {
-        if (result.candidates > 0 || result.evidenceCandidates > 0 || result.failed > 0) {
-          logger.info({ ...result, dryRun: config.nativeHarnessBackupExpirationDryRun }, "native harness backup expiration");
-        }
-        if (result.truncated && !heartbeatSchedulerStopped) {
-          nativeHarnessBackupExpirationContinuation = setTimeout(sweepNativeHarnessBackups, 1000);
-          nativeHarnessBackupExpirationContinuation.unref?.();
-        }
-      })
-      .catch((err) => {
-        logger.error({ err }, "native harness backup expiration failed");
-      })
-      .finally(() => { nativeHarnessBackupExpirationInFlight = false; }));
-  };
-  const nativeHarnessBackupExpirationInterval = setInterval(sweepNativeHarnessBackups, NATIVE_HARNESS_BACKUP_EXPIRATION_INTERVAL_MS);
-  nativeHarnessBackupExpirationInterval.unref?.();
-  const nativeHarnessBackupExpirationStartup = setTimeout(sweepNativeHarnessBackups, NATIVE_HARNESS_BACKUP_EXPIRATION_STARTUP_DELAY_MS);
-  nativeHarnessBackupExpirationStartup.unref?.();
   const externalObjects = externalObjectService(db as any, {
     pluginWorkerManager,
     enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
@@ -1355,6 +1330,12 @@ async function startServerWithDatabaseTeardown(
     () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
   if (config.nativeHarnessBackupExpirationEnabled) {
     nativeHarnessBackupExpiration.registerCheckpointExpiration(deliveryWork);
+    const backupExpirationWork = registerNativeHarnessBackupExpirationWork(deliveryWork, db as any, {
+      dryRun: config.nativeHarnessBackupExpirationDryRun,
+      closedForDays: config.nativeHarnessBackupExpirationDays,
+    }, () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
+    trackHeartbeatSchedulerWork(backupExpirationWork.ready);
+    server.on("close", backupExpirationWork.stop);
   }
   const taskDrainExpiryWork = registerTaskDrainExpiryWork(deliveryWork, () => {
     if (heartbeatSchedulerStopped || isWarmStandby()) return;
@@ -2167,9 +2148,6 @@ async function startServerWithDatabaseTeardown(
     heartbeatSchedulerStopped = true;
     skillVersionRetentionWorker?.unsubscribe();
     await taskDrainExpiryWork.stop();
-    clearInterval(nativeHarnessBackupExpirationInterval);
-    clearTimeout(nativeHarnessBackupExpirationStartup);
-    clearTimeout(nativeHarnessBackupExpirationContinuation);
     nativeRunnerEvidenceRetentionWorker?.unsubscribe();
     await skillSourceSync.stop();
     unsubscribeChatCompletions();

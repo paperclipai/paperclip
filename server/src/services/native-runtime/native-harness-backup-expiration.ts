@@ -17,6 +17,7 @@ import { nativeHarnessStateBase } from "./native-harness-backup-stamp.js";
 import { nativeSessionScopeDigestIsBusy } from "./native-session-executor.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import type { NativeHarnessBackupExpirationScope } from "../native-harness-backup-expiration-notifications.js";
 
 export const NATIVE_HARNESS_BACKUP_EXPIRATION_INTERVAL_MS = 60 * 60 * 1000;
 export const NATIVE_HARNESS_BACKUP_EXPIRATION_STARTUP_DELAY_MS = 2 * 60 * 1000;
@@ -146,7 +147,9 @@ async function readSessionIdentity(root: string): Promise<SessionIdentity | null
     const stat = await fs.lstat(statePath);
     if (!stat.isFile() || stat.size > MAX_CONTROL_PLANE_STATE_BYTES) return null;
     const state = JSON.parse(await fs.readFile(statePath, "utf8")) as { identity?: Record<string, unknown> };
+    if (!state || typeof state !== "object" || Array.isArray(state)) return null;
     const identity = state.identity ?? {};
+    if (!identity || typeof identity !== "object" || Array.isArray(identity)) return null;
     const runId = identity.runId;
     const normalizedSessionId = identity.normalizedSessionId;
     const environmentLeaseId = identity.environmentLeaseId;
@@ -160,17 +163,22 @@ async function readSessionIdentity(root: string): Promise<SessionIdentity | null
           ? environmentLeaseId
           : null,
     };
-  } catch {
-    return null;
+  } catch (error) {
+    if (error instanceof SyntaxError || ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return null;
+    throw error;
   }
 }
+
+export type NativeHarnessBackupDependencies = {
+  companyId: string; agentId: string; sessionId: string; runIds: string[]; issueIds: string[]; leaseIds: string[];
+};
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 async function sessionRetentionBlocker(
   tx: Tx,
-  input: { scopeDigest: string | null; identity: SessionIdentity; closedBefore: Date; checkpoint?: boolean },
-): Promise<{ reason: string } | { companyId: string; agentId: string; runIds: string[] }> {
+  input: { scopeDigest: string | null; identity: SessionIdentity; closedBefore: Date; checkpoint?: boolean; lock?: boolean },
+): Promise<{ reason: string } | { companyId: string; agentId: string; runIds: string[]; issueIds: string[]; closedAt: number }> {
   const [owner] = await tx
     .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId })
     .from(heartbeatRuns)
@@ -197,7 +205,7 @@ async function sessionRetentionBlocker(
   if (input.checkpoint && runs.some(run => run.finishedAt! >= input.closedBefore)) return { reason: "recent_run" };
   const issueIds = [...new Set(runs.map((run) => run.issueId).filter((id): id is string => Boolean(id)))];
   if (issueIds.length === 0) return { reason: "issue_unknown" };
-  const issueRows = await tx
+  const issueQuery = tx
     .select({
       id: issues.id,
       status: issues.status,
@@ -205,8 +213,8 @@ async function sessionRetentionBlocker(
       closedAt: sql<Date | null>`coalesce(${issues.completedAt}, ${issues.cancelledAt})`,
     })
     .from(issues)
-    .where(and(eq(issues.companyId, owner.companyId), inArray(issues.id, issueIds)))
-    .for("share");
+    .where(and(eq(issues.companyId, owner.companyId), inArray(issues.id, issueIds)));
+  const issueRows = await (input.lock === false ? issueQuery : issueQuery.for("share"));
   if (issueRows.length !== issueIds.length) return { reason: "issue_unknown" };
   for (const issue of issueRows) {
     if (!CLOSED_ISSUE_STATUSES.includes(issue.status)) return { reason: "issue_open" };
@@ -246,7 +254,7 @@ async function sessionRetentionBlocker(
     .where(and(inArray(environmentLeases.status, LIVE_LEASE_STATUSES), or(...leaseReferences)))
     .limit(1);
   if (lease) return { reason: "live_lease" };
-  return { ...owner, runIds };
+  return { ...owner, runIds, issueIds, closedAt: issueRows.reduce((latest, issue) => Math.max(latest, new Date(issue.closedAt!).getTime()), Number.NEGATIVE_INFINITY) };
 }
 
 async function hasLiveRun(db: Db, owner: { companyId: string; agentId: string }, sessionId: string) {
@@ -379,54 +387,49 @@ export function nativeHarnessBackupExpirationService(
     const identity = await readSessionIdentity(root);
     if (!identity) return skip("identity_unknown");
 
-    const decision = await db.transaction(async (tx) => {
-      const blocker = await sessionRetentionBlocker(tx, {
-        scopeDigest,
-        identity,
-        closedBefore: options.closedBefore,
-      });
-      if ("reason" in blocker) return blocker;
-      if (options.dryRun) return { owner: blocker, cleared: 0 };
-      await notifyExternalConversationSettlement(tx, { companyId: blocker.companyId });
-      const cleared = await tx
-        .delete(agentTaskSessions)
-        .where(
-          and(
-            eq(agentTaskSessions.companyId, blocker.companyId),
-            eq(agentTaskSessions.agentId, blocker.agentId),
-            sql`${agentTaskSessions.sessionParamsJson}->>'sessionId' = ${identity.normalizedSessionId}`,
-          ),
-        )
-        .returning({ id: agentTaskSessions.id });
-      return { owner: blocker, cleared: cleared.length };
-    });
-    if ("reason" in decision) return skip(decision.reason);
-
     const bytes = await allocatedBytes(current);
-    result.candidates++;
-    result.candidateBytes += bytes;
-    if (options.dryRun) return;
-    result.clearedTaskSessions += decision.cleared;
-    if (options.isSessionBusy(scopeDigest)) return skip("session_active");
     const id = randomUUID();
     const retiring = path.join(backupRoot, `${RETIRING_PREFIX}${id}`);
     const trash = path.join(backupRoot, `${EXPIRED_PREFIX}${id}`);
-    await fs.rename(current, retiring);
-    let liveRun: boolean;
+    let retired = false;
+    let decision: { reason: string } | { cleared: number; bytes: number };
     try {
-      liveRun = await hasLiveRun(db, decision.owner, identity.normalizedSessionId);
-    } catch (err) {
-      await fs.rename(retiring, current);
-      throw err;
+      decision = await db.transaction(async (tx) => {
+        const blocker = await sessionRetentionBlocker(tx, {
+          scopeDigest, identity, closedBefore: options.closedBefore,
+        });
+        if ("reason" in blocker) return blocker;
+        if ((await fs.stat(current)).mtime >= options.closedBefore) return { reason: "recent_backup" };
+        if (options.dryRun) return { cleared: 0, bytes };
+        if (options.isSessionBusy(scopeDigest)) return { reason: "session_active" };
+        await notifyExternalConversationSettlement(tx, { companyId: blocker.companyId });
+        await fs.rename(current, retiring);
+        retired = true;
+        if (await hasLiveRun(tx as unknown as Db, blocker, identity.normalizedSessionId)) {
+          await fs.rename(retiring, current);
+          retired = false;
+          return { reason: "live_run" };
+        }
+        const cleared = await tx.delete(agentTaskSessions).where(and(
+          eq(agentTaskSessions.companyId, blocker.companyId),
+          eq(agentTaskSessions.agentId, blocker.agentId),
+          sql`${agentTaskSessions.sessionParamsJson}->>'sessionId' = ${identity.normalizedSessionId}`,
+        )).returning({ id: agentTaskSessions.id });
+        return { cleared: cleared.length, bytes };
+      });
+    } catch (error) {
+      if (retired) await fs.rename(retiring, current);
+      throw error;
     }
-    if (liveRun) {
-      await fs.rename(retiring, current);
-      return skip("live_run");
-    }
+    if ("reason" in decision) return skip(decision.reason);
+    result.candidates++;
+    result.candidateBytes += decision.bytes;
+    if (options.dryRun) return;
+    result.clearedTaskSessions += decision.cleared;
     await fs.rename(retiring, trash);
     await removeBackupTree(trash);
     result.expired++;
-    result.reclaimedBytes += bytes;
+    result.reclaimedBytes += decision.bytes;
   }
 
   async function removeExpiredLeftovers(parent: string, context: EvidenceContext, result: NativeHarnessBackupExpirationResult) {
@@ -745,5 +748,91 @@ export function nativeHarnessBackupExpirationService(
     });
   }
 
-  return { tick, noteEvidence, nextEvidenceAt, tickCheckpoints, registerCheckpointExpiration };
+  async function backupDependencies(scopeDigest: string, identity: SessionIdentity): Promise<NativeHarnessBackupDependencies | null> {
+    const [owner] = await db.select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+      issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}, ${heartbeatRuns.issueId})`,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    if (!owner) return null;
+    const runs = await db.select({ id: heartbeatRuns.id,
+      issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}, ${heartbeatRuns.issueId})`,
+    }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, owner.companyId),
+      eq(heartbeatRuns.agentId, owner.agentId), eq(heartbeatRuns.nativeSessionId, identity.normalizedSessionId)));
+    const runIds = [...new Set([identity.runId, ...runs.map(run => run.id)])];
+    const issueIds = [...new Set([owner.issueId, ...runs.map(run => run.issueId)].filter((id): id is string => Boolean(id)))];
+    const leases = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, owner.companyId), or(inArray(environmentLeases.heartbeatRunId, runIds),
+        sql`${environmentLeases.metadata}->'nativeHarnessBackup'->>'sessionScopeSha256' = ${scopeDigest}`,
+        identity.environmentLeaseId ? eq(environmentLeases.id, identity.environmentLeaseId) : undefined)));
+    return { companyId: owner.companyId, agentId: owner.agentId, sessionId: identity.normalizedSessionId,
+      runIds, issueIds, leaseIds: leases.map(lease => lease.id) };
+  }
+
+  async function resolveBackupScope(scope: NativeHarnessBackupExpirationScope) {
+    let runId = scope.runId;
+    let issueId = scope.issueId;
+    let scopeDigest = scope.scopeDigest;
+    if (scope.leaseId) {
+      const [lease] = await db.select({ runId: environmentLeases.heartbeatRunId, issueId: environmentLeases.issueId,
+        scopeDigest: sql<string | null>`${environmentLeases.metadata}->'nativeHarnessBackup'->>'sessionScopeSha256'`,
+      }).from(environmentLeases).where(and(eq(environmentLeases.companyId, scope.companyId), eq(environmentLeases.id, scope.leaseId)));
+      runId = lease?.runId ?? runId; issueId = lease?.issueId ?? issueId;
+      scopeDigest = lease?.scopeDigest && SCOPE_PATTERN.test(lease.scopeDigest) ? lease.scopeDigest : scopeDigest;
+    }
+    const [run] = runId ? await db.select({ agentId: heartbeatRuns.agentId, sessionId: heartbeatRuns.nativeSessionId,
+      issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}, ${heartbeatRuns.issueId})`,
+    }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, scope.companyId), eq(heartbeatRuns.id, runId))) : [];
+    return { runId, issueId: run?.issueId ?? issueId, agentId: run?.agentId ?? scope.agentId,
+      sessionId: run?.sessionId ?? scope.sessionId, scopeDigest };
+  }
+
+  async function reconcileBackup(scopeDigest: string) {
+    const base = path.resolve(defaults.stateBase ?? nativeHarnessStateBase());
+    const root = path.join(base, scopeDigest);
+    if (!SCOPE_PATTERN.test(scopeDigest) || !(await isRealDirectory(root))) return null;
+    const backupRoot = path.join(root, "failover-backups");
+    if (!(await isRealDirectory(backupRoot))) return null;
+    if (!defaults.dryRun) await settleLeftovers(backupRoot);
+    const current = path.join(backupRoot, "current");
+    const stat = await fs.lstat(current).catch(missingPath);
+    if (!stat?.isDirectory() || stat.isSymbolicLink()) return null;
+    const identity = await readSessionIdentity(root);
+    if (!identity) return null;
+    const dependencies = await backupDependencies(scopeDigest, identity);
+    if (!dependencies) return null;
+    const source = { id: scopeDigest, companyId: dependencies.companyId, agentId: dependencies.agentId, dependencies };
+    if (await fs.lstat(path.join(root, "cleanup-activation.json")).then(() => true, () => false)) {
+      return { ...source, dueAt: null };
+    }
+    const blocker = await db.transaction(tx => sessionRetentionBlocker(tx, {
+      scopeDigest, identity, closedBefore: new Date(8_000_000_000_000_000), lock: false,
+    }));
+    if ("reason" in blocker) return { ...source, dueAt: null };
+    const retentionMs = Math.max(1, defaults.closedForDays ?? NATIVE_HARNESS_BACKUP_EXPIRATION_DEFAULT_DAYS) * DAY_MS;
+    return { ...source, dueAt: Math.max(stat!.mtime.getTime(), blocker.closedAt) + retentionMs + 1 };
+  }
+
+  async function backupScopes(after?: string, limit = 100) {
+    const base = path.resolve(defaults.stateBase ?? nativeHarnessStateBase());
+    const names = (await fs.readdir(base).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [] as string[];
+      throw error;
+    })).filter(name => SCOPE_PATTERN.test(name) && (!after || name > after)).sort();
+    return { names: names.slice(0, limit), complete: names.length <= limit };
+  }
+
+  async function expireBackup(scopeDigest: string) {
+    if (!SCOPE_PATTERN.test(scopeDigest)) throw new Error("Invalid native harness backup scope");
+    const result = emptyResult();
+    const root = path.join(path.resolve(defaults.stateBase ?? nativeHarnessStateBase()), scopeDigest);
+    const dryRun = defaults.dryRun ?? false;
+    await expireSession(root, scopeDigest, {
+      dryRun,
+      isSessionBusy: defaults.isSessionBusy ?? nativeSessionScopeDigestIsBusy,
+      closedBefore: new Date(Date.now() - Math.max(1, defaults.closedForDays ?? NATIVE_HARNESS_BACKUP_EXPIRATION_DEFAULT_DAYS) * DAY_MS),
+    }, result);
+    return result;
+  }
+
+  return { tick, noteEvidence, nextEvidenceAt, tickCheckpoints, registerCheckpointExpiration,
+    reconcileBackup, backupScopes, expireBackup, resolveBackupScope };
 }

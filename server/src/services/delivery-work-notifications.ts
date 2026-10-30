@@ -125,6 +125,7 @@ export const DELIVERY_QUEUES = {
   issueMonitors: "issue-monitors",
   agentTimers: "agent-timers",
   caseHandoffs: "case-handoffs",
+  nativeHarnessBackupExpiration: "native-harness-backup-expiration",
   nativeCheckpointExpiration: "native-checkpoint-expiration",
 } as const;
 export type DeliveryQueue = typeof DELIVERY_QUEUES[keyof typeof DELIVERY_QUEUES];
