@@ -157,6 +157,16 @@ export class CursorCloudClientError extends Error {
   }
 }
 
+// This private brand is minted only before fetch. The shared error code also
+// describes oversized responses, downloads and SSE frames after dispatch.
+class CursorCloudUnsentRequestError extends CursorCloudClientError {
+  constructor() { super("payload_too_large"); }
+}
+
+export function isCursorCloudUnsentRequestError(error: unknown): boolean {
+  return error instanceof CursorCloudUnsentRequestError;
+}
+
 const RUN_STATUSES = new Set<CursorCloudRunStatus>([
   "CREATING", "RUNNING", "WAITING_FOR_BACKGROUND_WORK", "FINISHED", "ERROR", "CANCELLED", "EXPIRED",
 ]);
@@ -458,7 +468,7 @@ export class CursorCloudClient {
     let body: string | undefined;
     if (input !== undefined) {
       try { body = JSON.stringify(input); } catch { invalidRequest(); }
-      if (Buffer.byteLength(body) > this.#maxRequestBytes) throw new CursorCloudClientError("payload_too_large");
+      if (Buffer.byteLength(body) > this.#maxRequestBytes) throw new CursorCloudUnsentRequestError();
       headers["Content-Type"] = "application/json";
     }
     if (options.idempotencyKey !== undefined) headers["Idempotency-Key"] = headerValue(options.idempotencyKey);

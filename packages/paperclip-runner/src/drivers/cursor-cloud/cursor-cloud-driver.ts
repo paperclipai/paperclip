@@ -11,7 +11,7 @@ import { PRP_BLOCK_TOOL_NAME, PRP_COMPLETION_TOOL_NAME } from "../../contracts/c
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 import { RUNNER_TOOL_SCOPE_TOKEN_HEADER, startRunnerToolBridge, type RunnerToolBridge, type RunnerToolCall } from "../runner-tool-bridge.js";
 import { semanticCanonicalJson } from "../semantic-tool-receipt.js";
-import { CursorCloudClient, CursorCloudClientError, isCursorCloudRunActive, type CursorCloudModelRef, type CursorCloudRun, type CursorCloudSseEvent } from "./cloud-client.js";
+import { CursorCloudClient, CursorCloudClientError, isCursorCloudUnsentRequestError, isCursorCloudRunActive, type CursorCloudModelRef, type CursorCloudRun, type CursorCloudSseEvent } from "./cloud-client.js";
 import { CURSOR_CLOUD_MCP_SERVER_NAME, parseNativeCursorCloudConfig, parseCursorCloudBinding, type NativeCursorCloudConfig, type CursorCloudBinding } from "./config.js";
 import { CursorCloudCheckpointStore, cursorCloudDigest, type CursorCloudCheckpoint, type CursorCloudTerminalDelivery } from "./checkpoint.js";
 import { cursorCloudInlineInstructions } from "./inline-assets.js";
@@ -261,7 +261,8 @@ class CursorCloudSession implements CursorCloudSessionHandle {
           : await this.#client.createRun(authority.agentId!, request, options);
       } catch (error) {
         if (!this.#currentPending(authority) || !(error instanceof CursorCloudClientError)
-          || error.status === undefined || ![400, 401, 403, 404, 422].includes(error.status)) throw error;
+          || (!isCursorCloudUnsentRequestError(error)
+            && (error.status === undefined || ![400, 401, 403, 404, 422].includes(error.status)))) throw error;
         const settlement = this.#rejectCreate(error, authority);
         this.#rejectionSettlement = settlement;
         try { await settlement; return; }
@@ -503,7 +504,10 @@ class CursorCloudSession implements CursorCloudSessionHandle {
         continue;
       }
       Object.assign(this.#cp, rejected); this.#clearDeadline();
-      this.#emit("turn.failed", { error: { code: error.providerCode ?? "cursor_cloud_launch_rejected", message: "Cursor Cloud rejected the run before accepting provider work. Check the configured account, repository access and explicit model." }, remoteWorkAccepted: false });
+      const unsent = isCursorCloudUnsentRequestError(error);
+      this.#emit("turn.failed", { error: { code: unsent ? error.code : error.providerCode ?? "cursor_cloud_launch_rejected", message: unsent
+        ? "The encoded Cursor Cloud request exceeds the client limit. Reduce the task or instructions before retrying; no provider request was sent."
+        : "Cursor Cloud rejected the run before accepting provider work. Check the configured account, repository access and explicit model." }, remoteWorkAccepted: false });
       return;
     }
   }
