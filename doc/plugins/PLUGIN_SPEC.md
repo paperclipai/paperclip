@@ -1238,6 +1238,8 @@ The `@paperclipai/plugin-sdk/ui` subpath should also export an `ErrorBoundary` c
 
 Each plugin that declares an `instanceConfigSchema` in its manifest gets an auto-generated company-scoped settings form at `/settings/plugins/:pluginId`. The host renders the form from the JSON Schema for the selected company.
 
+Operators can save a new company configuration even when its values match the schema defaults. After a configuration row exists, the Save action is enabled only when the values change.
+
 The auto-generated form supports:
 
 - text inputs, number inputs, toggles, select dropdowns derived from schema types and enums
