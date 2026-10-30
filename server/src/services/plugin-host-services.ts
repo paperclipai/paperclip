@@ -34,7 +34,7 @@ import type {
   PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
 import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, IssueRelationIssueSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+import { ISSUE_TITLE_MAX_LENGTH, issueTitleSchema, pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
@@ -1212,6 +1212,26 @@ export function buildHostServices(
   };
 
   const defaultPluginOriginKind = `plugin:${pluginKey}`;
+  const normalizePluginIssueTitle = (title: unknown) => {
+    // Plugins generate titles from user-controlled names, so bound them
+    // instead of failing after the plugin has already saved pending work.
+    const trimmed = typeof title === "string" ? title.trim() : title;
+    let bounded = trimmed;
+    if (typeof trimmed === "string" && trimmed.length > ISSUE_TITLE_MAX_LENGTH) {
+      // The shared validator counts UTF-16 units, so keep the unit budget but
+      // never end on half of a surrogate pair.
+      let cut = ISSUE_TITLE_MAX_LENGTH - 1;
+      const last = trimmed.charCodeAt(cut - 1);
+      if (last >= 0xd800 && last <= 0xdbff) cut -= 1;
+      bounded = `${trimmed.slice(0, cut).trimEnd()}\u2026`;
+    }
+    const parsed = issueTitleSchema.safeParse(bounded);
+    if (!parsed.success) {
+      throw new Error(`Invalid issue title: ${parsed.error.issues[0]?.message ?? "invalid value"}`);
+    }
+    return parsed.data;
+  };
+
   const normalizePluginOriginKind = (originKind: unknown = defaultPluginOriginKind) => {
     if (originKind == null || originKind === "") return defaultPluginOriginKind;
     if (typeof originKind !== "string") {
@@ -2136,6 +2156,7 @@ export function buildHostServices(
         }
         const issue = (await issues.create(companyId, {
           ...(issueInput as any),
+          title: normalizePluginIssueTitle(issueInput.title),
           originKind: normalizedOriginKind,
           originId: params.originId ?? null,
           originRunId: params.originRunId ?? actorRunId ?? null,
@@ -2175,6 +2196,9 @@ export function buildHostServices(
         delete patch.actorRunId;
         if (patch.originKind !== undefined) {
           patch.originKind = normalizePluginOriginKind(patch.originKind);
+        }
+        if (patch.title !== undefined) {
+          patch.title = normalizePluginIssueTitle(patch.title);
         }
         const updated = (await issues.update(params.issueId, {
           ...(patch as any),
