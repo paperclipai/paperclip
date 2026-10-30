@@ -580,22 +580,33 @@ transaction or an intentional freshness/authorization discard. These retained
 homes are recovery evidence, not a background replay queue; persistent database
 or lock failures still require operator intervention.
 
-Quota OAuth replacement tokens are encrypted with the instance secrets master
-key and fsynced under `<instance-root>/quota-credential-recovery/<company-id>/`
-before vault, grant, or activity writes. Storage and encryption are checked before
-exchanging a single-use refresh token. Failed saves retry without another OAuth
-exchange; persistent failures keep the encrypted record for the next quota poll,
-including after a restart. New OpenAI subscription runtimes serialize credential
-reads with quota exchanges and recover a matching pending replacement before
-materializing an auth home. Authentication-failure handling also recovers a
-matching replacement before marking the grant invalid. A failed recovery save
-defers these actions and leaves both the active grant and journal intact.
-The journal is removed only after database commit (or
-when an authorized newer credential makes it obsolete). Replay checks the grant,
-connection, secret, and original credential fingerprint and cannot reactivate a
-revoked grant or overwrite a reconnect. Back up this directory and the instance
-secrets key with the instance data. Loss of durable storage while receiving a
-provider token can still require reconnecting the account.
+Server-owned quota refresh validates and locks the current grant and secret in
+Postgres before exchanging a token. A failed database prerequisite prevents the
+exchange. A returned replacement is saved directly into the existing secret
+store. The same logical operation keeps it in memory for at most three save
+attempts. A lost commit response is reconciled against the current saved value;
+reconnect, revocation, secret-version and session-epoch changes win over a delayed
+save. Save retries never repeat the OAuth exchange and no new recovery file is
+written for this path, in cloud or local deployments.
+
+If all save attempts fail, the request fails. If the server process then exits,
+the unsaved replacement is lost. V1 accepts signing in again after the next failed
+use; it does not report successful refresh or keep a second credential vault.
+
+Remote Codex Runner tasks retain their private credential until secret writeback
+and the lease's credential handoff commit. Provider completion follows that
+handoff. Failed exports or database saves leave it pending for the existing
+cleanup path, including a replacement web receiver. Its authority still checks
+the company, grant, secret, version selector and session epoch.
+
+Existing encrypted records in
+`<instance-root>/quota-credential-recovery/<company-id>/` remain readable for
+cutover settlement. Do not delete unresolved files or remove the old volume
+before inventory and settlement. Legacy replay cannot reactivate a revoked grant
+or overwrite a reconnect. Local Google Antigravity retirement still uses its
+existing encrypted recovery record and private-home ownership; remote and warm
+Google subscription sessions remain unsupported. This local path is not a cloud
+fallback. Cloud cutover must settle any observed legacy credential files first.
 
 ## Advanced provider routing (2026-10-02)
 

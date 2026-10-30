@@ -697,6 +697,12 @@ describe("startServer feedback export wiring", () => {
     expect(deliveryWorkErrors.filter(error => error.queue === DELIVERY_QUEUES.nativeRunnerEvidenceRetention)).toEqual([]);
   });
 
+  it.each([false, true])("registers trace retention independently of heartbeat scheduling (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(deliveryWorkRegisterMock.mock.calls.filter(([queue]) => queue === DELIVERY_QUEUES.providerTraceRetention)).toHaveLength(1);
+  });
+
   it.each([false, true])("registers skill cache retention only when enabled (%s)", async enabled => {
     loadConfigMock.mockReturnValue(buildTestConfig({ skillVersionRetentionEnabled: enabled }));
     await startServer(); await settleStartupHousekeeping();
