@@ -228,4 +228,97 @@ describe("findExistingIssueBlockersResolvedWakeForReadyState", () => {
     );
     expect(completed).toBeNull();
   });
+
+  it("keeps waiting while only one cycle-key wake has failed", async () => {
+    const cycleKey = buildIssueBlockersResolvedWakeStateKey(readyState);
+    const existing = await findExistingIssueBlockersResolvedWakeForReadyState(
+      dbWithWakes([
+        {
+          id: "wake-failed-once",
+          status: "failed",
+          idempotencyKey: cycleKey,
+          requestedAt: secondCycle,
+        },
+      ]),
+      readyState,
+    );
+    expect(existing).toBeNull();
+  });
+
+  it("covers the ready state after the first wake and one retry both failed", async () => {
+    const cycleKey = buildIssueBlockersResolvedWakeStateKey(readyState);
+    const existing = await findExistingIssueBlockersResolvedWakeForReadyState(
+      dbWithWakes([
+        {
+          id: "wake-failed-first",
+          status: "failed",
+          idempotencyKey: cycleKey,
+          requestedAt: firstCycle,
+        },
+        {
+          id: "wake-failed-retry",
+          status: "failed",
+          idempotencyKey: cycleKey,
+          requestedAt: secondCycle,
+        },
+      ]),
+      readyState,
+    );
+    expect(existing?.id).toBe("wake-failed-retry");
+  });
+
+  it("does not count cancelled or skipped wakes toward the failed retry cap", async () => {
+    const cycleKey = buildIssueBlockersResolvedWakeStateKey(readyState);
+    const existing = await findExistingIssueBlockersResolvedWakeForReadyState(
+      dbWithWakes([
+        {
+          id: "wake-failed",
+          status: "failed",
+          idempotencyKey: cycleKey,
+          requestedAt: firstCycle,
+        },
+        {
+          id: "wake-cancelled",
+          status: "cancelled",
+          idempotencyKey: cycleKey,
+          requestedAt: secondCycle,
+        },
+        {
+          id: "wake-skipped",
+          status: "skipped",
+          idempotencyKey: cycleKey,
+          requestedAt: secondCycle,
+        },
+      ]),
+      readyState,
+    );
+    expect(existing).toBeNull();
+  });
+
+  it("ignores failed wakes from an earlier blocked cycle", async () => {
+    const earlierCycleKey = buildIssueBlockersResolvedWakeStateKey({
+      dependentIssueId,
+      blockerIssueIds: [blockerIssueId],
+      blockedTransitionAt: firstCycle,
+    });
+    const currentCycleKey = buildIssueBlockersResolvedWakeStateKey(readyState);
+    const existing = await findExistingIssueBlockersResolvedWakeForReadyState(
+      dbWithWakes([
+        {
+          id: "wake-old-cycle-failed",
+          status: "failed",
+          idempotencyKey: earlierCycleKey,
+          requestedAt: firstCycle,
+        },
+        {
+          id: "wake-current-cycle-failed",
+          status: "failed",
+          idempotencyKey: currentCycleKey,
+          requestedAt: secondCycle,
+        },
+      ]),
+      readyState,
+    );
+    expect(existing).toBeNull();
+  });
 });

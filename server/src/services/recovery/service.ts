@@ -139,6 +139,7 @@ import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
+  hasExhaustedIssueBlockersResolvedWakeRetries,
 } from "../issue-dependency-wakeups.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
@@ -306,7 +307,7 @@ export function shouldRouteRecoveryToOriginalAgent(
   );
 }
 
-type StrandedPreviousStatus = "todo" | "in_progress" | "in_review";
+type StrandedPreviousStatus = "todo" | "in_progress" | "in_review" | "blocked";
 
 type SuccessfulRunHandoffRecoveryEvidence = {
   sourceRunId: string | null;
@@ -4563,6 +4564,7 @@ export function recoveryService(
       successfulRunHandoffRetried: 0,
       reviewParticipantRequeued: 0,
       escalated: 0,
+      blockedWorkspaceValidationEscalated: 0,
       waitingOnReviewResolved: 0,
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
@@ -5780,6 +5782,97 @@ export function recoveryService(
     result.escalated += activeRecovery.escalated;
     result.skipped += activeRecovery.skipped;
     result.issueIds.push(...activeRecovery.issueIds);
+    const blockedCandidates = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          isNull(issues.assigneeUserId),
+          eq(issues.status, "blocked"),
+          sql`${issues.assigneeAgentId} is not null`,
+          opts?.issueCreatedAtGte
+            ? gte(issues.createdAt, opts.issueCreatedAtGte)
+            : undefined,
+          isNull(issues.hiddenAt),
+          not(unadmittedChatWakeupCondition(issues.id, issues.companyId)),
+        ),
+      );
+
+    const blockedCandidatesByCompany = new Map<
+      string,
+      typeof blockedCandidates
+    >();
+    for (const candidate of blockedCandidates) {
+      const companyCandidates =
+        blockedCandidatesByCompany.get(candidate.companyId) ?? [];
+      companyCandidates.push(candidate);
+      blockedCandidatesByCompany.set(candidate.companyId, companyCandidates);
+    }
+
+    for (const [
+      companyId,
+      companyCandidates,
+    ] of blockedCandidatesByCompany.entries()) {
+      const readinessMap = await issuesSvc.listDependencyReadiness(
+        companyId,
+        companyCandidates.map((candidate) => candidate.id),
+      );
+
+      for (const candidate of companyCandidates) {
+        const agentId = candidate.assigneeAgentId;
+        if (!agentId) continue;
+
+        const readiness = readinessMap.get(candidate.id);
+        if (
+          !readiness ||
+          !readiness.isDependencyReady ||
+          readiness.blockerIssueIds.length === 0
+        ) {
+          continue;
+        }
+
+        const latestRun = await getLatestIssueRunForAgent(
+          companyId,
+          candidate.id,
+          agentId,
+        );
+        if (
+          !latestRun ||
+          latestRun.status !== "failed" ||
+          latestRun.errorCode !== "workspace_validation_failed"
+        ) {
+          continue;
+        }
+
+        if (
+          !(await hasExhaustedIssueBlockersResolvedWakeRetries(db, {
+            companyId,
+            dependentIssueId: candidate.id,
+            blockerIssueIds: readiness.blockerIssueIds,
+            blockedTransitionAt: candidate.blockedTransitionAt,
+          }))
+        ) {
+          continue;
+        }
+
+        const updated = await escalateStrandedAssignedIssue({
+          issue: candidate,
+          previousStatus: "blocked",
+          latestRun,
+          recoveryCause: "workspace_validation_failed",
+          comment:
+            "Every recorded blocker of this issue is resolved, but the latest assignee run failed " +
+            "workspace validation, so the dependency wake cannot move it forward. " +
+            "The board must repair the task workspace, then explicitly retry or reassign.",
+        });
+        if (updated) {
+          result.blockedWorkspaceValidationEscalated += 1;
+          result.escalated += 1;
+          result.issueIds.push(candidate.id);
+        }
+      }
+    }
+
     result.issueIds = [...new Set(result.issueIds)];
 
     return result;

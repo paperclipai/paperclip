@@ -5,6 +5,8 @@ import { agentWakeupRequests } from "@paperclipai/db";
 
 export const ISSUE_BLOCKERS_RESOLVED_WAKE_REASON = "issue_blockers_resolved";
 
+export const ISSUE_BLOCKERS_RESOLVED_FAILED_WAKE_LIMIT = 2;
+
 /**
  * Whether moving an issue into `blocked` should immediately wake its assignee
  * because every recorded blocker is already resolved ("blockers restored").
@@ -267,5 +269,40 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
       blockedTransitionAt,
     }),
   );
-  return covering ?? null;
+  if (covering) return covering;
+
+  const failedCycleWakes = rows
+    .filter(
+      (row) => row.idempotencyKey === cycleKey && row.status === "failed",
+    )
+    .sort((a, b) => b.requestedAt.getTime() - a.requestedAt.getTime());
+  return failedCycleWakes.length >= ISSUE_BLOCKERS_RESOLVED_FAILED_WAKE_LIMIT
+    ? failedCycleWakes[0]!
+    : null;
+}
+
+export async function hasExhaustedIssueBlockersResolvedWakeRetries(
+  db: Db,
+  input: {
+    companyId: string;
+    dependentIssueId: string;
+    blockerIssueIds: string[];
+    blockedTransitionAt?: IssueBlockersResolvedWakeCycleInput;
+  },
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: agentWakeupRequests.id })
+    .from(agentWakeupRequests)
+    .where(
+      and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        eq(
+          agentWakeupRequests.idempotencyKey,
+          buildIssueBlockersResolvedWakeStateKey(input),
+        ),
+        eq(agentWakeupRequests.status, "failed"),
+      ),
+    )
+    .limit(ISSUE_BLOCKERS_RESOLVED_FAILED_WAKE_LIMIT);
+  return rows.length >= ISSUE_BLOCKERS_RESOLVED_FAILED_WAKE_LIMIT;
 }
