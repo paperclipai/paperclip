@@ -325,3 +325,8 @@ and independently reads the receipt and ledger. The provider is controlled;
 no paid provider request is made. Additional cases cover lost commit responses,
 replay conflicts, per-turn aggregation, partial usage, source replacement, and
 budget holds. Optional log and trace callbacks are absent from the experiment.
+
+The cold fixture build runs before opening PostgreSQL, with the existing native
+integration build budget. PR CI routes this suite through the existing cached
+native Runner lane. CI builds the release fixture; local execution uses debug.
+The behavior test has its own bounded receiver/process deadline after compilation.

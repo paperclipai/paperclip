@@ -15,15 +15,19 @@ import { usageReceiptSpoolPath } from "../usage-receipts.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 
 const runnerRoot = fileURLToPath(new URL("../../../../packages/paperclip-runner/runner/", import.meta.url));
+const fixtureProfile = process.env.CI ? "release" : "debug";
 const billing = { provider: "openai", biller: "openai", billingType: "metered_api" as const };
 
 describe("producer-owned native usage", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: Db;
   beforeAll(async () => {
+    execFileSync("cargo", ["build", ...(fixtureProfile === "release" ? ["--release"] : []), "--locked",
+      "--manifest-path", resolve(runnerRoot, "Cargo.toml"), "-p", "paperclip-runner-core", "--example", "recovery-fixture"],
+    { timeout: 600_000, stdio: "pipe" });
     database = await startEmbeddedPostgresTestDatabase("native-usage-delivery-");
     db = createDb(database.connectionString);
-  }, 60_000);
+  }, 660_000);
   afterAll(async () => { await database?.cleanup(); });
   const seed = async () => {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
@@ -40,7 +44,6 @@ describe("producer-owned native usage", () => {
   } as PrpEvent);
 
   it("retains the same Runner report through a failed Postgres receipt and an empty replacement receiver", async () => {
-    execFileSync("cargo", ["build", "--locked", "--manifest-path", resolve(runnerRoot, "Cargo.toml"), "-p", "paperclip-runner-core", "--example", "recovery-fixture"], { timeout: 180_000, stdio: "pipe" });
     const input = await seed();
     expect(existsSync(usageReceiptSpoolPath())).toBe(false);
     const root = mkdtempSync(resolve(tmpdir(), "native-usage-runner-"));
@@ -87,10 +90,10 @@ describe("producer-owned native usage", () => {
       receiver = await startReceiver();
       const firstReceiver = await request(receiver, { kind: "start", connectionString: database.connectionString, directory: receiverA, identity, input });
       const connectUrl = String(firstReceiver.connectUrl), port = Number(new URL(connectUrl).port), ticket = String(firstReceiver.ticket);
-      child = spawn(resolve(runnerRoot, "target/debug/examples/recovery-fixture"), ["--fixture-script", scriptFile, "--connect-url", connectUrl,
+      child = spawn(resolve(runnerRoot, `target/${fixtureProfile}/examples/recovery-fixture`), ["--fixture-script", scriptFile, "--connect-url", connectUrl,
         "--state-dir", resolve(root, "producer"), "--runner-id", identity.runnerInstanceId, "--environment-lease-id", identity.environmentLeaseId,
         "--run-id", identity.runId, "--session-id", identity.normalizedSessionId, "--turn-id", identity.turnId, "--item-id", identity.itemId,
-        "--runner-version", expectedRunnerVersion, "--runner-digest", expectedRunnerDigest, "--max-outbox-bytes", "65536", "--p0-reserve-bytes", "16384", "--reconnect-grace-ms", "30000"],
+        "--runner-version", expectedRunnerVersion, "--runner-digest", expectedRunnerDigest, "--max-outbox-bytes", "65536", "--p0-reserve-bytes", "16384", "--reconnect-grace-ms", "120000"],
       { env: { ...process.env, PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: ticket }, stdio: ["ignore", "ignore", "pipe"] });
       exit = once(child, "exit");
       await request(receiver, { kind: "command", type: "turn.start", commandId: "start-once" });
