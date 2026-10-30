@@ -1284,6 +1284,7 @@ for (const execution of executions) {
       } else if (execution.task.flow === "agent_chat") {
         const chat = await runChatFlow({
           page, api, fixtures, execution, nonce, workspacePath,
+          deadlineAt: startedAtMs + deadlineMs,
           restart: () => restartChatServer(page, () => restartIsolatedPaperclipServer({ api, requestId: `chat-${nonce}`, deadlineAt: startedAtMs + deadlineMs })),
           observe: (chatIssue, chatRuns) => { issue = chatIssue; selectedRuns = chatRuns; },
           capture: captureScreenshot,

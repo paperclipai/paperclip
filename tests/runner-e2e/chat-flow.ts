@@ -367,6 +367,7 @@ export interface ChatFlowInput {
   execution: MatrixExecution;
   nonce: string;
   workspacePath: string;
+  deadlineAt: number;
   restart: () => Promise<void>;
   observe: (issue: ChatIssue, runs: ChatRun[]) => void;
   capture: (id: string, label: string, file: string) => Promise<void>;
@@ -604,12 +605,14 @@ export async function runChatFlow(input: ChatFlowInput) {
         }
         const oldComments = await comments();
         await sendChatMessage(page, "/new");
+        // Stop can be acknowledged before workspace preservation retries.
+        // Observe the reset within the existing case deadline.
         await expect
           .poll(
             async () =>
               (await api.get<ChatIssue>(chatPath))
                 .conversationSessionGeneration,
-            { timeout: 30_000 },
+            { timeout: stopCase ? Math.max(1, input.deadlineAt - Date.now()) : 30_000 },
           )
           .toBe(1);
         await expect
