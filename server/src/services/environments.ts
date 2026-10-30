@@ -1,4 +1,3 @@
-import { attachSandboxCreation } from "./sandbox-creation-operations.js";
 import { createReusableLeaseHandoff, preserveReusableLeaseHandoff, withoutReusableLeaseHandoff } from "./environment-lease-handoff.js";
 import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
@@ -49,6 +48,32 @@ import {
   stockHash,
   type ManagedResourceStockStatus,
 } from "./managed-resource-drift.js";
+
+export async function attachSandboxCreation(db: Db, id: string, scope: { companyId: string; environmentId: string; heartbeatRunId?: string | null },
+  attach: (tx: Db) => Promise<EnvironmentLease>): Promise<EnvironmentLease> {
+  return db.transaction(async tx => {
+    await assertEnvironmentCompanyBinding(tx as unknown as Db, scope.environmentId, scope.companyId);
+    const [operation] = await tx.select().from(sandboxCreationOperations)
+      .where(and(eq(sandboxCreationOperations.id, id), eq(sandboxCreationOperations.companyId, scope.companyId),
+        eq(sandboxCreationOperations.originalEnvironmentId, scope.environmentId))).for("update");
+    if (scope.heartbeatRunId) {
+      const [run] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, scope.heartbeatRunId), eq(heartbeatRuns.companyId, scope.companyId), eq(heartbeatRuns.status, "running"),
+      )).for("update");
+      if (!run || operation?.runId !== scope.heartbeatRunId) throw new Error("Sandbox creation run authority changed");
+    }
+    if (operation?.state === "attached" && operation.leaseId) {
+      const existing = await environmentService(tx as unknown as Db).getLeaseById(operation.leaseId);
+      if (existing?.status === "active") return existing;
+    }
+    if (!operation || operation.state !== "pending") throw new Error("Sandbox creation ownership has already transferred");
+    const lease = await attach(tx as unknown as Db);
+    await notifyEnvironmentCleanup(tx, { companyId: scope.companyId });
+    await tx.update(sandboxCreationOperations).set({ state: "attached", leaseId: lease.id, updatedAt: new Date() })
+      .where(eq(sandboxCreationOperations.id, id));
+    return lease;
+  });
+}
 
 export async function assertEnvironmentCompanyBinding(db: Db, environmentId: string, companyId: string): Promise<void> {
   const [environment] = await db.select({ id: environments.id }).from(environments)

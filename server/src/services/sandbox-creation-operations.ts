@@ -3,7 +3,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { and, eq, lte } from "drizzle-orm";
 import { environments, heartbeatRuns, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import { readEnvironmentCreationCleanupError, type PluginEnvironmentLease, type PluginEnvironmentLeaseObservation } from "@paperclipai/plugin-sdk";
-import type { EnvironmentLease } from "@paperclipai/shared";
 import { assertEnvironmentCompanyBinding, environmentService } from "./environments.js";
 import { ENVIRONMENT_CLEANUP_RETRY_MS } from "./environment-cleanup-state.js";
 import { logger } from "../middleware/logger.js";
@@ -73,32 +72,6 @@ export async function createOwnedSandbox(
   }
   const lease = await create({ id, runId });
   return { ...lease, metadata: { ...lease.metadata, creationOperationId: id } };
-}
-
-export async function attachSandboxCreation(db: Db, id: string, scope: { companyId: string; environmentId: string; heartbeatRunId?: string | null },
-  attach: (tx: Db) => Promise<EnvironmentLease>): Promise<EnvironmentLease> {
-  return db.transaction(async tx => {
-    await assertEnvironmentCompanyBinding(tx as unknown as Db, scope.environmentId, scope.companyId);
-    const [operation] = await tx.select().from(sandboxCreationOperations)
-      .where(and(eq(sandboxCreationOperations.id, id), eq(sandboxCreationOperations.companyId, scope.companyId),
-        eq(sandboxCreationOperations.originalEnvironmentId, scope.environmentId))).for("update");
-    if (scope.heartbeatRunId) {
-      const [run] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-        eq(heartbeatRuns.id, scope.heartbeatRunId), eq(heartbeatRuns.companyId, scope.companyId), eq(heartbeatRuns.status, "running"),
-      )).for("update");
-      if (!run || operation?.runId !== scope.heartbeatRunId) throw new Error("Sandbox creation run authority changed");
-    }
-    if (operation?.state === "attached" && operation.leaseId) {
-      const existing = await environmentService(tx as unknown as Db).getLeaseById(operation.leaseId);
-      if (existing?.status === "active") return existing;
-    }
-    if (!operation || operation.state !== "pending") throw new Error("Sandbox creation ownership has already transferred");
-    const lease = await attach(tx as unknown as Db);
-    await notifyEnvironmentCleanup(tx, { companyId: scope.companyId });
-    await tx.update(sandboxCreationOperations).set({ state: "attached", leaseId: lease.id, updatedAt: new Date() })
-      .where(eq(sandboxCreationOperations.id, id));
-    return lease;
-  });
 }
 
 export async function recoverSandboxCreations(db: Db,
