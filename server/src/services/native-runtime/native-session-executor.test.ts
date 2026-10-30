@@ -1940,6 +1940,7 @@ describe("remote provider pack manifest", () => {
         expect(operations[0]?.files[0]).toMatchObject({ sourcePath: root,
           targetPath: "/workspace/.paperclip-runtime/paperclip-runner/provider-pack", kind: "directory" });
         transferred = true;
+        return { operations: [] };
       });
       const execute = vi.fn(async (command: { command: string; args?: string[]; timeoutMs?: number }) => {
         expect(command.timeoutMs).toBeGreaterThan(0);
