@@ -52,11 +52,17 @@ describe("IssueFiltersPopover", () => {
     document.body.innerHTML = "";
   });
 
-  it.each(["streamlined", "refreshed"] as const)("exposes a checked and clearable routine filter in %s", presentation => {
+  it.each(["legacy", "streamlined", "refreshed"] as const)("groups the routine filter under Visibility in %s", presentation => {
     const root = createRoot(container);
     const onChange = vi.fn();
-    act(() => root.render(<IssueFiltersPopover enableRoutineTasksFilter presentation={presentation} state={{ ...defaultIssueFilterState, routineTasksOnly: true }} onChange={onChange} activeFilterCount={1} />));
-    const row = Array.from(container.querySelectorAll("label")).find(label => label.textContent === "Routine tasks only");
+    act(() => root.render(<IssueFiltersPopover enableAgentCreatedVisibilityFilter enableRoutineTasksFilter presentation={presentation} state={{ ...defaultIssueFilterState, routineTasksOnly: true }} onChange={onChange} activeFilterCount={1} />));
+    const visibility = container.querySelector('[data-filter-options="visibility"]');
+    expect(Array.from(visibility?.querySelectorAll("label") ?? []).map(label => label.textContent)).toEqual([
+      "Live runs only", "Show agent-created tasks", "Routine tasks",
+    ]);
+    expect(container.textContent).toContain("Visibility");
+    expect(container.textContent).not.toContain("Source");
+    const row = Array.from(visibility!.querySelectorAll("label")).find(label => label.textContent === "Routine tasks");
     expect(row?.querySelector("input")?.checked).toBe(true);
     act(() => row?.querySelector("input")?.click());
     expect(onChange).toHaveBeenCalledWith({ routineTasksOnly: false });
@@ -99,8 +105,8 @@ describe("IssueFiltersPopover", () => {
     );
     expect(layoutGrid?.className).toContain("grid-cols-1");
     expect(popoverContent?.textContent).toContain("Live runs only");
-    const creationToggle = Array.from(popoverContent?.querySelectorAll("label") ?? []).find((label) => label.textContent?.includes("show agent-created tasks"));
-    expect(creationToggle?.textContent).toBe("show agent-created tasks");
+    const creationToggle = Array.from(popoverContent?.querySelectorAll("label") ?? []).find((label) => label.textContent?.includes("Show agent-created tasks"));
+    expect(creationToggle?.textContent).toBe("Show agent-created tasks");
     expect(creationToggle?.querySelector("input")?.checked).toBe(false);
   });
 

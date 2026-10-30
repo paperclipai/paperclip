@@ -23,7 +23,7 @@ vi.mock("../hooks/useUpdateIssueMutation", () => ({ useUpdateIssueMutation: () =
 vi.mock("../components/IssuesList", () => ({ IssuesList: ({ issues, routineTasksOnly, onRoutineTasksOnlyChange, onLoadMoreIssues }: {
   issues: Issue[]; routineTasksOnly: boolean; onRoutineTasksOnlyChange: (checked: boolean) => void; onLoadMoreIssues: () => void;
 }) => <>
-  <label><input type="checkbox" checked={routineTasksOnly} onChange={event => onRoutineTasksOnlyChange(event.target.checked)} />Routine tasks only</label>
+  <label><input type="checkbox" checked={routineTasksOnly} onChange={event => onRoutineTasksOnlyChange(event.target.checked)} />Routine tasks</label>
   <button onClick={onLoadMoreIssues}>Load more</button>
   <output>{issues.map(issue => issue.id).join(",")}</output>
   <p>{useLocation().search}</p>

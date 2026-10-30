@@ -29,7 +29,7 @@ Open `/routines`, create one, and inspect `/routines/:routineId` and its edit se
 ### `trigger-history`
 
 Use the routine's trigger controls and Runs/Recent Runs/Audit links; lists also
-offer Run now. **View all tasks** opens the Tasks list with **Routine tasks only**
+offer Run now. **View all tasks** opens the Tasks list with **Routine tasks**
 selected, using `/issues?view=all&originKind=routine_execution`. Uncheck the
 filter to return to other tasks. **History** records configuration versions, not executions.
 

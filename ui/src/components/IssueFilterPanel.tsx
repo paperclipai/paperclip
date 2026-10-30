@@ -9,7 +9,7 @@ import { StatusIcon } from "./StatusIcon";
 import { TruncatedText } from "./TruncatedText";
 import { issueFilterLabel, issueStatusOrder, searchIssueFilterOptions, toggleIssueFilterValue } from "@/lib/issue-filters";
 
-type PanelProps = Pick<ComponentProps<typeof IssueFiltersPopover>, "state" | "onChange" | "activeFilterCount" | "agents" | "projects" | "labels" | "creators" | "currentUserId" | "enableRoutineTasksFilter"> & { onClear: () => void };
+type PanelProps = Pick<ComponentProps<typeof IssueFiltersPopover>, "state" | "onChange" | "activeFilterCount" | "agents" | "projects" | "labels" | "creators" | "currentUserId" | "enableRoutineTasksFilter" | "enableAgentCreatedVisibilityFilter"> & { onClear: () => void };
 
 function FilterGroup({ title, searchLabel, query, onQueryChange, children, optionsKey }: { title: string; searchLabel?: string; query?: string; onQueryChange?: (value: string) => void; children: ReactNode; optionsKey: string }) {
   const headingId = useId();
@@ -29,7 +29,7 @@ function FilterRow({ label, checked, onToggle, icon }: { label: string; checked:
 }
 
 /** The collection retains ownership of filter state. */
-export function IssueFilterPanel({ state, onChange, activeFilterCount, agents = [], projects = [], labels = [], creators = [], currentUserId, onClear, enableRoutineTasksFilter }: PanelProps) {
+export function IssueFilterPanel({ state, onChange, activeFilterCount, agents = [], projects = [], labels = [], creators = [], currentUserId, onClear, enableRoutineTasksFilter, enableAgentCreatedVisibilityFilter }: PanelProps) {
   const [queries, setQueries] = useState({ projects: "", creators: "", assignees: "", labels: "" });
   const search = (key: keyof typeof queries) => (value: string) => setQueries(current => ({ ...current, [key]: value }));
   const visibleProjects = searchIssueFilterOptions(projects, queries.projects, option => option.name);
@@ -44,9 +44,11 @@ export function IssueFilterPanel({ state, onChange, activeFilterCount, agents = 
         <FilterGroup title="Status" optionsKey="statuses">
           {issueStatusOrder.map(status => <FilterRow key={status} label={issueFilterLabel(status)} checked={state.statuses.includes(status)} onToggle={() => onChange({ statuses: toggleIssueFilterValue(state.statuses, status) })} icon={<StatusIcon status={status} />} />)}
         </FilterGroup>
-        {enableRoutineTasksFilter ? <FilterGroup title="Source" optionsKey="source">
-          <FilterRow label="Routine tasks only" checked={state.routineTasksOnly === true} onToggle={() => onChange({ routineTasksOnly: !state.routineTasksOnly })} />
-        </FilterGroup> : null}
+        <FilterGroup title="Visibility" optionsKey="visibility">
+          <FilterRow label="Live runs only" checked={state.liveOnly === true} onToggle={() => onChange({ liveOnly: !state.liveOnly })} />
+          {enableAgentCreatedVisibilityFilter ? <FilterRow label="Show agent-created tasks" checked={state.showAgentCreatedTasks} onToggle={() => onChange({ showAgentCreatedTasks: !state.showAgentCreatedTasks })} /> : null}
+          {enableRoutineTasksFilter ? <FilterRow label="Routine tasks" checked={state.routineTasksOnly === true} onToggle={() => onChange({ routineTasksOnly: !state.routineTasksOnly })} /> : null}
+        </FilterGroup>
       </div>
       <FilterGroup title="Project" optionsKey="projects" searchLabel="projects" query={queries.projects} onQueryChange={search("projects")}>
         {visibleProjects.map(project => <FilterRow key={project.id} label={project.name} checked={state.projects.includes(project.id)} onToggle={() => onChange({ projects: toggleIssueFilterValue(state.projects, project.id) })} />)}

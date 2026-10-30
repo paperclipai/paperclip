@@ -23,7 +23,7 @@ vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompan
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mocks.breadcrumbs }) }));
 vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, onViewChange, onLayoutChange }: { filters: { onChange: (value: { liveOnly?: boolean; priorities?: string[]; assignees?: string[]; statuses?: string[]; routineTasksOnly?: boolean }) => void }; onViewChange: (view: "blocked") => void; onLayoutChange: (layout: "board") => void }) => <>
-  <button onClick={() => filters.onChange({ routineTasksOnly: true })}>Routine tasks only</button>
+  <button onClick={() => filters.onChange({ routineTasksOnly: true })}>Routine tasks</button>
   <button onClick={() => filters.onChange({ routineTasksOnly: false })}>Show other tasks</button>
   <button onClick={() => filters.onChange({ liveOnly: true })}>Live runs only</button>
   <button onClick={() => filters.onChange({ priorities: ["high"] })}>High priority</button>
@@ -72,7 +72,7 @@ describe("Coordinator tasks using the proposed table", () => {
     flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Show other tasks")!.click());
     await vi.waitFor(() => expect(host.textContent).toContain("Manual report"));
     expect(mocks.list.mock.lastCall?.[1].originKind).toBeUndefined();
-    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Routine tasks only")!.click());
+    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Routine tasks")!.click());
     await vi.waitFor(() => expect(host.querySelector('[data-task-id="manual-task"]')).toBeNull());
   });
 

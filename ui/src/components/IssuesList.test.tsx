@@ -2136,7 +2136,7 @@ describe("IssuesList", () => {
         button.title.startsWith("Filters:") || button.textContent?.includes("Filters:"));
       await act(() => filterButton()!.click());
       await waitForAssertion(() => {
-        const row = Array.from(document.body.querySelectorAll("label")).find(label => label.textContent === "Routine tasks only");
+        const row = Array.from(document.body.querySelectorAll("label")).find(label => label.textContent === "Routine tasks");
         expect(row?.querySelector('[role="checkbox"]')?.getAttribute("aria-checked")).toBe("true");
       });
       await act(() => filterButton()!.click());
@@ -2200,14 +2200,14 @@ describe("IssuesList", () => {
 
     await waitForAssertion(() => {
       const toggle = Array.from(document.body.querySelectorAll("label")).find(
-        (label) => label.textContent?.includes("show agent-created tasks"),
+        (label) => label.textContent?.includes("Show agent-created tasks"),
       );
       expect(toggle).not.toBeUndefined();
     });
 
     await act(async () => {
       const toggle = Array.from(document.body.querySelectorAll("label")).find(
-        (label) => label.textContent?.includes("show agent-created tasks"),
+        (label) => label.textContent?.includes("Show agent-created tasks"),
       );
       toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
@@ -2226,7 +2226,7 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       expect(container.textContent).not.toContain("Routine issue");
       expect(container.querySelector("[data-testid='creation-preference']")?.textContent).toBe("false");
-      const label = Array.from(document.body.querySelectorAll("label")).find((element) => element.textContent?.includes("show agent-created tasks"));
+      const label = Array.from(document.body.querySelectorAll("label")).find((element) => element.textContent?.includes("Show agent-created tasks"));
       const checkbox = label?.querySelector("[role='checkbox'], input[type='checkbox']");
       expect(checkbox).not.toBeNull();
       expect(checkbox instanceof HTMLInputElement ? checkbox.checked : checkbox?.getAttribute("aria-checked") === "true").toBe(false);
