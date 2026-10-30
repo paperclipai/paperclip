@@ -26,13 +26,16 @@ async function fixture() {
 }
 const generation = (index: number) => index.toString(16).padStart(64, "0");
 
-it("does not wait for storage flushes when publishing a rebuildable cache", async () => {
+it("does not wait for a cache-only Git archive flush", async () => {
   const f = await fixture();
+  const recovery = path.join(f.root, "recovery-git.tar"), cacheOnly = path.join(f.root, "cache-git.tar");
+  await fs.writeFile(recovery, "task branch recovery");
+  await fs.writeFile(cacheOnly, "branch-neutral reusable seed");
   const blocked = deferred<"flush_wait">(), release = deferred<void>();
   const open = fs.open.bind(fs);
   vi.spyOn(fs, "open").mockImplementation(async (...args) => {
     const file = await open(...args);
-    if (String(args[0]).includes(".pending-")) {
+    if (String(args[0]).includes(".pending-") && path.basename(String(args[0])) === "git.tar") {
       vi.spyOn(file, "sync").mockImplementation(async () => {
         blocked.resolve("flush_wait");
         await release.promise;
@@ -40,16 +43,62 @@ it("does not wait for storage flushes when publishing a rebuildable cache", asyn
     }
     return file;
   });
-  const publishing = publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed);
+  const publishing = publishWorkspaceSeedGeneration(f.workspace, generation(1),
+    { ...f.seed, gitArchivePath: recovery }, { cacheOnlyGitArchivePath: cacheOnly });
   try {
     expect(await Promise.race([publishing, blocked.promise])).toBe(true);
     const cached = await readWorkspaceSeedGeneration(f.workspace, generation(1));
     expect(await fs.readFile(cached!.workspaceArchivePath, "utf8")).toBe("run recovery bytes");
+    expect(await fs.readFile(cached!.gitArchivePath!, "utf8")).toBe("branch-neutral reusable seed");
+    expect(await fs.readFile(recovery, "utf8")).toBe("task branch recovery");
     expect(await fs.readFile(f.archive, "utf8")).toBe("run recovery bytes");
   } finally {
     release.resolve();
     await publishing;
   }
+});
+
+it.each(["same path", "hardlink"])("rejects a cache-only Git archive that shares recovery bytes through %s", async kind => {
+  const f = await fixture();
+  const recovery = path.join(f.root, "recovery-git.tar"), cacheOnly = path.join(f.root, "cache-git.tar");
+  await fs.writeFile(recovery, "task branch recovery");
+  if (kind === "hardlink") await fs.link(recovery, cacheOnly);
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1),
+    { ...f.seed, gitArchivePath: recovery }, { cacheOnlyGitArchivePath: kind === "hardlink" ? cacheOnly : recovery })).toBe(false);
+  expect(await fs.readFile(recovery, "utf8")).toBe("task branch recovery");
+});
+
+it("rejects a cache-only archive replaced with a recovery hardlink during verification", async () => {
+  const f = await fixture();
+  const recovery = path.join(f.root, "recovery-git.tar"), cacheOnly = path.join(f.root, "cache-git.tar");
+  await fs.writeFile(recovery, "task branch recovery");
+  await fs.writeFile(cacheOnly, "branch-neutral reusable seed");
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1),
+    { ...f.seed, gitArchivePath: recovery }, { cacheOnlyGitArchivePath: cacheOnly, verify: async () => {
+      await fs.rm(cacheOnly);
+      await fs.link(recovery, cacheOnly);
+      return true;
+    } })).toBe(false);
+  expect(await readWorkspaceSeedGeneration(f.workspace, generation(1))).toBeNull();
+  expect(await fs.readFile(recovery, "utf8")).toBe("task branch recovery");
+});
+
+it.each(["workspace.tar", "git.tar"])("keeps storage flush failures fatal to publication of recovery-backed %s", async archive => {
+  const f = await fixture();
+  const git = path.join(f.root, "recovery-git.tar");
+  await fs.writeFile(git, "task branch recovery");
+  const open = fs.open.bind(fs);
+  vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+    const file = await open(...args);
+    if (String(args[0]).includes(".pending-") && path.basename(String(args[0])) === archive) {
+      vi.spyOn(file, "sync").mockRejectedValue(Object.assign(new Error("storage flush failed"), { code: "EIO" }));
+    }
+    return file;
+  });
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), { ...f.seed, gitArchivePath: git })).toBe(false);
+  expect(await readWorkspaceSeedGeneration(f.workspace, generation(1))).toBeNull();
+  expect(await fs.readFile(f.archive, "utf8")).toBe("run recovery bytes");
+  expect(await fs.readFile(git, "utf8")).toBe("task branch recovery");
 });
 
 it("returns verified private copies that survive subsequent cache changes", async () => {
@@ -156,6 +205,7 @@ it("keeps company-lock contention outside the locked-publication span", async ()
   for (const names of spans) {
     expect(names).toContain("workspace.seed_cache_locked_publish");
     expect(names).toContain("workspace.seed_cache_evict");
+    expect(names).toContain("workspace.seed_cache_sync");
     expect(names).toContain("workspace.seed_cache_hash");
   }
   for (const [name, index] of [["first", 1], ["second", 2]] as const) {

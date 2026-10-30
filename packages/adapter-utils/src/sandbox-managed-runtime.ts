@@ -1740,9 +1740,10 @@ export async function prepareSandboxManagedRuntime(input: {
               const gitArchivePath = gitSnapshot || repositories.length
                 ? (sharedSeed ? gitSeedTarPath : seed.gitArchivePath) : null;
               await runStepSpan("workspace.seed_publish", () => publishWorkspaceSeedGeneration(input.workspaceSeedCacheDirectory!, seedGeneration,
-                { ...seed, gitArchivePath }, {
+                { ...seed, gitArchivePath: gitSnapshot || repositories.length ? seed.gitArchivePath : null }, {
                   companyDirectory: input.workspaceSeedCacheCompanyDirectory,
                   scope: input.workspaceSeedCacheScope,
+                  ...(sharedSeed && gitArchivePath ? { cacheOnlyGitArchivePath: gitArchivePath } : {}),
                   runtimeSpan: runStepSpan,
                   verify: () => runStepSpan("seed.verify", async () => {
                     const verifiedRoot = path.join(tempDir, "verify-seed");
