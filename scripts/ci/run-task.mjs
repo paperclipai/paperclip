@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { matchesGlob } from "node:path";
 import { executionPlan, sourceFiles } from "./execution-plan.mjs";
 import { loadSelection, selectionHash } from "./test-selection-manifest.mjs";
+import { productInputs } from "../../.github/scripts/ci-inputs.mjs";
 
 const task = process.env.CI_TASK;
 if (!/^ci:[a-z-]+$/.test(task ?? "")) throw new Error("Invalid CI task");
@@ -27,7 +28,7 @@ writeFileSync(runtimeConfig, JSON.stringify(execution.config));
 const classified = [...config.globalDependencies, ...Object.values(config.tasks).flatMap((entry) => entry.inputs)];
 const unknownInputs = createHash("sha256");
 let uncacheable = false;
-for (const file of files) {
+for (const file of productInputs(files)) {
   if (classified.some((glob) => matchesGlob(file, glob))) continue;
   unknownInputs.update(JSON.stringify(file));
   try {

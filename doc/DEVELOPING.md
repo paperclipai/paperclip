@@ -171,10 +171,12 @@ does not include the lower PRs' code.
 
 For ordinary full-scope PRs, the routing job further selects affected suites
 using `turbo.json` and `.github/ci-task-matrix.json`. It downloads the planner
-and both definitions from one canonical master revision, without executing PR
-code. The comparison covers the tested merge commit. Both rename paths count;
-failed, empty, malformed, or potentially truncated comparisons select the full
-suite. Unclassified files also select full CI. Stack verification retains the
+and its helpers and definitions from one canonical master revision, without executing PR
+code. It fetches the exact tested merge commit and its parents into a temporary
+bare Git repository, validates the PR head, and compares the merge tree against
+its first parent. The event's base SHA can be stale. Git tree comparisons have
+no GitHub compare-API 300-file cap. Renames count as deletion plus addition;
+failed, empty, or malformed comparisons select the full suite. Unclassified files also select full CI. Stack verification retains the
 existing scope policy and runs all suites whenever that policy requires them.
 Changes to global inputs, including the task graph, package scripts, workflows,
 and execution helpers, force full execution and disable result-cache restore and
@@ -193,7 +195,16 @@ canary dry run.
 The uncached typecheck job also runs the repository-wide CLI guidance safety
 guard. It still scans UI changes when unrelated server shards are omitted.
 
-For ordinary source-only PRs, a separate `Select Vitest files` job refines the
+The shared policy in `.github/scripts/ci-inputs.mjs` exempts only audited prose:
+`doc/DEVELOPING.md`, `doc/DATABASE.md`, and Markdown under `doc/plans/`.
+The first two still select the uncached typecheck/guidance lane; historical plans
+need only the always-running policy checks. These inputs do not widen product
+test selection or enter product task cache hashes. All other docs, bundled
+skills, fixtures and unknown paths keep their existing conservative coverage.
+A source change plus exempt prose remains graph eligible. When adding a reader
+of exempt prose, update this policy as well as the task inputs.
+
+For ordinary source PRs (including the audited prose inputs above), a separate `Select Vitest files` job refines the
 general and serialized test lanes before their runners are allocated. It runs
 on the gate-approved test fleet, loads the real Vitest projects, and follows
 imports across workspace packages. Only projects with their own source changes
@@ -226,11 +237,11 @@ selected per lane, and the `vitest-selection` artifact records the manifest and
 dependency audit. Selected jobs execute exact Vitest test specifications, so
 similarly named `.test.ts` and `.test.tsx` files cannot overlap between shards.
 
-Missing/deleted/renamed files, non-source inputs, unrecognized graph inputs,
+Missing/deleted/renamed source files, non-exempt non-source inputs, unrecognized graph inputs,
 setup/config changes, failed dependency installs, graph errors and timeouts use
 the complete original task plan. Source mutations during dependency setup also
 disable narrowing. A published manifest must match the checked-out
-merge SHA, its plan hash and the expected shard/project ownership. Missing or
+merge SHA and parent diff, its plan hash and the expected shard/project ownership. Missing or
 invalid manifests fail selected jobs and the required aggregate; they cannot
 turn reduced matrices green. Failed-job retries download the original artifact
 ID saved with the plan, even when GitHub increments the run attempt. Turbo hashes the selected file assignment through

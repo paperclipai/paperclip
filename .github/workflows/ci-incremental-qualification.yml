@@ -7,6 +7,8 @@ on:
       - turbo.json
       - .github/ci-task-matrix.json
       - .github/scripts/ci-plan.mjs
+      - .github/scripts/ci-diff.mjs
+      - .github/scripts/ci-inputs.mjs
       - .github/scripts/tests/ci-plan.test.mjs
       - .github/actions/run-ci-task/**
       - .github/workflows/ci-routing.yml
@@ -57,7 +59,7 @@ jobs:
             ['ui/src/pages/Inbox.tsx', '@paperclipai/ui', 'ui/src/pages/Inbox.test.tsx'],
             ['server/src/middleware/auth.ts', '@paperclipai/server', 'server/src/__tests__/agent-auth-middleware.test.ts'],
           ]) {
-            const selected = await createTestSelection(planTasks({ config, lanes, paths: [file] }), head);
+            const selected = await createTestSelection(planTasks({ config, lanes, paths: [file, "doc/DEVELOPING.md", "doc/plans/2026-10-30-ci-proof.md"] }), head);
             const graph = selected.graphs.find(graph => graph.project === project);
             assert.ok(graph.related.includes(related));
             assert.ok(graph.alwaysRun.length > 0, 'Filesystem contracts must remain covered');

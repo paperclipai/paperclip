@@ -4,11 +4,15 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { refineTestPlan, selectionDurations } from "./test-selection-plan.mjs";
+import { productInputs } from "../../.github/scripts/ci-inputs.mjs";
+import { mergeDiff } from "../../.github/scripts/ci-diff.mjs";
 
 export function selectionEligibility(plan) {
   if (plan?.version !== 1 || plan.mode !== "enabled" || plan.forceReason) return "Full/shadow/forced task plan";
-  if (!Array.isArray(plan.changed) || !plan.changed.length || plan.changed.length >= 300) return "Incomplete comparison";
-  for (const file of plan.changed) {
+  if (!Array.isArray(plan.changed) || !plan.changed.length) return "Incomplete comparison";
+  const changed = productInputs(plan.changed);
+  if (!changed.length) return "Documentation-only diff";
+  for (const file of changed) {
     if (!/^(?:ui\/src|server\/src|cli\/src|packages\/.+\/src)\/.+\.[cm]?[jt]sx?$/.test(file)
       || /(?:config|setup)|\.d\.[cm]?ts$/i.test(file) || file.split("/").includes("..")) return `Broad input: ${file}`;
     try {
@@ -50,14 +54,15 @@ export async function createTestSelection(plan, head) {
   }
   const { selectProjectTests } = await import("./vitest-selection-graph.mjs");
   const graphs = [];
+  const changed = productInputs(plan.changed);
   for (const project of projects) {
-    const graph = await selectProjectTests({ project, changed: plan.changed, onlyOwnChanges: true });
+    const graph = await selectProjectTests({ project, changed, onlyOwnChanges: true });
     graphs.push(graph);
     console.log(`${project}: ${graph.selected.length}/${graph.inventory.length} files, ${graph.alwaysRun.length} retained conservatively, ${graph.seconds.toFixed(1)}s`);
     for (const owner of Object.values(owners)) if (owner[project] === null) owner[project] = graph.inventory;
   }
   const covered = new Set(graphs.flatMap((graph) => graph.coveredChanges));
-  for (const file of plan.changed) assert.ok(covered.has(file), `Change outside the resolved test graphs: ${file}`);
+  for (const file of changed) assert.ok(covered.has(file), `Change outside the resolved test graphs: ${file}`);
   const server = graphs.find((graph) => graph.project === "@paperclipai/server");
   if (server) {
     const general = runnerInventory("general-server-without-chat");
@@ -87,10 +92,10 @@ async function main() {
   try {
     const head = git("rev-parse", "HEAD");
     assert.equal(head, process.env.GITHUB_SHA, "Selection must describe the tested merge commit");
-    assert.match(process.env.BASE_SHA ?? "", /^[a-f0-9]{40}$/);
-    const changed = execFileSync("git", ["diff", "--name-only", "--no-renames", "-z", process.env.BASE_SHA, head, "--"],
-      { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }).split("\0").filter(Boolean).sort();
-    assert.deepEqual(changed, [...new Set(plan.changed)].sort(), "Local diff disagrees with the trusted routing diff");
+    assert.ok(plan.diff, "Missing trusted merge diff");
+    const local = mergeDiff(head, plan.diff.prHead);
+    assert.deepEqual(local.diff, plan.diff, "Selection must use the trusted merge parents");
+    assert.deepEqual(local.changed, [...new Set(plan.changed)].sort(), "Local diff disagrees with the trusted routing diff");
     assert.equal(git("status", "--porcelain", "--untracked-files=normal"), "", "Source inputs changed during dependency setup");
     process.env.NODE_ENV = "test";
     process.env.VITEST = "true";

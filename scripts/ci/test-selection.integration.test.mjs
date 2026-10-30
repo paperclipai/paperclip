@@ -8,6 +8,7 @@ import { selectProjectTests } from "./vitest-selection-graph.mjs";
 import { partitionSelection, refineTestPlan } from "./test-selection-plan.mjs";
 import { selectionHash, selectedShard, validateSelection } from "./test-selection-manifest.mjs";
 import { selectionEligibility } from "./select-tests.mjs";
+import { mergeDiff } from "../../.github/scripts/ci-diff.mjs";
 
 const root = process.cwd();
 const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
@@ -166,10 +167,13 @@ test("the CLI publishes the complete coarse plan if setup mutates tracked inputs
   const commit = () => git("-c", "user.name=CI", "-c", "user.email=ci@example.invalid", "commit", "-qam", "fixture");
   git("init", "-q"); writeFileSync(file, "export const value = 1;"); git("add", "."); commit();
   const base = git("rev-parse", "HEAD");
+  git("checkout", "-qb", "pr");
   writeFileSync(file, "export const value = 2;"); commit();
+  const prHead = git("rev-parse", "HEAD");
+  git("checkout", "--detach", base); git("-c", "user.name=CI", "-c", "user.email=ci@example.invalid", "merge", "--no-ff", "pr", "-m", "merge");
   const merge = git("rev-parse", "HEAD");
   writeFileSync(file, "export const value = 3; // generated during setup");
-  const plan = { version: 1, mode: "enabled", forceReason: null, changed: ["ui/src/input.ts"],
+  const plan = { version: 1, mode: "enabled", forceReason: null, ...mergeDiff(merge, prHead, directory),
     jobs: { general_tests: { run: true, selected: 2, matrix: { include: [{ shard_index: 0 }, { shard_index: 1 }] } } } };
   const result = spawnSync(process.execPath, [path.join(root, "scripts/ci/select-tests.mjs")], {
     cwd: directory, encoding: "utf8", env: { ...process.env, CI_PLAN: JSON.stringify(plan), BASE_SHA: base,
@@ -180,4 +184,15 @@ test("the CLI publishes the complete coarse plan if setup mutates tracked inputs
   assert.match(fallback.testSelectionFallback, /Source inputs changed/);
   assert.deepEqual(fallback.jobs, plan.jobs);
   assert.equal(fallback.testSelection, undefined);
+});
+
+
+test("mixed audited documentation stays graph eligible and large complete source diffs are allowed", () => {
+  const plan = fixturePlan().plan;
+  for (const doc of ["doc/DEVELOPING.md", "doc/DATABASE.md", "doc/plans/2026-10-30-example.md"]) {
+    assert.equal(selectionEligibility({ ...plan, changed: [...plan.changed, doc] }), null);
+  }
+  assert.equal(selectionEligibility({ ...plan, changed: Array(350).fill(plan.changed[0]) }), null);
+  assert.ok(selectionEligibility({ ...plan, changed: ["doc/DEVELOPING.md"] }));
+  assert.ok(selectionEligibility({ ...plan, changed: [...plan.changed, "docs/api/issues.md"] }));
 });
