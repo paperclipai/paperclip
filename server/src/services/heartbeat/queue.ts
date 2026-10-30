@@ -853,7 +853,16 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               .where(eq(heartbeatRuns.id, current.id));
           return onClear(tx as unknown as Db);
         }
-        if (proof.kind === "unresolved" && stage === "claim") return null;
+        // Claim defers a proof that may still clear (pending chat state, a
+        // contended row). Exhausted ancestry never clears; deferring it keeps
+        // the queued run holding the issue execution lock forever, so settle
+        // it as unresolved now.
+        if (
+          proof.kind === "unresolved" &&
+          stage === "claim" &&
+          !("reason" in proof && proof.reason === "ancestry_exhausted")
+        )
+          return null;
         const now = new Date();
         const stopped = proof.kind === "stopped";
         const code = stopped

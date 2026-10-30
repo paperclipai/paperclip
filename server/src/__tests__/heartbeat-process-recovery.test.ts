@@ -120,6 +120,7 @@ import type { PrpStructuredRunResult } from "../vendor/paperclip-runner/index.js
 import { buildNativeModelEnvelope } from "@paperclipai/paperclip-runner";
 import {
   CHAT_CONTROL_RECOVERY_ADMISSION_KEY,
+  CHAT_CONTROL_RECOVERY_MAX_ANCESTRY,
   CHAT_CONTROL_RECOVERY_STOP_CODE,
   CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE,
   chatControlRecoveryAdmission,
@@ -13406,20 +13407,116 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
-  it("defers exhausted automatic ancestry without claiming a close or launching work", async () => {
-    const source = await seedCommittedChatControlStop();
-    let parentId = source.runId;
-    for (let index = 0; index < 64; index++)
-      parentId = (
-        await seedChatAutomaticChild(source, {
-          parentId,
-          status: index === 63 ? "queued" : "succeeded",
-        })
-      ).runId;
+  // Mirrors a workspace_busy wait ladder: every hop is a system automation
+  // retry of the previous run. Bulk inserts keep a 1000+ hop chain fast.
+  async function seedAutomaticRetryLadder(
+    root: { companyId: string; issueId: string; agentId: string; runId: string },
+    hops: number,
+  ) {
+    const rows = Array.from({ length: hops }, () => ({
+      runId: randomUUID(),
+      wakeupRequestId: randomUUID(),
+    }));
+    for (let start = 0; start < rows.length; start += 250) {
+      const chunk = rows.slice(start, start + 250);
+      await db.insert(agentWakeupRequests).values(
+        chunk.map((row, offset) => ({
+          id: row.wakeupRequestId,
+          companyId: root.companyId,
+          agentId: root.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: "workspace_busy_retry",
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          status: start + offset === rows.length - 1 ? "queued" : "cancelled",
+          runId: row.runId,
+          payload: { issueId: root.issueId },
+        })),
+      );
+      await db.insert(heartbeatRuns).values(
+        chunk.map((row, offset) => {
+          const index = start + offset;
+          const leaf = index === rows.length - 1;
+          return {
+            id: row.runId,
+            companyId: root.companyId,
+            agentId: root.agentId,
+            invocationSource: "automation",
+            triggerDetail: "system",
+            status: leaf ? "queued" : "cancelled",
+            errorCode: leaf ? null : "workspace_busy",
+            wakeupRequestId: row.wakeupRequestId,
+            retryOfRunId: index === 0 ? root.runId : rows[index - 1]!.runId,
+            scheduledRetryReason: "workspace_busy",
+            scheduledRetryAttempt: index + 1,
+            contextSnapshot: {
+              issueId: root.issueId,
+              taskId: root.issueId,
+              wakeReason: "workspace_busy_retry",
+              retryReason: "workspace_busy",
+            },
+            ...(leaf ? {} : { finishedAt: new Date() }),
+          };
+        }),
+      );
+    }
+    const leafId = rows[rows.length - 1]!.runId;
+    // A scheduled retry inherits the issue execution lock while it waits.
+    await db
+      .update(issues)
+      .set({ executionRunId: leafId, executionLockedAt: new Date() })
+      .where(eq(issues.id, root.issueId));
+    return leafId;
+  }
+
+  it("walks a long automatic wait ladder back to its non-chat origin and claims the retry", async () => {
+    const root = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    // Production stalled at exactly 64 hops past the assignment wake.
+    const leafId = await seedAutomaticRetryLadder(root, 64);
     expect(
-      (await readChatControlRecoveryStop(db, chatStopScope(source, parentId)))
+      (await readChatControlRecoveryStop(db, {
+        companyId: root.companyId,
+        issueId: root.issueId,
+        agentId: root.agentId,
+        sourceRunId: leafId,
+      }))
         .kind,
-    ).toBe("unresolved");
+    ).toBe("clear");
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    const [leaf] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, leafId));
+    expect(leaf?.status).not.toBe("queued");
+    expect(leaf?.startedAt).not.toBeNull();
+    expect(leaf?.errorCode).not.toBe(CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE);
+  });
+
+  it("keeps a committed chat stop authoritative across a long automatic ladder", async () => {
+    const source = await seedCommittedChatControlStop();
+    const leafId = await seedAutomaticRetryLadder(source, 64);
+    expect(
+      (await readChatControlRecoveryStop(db, chatStopScope(source, leafId)))
+        .kind,
+    ).toBe("stopped");
+  });
+
+  it("fails exhausted automatic ancestry at claim and releases the issue lock instead of deferring forever", async () => {
+    const source = await seedCommittedChatControlStop();
+    const leafId = await seedAutomaticRetryLadder(
+      source,
+      CHAT_CONTROL_RECOVERY_MAX_ANCESTRY,
+    );
+    expect(
+      await readChatControlRecoveryStop(db, chatStopScope(source, leafId)),
+    ).toEqual({ kind: "unresolved", reason: "ancestry_exhausted" });
     const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
     expect(
@@ -13427,9 +13524,21 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         await db
           .select()
           .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, parentId))
+          .where(eq(heartbeatRuns.id, leafId))
       )[0],
-    ).toMatchObject({ status: "queued", startedAt: null, errorCode: null });
+    ).toMatchObject({
+      status: "failed",
+      startedAt: null,
+      errorCode: CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE,
+    });
+    expect(
+      (
+        await db
+          .select({ executionRunId: issues.executionRunId })
+          .from(issues)
+          .where(eq(issues.id, source.issueId))
+      )[0]?.executionRunId,
+    ).toBeNull();
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 

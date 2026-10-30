@@ -5,6 +5,7 @@ import { agentWakeupRequests, assets, environmentLeases, heartbeatRuns, issueAtt
 import { reconstructWorkspaceSchema, type ExecutionReconciliation } from "@paperclipai/shared";
 import type { z } from "zod";
 import { conflict } from "../../errors.js";
+import { CHAT_CONTROL_RECOVERY_MAX_ANCESTRY } from "../chat-control-recovery-stop.js";
 import { persistActivity, publishActivity } from "../activity-log.js";
 import { markExecutionReconciliation } from "../execution-recovery-resolution.js";
 import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
@@ -127,7 +128,7 @@ export async function validateReconstructedWorkspaceDispatch(db: Db, run: typeof
   const predecessorRunIds: string[] = [];
   let root = run;
   while (root.retryOfRunId !== context.previousRunId) {
-    if (!root.retryOfRunId || predecessorRunIds.length >= 64 || predecessorRunIds.includes(root.retryOfRunId)
+    if (!root.retryOfRunId || predecessorRunIds.length >= CHAT_CONTROL_RECOVERY_MAX_ANCESTRY || predecessorRunIds.includes(root.retryOfRunId)
       || root.invocationSource !== "automation" || root.triggerDetail !== "system" || !root.scheduledRetryReason
       || object(root.contextSnapshot).retryOfRunId !== root.retryOfRunId) throw changed();
     const [wake] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, run.companyId),
