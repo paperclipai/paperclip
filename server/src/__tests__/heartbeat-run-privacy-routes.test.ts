@@ -267,7 +267,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
       runnerProfileJson: { instructions: payload }, stdoutExcerpt: payload, stderrExcerpt: payload,
     }).where(eq(heartbeatRuns.id, f.privateRunId));
     const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.privateRunId));
-    const observed = createDb(tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const observed = createDb(externalDatabaseUrl ?? tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
     const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
     try {
