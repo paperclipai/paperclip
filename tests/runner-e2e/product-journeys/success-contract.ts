@@ -11,6 +11,7 @@ export function agentJourneyRunCountValid(id: string, count: unknown): boolean {
 export const journeyRequiredChecks: Record<string, readonly string[]> = {
   "task-properties": ["assignment-persisted", "no-agent-work"],
   "task-create": ["browser-created-task-persisted", "no-agent-work"],
+  "task-search-filter": ["task-search-results-exact", "task-status-filter-excludes-controls", "task-search-filter-reloaded", "task-search-result-reopened", "no-agent-work"],
   "ask-question": ["question-answer-persisted", "one-bound-successful-run", "configured-model-and-environment"],
   "question-answer-resume": ["question-resume.forms", "question-resume.choice.answer", "question-resume.choice.path",
     "question-resume.text.answer", "question-resume.text.path", "question-resume.complete-evidence", "question-no-premature-output",

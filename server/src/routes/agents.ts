@@ -154,7 +154,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingClaim } from "@paperclipai/shared";
-import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
+import { adapterSettingsService } from "../services/adapter-settings.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { isFixedClaudeOAuthBinding, secretService } from "../services/secrets.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
@@ -1859,15 +1859,6 @@ export function agentRoutes(
    * Adapter validation for the paths that CHOOSE a harness for a new agent
    * (hire + create), as opposed to the paths that operate on an existing one.
    *
-   * A disabled adapter is one this instance cannot run — most often because a
-   * declarative registry (PAPERCLIP_ADAPTERS) curated it out, which
-   * reconcileAdapterAvailability turns into a disabled type at boot. Registered
-   * but disabled still passes assertKnownAdapterType, so an agent could be
-   * created on it and then fail EVERY run at lease time with
-   * `Adapter "..." is not in the configured adapter registry` — an error that
-   * arrives minutes later, in a run log, with no way back to the choice that
-   * caused it. Refuse at selection time instead, and name what can be chosen.
-   *
    * Existing agents on a now-disabled adapter are deliberately untouched
    * (listEnabledServerAdapters documents the same rule: hidden from selection,
    * still functional for agents that already use them).
@@ -1902,7 +1893,7 @@ export function agentRoutes(
         );
       }
     }
-    const disabled = new Set(getDisabledAdapterTypes());
+    const disabled = new Set(await adapterSettingsService(db).getDisabledTypes());
     if (!disabled.has(adapterType)) return adapterType;
     const available = listServerAdapters()
       .map((a) => a.type)
