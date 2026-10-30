@@ -178,6 +178,21 @@ function gitFilesystemRoots(source: NodeJS.ProcessEnv): { read: string[]; write:
   return { read: [...new Set(read)], write: [...new Set(write)] };
 }
 
+function extraFilesystemRoots(source: NodeJS.ProcessEnv): string[] {
+  try {
+    const raw = (source.PAPERCLIP_RUNNER_EXTRA_ROOTS ?? "[]").trim();
+    const roots: unknown = raw.startsWith("[") ? JSON.parse(raw) : raw.split(delimiter).filter(Boolean);
+    if (!Array.isArray(roots)) return [];
+    const home = source.HOME ? resolve(source.HOME) : undefined;
+    return [...new Set(roots
+      .filter((root): root is string => typeof root === "string" && isAbsolute(root))
+      .map((root) => resolve(root))
+      .filter((root) => root !== "/" && root !== home))];
+  } catch {
+    return [];
+  }
+}
+
 function usesExternalRunnerSandbox(source: NodeJS.ProcessEnv): boolean {
   return source.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX === "1";
 }
@@ -259,6 +274,7 @@ export function createIsolatedCodexAppServerArgs(
   const explicitSource = source;
   source ??= process.env;
   const gitRoots = gitFilesystemRoots(source);
+  const extraRoots = extraFilesystemRoots(source);
   readOnlyRoots = [...new Set([...readOnlyRoots, ...codexNetworkReadOnlyRoots(source)])];
   const networkAccess = codexNetworkAccess(source);
   const externalRunnerSandbox = usesExternalRunnerSandbox(source);
@@ -296,6 +312,7 @@ export function createIsolatedCodexAppServerArgs(
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
     ...gitRoots.read.map((path) => `${tomlString(path)}="read"`),
     ...gitRoots.write.map((path) => `${tomlString(path)}="write"`),
+    ...extraRoots.map((path) => `${tomlString(path)}="write"`),
     ...(instructionWorkingCopyRoot ? [`${tomlString(resolve(instructionWorkingCopyRoot))}="write"`] : []),
     ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
       ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
@@ -309,7 +326,7 @@ export function createIsolatedCodexAppServerArgs(
     ...protectedPaths.map((path) => `${tomlString(resolve(path))}="none"`),
     ...(usesPreconfiguredHome(source) && source.HOME ? [`${tomlString(source.HOME)}="read"`] : []),
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
-    ...[...gitRoots.read, ...gitRoots.write].map((path) => `${tomlString(path)}="read"`),
+    ...[...gitRoots.read, ...gitRoots.write, ...extraRoots].map((path) => `${tomlString(path)}="read"`),
     ...(instructionWorkingCopyRoot ? [`${tomlString(resolve(instructionWorkingCopyRoot))}="read"`] : []),
     ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
       ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),

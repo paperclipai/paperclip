@@ -488,4 +488,18 @@ describe("Codex security configuration", () => {
       "--dangerously-bypass-approvals-and-sandbox",
     );
   });
+  it("projects operator-approved extra roots as writable for execution and read-only for planning", () => {
+    const source = { HOME: "/host/home", PAPERCLIP_RUNNER_EXTRA_ROOTS: JSON.stringify(["/host/home/Projects", "/host/home", "/", "relative", 7]) };
+    const args = createIsolatedCodexAppServerArgs(source);
+    const execution = args.find((arg) => arg.startsWith("permissions.paperclip-runner-workspace-only.filesystem="))!;
+    const planning = args.find((arg) => arg.startsWith("permissions.paperclip-runner-workspace-read-only.filesystem="))!;
+    expect(execution).toContain('"/host/home/Projects"="write"');
+    expect(planning).toContain('"/host/home/Projects"="read"');
+    expect(execution).not.toContain('"/host/home"="write"');
+    expect(execution).not.toContain('"/"="write"');
+    expect(execution).not.toContain('"relative"');
+    const plain = createIsolatedCodexAppServerArgs({ HOME: "/host/home", PAPERCLIP_RUNNER_EXTRA_ROOTS: "/host/home/Projects:/host/home/Other" }).join("\n");
+    expect(plain).toContain('"/host/home/Projects"="write"');
+    expect(plain).toContain('"/host/home/Other"="write"');
+  });
 });
