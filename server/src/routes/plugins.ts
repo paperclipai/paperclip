@@ -1928,7 +1928,7 @@ export function pluginRoutes(
       }
       assertCompanyAccess(req, companyId);
       await enforceScopedApiCheckout(req, match.route, match.params, companyId);
-      if (req.method !== "GET" && req.headers["content-type"] && !req.is("application/json")) {
+      if (req.method !== "GET" && req.is("application/json") === false) {
         res.status(415).json({ error: "Plugin API routes accept JSON requests only" });
         return;
       }
