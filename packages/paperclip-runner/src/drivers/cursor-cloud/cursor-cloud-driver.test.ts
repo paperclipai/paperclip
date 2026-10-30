@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { lstat, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
@@ -462,6 +462,98 @@ describe("Cursor Cloud native driver", () => {
     expect(peer.cancelRun).toHaveBeenCalledTimes(1);
     expect(peer.cancelRun).toHaveBeenCalledWith(previous.agentId, peer.native!.id, expect.anything());
     expect(await f.session.read()).toMatchObject({ phase: "terminal", pendingTerminalDelivery: { providerRunId: peer.native!.id, turnId: next.next.turnId } });
+  });
+
+  it.each(["fresh", "follow-up"])("restores a provably unsent %s turn after an actual checkpoint publication failure", async phase => {
+    const peer = new Peer(); distinctFollowup(peer);
+    const f = await fixture(peer);
+    if (phase === "follow-up") {
+      await f.session.startTurn({ message: { role: "user", text: "First task" } });
+      await waitFor(() => f.events.some(event => event.eventType === "item.delta"));
+      await f.session.interrupt!(); await acknowledgeTerminal(f.session);
+      await f.session.attachRun!({ runId: "paperclip-followup" });
+    }
+    const before = await savedCheckpoint(f.root, f.session);
+    const eventCount = f.events.length;
+    const checkpointPath = join(f.root, (await readdir(f.root)).find(name => /^checkpoint-.*\.json$/.test(name))!);
+    const savedPath = `${checkpointPath}.before-failure`;
+    await rename(checkpointPath, savedPath); await mkdir(checkpointPath, { mode: 0o700 });
+    try {
+      await expect(f.session.startTurn({ message: { role: "user", text: "No remote request before durable custody" } })).rejects.toThrow();
+    } finally {
+      await rm(checkpointPath, { recursive: true }); await rename(savedPath, checkpointPath);
+    }
+    expect(peer.createAgent).toHaveBeenCalledTimes(phase === "fresh" ? 0 : 1);
+    expect(peer.createRun).not.toHaveBeenCalled();
+    expect(await savedCheckpoint(f.root, f.session)).toEqual(before);
+    expect(f.events.slice(eventCount)).toEqual([]);
+    const reconciliations = peer.getAgent.mock.calls.length, cancellations = peer.cancelRun.mock.calls.length;
+    await f.session.interrupt!();
+    expect(peer.getAgent).toHaveBeenCalledTimes(reconciliations); expect(peer.cancelRun).toHaveBeenCalledTimes(cancellations);
+    const snapshot = await f.session.snapshot(); await f.session.close({ reason: "storage_recovered" }); await f.pump;
+    expect(peer.getAgent).toHaveBeenCalledTimes(reconciliations); expect(peer.cancelRun).toHaveBeenCalledTimes(cancellations);
+    const recovered = (await new CursorCloudDriver(f.options).recoverSession(snapshot)).session!;
+    sessions.push(recovered);
+    expect(await savedCheckpoint(f.root, recovered)).toEqual({ ...before, relayTurnToken: before.relayTurnToken ?? null });
+    await recovered.startTurn({ message: { role: "user", text: "Retry after storage recovery" } });
+    await waitFor(() => peer.createAgent.mock.calls.length === 1 && peer.createRun.mock.calls.length === (phase === "fresh" ? 0 : 1));
+    await recovered.interrupt!();
+  });
+
+  it("retains accepted provider work when its confirmed-identity checkpoint write fails", async () => {
+    const peer = new Peer();
+    const f = await fixture(peer);
+    const checkpointPath = join(f.root, (await readdir(f.root)).find(name => /^checkpoint-.*\.json$/.test(name))!);
+    const savedPath = `${checkpointPath}.before-confirmation`;
+    const create = peer.createAgent.getMockImplementation()!;
+    peer.createAgent.mockImplementationOnce(async input => {
+      const response = await create(input);
+      await rename(checkpointPath, savedPath); await mkdir(checkpointPath, { mode: 0o700 });
+      return response;
+    });
+    try {
+      await f.session.startTurn({ message: { role: "user", text: "Accepted provider work retains its custody" } });
+      await waitFor(() => f.events.some(event => event.payload.code === "cursor_cloud_remote_state_unknown"));
+      expect(await f.session.read()).toMatchObject({ agentId: peer.native!.agentId, runId, phase: "running" });
+      expect(peer.createAgent).toHaveBeenCalledTimes(1);
+      await expect(f.session.startTurn({ message: { role: "user", text: "No duplicate" } })).rejects.toThrow("unresolved remote work");
+    } finally {
+      await rm(checkpointPath, { recursive: true }); await rename(savedPath, checkpointPath);
+    }
+    expect(await savedCheckpoint(f.root, f.session)).toMatchObject({ agentId: peer.native!.agentId, runId, phase: "running", pendingOperation: null });
+    await f.session.interrupt!();
+    expect(peer.createAgent).toHaveBeenCalledTimes(1); expect(peer.cancelRun).toHaveBeenCalledTimes(1);
+    expect(await f.session.read()).toMatchObject({ phase: "terminal", pendingTerminalDelivery: { status: "CANCELLED", providerRunId: runId } });
+  });
+
+  it("restores an unsent launch behind a concurrent Stop write after persistence rejects", async () => {
+    const f = await fixture();
+    const before = await savedCheckpoint(f.root, f.session);
+    const held = deferred(), release = deferred(), stoppingWritten = deferred();
+    const failure = new Error("controlled post-publication persistence failure");
+    const originalWrite = CursorCloudCheckpointStore.prototype.write;
+    let intercepted = false;
+    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(value) {
+      const persisted = originalWrite.call(this, value);
+      if (value.phase === "creating" && !intercepted) {
+        intercepted = true;
+        return persisted.then(async () => { held.resolve(); await release.promise; throw failure; });
+      }
+      if (value.phase === "stopping") void persisted.then(() => stoppingWritten.resolve());
+      return persisted;
+    });
+    try {
+      const started = f.session.startTurn({ message: { role: "user", text: "Stop before unsent launch" } });
+      const rejected = expect(started).rejects.toBe(failure);
+      await held.promise;
+      const stopped = f.session.interrupt!(); await stoppingWritten.promise;
+      expect(f.peer.createAgent).not.toHaveBeenCalled();
+      release.resolve(); await rejected; await stopped;
+      expect(await savedCheckpoint(f.root, f.session)).toEqual(before);
+      expect(f.peer.createAgent).not.toHaveBeenCalled(); expect(f.peer.getAgent).not.toHaveBeenCalled(); expect(f.peer.cancelRun).not.toHaveBeenCalled();
+      await f.session.startTurn({ message: { role: "user", text: "Next admitted task" } }); await f.peer.created.promise;
+      await f.session.interrupt!();
+    } finally { release.resolve(); write.mockRestore(); }
   });
 
   it("registers the new turn launch before Stop can enter its initial checkpoint await", async () => {

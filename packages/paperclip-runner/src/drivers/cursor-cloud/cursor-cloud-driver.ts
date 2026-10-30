@@ -221,6 +221,7 @@ class CursorCloudSession implements CursorCloudSessionHandle {
     if (this.#cp.pendingTerminalDelivery) throw new Error("Cursor Cloud terminal delivery must be acknowledged before new work");
     if (this.#options.relay.expiresAt <= Date.now()) throw new Error("Cursor Cloud semantic relay capability expired; only recovery cleanup is permitted");
     if (!input.message.text.trim() || Buffer.byteLength(input.message.text) > 1_048_576) throw new Error("Cursor Cloud turn text is empty or exceeds its bound");
+    const previous = structuredClone(this.#cp);
     const turnId = `turn-${randomUUID()}`;
     const relayTurnToken = randomBytes(32).toString("base64url");
     const first = this.#cp.agentId === null;
@@ -235,7 +236,17 @@ class CursorCloudSession implements CursorCloudSessionHandle {
     const authority = this.#pending(this.#authority());
     this.#stopping = false; this.#stop = null;
     const streamAbort = new AbortController(); this.#streamAbort = streamAbort;
-    const persisted = this.#store.write(this.#cp);
+    const persisted = this.#store.write(this.#cp).catch(async error => {
+      if (this.#current(authority)) {
+        this.#generation += 1;
+        Object.assign(this.#cp, previous);
+        if (previous.relayTurnToken === undefined) delete this.#cp.relayTurnToken;
+        this.#stopping = false; this.#clearDeadline(); streamAbort.abort();
+        if (this.#streamAbort === streamAbort) this.#streamAbort = null;
+        await this.#store.write(this.#cp);
+      }
+      throw error;
+    });
     const launch = (async () => {
       await persisted;
       if (!this.#currentPending(authority)) return;
