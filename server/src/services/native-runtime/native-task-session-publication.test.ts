@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { agents, agentTaskSessions, companies, completionContracts, createDb, heartbeatRuns, issues,
-  nativeRunFinalizations, type Db } from "@paperclipai/db";
+  nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { CONTROL_PLANE_CONFORMANCE_OPEN, CONTROL_PLANE_CONFORMANCE_RESULT,
   CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../../vendor/paperclip-runner/testing.js";
 import type { PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
@@ -13,7 +13,7 @@ import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres
 import { redactRegisteredSecretValues } from "../run-secret-redaction.js";
 import { nativeSha256 } from "./canonical.js";
 import { PaperclipControlPlanePort, type PaperclipControlPlaneBinding } from "./paperclip-control-plane-port.js";
-import { nativeTaskSessionPublicationHandled, NATIVE_TASK_SESSION_PUBLICATION_KEY,
+import { nativeTaskSessionPublicationHandled, publishNativeTaskSessionInTransaction, NATIVE_TASK_SESSION_PUBLICATION_KEY,
   type NativeTaskSessionPublicationContext } from "./native-task-session-publication.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_PUBLICATION_TEST_DATABASE_URL");
@@ -40,7 +40,7 @@ describe("accepted native task session publication", () => {
     await temporary?.cleanup();
   });
 
-  async function fixture(source: "runner" | "control" = "runner") {
+  async function fixture(source: "runner" | "control" = "runner", accepted = true) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     const sessionId = randomUUID(), contractId = randomUUID(), runner = randomUUID(), control = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Native pointer", issuePrefix: `P${companyId.slice(0, 7)}` });
@@ -69,7 +69,7 @@ describe("accepted native task session publication", () => {
       semanticResult: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL };
     const port = new PaperclipControlPlanePort(measured, binding, { taskSessionPublication: context, taskSessionPublicationOwner: owner });
     await port.openRun({ ...CONTROL_PLANE_CONFORMANCE_OPEN, identity: snapshot.identity, sourceInstanceId: runner });
-    await new PaperclipControlPlanePort(db, binding).completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT,
+    if (accepted) await new PaperclipControlPlanePort(db, binding).completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT,
       terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, turnId: "publication-turn" });
     await db.insert(agentTaskSessions).values({ companyId, agentId, adapterType: context.adapterType, taskKey: issueId,
       goalSourceId: `${source === "runner" ? runner : control}:${runId}`, goalSourceCursor: 4 });
@@ -113,6 +113,66 @@ describe("accepted native task session publication", () => {
     expect(repeated.filter(query => /agent_task_sessions|native_run_results/i.test(query))).toHaveLength(0);
     expect(repeated.filter(query => /^begin\b/i.test(query.trim()))).toHaveLength(1);
     expect(repeated.filter(query => /^update /i.test(query.trim()))).toHaveLength(1);
+  });
+
+  it("persists a pre-acceptance terminal observation and publishes only at the existing accepted checkpoint", async () => {
+    const f = await fixture("runner", false);
+    // Driver event/startup checkpoints can expose a semantic terminal observation
+    // before the runtime calls completeRun. That observation is not acceptance.
+    await f.port.checkpointSession(f.snapshot);
+    const observed = await f.read();
+    expect(observed.run.runnerProfileJson?.sessionCheckpoint).toMatchObject({ semanticResult: CONTROL_PLANE_CONFORMANCE_RESULT });
+    expect(observed.run.runnerProfileJson).not.toHaveProperty(NATIVE_TASK_SESSION_PUBLICATION_KEY);
+    expect(observed.session?.sessionParamsJson).toBeNull();
+    expect(nativeTaskSessionPublicationHandled(observed.run.runnerProfileJson, { ...f.binding, ...f.context })).toBe(false);
+    await f.port.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT,
+      terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, turnId: "publication-turn" });
+    expect((await f.read()).session?.sessionParamsJson).toBeNull();
+    await f.port.checkpointSession(f.snapshot);
+    const completed = await f.read();
+    expect(completed.session?.lastRunId).toBe(f.binding.runId);
+    expect(nativeTaskSessionPublicationHandled(completed.run.runnerProfileJson, { ...f.binding, ...f.context })).toBe(true);
+  });
+
+  it("does not hold the issue parent lock while a result replay waits for the status coordinator", async () => {
+    const f = await fixture();
+    let committed = 0;
+    const port = new PaperclipControlPlanePort(db, f.binding, { nativeRecovery: { owner: f.owner,
+      compatibility: { configDigest: nativeSha256("config"), processConfigDigest: null } },
+      onResultCommitted: async () => { committed++; } });
+    await port.openRun({ ...CONTROL_PLANE_CONFORMANCE_OPEN, identity: f.snapshot.identity, sourceInstanceId: f.binding.sourceInstanceId });
+    let replay: Promise<unknown> | undefined;
+    let statusLockError: unknown = null;
+    try {
+      await db.transaction(async tx => {
+        // This is commitNativeStatusDecision's actual lock prefix. Hold its
+        // coordinator first, then overlap an identical remote result replay.
+        await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.binding.runId)).for("update");
+        const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`);
+        replay = port.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT,
+          terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, turnId: "publication-turn" }).then(() => null, error => error);
+        let waiting = false;
+        for (let attempt = 0; attempt < 100; attempt++) {
+          const [state] = await measured.execute(sql`select exists (
+            select 1 from pg_stat_activity where ${backend.pid} = any(pg_blocking_pids(pid))) as waiting`);
+          if (state.waiting) { waiting = true; break; }
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(waiting).toBe(true);
+        // A bounded test-local timeout reports the inverse-order cycle without
+        // relying on which transaction PostgreSQL chooses as deadlock victim.
+        await tx.execute(sql`set local lock_timeout = '500ms'`);
+        await tx.select().from(issues).where(eq(issues.id, f.binding.issueId)).for("update");
+      });
+    } catch (error) { statusLockError = error; }
+    const replayError = await replay;
+    expect(statusLockError).toBeNull();
+    expect(replayError).toBeNull();
+    expect(committed).toBe(0);
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.binding.runId))).toHaveLength(1);
+    await db.update(nativeRunFinalizations).set({ controllerGeneration: 2 }).where(eq(nativeRunFinalizations.runId, f.binding.runId));
+    await expect(port.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT,
+      terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, turnId: "publication-turn" })).rejects.toThrow("checkpoint_owner_lost");
   });
 
   it.each(["missing", "foreign_epoch", "newer_pointer", "newer_execution", "generation_reset", "stop"])("fences %s and records a handled suppression", async kind => {
@@ -171,7 +231,11 @@ describe("accepted native task session publication", () => {
       .rejects.toMatchObject({ cause: { constraint_name: "native_run_finalizations_result_owner_fk" } });
     expect((await foreign.read()).session?.sessionParamsJson).toBeNull();
     await db.update(nativeRunFinalizations).set({ resultId: null }).where(eq(nativeRunFinalizations.runId, foreign.binding.runId));
-    await expect(foreign.port.checkpointSession(foreign.snapshot)).rejects.toThrow("publication_result_missing");
+    // The CP defers preacceptance snapshots, while the publication helper itself
+    // still requires accepted-result authority if called directly.
+    await expect(publishNativeTaskSessionInTransaction({} as never, { binding: foreign.binding,
+      context: foreign.context, snapshot: foreign.snapshot, run: (await foreign.read()).run,
+      issue: null, resultId: null })).rejects.toThrow("publication_result_missing");
   });
 
   it("adds no publication SQL for nonterminal or goal snapshots", async () => {

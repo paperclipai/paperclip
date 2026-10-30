@@ -2704,6 +2704,13 @@ so they cannot restore a cleared pointer or overwrite its successor. Unsupported
 legacy bindings keep the existing completion path. The receipt is excluded from
 public run projections and contains no session parameters or credentials.
 
+A terminal snapshot can arrive before result acceptance. That snapshot publishes
+neither a continuation pointer nor a handled publication receipt. The existing
+post-acceptance checkpoint completes publication in its normal transaction.
+The first production release containing recovery readers and redaction for both
+private recovery fields is the disk-independent rollback floor. Earlier
+development-reader probes do not establish a published rollback target.
+
 For per-turn direct sandbox recovery, the executor reads the retained Runner's
 suspended lifecycle through the recorded sandbox lease and validates its complete
 identity and lack of pending delivery/cleanup. Only a lifecycle projection is

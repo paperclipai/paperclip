@@ -300,7 +300,10 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
             header ? { runId: this.#binding.runId, runnerInstanceId: header.runnerInstanceId,
               normalizedSessionId: header.normalizedSessionId } : null) } : {}),
         };
-      if (publication && selected) {
+      // Driver/live snapshots may already describe a terminal result before
+      // completeRun accepts it. Persist that observation without a handled
+      // receipt; the existing post-acceptance checkpoint publishes the pointer.
+      if (publication && selected?.resultId) {
         const receipt = await publishNativeTaskSessionInTransaction(tx, { binding: this.#binding, context: publication,
           snapshot, run, issue: selected.publicationIssue ?? null, resultId: selected.resultId ?? null,
           recoveryReady: !recovery || header !== null });
@@ -485,14 +488,15 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     });
 
     const insertedResult = await this.#db.transaction(async (tx) => {
-      // Result insertion checks the task foreign key. Acquire that parent lock
-      // before the run, matching task mutations that subsequently update a run.
-      // Otherwise concurrent chat/status writes can deadlock after generation.
+      // Status commit and snapshot publication lock coordinator → issue → run.
+      // A replay must follow that order too: holding the issue while waiting
+      // for the coordinator deadlocks a status commit's issue UPDATE lock.
+      const recovery = this.#nativeRecovery;
+      const owner = recovery ? await lockNativeRunnerCheckpointOwner(tx, recovery.owner) : null;
+      // Result insertion checks the task FK. Keep its parent lock before run.
       await tx.select({ id: issues.id }).from(issues)
         .where(and(eq(issues.id, this.#binding.issueId), eq(issues.companyId, this.#binding.companyId)))
         .for("key share");
-      const recovery = this.#nativeRecovery;
-      const owner = recovery ? await lockNativeRunnerCheckpointOwner(tx, recovery.owner) : null;
       const run = await tx.select().from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, this.#binding.runId)).for("update").limit(1)
         .then((rows) => rows[0] ?? null);

@@ -2779,6 +2779,8 @@ not resource cleanup. `native-task-session-publication.ts` owns its accepted-res
 owner, task-epoch and reset checks; heartbeat supplies prepared session metadata.
 The goal-less regression in `native-session-resumption.test.ts` holds provider
 cleanup open and then exercises a normal follow-up and an explicit session reset.
+Control-port tests also cover terminal snapshots before accepted results and
+result-replay contention with the status writer's coordinator-first lock order.
 Run it against an isolated database with `PAPERCLIP_TEST_DATABASE_URL` when the
 host cannot start embedded Postgres:
 
