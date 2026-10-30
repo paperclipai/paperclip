@@ -388,8 +388,10 @@ test command and additional warm compatibility cases are running. The paired
 300-controller/10,000-task workload now includes actual snapshot persistence.
 Its initial host pilot missed throughput gates; an isolated Linux client/database
 pilot is underway. Database cost acceptance, distinct-release application startup,
-compatible rollback, and native Daytona qualification remain open. Daytona needs
-an immutable qualification image; an asynchronous question requests that fixture.
+compatible rollback, and native Daytona qualification remain open. The published Daytona qualification image was independently resolved from successful
+workflow 40709784515 to `sha256:b38ed051d00fed409092d354eea9ae1b01fb232bcb7d5a187ed763382dda2d0b`
+(source `8fe5d5defcdfb55a1b9049a801cfa5498629cebc`). The exact Linux Runner was
+extracted from that image. A single five-minute outage Product E2E attempt is running.
 No production deployment or complete zero-downtime acceptance is claimed.
 
 Failures retained in the implementation record: sandbox listener denial and host
@@ -415,3 +417,14 @@ Next action: complete the remaining native qualification and compatibility cells
 retain reproducible measurements, and prepare the reviewed PR. Full-home application
 acceptance remains dependent on workspace/backup durability; no controller-only
 test can waive that gate.
+
+Qualification update: the legacy and changed-process-configuration warm cases
+exposed a marker left by suspension before authority rotation. Restoring the
+committed PRP checkpoint before constructing the replacement backend fixes both;
+both real-process cases pass. The initial rerun used the wrong fixture executable
+path and failed before provider startup; its log is retained. All 59 control-plane
+port tests pass after narrowing the snapshot read to the binding and profile
+columns it actually needs. The initial paired 300-controller ABBA comparison
+completed every offered operation with no ownership losses, but candidate latency
+and CPU increased above the investigation threshold. It is not performance
+acceptance. A new paired run will measure the narrower snapshot projection.

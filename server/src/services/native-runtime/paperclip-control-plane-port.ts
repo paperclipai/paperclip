@@ -32,7 +32,6 @@ import { publishLiveEvent } from "../live-events.js";
 import { nativeSha256 } from "./canonical.js";
 import { redactRunnerApiEvent, redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 import { createNativeControllerRecovery, type NativeControllerCompatibility } from "./native-controller-recovery.js";
-import { getTableColumns } from "drizzle-orm";
 import { lockNativeRunnerCheckpointOwner, validateNativeRunnerCheckpointOwner, inspectNativeRunnerUpgradeHeader, type NativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
 
 export interface PaperclipControlPlaneBinding {
@@ -130,7 +129,9 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     options?.signal.throwIfAborted();
   }
 
-  #matchesPersistedBinding(run: typeof heartbeatRuns.$inferSelect): boolean {
+  #matchesPersistedBinding(run: Pick<typeof heartbeatRuns.$inferSelect,
+    "companyId" | "agentId" | "runtimeMode" | "nativeIssueId" | "nativeSessionId" |
+    "runnerInstanceId" | "completionContractId" | "completionContractSha256">): boolean {
     return run.companyId === this.#binding.companyId
       && run.agentId === this.#binding.agentId
       && run.runtimeMode === "native"
@@ -210,13 +211,25 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     await this.#db.transaction(async (tx) => {
       const recovery = this.#nativeRecovery;
       const owner = recovery ? await lockNativeRunnerCheckpointOwner(tx, recovery.owner) : null;
-      const lockedRun = tx.$with("snapshot_run").as(tx.select().from(heartbeatRuns)
+      const lockedRun = tx.$with("snapshot_run").as(tx.select({
+        companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+        runtimeMode: heartbeatRuns.runtimeMode, nativeIssueId: heartbeatRuns.nativeIssueId,
+        nativeSessionId: heartbeatRuns.nativeSessionId, runnerInstanceId: heartbeatRuns.runnerInstanceId,
+        completionContractId: heartbeatRuns.completionContractId,
+        completionContractSha256: heartbeatRuns.completionContractSha256,
+        runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      }).from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, this.#binding.runId)).for("update"));
       // Project the locking CTE's tuples, including any update committed while
       // the lock waited. A second scan of heartbeat_runs could see an old MVCC tuple.
-      const runColumns = Object.fromEntries(Object.keys(getTableColumns(heartbeatRuns)).map(key =>
-        [key, lockedRun[key as keyof typeof heartbeatRuns.$inferSelect]])) as unknown as ReturnType<typeof getTableColumns<typeof heartbeatRuns>>;
-      const selected = await tx.with(lockedRun).select({ run: runColumns, now: sql<Date>`clock_timestamp()`, ...(recovery ? {
+      const selected = await tx.with(lockedRun).select({ run: {
+        companyId: lockedRun.companyId, agentId: lockedRun.agentId,
+        runtimeMode: lockedRun.runtimeMode, nativeIssueId: lockedRun.nativeIssueId,
+        nativeSessionId: lockedRun.nativeSessionId, runnerInstanceId: lockedRun.runnerInstanceId,
+        completionContractId: lockedRun.completionContractId,
+        completionContractSha256: lockedRun.completionContractSha256,
+        runnerProfileJson: lockedRun.runnerProfileJson,
+      }, now: sql<Date>`clock_timestamp()`, ...(recovery ? {
         checkpointHeader: sql<Record<string, unknown> | null>`(select material from ${nativeRunnerCheckpoints}
           where ${nativeRunnerCheckpoints.runId} = ${this.#binding.runId}
             and ${nativeRunnerCheckpoints.companyId} = ${this.#binding.companyId}
