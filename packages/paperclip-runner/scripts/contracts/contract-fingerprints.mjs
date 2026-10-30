@@ -360,29 +360,68 @@ function rustSerdeTypeShapes(paths, readFile) {
   return Object.fromEntries([...byName.keys()].sort().map(name => [name, resolve(name, []).shape]));
 }
 
-/** Payload keys built or read in code: `json!({"key": ...})`, `["key"]`, `.get("key")`. */
+/** Payload keys built or read in code, `json!({"key": ...})`, `["key"]` and
+ * `.get("key")`, grouped by enclosing function. Groups carry no function name,
+ * so renaming or moving a function is not a contract change, while a parser
+ * that starts reading a different key is, even when another function already
+ * reads that key. */
 function rustJsonKeys(source) {
-  const text = withoutTestModules(stripRustComments(source));
-  const writes = new Set(), reads = new Set();
-  for (const m of text.matchAll(/json!\s*\(/g)) {
-    const body = balanced(text, m.index + m[0].length - 1, "(", ")");
-    for (const k of body.matchAll(/"((?:\\.|[^"\\])*)"\s*:/g)) writes.add(k[1]);
-  }
-  for (const m of text.matchAll(/\[\s*"((?:\\.|[^"\\])*)"\s*\]|\.get\(\s*"((?:\\.|[^"\\])*)"\s*\)/g)) reads.add(m[1] ?? m[2]);
-  return { writes: [...writes].sort(), reads: [...reads].sort() };
+  return rustScopeGroups(source, text => {
+    const writes = new Set(), reads = new Set();
+    for (const m of text.matchAll(/json!\s*\(/g)) {
+      const body = balanced(text, m.index + m[0].length - 1, "(", ")");
+      for (const k of body.matchAll(/"((?:\\.|[^"\\])*)"\s*:/g)) writes.add(k[1]);
+    }
+    for (const m of text.matchAll(/\[\s*"((?:\\.|[^"\\])*)"\s*\]|\.get\(\s*"((?:\\.|[^"\\])*)"\s*\)/g)) reads.add(m[1] ?? m[2]);
+    return writes.size || reads.size ? { writes: [...writes].sort(), reads: [...reads].sort() } : null;
+  });
 }
-/** Inline accept-sets: string literals in `matches!(...)` and in match-arm patterns. */
+/** Inline accept-sets, string literals in `matches!(...)` and in match-arm
+ * patterns, grouped by enclosing function like rustJsonKeys. */
 function rustMatchLiterals(source) {
-  const text = withoutTestModules(stripRustComments(source));
-  const out = new Set();
-  for (const m of text.matchAll(/matches!\s*\(/g)) {
-    for (const s of rustStrings(balanced(text, m.index + m[0].length - 1, "(", ")"))) out.add(s);
+  return rustScopeGroups(source, text => {
+    const out = new Set();
+    for (const m of text.matchAll(/matches!\s*\(/g)) {
+      for (const s of rustStrings(balanced(text, m.index + m[0].length - 1, "(", ")"))) out.add(s);
+    }
+    const lit = String.raw`"(?:\\.|[^"\\])*"`;
+    for (const m of text.matchAll(new RegExp(`(${lit}(?:\\s*\\|\\s*${lit})*)\\s*(?:if\\b[^=]*)?=>`, "g"))) {
+      for (const s of rustStrings(m[1])) out.add(s);
+    }
+    return out.size ? [...out].sort() : null;
+  });
+}
+/** Applies `collect` to each outermost function body, and to the code outside
+ * any function, and returns the sorted set of non-empty results. */
+function rustScopeGroups(source, collect) {
+  const groups = rustScopes(withoutTestModules(stripRustComments(source))).map(collect).filter(Boolean);
+  return [...new Set(groups.map(stableStringify))].sort();
+}
+/** Outermost `fn` bodies, then the remaining text. String contents are masked
+ * while locating braces, so `"{}"` format strings do not end a body early. */
+function rustScopes(text) {
+  const masked = text.replace(/"(?:\\.|[^"\\])*"/g, m => `"${" ".repeat(m.length - 2)}"`);
+  const scopes = [];
+  let rest = "", last = 0;
+  const fn = /\bfn\s+\w+/g;
+  for (let m; (m = fn.exec(masked));) {
+    // A declaration without a body ends at `;` outside the signature's (..) and [..].
+    let i = m.index + m[0].length, depth = 0;
+    for (; i < masked.length; i++) {
+      const c = masked[i];
+      if (c === "(" || c === "[") depth++;
+      else if (c === ")" || c === "]") depth--;
+      else if (depth === 0 && (c === "{" || c === ";")) break;
+    }
+    if (masked[i] !== "{") continue;
+    const end = i + balanced(masked, i, "{", "}").length;
+    rest += text.slice(last, m.index);
+    scopes.push(text.slice(i, end));
+    last = end;
+    fn.lastIndex = end;
   }
-  const lit = String.raw`"(?:\\.|[^"\\])*"`;
-  for (const m of text.matchAll(new RegExp(`(${lit}(?:\\s*\\|\\s*${lit})*)\\s*(?:if\\b[^=]*)?=>`, "g"))) {
-    for (const s of rustStrings(m[1])) out.add(s);
-  }
-  return [...out].sort();
+  scopes.push(rest + text.slice(last));
+  return scopes;
 }
 function balanced(text, start, open, close) {
   let depth = 0, j = start;

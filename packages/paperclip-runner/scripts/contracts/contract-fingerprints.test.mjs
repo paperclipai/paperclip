@@ -114,6 +114,15 @@ test("moving Rust code to another file leaves the digest unchanged", () => {
   assert.equal(moved, baseline);
 });
 
+test("a parser that reads another key changes the digest even when other code reads it", () => {
+  const path = `${RUST}/acpx_provider_session.rs`;
+  // provider_backend.rs already reads both `status` and `result`.
+  assert.notEqual(digestWith(path, s => s.replace("|| !value.get(\"status\").is_some_and(Value::is_object)",
+    "|| !value.get(\"result\").is_some_and(Value::is_object)")), baseline);
+  // Renaming the function keeps its keys and the digest.
+  assert.equal(digestWith(path, s => s.replaceAll("verify_open_response", "verify_session_open_response")), baseline);
+});
+
 test("recursive serde types resolve", () => {
   const path = `${RUST}/acpx_provider_checkpoint.rs`;
   const recursive = name => original => `${original}\n#[derive(Serialize)]\nstruct ${name} {\n    children: Vec<${name}>,\n}\n`;
