@@ -415,6 +415,38 @@ describe("scoped plugin API routes", () => {
     vi.clearAllMocks();
   });
 
+  it("passes the selected company to the worker when it tests a plugin config", async () => {
+    readyPlugin();
+    const configJson = {
+      apiKeyRef: { type: "secret_ref", secretId, version: "latest" },
+    };
+    mockSecretService.getById.mockResolvedValue({ id: secretId, companyId: companyA, status: "active" });
+    const workerManager = { call: vi.fn().mockResolvedValue({ ok: true }) };
+
+    const { app } = await createApp(
+      {
+        type: "board",
+        userId: "admin-1",
+        source: "session",
+        isInstanceAdmin: true,
+        companyIds: [companyA],
+      },
+      {},
+      { bridgeDeps: { workerManager } },
+    );
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/config/test`)
+      .send({ companyId: companyA, configJson });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ valid: true });
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "validateConfig", {
+      config: configJson,
+      companyId: companyA,
+    });
+  }, 20_000);
+
   it("dispatches manifest-declared scoped routes after company access checks", async () => {
     const pluginId = "11111111-1111-4111-8111-111111111111";
     const workerManager = {
