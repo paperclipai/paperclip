@@ -46,17 +46,21 @@ test("candidate options stay explicit and supported native assets are included b
   assert.deepEqual(parseProviderPackArguments(["/pack", "--candidate-providers=kimi"]), { output: "/pack", candidates: ["kimi"] });
 });
 
-test("Kimi stays explicit, pending and separate from released provider inventory", () => {
-  const kimi = { version: "2.3.3", qualification: "pending", profileDigest: "sha256:profile", closureDigest: "sha256:closure" };
+test("released Kimi enters ordinary inventory on only its two supported targets", () => {
+  const kimi = { version: "2.3.3", qualification: "qualified", profileDigest: "sha256:profile", closureDigest: "sha256:closure" };
   for (const [platform, architecture] of [["darwin", "arm64"], ["linux", "x64"]]) {
-    assert.equal(providerPackProviders(platform, architecture, []).includes("kimi"), false);
-    assert.equal(providerPackProviders(platform, architecture, ["kimi"]).includes("kimi"), true);
+    assert.equal(providerPackProviders(platform, architecture, []).filter(provider => provider === "kimi").length, 1);
+    assert.equal(providerPackProviders(platform, architecture, ["kimi"]).filter(provider => provider === "kimi").length, 1);
   }
-  const fields = providerPackManifestFields({ kimi }, ["kimi"]);
-  assert.equal(fields.providers?.kimi, undefined);
-  assert.equal(fields.candidateProviders.kimi, kimi);
-  assert.equal(providerPackManifestFields({ kimi }, []).candidateProviders?.kimi, undefined);
-  assert.equal(digest(JSON.parse(JSON.stringify(fields))), digest(fields));
+  for (const [platform, architecture] of [["darwin", "x64"], ["linux", "arm64"], ["win32", "x64"]]) {
+    assert.equal(providerPackProviders(platform, architecture, []).includes("kimi"), false);
+  }
+  for (const candidates of [[], ["kimi"]]) {
+    const fields = providerPackManifestFields({ kimi }, candidates);
+    assert.equal(fields.providers.kimi, kimi);
+    assert.equal(fields.candidateProviders?.kimi, undefined);
+    assert.equal(digest(JSON.parse(JSON.stringify(fields))), digest(fields));
+  }
 });
 
 test("Kimi's candidate builder rejects invalid paths before any public download", async t => {
@@ -67,8 +71,8 @@ test("Kimi's candidate builder rejects invalid paths before any public download"
 });
 test("normal packs include Cursor and Copilot on their three pinned targets without breaking other hosts", () => {
   for (const [platform, architecture] of [["darwin", "arm64"], ["darwin", "x64"], ["linux", "x64"]]) {
-    assert.deepEqual(providerPackProviders(platform, architecture, []), ["pi", "cursor", "copilot"]);
-    assert.deepEqual(providerPackProviders(platform, architecture, ["cursor"]), ["pi", "cursor", "copilot"]);
+    assert.deepEqual(providerPackProviders(platform, architecture, []), ["pi", "cursor", "copilot", ...((platform === "darwin" && architecture === "arm64") || platform === "linux" ? ["kimi"] : [])]);
+    assert.deepEqual(providerPackProviders(platform, architecture, ["cursor"]), providerPackProviders(platform, architecture, []));
   }
   assert.deepEqual(providerPackProviders("linux", "arm64", []), []);
   assert.deepEqual(providerPackProviders("win32", "x64", []), []);

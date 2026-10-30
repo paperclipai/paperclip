@@ -9,6 +9,7 @@ import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  PAPERCLIP_RUNNER_ACPX_PROFILES,
 } from "@paperclipai/adapter-utils";
 import type { AdapterLoginCapability } from "@paperclipai/adapter-utils";
 import { runAdapterExecutionTargetShellCommand } from "@paperclipai/adapter-utils/execution-target";
@@ -468,8 +469,22 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
             checks: [{ code: "copilot_metadata_verified", level: "info" as const,
               message: "The verified Copilot runtime authenticated this account and accepted the selected model. No model prompt was sent." }] };
         }
-        if (profile.acpxAgent !== "claude" && profile.acpxAgent !== "grok" && profile.acpxAgent !== "cursor" && profile.acpxAgent !== "pi") throw new Error("Select Codex to use the native Codex runner.");
+        if (profile.acpxAgent !== "claude" && profile.acpxAgent !== "grok" && profile.acpxAgent !== "cursor" && profile.acpxAgent !== "pi" && profile.acpxAgent !== "kimi") throw new Error("Select Codex to use the native Codex runner.");
+        if (profile.acpxAgent === "kimi") {
+          const environment = context.config.env as Record<string, unknown> | undefined;
+          if (typeof environment?.KIMI_API_KEY !== "string" || !environment.KIMI_API_KEY.trim()) {
+            return { adapterType: "paperclip_runner", status: "fail" as const, testedAt: new Date().toISOString(),
+              checks: [{ code: "KIMI_AUTH_REQUIRED", level: "error" as const, message: "Bind a company secret to KIMI_API_KEY in the agent environment." }] };
+          }
+        }
         const target = context.executionTarget;
+        if (profile.acpxAgent === "kimi") {
+          const { probeKimiExecutionTarget } = await import("../services/kimi-connection-probe.js");
+          await probeKimiExecutionTarget((context.config.env as Record<string, string>).KIMI_API_KEY, target, profile.model, { companyId: context.companyId });
+          return { adapterType: "paperclip_runner", status: "pass" as const, testedAt: new Date().toISOString(),
+            checks: [{ code: "kimi_metadata_verified", level: "info" as const,
+              message: "The selected environment verified the pinned Kimi Code runtime. Its Code model catalog accepted the credential and lists the exact selected model. No model prompt was sent." }] };
+        }
         if (target?.kind === "remote") {
           const probe = await runAdapterExecutionTargetShellCommand(
             `acpx-platform-${crypto.randomUUID()}`, target, "uname -s && uname -m",
@@ -477,7 +492,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           );
           if (probe.timedOut || probe.exitCode !== 0) throw new Error("Could not verify the remote ACPX runner platform.");
           const [os, arch] = probe.stdout.trim().split(/\s+/);
-          if (!((os === "Linux" && (arch === "x86_64" || (profile.acpxAgent === "claude" && ["aarch64", "arm64"].includes(arch)))) || (os === "Darwin" && (arch === "arm64" || (profile.acpxAgent !== "grok" && arch === "x86_64"))))) {
+          if (!((os === "Linux" && (arch === "x86_64" || (profile.acpxAgent === "claude" && ["aarch64", "arm64"].includes(arch)))) || (os === "Darwin" && (arch === "arm64" || (!["grok"].includes(profile.acpxAgent) && arch === "x86_64"))))) {
             throw new Error(`ACPX ${profile.acpxAgent} requires a qualified Linux ${profile.acpxAgent === "claude" ? "x64/ARM64" : "x64"} or macOS architecture.`);
           }
           return verifyNativeClaudeApiKey(context.config, {
@@ -614,7 +629,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
       },
       {
         key: "acpxAgent", label: "ACP agent", type: "select" as const, default: "claude",
-        options: [{ value: "claude", label: "Claude" }, { value: "grok", label: "Grok Build" }, { value: "copilot", label: "GitHub Copilot" }],
+        options: PAPERCLIP_RUNNER_ACPX_PROFILES.filter(profile => profile.qualified).map(profile => ({ value: profile.value, label: profile.label })),
         meta: { visibleWhen: { key: "provider", value: "acpx" } },
       },
       {

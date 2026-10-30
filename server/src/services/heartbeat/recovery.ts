@@ -18,7 +18,7 @@ import {
   hasStopOnlyCleanup,
   settleStopOnlyCleanup,
 } from "../sandbox-stop-and-retain.js";
-import { discoverSettledNativeRunProcesses, recordNativeLocalProcessStop, retryPendingSettledNativeRunProcesses } from "../native-local-process-stop.js";
+import { discoverSettledNativeRunProcesses, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, recordNativeLocalProcessStop, retryPendingSettledNativeRunProcesses } from "../native-local-process-stop.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import {
   legacyControllerBootId,
@@ -30,9 +30,11 @@ import { runUsedConversationAdapter } from "../conversation-continuation.js";
 import { legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
 import { reconcileRetainedWorkspaces } from "../workspace-recovery.js";
 import { randomUUID } from "node:crypto";
+import os from "node:os";
 import {
   and,
   asc,
+  desc,
   eq,
   gt,
   inArray,
@@ -46,6 +48,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   environmentLeases,
+  heartbeatRunEvents,
   heartbeatRuns,
   issues,
   nativeRunFinalizations,
@@ -1836,6 +1839,29 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     return { swept: rows.length, destroyed, capped };
   }
 
+  async function nativeProcessIsLocal(run: HeartbeatRun) {
+    if (parseObject(run.runnerProfileJson).nativeWorkspaceSync != null) return false;
+    const [identity] = await db.select({
+      eventType: heartbeatRunEvents.eventType,
+      agentId: heartbeatRunEvents.agentId,
+      payload: heartbeatRunEvents.payload,
+    }).from(heartbeatRunEvents).where(and(
+      eq(heartbeatRunEvents.companyId, run.companyId),
+      eq(heartbeatRunEvents.runId, run.id),
+      isNull(heartbeatRunEvents.sourceEventId),
+      inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED]),
+    )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
+    const recorded = identity?.payload;
+    if (identity?.eventType !== PROCESS_IDENTITY_RECORDED || identity.agentId !== run.agentId ||
+        recorded?.targetKind !== "local" || recorded.hostname !== os.hostname() ||
+        recorded.processPid !== run.processPid || recorded.processGroupId !== run.processGroupId ||
+        !run.processStartedAt || recorded.processStartedAt !== run.processStartedAt.toISOString()) return false;
+    const leases = await db.select({ provider: environmentLeases.provider }).from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+    ));
+    return leases.every(lease => lease.provider === "local");
+  }
+
   async function markNativeOwnershipUnverified(
     run: typeof heartbeatRuns.$inferSelect,
     evidence: {
@@ -2057,6 +2083,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         claimableNativeRunIds.add(run.id);
         continue;
       }
+      if (!await nativeProcessIsLocal(run)) continue;
       const processPidAlive =
         !!run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive =
@@ -2082,6 +2109,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             and(
               eq(heartbeatRuns.id, run.id),
               eq(heartbeatRuns.runtimeMode, "native"),
+              eq(heartbeatRuns.nextEventSeq, run.nextEventSeq),
               run.processPid === null
                 ? isNull(heartbeatRuns.processPid)
                 : eq(heartbeatRuns.processPid, run.processPid),
@@ -2300,10 +2328,12 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       // preserves its explicit physical-copyback hold. Keep its source lease.
       if (nativeWorkspaceFinalizationPending) continue;
       const nativeRun = run.runtimeMode === "native";
+      const nativeLocalProcess = nativeRun && !!(run.processPid || run.processGroupId) &&
+        await nativeProcessIsLocal(run);
       const nativeProcessPidAlive =
-        nativeRun && !!run.processPid && isProcessAlive(run.processPid);
+        nativeLocalProcess && !!run.processPid && isProcessAlive(run.processPid);
       const nativeProcessGroupAlive =
-        nativeRun &&
+        nativeLocalProcess &&
         !!run.processGroupId &&
         isProcessGroupAlive(run.processGroupId);
       const coordinatorOwnedByCurrentController =
@@ -2360,6 +2390,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         });
         continue;
       }
+      if (nativeRun && !locallyTracked && (run.processPid || run.processGroupId) && !nativeLocalProcess) continue;
       if (resumedRunIds.has(run.id)) continue;
       if (locallyTracked) continue;
       if (await hasLiveLegacyController(db, run)) continue;
@@ -2379,7 +2410,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       // for a read-only liveness check so a lost in-memory handle cannot cause
       // overlapping provider/tool execution while that child is still alive.
       const checksPersistedChildLiveness =
-        currentAdapterTracksLocalChild || run.runtimeMode === "native";
+        nativeRun ? nativeLocalProcess : currentAdapterTracksLocalChild;
       const processPidAlive =
         checksPersistedChildLiveness &&
         run.processPid &&

@@ -90,6 +90,23 @@ it.skipIf(!tar || !hasZstd)("reuses only byte-matched image files, keeps modes, 
   expect(await fs.readlink(path.join(targetPath, "tool"))).toBe("bin/tool");
 });
 
+it.skipIf(!tar || !hasZstd)("stages a complete layered pack into a fresh nested runtime directory", async () => {
+  const { root, pack, archive } = await layeredFixture();
+  const remote = await runner(root);
+  const workspace = path.join(root, "workspace");
+  await fs.mkdir(workspace);
+  const targetPath = path.join(workspace, ".paperclip-runtime", "paperclip-runner", "provider-pack");
+  await expect(fs.lstat(path.dirname(targetPath))).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, reuseRoots: [pack] })).toBe(true);
+  expect(await fs.readFile(path.join(targetPath, "bin/large"))).toEqual(await fs.readFile(path.join(pack, "bin/large")));
+  expect(await fs.readFile(path.join(targetPath, "provider-pack.json"))).toEqual(await fs.readFile(path.join(pack, "provider-pack.json")));
+  expect(await fs.readlink(path.join(targetPath, "tool"))).toBe("bin/tool");
+  for (const directory of [targetPath, path.dirname(targetPath), path.dirname(path.dirname(targetPath))]) {
+    expect((await fs.stat(directory)).mode & 0o777).toBe(0o700);
+  }
+  expect((await fs.stat(path.join(targetPath, "bin/large"))).ino).not.toBe((await fs.stat(path.join(pack, "bin/large"))).ino);
+});
+
 it.skipIf(!tar || !hasZstd).each(["missing", "wrong-digest", "symlink", "ancestor-symlink"])("transfers a large layer when the image file is %s", async reason => {
   const { root, pack, archive } = await layeredFixture();
   const remote = await runner(root);
@@ -134,13 +151,18 @@ it.skipIf(!tar || !hasZstd)("rejects a corrupt missing layer before transfer and
   expect(remote.syncIn).not.toHaveBeenCalled();
 });
 
-it.skipIf(!tar || !hasZstd)("does not follow a layered target symlink or accept invalid reuse receipts", async () => {
+it.skipIf(!tar || !hasZstd).each(["directory", "file", "symlink"])("rejects an existing layered target %s or invalid reuse receipts", async kind => {
   const { root, archive } = await layeredFixture();
   const remote = await runner(root);
   const targetPath = path.join(root, "target"), other = path.join(root, "other");
-  await fs.mkdir(other); await fs.symlink(other, targetPath);
+  await fs.mkdir(other);
+  if (kind === "directory") await fs.mkdir(targetPath);
+  else if (kind === "file") await fs.writeFile(targetPath, "untouched");
+  else await fs.symlink(other, targetPath);
   await expect(stageProviderPackArchive({ archive, runner: remote, targetPath })).rejects.toThrow("runner_remote_provider_archive_reuse_failed");
   expect(await fs.readdir(other)).toEqual([]);
+  if (kind === "directory") expect(await fs.readdir(targetPath)).toEqual([]);
+  if (kind === "file") expect(await fs.readFile(targetPath, "utf8")).toBe("untouched");
   remote.execute.mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "[999999]", stderr: "", signal: null, pid: null, startedAt: null });
   await expect(stageProviderPackArchive({ archive, runner: remote, targetPath: `${targetPath}-2` })).rejects.toThrow("runner_remote_provider_archive_reuse_failed");
   expect(remote.syncIn).not.toHaveBeenCalled();

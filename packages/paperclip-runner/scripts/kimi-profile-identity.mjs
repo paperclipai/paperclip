@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const KIMI_PROFILE_VERSION = 16;
+export const KIMI_PROFILE_VERSION = 17;
 const sources = [
   "scripts/patch-kimi-runtime.mjs", "scripts/kimi-instructions-runtime.mjs",
   "scripts/materialize-kimi-distribution.mjs", "scripts/provision-kimi.mjs",

@@ -272,14 +272,15 @@ mod tests {
     }
 
     #[test]
-    fn kimi_candidate_requires_exact_two_platform_closures_scope_and_time() {
+    fn released_kimi_rejects_candidate_records_on_both_native_platforms() {
+        assert!(!acpx_release_profile("kimi").unwrap().qualification_pending);
         for (platform, architecture, os, host_arch) in [
             ("darwin", "arm64", "macos", "aarch64"),
             ("linux", "x64", "linux", "x86_64"),
         ] {
             let candidate = kimi_admission(platform, architecture);
             let now = candidate.expires_at - 1;
-            candidate.validate_at(now, os, host_arch).unwrap();
+            assert!(candidate.validate_at(now, os, host_arch).is_err());
             for (wrong_os, wrong_arch) in [
                 ("windows", "x86_64"),
                 ("linux", "aarch64"),
@@ -323,7 +324,8 @@ mod tests {
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64")
     ))]
-    fn kimi_next_run_rebinds_only_the_authenticated_run_identity() {
+    fn released_kimi_rejects_candidate_rebinding_and_startup_records() {
+        assert!(!acpx_release_profile("kimi").unwrap().qualification_pending);
         let (platform, architecture) = if cfg!(target_os = "macos") {
             ("darwin", "arm64")
         } else {
@@ -332,7 +334,11 @@ mod tests {
         let current = kimi_admission(platform, architecture);
         let mut next = current.clone();
         next.run_id = "kimi-next-run".to_owned();
-        current
+        assert!(current.validate().is_err());
+        assert!(
+            AcpxCandidateAdmission::parse_json(&serde_json::to_string(&current).unwrap()).is_err()
+        );
+        assert!(current
             .validate_next_run(
                 &next,
                 "kimi",
@@ -340,7 +346,7 @@ mod tests {
                 "kimi-next-run",
                 "kimi-session",
             )
-            .unwrap();
+            .is_err());
         assert!(current
             .validate_next_run(
                 &current,

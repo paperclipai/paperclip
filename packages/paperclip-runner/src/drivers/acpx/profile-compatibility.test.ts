@@ -11,17 +11,20 @@ describe("historical ACPX profile decoding", () => {
     expect(isSupportedAcpxProfileVersion("kimi", 14)).toBe(true);
     expect(isSupportedAcpxProfileVersion("kimi", 15)).toBe(true);
     expect(isSupportedAcpxProfileVersion("kimi", 16)).toBe(true);
-    expect(isSupportedAcpxProfileVersion("kimi", 17)).toBe(false);
+    expect(isSupportedAcpxProfileVersion("kimi", 17)).toBe(true);
+    expect(isSupportedAcpxProfileVersion("kimi", 18)).toBe(false);
     expect(isSupportedAcpxProfileVersion("copilot", 88)).toBe(true);
     expect(isSupportedAcpxProfileVersion("copilot", 89)).toBe(true);
     expect(isSupportedAcpxProfileVersion("copilot", 90)).toBe(true);
     expect(isSupportedAcpxProfileVersion("copilot", 91)).toBe(true);
-    expect(isSupportedAcpxProfileVersion("copilot", 92)).toBe(false);
+    expect(isSupportedAcpxProfileVersion("copilot", 92)).toBe(true);
+    expect(isSupportedAcpxProfileVersion("copilot", 93)).toBe(false);
     expect(isSupportedAcpxProfileVersion("grok", 15)).toBe(true);
     expect(isSupportedAcpxProfileVersion("grok", 16)).toBe(true);
     expect(isSupportedAcpxProfileVersion("grok", 17)).toBe(true);
     expect(isSupportedAcpxProfileVersion("grok", 18)).toBe(true);
-    expect(isSupportedAcpxProfileVersion("grok", 19)).toBe(false);
+    expect(isSupportedAcpxProfileVersion("grok", 19)).toBe(true);
+    expect(isSupportedAcpxProfileVersion("grok", 20)).toBe(false);
   });
   it("retains each provider's existing revision boundary", () => {
     expect(isSupportedAcpxProfileVersion("grok", 7)).toBe(true);

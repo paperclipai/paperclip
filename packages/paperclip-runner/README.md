@@ -973,10 +973,11 @@ while daemon work might still be running. The socket and its parent must be priv
 canonical paths owned by the same account. Local stdio assignment requires Unix;
 other platforms retain the HTTP path.
 
-## Kimi Code candidate
+## Kimi Code
 
 Kimi Code uses the pinned `@moonshot-ai/kimi-code@2.3.3` distribution through
-ACPX. Candidate support is pending local and Daytona Product E2E qualification.
+ACPX through the qualified native profile. Ordinary selection and Runtime Test
+require no candidate grant.
 The installation targets are macOS ARM64 and Linux x64. Platform startup,
 authenticated driver checks, and product acceptance are separate evidence levels.
 
@@ -990,8 +991,12 @@ The account needs Kimi Code entitlement. Runtime Test verifies installation and
 queries the authenticated Code model catalog for the exact selected model. It
 sends no model prompt; an actual task verifies inference and tool execution.
 
-The ordinary hiring path stays hidden while qualification is pending. Existing
-legacy Kimi agents retain their runtime and history. Managed Kimi connections,
+The qualified native profile uses ordinary setup, hiring, metadata Test and task
+startup on these two supported targets without operator admission flags. Protected
+candidate startup records remain reserved for future pending profiles; saved agent
+configuration and public requests cannot supply that authority.
+
+Existing legacy Kimi agents retain their runtime and history. Managed Kimi connections,
 ambient login borrowing, other regions/platforms, steering, native child work,
 and per-run token/dollar accounting are outside this release. Read-only Kimi work
 uses scoped Paperclip tools; native filesystem and shell tools are denied.
