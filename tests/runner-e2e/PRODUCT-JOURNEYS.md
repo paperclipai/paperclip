@@ -33,6 +33,10 @@ never start a server or depend on a tenant filesystem.
 | `stop-redirect` | Native agent; three work runs; qualified Docker oracle | Download a verified checkpoint, Stop an active revision, require native cancellation acknowledgement, submit a new direction once and verify completion without original-run activity |
 | `cloud-onboarding` | Signed-in admitted Cloud account; fresh workspace; qualified bounded provider route | Create workspace in the portal, connect API key and native Codex agent in the wizard, complete a task, download and independently check its artifact |
 
+The shared Studio helper waits for the original saved file body before typing.
+An editor control can mount before the file query completes; editing that empty
+draft can otherwise lose the original content when the file arrives.
+
 Supported acquisitions are managed self-hosted (`local`), registered existing
 Cloud (`local` or `daytona` when present), and new Cloud. New Cloud must start
 with onboarding. Its context can then satisfy the identical task-properties
