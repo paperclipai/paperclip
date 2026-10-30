@@ -11,7 +11,7 @@ import {
   truncateDisplayId, type createHeartbeatRunState, type getAdapterSessionCodec,
 } from "./run-state.js";
 import {
-  buildEffectiveRunSessionConfigMetadata, readConfigFingerprintFromSessionParams,
+  buildEffectiveRunSessionConfigMetadata, createRunSessionConfigMetadataBuilder, readConfigFingerprintFromSessionParams,
   readConfiguredModelFromAdapterConfig, resolveTaskSessionConfigFreshness,
   stripPaperclipSessionMetadataFromSessionParams, type EffectiveRunSessionConfigMetadata,
 } from "./workspaces.js";
@@ -149,7 +149,8 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
           }
         : null,
     };
-  const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata(sessionConfigMetadataInput);
+  const buildSessionConfigMetadata = createRunSessionConfigMetadataBuilder();
+  const sessionConfigMetadata = await buildSessionConfigMetadata(sessionConfigMetadataInput);
   let compatibleConfigMetadata: EffectiveRunSessionConfigMetadata[] = [];
   if (managedAiRuntime && aiBinding && taskSession &&
     readConfigFingerprintFromSessionParams(taskSession.sessionParamsJson)?.fingerprint !== sessionConfigMetadata.fingerprint) {
@@ -164,7 +165,7 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
       storedIdentity: taskSession.sessionParamsJson?.paperclipAiCredentialIdentity,
       sessionIdentity: managedAiRuntime.sessionIdentity, credentialIdentity: managedAiRuntime.identity, revisions,
     });
-    compatibleConfigMetadata = await Promise.all(candidates.map(candidate => buildEffectiveRunSessionConfigMetadata({ ...sessionConfigMetadataInput, ...candidate })));
+    compatibleConfigMetadata = await Promise.all(candidates.map(candidate => buildSessionConfigMetadata({ ...sessionConfigMetadataInput, ...candidate })));
   }
   const configuredModel =
     readConfiguredModelFromAdapterConfig(runtimeConfig);
