@@ -274,6 +274,7 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
+import { validateHermesModelProviderAlignment } from "@paperclipai/hermes-paperclip-adapter/server";
 import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
@@ -2400,6 +2401,23 @@ export function agentRoutes(
   ) {
     if (adapterType === "paperclip_runner") {
       await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
+      return;
+    }
+    if (adapterType === "hermes_local") {
+      // A model id namespace such as "openrouter/..." states the vendor that
+      // must serve the model. Reject a config that pairs it with another
+      // provider or another vendor's base URL, instead of sending the request
+      // to the wrong endpoint and failing with an opaque provider error.
+      const alignment = validateHermesModelProviderAlignment({
+        model: asNonEmptyString(adapterConfig.model),
+        provider: asNonEmptyString(adapterConfig.provider),
+        baseUrl:
+          asNonEmptyString(adapterConfig.baseUrl)
+          ?? asNonEmptyString(adapterConfig.base_url),
+      });
+      if (!alignment.ok) {
+        throw unprocessable(`Invalid hermes_local adapterConfig: ${alignment.reason}`);
+      }
       return;
     }
     if (adapterType !== "opencode_local") return;

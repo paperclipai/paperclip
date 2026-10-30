@@ -1657,6 +1657,73 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
   });
 
+  it("rejects a hermes_local agent config whose model id namespace disagrees with the configured provider", async () => {
+    // A model id namespace ("openrouter/...") states the vendor that must serve
+    // the model. Pairing it with another provider sends the request to the wrong
+    // base URL and fails as an opaque provider error, so the mismatch has to be
+    // rejected when the config is saved.
+    const selection = await import("../services/agent-runner-selection.js");
+    vi.spyOn(selection, "resolveNewAgentRunnerForCompany").mockImplementation(async (_db, _companyId, input) =>
+      selection.resolveNewAgentRunner({ ...input, target: { driver: "local", platform: "linux", architecture: "x64" } }));
+    const app = await createApp();
+
+    const conflicting = await requestApp(app, baseUrl => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Hermes",
+        adapterType: "hermes_local",
+        runner: "legacy",
+        adapterConfig: { model: "openrouter/gpt-4.1-mini", provider: "openai-codex" },
+      }));
+
+    expect(conflicting.status, JSON.stringify(conflicting.body)).toBe(422);
+    expect(JSON.stringify(conflicting.body)).toContain("openrouter");
+    expect(JSON.stringify(conflicting.body)).toContain("openai-codex");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it("rejects a hermes_local agent config whose model id namespace disagrees with the configured base URL", async () => {
+    const selection = await import("../services/agent-runner-selection.js");
+    vi.spyOn(selection, "resolveNewAgentRunnerForCompany").mockImplementation(async (_db, _companyId, input) =>
+      selection.resolveNewAgentRunner({ ...input, target: { driver: "local", platform: "linux", architecture: "x64" } }));
+    const app = await createApp();
+
+    const conflicting = await requestApp(app, baseUrl => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Hermes",
+        adapterType: "hermes_local",
+        runner: "legacy",
+        adapterConfig: { model: "openrouter/gpt-4.1-mini", provider: "openrouter", baseUrl: "https://api.minimax.io/v1" },
+      }));
+
+    expect(conflicting.status, JSON.stringify(conflicting.body)).toBe(422);
+    expect(JSON.stringify(conflicting.body)).toContain("base URL");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it("accepts a hermes_local agent config whose model id namespace agrees with the configured provider", async () => {
+    const selection = await import("../services/agent-runner-selection.js");
+    vi.spyOn(selection, "resolveNewAgentRunnerForCompany").mockImplementation(async (_db, _companyId, input) =>
+      selection.resolveNewAgentRunner({ ...input, target: { driver: "local", platform: "linux", architecture: "x64" } }));
+    const app = await createApp();
+
+    const agreeing = await requestApp(app, baseUrl => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Hermes",
+        adapterType: "hermes_local",
+        runner: "legacy",
+        adapterConfig: { model: "openrouter/gpt-4.1-mini", provider: "openrouter" },
+      }));
+
+    expect(agreeing.status, JSON.stringify(agreeing.body)).toBe(201);
+    expect(mockAgentService.create.mock.calls.at(-1)?.[1]).toMatchObject({
+      adapterType: "hermes_local",
+      adapterConfig: { model: "openrouter/gpt-4.1-mini", provider: "openrouter" },
+    });
+  }, 60_000);
+
   it("keeps an existing paperclip_runner agent editable after the flag is disabled", async () => {
     const existing = await mockAgentService.getById();
     mockAgentService.getById.mockResolvedValue({
