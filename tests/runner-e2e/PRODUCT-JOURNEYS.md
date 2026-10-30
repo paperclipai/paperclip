@@ -41,7 +41,10 @@ reusing successful onboarding reports `onboarding`. Preconfigured state is never
 counted as onboarding coverage.
 
 The scripted onboarding request supplies a self-contained child brief. The
-parent must copy the full marked brief verbatim into `create_task.description`,
+parent must first save its proposal through the existing native confirmation
+tool and check the saved card receipt. The browser records the human decision;
+the parent must not record its own approval or treat the opening scope as acceptance.
+It must copy the full marked brief verbatim into `create_task.description`,
 including tool names, parameters, and the encoded input. It orders the child's
 work: create the files, publish `connection-proof.json` with that exact filename
 and workspace-relative content reference, save its Paperclip task document with
