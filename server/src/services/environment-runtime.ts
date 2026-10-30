@@ -1967,33 +1967,33 @@ function createSandboxEnvironmentDriver(
             : {}),
           ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
         };
-            return await environmentsSvc.acquireLease({
-            creationOperationId: providerLease ? undefined : acquiredLease.metadata?.creationOperationId as string | undefined,
-            companyId: input.companyId,
-            environmentId: input.environment.id,
-            executionWorkspaceId: input.executionWorkspaceId,
-            issueId: input.issueId,
-            heartbeatRunId: input.heartbeatRunId,
-            assertCompanyBinding: input.assertCompanyBinding,
-            leasePolicy: resolvedLeasePolicy,
-            provider: parsed.config.provider,
-            providerLeaseId: acquiredLease.providerLeaseId,
-            expiresAt: providerAttestedLeaseExpiry(
-              input.requestedExpiresAt,
-              acquiredLease.expiresAt ? new Date(acquiredLease.expiresAt) : undefined,
-            ),
-            metadata: pluginLeaseMetadata,
-            reusesReusableLeaseId:
-              providerLease &&
-              reusableLease?.heartbeatRunId === input.heartbeatRunId
-                ? reusableLease.id
-                : null,
-            replacesReusableLeaseId:
-              providerLease &&
-              reusableLease?.heartbeatRunId !== input.heartbeatRunId
-                ? reusableLease?.id
-                : null,
-          });
+        return await environmentsSvc.acquireLease({
+          creationOperationId: providerLease ? undefined : acquiredLease.metadata?.creationOperationId as string | undefined,
+          companyId: input.companyId,
+          environmentId: input.environment.id,
+          executionWorkspaceId: input.executionWorkspaceId,
+          issueId: input.issueId,
+          heartbeatRunId: input.heartbeatRunId,
+          assertCompanyBinding: input.assertCompanyBinding,
+          leasePolicy: resolvedLeasePolicy,
+          provider: parsed.config.provider,
+          providerLeaseId: acquiredLease.providerLeaseId,
+          expiresAt: providerAttestedLeaseExpiry(
+            input.requestedExpiresAt,
+            acquiredLease.expiresAt ? new Date(acquiredLease.expiresAt) : undefined,
+          ),
+          metadata: pluginLeaseMetadata,
+          reusesReusableLeaseId:
+            providerLease &&
+            reusableLease?.heartbeatRunId === input.heartbeatRunId
+              ? reusableLease.id
+              : null,
+          replacesReusableLeaseId:
+            providerLease &&
+            reusableLease?.heartbeatRunId !== input.heartbeatRunId
+              ? reusableLease?.id
+              : null,
+        });
 
       }
 
@@ -2171,35 +2171,35 @@ function createSandboxEnvironmentDriver(
           : {}),
         ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
       };
-        return await environmentsSvc.acquireLease({
-          creationOperationId: providerLease.metadata?.creationOperationId as string | undefined,
-          companyId: input.companyId,
-          environmentId: input.environment.id,
-          executionWorkspaceId: input.executionWorkspaceId,
-          issueId: input.issueId,
-          heartbeatRunId: input.heartbeatRunId,
-          assertCompanyBinding: input.assertCompanyBinding,
-          leasePolicy: resolvedLeasePolicy,
-          provider: parsed.config.provider,
-          providerLeaseId: providerLease.providerLeaseId,
-          expiresAt: providerAttestedLeaseExpiry(
-            input.requestedExpiresAt,
-            providerLease.expiresAt ? new Date(providerLease.expiresAt) : undefined,
-          ),
-          metadata: builtinLeaseMetadata,
-          reusesReusableLeaseId:
-            reusableLease &&
-            providerLease.providerLeaseId === reusableLease.providerLeaseId &&
-            reusableLease.heartbeatRunId === input.heartbeatRunId
-              ? reusableLease.id
-              : null,
-          replacesReusableLeaseId:
-            reusableLease &&
-            providerLease.providerLeaseId === reusableLease.providerLeaseId &&
-            reusableLease.heartbeatRunId !== input.heartbeatRunId
-              ? reusableLease.id
-              : null,
-        });
+      return await environmentsSvc.acquireLease({
+        creationOperationId: providerLease.metadata?.creationOperationId as string | undefined,
+        companyId: input.companyId,
+        environmentId: input.environment.id,
+        executionWorkspaceId: input.executionWorkspaceId,
+        issueId: input.issueId,
+        heartbeatRunId: input.heartbeatRunId,
+        assertCompanyBinding: input.assertCompanyBinding,
+        leasePolicy: resolvedLeasePolicy,
+        provider: parsed.config.provider,
+        providerLeaseId: providerLease.providerLeaseId,
+        expiresAt: providerAttestedLeaseExpiry(
+          input.requestedExpiresAt,
+          providerLease.expiresAt ? new Date(providerLease.expiresAt) : undefined,
+        ),
+        metadata: builtinLeaseMetadata,
+        reusesReusableLeaseId:
+          reusableLease &&
+          providerLease.providerLeaseId === reusableLease.providerLeaseId &&
+          reusableLease.heartbeatRunId === input.heartbeatRunId
+            ? reusableLease.id
+            : null,
+        replacesReusableLeaseId:
+          reusableLease &&
+          providerLease.providerLeaseId === reusableLease.providerLeaseId &&
+          reusableLease.heartbeatRunId !== input.heartbeatRunId
+            ? reusableLease.id
+            : null,
+      });
     },
 
     async releaseRunLease(input) {
@@ -4065,31 +4065,31 @@ export function environmentRuntimeService(
     // drivers. A driver with no buffer contributes nothing.
     async flushDeferredOrphanCleanups(): Promise<{ recovered: number; pending: number }> {
       orphanRecoveryFlush ??= (async () => {
-      await recoverSandboxCreations(db, async operation => {
-        if (!operation.pluginId || operation.metadata.sandboxProviderPlugin !== true) return null;
-        if (!options.pluginWorkerManager) throw new Error("Sandbox creation recovery worker is unavailable");
-        const plugin = await pluginRegistryService(db).getById(operation.pluginId);
-        const driver = plugin?.manifestJson.environmentDrivers?.find(value => value.driverKey === operation.driverKey);
-        if (driver?.creationOperationVersion !== 1) return null;
-        if (!options.pluginWorkerManager.isRunning(operation.pluginId) ||
-          !options.pluginWorkerManager.getWorker(operation.pluginId)?.supportedMethods.includes("environmentInspectLease")) {
-          throw new Error("Sandbox creation recovery worker is unavailable");
-        }
-        const resolved = await resolveSandboxCleanupConfigSecrets(db, operation.companyId,
-          operation.config as SandboxEnvironmentConfig, { issueId: operation.issueId });
-        const credentialHashes = operation.metadata.creationCredentialHashes as Record<string, string> | undefined;
-        for (const [path, expected] of Object.entries(credentialHashes ?? {})) {
-          const actual = readConfigValueAtPath({ ...resolved }, path);
-          if (typeof actual !== "string" || createHash("sha256").update(actual).digest("hex") !== expected) return null;
-        }
-        return options.pluginWorkerManager.call(operation.pluginId, "environmentInspectLease", {
-          driverKey: operation.driverKey, companyId: operation.companyId, environmentId: operation.originalEnvironmentId,
-          config: stripSandboxProviderEnvelope(resolved), providerLeaseId: operation.id,
-          leaseMetadata: { creationOperationId: operation.id, creationRunId: operation.runId },
+        await recoverSandboxCreations(db, async operation => {
+          if (!operation.pluginId || operation.metadata.sandboxProviderPlugin !== true) return null;
+          if (!options.pluginWorkerManager) throw new Error("Sandbox creation recovery worker is unavailable");
+          const plugin = await pluginRegistryService(db).getById(operation.pluginId);
+          const driver = plugin?.manifestJson.environmentDrivers?.find(value => value.driverKey === operation.driverKey);
+          if (driver?.creationOperationVersion !== 1) return null;
+          if (!options.pluginWorkerManager.isRunning(operation.pluginId) ||
+            !options.pluginWorkerManager.getWorker(operation.pluginId)?.supportedMethods.includes("environmentInspectLease")) {
+            throw new Error("Sandbox creation recovery worker is unavailable");
+          }
+          const resolved = await resolveSandboxCleanupConfigSecrets(db, operation.companyId,
+            operation.config as SandboxEnvironmentConfig, { issueId: operation.issueId });
+          const credentialHashes = operation.metadata.creationCredentialHashes as Record<string, string> | undefined;
+          for (const [path, expected] of Object.entries(credentialHashes ?? {})) {
+            const actual = readConfigValueAtPath({ ...resolved }, path);
+            if (typeof actual !== "string" || createHash("sha256").update(actual).digest("hex") !== expected) return null;
+          }
+          return options.pluginWorkerManager.call(operation.pluginId, "environmentInspectLease", {
+            driverKey: operation.driverKey, companyId: operation.companyId, environmentId: operation.originalEnvironmentId,
+            config: stripSandboxProviderEnvelope(resolved), providerLeaseId: operation.id,
+            leaseMetadata: { creationOperationId: operation.id, creationRunId: operation.runId },
+          });
         });
-      });
-      return flushDeferredEnvironmentCleanup(db, Array.from(drivers.values())
-        .flatMap(driver => driver.flushDeferredOrphanCleanups ? [driver.flushDeferredOrphanCleanups] : []));
+        return flushDeferredEnvironmentCleanup(db, Array.from(drivers.values())
+          .flatMap(driver => driver.flushDeferredOrphanCleanups ? [driver.flushDeferredOrphanCleanups] : []));
       })().finally(() => { orphanRecoveryFlush = null; });
       return orphanRecoveryFlush;
     },

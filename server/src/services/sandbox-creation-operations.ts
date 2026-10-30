@@ -82,36 +82,36 @@ export async function recoverSandboxCreations(db: Db,
   )).limit(100);
   for (const candidate of due) {
     try {
-    const observation = await inspect(candidate);
-    const cleanup = observation?.creationCleanup ? readEnvironmentCreationCleanupError({ data: {
-      schema: "paperclip/environment-creation-cleanup/v1", cleanup: observation.creationCleanup,
-    } }) : null;
-    if (cleanup && (cleanup.companyId !== candidate.companyId || cleanup.environmentId !== candidate.originalEnvironmentId ||
-      cleanup.runId !== candidate.runId || cleanup.attemptId !== candidate.id || cleanup.providerLeaseId !== observation!.providerLeaseId)) {
-      throw new Error("Sandbox creation recovery returned foreign ownership");
-    }
-    await db.transaction(async tx => {
-      await tx.select({ id: environments.id }).from(environments).where(eq(environments.id, candidate.originalEnvironmentId)).for("update");
-      const [operation] = await tx.select().from(sandboxCreationOperations)
-        .where(eq(sandboxCreationOperations.id, candidate.id)).for("update");
-      if (!operation || operation.state !== "pending") return;
-      await notifyEnvironmentCleanup(tx, { companyId: operation.companyId });
-      if (!cleanup) {
-        logger.warn({ errorKind: "sandbox_creation_needs_reconciliation", operationId: operation.id, companyId: operation.companyId },
-          "Sandbox creation could not be identified; operator reconciliation is required");
-        await tx.update(sandboxCreationOperations).set({ state: "needs_reconciliation", updatedAt: new Date() })
-          .where(eq(sandboxCreationOperations.id, operation.id));
-        return;
+      const observation = await inspect(candidate);
+      const cleanup = observation?.creationCleanup ? readEnvironmentCreationCleanupError({ data: {
+        schema: "paperclip/environment-creation-cleanup/v1", cleanup: observation.creationCleanup,
+      } }) : null;
+      if (cleanup && (cleanup.companyId !== candidate.companyId || cleanup.environmentId !== candidate.originalEnvironmentId ||
+        cleanup.runId !== candidate.runId || cleanup.attemptId !== candidate.id || cleanup.providerLeaseId !== observation!.providerLeaseId)) {
+        throw new Error("Sandbox creation recovery returned foreign ownership");
       }
-      const lease = await environmentService(tx as unknown as Db).insertPendingCleanupLease({
-        companyId: operation.companyId, environmentId: operation.originalEnvironmentId,
-        provider: operation.provider, providerLeaseId: cleanup.providerLeaseId,
-        metadata: { ...operation.metadata, creationOperationId: operation.id, failedCreateCleanup: cleanup },
-        failureReason: "interrupted_sandbox_creation",
+      await db.transaction(async tx => {
+        await tx.select({ id: environments.id }).from(environments).where(eq(environments.id, candidate.originalEnvironmentId)).for("update");
+        const [operation] = await tx.select().from(sandboxCreationOperations)
+          .where(eq(sandboxCreationOperations.id, candidate.id)).for("update");
+        if (!operation || operation.state !== "pending") return;
+        await notifyEnvironmentCleanup(tx, { companyId: operation.companyId });
+        if (!cleanup) {
+          logger.warn({ errorKind: "sandbox_creation_needs_reconciliation", operationId: operation.id, companyId: operation.companyId },
+            "Sandbox creation could not be identified; operator reconciliation is required");
+          await tx.update(sandboxCreationOperations).set({ state: "needs_reconciliation", updatedAt: new Date() })
+            .where(eq(sandboxCreationOperations.id, operation.id));
+          return;
+        }
+        const lease = await environmentService(tx as unknown as Db).insertPendingCleanupLease({
+          companyId: operation.companyId, environmentId: operation.originalEnvironmentId,
+          provider: operation.provider, providerLeaseId: cleanup.providerLeaseId,
+          metadata: { ...operation.metadata, creationOperationId: operation.id, failedCreateCleanup: cleanup },
+          failureReason: "interrupted_sandbox_creation",
+        });
+        await tx.update(sandboxCreationOperations).set({ state: "cleanup_pending", leaseId: lease.id, updatedAt: new Date() })
+          .where(eq(sandboxCreationOperations.id, operation.id));
       });
-      await tx.update(sandboxCreationOperations).set({ state: "cleanup_pending", leaseId: lease.id, updatedAt: new Date() })
-        .where(eq(sandboxCreationOperations.id, operation.id));
-    });
     } catch {
       await db.transaction(async tx => {
         await notifyEnvironmentCleanup(tx, { companyId: candidate.companyId });
