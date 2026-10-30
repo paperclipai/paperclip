@@ -195,11 +195,15 @@ then conditionally changes the run's backend/reference. Unknown-completeness
 mirrors, missing/corrupt payloads, and active writers block publication. Existing
 trace bytes, download ordering, integrity state and original expiry are retained.
 Neither path fabricates missing historical data or extends trace retention.
-For native logs, a bounded NDJSON scan must also prove ordered coverage of the
-existing canonical source records. Missing ranges or canonical chunks whose
-identities cannot be verified block publication as
+For finalized native logs, matching the recorded size and SHA-256 proves the
+complete legacy file, including display chunks truncated by the existing 64 KiB
+formatter. Migration preserves those exact bytes and records the settled source
+cursor. If either completeness field is absent, a bounded NDJSON scan must prove
+ordered coverage of the existing canonical source records. Missing ranges or
+chunks whose identities cannot be verified block publication as
 `native_log_source_coverage_unproven`. A database's latest event cursor alone
-does not establish that its output reached the local file. Keep the original
+does not establish completeness. Publication checks that the original reference,
+completeness metadata, and source cursor have not changed. Keep the original
 volume and resolve blocked inventory before cutover.
 An interrupted trace import keeps an `s3-import-v1:` reference: reads still use
 the original local sidecars, while deletion and expiry retain responsibility for

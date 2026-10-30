@@ -491,6 +491,11 @@ claim live-provider or fleet evidence from deterministic fixtures.
   redact existing agent identity material; runtime log secrets are registered
   once through the existing encrypted redaction registry, without copying agent
   private keys into run contexts.
+- Native history migration accepts finalized files whose recorded size and
+  digest match, preserving the existing formatter's truncated large display
+  chunks. Files missing either completeness field still require ordered source
+  coverage. Corrupt metadata blocks publication; the conditional switch checks
+  that the original completeness fields have not changed.
 - PR: https://github.com/paperclipai/paperclip/pull/18327. Initial CI passed 51
   checks with one E2E teardown lock timeout. That E2E shard passed on the next
   revision; its Runner shard then failed the Antigravity authentication fixture.

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import {
   heartbeatRuns,
   heartbeatRunEvents,
@@ -140,7 +140,7 @@ export async function migrateRunEvidence(
       }
       const hash = createHash("sha256");
       const nativeCoverage =
-        run.runtimeMode === "native"
+        run.runtimeMode === "native" && (run.bytes === null || run.sha256 === null)
           ? createNativeRunLogCoverageVerifier(db, run.companyId, run.id)
           : undefined;
       let offset = 0,
@@ -184,7 +184,16 @@ export async function migrateRunEvidence(
       }
       item.bytes = offset;
       item.sha256 = digest;
-      const sourceCursor = (await nativeCoverage?.finish()) ?? 0;
+      let sourceCursor = (await nativeCoverage?.finish()) ?? 0;
+      if (run.runtimeMode === "native" && !nativeCoverage) {
+        const [source] = await db
+          .select({ seq: heartbeatRunEvents.seq })
+          .from(heartbeatRunEvents)
+          .where(nativeRunLogSourceWhere(run.companyId, run.id))
+          .orderBy(desc(heartbeatRunEvents.seq))
+          .limit(1);
+        sourceCursor = source?.seq ?? 0;
+      }
       if (writer) {
         if (writer.head.end !== offset) throw new Error("migration_prefix_exceeds_source");
 
@@ -204,6 +213,12 @@ export async function migrateRunEvidence(
               eq(heartbeatRuns.companyId, run.companyId),
               eq(heartbeatRuns.logStore, "local_file"),
               eq(heartbeatRuns.logRef, run.logRef),
+              run.bytes === null
+                ? isNull(heartbeatRuns.logBytes)
+                : eq(heartbeatRuns.logBytes, run.bytes),
+              run.sha256 === null
+                ? isNull(heartbeatRuns.logSha256)
+                : eq(heartbeatRuns.logSha256, run.sha256),
               drainedWriter(),
               run.runtimeMode === "native"
                 ? sql`not exists (select 1 from ${heartbeatRunEvents} where ${and(
