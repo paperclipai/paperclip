@@ -104,7 +104,8 @@ import {
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
-import { loadConfig } from "./config.js";
+import { initializeCloudRuntimeConfig } from "./services/cloud-runtime-config.js";
+import { loadCloudBootstrapConfig, loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { createIncompleteTaskWatchdogScanReporter } from "./services/task-watchdog-diagnostics.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
@@ -252,6 +253,19 @@ async function endDatabaseClient(client: unknown, timeoutSeconds: number): Promi
   await sql.end({ timeout: timeoutSeconds });
 }
 
+function initializeRuntimeConfigConsumers(config: ReturnType<typeof loadConfig>): void {
+  initTelemetry({ enabled: config.telemetryEnabled });
+  if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
+    process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
+  }
+  if (process.env.PAPERCLIP_SECRETS_STRICT_MODE === undefined) {
+    process.env.PAPERCLIP_SECRETS_STRICT_MODE = config.secretsStrictMode ? "true" : "false";
+  }
+  if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
+  }
+}
+
 export async function startServer(): Promise<StartedServer> {
   const startupDatabase: StartupDatabaseTeardown = { close: null };
   try {
@@ -279,17 +293,8 @@ async function startServerWithDatabaseTeardown(
   // sentry.ts.
   await sentryReady;
   ensureDecisionSigningSecret();
-  let config = loadConfig();
-  initTelemetry({ enabled: config.telemetryEnabled });
-  if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
-    process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
-  }
-  if (process.env.PAPERCLIP_SECRETS_STRICT_MODE === undefined) {
-    process.env.PAPERCLIP_SECRETS_STRICT_MODE = config.secretsStrictMode ? "true" : "false";
-  }
-  if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
-    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
-  }
+  let config = isCloudManagedInstance() ? loadCloudBootstrapConfig() : loadConfig();
+  if (!isCloudManagedInstance()) initializeRuntimeConfigConsumers(config);
   
   type MigrationSummary =
     | "skipped"
@@ -714,11 +719,16 @@ async function startServerWithDatabaseTeardown(
   setSentryRunLinkResolver(createSentryRunLinkResolver(db));
   await initializeAdapterSettings(db as any);
   
+  await initializeCloudRuntimeConfig(db as any);
+  if (isCloudManagedInstance()) config = loadConfig();
+
   // A claimed warm-pool stack may restart while its provider environment still
   // names the pool host. Restore the signed, durable identity before Better
   // Auth, routes, or child-runtime configuration capture any public URL.
   const restoredCloudRuntimeIdentity = await initializeCloudRuntimeIdentity(db as any);
   if (restoredCloudRuntimeIdentity) config = loadConfig();
+  if (isCloudManagedInstance()) initializeRuntimeConfigConsumers(config);
+
   const isWarmStandby = await createCloudWarmStandby(db as any);
 
   if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {

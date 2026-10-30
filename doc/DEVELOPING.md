@@ -3816,3 +3816,12 @@ in `_test` for `PAPERCLIP_MCP_SLEEP_TEST_DATABASE_URL`,
 `PAPERCLIP_DOT_RUNNER_TEST_DATABASE_URL`. The interaction-service regression suite
 also accepts `PAPERCLIP_INTERACTIONS_TEST_DATABASE_URL`. The suites migrate and write to those
 URLs; the sleep suite truncates company data between tests.
+
+## Cloud startup configuration
+
+Cloud stores nonsecret startup choices in a private PostgreSQL singleton.
+Bootstrap connection credentials stay in the supplied environment. A bounded
+one-time config-file seed preserves existing choices, then later starts use the
+database without loading home `.env` files or repairing worktree config. See
+[Cloud runtime configuration](cloud-runtime-configuration.md) for field ownership,
+secret handling, initialization order and migration interfaces.

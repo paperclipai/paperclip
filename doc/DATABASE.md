@@ -1523,3 +1523,12 @@ It uses disposable embedded PostgreSQL by default. A disposable local database
 named `review_wait_benchmark...` can be supplied through
 `PAPERCLIP_TEST_DATABASE_URL` to compare another PostgreSQL major version.
 DataRow bytes exclude response metadata and transport overhead.
+
+## Cloud runtime configuration singleton
+
+The private `instance_settings` key `cloud-runtime-config:v1` holds a strictly
+validated, versioned nonsecret configuration and revision. It is separate from
+the ordinary instance settings API. Seed inserts preserve an existing winner;
+replacements lock the row and reject stale revisions. Database/transaction
+handles permit atomic migration receipts. Connection URLs, API keys and unknown
+fields are excluded. See [field ownership and startup order](cloud-runtime-configuration.md).

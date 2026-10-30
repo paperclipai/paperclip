@@ -1,4 +1,6 @@
 import { readConfigFile, resolveDeploymentMode } from "./config-file.js";
+import { isCloudManagedInstance } from "./services/cloud-instance.js";
+import type { PaperclipConfig } from "@paperclipai/shared";
 import { parseChatWebhookPublicBaseUrl } from "./chat-webhook-public-url.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
@@ -32,27 +34,29 @@ import {
   resolveHomeAwarePath,
 } from "./home-paths.js";
 
-const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
-if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
-  loadDotenv({ path: PAPERCLIP_ENV_FILE_PATH, override: false, quiet: true });
-}
+if (!isCloudManagedInstance()) {
+  const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
+  if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
+    loadDotenv({ path: PAPERCLIP_ENV_FILE_PATH, override: false, quiet: true });
+  }
 
-const CWD_ENV_PATH = resolve(process.cwd(), ".env");
-const cwdEnvExists = existsSync(CWD_ENV_PATH);
-const isSameFile = cwdEnvExists && existsSync(PAPERCLIP_ENV_FILE_PATH)
-  ? realpathSync(CWD_ENV_PATH) === realpathSync(PAPERCLIP_ENV_FILE_PATH)
-  : CWD_ENV_PATH === PAPERCLIP_ENV_FILE_PATH;
-if (shouldLoadWorkingDirectoryEnv({
-  cwdEnvExists,
-  isPaperclipEnvFile: isSameFile,
-})) {
-  loadDotenv({ path: CWD_ENV_PATH, override: false, quiet: true });
-}
+  const CWD_ENV_PATH = resolve(process.cwd(), ".env");
+  const cwdEnvExists = existsSync(CWD_ENV_PATH);
+  const isSameFile = cwdEnvExists && existsSync(PAPERCLIP_ENV_FILE_PATH)
+    ? realpathSync(CWD_ENV_PATH) === realpathSync(PAPERCLIP_ENV_FILE_PATH)
+    : CWD_ENV_PATH === PAPERCLIP_ENV_FILE_PATH;
+  if (shouldLoadWorkingDirectoryEnv({
+    cwdEnvExists,
+    isPaperclipEnvFile: isSameFile,
+  })) {
+    loadDotenv({ path: CWD_ENV_PATH, override: false, quiet: true });
+  }
 
-if (basename(dirname(PAPERCLIP_ENV_FILE_PATH)) === ".paperclip") {
-  applyEmptyWorktreeSigningSecrets(dirname(dirname(PAPERCLIP_ENV_FILE_PATH)));
+  if (basename(dirname(PAPERCLIP_ENV_FILE_PATH)) === ".paperclip") {
+    applyEmptyWorktreeSigningSecrets(dirname(dirname(PAPERCLIP_ENV_FILE_PATH)));
+  }
+  maybeRepairLegacyWorktreeConfigAndEnvFiles();
 }
-maybeRepairLegacyWorktreeConfigAndEnvFiles();
 
 const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
 
@@ -147,13 +151,12 @@ function detectTailnetBindHost(): string | undefined {
   }
 }
 
-export function loadConfig(): Config {
-  const fileConfig = readConfigFile();
+export function loadConfig(fileConfig: PaperclipConfig | null = readConfigFile()): Config {
   const fileDatabaseMode =
-    (fileConfig?.database.mode === "postgres" ? "postgres" : "embedded-postgres") as DatabaseMode;
+    (isCloudManagedInstance() || fileConfig?.database.mode === "postgres" ? "postgres" : "embedded-postgres") as DatabaseMode;
 
   const fileDbUrl =
-    fileDatabaseMode === "postgres"
+    !isCloudManagedInstance() && fileDatabaseMode === "postgres"
       ? fileConfig?.database.connectionString
       : undefined;
   const fileDatabaseBackup = fileConfig?.database.backup;
@@ -459,4 +462,14 @@ export function loadConfig(): Config {
     announcementsEnabled: process.env.PAPERCLIP_ANNOUNCEMENTS_ENABLED !== "false",
     announcementsFeedUrl: process.env.PAPERCLIP_ANNOUNCEMENTS_FEED_URL?.trim() || "https://pages.paperclip.ing/announcements/v1/current.json",
   };
+}
+
+export function loadCloudBootstrapConfig(): Config {
+  if (!isCloudManagedInstance()) throw new Error("Cloud bootstrap configuration requires a managed instance");
+  const url = process.env.DATABASE_URL?.trim();
+  if (!url) throw new Error("Cloud bootstrap requires DATABASE_URL from the environment");
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { throw new Error("Cloud bootstrap DATABASE_URL must use PostgreSQL"); }
+  if (!["postgres:", "postgresql:"].includes(parsed.protocol)) throw new Error("Cloud bootstrap DATABASE_URL must use PostgreSQL");
+  return { ...loadConfig(null), databaseMode: "postgres", databaseUrl: url };
 }

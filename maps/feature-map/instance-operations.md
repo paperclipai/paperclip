@@ -63,6 +63,16 @@ unfinished application write must still prevent sleep after its client leaves.
 
 ### `settings-backup`
 
+Cloud startup reads nonsecret application choices from a private, versioned
+PostgreSQL singleton after a bounded one-time legacy config seed. A fresh
+process and different home restore the saved choices without consulting a stale
+`.env` file. Invalid saved data or an unavailable database prevents startup;
+saved telemetry opt-out applies before client creation. The
+[database controls](../../server/src/__tests__/cloud-runtime-config.test.ts) and
+[startup-order controls](../../server/src/__tests__/server-startup-feedback-export.test.ts)
+cover these local boundaries. See [field ownership](../../doc/cloud-runtime-configuration.md).
+These controls do not qualify a deployed Cloud rollout or durable file storage.
+
 Automated: [experimental settings](../../ui/src/pages/InstanceExperimentalSettings.test.tsx) and [database backup routes](../../server/src/__tests__/instance-database-backups-routes.test.ts) cover their UI/API contracts.
 
 Managed adapters: change a visible adapter preference as an instance admin,

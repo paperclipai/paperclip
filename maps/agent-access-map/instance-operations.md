@@ -91,6 +91,15 @@ Verification: `not-run` — assert the documented agent denial with an owned tes
 verify any listed agent request/result path separately. A delegated operation needs its
 own policy and access review.
 
+Cloud runtime configuration uses a separate private PostgreSQL singleton and
+adds no public read or mutation endpoint. Existing instance settings APIs do not
+expose it. Bootstrap database credentials and trust keys remain in the supplied
+environment; the strict saved allowlist excludes API keys and connection URLs.
+Internal configuration updates require a matching revision and transaction lock.
+[Database controls](../../server/src/__tests__/cloud-runtime-config.test.ts) cover
+seed/restart, credential exclusion, conflicts and rollback. These are local
+controls, not agent authorization or deployed Cloud qualification.
+
 Gaps: Settings APIs cover parts of configuration; pre-start database/binding/storage
 configuration is local operator tooling.
 
