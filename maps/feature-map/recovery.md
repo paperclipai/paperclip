@@ -402,7 +402,9 @@ changed claim, missing stop intent, wrong lease or wrong environment before a
 provider call. Repeat accepted-native-result copyback for both reusable lease policies. Require
 the exact accepted result and completion contract; reject a rejected or unselected
 result, another allocation owner, and an active host writer. Verify no provider
-turn or wake is created, then finalize the original result once. These database
+turn or wake is created, then finalize the original result once. Reject malformed
+or oversized Git metadata through native finalization: the run must fail and
+retain its file-recovery barrier, rather than successfully omitting the export. These database
 and filesystem controls do not qualify a deployed provider.
 Verify saved and newer local files, one preservation receipt, and
 no additional agent turn. The PostgreSQL regression covers this boundary; the

@@ -691,7 +691,7 @@ export async function deleteLocalGitRef(input: {
 
 /** Invalid restore metadata is an integrity rejection, not a dropped transfer. */
 export class GitShallowMetadataError extends Error {
-  readonly code = "WORKSPACE_RESTORE_UNSAFE_ARCHIVE";
+  readonly code = "WORKSPACE_RESTORE_INVALID_GIT_METADATA";
 }
 
 export const GIT_SHALLOW_MAX_BYTES = 64 * 1024;

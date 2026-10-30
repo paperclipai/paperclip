@@ -9,6 +9,8 @@ import { executionWorkspaceService } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { projectTaskInterruption } from "./task-interruption-presentation.js";
+import * as nativeWorkspaceSync from "./native-runtime/native-workspace-sync.js";
+import { GitShallowMetadataError } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { adoptSystemRecovery } from "./system-recovery.js";
 import { getStorageService } from "../storage/index.js";
@@ -601,6 +603,20 @@ describe("automatic retained workspace recovery", () => {
     expect(await readFile(path.join(attached[0].path, "provenance.json"), "utf8")).toContain(f.runId);
     expect(await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: randomUUID(),
       sourceRunIds: [laterId], cwd: next })).toEqual([]);
+  }, 30_000);
+
+  it("retains files and the recovery barrier when native export rejects Git metadata", async () => {
+    const f = await seed();
+    const restore = vi.spyOn(nativeWorkspaceSync, "resumeNativeWorkspaceSync")
+      .mockRejectedValueOnce(new GitShallowMetadataError("Git shallow metadata exceeds its byte limit"));
+    try { await recoverRetainedWorkspace(f.input); } finally { restore.mockRestore(); }
+    expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ state: "exhausted",
+      failure: { code: "snapshot_verification_failed", retryClass: "service_required" }, preservationOperationIds: [] });
+    expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
+    expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+    expect(await readFile(path.join(f.host, "newer.txt"), "utf8")).toBe("newer local work\n");
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+    expect((await run(f.runId)).status).toBe("failed");
   }, 30_000);
 
   it("reconciles an uploaded snapshot after a lost upload acknowledgement without exporting again", async () => {

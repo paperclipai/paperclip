@@ -719,7 +719,9 @@ the normal concurrent-work merge must still finish before run finalization.
 The boundary metadata has a 64 KiB transfer/read budget and at most 256 unique
 commits. Duplicate entries do not repeat host Git probes. Boundary inspection
 has a separate 15-second budget; cloning, unpacking and import share 60 seconds
-without charging probe time. Oversized metadata fails before import.
+without charging probe time. Oversized or malformed metadata fails before import
+with a distinct non-retryable metadata classification. It requires file recovery
+and never uses the unsafe-archive omission path to complete an accepted result.
 Unrelated sandbox history keeps the existing history-preserving graft only when
 the recorded host has not advanced; it must not replace concurrent host work.
 Warm sandbox reuse must match the current host Git tip and branch as well as the
