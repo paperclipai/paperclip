@@ -9,6 +9,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   issueApprovals,
   issueRelations,
   issueThreadInteractions,
@@ -39,7 +40,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-blocker-attention-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     await db.delete(issueThreadInteractions);
@@ -673,6 +674,183 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
     await expect(svc.count(companyId, { attention: "blocked" })).resolves.toBe(1);
   });
+
+  it("preserves attention ordering and pagination with many healthy tasks", async () => {
+    const { companyId, agentId } = await createCompany("BIP");
+    const criticalParentId = await insertIssue({
+      companyId,
+      identifier: "BIP-1",
+      title: "Critical dependency",
+      status: "blocked",
+    });
+    const unassignedBlockerId = await insertIssue({
+      companyId,
+      identifier: "BIP-2",
+      title: "Unassigned dependency",
+      status: "todo",
+    });
+    const highParentId = await insertIssue({
+      companyId,
+      identifier: "BIP-3",
+      title: "Parked dependency",
+      status: "blocked",
+    });
+    const backlogBlockerId = await insertIssue({
+      companyId,
+      identifier: "BIP-4",
+      title: "Assigned backlog dependency",
+      status: "backlog",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: unassignedBlockerId, blockedIssueId: criticalParentId });
+    await block({ companyId, blockerIssueId: backlogBlockerId, blockedIssueId: highParentId });
+    for (let index = 5; index < 105; index += 1) {
+      await insertIssue({
+        companyId,
+        identifier: `BIP-${index}`,
+        title: `Healthy task ${index}`,
+        status: "todo",
+      });
+    }
+
+    const firstPage = await svc.list(companyId, { attention: "blocked", limit: 1 });
+    const secondPage = await svc.list(companyId, { attention: "blocked", limit: 1, offset: 1 });
+
+    expect(firstPage).toHaveLength(1);
+    expect(firstPage[0]).toMatchObject({
+      id: criticalParentId,
+      blockedInboxAttention: { reason: "blocked_by_unassigned_issue" },
+    });
+    expect(secondPage).toHaveLength(1);
+    expect(secondPage[0]).toMatchObject({
+      id: highParentId,
+      blockedInboxAttention: { reason: "blocked_by_assigned_backlog_issue" },
+    });
+  });
+
+  it.skipIf(process.env.PAPERCLIP_RUN_ISSUE_PERF !== "1")(
+    "profiles blocked issue listing with 100, 1,000, and 10,000 task dependency chains",
+    async () => {
+      const sizes = process.env.PAPERCLIP_ISSUE_PERF_SIZES
+        ?.split(",")
+        .map((value) => Number(value.trim()))
+        .filter((value) => Number.isInteger(value) && value > 0) ?? [100, 1_000, 10_000];
+      for (const size of sizes) {
+        const phaseMs: Record<string, number> = {};
+        const phaseSql: Record<string, { count: number; elapsedMs: number; returnedRows: number }> = {};
+        const querySignatures = new Map<string, number>();
+        const client = db.$client as typeof db.$client & { unsafe: (...args: any[]) => Promise<any> };
+        const originalUnsafe = client.unsafe.bind(client);
+        const measure = async <T>(phase: string, action: () => Promise<T> | T) => {
+          const started = performance.now();
+          const metrics = { count: 0, elapsedMs: 0, returnedRows: 0 };
+          phaseSql[phase] = metrics;
+          client.unsafe = ((...args: any[]) => {
+            metrics.count += 1;
+            const signature = String(args[0] ?? "").replace(/\s+/g, " ").trim().slice(0, 180);
+            querySignatures.set(signature, (querySignatures.get(signature) ?? 0) + 1);
+            const queryStarted = performance.now();
+            const query = originalUnsafe(...args) as any;
+            let recorded = false;
+            const record = (result: unknown) => {
+              if (recorded) return;
+              recorded = true;
+              metrics.elapsedMs += performance.now() - queryStarted;
+              metrics.returnedRows += Array.isArray(result) ? result.length : 0;
+            };
+            return new Proxy(query, {
+              get(target, property, receiver) {
+                if (property === "values" || property === "raw") {
+                  const method = Reflect.get(target, property, receiver);
+                  return (...methodArgs: unknown[]) => Promise.resolve(method.apply(target, methodArgs)).then((result: unknown) => {
+                    record(result);
+                    return result;
+                  }, (error: unknown) => {
+                    record(undefined);
+                    throw error;
+                  });
+                }
+                if (property === "then") {
+                  return (resolve?: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) =>
+                    target.then((result: unknown) => {
+                      record(result);
+                      return resolve ? resolve(result) : result;
+                    }, (error: unknown) => {
+                      record(undefined);
+                      if (reject) return reject(error);
+                      throw error;
+                    });
+                }
+                const value = Reflect.get(target, property, receiver);
+                return typeof value === "function" ? value.bind(target) : value;
+              },
+            });
+          }) as typeof client.unsafe;
+          try {
+            const value = await action();
+            phaseMs[phase] = performance.now() - started;
+            return value;
+          } finally {
+            client.unsafe = originalUnsafe;
+          }
+        };
+        const { companyId, agentId } = await measure("seed_company", () => createCompany(`BP${size}`));
+        const { issueRows, relationRows } = await measure("data_generation", () => {
+          const ids = Array.from({ length: size }, () => randomUUID());
+          return {
+            issueRows: ids.map((id, index) => ({
+              id,
+              companyId,
+              identifier: `BP${size}-${index}`,
+              title: `Synthetic dependency ${index}`,
+              status: index === 0 ? "todo" : "blocked",
+              assigneeAgentId: index === 0 ? null : agentId,
+              originKind: "manual",
+              originFingerprint: `bp-${size}-${index}`,
+            })),
+            relationRows: ids.slice(1).map((blockedIssueId, index) => ({
+              companyId,
+              issueId: ids[index]!,
+              relatedIssueId: blockedIssueId,
+              type: "blocks" as const,
+            })),
+          };
+        });
+        await measure("seed_issues", async () => {
+          for (let start = 0; start < issueRows.length; start += 500) {
+            await db.insert(issues).values(issueRows.slice(start, start + 500));
+          }
+        });
+        await measure("seed_relations", async () => {
+          for (let start = 0; start < relationRows.length; start += 500) {
+            await db.insert(issueRelations).values(relationRows.slice(start, start + 500));
+          }
+        });
+
+        let rows: Awaited<ReturnType<typeof svc.list>>;
+        rows = await measure("service_list_total", () => svc.list(companyId, { attention: "blocked", limit: 200 }));
+        const queryMetrics = phaseSql.service_list_total!;
+        phaseMs.classification_and_service_overhead = Math.max(0, phaseMs.service_list_total! - queryMetrics.elapsedMs);
+        const elapsedMs = phaseMs.service_list_total!;
+        console.info(
+          `blocked_issue_list tasks=${size} relations=${relationRows.length} returned=${rows.length} data_generation_ms=${phaseMs.data_generation!.toFixed(1)} seed_company_ms=${phaseMs.seed_company!.toFixed(1)} seed_company_queries=${phaseSql.seed_company!.count} seed_company_sql_ms=${phaseSql.seed_company!.elapsedMs.toFixed(1)} seed_issues_ms=${phaseMs.seed_issues!.toFixed(1)} seed_issues_queries=${phaseSql.seed_issues!.count} seed_issues_sql_ms=${phaseSql.seed_issues!.elapsedMs.toFixed(1)} seed_relations_ms=${phaseMs.seed_relations!.toFixed(1)} seed_relations_queries=${phaseSql.seed_relations!.count} seed_relations_sql_ms=${phaseSql.seed_relations!.elapsedMs.toFixed(1)} service_total_ms=${elapsedMs.toFixed(1)} service_sql_ms=${queryMetrics.elapsedMs.toFixed(1)} service_queries=${queryMetrics.count} service_sql_rows=${queryMetrics.returnedRows} classification_and_overhead_ms=${phaseMs.classification_and_service_overhead!.toFixed(1)}`,
+        );
+        console.info(`blocked_issue_list_sql_top tasks=${size} signatures=${JSON.stringify([...querySignatures].sort((a, b) => b[1] - a[1]).slice(0, 8))}`);
+        expect(rows).toHaveLength(Math.min(size - 1, 200));
+        expect(rows.every((row) => row.blockedInboxAttention?.kind === "blocked")).toBe(true);
+        expect(queryMetrics.count).toBeLessThan(1_000);
+
+        await measure("cleanup", async () => {
+          await db.delete(issueRelations).where(eq(issueRelations.companyId, companyId));
+          await db.delete(issues).where(eq(issues.companyId, companyId));
+          await db.delete(agents).where(eq(agents.companyId, companyId));
+          await db.delete(companies).where(eq(companies.id, companyId));
+        });
+        console.info(`blocked_issue_list_cleanup tasks=${size} elapsed_ms=${phaseMs.cleanup!.toFixed(1)} queries=${phaseSql.cleanup!.count} sql_ms=${phaseSql.cleanup!.elapsedMs.toFixed(1)}`);
+      }
+    },
+    360_000,
+  );
 
   it("surfaces cancelled-blocker attention on an assigned todo source", async () => {
     const { companyId, agentId } = await createCompany("BICX");

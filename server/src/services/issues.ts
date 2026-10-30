@@ -4202,6 +4202,13 @@ async function listIssueBlockerAttentionMap(
           )
       : [];
   const agentsById = new Map(agentRows.map((agent) => [agent.id, agent]));
+  const hasAnyLiveWorkNode = [...nodesById.values()].some(
+    (node) =>
+      node.status === "in_progress" ||
+      activeIssueIds.has(node.id) ||
+      explicitWaitingIssueIds.has(node.id) ||
+      Boolean(node.assigneeUserId),
+  );
 
   type PathClassification = {
     covered: boolean;
@@ -4384,28 +4391,34 @@ async function listIssueBlockerAttentionMap(
   };
 
   const pathHasLiveWork = (nodeId: string, seen: Set<string>): boolean => {
-    if (seen.has(nodeId)) return false;
-    const node = nodesById.get(nodeId);
-    if (!node || node.companyId !== companyId) return false;
-    if (
-      node.status === "in_progress" ||
-      activeIssueIds.has(node.id) ||
-      explicitWaitingIssueIds.has(node.id) ||
-      Boolean(node.assigneeUserId)
-    )
-      return true;
-
-    const nextSeen = new Set(seen);
-    nextSeen.add(nodeId);
-    return (edgesByIssueId.get(node.id) ?? []).some((edge) => {
-      const blocker = nodesById.get(edge.blockerIssueId);
+    if (!hasAnyLiveWorkNode) return false;
+    const visited = new Set(seen);
+    const pending = [nodeId];
+    while (pending.length > 0) {
+      const currentId = pending.pop()!;
+      if (visited.has(currentId)) continue;
+      visited.add(currentId);
+      const node = nodesById.get(currentId);
+      if (!node || node.companyId !== companyId) continue;
       if (
-        blocker?.status === "done" &&
-        !pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId)
+        node.status === "in_progress" ||
+        activeIssueIds.has(node.id) ||
+        explicitWaitingIssueIds.has(node.id) ||
+        Boolean(node.assigneeUserId)
       )
-        return false;
-      return pathHasLiveWork(edge.blockerIssueId, nextSeen);
-    });
+        return true;
+
+      for (const edge of edgesByIssueId.get(node.id) ?? []) {
+        const blocker = nodesById.get(edge.blockerIssueId);
+        if (
+          blocker?.status === "done" &&
+          !pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId)
+        )
+          continue;
+        pending.push(edge.blockerIssueId);
+      }
+    }
+    return false;
   };
 
   const issueIdForSample = (sample: string | null | undefined) => {
@@ -5673,7 +5686,32 @@ async function listIssueBlockedInboxAttentionMap(
   const [graphIssueRows, graphRelationRows, companyAgentRows] =
     await Promise.all([
       dbOrTx
-        .select()
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          projectId: issues.projectId,
+          goalId: issues.goalId,
+          parentId: issues.parentId,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          createdByAgentId: issues.createdByAgentId,
+          createdByUserId: issues.createdByUserId,
+          conversationAgentId: issues.conversationAgentId,
+          conversationUserId: issues.conversationUserId,
+          conversationState: issues.conversationState,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
+          hiddenAt: issues.hiddenAt,
+          originKind: issues.originKind,
+          originId: issues.originId,
+          createdAt: issues.createdAt,
+          updatedAt: issues.updatedAt,
+        })
         .from(issues)
         .where(
           and(
@@ -6024,6 +6062,23 @@ async function listIssueBlockedInboxAttentionMap(
       row.issueId ? [row.issueId] : [],
     ),
   );
+  // The fallback classification consults each issue's blocker tree. Resolve
+  // those trees for the complete candidate set in one graph pass instead of
+  // repeating the same database traversal for every issue in the inbox.
+  const blockerAttentionByIssueId = new Map<string, IssueBlockerAttention>();
+  for (const candidateChunk of chunkList(
+    issueRows,
+    ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE,
+  )) {
+    const chunkAttention = await listIssueBlockerAttentionMap(
+      dbOrTx,
+      companyId,
+      candidateChunk,
+    );
+    for (const [issueId, attention] of chunkAttention) {
+      blockerAttentionByIssueId.set(issueId, attention);
+    }
+  }
 
   for (const row of issueRows) {
     if (
@@ -6271,12 +6326,7 @@ async function listIssueBlockedInboxAttentionMap(
       continue;
     }
 
-    const blockerAttention = await listIssueBlockerAttentionMap(
-      dbOrTx,
-      companyId,
-      [row],
-    );
-    const blockerState = blockerAttention.get(row.id);
+    const blockerState = blockerAttentionByIssueId.get(row.id);
     if (
       row.status === "blocked" &&
       (blockerState?.state === "needs_attention" ||
@@ -6512,50 +6562,32 @@ async function listBlockedInboxIssues(
       row.description,
       ISSUE_LIST_DESCRIPTION_MAX_CHARS,
     ),
-  }));
-  const withLabels = await withIssueLabels(dbOrTx, rows);
-  const withRuns = withActiveRuns(
-    withLabels,
-    await activeRunMapForIssues(dbOrTx, withLabels),
-  );
-  if (withRuns.length === 0) return [];
+  })) as IssueRow[];
+  if (rows.length === 0) return [];
 
-  const issueIds = withRuns.map((row) => row.id);
-  const includeLiveDescendantSummary =
-    filters?.includeLiveDescendantSummary === true;
-  const [
-    statsRows,
-    readRows,
-    lastActivityRows,
-    blockedByMap,
-    blockerAttentionByIssueId,
-    reviewAttentionByIssueId,
-    blockedInboxAttentionByIssueId,
-    liveDescendantCountByIssueId,
-  ] = await Promise.all([
-    contextUserId
-      ? userCommentStatsForIssues(dbOrTx, companyId, contextUserId, issueIds)
-      : Promise.resolve([]),
-    contextUserId
-      ? userReadStatsForIssues(dbOrTx, companyId, contextUserId, issueIds)
-      : Promise.resolve([]),
-    lastActivityStatsForIssues(dbOrTx, companyId, issueIds),
-    blockedByMapForIssues(dbOrTx, companyId, issueIds),
-    listIssueBlockerAttentionMap(dbOrTx, companyId, withRuns),
-    listIssueReviewAttentionMap(dbOrTx, companyId, withRuns),
-    listIssueBlockedInboxAttentionMap(dbOrTx, companyId, withRuns),
-    includeLiveDescendantSummary
-      ? liveDescendantCountMapForIssues(dbOrTx, companyId, issueIds)
-      : Promise.resolve(new Map<string, number>()),
-  ]);
+  // Attention classification needs the complete candidate set to preserve
+  // ordering and pagination. Keep that graph pass, then defer row hydration
+  // until after the attention filter, search, ordering, and page are known.
+  const blockedInboxAttentionByIssueId =
+    await listIssueBlockedInboxAttentionMap(dbOrTx, companyId, rows);
+  let attentionRows = rows.flatMap((row) => {
+    const blockedInboxAttention = blockedInboxAttentionByIssueId.get(row.id);
+    return blockedInboxAttention
+      ? [{ ...row, blockedInboxAttention }]
+      : [];
+  });
+  if (attentionRows.length === 0) return [];
 
   const rawSearchInput = filters?.q?.trim() ?? "";
   const rawSearch = rawSearchInput.toLowerCase();
   const commentSearchMatchIssueIds = new Set<string>();
   if (rawSearchInput) {
+    const commentSearchCandidates = attentionRows.filter(
+      (row) => !blockedInboxSearchText(row.blockedInboxAttention, row).includes(rawSearch),
+    );
     const containsPattern = `%${escapeLikePattern(rawSearchInput)}%`;
     for (const issueIdChunk of chunkList(
-      issueIds,
+      commentSearchCandidates.map((row) => row.id),
       ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE,
     )) {
       const rows = await dbOrTx
@@ -6572,68 +6604,33 @@ async function listBlockedInboxIssues(
       for (const row of rows as Array<{ issueId: string }>)
         commentSearchMatchIssueIds.add(row.issueId);
     }
+    attentionRows = attentionRows.filter(
+      (row) =>
+        blockedInboxSearchText(row.blockedInboxAttention, row).includes(rawSearch) ||
+        commentSearchMatchIssueIds.has(row.id),
+    );
   }
-  const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
-  const readByIssueId = new Map(
-    readRows.map((row) => [row.issueId, row.myLastReadAt]),
+
+  const activityRows = await lastActivityStatsForIssues(
+    dbOrTx,
+    companyId,
+    attentionRows.map((row) => row.id),
   );
   const lastActivityByIssueId = new Map(
-    lastActivityRows.map((row) => [row.issueId, row]),
+    activityRows.map((row) => [row.issueId, row]),
   );
-
-  const enriched = withRuns
-    .flatMap((row) => {
-      const blockedInboxAttention = blockedInboxAttentionByIssueId.get(row.id);
-      if (!blockedInboxAttention) return [];
-      if (
-        rawSearch &&
-        !blockedInboxSearchText(blockedInboxAttention, row).includes(
-          rawSearch,
-        ) &&
-        !commentSearchMatchIssueIds.has(row.id)
-      )
-        return [];
-
+  const sortableRows = attentionRows
+    .map((row) => {
       const activity = lastActivityByIssueId.get(row.id);
-      const lastActivityAt =
-        latestIssueActivityAt(
-          row.updatedAt,
-          activity?.latestCommentAt ?? null,
-          activity?.latestLogAt ?? null,
-        ) ?? row.updatedAt;
-      return [
-        {
-          ...row,
-          description: blockedInboxResponseDescription(
-            blockedInboxAttention,
-            row,
-          ),
-          blockedBy: blockedByMap.get(row.id) ?? [],
-          lastActivityAt,
-          ...(blockerAttentionByIssueId.has(row.id)
-            ? { blockerAttention: blockerAttentionByIssueId.get(row.id) }
-            : {}),
-          reviewAttention:
-            reviewAttentionByIssueId.get(row.id) ?? reviewAttentionNone(),
-          blockedInboxAttention,
-          ...(includeLiveDescendantSummary
-            ? {
-                liveDescendantCount:
-                  liveDescendantCountByIssueId.get(row.id) ?? 0,
-              }
-            : {}),
-          ...(contextUserId
-            ? deriveIssueUserContext(row, contextUserId, {
-                isUnreadForMe: statsByIssueId.get(row.id)?.isUnreadForMe ?? false,
-                myLastCommentAt:
-                  statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
-                myLastReadAt: readByIssueId.get(row.id) ?? null,
-                lastExternalCommentAt:
-                  statsByIssueId.get(row.id)?.lastExternalCommentAt ?? null,
-              })
-            : {}),
-        },
-      ];
+      return {
+        ...row,
+        lastActivityAt:
+          latestIssueActivityAt(
+            row.updatedAt,
+            activity?.latestCommentAt ?? null,
+            activity?.latestLogAt ?? null,
+          ) ?? row.updatedAt,
+      };
     })
     .sort(compareBlockedInboxRows);
 
@@ -6645,9 +6642,93 @@ async function listBlockedInboxIssues(
     typeof filters?.limit === "number" && Number.isFinite(filters.limit)
       ? Math.max(1, Math.floor(filters.limit))
       : undefined;
-  return limit === undefined
-    ? enriched.slice(offset)
-    : enriched.slice(offset, offset + limit);
+  const pageRows =
+    limit === undefined
+      ? sortableRows.slice(offset)
+      : sortableRows.slice(offset, offset + limit);
+  if (pageRows.length === 0) return [];
+
+  const withLabels = await withIssueLabels(dbOrTx, pageRows);
+  const withRuns = withActiveRuns(
+    withLabels,
+    await activeRunMapForIssues(dbOrTx, withLabels),
+  );
+  const issueIds = withRuns.map((row) => row.id);
+  const includeLiveDescendantSummary =
+    filters?.includeLiveDescendantSummary === true;
+  const [
+    statsRows,
+    readRows,
+    blockedByMap,
+    blockerAttentionByIssueId,
+    reviewAttentionByIssueId,
+    liveDescendantCountByIssueId,
+  ] = await Promise.all([
+    contextUserId
+      ? userCommentStatsForIssues(dbOrTx, companyId, contextUserId, issueIds)
+      : Promise.resolve([]),
+    contextUserId
+      ? userReadStatsForIssues(dbOrTx, companyId, contextUserId, issueIds)
+      : Promise.resolve([]),
+    blockedByMapForIssues(dbOrTx, companyId, issueIds),
+    listIssueBlockerAttentionMap(dbOrTx, companyId, withRuns),
+    listIssueReviewAttentionMap(dbOrTx, companyId, withRuns),
+    includeLiveDescendantSummary
+      ? liveDescendantCountMapForIssues(dbOrTx, companyId, issueIds)
+      : Promise.resolve(new Map<string, number>()),
+  ]);
+  const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
+  const readByIssueId = new Map(
+    readRows.map((row) => [row.issueId, row.myLastReadAt]),
+  );
+  const pageIssueIdSet = new Set(issueIds);
+  const pageActivityByIssueId = new Map(
+    activityRows
+      .filter((row) => pageIssueIdSet.has(row.issueId))
+      .map((row) => [row.issueId, row]),
+  );
+
+  return withRuns.map((row) => {
+    const blockedInboxAttention =
+      blockedInboxAttentionByIssueId.get(row.id)!;
+    const activity = pageActivityByIssueId.get(row.id);
+    return {
+      ...row,
+      description: blockedInboxResponseDescription(
+        blockedInboxAttention,
+        row,
+      ),
+      blockedBy: blockedByMap.get(row.id) ?? [],
+      lastActivityAt:
+        latestIssueActivityAt(
+          row.updatedAt,
+          activity?.latestCommentAt ?? null,
+          activity?.latestLogAt ?? null,
+        ) ?? row.updatedAt,
+      ...(blockerAttentionByIssueId.has(row.id)
+        ? { blockerAttention: blockerAttentionByIssueId.get(row.id) }
+        : {}),
+      reviewAttention:
+        reviewAttentionByIssueId.get(row.id) ?? reviewAttentionNone(),
+      blockedInboxAttention,
+      ...(includeLiveDescendantSummary
+        ? {
+            liveDescendantCount:
+              liveDescendantCountByIssueId.get(row.id) ?? 0,
+          }
+        : {}),
+      ...(contextUserId
+        ? deriveIssueUserContext(row, contextUserId, {
+            isUnreadForMe: statsByIssueId.get(row.id)?.isUnreadForMe ?? false,
+            myLastCommentAt:
+              statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
+            myLastReadAt: readByIssueId.get(row.id) ?? null,
+            lastExternalCommentAt:
+              statsByIssueId.get(row.id)?.lastExternalCommentAt ?? null,
+          })
+        : {}),
+    };
+  });
 }
 
 async function countBlockedInboxIssues(
