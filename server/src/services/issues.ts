@@ -1,3 +1,4 @@
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notifications.js";
 import { notifyNativeRunProjection } from "./native-run-projection-notifications.js";
@@ -7626,6 +7627,7 @@ export function issueService(db: Db) {
       await assertNoBlockingCycles(companyId, issueId, deduped, dbOrTx);
     }
 
+    await notifyAttentionRetentionWork(dbOrTx, { companyId });
     await dbOrTx
       .delete(issueRelations)
       .where(
@@ -10606,6 +10608,7 @@ export function issueService(db: Db) {
         }
         if (values.monitorNextCheckAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+        await notifyAttentionRetentionWork(tx, { companyId });
         const [issue] = await tx.insert(issues).values(values).returning();
         await attachOwnedDraftImages(tx, issue, issue.description, { userId: issueData.createdByUserId, agentId: issueData.createdByAgentId });
         if (issue.visibility === "private" && !inheritedPrivateSubtree && issueData.createdByAgentId) {
@@ -11491,6 +11494,7 @@ export function issueService(db: Db) {
           || issueData.parentId !== undefined || issueData.executionWorkspaceId !== undefined) {
           await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
         }
+        await notifyAttentionRetentionWork(tx, { companyId: receiptExisting.companyId });
         if (patch.status !== undefined || patch.assigneeAgentId !== undefined || patch.assigneeUserId !== undefined
           || patch.hiddenAt !== undefined || patch.conversationAgentId !== undefined) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
@@ -11952,6 +11956,7 @@ export function issueService(db: Db) {
           await requestRestorePointDeletion(tx, { sourceIssueId: id });
           const [owner] = await tx.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, id));
           if (owner) {
+            await notifyAttentionRetentionWork(tx, { companyId: owner.companyId });
             await notifyExternalConversationSettlement(tx, { companyId: owner.companyId });
             await notifyApprovalWork(tx, owner.companyId);
           }
@@ -12084,6 +12089,7 @@ export function issueService(db: Db) {
           )
         : isNull(issues.executionRunId);
       const updated = await db.transaction(async tx => {
+        await notifyAttentionRetentionWork(tx, { companyId: issueCompany.companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
         return tx
@@ -12213,6 +12219,7 @@ export function issueService(db: Db) {
           }
           const staleExecutionRunId = current.executionRunId;
           const adopted = await db.transaction(async tx => {
+            await notifyAttentionRetentionWork(tx, { companyId: issueCompany.companyId });
             await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
             await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
             return tx
@@ -12468,6 +12475,7 @@ export function issueService(db: Db) {
           existing.status === "in_progress" ? "todo" : existing.status;
         await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
         await notifyNativeStatusReassessment(tx, { companyId: existing.companyId, issueId: id });
+        await notifyAttentionRetentionWork(tx, { companyId: existing.companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
         const updated = await tx
@@ -12520,6 +12528,7 @@ export function issueService(db: Db) {
           patch.assigneeAgentId = null;
         }
 
+        await notifyAttentionRetentionWork(tx, { companyId: existing.companyId });
         await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
         if (existing.checkoutRunId || existing.executionRunId || options.clearAssignee) {
           await notifyExternalConversationSettlement(tx, { companyId: existing.companyId, issueId: id });

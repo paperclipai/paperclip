@@ -1,11 +1,14 @@
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import type { Db } from "@paperclipai/db";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
-export function notifyDecisionCreated(transaction: object) {
+export async function notifyDecisionCreated(transaction: object) {
+  await notifyAttentionRetentionWork(transaction, { sourceKind: "decision" });
   return notifyDeliveryWork(transaction, DELIVERY_QUEUES.decisionExpiry);
 }
 
 export async function notifyDecisionChange(transaction: object) {
+  await notifyAttentionRetentionWork(transaction, { sourceKind: "decision" });
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.decisionContinuation);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.decisionExpiry);
 }

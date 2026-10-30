@@ -80,18 +80,19 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
         throw conflict("Only agents in error status can have their error cleared");
       }
 
-      const updated = await db
-        .update(agents)
-        .set({
+      const updated = await effects.transaction(db, existing.companyId, async tx => {
+        await effects.beforeStatusChange(tx, existing.companyId, id, "error", "idle");
+        return tx.update(agents).set({
           status: "idle",
           pauseReason: null,
           pausedAt: null,
           errorReason: null,
           updatedAt: new Date(),
         })
-        .where(and(eq(agents.id, id), eq(agents.status, "error"), eq(agents.lifecycleState, "ready")))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+          .where(and(eq(agents.id, id), eq(agents.status, "error"), eq(agents.lifecycleState, "ready")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      });
 
       if (!updated) {
         throw conflict("Only agents in error status can have their error cleared");

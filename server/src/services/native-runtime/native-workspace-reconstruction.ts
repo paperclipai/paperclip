@@ -1,3 +1,4 @@
+import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { and, eq, gt, inArray, ne, notInArray, or, sql } from "drizzle-orm";
@@ -179,6 +180,7 @@ export async function reconstructNativeWorkspace(input: {
         ...(source.interveningExecutions.length ? { interveningExecutions: source.interveningExecutions } : {}) } };
     await markExecutionReconciliation(db, source.action, decision, input.actorId);
     const now = new Date();
+    await notifyAttentionRetentionWork(tx, { companyId: input.companyId });
     await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.issueId });
     await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "handed_back", resolvedAt: now, updatedAt: now,
       resolutionNote: "workspace_reconstruction_authorized", nextAction: "Continue from saved sources. The original unexported edits are lost; verify the selected attachments before rebuilding. Do not repeat completed external actions or reset the original work limits.",

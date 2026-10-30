@@ -1,5 +1,5 @@
 import { notifyApprovalWork } from "./approval-work-notifications.js";
-import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
+import { notifyAttentionRetentionWork, notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { addCents, compareCents, normalizeCents } from "@paperclipai/shared";
 import { and, desc, eq, inArray, sql, or, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -466,6 +466,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       windowEnd: end,
     });
 
+    await notifyAttentionRetentionWork(db, { companyId: policy.companyId, sourceKind: "budget_alert" });
     if (thresholdType === "hard") await notifyApprovalWork(db, policy.companyId);
     const approval = thresholdType === "hard"
       ? await db
@@ -505,6 +506,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
   }
 
   async function resolveOpenSoftIncidents(policyId: string) {
+    await notifyAttentionRetentionWork(db, { sourceKind: "budget_alert" });
     await db
       .update(budgetIncidents)
       .set({
@@ -527,6 +529,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     decidedByUserId: string | null,
     thresholdType?: BudgetThresholdType,
   ) {
+    await notifyAttentionRetentionWork(db, { sourceKind: "budget_alert" });
     const condition = and(eq(budgetIncidents.policyId, policyId), eq(budgetIncidents.status, "open"),
       thresholdType ? eq(budgetIncidents.thresholdType, thresholdType) : undefined);
     const openRows = await db
@@ -937,6 +940,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
         }
 
         const now = new Date();
+        await notifyAttentionRetentionWork(db, { companyId, sourceKind: "budget_alert" });
         await notifyDeliveryWork(db, DELIVERY_QUEUES.budgetEnforcement, companyId);
         await db
           .update(budgetPolicies)
