@@ -86,10 +86,39 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     const service = companySkillService(db);
     const saved = await service.createVersion(companyId, linked!.id);
     await fs.writeFile(path.join(directory, "support.txt"), "current local content");
+    await fs.writeFile(path.join(directory, "added.txt"), "new local file");
     const forked = await service.createLocalSkill(companyId, { name: "Live fork", forkedFromSkillId: linked!.id });
     expect(await service.readFile(companyId, forked.id, "support.txt")).toMatchObject({ content: "current local content" });
+    expect(await service.readFile(companyId, forked.id, "added.txt")).toMatchObject({ content: "new local file" });
     expect((await service.getVersion(companyId, linked!.id, saved.id))?.fileInventory)
       .toContainEqual(expect.objectContaining({ path: "support.txt", content: "old saved content" }));
+  });
+
+  it("carries committed version preconditions through a multi-file linked-local restore", async () => {
+    const companyId = await company();
+    const directory = path.join(root, `restore-${randomUUID()}`);
+    await fs.mkdir(directory);
+    await fs.writeFile(path.join(directory, "SKILL.md"), "# Original\n");
+    await fs.writeFile(path.join(directory, "support.txt"), "original support");
+    const [linked] = await db.insert(companySkills).values({ companyId, key: "linked", slug: "linked", name: "Linked",
+      markdown: "# Original\n", sourceType: "local_path", sourceLocator: directory,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "support.txt", kind: "other" }] }).returning();
+    const service = companySkillService(db);
+    const saved = await service.createVersion(companyId, linked!.id);
+    const original = (await service.getVersion(companyId, linked!.id, saved.id))!;
+    await service.updateFile(companyId, linked!.id, "SKILL.md", "# Changed\n");
+    await service.updateFile(companyId, linked!.id, "support.txt", "changed support");
+    let versionId = (await service.readFile(companyId, linked!.id, "SKILL.md"))!.versionId;
+    expect(versionId).toBeTruthy();
+    for (const file of original.fileInventory) {
+      const result = await service.updateFile(companyId, linked!.id, file.path, file.content, null,
+        { expectedVersionId: versionId });
+      expect(result.versionId).toBeTruthy();
+      expect(result.versionId).not.toBe(versionId);
+      versionId = result.versionId;
+    }
+    expect(await service.readFile(companyId, linked!.id, "SKILL.md")).toMatchObject({ content: "# Original\n", versionId });
+    expect(await service.readFile(companyId, linked!.id, "support.txt")).toMatchObject({ content: "original support", versionId });
   });
 
   it("keeps an unassigned skill, supporting bytes and executable mode across fresh homes", async () => {

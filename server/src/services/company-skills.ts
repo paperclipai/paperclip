@@ -3195,7 +3195,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     );
   }
 
-  async function reconcileLocalPathSkillSources(companyId: string) {
+  async function reconcileLocalPathSkillSources(companyId: string, skillId?: string) {
     const rows = await db
       .select({
         id: companySkills.id,
@@ -3208,7 +3208,8 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         metadata: companySkills.metadata,
       })
       .from(companySkills)
-      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.sourceType, "local_path")));
+      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.sourceType, "local_path"),
+        skillId ? eq(companySkills.id, skillId) : undefined));
     const skills = rows.map((row) => ({
       ...row,
       sourceType: row.sourceType as CompanySkillSourceType,
@@ -3664,6 +3665,11 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       skill = await getByRouteRef(companyId, id);
     }
     if (!skill) return null;
+    if (skill.sourceType === "local_path") {
+      await reconcileLocalPathSkillSources(companyId, skill.id);
+      skill = await getById(companyId, skill.id);
+      if (!skill) return null;
+    }
     const usedByAgents = await usage(companyId, skill.key);
     const existingForks = await existingForkSummaries(companyId, skill.id, actor);
     const currentVersion = await getCurrentVersion(skill);
@@ -3706,9 +3712,12 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       if (!version) throw notFound("Skill version not found");
       return runtimeVersionInventory(companyId, version);
     }
+    if (skill.sourceType === "local_path" && skill.sourceLocator) {
+      skill = { ...skill, fileInventory: await collectLocalSkillInventory(skill.sourceLocator, inferLocalSkillInventoryMode(skill)) };
+    }
     const out: CompanySkillVersionFileInventoryEntry[] = [];
     for (const entry of skill.fileInventory) {
-      const detail = await readFile(companyId, skill.id, entry.path);
+      const detail = await readLoadedSkillFile(skill, entry.path);
       if (!detail) continue;
       out.push({
         path: detail.path,
@@ -4478,7 +4487,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       const diskBytes = absolutePath ? await fs.readFile(absolutePath).catch(() => null) : null;
       if (diskBytes !== null) {
         const file = snapshotFile(normalizedPath, fileEntry.kind, diskBytes, Boolean((await fs.stat(absolutePath!)).mode & 0o111));
-        return { ...file, skillId: skill.id, language: file.encoding === "base64" ? null : inferLanguageFromPath(normalizedPath),
+        return { ...file, skillId: skill.id, versionId: skill.currentVersionId, language: file.encoding === "base64" ? null : inferLanguageFromPath(normalizedPath),
           markdown: file.encoding !== "base64" && isMarkdownPath(normalizedPath), editable: source.editable && file.encoding !== "base64" };
       } else if (normalizedPath === "SKILL.md") {
         content = skill.markdown;
@@ -4521,6 +4530,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
 
     return {
       skillId: skill.id,
+      versionId: skill.currentVersionId,
       path: normalizedPath,
       kind: fileEntry.kind,
       content,
