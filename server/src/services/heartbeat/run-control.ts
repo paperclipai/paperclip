@@ -1387,6 +1387,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
               ...(options.cancellationRequestId ? { cancellationRequestId: options.cancellationRequestId } : {}),
             });
             if (running) {
+              running.markStopRequested?.();
               await terminateHeartbeatRunProcess({
                 pid: running.child.pid,
                 processGroupId: running.processGroupId,
