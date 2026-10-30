@@ -1194,7 +1194,7 @@ describe("company skill mutation permissions", () => {
     expect(mockCompanySkillService.installFromCatalog).toHaveBeenCalledWith("company-1", {
       catalogSkillId: "paperclipai:bundled:software-development:review",
       slug: "review",
-    });
+    }, expect.any(Function));
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       companyId: "company-1",
       action: "company.skill_catalog_installed",
@@ -1559,7 +1559,7 @@ describe("company skill mutation permissions", () => {
     expect(mockCompanySkillService.createVersion).toHaveBeenCalledWith("company-1", "skill-1", { label: "v1" }, {
       type: "user",
       userId: "user-1",
-    });
+   }, { publication: expect.objectContaining({ validate: expect.any(Function), afterPublish: expect.any(Function) }) });
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "company.skill_version_created",
       entityType: "company_skill_version",
@@ -1582,7 +1582,7 @@ describe("company skill mutation permissions", () => {
     }, {
       type: "user",
       userId: "user-1",
-    });
+   }, expect.objectContaining({ validate: expect.any(Function), afterPublish: expect.any(Function) }));
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "company.skill_file_deleted",
       entityType: "company_skill",
@@ -1621,6 +1621,7 @@ describe("company skill mutation permissions", () => {
         type: "user",
         userId: "user-1",
       },
+      expect.objectContaining({ validate: expect.any(Function), afterPublish: expect.any(Function) }),
     );
 
     await request(app).get("/api/companies/company-1/skills/skill-1/fork-precheck").expect(200);
@@ -1667,6 +1668,7 @@ describe("company skill mutation permissions", () => {
       "company-1",
       "skill-1",
       { name: "Ship PR", slug: "ship-pr" },
+      expect.objectContaining({ validate: expect.any(Function), afterPublish: expect.any(Function) }),
     );
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "company.skill_renamed",
@@ -2172,7 +2174,7 @@ describe("company skill mutation permissions", () => {
     expect(res.body).toEqual({
       error: 'Cannot delete skill "Find Skills" while it is still used by Builder, Reviewer. Detach it from those agents first.',
     });
-    expect(mockCompanySkillService.deleteSkill).toHaveBeenCalledWith("company-1", "skill-1");
+    expect(mockCompanySkillService.deleteSkill).toHaveBeenCalledWith("company-1", "skill-1", expect.any(Function), expect.any(Function));
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 });

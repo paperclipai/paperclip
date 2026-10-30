@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { companies, companySkills, companySkillVersions, companySkillRepositorySnapshots as snapshots,
+import { agents, companies, companySkills, companySkillVersions, companySkillRepositorySnapshots as snapshots,
   skillPackageDeletions, createDb, withDedicatedDbConnection } from "@paperclipai/db";
 import * as dbModule from "@paperclipai/db";
 import type { CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
@@ -121,15 +121,41 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     expect(await skillPackageStore(db, storage).versionInventory(stale!)).toEqual(files.map(({ path, kind }) => ({ path, kind })));
   });
 
-  it("forks a packaged repository inside an outer transaction with a one-connection pool", async () => {
+  it("prepares a repository fork before its publication transaction with a one-connection pool", async () => {
     const f = await fixture();
-    const fork = await db.transaction(tx => companySkillService(tx as unknown as typeof db, { packageDb: db })
-      .createLocalSkill(f.companyId, { name: "Idempotent fork", slug: "idempotent-fork", forkedFromSkillId: f.skills[0]!.skill.id }));
+    let publishing = false;
+    const read = storage.getObject.bind(storage);
+    vi.spyOn(storage, "getObject").mockImplementation((...args) => {
+      expect(publishing, "Package acquisition must finish before publication takes database locks").toBe(false);
+      return read(...args);
+    });
+    const fork = await f.service.createLocalSkill(f.companyId,
+      { name: "Idempotent fork", slug: "idempotent-fork", forkedFromSkillId: f.skills[0]!.skill.id }, null, {
+        beforeLock: async () => { publishing = true; },
+        afterPublish: async (tx, skill, version) => {
+          expect((await tx.select().from(companySkillVersions).where(eq(companySkillVersions.id, version.id)))[0])
+            .toMatchObject({ companySkillId: skill.id });
+        },
+      });
+    publishing = false;
     const saved = await f.service.getVersion(f.companyId, fork.id, fork.currentVersionId!);
     expect(saved!.fileInventory).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: ".paperclip-repository/shared/run.sh", content: files[2]!.content }),
     ]));
   }, 15_000);
+
+  it("publishes a fork and agent reassignment atomically with a one-connection pool", async () => {
+    const f = await fixture();
+    const original = f.skills[0]!.skill;
+    const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Fork user", adapterType: "codex_local",
+      adapterConfig: { paperclipSkillSync: { desiredSkills: [{ key: original.key }] } } }).returning();
+    await expect(f.service.forkSkill(f.companyId, original.id, { slug: "atomic-fork", reassignAgentIds: [agent!.id] }, null,
+      { afterPublish: async () => { throw new Error("audit rollback"); } })).rejects.toThrow("audit rollback");
+    expect(await f.service.getByKey(f.companyId, `company/${f.companyId}/atomic-fork`)).toBeNull();
+    expect((await db.select().from(agents).where(eq(agents.id, agent!.id)))[0]!.adapterConfig).toEqual(agent!.adapterConfig);
+    const fork = await f.service.forkSkill(f.companyId, original.id, { slug: "atomic-fork", reassignAgentIds: [agent!.id] });
+    expect(fork.reassignments).toEqual([{ agentId: agent!.id, previousSkillKey: original.key, nextSkillKey: fork.skill.key }]);
+  });
 
   it("lists version metadata without reading archives, while inspection reads the requested historical bytes", async () => {
     const f = await fixture();
@@ -247,7 +273,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     expect(await skillPackageStore(db, storage).versionFiles(converted!)).toEqual([{ ...files[0]!, path: "SKILL.md" }]);
   });
 
-  it.each(["file", "folder"] as const)("restores a deleted %s when the replacement package upload fails", async target => {
+  it.each(["file", "folder"] as const)("keeps committed %s contents when the replacement package upload fails", async target => {
     const companyId = await company();
     vi.spyOn(storageModule, "getStorageService").mockReturnValue(storage);
     const service = companySkillService(db);
@@ -256,11 +282,6 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     await service.updateFile(companyId, skill.id, "bundle/probe.sh", "#!/bin/sh\nprintf kept\n", null, { executable: true });
     await service.updateFile(companyId, skill.id, "bundle/nested/data.bin", binary.toString("base64"), null, { encoding: "base64" });
     await service.updateFile(companyId, skill.id, "keep.txt", "Unrelated file\n");
-    const root = skill.sourceLocator!;
-    await fs.chmod(path.join(root, "bundle/probe.sh"), 0o751);
-    await fs.mkdir(path.join(root, "bundle/empty"));
-    await fs.mkdir(path.join(root, "bundle/.git"));
-    await fs.writeFile(path.join(root, "bundle/.git/local-state"), "Unlisted bytes\n");
     const [before] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
     const versionsBefore = await db.select({ id: companySkillVersions.id }).from(companySkillVersions)
       .where(eq(companySkillVersions.companySkillId, skill.id));
@@ -270,11 +291,10 @@ describe.skipIf(!support.supported)("external skill packages", () => {
       await expect(service.deleteFile(companyId, skill.id, input)).rejects.toThrow("Object storage unavailable");
       expect(upload).toHaveBeenCalled();
     } finally { upload.mockRestore(); }
-    expect(await fs.readFile(path.join(root, "bundle/probe.sh"), "utf8")).toBe("#!/bin/sh\nprintf kept\n");
-    expect((await fs.stat(path.join(root, "bundle/probe.sh"))).mode & 0o777).toBe(0o751);
-    expect(await fs.readFile(path.join(root, "bundle/nested/data.bin"))).toEqual(binary);
-    expect((await fs.stat(path.join(root, "bundle/empty"))).isDirectory()).toBe(true);
-    expect(await fs.readFile(path.join(root, "bundle/.git/local-state"), "utf8")).toBe("Unlisted bytes\n");
+    expect(await service.readFile(companyId, skill.id, "bundle/probe.sh"))
+      .toMatchObject({ content: "#!/bin/sh\nprintf kept\n", executable: true });
+    expect(await service.readFile(companyId, skill.id, "bundle/nested/data.bin"))
+      .toMatchObject({ content: binary.toString("base64"), encoding: "base64" });
     const [after] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
     expect(after).toEqual(before);
     expect(await db.select({ id: companySkillVersions.id }).from(companySkillVersions)
@@ -285,8 +305,9 @@ describe.skipIf(!support.supported)("external skill packages", () => {
       .where(and(eq(snapshots.companyId, companyId), sql`${snapshots.upload} is not null`));
     const deleted = await service.deleteFile(companyId, skill.id, input);
     expect(deleted.deletedPaths).toContain("bundle/probe.sh");
-    await expect(fs.stat(path.join(root, input.path))).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await fs.readFile(path.join(root, "keep.txt"), "utf8")).toBe("Unrelated file\n");
+    await expect(service.readFile(companyId, skill.id, "bundle/probe.sh")).rejects.toMatchObject({ status: 404 });
+    if (target === "folder") await expect(service.readFile(companyId, skill.id, "bundle/nested/data.bin")).rejects.toMatchObject({ status: 404 });
+    expect(await service.readFile(companyId, skill.id, "keep.txt")).toMatchObject({ content: "Unrelated file\n" });
     expect((await service.getVersion(companyId, skill.id, before!.currentVersionId!))!.fileInventory)
       .toEqual(expect.arrayContaining([expect.objectContaining({ path: "bundle/probe.sh", executable: true })]));
   });
@@ -300,52 +321,45 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     await service.updateFile(companyId, skill.id, "keep.txt", "Keep\n");
     const before = (await service.getById(companyId, skill.id))!;
     let deletionFinished = false;
-    let backupDirectory: string | undefined;
-    const mkdtemp = fs.mkdtemp.bind(fs);
-    vi.spyOn(fs, "mkdtemp").mockImplementation(async (...args) => {
-      const directory = await mkdtemp(...args);
-      if (String(args[0]).includes("paperclip-skill-delete-")) backupDirectory = directory as string;
-      return directory;
-    });
     const ambiguousDb = new Proxy(db, {
       get(target, property, receiver) {
         if (property === "transaction") return async (callback: (tx: any) => Promise<any>, ...options: any[]) => {
           if (deletionFinished && outcome === "unavailable") throw new Error("Database unavailable");
           const result = await target.transaction(async tx => {
             const value = await callback(tx);
-            if (value?.deletedPaths) {
+            if (value?.skill?.id === skill.id && value?.version) {
               deletionFinished = true;
               if (outcome === "rolled_back") throw new Error("Lost commit reply");
             }
             return value;
           }, ...options);
-          if (!result?.deletedPaths) return result;
+          if (result?.skill?.id !== skill.id || !result?.version) return result;
           if (outcome === "newer_edit") await service.updateFile(companyId, skill.id, "notes.txt", "Newer edit\n");
           throw new Error("Lost commit reply");
         };
         return Reflect.get(target, property, receiver);
       },
     });
-    try {
-      await expect(companySkillService(ambiguousDb, { packageDb: db }).deleteFile(companyId, skill.id,
-        { path: "notes.txt", target: "file" })).rejects.toThrow("Lost commit reply");
-      expect(deletionFinished).toBe(true);
-      const [saved] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
-      if (outcome === "rolled_back") {
-        expect(saved!.currentVersionId).toBe(before.currentVersionId);
-        expect(await fs.readFile(path.join(skill.sourceLocator!, "notes.txt"), "utf8")).toBe("Original notes\n");
-      } else if (outcome === "newer_edit") {
-        expect(await fs.readFile(path.join(skill.sourceLocator!, "notes.txt"), "utf8")).toBe("Newer edit\n");
-      } else {
-        expect(saved!.currentVersionId).not.toBe(before.currentVersionId);
-        await expect(fs.stat(path.join(skill.sourceLocator!, "notes.txt"))).rejects.toMatchObject({ code: "ENOENT" });
-      }
-      if (outcome === "unavailable" || outcome === "newer_edit") {
-        expect(await fs.readFile(path.join(backupDirectory!, "source"), "utf8")).toBe("Original notes\n");
-      } else await expect(fs.stat(backupDirectory!)).rejects.toMatchObject({ code: "ENOENT" });
-    } finally {
-      if (backupDirectory) await fs.rm(backupDirectory, { recursive: true, force: true });
+    await expect(companySkillService(ambiguousDb, { packageDb: db }).deleteFile(companyId, skill.id,
+      { path: "notes.txt", target: "file", expectedVersionId: before.currentVersionId })).rejects.toThrow("Lost commit reply");
+    expect(deletionFinished).toBe(true);
+    const [saved] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
+    if (outcome === "rolled_back") {
+      expect(saved!.currentVersionId).toBe(before.currentVersionId);
+      expect(await service.readFile(companyId, skill.id, "notes.txt")).toMatchObject({ content: "Original notes\n" });
+      await expect(service.deleteFile(companyId, skill.id, { path: "notes.txt", target: "file", expectedVersionId: before.currentVersionId }))
+        .resolves.toMatchObject({ deletedPaths: ["notes.txt"] });
+    } else {
+      expect(saved!.currentVersionId).not.toBe(before.currentVersionId);
+      if (outcome === "newer_edit") expect(await service.readFile(companyId, skill.id, "notes.txt"))
+        .toMatchObject({ content: "Newer edit\n" });
+      else await expect(service.readFile(companyId, skill.id, "notes.txt")).rejects.toMatchObject({ status: 404 });
+      await expect(service.deleteFile(companyId, skill.id, { path: "notes.txt", target: "file", expectedVersionId: before.currentVersionId }))
+        .rejects.toMatchObject({ status: 409 });
     }
+    expect((await service.getVersion(companyId, skill.id, before.currentVersionId!))!.fileInventory)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ path: "notes.txt", content: "Original notes\n" })]));
+
   });
 
   it("expires an unused Git package and reacquires its exact bytes without a migration command", async () => {

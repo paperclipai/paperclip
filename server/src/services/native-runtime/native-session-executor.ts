@@ -1,3 +1,4 @@
+import { rehydratePinnedSkillAssets } from "./runtime-context.js";
 import { measureRunnerOperation, recordRunnerTimingReceipt } from "./runner-operation-timing.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
@@ -12529,8 +12530,9 @@ async function createRunnerdBackendWithinSessionClaim(
       : remoteRunnerFilesystemRoot
         ? posix.join(remoteRunnerFilesystemRoot, directory.name)
         : null;
-  const sourceRuntimeContext =
-    "runtimeContext" in input.execution ? input.execution.runtimeContext : null;
+  const sourceRuntimeContext = "runtimeContext" in input.execution
+    ? await rehydratePinnedSkillAssets(input.db, input.execution.binding, input.execution.runtimeContext)
+    : null;
   const remoteRuntimeContext: NativeRuntimeContextSnapshot | null =
     remoteRunnerFilesystemRoot && sourceRuntimeContext
       ? {

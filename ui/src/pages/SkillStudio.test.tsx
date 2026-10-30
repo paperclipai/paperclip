@@ -11,6 +11,7 @@ import type {
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SkillStudio } from "./SkillStudio";
+import { ApiError } from "@/api/client";
 
 const routeState = vi.hoisted(() => ({
   pathname: "/skills/studio/new",
@@ -274,6 +275,7 @@ beforeEach(() => {
     forkedFromSkillId: null,
   });
   mockCompanySkillsApi.file.mockResolvedValue({
+    versionId: "read-version",
     path: "SKILL.md",
     content: "---\nname: Demo Skill\ndescription: Existing\n---\n\n# Demo Skill\n",
     markdown: true,
@@ -641,6 +643,7 @@ describe("SkillStudio editor frontmatter", () => {
         "source-skill",
         "SKILL.md",
         expect.stringContaining("Edited body"),
+        { expectedVersionId: "read-version" },
       );
     });
     expect(mockCompanySkillsApi.updateFile).toHaveBeenCalledWith(
@@ -648,7 +651,31 @@ describe("SkillStudio editor frontmatter", () => {
       "source-skill",
       "SKILL.md",
       expect.stringContaining("---\nname: Demo Skill"),
+      { expectedVersionId: "read-version" },
     );
+  });
+
+  it("keeps unsaved text on a version conflict and reloads only after confirmation", async () => {
+    mockCompanySkillsApi.updateFile.mockRejectedValueOnce(new ApiError("Skill version changed", 409, {}));
+    const node = await renderStudio();
+    let editor: HTMLTextAreaElement;
+    await waitFor(() => {
+      editor = Array.from(node.querySelectorAll<HTMLTextAreaElement>('[data-testid="markdown-editor"]'))
+        .find(candidate => candidate.value.includes("# Demo Skill"))!;
+      expect(editor).toBeTruthy();
+    });
+    await keyDown(editor!, "E");
+    await click(buttonsNamed(node, "Save").find(button => !button.disabled)!);
+    await waitFor(() => expect(node.textContent).toContain("This skill changed since you opened it"));
+    expect(editor!.value).toContain("Edited body");
+    mockCompanySkillsApi.file.mockResolvedValue({ path: "SKILL.md", content: "# New saved version", versionId: "new-version", markdown: true, editable: true });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    await click(buttonsNamed(node, "Load latest saved file")[0]!);
+    expect(editor!.value).toContain("Edited body");
+    await click(buttonsNamed(node, "Load latest saved file")[0]!);
+    await waitFor(() => expect(node.textContent).not.toContain("This skill changed since you opened it"));
+    expect(Array.from(node.querySelectorAll<HTMLTextAreaElement>('[data-testid="markdown-editor"]')).some(candidate => candidate.value.includes("# New saved version"))).toBe(true);
+    confirm.mockRestore();
   });
 
   it("offers a 'Make a copy' CTA on the read-only banner (PAP-13112)", async () => {

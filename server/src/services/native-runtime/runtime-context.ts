@@ -1,3 +1,4 @@
+import { skillExecutionContent } from "../skill-execution-content.js";
 import { withRuntimeAssetUse, removeRuntimeAssetTree } from "./runtime-asset-retention.js";
 import { cachedSkillAsset, rememberSkillAsset } from "./skill-asset-cache.js";
 import { verifyFileManifest, type FileManifestEntry } from "../file-manifest-cache.js";
@@ -11,7 +12,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { companySkillVersions, heartbeatRuns, type Db } from "@paperclipai/db";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import { isToolConnectionAttentionHealth } from "@paperclipai/shared";
 import {
@@ -185,6 +186,54 @@ async function materializeInstructionBundle(db: Db, agent: RuntimeAgent, agentFi
   return { entryPath, bundle: await materializeAsset(files) };
 }
 
+async function materializeSkillAsset(source: string) {
+    let bundle = await measureRunPhase("runtime_context.asset_verify", () => cachedSkillAsset(source));
+    if (!bundle) {
+      const files = await measureRunPhase("runtime_context.asset_read", () => collectDirectoryFiles(source));
+      bundle = await materializeAsset(files);
+      const manifest: FileManifestEntry[] = files.map(file => ({ path: file.path, size: file.content.length,
+        sha256: sha256(file.content), mode: file.mode & 0o555, executable: Boolean(file.mode & 0o111) }));
+      if (await verifyFileManifest(source, manifest)) rememberSkillAsset(source, manifest, bundle);
+    }
+    return bundle;
+}
+
+export async function rehydratePinnedSkillAssets(
+  db: Db,
+  binding: { companyId: string; runId: string; agentId: string },
+  context: NativeRuntimeContextSnapshot,
+): Promise<NativeRuntimeContextSnapshot> {
+  if (!context.skills.some(skill => skill.versionId)) return context;
+  const [run] = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId,
+    contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.id, binding.runId), eq(heartbeatRuns.agentId, binding.agentId)));
+  if (!run) throw new Error("Skill recovery has no matching admitted run");
+  const actor = { type: "agent" as const, companyId: binding.companyId, agentId: binding.agentId,
+    runId: binding.runId, source: "agent_jwt" as const,
+    onBehalfOfUserId: run.responsibleUserId === "local-board" ? null : run.responsibleUserId };
+  const delivery = skillExecutionContent(db, { actor });
+  const pins = run.contextSnapshot?.skillVersions;
+  const skills: NativeRuntimeContextSnapshot["skills"] = [];
+  for (const skill of context.skills) {
+    if (!skill.versionId) { skills.push(skill); continue; }
+    if (pins !== undefined && (!pins || typeof pins !== "object" || Array.isArray(pins)
+      || (pins as Record<string, unknown>)[skill.key] !== skill.versionId)) {
+      throw new Error("Skill recovery differs from the admitted version selection");
+    }
+    const [version] = await db.select({ skillId: companySkillVersions.companySkillId }).from(companySkillVersions).where(and(
+      eq(companySkillVersions.companyId, binding.companyId), eq(companySkillVersions.id, skill.versionId)));
+    if (!version) throw new Error("Pinned skill version is unavailable for recovery");
+    const bundle = await delivery.withVersion({ companyId: binding.companyId, skillId: version.skillId, versionId: skill.versionId },
+      source => materializeSkillAsset(source));
+    if (bundle.digest !== skill.bundle.digest || bundle.manifestDigest !== skill.bundle.manifestDigest
+      || bundle.fileCount !== skill.bundle.fileCount || bundle.totalBytes !== skill.bundle.totalBytes) {
+      throw new Error("Recovered skill projection does not match its admitted digest");
+    }
+    skills.push({ ...skill, bundle });
+  }
+  return { ...context, skills };
+}
+
 export async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>, entries: PaperclipSkillEntry[], omitLegacy: boolean) {
   const desiredKeys = resolvePaperclipDesiredSkillNames(runtimeConfig, entries).filter(
     (key) => !omitLegacy || key !== PAPERCLIP_OPERATIONAL_SKILL_KEY,
@@ -194,16 +243,7 @@ export async function materializeSelectedSkills(runtimeConfig: Record<string, un
     const entry = byKey.get(key);
     if (!entry) throw new Error(`assigned runtime skill is missing from the company library: ${key}`);
     if (entry.sourceStatus === "missing") throw new Error(entry.missingDetail ?? `assigned runtime skill source is missing: ${key}`);
-    let bundle = await measureRunPhase("runtime_context.asset_verify", () => cachedSkillAsset(entry.source));
-    if (!bundle) {
-      const files = await measureRunPhase("runtime_context.asset_read", () => collectDirectoryFiles(entry.source));
-      bundle = await materializeAsset(files);
-      const manifest: FileManifestEntry[] = files.map(file => ({ path: file.path, size: file.content.length,
-        sha256: sha256(file.content), mode: file.mode & 0o555, executable: Boolean(file.mode & 0o111) }));
-      // Populate the stat/digest cache against these exact source bytes before
-      // remembering the reference. A concurrent source edit cannot seed it.
-      if (await verifyFileManifest(entry.source, manifest)) rememberSkillAsset(entry.source, manifest, bundle);
-    }
+    const bundle = await materializeSkillAsset(entry.source);
     return { key: entry.key, runtimeName: safeRelativePath(entry.runtimeName, `runtime name for ${key}`), versionId: entry.versionId ?? entry.currentVersionId ?? null, bundle };
   }));
 }

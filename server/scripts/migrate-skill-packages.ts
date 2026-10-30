@@ -1,6 +1,7 @@
 /** Run from the server package with its configured storage and DATABASE_URL. */
 import { createDb } from "@paperclipai/db";
 import { skillPackageMaintenance } from "../src/services/skill-package-maintenance.js";
+import { skillInstallationMaintenance } from "../src/services/skill-installation-maintenance.js";
 
 const value = (flag: string) => process.argv.find(arg => arg.startsWith(`${flag}=`))?.slice(flag.length + 1);
 const phase = value("--phase") ?? "snapshots";
@@ -11,11 +12,14 @@ if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new Error("--
 const db = createDb(url, { maxConnections: 2 });
 try {
   const service = skillPackageMaintenance(db);
+  const installations = skillInstallationMaintenance(db);
   const actions = { snapshots: service.migrateSnapshots, versions: service.migrateVersions,
-    orphans: service.collectOrphans, deletions: service.deleteObjects };
+    orphans: service.collectOrphans, deletions: service.deleteObjects,
+    installations: installations.installations, eligibility: installations.eligibility, verification: installations.verifyVersions };
   const action = actions[phase as keyof typeof actions];
-  if (!action) throw new Error("--phase must be snapshots, versions, orphans, or deletions");
+  if (!action) throw new Error("--phase must be snapshots, versions, orphans, deletions, installations, eligibility, or verification");
   const apply = process.argv.includes("--apply");
-  const result = await action({ apply, clearLegacy: process.argv.includes("--clear-legacy"), limit, after: value("--after"), companyId: value("--company") });
+  const result = await action({ apply, writersStopped: process.argv.includes("--writers-stopped"),
+    clearLegacy: process.argv.includes("--clear-legacy"), limit, after: value("--after"), companyId: value("--company") });
   console.log(JSON.stringify({ phase, apply, ...result }));
 } finally { await db.$client.end({ timeout: 1 }); }
