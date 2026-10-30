@@ -97,6 +97,51 @@ describe("resolveAttentionAudience — precedence", () => {
   });
 });
 
+describe("resolveAttentionAudience — default decision owner (PAP-749 task 1d-lite, step 5)", () => {
+  it("routes an ownerless card to the company default decision owner", () => {
+    expect(resolveAttentionAudience(input(), EMPTY_CTX, { defaultDecisionOwnerUserId: "scott" }))
+      .toEqual({ kind: "user", userId: "scott", reason: "escalation_owner" });
+  });
+
+  it("falls back to Unassigned when no default decision owner is set", () => {
+    expect(resolveAttentionAudience(input(), EMPTY_CTX, { defaultDecisionOwnerUserId: null }))
+      .toEqual({ kind: "pool", userId: null, reason: "none" });
+    // Omitting the config entirely behaves the same as an unset owner.
+    expect(resolveAttentionAudience(input(), EMPTY_CTX))
+      .toEqual({ kind: "pool", userId: null, reason: "none" });
+  });
+
+  it("does not override an earlier chain step with the default owner", () => {
+    // A card that already resolves to a person keeps that person; the default
+    // owner only catches cards that would otherwise fall through to the pool.
+    expect(resolveAttentionAudience(
+      input({ addresseeUserId: "dotta" }),
+      ctx({ instigatorUserId: "riley" }),
+      { defaultDecisionOwnerUserId: "scott" },
+    )).toEqual({ kind: "user", userId: "dotta", reason: "addressee" });
+    expect(resolveAttentionAudience(
+      input(),
+      ctx({ instigatorUserId: "riley" }),
+      { defaultDecisionOwnerUserId: "scott" },
+    )).toEqual({ kind: "user", userId: "riley", reason: "instigator" });
+  });
+
+  it("never pulls a company-operations alert onto the default owner", () => {
+    expect(resolveAttentionAudience(
+      input({ issueId: null, companyScoped: true }),
+      null,
+      { defaultDecisionOwnerUserId: "scott" },
+    )).toEqual({ kind: "company", userId: null, reason: "none" });
+  });
+
+  it("the default owner's card lands in that user's `mine` view, not Unassigned", () => {
+    const audience = resolveAttentionAudience(input(), EMPTY_CTX, { defaultDecisionOwnerUserId: "scott" });
+    expect(audienceMatchesView(audience, "mine", "scott")).toBe(true);
+    expect(audienceMatchesView(audience, "unassigned", "scott")).toBe(false);
+    expect(audienceMatchesView(audience, "company", "scott")).toBe(false);
+  });
+});
+
 describe("resolveAttentionAudience — forbidden routing signals", () => {
   // `responsibleUserId`, the routine creator, the connected account, the agent
   // owner, and a manual routine starter are deliberately not inputs, so a card

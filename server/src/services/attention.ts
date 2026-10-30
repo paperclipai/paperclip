@@ -6,6 +6,7 @@ import {
   approvals,
   assets,
   companies,
+  companyMemberships,
   decisionBundles,
   decisionQueueItems,
   decisionQueues,
@@ -804,13 +805,39 @@ function budgetObservedPercent(amountObserved: number, amountLimit: number) {
   return amountLimit > 0 ? Math.round((amountObserved / amountLimit) * 10_000) / 100 : 0;
 }
 
-async function companyPrefix(db: Db, companyId: string) {
+/**
+ * Company-level facts the feed needs once per request: the issue prefix for
+ * href building and the default decision owner for the audience post-pass
+ * (PAP-749 task 1d-lite).
+ */
+async function loadCompanyAttentionConfig(db: Db, companyId: string) {
   const row = await db
-    .select({ issuePrefix: companies.issuePrefix })
+    .select({
+      issuePrefix: companies.issuePrefix,
+      defaultDecisionOwnerUserId: companies.defaultDecisionOwnerUserId,
+    })
     .from(companies)
     .where(eq(companies.id, companyId))
     .then((rows) => rows[0] ?? null);
-  return row?.issuePrefix ?? "PAP";
+  // A removed or inactive owner sends cards to Unassigned instead of hiding
+  // them on a list nobody reads (PAP-749 plan §1, special conditions).
+  const ownerUserId = row?.defaultDecisionOwnerUserId ?? null;
+  const ownerIsActive = ownerUserId
+    ? await db
+      .select({ id: companyMemberships.id })
+      .from(companyMemberships)
+      .where(and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, ownerUserId),
+        eq(companyMemberships.status, "active"),
+      ))
+      .then((rows) => rows.length > 0)
+    : false;
+  return {
+    prefix: row?.issuePrefix ?? "PAP",
+    defaultDecisionOwnerUserId: ownerIsActive ? ownerUserId : null,
+  };
 }
 
 async function dismissalByKey(db: Db, companyId: string, userId: string | null | undefined) {
@@ -1212,13 +1239,26 @@ export type IssueAudienceContext = {
 const MAX_INSTIGATOR_CHAIN_DEPTH = 50;
 
 /**
+ * Company-level audience configuration (PAP-749 plan §1, Rule 2 step 5). Task
+ * 1d-lite ships only the default decision owner; the fuller escalation owners
+ * (project owner, budget owner) arrive with task 1d.
+ */
+export type AttentionAudienceCompanyConfig = {
+  /** The company's default decision owner, or `null` when none is set. */
+  defaultDecisionOwnerUserId?: string | null;
+};
+
+/**
  * Compute where a card shows (PAP-749 plan §1, Rule 2). Apply the first step in
- * the table that yields a user; otherwise the card goes to the claimable
- * Unassigned pool. Placement only — the resolver policy still gates who may act.
+ * the table that yields a user; otherwise, if the company configured a default
+ * decision owner, the card goes to that owner (step 5); failing that it goes to
+ * the claimable Unassigned pool (step 6). Placement only — the resolver policy
+ * still gates who may act.
  */
 export function resolveAttentionAudience(
   input: AttentionAudienceInput,
   ctx: IssueAudienceContext | null,
+  companyConfig: AttentionAudienceCompanyConfig = {},
 ): AttentionAudience {
   // Company-operations alerts belong to the operator "Company" view, never a person.
   if (input.companyScoped) return { kind: "company", userId: null, reason: "none" };
@@ -1234,7 +1274,13 @@ export function resolveAttentionAudience(
   if (ctx?.assigneeUserId) return { kind: "user", userId: ctx.assigneeUserId, reason: "assignee" };
   // Step 4: the instigator — the human who created the original work, up the parent chain.
   if (ctx?.instigatorUserId) return { kind: "user", userId: ctx.instigatorUserId, reason: "instigator" };
-  // Step 5 (escalation owner / decision pool) arrives with task 1d configuration.
+  // Step 5 (task 1d-lite): the company's default decision owner, when set, so an
+  // ownerless card lands on a real person's "For you" list instead of waiting in
+  // Unassigned. The UI renders `escalation_owner` as "You are the default
+  // decision owner". The fuller project/budget owners arrive with task 1d.
+  if (companyConfig.defaultDecisionOwnerUserId) {
+    return { kind: "user", userId: companyConfig.defaultDecisionOwnerUserId, reason: "escalation_owner" };
+  }
   // Step 6: no owner — the card goes to the claimable Unassigned pool.
   return { kind: "pool", userId: null, reason: "none" };
 }
@@ -1344,10 +1390,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const readCondition = options.actor
         ? await issueReadSqlCondition(db, options.actor)
         : sql<boolean>`true`;
-      const [prefix, dismissals] = await Promise.all([
-        companyPrefix(db, companyId),
+      const [companyConfig, dismissals] = await Promise.all([
+        loadCompanyAttentionConfig(db, companyId),
         dismissalByKey(db, companyId, options.userId),
       ]);
+      const prefix = companyConfig.prefix;
       const includeDismissed = options.includeDismissed === true;
       const now = serviceOptions.now?.() ?? Date.now();
       const view: AttentionFeedView = options.view ?? "all";
@@ -2154,7 +2201,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       for (const item of dedupedItems) {
         const input = audienceInputByDedupKey.get(item.dedupKey) ?? { issueId: null };
         const ctx = input.issueId ? audienceContext.get(input.issueId) ?? null : null;
-        item.audience = resolveAttentionAudience(input, ctx);
+        item.audience = resolveAttentionAudience(input, ctx, {
+          defaultDecisionOwnerUserId: companyConfig.defaultDecisionOwnerUserId,
+        });
       }
 
       const collectedItems = dedupedItems.sort(compareAttentionItems);

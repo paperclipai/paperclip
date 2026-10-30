@@ -1,11 +1,12 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   approvals,
   companies,
+  companyMemberships,
   createDb,
   issueThreadInteractions,
   issues,
@@ -251,6 +252,59 @@ describeEmbeddedPostgres("attention audience service (PAP-749 task 1a)", () => {
     expect(company.items.length).toBeGreaterThan(0);
     expect(company.items.every((item) => item.audience.kind === "company")).toBe(true);
     expect(company.items.some((item) => item.sourceKind === "agent_error_alert")).toBe(true);
+  });
+
+  it("routes ownerless cards to the company default decision owner, and to Unassigned once cleared (PAP-749 task 1d-lite)", async () => {
+    const { companyId, workerId } = await seedCompany("DDO");
+
+    // An agent/routine card with no human signal — a pool card by default.
+    const routineTask = await insertIssue({
+      companyId, createdByAgentId: workerId, originKind: "routine_execution", responsibleUserId: SCOTT,
+    });
+    const ownerlessCard = await insertConfirmation({ companyId, issueId: routineTask, workerId });
+
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: DOTTA, status: "active", membershipRole: "admin",
+    });
+
+    // With the default decision owner set to Dotta, the ownerless card routes to
+    // Dotta's "For you" list, with reason escalation_owner — not the pool.
+    await db.update(companies).set({ defaultDecisionOwnerUserId: DOTTA }).where(eq(companies.id, companyId));
+
+    const dottaMineSet = await list(companyId, DOTTA, "mine");
+    expect(audienceOf(dottaMineSet.items, ownerlessCard)).toEqual({ kind: "user", userId: DOTTA, reason: "escalation_owner" });
+
+    const unassignedSet = await list(companyId, SCOTT, "unassigned");
+    expect(unassignedSet.items.some((item) => item.subject.id === ownerlessCard)).toBe(false);
+
+    // responsibleUserId is still never a routing signal: Scott does not get it.
+    const scottMineSet = await list(companyId, SCOTT, "mine");
+    expect(scottMineSet.items.some((item) => item.subject.id === ownerlessCard)).toBe(false);
+
+    // Clearing the owner sends the same card back to the claimable pool.
+    await db.update(companies).set({ defaultDecisionOwnerUserId: null }).where(eq(companies.id, companyId));
+
+    const unassignedCleared = await list(companyId, SCOTT, "unassigned");
+    expect(audienceOf(unassignedCleared.items, ownerlessCard)).toEqual({ kind: "pool", userId: null, reason: "none" });
+
+    const dottaMineCleared = await list(companyId, DOTTA, "mine");
+    expect(dottaMineCleared.items.some((item) => item.subject.id === ownerlessCard)).toBe(false);
+  });
+
+  it("sends ownerless cards to Unassigned when the default decision owner is no longer an active member", async () => {
+    const { companyId, workerId } = await seedCompany("DDI");
+    const routineTask = await insertIssue({ companyId, createdByAgentId: workerId, originKind: "routine_execution" });
+    const ownerlessCard = await insertConfirmation({ companyId, issueId: routineTask, workerId });
+
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: DOTTA, status: "suspended", membershipRole: "admin",
+    });
+    await db.update(companies).set({ defaultDecisionOwnerUserId: DOTTA }).where(eq(companies.id, companyId));
+
+    const unassigned = await list(companyId, SCOTT, "unassigned");
+    expect(audienceOf(unassigned.items, ownerlessCard)).toEqual({ kind: "pool", userId: null, reason: "none" });
+    const dottaMine = await list(companyId, DOTTA, "mine");
+    expect(dottaMine.items.some((item) => item.subject.id === ownerlessCard)).toBe(false);
   });
 
   it("routes a delegated child card to the instigator of its parent", async () => {

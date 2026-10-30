@@ -1262,6 +1262,15 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       return;
     }
 
+    // PAP-749 task 1d-lite: ownerless cards route to the default decision owner,
+    // so it must be a person who is an active member of this company.
+    if (typeof body.defaultDecisionOwnerUserId === "string") {
+      const membership = await access.getMembership(companyId, "user", body.defaultDecisionOwnerUserId);
+      if (membership?.status !== "active") {
+        throw unprocessable("Default decision owner must be an active member of this company");
+      }
+    }
+
     if (req.actor.type !== "agent") {
       if (body.feedbackDataSharingEnabled === true && !existingCompany.feedbackDataSharingEnabled) {
         body = {

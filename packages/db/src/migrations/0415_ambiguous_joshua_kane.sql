@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ADD COLUMN "default_decision_owner_user_id" text;

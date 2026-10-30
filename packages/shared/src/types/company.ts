@@ -26,6 +26,15 @@ export interface Company {
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   defaultResponsibleUserId: string | null;
+  /**
+   * PAP-749 task 1d-lite: the company's default decision owner. When set,
+   * ownerless attention cards route to this user's "For you" list; when null
+   * they stay in the claimable Unassigned pool. Placement only — it never
+   * grants authority, which the resolver policy still gates. Distinct from
+   * {@link defaultResponsibleUserId}, which is attribution and is never used
+   * to route cards.
+   */
+  defaultDecisionOwnerUserId: string | null;
   requireBoardApprovalForNewAgents: boolean;
   interactionResolverGovernance: InteractionResolverGovernance;
   feedbackDataSharingEnabled: boolean;

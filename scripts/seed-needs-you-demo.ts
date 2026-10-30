@@ -24,6 +24,12 @@
  *
  * Logins: the three demo users share one password, the DEMO_PASSWORD constant
  * below (override with SEED_DEMO_PASSWORD). Emails are listed in DEMO_USERS.
+ *
+ * Default decision owner (PAP-749 task 1d-lite): set SEED_DEFAULT_DECISION_OWNER
+ * to a demo user key (scott|dotta|riley) to configure the company's default
+ * decision owner. When set, the Unassigned-group cards route to that user's
+ * "For you" list; when unset (the default) they stay in Unassigned. Re-run the
+ * seed with and without it to compare the two behaviors.
  */
 import { randomUUID, createHash } from "node:crypto";
 import { createRequire } from "node:module";
@@ -114,6 +120,9 @@ async function main() {
   console.log("[seed] users (shared password in DEMO_PASSWORD / SEED_DEMO_PASSWORD):");
   for (const u of summary.users) console.log(`         - ${u.name} <${u.email}> [${u.role}]`);
   console.log(`[seed] cards created: ${summary.cardCount} (see group breakdown above)`);
+  console.log(
+    `[seed] default decision owner: ${summary.defaultDecisionOwner ?? "cleared (Unassigned)"} — toggle with SEED_DEFAULT_DECISION_OWNER`,
+  );
   await (db as unknown as { $client: { end: (o?: { timeout?: number }) => Promise<void> } }).$client.end({ timeout: 5 });
   process.exit(0);
 }
@@ -218,6 +227,22 @@ async function seed(db: Db) {
   const scott = userIds.scott!;
   const dotta = userIds.dotta!;
   const riley = userIds.riley!;
+
+  // --- default decision owner (PAP-749 task 1d-lite) -----------------------
+  // Toggle for the reviewer: SEED_DEFAULT_DECISION_OWNER accepts a demo user key
+  // (scott|dotta|riley) to route ownerless cards to that person's "For you"
+  // list; anything else (or unset / "none") leaves it cleared, so ownerless
+  // cards stay in the claimable Unassigned pool. Re-run the seed with and
+  // without it to compare set vs cleared.
+  const defaultDecisionOwnerKey = (process.env.SEED_DEFAULT_DECISION_OWNER ?? "").trim().toLowerCase();
+  const defaultDecisionOwnerId =
+    defaultDecisionOwnerKey && defaultDecisionOwnerKey !== "none" ? userIds[defaultDecisionOwnerKey] ?? null : null;
+  if (defaultDecisionOwnerId) {
+    await companyService(db).update(companyId, { defaultDecisionOwnerUserId: defaultDecisionOwnerId });
+    console.log(`[seed] default decision owner: ${defaultDecisionOwnerKey} (${defaultDecisionOwnerId}) — ownerless cards route to this user's For you`);
+  } else {
+    console.log('[seed] default decision owner: cleared — ownerless cards go to Unassigned. Set SEED_DEFAULT_DECISION_OWNER=dotta to compare.');
+  }
 
   // --- agents --------------------------------------------------------------
   const hire = (name: string, role: string, extra: Record<string, unknown> = {}) =>
@@ -537,6 +562,7 @@ async function seed(db: Db) {
     prefix: company.issuePrefix,
     users: DEMO_USERS.map((u) => ({ name: u.name, email: u.email, role: u.role })),
     cardCount,
+    defaultDecisionOwner: defaultDecisionOwnerId ? defaultDecisionOwnerKey : null,
   };
 }
 

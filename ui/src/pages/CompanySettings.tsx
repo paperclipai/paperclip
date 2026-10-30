@@ -1,7 +1,7 @@
 import { ChangeEvent, useEffect, useState } from "react";
 import { AgentObservabilitySettingsSection } from "../components/observability/AgentObservabilitySettings";
 import { useNavigate } from "react-router-dom";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type InteractionResolverGovernance,
   type IssueThreadInteractionKind,
@@ -14,9 +14,11 @@ import { resolveCompanyArchiveDeparture } from "../lib/company-selection";
 import { cloudPortfolioManageUrl } from "../lib/cloudLinks";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import { companiesApi } from "../api/companies";
+import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { NativeSelect } from "@/components/ui/select";
 import { SlidersHorizontal } from "lucide-react";
 import {
   InteractionGovernancePanel,
@@ -82,6 +84,23 @@ export function CompanySettings() {
       companiesApi.update(selectedCompanyId!, {
         requireBoardApprovalForNewAgents: requireApproval
       }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    }
+  });
+
+  // Members populate the default decision owner picker. Ownerless "Needs You"
+  // cards route to that user's "For you" list; clearing it sends them to the
+  // claimable Unassigned pool (PAP-749 task 1d-lite).
+  const membersQuery = useQuery({
+    queryKey: queryKeys.access.companyMembers(selectedCompanyId ?? ""),
+    queryFn: () => accessApi.listMembers(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const decisionOwnerMutation = useMutation({
+    mutationFn: (defaultDecisionOwnerUserId: string | null) =>
+      companiesApi.update(selectedCompanyId!, { defaultDecisionOwnerUserId }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
@@ -353,6 +372,42 @@ export function CompanySettings() {
             toggleTestId="company-settings-team-approval-toggle"
           />
         </div>
+      </div>
+
+      {/* Decisions */}
+      <div className="max-w-2xl space-y-4" data-testid="company-settings-decisions-section">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Decisions
+        </div>
+        <Field
+          label="Default decision owner"
+          hint="When a card needs a person but has no explicit owner, it goes to this user's For you list. Leave as Unassigned to keep ownerless cards in the claimable pool."
+        >
+          <NativeSelect
+            data-testid="company-settings-default-decision-owner"
+            value={selectedCompany.defaultDecisionOwnerUserId ?? ""}
+            disabled={decisionOwnerMutation.isPending || membersQuery.isLoading}
+            onChange={(e) =>
+              decisionOwnerMutation.mutate(e.target.value === "" ? null : e.target.value)
+            }
+          >
+            <option value="">Unassigned (no default owner)</option>
+            {(membersQuery.data?.members ?? [])
+              .filter((member) => member.user?.id)
+              .map((member) => (
+                <option key={member.user!.id} value={member.user!.id}>
+                  {member.user!.name || member.user!.email || member.user!.id}
+                </option>
+              ))}
+          </NativeSelect>
+        </Field>
+        {decisionOwnerMutation.isError && (
+          <span className="text-xs text-destructive">
+            {decisionOwnerMutation.error instanceof Error
+              ? decisionOwnerMutation.error.message
+              : "Failed to update default decision owner"}
+          </span>
+        )}
       </div>
 
       {/* Interaction governance */}
