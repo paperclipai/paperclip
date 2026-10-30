@@ -273,6 +273,16 @@ describe("decideQueuedRunStaleness", () => {
     });
   });
 
+  it("keeps an approval-requester wake when the issue is assigned to another agent", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(), issueAssigneeAgentId: "reviewer", issueStatus: "blocked",
+      isApprovalRequesterWake: true, wakeReason: "approval_approved",
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+    expect(decideQueuedRunStaleness({ ...facts, isApprovalRequesterWake: false }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_assignee_changed" });
+  });
+
   it.each([
     {
       name: "issue_not_found",
