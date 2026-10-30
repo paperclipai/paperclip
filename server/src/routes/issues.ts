@@ -341,7 +341,13 @@ import {
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
-import { buildExecutionWorkspaceAdapterConfig, parseProjectExecutionWorkspacePolicy, parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
+import {
+  buildExecutionWorkspaceAdapterConfig,
+  normalizeGatedExecutionWorkspaceField,
+  parseIssueExecutionWorkspaceSettings,
+  parseProjectExecutionWorkspacePolicy,
+  unpersistableGatedExecutionWorkspaceFields,
+} from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
@@ -684,6 +690,75 @@ function readObject(value: unknown): Record<string, unknown> {
 
 function hasOwn(record: Record<string, unknown>, key: string) {
   return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+/** Key-order-independent, so a re-sent settings blob still compares equal. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, entryValue]) => entryValue !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`).join(",")}}`;
+}
+
+/** Treats `undefined` and `null` as the same absent value, as the column does. */
+function isSameExecutionWorkspaceValue(requested: unknown, stored: unknown) {
+  const requestedIsAbsent = requested === null || requested === undefined;
+  const storedIsAbsent = stored === null || stored === undefined;
+  if (requestedIsAbsent || storedIsAbsent) return requestedIsAbsent && storedIsAbsent;
+  return stableStringify(requested) === stableStringify(stored);
+}
+
+/**
+ * Names the execution-workspace fields in a PATCH body that the
+ * isolated-workspaces gate cannot honour, and that would therefore be dropped
+ * on the way to the row.
+ *
+ * While the gate is off, `issueService.update` drops the values it cannot
+ * honour before they reach reference validation or the row. The drop is
+ * deliberate, but it used to be both silent *and* total: a caller pointing a
+ * task at a workspace got HTTP 200 and an empty change receipt while nothing
+ * moved, and only a re-read revealed it.
+ *
+ * Two shapes are honoured, and the service now writes them rather than dropping
+ * them, so this is a statement about what lands and not a pardon:
+ *
+ * - **The gate's own baseline** — see `isGatedExecutionWorkspaceBaseline`. It
+ *   removes execution-workspace configuration instead of introducing any, so it
+ *   is safe to persist with the feature off, and clearing works for real.
+ * - **Re-sending the value the row already holds.** A no-op either way, which
+ *   keeps a client that round-trips a fetched issue back into a PATCH working
+ *   even when the runtime bound a workspace past the gate
+ *   (`bindRuntimeSharedWorkspace`).
+ *
+ * What is left refused is exactly what the service drops
+ * (`unpersistableGatedExecutionWorkspaceFields`), so a 200 always means the
+ * value landed. That is the write the ticket was opened for — naming a real
+ * `executionWorkspaceId`, or a preference or settings blob asking for an
+ * isolated workspace, a worktree strategy, or any other posture the gate has no
+ * way to deliver — plus a non-`null` settings blob that normalizes away to
+ * nothing (`{}`, `{ environmentId }`) against a column that holds something.
+ * The service will not blank the column over that blob, so answering 200 would
+ * leave whatever it held — a stale `isolated_workspace` included — behind a
+ * success. `null` is the spelling that clears.
+ *
+ * And `resolveExecutionWorkspaceMode` returns `agent_default`, not
+ * `shared_workspace`, when an assignee override sets `useProjectWorkspace:
+ * false`, so the baseline allowance is not a promise about the mode a task
+ * ultimately runs in.
+ */
+function unhonourableExecutionWorkspaceFields(
+  body: Record<string, unknown>,
+  existing: Record<string, unknown>,
+) {
+  return unpersistableGatedExecutionWorkspaceFields(body).filter(
+    (field) =>
+      !isSameExecutionWorkspaceValue(
+        normalizeGatedExecutionWorkspaceField(field, body[field]),
+        normalizeGatedExecutionWorkspaceField(field, existing[field]),
+      ),
+  );
 }
 
 async function auditAgentIssueCreateAttributionSpoof(input: {
@@ -13923,6 +13998,27 @@ export function issueRoutes(
         { allowVisibleIssueWrite: true },
       );
       if (!issueMutationAccess) return;
+      // Refuse execution-workspace values the gate will strip, rather than
+      // answering 200 with an empty change receipt. Checked after the 404/403
+      // gates, and only when the body actually names one of the fields, so an
+      // ordinary PATCH takes no extra settings read.
+      const unhonourableWorkspaceFields = unhonourableExecutionWorkspaceFields(
+        readObject(req.body),
+        readObject(existing),
+      );
+      if (
+        unhonourableWorkspaceFields.length > 0 &&
+        !(await instanceSettings.getExperimental()).enableIsolatedWorkspaces
+      ) {
+        throw unprocessable(
+          `Isolated execution workspaces are disabled on this instance, so ${unhonourableWorkspaceFields.join(", ")} cannot be set`,
+          {
+            code: "isolated_workspaces_disabled",
+            fields: unhonourableWorkspaceFields,
+            setting: "enableIsolatedWorkspaces",
+          },
+        );
+      }
       if (req.body.comment && !(await assertBoardCommentNotPaused(req, res, existing))) return;
       const issueMutationAuthorizationReason =
         req.actor.type === "agent"
