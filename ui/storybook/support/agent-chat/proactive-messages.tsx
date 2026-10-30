@@ -35,8 +35,9 @@ const agents = [
   { ...storybookAgents[1], name: "Mira", urlKey: "mira", status: "idle" as const, title: "Research and planning" },
 ];
 
-export function prepareProactiveMessageFixtures(readFailure = false) {
+export function prepareProactiveMessageFixtures(readFailure = false, transientReadFailures = 0) {
   const unread = new Set(agents.map(agent => agent.id));
+  let remainingReadFailures = transientReadFailures;
   const chats = () => agents.map((agent, index): Issue => ({
     ...storybookIssues[0],
     id: index === 0 ? proactiveChatId : "55555555-5555-4555-8555-555555555555",
@@ -65,7 +66,10 @@ export function prepareProactiveMessageFixtures(readFailure = false) {
     { path: "/api/cli-auth/me", read: () => ({ userId: "user-board", isInstanceAdmin: false, companyIds: [proactiveCompanyId], source: "authenticated", keyId: null, memberships: [{ companyId: proactiveCompanyId, membershipRole: "owner", status: "active" }] }) },
     { path: `/api/issues/${proactiveChatId}/read`, method: "POST", read: ({ body }) => {
       if (body.throughCommentId !== proactiveMessage.id) return Response.json({ error: "Expected the rendered message cutoff." }, { status: 400 });
-      if (readFailure) return Response.json({ error: "Read receipt unavailable." }, { status: 500 });
+      if (readFailure || remainingReadFailures > 0) {
+        remainingReadFailures = Math.max(0, remainingReadFailures - 1);
+        return Response.json({ error: "Read receipt unavailable." }, { status: 503 });
+      }
       unread.delete(agents[0].id);
       return { issueId: proactiveChatId, userId: "user-board", lastReadAt: proactiveMessage.createdAtIso };
     } },

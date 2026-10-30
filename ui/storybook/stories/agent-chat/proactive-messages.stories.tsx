@@ -21,7 +21,7 @@ const meta = {
     capabilities: ["agent-chat/history", "agent-chat/discovery"], status: "current", implementation: "production", boundary: "fixtures",
     notes: "Production Sidebar, CoordinatorSidebar, AgentConversationsSidebar, TaskChatBubble and read-receipt hook in a review-only gallery. Stateful API fixtures show unread-to-read and error transitions. The app navigation is currently expanded; the retired rail is not recreated. Server delivery, event refresh, account isolation, routine execution and real source-task navigation require the separate app/database checks.",
   } },
-  beforeEach: ({ parameters }) => prepareProactiveMessageFixtures(parameters.readFailure === true).cleanup,
+  beforeEach: ({ parameters }) => prepareProactiveMessageFixtures(parameters.readFailure === true, Number(parameters.transientReadFailures ?? 0)).cleanup,
 } satisfies Meta<typeof TaskChatBubble>;
 export default meta;
 type Story = StoryObj<typeof meta>;
@@ -50,21 +50,34 @@ export const ReadOnOpen: Story = {
     await expect(canvas.findAllByLabelText("1 unread chats")).resolves.toHaveLength(2);
   },
 };
+export const ReadAutomaticallyRecovers: Story = {
+  ...AllChangedUx,
+  name: "03 · Read receipt recovers automatically",
+  parameters: { layout: "fullscreen", options: { showPanel: true }, transientReadFailures: 1 },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("img", { name: "Unread messages from Kodi" });
+    await userEvent.click(canvas.getByRole("button", { name: "Open Kodi chat" }));
+    await waitFor(() => expect(canvas.queryByRole("img", { name: "Unread messages from Kodi" })).not.toBeInTheDocument(), { timeout: 5_000 });
+    await expect(canvas.queryByRole("alert")).not.toBeInTheDocument();
+    await expect(canvas.findAllByLabelText("1 unread chats")).resolves.toHaveLength(2);
+  },
+};
 export const ReadReceiptFailure: Story = {
   ...AllChangedUx,
-  name: "03 · Read receipt failed",
+  name: "04 · Read receipt failed after retries",
   parameters: { layout: "fullscreen", options: { showPanel: true }, readFailure: true },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByRole("img", { name: "Unread messages from Kodi" });
     await userEvent.click(canvas.getByRole("button", { name: "Open Kodi chat" }));
-    await expect(await canvas.findByRole("alert")).toHaveTextContent("Couldn’t mark this chat read. Reopen the chat to retry.");
+    await expect(await canvas.findByRole("alert", {}, { timeout: 5_000 })).toHaveTextContent("Couldn’t mark this chat read.");
     await expect(canvas.getByRole("img", { name: "Unread messages from Kodi" })).toBeVisible();
     await expect(canvas.findAllByLabelText("2 unread chats")).resolves.toHaveLength(2);
   },
 };
-export const MobileReview: Story = { ...AllChangedUx, name: "04 · All changed UX · Mobile", globals: { viewport: { value: "mobile", isRotated: false } } };
-export const LightReview: Story = { ...AllChangedUx, name: "05 · All changed UX · Light", globals: { theme: "light" } };
+export const MobileReview: Story = { ...AllChangedUx, name: "05 · All changed UX · Mobile", globals: { viewport: { value: "mobile", isRotated: false } } };
+export const LightReview: Story = { ...AllChangedUx, name: "06 · All changed UX · Light", globals: { theme: "light" } };
 export const MorningDigest: Story = {
   play: async ({ canvasElement }) => {
     await expect(within(canvasElement).getByRole("link", { name: "From PC-42" })).toHaveAttribute("href", expect.stringContaining("/issues/PC-42"));
