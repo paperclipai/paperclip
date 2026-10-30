@@ -37,6 +37,7 @@ export type IssueFilterState = {
    */
   externalObjectStatuses: string[];
   showAgentCreatedTasks: boolean;
+  routineTasksOnly?: boolean;
 };
 
 export const defaultIssueFilterState: IssueFilterState = {
@@ -50,6 +51,7 @@ export const defaultIssueFilterState: IssueFilterState = {
   liveOnly: false,
   externalObjectStatuses: [],
   showAgentCreatedTasks: false,
+  routineTasksOnly: false,
 };
 
 export const externalObjectFilterOrder = [
@@ -118,6 +120,7 @@ export function normalizeIssueFilterState(value: unknown): IssueFilterState {
     liveOnly: candidate.liveOnly === true,
     externalObjectStatuses: normalizeIssueFilterValueArray(candidate.externalObjectStatuses),
     showAgentCreatedTasks: candidate.showAgentCreatedTasks === true,
+    routineTasksOnly: candidate.routineTasksOnly === true,
   };
 }
 
@@ -222,7 +225,10 @@ export function applyIssueFilters(
   if (state.liveOnly) {
     result = result.filter((issue) => liveIssueIds?.has(issue.id) === true);
   }
-  if (enableAgentCreatedVisibilityFilter && !state.showAgentCreatedTasks) {
+  if (state.routineTasksOnly) {
+    result = result.filter((issue) => issue.originKind === "routine_execution");
+  }
+  if (enableAgentCreatedVisibilityFilter && !state.showAgentCreatedTasks && !state.routineTasksOnly) {
     result = result.filter((issue) => !isAgentCreatedIssue(issue));
   }
   if (state.statuses.length > 0) result = result.filter((issue) => state.statuses.includes(issue.status));
@@ -284,6 +290,7 @@ export function countActiveIssueFilters(
   if (state.projects.length > 0) count += 1;
   if (state.workspaces.length > 0) count += 1;
   if (state.liveOnly) count += 1;
+  if (state.routineTasksOnly) count += 1;
   if (state.externalObjectStatuses.length > 0) count += 1;
   if (enableAgentCreatedVisibilityFilter && state.showAgentCreatedTasks) count += 1;
   return count;

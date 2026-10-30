@@ -134,6 +134,13 @@ choice stays selected while task data refreshes.
 
 ### Task collection creation filters
 
+The task Filters menu also offers **Routine tasks only**. It selects tasks with
+`originKind=routine_execution`, including manually triggered routine runs, even
+when other automatic tasks are hidden. The routines list's **View all tasks**
+link opens `/issues?view=all&originKind=routine_execution` with that checkbox
+selected. The URL retains the selection across reloads and task navigation.
+Search and pagination apply the routine origin filter on the server.
+
 Tasks and project lists hide agent-created and system-created tasks by default.
 The Filters menu's **show agent-created tasks** checkbox includes routine runs,
 recovery/watchdog tasks, chat-channel tasks, and other automation. Channel tasks

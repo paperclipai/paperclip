@@ -2573,6 +2573,13 @@ its upstream authors; operators can pause updates to review changes manually.
 
 ### Task collection creation visibility (2026-10-13)
 
+The task Filters menu also offers **Routine tasks only**. It selects tasks with
+`originKind=routine_execution`, including manually triggered routine runs, even
+when other automatic tasks are hidden. The routines list's **View all tasks**
+link opens `/issues?view=all&originKind=routine_execution` with that checkbox
+selected. The URL retains the selection across reloads and task navigation.
+Search and pagination apply the routine origin filter on the server.
+
 Tasks and project collections default to hiding agent/system-created tasks and
 provide a saved **show agent-created tasks** filter. Classify creation using
 creator identity and origin; assignee/responsible users do not imply human

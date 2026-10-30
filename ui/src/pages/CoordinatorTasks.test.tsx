@@ -22,7 +22,9 @@ vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mocks.breadcrumbs }) }));
-vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, onViewChange, onLayoutChange }: { filters: { onChange: (value: { liveOnly?: boolean; priorities?: string[]; assignees?: string[]; statuses?: string[] }) => void }; onViewChange: (view: "blocked") => void; onLayoutChange: (layout: "board") => void }) => <>
+vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, onViewChange, onLayoutChange }: { filters: { onChange: (value: { liveOnly?: boolean; priorities?: string[]; assignees?: string[]; statuses?: string[]; routineTasksOnly?: boolean }) => void }; onViewChange: (view: "blocked") => void; onLayoutChange: (layout: "board") => void }) => <>
+  <button onClick={() => filters.onChange({ routineTasksOnly: true })}>Routine tasks only</button>
+  <button onClick={() => filters.onChange({ routineTasksOnly: false })}>Show other tasks</button>
   <button onClick={() => filters.onChange({ liveOnly: true })}>Live runs only</button>
   <button onClick={() => filters.onChange({ priorities: ["high"] })}>High priority</button>
   <button onClick={() => filters.onChange({ assignees: [], statuses: [] })}>Clear assignee and status</button>
@@ -58,6 +60,20 @@ describe("Coordinator tasks using the proposed table", () => {
     await mount("/issues");
     expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "index", limit: 200 }), expect.anything());
     expect(mocks.get).not.toHaveBeenCalled();
+  });
+
+  it("opens routine task links, filters before paging, and lets the checkbox change the collection", async () => {
+    const routine = createIssue({ id: "routine-task", companyId: "company", parentId: null, originKind: "routine_execution", title: "Routine report" });
+    const manual = createIssue({ id: "manual-task", companyId: "company", parentId: null, originKind: "manual", title: "Manual report" });
+    mocks.list.mockImplementation(async (_company, filters) => filters.originKind === "routine_execution" ? [routine] : [manual, routine]);
+    await mount("/issues?view=all&originKind=routine_execution");
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ originKind: "routine_execution", includeAgentCreatedTasks: true, includeRoutineExecutions: true, offset: 0 }), expect.anything());
+    expect([...host.querySelectorAll("[data-task-id]")].map(row => row.getAttribute("data-task-id"))).toEqual([routine.id]);
+    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Show other tasks")!.click());
+    await vi.waitFor(() => expect(host.textContent).toContain("Manual report"));
+    expect(mocks.list.mock.lastCall?.[1].originKind).toBeUndefined();
+    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Routine tasks only")!.click());
+    await vi.waitFor(() => expect(host.querySelector('[data-task-id="manual-task"]')).toBeNull());
   });
 
   it("loads diagnostics for visible production board cards and retains their next-step badges", async () => {

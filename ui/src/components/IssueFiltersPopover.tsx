@@ -111,6 +111,7 @@ export function IssueFiltersPopover({
   currentUserId,
   enableExternalObjectFilters = true,
   enableAgentCreatedVisibilityFilter = false,
+  enableRoutineTasksFilter = false,
   buttonVariant = "ghost",
   iconOnly = false,
   creators,
@@ -126,6 +127,7 @@ export function IssueFiltersPopover({
   currentUserId?: string | null;
   enableExternalObjectFilters?: boolean;
   enableAgentCreatedVisibilityFilter?: boolean;
+  enableRoutineTasksFilter?: boolean;
   buttonVariant?: "ghost" | "outline";
   iconOnly?: boolean;
   creators?: CreatorOption[];
@@ -210,7 +212,7 @@ export function IssueFiltersPopover({
           ? "w-(--sz-calc-10) max-h-(--sz-calc-9) overflow-y-auto overscroll-contain p-0"
           : "w-(--sz-calc-10) p-0"}
       >
-        {refreshed ? <IssueFilterPanel state={state} onChange={onChange} activeFilterCount={activeFilterCount} agents={agents} projects={projects} labels={labels} creators={creators} currentUserId={currentUserId} onClear={clearFilters} /> : <div className="space-y-3 p-3">
+        {refreshed ? <IssueFilterPanel enableRoutineTasksFilter={enableRoutineTasksFilter} state={state} onChange={onChange} activeFilterCount={activeFilterCount} agents={agents} projects={projects} labels={labels} creators={creators} currentUserId={currentUserId} onClear={clearFilters} /> : <div className="space-y-3 p-3">
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium">Filters</span>
             {activeFilterCount > 0 ? (
@@ -525,6 +527,13 @@ export function IssueFiltersPopover({
                   />
                   <span className="text-sm">Live runs only</span>
                 </label>
+                {enableRoutineTasksFilter ? <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                  <Checkbox
+                    checked={state.routineTasksOnly === true}
+                    onCheckedChange={(checked) => onChange({ routineTasksOnly: checked === true })}
+                  />
+                  <span className="text-sm">Routine tasks only</span>
+                </label> : null}
                 {enableAgentCreatedVisibilityFilter ? (
                   <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
                     <Checkbox

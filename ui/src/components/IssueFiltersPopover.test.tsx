@@ -29,7 +29,7 @@ vi.mock("@/components/ui/button", () => ({
 }));
 
 vi.mock("@/components/ui/checkbox", () => ({
-  Checkbox: ({ checked }: { checked?: boolean }) => <input type="checkbox" checked={checked} readOnly />,
+  Checkbox: ({ checked, onCheckedChange, ...props }: { checked?: boolean; onCheckedChange?: (checked: boolean) => void }) => <input {...props} type="checkbox" checked={checked} onChange={event => onCheckedChange?.(event.target.checked)} />,
 }));
 
 vi.mock("./StatusIcon", () => ({
@@ -50,6 +50,19 @@ describe("IssueFiltersPopover", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it.each(["streamlined", "refreshed"] as const)("exposes a checked and clearable routine filter in %s", presentation => {
+    const root = createRoot(container);
+    const onChange = vi.fn();
+    act(() => root.render(<IssueFiltersPopover enableRoutineTasksFilter presentation={presentation} state={{ ...defaultIssueFilterState, routineTasksOnly: true }} onChange={onChange} activeFilterCount={1} />));
+    const row = Array.from(container.querySelectorAll("label")).find(label => label.textContent === "Routine tasks only");
+    expect(row?.querySelector("input")?.checked).toBe(true);
+    act(() => row?.querySelector("input")?.click());
+    expect(onChange).toHaveBeenCalledWith({ routineTasksOnly: false });
+    act(() => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Clear")?.click());
+    expect(onChange).toHaveBeenCalledWith(defaultIssueFilterState);
+    act(() => root.unmount());
   });
 
   it("uses a scrollable popover and a three-column desktop grid", () => {

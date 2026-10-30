@@ -48,6 +48,8 @@ Use New task from the global launcher, task list, or project task view.
 ### `task-list`
 
 Open `/issues` or a project’s Issues view; legacy `/tasks` links redirect.
+Filters → **Routine tasks only** selects tasks created by routine runs. The
+`/issues?view=all&originKind=routine_execution` link opens that selection.
 
 ### `task-detail`
 
