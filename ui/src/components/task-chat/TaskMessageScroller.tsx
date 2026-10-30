@@ -342,7 +342,7 @@ export function TaskMessageScroller({ children, contentKey, className, scrolling
         )}
         data-testid="task-chat-scroller"
       >
-        {scrollingHistory ? <div>
+        {scrollingHistory ? <>
         {scrollingHistory && (scrollingHistory.hasMore || scrollingHistory.loading || scrollingHistory.error) ? (
           <div role="status" className="flex h-8 items-center justify-center gap-2 text-xs text-muted-foreground" data-testid="chat-history-status">
             {scrollingHistory.error ? <>
@@ -352,7 +352,7 @@ export function TaskMessageScroller({ children, contentKey, className, scrolling
           </div>
         ) : null}
         {children}
-        </div> : children}
+        </> : children}
       </div>
       {pillPhase !== "hidden" ? (
         <button

@@ -80,6 +80,9 @@ test("cold long chat reveals one recent window without full-history reads or red
   await ready(page);
   await expect(page.locator('[id^="comment-"]')).toHaveCount(20);
   await expect(page.locator(`[id="comment-${latestId}"]`)).toBeVisible();
+  const reply = await page.locator(`[id="comment-${latestId}"]`).boundingBox();
+  const composer = await page.getByTestId("task-chat-composer-dock").boundingBox();
+  expect(reply!.y + reply!.height).toBeLessThanOrEqual(composer!.y + 2);
   await expect(page.getByRole("button", { name: /^(More messages|Load earlier (comments|decisions|tasks))$/ })).toHaveCount(0);
   await page.waitForTimeout(500);
   expect(reads.filter(url => /\/comments\?/.test(url))).toEqual([]);
