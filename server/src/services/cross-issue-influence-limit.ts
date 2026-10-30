@@ -6,6 +6,19 @@ import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 
 export const CROSS_ISSUE_INFLUENCE_LIMIT = 20;
+export const CROSS_ISSUE_INFLUENCE_LIMIT_ENV = "PAPERCLIP_CROSS_ISSUE_INFLUENCE_LIMIT";
+
+/**
+ * Operators can raise or lower the per-run cap with a positive integer in
+ * `PAPERCLIP_CROSS_ISSUE_INFLUENCE_LIMIT`. A missing, empty, or invalid value
+ * keeps the default, so the backstop cannot be disabled by a bad setting.
+ */
+export function resolveCrossIssueInfluenceLimit(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[CROSS_ISSUE_INFLUENCE_LIMIT_ENV]?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return CROSS_ISSUE_INFLUENCE_LIMIT;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : CROSS_ISSUE_INFLUENCE_LIMIT;
+}
 export const CROSS_ISSUE_INFLUENCE_ENFORCE_AT = new Date("2026-08-11T00:00:00.000Z");
 
 const CROSS_ISSUE_INFLUENCE_ACTIVITY = "issue.cross_issue_influence_observed";
@@ -46,15 +59,17 @@ function readRunSourceIssueId(contextSnapshot: unknown) {
 export function evaluateCrossIssueInfluenceLimit(input: {
   priorCount: number;
   now?: Date;
+  limit?: number;
 }): CrossIssueInfluenceDecision {
+  const limit = input.limit ?? resolveCrossIssueInfluenceLimit();
   const now = input.now ?? new Date();
   const mode = now >= CROSS_ISSUE_INFLUENCE_ENFORCE_AT ? "enforce" : "log_only";
   const nextCount = input.priorCount + 1;
   return {
-    allowed: mode === "log_only" || nextCount <= CROSS_ISSUE_INFLUENCE_LIMIT,
+    allowed: mode === "log_only" || nextCount <= limit,
     mode,
     count: nextCount,
-    cap: CROSS_ISSUE_INFLUENCE_LIMIT,
+    cap: limit,
     enforceAt: CROSS_ISSUE_INFLUENCE_ENFORCE_AT.toISOString(),
   };
 }
