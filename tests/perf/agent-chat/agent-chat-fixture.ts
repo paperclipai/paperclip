@@ -8,10 +8,11 @@ export interface ChatFixture {
   issue: { id: string };
   comments: { id: string; body: string }[];
 }
-export async function longChatFixture(request: APIRequestContext): Promise<ChatFixture> {
+export async function longChatFixture(request: APIRequestContext, suffix = ""): Promise<ChatFixture> {
   const count = Number(process.env.PAPERCLIP_CHAT_PERF_MESSAGES ?? 600);
   if (!Number.isSafeInteger(count) || count < 100 || count > 10_000) throw new Error("Use 100–10000 synthetic messages");
-  const file = process.env.PAPERCLIP_CHAT_PERF_SEED_FILE ?? `test-results/agent-chat/fixture-${count}.json`;
+  const baseFile = process.env.PAPERCLIP_CHAT_PERF_SEED_FILE ?? `test-results/agent-chat/fixture-${count}.json`;
+  const file = suffix ? `${baseFile}.${suffix}.json` : baseFile;
   const saved: ChatFixture | null = await fs.readFile(file, "utf8").then(JSON.parse).catch(error => {
     if (error.code !== "ENOENT") throw error;
     return null;

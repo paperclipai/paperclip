@@ -168,6 +168,20 @@ describe("TaskMessageScroller", () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 
+  it("retains upward intent when content reconciles before the scroll event", async () => {
+    const load = vi.fn();
+    const update = (tick: number) => flushSync(() => root.render(
+      <TaskMessageScroller contentKey={tick} scrollingHistory={{ hasMore: true, loading: false, load }}><div>saved messages</div></TaskMessageScroller>,
+    ));
+    update(0); fakeGeometry(scroller()); update(1);
+    await scrollTo(scroller(), 400);
+    scroller().dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -1000 }));
+    scroller().scrollTop = 0;
+    update(2);
+    await dispatch(scroller(), new Event("scroll", { bubbles: true }));
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
   it("holds a short conversation when an upward wheel gesture loads history", async () => {
     const load = vi.fn().mockResolvedValue(undefined);
     const update = (tick: number) => flushSync(() => root.render(

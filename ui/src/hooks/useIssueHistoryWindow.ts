@@ -83,7 +83,34 @@ export function useIssueHistoryWindow(
       };
     },
   });
+  const { data: acknowledgedComments = [] } = useQuery<IssueComment[]>({
+    queryKey: queryKeys.issues.acknowledgedComments(issueRef ?? ""),
+    queryFn: () => [],
+    enabled: false,
+    initialData: [],
+  });
+  const retainComment = useCallback((comment: IssueComment) => {
+    for (const ref of new Set([issueRef, issue?.id, issue?.identifier, comment.issueId])) {
+      if (!ref) continue;
+      queryClient.setQueryData<IssueComment[]>(queryKeys.issues.acknowledgedComments(ref), current =>
+        mergeWindowComments(current ?? [], [comment]),
+      );
+    }
+  }, [issueRef, issue?.id, issue?.identifier, queryClient]);
+  useEffect(() => {
+    if (!recent.data) return;
+    const observed = new Set(recent.data.comments.map(comment => comment.id));
+    for (const ref of new Set([issueRef, issue?.id, issue?.identifier])) {
+      if (!ref) continue;
+      queryClient.setQueryData<IssueComment[]>(queryKeys.issues.acknowledgedComments(ref), current => {
+        if (!current?.some(comment => observed.has(comment.id))) return current;
+        return current.filter(comment => !observed.has(comment.id));
+      });
+    }
+  }, [recent.data, issueRef, issue?.id, issue?.identifier, queryClient]);
   return {
+    acknowledgedComments,
+    retainComment,
     historyExpanded,
     expandHistory,
     recent,

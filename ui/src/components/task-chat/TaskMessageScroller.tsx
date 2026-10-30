@@ -68,7 +68,9 @@ export function TaskMessageScroller({ children, contentKey, className, scrolling
   const previousScrollTop = useRef(0);
   const touchStartY = useRef<number | null>(null);
   const requestingHistory = useRef(false);
+  const upwardIntent = useRef(false);
   const requestEarlierHistory = useCallback(() => {
+    upwardIntent.current = false;
     if (!initialPositionApplied.current || !navigation.ready || !scrollingHistory?.hasMore
       || scrollingHistory.loading || scrollingHistory.error || requestingHistory.current) return;
     requestingHistory.current = true;
@@ -182,7 +184,7 @@ export function TaskMessageScroller({ children, contentKey, className, scrolling
     const top = ref.current.scrollTop;
     const scrollingUp = top < previousScrollTop.current;
     previousScrollTop.current = top;
-    if (scrollingUp && top <= 192 && !easingRef.current) requestEarlierHistory();
+    if ((scrollingUp || upwardIntent.current) && top <= 192 && !easingRef.current) requestEarlierHistory();
     showScrollbarWhileScrolling();
     // A growing composer shrinks this viewport. Some browsers dispatch the
     // resulting scroll event before ResizeObserver, so preserve the previous
@@ -322,6 +324,7 @@ export function TaskMessageScroller({ children, contentKey, className, scrolling
         }}
         onTouchEnd={() => { touchStartY.current = null; }}
         onWheel={event => {
+          upwardIntent.current = event.deltaY < 0;
           if (event.deltaY < 0 && ref.current && ref.current.scrollTop <= 192) requestEarlierHistory();
         }}
         // Keep the viewport tied to the flex-sized wrapper vertically —

@@ -4,7 +4,7 @@
 600-message, 300-run synthetic conversation. Completed runs have valid native
 assistant events; there are no model calls. It verifies recent-only startup,
 one backward page per upward gesture, delayed/error recovery, retained rows and
-drafts, Back, older links, and one saved live message. The live-message check posts one reply with a temporary key for the fixture agent, then revokes it. It starts no agent execution.
+drafts, Back, older links, one saved live message, and sending before the first upward scroll. The send check uses separate retained fixture files per browser project so queued board input cannot alter the main history dataset. The live-message check posts one reply with a temporary key for the fixture agent, then revokes it. It starts no agent execution.
 
 Use a disposable loopback instance with Agent Chat enabled. The first seed needs
 its matching PostgreSQL URL, with a database name ending in `_test`:

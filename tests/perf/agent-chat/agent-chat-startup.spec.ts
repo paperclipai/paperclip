@@ -10,6 +10,8 @@ const editor = (page: Page) => page.getByTestId("task-chat-composer-stack").loca
 async function ready(page: Page) {
   await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible({ timeout: 20_000 });
   await expect(editor(page)).toBeVisible();
+  const announcement = page.getByRole("button", { name: "Dismiss announcement", exact: true });
+  if (await announcement.isVisible()) await announcement.click();
 }
 async function anchor(page: Page) {
   return scroller(page).evaluate(root => {
@@ -197,4 +199,53 @@ test("live updates keep an unpinned reader and draft, and the saved message appe
   expect((await persisted.json()).filter((row: { body: string }) => row.body === body)).toHaveLength(1);
   await page.getByRole("button", { name: "Scroll to latest", exact: true }).click();
   await expect(page.locator(`[id="comment-${message.id}"]`)).toBeVisible();
+});
+
+test("sending before the first upward scroll leaves earlier history reachable", async ({ page, request }, info) => {
+  const own = await longChatFixture(request, `send-first-${info.project.name}`);
+  const snapshot = await request.get(`/api/issues/${own.issue.id}/recent-comments`);
+  const oldest = (await snapshot.json()).oldestCommentId;
+  await page.goto(`/${own.company.issuePrefix}/chats/${own.agent.id}`); await ready(page);
+  const body = `Saved before paging ${randomUUID()}`;
+  await editor(page).fill(body);
+  const posted = page.waitForResponse(response => response.request().method() === "POST"
+    && new URL(response.url()).pathname === `/api/issues/${own.issue.id}/comments`);
+  await page.getByTestId("task-chat-composer-send").click();
+  const receipt = await posted;
+  expect(receipt.ok(), await receipt.text()).toBeTruthy();
+  await expect(page.getByTestId("chat-history-status")).toHaveText("Scroll up for earlier messages");
+  const older = page.waitForResponse(response => new URL(response.url()).pathname === `/api/issues/${own.issue.id}/comments`
+    && new URL(response.url()).searchParams.get("order") === "desc");
+  await scrollUp(page);
+  const pageResponse = await older;
+  expect(new URL(pageResponse.url()).searchParams.get("after")).toBe(oldest);
+  await expect(page.locator(`[id="comment-${own.comments.at(-21)!.id}"]`)).toBeAttached();
+});
+
+test("a receipts outage leaves message paging available with one independent retry", async ({ page }) => {
+  await page.route("**/decision-receipts?*", route => route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"Receipt fixture unavailable"}' }));
+  await page.goto(chatPath); await ready(page);
+  await expect(page.getByText("Decision updates couldn’t load.")).toBeVisible();
+  await scrollUp(page);
+  await expect(page.locator('[id^="comment-"]')).toHaveCount(70);
+  await expect(page.getByTestId("chat-history-status")).toHaveText("Scroll up for earlier messages");
+  await expect(page.getByRole("button", { name: "Retry", exact: true })).toHaveCount(1);
+});
+
+test("successive older pages hydrate each message and run id only once", async ({ page }) => {
+  const seen: Record<string, string[]> = { commentIds: [], runIds: [] };
+  page.on("request", request => {
+    const url = new URL(request.url());
+    if (!url.pathname.startsWith(`/api/issues/${fixture.issue.id}/`)) return;
+    for (const field of ["commentIds", "runIds"]) seen[field].push(...(url.searchParams.get(field)?.split(",") ?? []));
+  });
+  await page.goto(chatPath); await ready(page);
+  const initial = Object.fromEntries(Object.entries(seen).map(([key, ids]) => [key, new Set(ids)]));
+  await scrollUp(page); await expect(page.locator('[id^="comment-"]')).toHaveCount(70);
+  await scrollUp(page); await expect(page.locator('[id^="comment-"]')).toHaveCount(120);
+  await expect.poll(() => seen.commentIds.filter(id => !initial.commentIds.has(id)).length).toBe(100);
+  for (const [key, ids] of Object.entries(seen)) {
+    const historical = ids.filter(id => !initial[key].has(id));
+    expect(new Set(historical).size).toBe(historical.length);
+  }
 });

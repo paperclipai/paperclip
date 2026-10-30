@@ -624,11 +624,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const scrollingHistory: ScrollingHistory | undefined = props.scrollingHistory ? {
     hasMore: props.scrollingHistory.hasMore || !!decisionReceipts.hasNextPage || !!taskHandoffs.hasNextPage,
     loading: props.scrollingHistory.loading || decisionReceipts.isFetchingNextPage || taskHandoffs.isFetchingNextPage,
-    error: props.scrollingHistory.error || decisionReceipts.isError || taskHandoffs.isError,
+    error: props.scrollingHistory.error,
     load: () => Promise.all([
       props.scrollingHistory?.hasMore ? props.scrollingHistory.load() : undefined,
-      decisionReceipts.isError ? decisionReceipts.refetch() : decisionReceipts.hasNextPage ? decisionReceipts.fetchNextPage() : undefined,
-      taskHandoffs.isError ? taskHandoffs.refetch() : taskHandoffs.hasNextPage ? taskHandoffs.fetchNextPage() : undefined,
+      !decisionReceipts.isError && decisionReceipts.hasNextPage ? decisionReceipts.fetchNextPage() : undefined,
+      !taskHandoffs.isError && taskHandoffs.hasNextPage ? taskHandoffs.fetchNextPage() : undefined,
     ]),
   } : undefined;
   const conversationWindowStart = props.scrollingHistory?.hasMore && comments.length
