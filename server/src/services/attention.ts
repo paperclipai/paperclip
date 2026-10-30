@@ -409,6 +409,7 @@ type CreateAttentionItemInput = Omit<AttentionItem,
   | "dismissal"
   | "audience"
   | "stale"
+  | "required"
   | "changeFingerprint"
   | "closeModes"
   | "project"
@@ -447,6 +448,7 @@ function createItem(input: CreateAttentionItemInput): AttentionItem {
     audience: { kind: "pool", userId: null, reason: "none" },
     // Placeholders; the same post-pass sets these (PAP-749 plan §2, Rules 9-10).
     stale: null,
+    required: false,
     changeFingerprint: "",
     closeModes: attentionCloseModes(input.sourceKind, input.subject),
     project: input.project ?? null,
@@ -2436,10 +2438,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           audience,
           now,
         });
+        item.required = change.required === true;
         item.audience = escalateStaleAudience({
           audience,
           since: change.since,
-          required: change.required === true,
+          required: item.required,
           now,
           companyConfig: audienceConfig,
         });

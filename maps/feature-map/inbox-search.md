@@ -49,7 +49,17 @@ its own withdraw/cancel, never as consent, and tells the agent; **Archive** and
 interaction to another person who can answer it. A late second answer gets 409
 "Already answered" naming who answered first. Failed-run, recovery and
 agent-error cards offer only actions they can complete (Retry, Open run, Open
-recovery, Inspect). The Close… menu UI arrives with task 2c.
+recovery, Inspect).
+Each card on both surfaces has one **Close…** menu with only its `closeModes`:
+**Withdraw request…** (confirms, optional reason, cannot be undone), **Archive
+for me**, **Snooze for me** (both with Undo) and, for interactions, **Transfer
+to @x**. A card for a different person asks "This is for @x. Continue?" before
+its answer controls, Withdraw or Transfer. Failed runs **Retry** inline; budget
+stops **Raise budget** or **Keep paused** inline. Stale cards carry a **Stale ·
+reason** chip and sit in a collapsed **Stale (N)** group at the bottom of each
+view; **Withdraw all stale** lists every card first and withdraws only those
+with a real withdraw. "Dismiss — no effects" and the questions-only Cancel are
+gone; the classic "Dismissed" curtain is now **Archived**.
 Search, filter by agent/project, sort, and group by task/agent/project apply to
 both open decisions and the visible Recent Decisions receipts. Successful
 resolutions resize into compact receipts while the same contained Gather Light

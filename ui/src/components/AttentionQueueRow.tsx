@@ -1,15 +1,12 @@
 import { memo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  AlarmClock,
   CalendarClock,
   ChevronDown,
   ChevronUp,
   ExternalLink,
   Loader2,
-  MoreHorizontal,
   RotateCcw,
-  X,
 } from "lucide-react";
 import type { Agent, AttentionDetailImage, AttentionItem } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
@@ -38,23 +35,13 @@ import { StatusGlyph } from "./StatusGlyph";
 import { Button } from "./ui/button";
 import { Collapsible, CollapsibleContent } from "./ui/collapsible";
 import { Textarea } from "./ui/textarea";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from "./ui/dropdown-menu";
+import { AttentionCloseMenu, AttentionForOtherGate, AttentionStaleChip } from "./AttentionCloseMenu";
+import { BudgetAlertActions, FailedRunActions } from "./AttentionInlineVerbs";
 import { AttentionInteractionResolver } from "./AttentionInteractionResolver";
 import { DecisionResolver } from "./DecisionResolver";
 import { StalledReviewActions } from "./StalledReviewActions";
 import { readIssueReviewPolicyMetadata } from "../lib/review-policy";
-
-const HOUR_MS = 60 * 60 * 1000;
-const DAY_MS = 24 * HOUR_MS;
+import { attentionOtherAudienceUserId } from "../lib/attention-close";
 
 // Decision-action buttons: a comfortable tap target when the row is narrow
 // (h-9 / text-sm), shrinking back to the dense pill (h-6 / text-xs) once the
@@ -62,30 +49,22 @@ const DAY_MS = 24 * HOUR_MS;
 // the row also reflows correctly inside narrow side panels, not just on phones.
 const ACTION_BTN = "h-9 gap-1.5 px-3 text-sm @xl:h-6 @xl:gap-1 @xl:px-2 @xl:text-xs";
 
-/** Tomorrow at 9am local time. */
-function tomorrowMorningIso(): string {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  d.setHours(9, 0, 0, 0);
-  return d.toISOString();
-}
-
-/** Snooze presets, resolved to a future ISO timestamp at click time. */
-const SNOOZE_PRESETS: ReadonlyArray<{ label: string; resolve: () => string }> = [
-  { label: "1 hour", resolve: () => new Date(Date.now() + HOUR_MS).toISOString() },
-  { label: "4 hours", resolve: () => new Date(Date.now() + 4 * HOUR_MS).toISOString() },
-  { label: "Tomorrow morning", resolve: tomorrowMorningIso },
-  { label: "Next week", resolve: () => new Date(Date.now() + 7 * DAY_MS).toISOString() },
-];
-
 interface AttentionQueueRowProps {
   item: AttentionItem;
   companyId: string;
   expanded: boolean;
   /** Receives the row's item so the parent can pass one stable callback for every row. */
   onToggleExpand: (item: AttentionItem) => void;
+  /** "Archive for me" in the Close… menu: hides the card for you only (PAP-749 Rule 6). */
   onDismiss: (item: AttentionItem) => void;
+  /** "Snooze for me" in the Close… menu. */
   onSnooze?: (item: AttentionItem, snoozedUntil: string) => void;
+  /** "Withdraw request" closes it for everyone; only cards whose `closeModes` allow it. */
+  onWithdraw?: (item: AttentionItem, reason: string) => void;
+  /** "Transfer to @x" (interactions only). */
+  onTransfer?: (item: AttentionItem, userId: string) => void;
+  /** A close or transfer of this card is in flight. */
+  closing?: boolean;
   /** Restore a snoozed/dismissed row (curtain variant only). */
   onRestore?: (item: AttentionItem) => void;
   /** "active" renders the live queue row; "hidden" renders a curtain row. */
@@ -117,6 +96,9 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   onToggleExpand,
   onDismiss,
   onSnooze,
+  onWithdraw,
+  onTransfer,
+  closing = false,
   onRestore,
   variant = "active",
   agentMap,
@@ -164,7 +146,10 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
 
   // Which rows contribute an action bar. Inline rows carry compact decision
   // verbs; deep-link rows carry an Open button; curtain rows carry Restore.
-  const compactActions = !isHidden ? collectCompactActions(item) : [];
+  // A card for a different person asks "This is for @x. Continue?" before any
+  // answer (PAP-749 plan §6), so it offers no one-click verbs while collapsed.
+  const forOther = attentionOtherAudienceUserId(item, currentUserId) !== null;
+  const compactActions = !isHidden && !forOther ? collectCompactActions(item) : [];
   // Who the server will let resolve this interaction. A collapsed row offers
   // Accept/Reject before anything fetches the interaction, so the audience
   // travels with the feed item; null for every non-interaction source and for a
@@ -293,6 +278,12 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               </span>
             </>
           )}
+          {item.stale && (
+            <>
+              <EyebrowSeparator />
+              <AttentionStaleChip item={item} />
+            </>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-1" data-attention-menu="true">
@@ -307,33 +298,16 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             <span className="text-(length:--text-nano) text-muted-foreground">{relativeTime(item.activityAt)}</span>
           )}
           {!isHidden && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  className="text-muted-foreground"
-                  aria-label="Row actions"
-                >
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {onSnooze && <SnoozeSubmenu onSnooze={(iso) => onSnooze(item, iso)} />}
-                <DropdownMenuItem onClick={() => onDismiss(item)}>
-                  <X className="h-4 w-4" />
-                  Dismiss
-                </DropdownMenuItem>
-                {href && (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem asChild>
-                      <Link to={href}>Open source</Link>
-                    </DropdownMenuItem>
-                  </>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <AttentionCloseMenu
+              item={item}
+              currentUserId={currentUserId}
+              userLabelMap={userLabelMap}
+              onWithdraw={onWithdraw}
+              onArchive={onDismiss}
+              onSnooze={onSnooze}
+              onTransfer={onTransfer}
+              busy={closing}
+            />
           )}
         </div>
       </div>
@@ -405,14 +379,16 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             {hasImages && <ExpandedImages images={images} issueHref={issueHref} />}
             {triageEnabled && <DecisionTriageStrip item={item} companyId={companyId} agents={agents} />}
             {inline && (
-              <InlineResolver
-                item={item}
-                companyId={companyId}
-                agentMap={agentMap}
-                currentUserId={currentUserId}
-                userLabelMap={userLabelMap}
-                toggle={toggle}
-              />
+              <AttentionForOtherGate item={item} currentUserId={currentUserId} userLabelMap={userLabelMap}>
+                <InlineResolver
+                  item={item}
+                  companyId={companyId}
+                  agentMap={agentMap}
+                  currentUserId={currentUserId}
+                  userLabelMap={userLabelMap}
+                  toggle={toggle}
+                />
+              </AttentionForOtherGate>
             )}
           </div>
         </CollapsibleContent>
@@ -688,53 +664,6 @@ function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[];
   );
 }
 
-/** Snooze submenu: presets + a custom date-time (plan §6). */
-function SnoozeSubmenu({ onSnooze }: { onSnooze: (snoozedUntil: string) => void }) {
-  const [customValue, setCustomValue] = useState("");
-  const applyCustom = () => {
-    if (!customValue) return;
-    const ts = new Date(customValue);
-    if (Number.isNaN(ts.getTime())) return;
-    onSnooze(ts.toISOString());
-  };
-  return (
-    <DropdownMenuSub>
-      <DropdownMenuSubTrigger>
-        <AlarmClock className="h-4 w-4" />
-        Snooze
-      </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent>
-        {SNOOZE_PRESETS.map((preset) => (
-          <DropdownMenuItem key={preset.label} onClick={() => onSnooze(preset.resolve())}>
-            {preset.label}
-          </DropdownMenuItem>
-        ))}
-        <DropdownMenuSeparator />
-        {/* Custom picker: a non-menu-item region so interacting with the input
-            doesn't close the menu (guard keydown/select against Radix typeahead). */}
-        <div
-          className="flex flex-col gap-1.5 px-2 py-1.5"
-          onKeyDown={(e) => e.stopPropagation()}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <span className="text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-            Custom
-          </span>
-          <input
-            type="datetime-local"
-            value={customValue}
-            onChange={(e) => setCustomValue(e.target.value)}
-            className="w-full rounded-sm border border-border bg-background px-2 py-1 text-xs"
-          />
-          <Button type="button" size="xs" disabled={!customValue} onClick={applyCustom}>
-            Snooze until…
-          </Button>
-        </div>
-      </DropdownMenuSubContent>
-    </DropdownMenuSub>
-  );
-}
-
 /**
  * Who set this row's decide-by deadline, for the card's provenance line
  * ("· set by Prioritizer"). Returns null when unattributed so the chip shows
@@ -817,6 +746,14 @@ function InlineResolver({
 
   if (item.sourceKind === "join_request") {
     return <JoinRequestResolver item={item} companyId={companyId} toggle={toggle} />;
+  }
+
+  if (item.sourceKind === "failed_run") {
+    return <FailedRunActions item={item} companyId={companyId} leading={toggle} />;
+  }
+
+  if (item.sourceKind === "budget_alert") {
+    return <BudgetAlertActions item={item} companyId={companyId} leading={toggle} />;
   }
 
   if (item.sourceKind === "review") {

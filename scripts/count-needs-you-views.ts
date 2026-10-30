@@ -116,6 +116,26 @@ async function main() {
       );
     }
 
+    // Task 2c: the collapsed Stale (N) group in each view, and what "Withdraw
+    // all stale" would close: cards whose closeModes include withdraw and that
+    // are not required gates (required approvals and governed requests stay).
+    console.log("\n=== Stale group per view (task 2c) ===");
+    for (const [name, email] of Object.entries(DEMO_EMAILS)) {
+      const userId = idByEmail.get(email);
+      if (!userId) continue;
+      for (const view of ["mine", "unassigned", "company"] as const) {
+        const feed = await svc.list(company.id, { userId, view });
+        const stale = feed.items.filter((item) => item.stale);
+        if (!stale.length) continue;
+        const bulk = (item: (typeof stale)[number]) => item.closeModes.includes("withdraw") && !item.required;
+        console.log(`${name} view=${view}: Stale (${stale.length}), Withdraw all stale closes ${stale.filter(bulk).length}`);
+        for (const item of stale) {
+          const verb = bulk(item) ? "withdraw" : item.required ? "required" : "stays   ";
+          console.log(`  - ${verb} ${item.stale!.reason.padEnd(17)} ${item.sourceKind}: ${item.subject.title}`);
+        }
+      }
+    }
+
     // Per-source-kind breakdown for Scott's mine view, to show the composition.
     const scottId = idByEmail.get(DEMO_EMAILS.Scott);
     if (scottId) {

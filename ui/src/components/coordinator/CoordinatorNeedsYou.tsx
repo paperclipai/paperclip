@@ -13,14 +13,17 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { usePanel } from "@/context/PanelContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
-import { useAttentionBadge, useAttentionViewFeed, useClaimAttentionItem } from "@/hooks/useAttentionViews";
+import { useAttentionBadge, useAttentionCloseActions, useAttentionViewFeed, useClaimAttentionItem } from "@/hooks/useAttentionViews";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { COORDINATOR_RECENT_DECISION_MS, recentDecisionReceipts } from "@/lib/coordinator-attention";
 import { attentionDetailLine, isInlineResolvable } from "@/lib/attention";
 import { ATTENTION_VIEW_PARAM, parseAttentionView } from "@/lib/attention-views";
+import { splitStaleAttentionItems } from "@/lib/attention-close";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
 import { AttentionAudienceLine, AttentionUnassignedBanner, AttentionViewSwitch } from "@/components/AttentionViews";
+import { AttentionCloseMenu, AttentionForOtherGate, AttentionStaleChip, AttentionStaleGroup } from "@/components/AttentionCloseMenu";
+import { BudgetAlertActions, FailedRunActions } from "@/components/AttentionInlineVerbs";
 import { AttentionInteractionResolver } from "@/components/AttentionInteractionResolver";
 import { StalledReviewActions } from "@/components/StalledReviewActions";
 import { DecisionResolver } from "@/components/DecisionResolver";
@@ -36,6 +39,11 @@ import { CoordinatorDecisionReceipt as Receipt } from "./CoordinatorDecisionRece
 import { CoordinatorTaskMotion } from "./CoordinatorTaskCommitment";
 
 type Group = "none" | "task" | "agent" | "project";
+
+/** Rule 7: a card that cannot answer inline links to the exact control, named by its verb. */
+function openLabel(item: AttentionItem) {
+  return (item.decisionVerbs ?? []).find((verb) => verb.id === "open_recovery" || verb.id === "inspect")?.label ?? "Open to review";
+}
 
 const EMPTY_VIEW_TEXT: Record<AttentionPersonalView, string> = {
   mine: "You're caught up.",
@@ -112,7 +120,9 @@ export function CoordinatorNeedsYou() {
   const [now, setNow] = useState(Date.now);
   const [settling, setSettling] = useState<AttentionItem[]>([]);
   const [savedIds, setSavedIds] = useState<Set<string>>(() => new Set());
-  useEffect(() => { setSettling([]); setSavedIds(new Set()); }, [selectedCompanyId, userId, view]);
+  // The Stale (N) group starts collapsed in each view (PAP-749 plan §3).
+  const [staleOpen, setStaleOpen] = useState(false);
+  useEffect(() => { setSettling([]); setSavedIds(new Set()); setStaleOpen(false); }, [selectedCompanyId, userId, view]);
   const [renderLimit, setRenderLimit] = useState(40);
   // Keyed by person and view; the For you key is the one the badge reads.
   const feed = useAttentionViewFeed(selectedCompanyId, view);
@@ -120,6 +130,12 @@ export function CoordinatorNeedsYou() {
   const claim = useClaimAttentionItem(selectedCompanyId);
   const directory = useQuery({ queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!), queryFn: () => accessApi.listUserDirectory(selectedCompanyId!), enabled: !!selectedCompanyId });
   const userLabelMap = useMemo(() => buildCompanyUserLabelMap(directory.data?.users), [directory.data?.users]);
+  // A closed card leaves the list at once; a withdrawn one comes back as a
+  // receipt in Recent Decisions after the history refetch.
+  const hideClosed = useCallback((item: AttentionItem) => {
+    setSavedIds(current => new Set([...current, `${item.sourceKind}:${item.subject.id}`]));
+  }, []);
+  const closeActions = useAttentionCloseActions(selectedCompanyId, { userLabelMap, onClosed: hideClosed });
   const agentQuery = useQuery({ queryKey: queryKeys.agents.list(selectedCompanyId!), queryFn: () => agentsApi.list(selectedCompanyId!), enabled: !!selectedCompanyId });
   // Full history lives in its own paginated tab. Only the newest bounded page
   // is fetched here; its window expires visually without deleting any record.
@@ -158,28 +174,31 @@ export function CoordinatorNeedsYou() {
     if (projectFilter && item.project?.id !== projectFilter) return false;
     return [item.subject.title, item.relatedIssue?.title, item.relatedIssue?.identifier, item.originAgentName, item.project?.name, attentionDetailLine(item)].join(" ").toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
   }).sort((a, b) => (sort === "oldest" ? 1 : -1) * (Date.parse(a.activityAt) - Date.parse(b.activityAt))), [pendingItems, agentFilter, projectFilter, query, sort, agentMap]);
+  // Stale cards go to the collapsed group at the bottom of each view (Rule 10).
+  const { current: currentItems, stale: staleItems } = useMemo(() => splitStaleAttentionItems(filtered), [filtered]);
   const groups = useMemo(() => {
     const result = new Map<string, AttentionItem[]>();
-    for (const item of filtered.slice(0, renderLimit)) {
+    for (const item of currentItems.slice(0, renderLimit)) {
       const label = groupBy === "task" ? item.relatedIssue?.identifier ?? item.relatedIssue?.title ?? "Other decisions"
         : groupBy === "agent" ? item.originAgentName ?? "Other agents" : groupBy === "project" ? item.project?.name ?? "No project" : "";
       result.set(label, [...(result.get(label) ?? []), item]);
     }
     return [...result];
-  }, [filtered, groupBy, renderLimit]);
+  }, [currentItems, groupBy, renderLimit]);
   useEffect(() => {
     if (!deepLinkDecisionId || !selectedCompanyId || !pendingItems.some(item => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId)) return;
     // A saved decision link takes precedence over local toolbar filters and the
     // rendering window. Consume it only after its actual card has mounted.
     if (query || agentFilter || projectFilter) { setQuery(""); setAgentFilter(""); setProjectFilter(""); return; }
-    const index = filtered.findIndex(item => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId);
+    if (staleItems.some(item => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId)) setStaleOpen(true);
+    const index = currentItems.findIndex(item => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId);
     if (index >= renderLimit) { setRenderLimit(Math.ceil((index + 1) / 40) * 40); return; }
     const card = document.getElementById(`coordinator-decision-${deepLinkDecisionId}`);
     if (!card) return;
     card.focus({ preventScroll: true });
     card.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
     setSearchParams(current => { const next = new URLSearchParams(current); next.delete("decisionId"); return next; }, { replace: true });
-  }, [deepLinkDecisionId, selectedCompanyId, pendingItems, filtered, query, agentFilter, projectFilter, renderLimit, reducedMotion, setSearchParams]);
+  }, [deepLinkDecisionId, selectedCompanyId, pendingItems, currentItems, staleItems, query, agentFilter, projectFilter, renderLimit, reducedMotion, setSearchParams]);
   const projects = useMemo(() => [...new Map([
     ...pendingItems.flatMap((item) => item.project ? [[item.project.id, item.project.name] as const] : []),
     ...recentItems.flatMap((item) => item.projectId ? [[item.projectId, item.projectName ?? "Unnamed project"] as const] : []),
@@ -213,6 +232,53 @@ export function CoordinatorNeedsYou() {
     void feed.refetch();
   };
   const duration = typeof document === "undefined" ? 0 : parseCssTimeMs(getComputedStyle(document.documentElement).getPropertyValue("--motion-duration-base")) / 1_000;
+  const renderCard = (item: AttentionItem) => {
+    const issueId = item.relatedIssue?.id ?? String(item.subject.metadata?.issueId ?? "");
+    const interaction = item.sourceKind === "issue_thread_interaction" && isInlineResolvable(item) && issueId;
+    const decision = item.sourceKind === "decision" && isInlineResolvable(item);
+    const stalledReview = item.sourceKind === "review" && item.subject.kind === "issue" && isInlineResolvable(item) && item.subject.metadata?.reviewAttentionState === "stalled";
+    const failedRun = item.sourceKind === "failed_run" && isInlineResolvable(item);
+    const budget = item.sourceKind === "budget_alert" && isInlineResolvable(item);
+    const taskRef = item.relatedIssue ?? (item.subject.kind === "issue" ? item.subject : null);
+    const taskLink = taskRef?.href ? <button type="button" onClick={() => { if (taskRef.href) navigate(taskRef.href); }} className="flex max-w-full items-center gap-2 text-left text-sm text-muted-foreground hover:text-foreground"><span className="shrink-0">{taskRef.identifier ?? "Open task"}</span><span className="truncate">{taskRef.title}</span><ArrowUpRight className="size-4 shrink-0" /></button> : null;
+    const id = `${item.sourceKind}:${item.subject.id}`;
+    const receipt = settlingIds.has(id) ? recentItems.find(entry => entry.id === id) : undefined;
+    const phase = !receipt ? "pending" : ["cancelled", "expired"].includes(receipt.outcome) ? "closed" : "resolved";
+    const refetchAll = () => { void feed.refetch(); void recent.refetch(); };
+    const heading = <><h2 className="text-lg font-medium">{item.subject.title ?? item.whyNow}</h2><p className="text-sm">{attentionDetailLine(item) ?? item.whyNow}</p></>;
+    return <motion.div id={item.sourceKind === "decision" ? `coordinator-decision-${item.subject.id}` : undefined} tabIndex={item.sourceKind === "decision" ? -1 : undefined} layout={reducedMotion ? false : "position"} layoutId={reducedMotion ? undefined : id} transition={{ duration }} key={id}>
+    <CoordinatorTaskMotion eventId={`decision:${selectedCompanyId}:${userId}:${id}`} phase={phase} createdAt={item.activityAt} className="coordinator-decision-motion"
+      onSettled={() => setSettling(current => current.filter(entry => `${entry.sourceKind}:${entry.subject.id}` !== id))}>
+    {receipt ? <Receipt item={receipt} onOpen={navigate} /> : <article className="coordinator-decision-card space-y-4 rounded-xl border border-border bg-card p-6" data-attention-card={item.id}>
+      {/* Why this card is here, whether it is stale, and its one Close… menu (PAP-749 Rules 4, 6, 10). */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <AttentionStaleChip item={item} />
+          <AttentionAudienceLine item={item} currentUserId={userId} userLabelMap={userLabelMap} onClaim={entry => claim.mutate(entry)} claiming={claim.isPending && claim.variables?.id === item.id} />
+        </div>
+        <AttentionCloseMenu item={item} currentUserId={userId} userLabelMap={userLabelMap}
+          busy={closeActions.closingItemId === item.id || closeActions.transferringItemId === item.id}
+          onWithdraw={(entry, reason) => closeActions.close({ item: entry, mode: "withdraw", reason })}
+          onArchive={entry => closeActions.close({ item: entry, mode: "archive" })}
+          onSnooze={(entry, until) => closeActions.close({ item: entry, mode: "snooze", until })}
+          onTransfer={(entry, target) => closeActions.transfer({ item: entry, userId: target })} />
+      </div>
+      <AttentionForOtherGate item={item} currentUserId={userId} userLabelMap={userLabelMap}>
+      {interaction ? <AttentionInteractionResolver footerSlot={taskLink} presentation="coordinator-decision" companyId={selectedCompanyId!} issueId={issueId} interactionId={item.subject.id} agentMap={agentMap} currentUserId={userId} onResolved={resolved => {
+        if (!resolved || resolved.status === "pending") { refetchAll(); return; }
+        onResolved(item);
+      }} />
+        : decision ? <DecisionResolver companyId={selectedCompanyId!} decisionId={item.subject.id} originIssue={item.relatedIssue} agentMap={agentMap} onResolved={() => onResolved(item)} />
+        : stalledReview ? <><h2 className="text-lg font-medium">Choose how this task continues</h2><p className="text-sm">This task is still in review with no active reviewer or continuation. Return it to work, request changes, or mark the task done.</p><StalledReviewActions footerSlot={taskLink} issueId={item.subject.id} companyId={selectedCompanyId!} reviewPolicy={readIssueReviewPolicyMetadata(item.subject.metadata)} approveLabel="Mark task done" onResolved={refetchAll} /></>
+        : failedRun ? <>{heading}<FailedRunActions item={item} companyId={selectedCompanyId!} leading={taskLink} onResolved={refetchAll} /></>
+        : budget ? <>{heading}<BudgetAlertActions item={item} companyId={selectedCompanyId!} onResolved={refetchAll} /></>
+        : <>{heading}<Button disabled={!item.subject.href} onClick={() => { if (item.subject.href) navigate(item.subject.href); }}>{openLabel(item)}<ArrowUpRight className="size-4" /></Button></>}
+      </AttentionForOtherGate>
+      {!interaction && !stalledReview && !failedRun ? taskLink : null}
+    </article>}
+    </CoordinatorTaskMotion>
+    </motion.div>;
+  };
   if (!selectedCompanyId) return <p className="text-sm text-muted-foreground">Choose a company to see its decisions.</p>;
   return <LayoutGroup id="coordinator-decisions"><section className="coordinator-needs-you mx-auto w-full max-w-4xl space-y-6" aria-label="Needs You">
     {isMobile ? <Sheet open={historyOpen} onOpenChange={open => { if (!open) closeHistory(); }}>
@@ -233,35 +299,13 @@ export function CoordinatorNeedsYou() {
     </div>
     {feed.isPending ? <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Loading decisions…</p> : null}
     {feed.isError ? <div role="alert" className="space-y-2"><p className="text-sm">Decisions could not be loaded.</p><Button variant="outline" onClick={() => void feed.refetch()}>Retry</Button></div> : null}
-    {!feed.isPending && !feed.isError && filtered.length === 0 ? <div className="space-y-3 py-8 text-center"><p className="text-sm text-muted-foreground">{filtersActive && !visibleRecentItems.length ? "No decisions match these filters." : pendingItems.length ? "No open decisions match these filters." : EMPTY_VIEW_TEXT[view]}</p><Button variant="ghost" onClick={showHistory}>Open decision history<ArrowUpRight className="size-4" /></Button></div> : null}
-    {groups.map(([label, items]) => <div key={label} className="space-y-4">{label ? <h2 className="text-sm font-medium text-muted-foreground">{label}</h2> : null}{items.map((item) => {
-      const issueId = item.relatedIssue?.id ?? String(item.subject.metadata?.issueId ?? "");
-      const interaction = item.sourceKind === "issue_thread_interaction" && isInlineResolvable(item) && issueId;
-      const decision = item.sourceKind === "decision" && isInlineResolvable(item);
-      const stalledReview = item.sourceKind === "review" && item.subject.kind === "issue" && isInlineResolvable(item) && item.subject.metadata?.reviewAttentionState === "stalled";
-      const taskRef = item.relatedIssue ?? (item.subject.kind === "issue" ? item.subject : null);
-      const taskLink = taskRef?.href ? <button type="button" onClick={() => { if (taskRef.href) navigate(taskRef.href); }} className="flex max-w-full items-center gap-2 text-left text-sm text-muted-foreground hover:text-foreground"><span className="shrink-0">{taskRef.identifier ?? "Open task"}</span><span className="truncate">{taskRef.title}</span><ArrowUpRight className="size-4 shrink-0" /></button> : null;
-      const id = `${item.sourceKind}:${item.subject.id}`;
-      const receipt = settlingIds.has(id) ? recentItems.find(entry => entry.id === id) : undefined;
-      const phase = !receipt ? "pending" : ["cancelled", "expired"].includes(receipt.outcome) ? "closed" : "resolved";
-      return <motion.div id={item.sourceKind === "decision" ? `coordinator-decision-${item.subject.id}` : undefined} tabIndex={item.sourceKind === "decision" ? -1 : undefined} layout={reducedMotion ? false : "position"} layoutId={reducedMotion ? undefined : id} transition={{ duration }} key={id}>
-      <CoordinatorTaskMotion eventId={`decision:${selectedCompanyId}:${userId}:${id}`} phase={phase} createdAt={item.activityAt} className="coordinator-decision-motion"
-        onSettled={() => setSettling(current => current.filter(entry => `${entry.sourceKind}:${entry.subject.id}` !== id))}>
-      {receipt ? <Receipt item={receipt} onOpen={navigate} /> : <article className="coordinator-decision-card space-y-4 rounded-xl border border-border bg-card p-6">
-        <AttentionAudienceLine item={item} currentUserId={userId} userLabelMap={userLabelMap} onClaim={entry => claim.mutate(entry)} claiming={claim.isPending && claim.variables?.id === item.id} />
-        {interaction ? <AttentionInteractionResolver footerSlot={taskLink} presentation="coordinator-decision" companyId={selectedCompanyId} issueId={issueId} interactionId={item.subject.id} agentMap={agentMap} currentUserId={userId} onResolved={resolved => {
-          if (!resolved || resolved.status === "pending") { void feed.refetch(); void recent.refetch(); return; }
-          onResolved(item);
-        }} />
-          : decision ? <DecisionResolver companyId={selectedCompanyId} decisionId={item.subject.id} originIssue={item.relatedIssue} agentMap={agentMap} onResolved={() => onResolved(item)} />
-          : stalledReview ? <><h2 className="text-lg font-medium">Choose how this task continues</h2><p className="text-sm">This task is still in review with no active reviewer or continuation. Return it to work, request changes, or mark the task done.</p><StalledReviewActions footerSlot={taskLink} issueId={item.subject.id} companyId={selectedCompanyId} reviewPolicy={readIssueReviewPolicyMetadata(item.subject.metadata)} approveLabel="Mark task done" onResolved={() => { void feed.refetch(); void recent.refetch(); }} /></>
-          : <><h2 className="text-lg font-medium">{item.subject.title ?? item.whyNow}</h2><p className="text-sm">{attentionDetailLine(item) ?? item.whyNow}</p><Button disabled={!item.subject.href} onClick={() => { if (item.subject.href) navigate(item.subject.href); }}>Open to review<ArrowUpRight className="size-4" /></Button></>}
-        {!interaction && !stalledReview ? taskLink : null}
-      </article>}
-      </CoordinatorTaskMotion>
-      </motion.div>;
-    })}</div>)}
-    {filtered.length > renderLimit ? <Button variant="outline" onClick={() => setRenderLimit((value) => value + 40)}>Show more decisions</Button> : null}
+    {!feed.isPending && !feed.isError && currentItems.length === 0 ? <div className="space-y-3 py-8 text-center"><p className="text-sm text-muted-foreground">{staleItems.length ? "No current cards. Stale cards are below." : filtersActive && !visibleRecentItems.length ? "No decisions match these filters." : pendingItems.length ? "No open decisions match these filters." : EMPTY_VIEW_TEXT[view]}</p><Button variant="ghost" onClick={showHistory}>Open decision history<ArrowUpRight className="size-4" /></Button></div> : null}
+    {groups.map(([label, items]) => <div key={label} className="space-y-4">{label ? <h2 className="text-sm font-medium text-muted-foreground">{label}</h2> : null}{items.map(renderCard)}</div>)}
+    {currentItems.length > renderLimit ? <Button variant="outline" onClick={() => setRenderLimit((value) => value + 40)}>Show more decisions</Button> : null}
+    <AttentionStaleGroup items={staleItems} open={staleOpen} onToggle={() => setStaleOpen(open => !open)} onWithdrawAll={closeActions.withdrawAll}
+      busy={closeActions.bulkPending} currentUserId={userId} userLabelMap={userLabelMap}>
+      {staleItems.map(renderCard)}
+    </AttentionStaleGroup>
     {visibleRecentItems.length ? <section className="space-y-3" aria-label="Recent Decisions"><h2 className="text-sm font-medium text-muted-foreground">Recent Decisions</h2>{recentGroups.map(([label, items]) => <div key={label} className="space-y-3">{label ? <h3 className="text-sm font-medium text-muted-foreground">{label}</h3> : null}{items.map((item) => <motion.div layout={!reducedMotion} layoutId={reducedMotion ? undefined : item.id} transition={{ duration }} key={item.id}><Receipt item={item} onOpen={navigate} /></motion.div>)}</div>)}</section> : null}
     {recent.isError ? <p role="alert" className="text-sm text-muted-foreground">Recent decisions could not be loaded. <button className="underline" onClick={() => void recent.refetch()}>Retry</button></p> : null}
   </section></LayoutGroup>;

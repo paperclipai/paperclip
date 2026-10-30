@@ -404,6 +404,13 @@ export interface AttentionItem {
   /** Set when the card is stale (PAP-749 plan §2, Rule 10); `null` for a current card. */
   stale: AttentionStale | null;
   /**
+   * The card is a required gate: an approval or a governed request that keeps
+   * its gate until someone answers it (PAP-749 plan §2, Rule 10). A stale
+   * required card goes to a person; "Withdraw all stale" never closes it. A
+   * person can still withdraw one from its own Close… menu.
+   */
+  required: boolean;
+  /**
    * Opaque fingerprint of the card's important content for this viewer
    * (PAP-749 plan §2, Rule 9). Send it with a dismiss or snooze; the hidden
    * card returns only when the fingerprint changes, not on log entries,

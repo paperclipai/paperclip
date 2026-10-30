@@ -119,6 +119,7 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     stale: overrides.stale ?? null,
     changeFingerprint: overrides.changeFingerprint ?? "fixture.other",
     closeModes: overrides.closeModes ?? ["archive", "snooze"],
+    required: overrides.required ?? false,
     expiresAt: overrides.expiresAt ?? null,
     ruleKey: overrides.ruleKey ?? null,
     originAgentName: overrides.originAgentName ?? null,
@@ -296,7 +297,7 @@ describe("AttentionQueueRow", () => {
     expect(el.textContent).not.toContain("Send back to work");
   });
 
-  it("fires onDismiss from the row menu action", () => {
+  it("puts Archive for me in the Close… menu", () => {
     const onDismiss = vi.fn();
     const item = buildItem();
     render(
@@ -308,11 +309,11 @@ describe("AttentionQueueRow", () => {
         onDismiss={onDismiss}
       />,
     );
-    // The dropdown trigger + item live in a portal; invoke the handler contract
-    // directly via the rendered menu after opening is environment-flaky in
-    // jsdom, so assert the wiring by locating the trigger exists.
-    const trigger = container?.querySelector('[aria-label="Row actions"]');
-    expect(trigger).toBeTruthy();
+    // The Close… menu replaces the old row menu (PAP-749 Rule 6). Its items
+    // live in a portal and opening is environment-flaky in jsdom, so assert the
+    // wiring by locating the trigger; AttentionCloseMenu.test covers the verbs.
+    const trigger = container?.querySelector("[data-attention-close-menu]");
+    expect(trigger?.textContent).toContain("Close…");
   });
 
   it("toggles expand when the collapsed header of an inline row is clicked", () => {
@@ -530,7 +531,7 @@ describe("AttentionQueueRow", () => {
     expect(actionArea?.getAttribute("class")).toContain("justify-between");
     expect(decisionActions?.parentElement?.getAttribute("class")).toContain("@xl:justify-end");
 
-    const rowMenu = container?.querySelector('[aria-label="Row actions"]');
+    const rowMenu = container?.querySelector("[data-attention-close-menu]");
     expect(rowMenu?.closest('[data-attention-menu="true"]')).toBeTruthy();
     expect(rowMenu?.closest('[data-attention-actions="true"]')).toBeNull();
 

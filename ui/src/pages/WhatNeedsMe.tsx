@@ -11,12 +11,12 @@ import { agentsApi } from "../api/agents";
 import { decisionsApi } from "../api/decisions";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useToastActions } from "../context/ToastContext";
 import { useInboxDismissals } from "../hooks/useInboxBadge";
-import { useAttentionBadge, useClaimAttentionItem } from "../hooks/useAttentionViews";
+import { useAttentionBadge, useAttentionCloseActions, useClaimAttentionItem } from "../hooks/useAttentionViews";
 import { ATTENTION_VIEW_PARAM, parseAttentionView } from "../lib/attention-views";
 import { buildCompanyUserLabelMap } from "../lib/company-members";
 import { AttentionUnassignedBanner, AttentionViewSwitch } from "../components/AttentionViews";
+import { AttentionStaleGroup } from "../components/AttentionCloseMenu";
 import { queryKeys } from "../lib/queryKeys";
 import {
   ATTENTION_AGING_DAYS,
@@ -122,6 +122,8 @@ function ClassicWhatNeedsMe() {
   const [snoozedOpen, setSnoozedOpen] = useState(false);
   const [dismissedOpen, setDismissedOpen] = useState(false);
   const [agingOpen, setAgingOpen] = useState(false);
+  // The Stale (N) group starts collapsed (PAP-749 plan §3).
+  const [staleOpen, setStaleOpen] = useState(false);
   const [decidedOpen, setDecidedOpen] = useState(false);
   const [expiredOpen, setExpiredOpen] = useState(false);
 
@@ -152,8 +154,7 @@ function ClassicWhatNeedsMe() {
   const [pendingHide, setPendingHide] = useState<Set<string>>(() => new Set());
   const [pendingRestore, setPendingRestore] = useState<Set<string>>(() => new Set());
 
-  const { dismiss, snooze, restore } = useInboxDismissals(selectedCompanyId);
-  const { pushToast } = useToastActions();
+  const { restore } = useInboxDismissals(selectedCompanyId);
   const navigate = useNavigate();
 
   // Date chips resolve to server-side activity bounds. Anchored to start-of-day,
@@ -226,6 +227,20 @@ function ClassicWhatNeedsMe() {
   });
   const userLabelMap = useMemo(() => buildCompanyUserLabelMap(userDirectory?.users), [userDirectory?.users]);
 
+  // Every Close… verb goes through the one close API (PAP-749 plan §2). The row
+  // hides at once; it comes back if the server refuses.
+  const unhide = useCallback((item: AttentionItem) => {
+    setPendingHide((prev) => {
+      const next = new Set(prev);
+      next.delete(item.id);
+      return next;
+    });
+  }, []);
+  const closeActions = useAttentionCloseActions(selectedCompanyId, { userLabelMap, onCloseFailed: unhide });
+  const closeCard = closeActions.close;
+  const transferCard = closeActions.transfer;
+  const closingId = closeActions.closingItemId ?? closeActions.transferringItemId;
+
   const agentMap = useMemo(() => {
     const map = new Map<string, Agent>();
     for (const agent of agents ?? []) map.set(agent.id, agent);
@@ -258,10 +273,12 @@ function ClassicWhatNeedsMe() {
     [feed?.generatedAt],
   );
 
-  // Aging shelf (§4.4): items the server flags as idle past retention leave the
-  // live desk for their own curtain, so today's desk shows only fresh decisions.
-  const agingItems = useMemo(() => activeItems.filter(attentionIsAging), [activeItems]);
-  const deskItems = useMemo(() => activeItems.filter((item) => !attentionIsAging(item)), [activeItems]);
+  // Stale cards (PAP-749 Rule 10) go to the collapsed Stale group at the bottom.
+  // Aging shelf (§4.4): other items the server flags as idle past retention
+  // leave the live desk for their own curtain, so the desk shows fresh decisions.
+  const staleItems = useMemo(() => activeItems.filter((item) => item.stale), [activeItems]);
+  const agingItems = useMemo(() => activeItems.filter((item) => !item.stale && attentionIsAging(item)), [activeItems]);
+  const deskItems = useMemo(() => activeItems.filter((item) => !item.stale && !attentionIsAging(item)), [activeItems]);
   const snoozedItems = useMemo(
     () =>
       allItems.filter(
@@ -294,6 +311,11 @@ function ClassicWhatNeedsMe() {
     const sorted = sortAttentionItems(filtered, sortOrder);
     return groupAttentionItems(sorted, groupBy);
   }, [deskItems, filters, searchQuery, sortOrder, groupBy, now]);
+
+  const visibleStaleItems = useMemo(
+    () => sortAttentionItems(filterAttentionItems(staleItems, filters, searchQuery), sortOrder),
+    [staleItems, filters, searchQuery, sortOrder],
+  );
 
   const visibleCount = useMemo(() => groups.reduce((sum, group) => sum + group.items.length, 0), [groups]);
   const keyboardItems = useMemo(
@@ -444,44 +466,50 @@ function ClassicWhatNeedsMe() {
   };
 
   // All row callbacks are stable (deps are setState functions, stable hook
-  // callbacks, and the stable `pushToast`) so the memoized rows only re-render
+  // callbacks, and the stable mutation `mutate`s) so the memoized rows only re-render
   // when their own item/expanded/selected props change (PAP-13784).
-  const handleUndoDismiss = useCallback(
-    (item: AttentionItem) => {
-      setPendingHide((prev) => {
-        const next = new Set(prev);
-        next.delete(item.id);
-        return next;
-      });
-      restore(item.dismissalKey);
-    },
-    [restore],
-  );
   const handleDismiss = useCallback(
     (item: AttentionItem) => {
       setPendingHide((prev) => new Set(prev).add(item.id));
-      dismiss(item.dismissalKey, item.changeFingerprint);
+      // "Archive for me": personal, with an Undo toast from the close hook.
+      closeCard({ item, mode: "archive" });
       setExpandedId((previous) => (previous === item.id ? null : previous));
-      // ~8s undo window; restores the row in place via T1's DELETE endpoint.
-      pushToast({
-        id: `attention-dismiss-${item.id}`,
-        dedupeKey: `attention-dismiss-${item.dismissalKey}`,
-        title: "Dismissed",
-        body: item.subject.title ?? undefined,
-        tone: "info",
-        ttlMs: 8000,
-        action: { label: "Undo", onClick: () => handleUndoDismiss(item) },
-      });
     },
-    [dismiss, handleUndoDismiss, pushToast],
+    [closeCard],
   );
   const handleSnooze = useCallback(
     (item: AttentionItem, snoozedUntil: string) => {
       setPendingHide((prev) => new Set(prev).add(item.id));
-      snooze(item.dismissalKey, snoozedUntil, item.changeFingerprint);
+      closeCard({ item, mode: "snooze", until: snoozedUntil });
       setExpandedId((previous) => (previous === item.id ? null : previous));
     },
-    [snooze],
+    [closeCard],
+  );
+  const handleWithdraw = useCallback(
+    (item: AttentionItem, reason: string) => {
+      setPendingHide((prev) => new Set(prev).add(item.id));
+      closeCard({ item, mode: "withdraw", reason });
+      setExpandedId((previous) => (previous === item.id ? null : previous));
+    },
+    [closeCard],
+  );
+  const handleTransfer = useCallback(
+    (item: AttentionItem, userId: string) => transferCard({ item, userId }),
+    [transferCard],
+  );
+  const handleWithdrawAll = useCallback(
+    (items: AttentionItem[], reason: string) => {
+      setPendingHide((prev) => {
+        const next = new Set(prev);
+        for (const item of items) next.add(item.id);
+        return next;
+      });
+      return closeActions.withdrawAll(items, reason).then((result) => {
+        for (const item of result.failed) unhide(item);
+        return result;
+      });
+    },
+    [closeActions.withdrawAll, unhide],
   );
   const handleRestore = useCallback(
     (item: AttentionItem) => {
@@ -652,6 +680,9 @@ function ClassicWhatNeedsMe() {
                                   onToggleExpand={handleToggleExpand}
                                   onDismiss={handleDismiss}
                                   onSnooze={handleSnooze}
+                                  onWithdraw={handleWithdraw}
+                                  onTransfer={handleTransfer}
+                                  closing={closingId === item.id}
                                   agentMap={agentMap}
                                   agents={agents}
                                   showTriage
@@ -673,6 +704,37 @@ function ClassicWhatNeedsMe() {
               })}
             </>
           )}
+
+          <AttentionStaleGroup
+            items={visibleStaleItems}
+            open={staleOpen}
+            onToggle={() => setStaleOpen((prev) => !prev)}
+            onWithdrawAll={handleWithdrawAll}
+            busy={closeActions.bulkPending}
+            currentUserId={currentUserId}
+            userLabelMap={userLabelMap}
+          >
+            {visibleStaleItems.map((item) => (
+              <AttentionQueueRow
+                key={item.id}
+                item={item}
+                companyId={selectedCompanyId}
+                expanded={expandedId === item.id}
+                onToggleExpand={handleToggleExpand}
+                onDismiss={handleDismiss}
+                onSnooze={handleSnooze}
+                onWithdraw={handleWithdraw}
+                onTransfer={handleTransfer}
+                closing={closingId === item.id}
+                agentMap={agentMap}
+                agents={agents}
+                currentUserId={currentUserId}
+                userLabelMap={userLabelMap}
+                onClaim={handleClaim}
+                claiming={claimingId === item.id}
+              />
+            ))}
+          </AttentionStaleGroup>
 
           {snoozedItems.length > 0 && (
             <Curtain
@@ -700,7 +762,7 @@ function ClassicWhatNeedsMe() {
 
           {dismissedItems.length > 0 && (
             <Curtain
-              label="Dismissed"
+              label="Archived"
               count={dismissedItems.length}
               open={dismissedOpen}
               onToggle={() => setDismissedOpen((prev) => !prev)}

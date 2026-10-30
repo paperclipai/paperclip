@@ -283,6 +283,10 @@ describeEmbeddedPostgres("attention current cards (PAP-749 task 2a)", () => {
     expect(find(items, approvalId)?.stale).toEqual({ reason: "aged" });
     expect(find(items, approvalId)?.audience).toEqual({ kind: "company", userId: null, reason: "none" });
     expect(find(items, governed)?.audience).toEqual({ kind: "company", userId: null, reason: "none" });
+    // The UI reads `required` so "Withdraw all stale" leaves these with a person (task 2c).
+    expect(find(items, approvalId)?.required).toBe(true);
+    expect(find(items, governed)?.required).toBe(true);
+    expect(find(items, old)?.required).toBe(false);
     expect(find(await list(companyId, SCOTT, "company"), approvalId)).not.toBeNull();
     expect(find(await list(companyId, SCOTT, "mine"), approvalId)).toBeNull();
 

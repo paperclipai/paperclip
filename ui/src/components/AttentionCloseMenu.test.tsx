@@ -1,0 +1,222 @@
+// @vitest-environment jsdom
+import { act, forwardRef, type AnchorHTMLAttributes } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AttentionAudience, AttentionItem } from "@paperclipai/shared";
+import { AttentionCloseMenu, AttentionForOtherGate, AttentionStaleChip, AttentionStaleGroup } from "./AttentionCloseMenu";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+vi.mock("@/lib/router", () => ({
+  Link: forwardRef<HTMLAnchorElement, AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }>(({ children, to, ...props }, ref) => (
+    <a ref={ref} href={to} {...props}>{children}</a>
+  )),
+}));
+
+// PAP-749 task 2c: the Close… menu, "This is for @x. Continue?", the Stale
+// chip and the Stale (N) group with "Withdraw all stale".
+let root: Root;
+let container: HTMLDivElement;
+beforeEach(() => {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+});
+afterEach(async () => {
+  await act(async () => root.unmount());
+  container.remove();
+  document.body.innerHTML = "";
+});
+
+const SCOTT = "scott";
+const labels = new Map([["scott", "Scott"], ["dotta", "Dotta"], ["riley", "Riley"]]);
+const forScott: AttentionAudience = { kind: "user", userId: SCOTT, reason: "addressee" };
+const forDotta: AttentionAudience = { kind: "user", userId: "dotta", reason: "addressee" };
+
+function card(id: string, overrides: Partial<AttentionItem> = {}) {
+  return {
+    id,
+    sourceKind: "issue_thread_interaction",
+    subject: { id: `${id}-subject`, kind: "interaction", title: `Card ${id}`, href: `/PAP/issues/PAP-1#${id}`, metadata: {} },
+    relatedIssue: { id: "issue-1", identifier: "PAP-1", title: "Task", kind: "issue" },
+    audience: forScott,
+    stale: null,
+    closeModes: ["withdraw", "archive", "snooze"],
+    changeFingerprint: "fp.me",
+    whyNow: "",
+    ...overrides,
+  } as unknown as AttentionItem;
+}
+
+async function render(node: React.ReactNode) {
+  await act(async () => root.render(<>{node}</>));
+}
+
+async function openMenu() {
+  const trigger = container.querySelector<HTMLElement>("[data-attention-close-menu]")!;
+  await act(async () => {
+    trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+    trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+}
+
+function menuItem(mode: string) {
+  return document.body.querySelector<HTMLElement>(`[data-attention-close-mode="${mode}"]`);
+}
+
+function buttonWithText(text: string, scope: ParentNode = document.body) {
+  return [...scope.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === text);
+}
+
+async function click(element: HTMLElement | undefined | null) {
+  await act(async () => { element!.click(); });
+}
+
+describe("AttentionCloseMenu", () => {
+  it("lists only the verbs in closeModes", async () => {
+    await render(<AttentionCloseMenu item={card("a", { closeModes: ["archive", "snooze"] })} currentUserId={SCOTT} userLabelMap={labels}
+      onWithdraw={vi.fn()} onArchive={vi.fn()} onSnooze={vi.fn()} onTransfer={vi.fn()} />);
+    await openMenu();
+    expect(menuItem("withdraw")).toBeNull();
+    expect(menuItem("archive")?.textContent).toContain("Archive for me");
+    expect(menuItem("snooze")?.textContent).toContain("Snooze for me");
+    expect(menuItem("transfer")?.textContent).toContain("Transfer to…");
+    expect(document.body.textContent).toContain("Open source");
+  });
+
+  it("archives for me in one step", async () => {
+    const onArchive = vi.fn();
+    const item = card("a");
+    await render(<AttentionCloseMenu item={item} currentUserId={SCOTT} userLabelMap={labels} onArchive={onArchive} />);
+    await openMenu();
+    await click(menuItem("archive"));
+    expect(onArchive).toHaveBeenCalledWith(item);
+  });
+
+  it("confirms a withdraw and sends the reason", async () => {
+    const onWithdraw = vi.fn();
+    const item = card("a");
+    await render(<AttentionCloseMenu item={item} currentUserId={SCOTT} userLabelMap={labels} onWithdraw={onWithdraw} />);
+    await openMenu();
+    await click(menuItem("withdraw"));
+    const dialog = document.body.querySelector<HTMLElement>("[data-attention-withdraw-dialog]")!;
+    expect(dialog.textContent).toContain("Withdraw this request?");
+    expect(dialog.textContent).toContain("It is not an approval");
+    const textarea = dialog.querySelector("textarea")!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(textarea, "Plan changed");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(onWithdraw).not.toHaveBeenCalled();
+    await click(buttonWithText("Withdraw request", dialog));
+    expect(onWithdraw).toHaveBeenCalledWith(item, "Plan changed");
+  });
+
+  it('asks "This is for @x. Withdraw anyway?" on a card for a different person', async () => {
+    await render(<AttentionCloseMenu item={card("a", { audience: forDotta })} currentUserId={SCOTT} userLabelMap={labels} onWithdraw={vi.fn()} />);
+    await openMenu();
+    await click(menuItem("withdraw"));
+    expect(document.body.querySelector("[data-attention-withdraw-dialog]")?.textContent).toContain("This is for @Dotta. Withdraw anyway?");
+  });
+
+  it('asks "This is for @x. Continue?" before transferring a different person\'s card', async () => {
+    const onTransfer = vi.fn();
+    const item = card("a", { audience: forDotta });
+    await render(<AttentionCloseMenu item={item} currentUserId={SCOTT} userLabelMap={labels} onTransfer={onTransfer} />);
+    await openMenu();
+    const sub = menuItem("transfer")!;
+    await act(async () => {
+      sub.dispatchEvent(new PointerEvent("pointermove", { bubbles: true }));
+      sub.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    });
+    const riley = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((entry) => entry.textContent === "@Riley");
+    // Dotta owns the card, and Scott is the viewer, so only Riley is offered.
+    expect([...document.body.querySelectorAll('[role="menuitem"]')].map((entry) => entry.textContent)).not.toContain("@Dotta");
+    await click(riley);
+    expect(onTransfer).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("This is for @Dotta. Continue?");
+    await click(buttonWithText("Transfer to @Riley"));
+    expect(onTransfer).toHaveBeenCalledWith(item, "riley");
+  });
+});
+
+describe("AttentionForOtherGate", () => {
+  it("hides the answer controls until the person continues", async () => {
+    await render(<AttentionForOtherGate item={card("a", { audience: forDotta })} currentUserId={SCOTT} userLabelMap={labels}><button type="button">Approve</button></AttentionForOtherGate>);
+    expect(container.textContent).toContain("This is for @Dotta. Continue?");
+    expect(buttonWithText("Approve", container)).toBeUndefined();
+    await click(buttonWithText("Continue", container));
+    expect(buttonWithText("Approve", container)).toBeTruthy();
+  });
+
+  it("shows the controls at once on your own card", async () => {
+    await render(<AttentionForOtherGate item={card("a")} currentUserId={SCOTT} userLabelMap={labels}><button type="button">Approve</button></AttentionForOtherGate>);
+    expect(container.querySelector("[data-attention-for-other-gate]")).toBeNull();
+    expect(buttonWithText("Approve", container)).toBeTruthy();
+  });
+});
+
+describe("AttentionStaleChip", () => {
+  it("shows the stale reason", async () => {
+    await render(<AttentionStaleChip item={card("a", { stale: { reason: "aged" } })} />);
+    expect(container.querySelector('[data-attention-stale="aged"]')?.textContent).toBe("Stale · Waiting 30+ days");
+  });
+
+  it("renders nothing for a current card", async () => {
+    await render(<AttentionStaleChip item={card("a")} />);
+    expect(container.textContent).toBe("");
+  });
+});
+
+describe("AttentionStaleGroup", () => {
+  const stale = [
+    card("old", { stale: { reason: "aged" } }),
+    card("closed-task", { stale: { reason: "issue_closed" }, audience: forDotta }),
+    card("run", { sourceKind: "failed_run", stale: { reason: "aged" }, closeModes: ["archive", "snooze"] }),
+    card("approval", { sourceKind: "approval", stale: { reason: "aged" }, required: true }),
+  ];
+
+  it("starts collapsed with its count and opens with one click", async () => {
+    const onToggle = vi.fn();
+    await render(<AttentionStaleGroup items={stale} open={false} onToggle={onToggle} onWithdrawAll={vi.fn()} currentUserId={SCOTT} userLabelMap={labels}><p>cards</p></AttentionStaleGroup>);
+    expect(container.textContent).toContain("Stale (4)");
+    expect(container.textContent).not.toContain("cards");
+    const header = container.querySelector<HTMLElement>("[aria-expanded]")!;
+    expect(header.getAttribute("aria-expanded")).toBe("false");
+    await click(header);
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists every card before Withdraw all stale and withdraws only those with a request", async () => {
+    const onWithdrawAll = vi.fn();
+    await render(<AttentionStaleGroup items={stale} open={false} onToggle={vi.fn()} onWithdrawAll={onWithdrawAll} currentUserId={SCOTT} userLabelMap={labels}><p>cards</p></AttentionStaleGroup>);
+    await click(buttonWithText("Withdraw all stale", container));
+    expect(onWithdrawAll).not.toHaveBeenCalled();
+    const dialog = document.body.querySelector<HTMLElement>("[data-attention-stale-withdraw-dialog]")!;
+    expect(dialog.textContent).toContain("Withdraw 2 stale requests?");
+    expect(dialog.textContent).toContain("None of them counts as approved");
+    const withdrawn = [...dialog.querySelectorAll('[data-attention-stale-list="Will be withdrawn"] [data-attention-stale-item]')].map((row) => row.getAttribute("data-attention-stale-item"));
+    expect(withdrawn).toEqual(["old", "closed-task"]);
+    expect(dialog.querySelector('[data-attention-stale-item="closed-task"]')?.textContent).toContain("For @Dotta");
+    expect(dialog.querySelector('[data-attention-stale-item="run"]')?.closest("[data-attention-stale-list]")?.getAttribute("data-attention-stale-list"))
+      .toBe("Stay open: no request to withdraw");
+    // A stale required approval goes to a person; bulk withdraw leaves it open.
+    expect(dialog.querySelector('[data-attention-stale-item="approval"]')?.closest("[data-attention-stale-list]")?.getAttribute("data-attention-stale-list"))
+      .toBe("Stay open: required, withdraw one at a time");
+    expect(dialog.querySelector("[data-attention-stale-for-others]")?.textContent).toBe("This is for @Dotta. Continue?");
+    await click(buttonWithText("Withdraw 2 requests", dialog));
+    expect(onWithdrawAll).toHaveBeenCalledWith([stale[0], stale[1]], "");
+  });
+
+  it("offers no bulk withdraw when nothing can be withdrawn", async () => {
+    await render(<AttentionStaleGroup items={[stale[2]!]} open={false} onToggle={vi.fn()} onWithdrawAll={vi.fn()} currentUserId={SCOTT} userLabelMap={labels}><p>cards</p></AttentionStaleGroup>);
+    expect(container.textContent).toContain("Stale (1)");
+    expect(buttonWithText("Withdraw all stale", container)).toBeUndefined();
+  });
+
+  it("renders nothing without stale cards", async () => {
+    await render(<AttentionStaleGroup items={[]} open onToggle={vi.fn()} currentUserId={SCOTT}><p>cards</p></AttentionStaleGroup>);
+    expect(container.querySelector("[data-attention-stale-group]")).toBeNull();
+  });
+});

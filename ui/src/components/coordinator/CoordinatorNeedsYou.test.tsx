@@ -8,7 +8,7 @@ import type { AttentionItem, DecisionHistoryItem } from "@paperclipai/shared";
 import { CoordinatorNeedsYou } from "./CoordinatorNeedsYou";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], byView: {} as Record<string, AttentionItem[]>, viewCounts: undefined as undefined | Record<string, number>, listCalls: [] as unknown[], claim: vi.fn(async () => ({})), history: [] as DecisionHistoryItem[], url: "/decisions", mobile: false, partial: false, historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn() }));
+const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], byView: {} as Record<string, AttentionItem[]>, viewCounts: undefined as undefined | Record<string, number>, listCalls: [] as unknown[], claim: vi.fn(async () => ({})), close: vi.fn(async (..._args: unknown[]) => ({ until: null })), retryTask: vi.fn(async (..._args: unknown[]) => ({ accepted: true, requestId: "r", stale: false, presentation: null })), history: [] as DecisionHistoryItem[], url: "/decisions", mobile: false, partial: false, historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn() }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: fixture.breadcrumbs }) }));
 vi.mock("@/context/PanelContext", () => ({ usePanel: () => ({ openPanel: fixture.openPanel, closePanel: fixture.closePanel, setPanelVisible: fixture.setPanelVisible }) }));
@@ -18,8 +18,10 @@ vi.mock("@/lib/router", async importOriginal => ({ ...await importOriginal<typeo
 vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
 vi.mock("@/api/access", () => ({ accessApi: { listUserDirectory: async () => ({ users: [{ principalId: "dotta", status: "active", user: { name: "Dotta" } }] }) } }));
+vi.mock("@/api/issues", () => ({ issuesApi: { retryTask: fixture.retryTask } }));
 vi.mock("@/api/attention", () => ({ attentionApi: {
   claim: fixture.claim,
+  close: fixture.close,
   list: async (_companyId: string, options: { view?: string }) => {
     fixture.listCalls.push(options);
     if (fixture.feedFail) throw new Error("Feed unavailable");
@@ -301,6 +303,65 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     await flush();
     expect(container.querySelector("[data-attention-for-user]")?.textContent).toBe("For @Dotta");
     expect(container.querySelector('[data-attention-view-count="mine"]')).toBeNull();
+    client.clear();
+  });
+
+  it("puts stale cards in a collapsed Stale (N) group at the bottom and withdraws them after a confirmation (PAP-749 task 2c)", async () => {
+    const stale = (id: string, reason: string, extra: Record<string, unknown> = {}) => ({ ...mine(id, "addressee"), stale: { reason }, closeModes: ["withdraw", "archive", "snooze"], ...extra }) as unknown as AttentionItem;
+    fixture.byView = { mine: [mine("fresh", "addressee"), stale("old", "aged"), stale("done", "issue_closed"),
+      stale("run", "aged", { sourceKind: "failed_run", inlineResolvable: false, closeModes: ["archive", "snooze"], subject: { id: "run-9", kind: "run", title: "Old run", href: "/PAP/runs/9" } })] };
+    fixture.viewCounts = { mine: 4, unassigned: 0, company: 0 };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(client);
+    const group = container.querySelector<HTMLElement>("[data-attention-stale-group]")!;
+    expect(group.textContent).toContain("Stale (3)");
+    // Collapsed: only the current card is mounted, and the group sits after it.
+    expect(container.querySelectorAll("article")).toHaveLength(1);
+    expect(container.querySelector("article")!.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await act(async () => group.querySelector<HTMLElement>("[aria-expanded]")!.click()); await flush();
+    expect(container.querySelectorAll("article")).toHaveLength(4);
+    expect(group.querySelector('[data-attention-stale="aged"]')?.textContent).toBe("Stale · Waiting 30+ days");
+    expect(group.querySelector('[data-attention-stale="issue_closed"]')?.textContent).toBe("Stale · Task closed");
+
+    await click("Withdraw all stale");
+    const dialog = document.querySelector<HTMLElement>("[data-attention-stale-withdraw-dialog]")!;
+    expect(dialog.textContent).toContain("Withdraw 2 stale requests?");
+    expect(fixture.close).not.toHaveBeenCalled();
+    await act(async () => [...dialog.querySelectorAll("button")].find((button) => button.textContent === "Withdraw 2 requests")!.click());
+    await flush(); await flush();
+    expect(fixture.close.mock.calls.map((call) => [call[2], (call[3] as { mode: string }).mode])).toEqual([["old", "withdraw"], ["done", "withdraw"]]);
+    // Withdrawn cards leave at once; the failed run has nothing to withdraw and stays.
+    expect(group.textContent).toContain("Stale (1)");
+    client.clear();
+  });
+
+  it("archives a card for me from its Close… menu with the version I saw", async () => {
+    fixture.byView = { mine: [{ ...mine("m1", "addressee"), closeModes: ["withdraw", "archive", "snooze"], changeFingerprint: "fp-1.me" } as unknown as AttentionItem, mine("m2", "addressee")] };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(client);
+    const menu = container.querySelector<HTMLElement>("[data-attention-close-menu]")!;
+    await act(async () => {
+      menu.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      menu.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => document.querySelector<HTMLElement>('[data-attention-close-mode="archive"]')!.click()); await flush(); await flush();
+    expect(fixture.close).toHaveBeenCalledWith("company", "issue_thread_interaction", "m1", { mode: "archive", reason: undefined, until: undefined, fingerprint: "fp-1.me" });
+    expect(container.querySelector('[data-attention-card="m1"]')).toBeNull();
+    expect(container.querySelector('[data-attention-card="m2"]')).not.toBeNull();
+    client.clear();
+  });
+
+  it("retries a failed run inline instead of only linking to it (Rule 7)", async () => {
+    fixture.url = "/decisions?view=company";
+    fixture.byView = { company: [{ id: "failed", sourceKind: "failed_run", inlineResolvable: true, decisionVerbs: [{ id: "retry", label: "Retry" }, { id: "inspect", label: "Open run" }],
+      subject: { id: "run-7", kind: "run", title: "Nightly sync failed", href: "/PAP/agents/a/runs/run-7", metadata: { issueId: "task-7" } },
+      relatedIssue: { id: "task-7", identifier: "PAP-7", title: "Nightly sync", href: "/PAP/issues/PAP-7" }, closeModes: ["archive", "snooze"],
+      activityAt: new Date().toISOString(), audience: { kind: "company", userId: null, reason: "none" } } as unknown as AttentionItem] };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(client);
+    expect(container.textContent).not.toContain("Open to review");
+    await click("Retry");
+    expect(fixture.retryTask).toHaveBeenCalledWith("task-7", { idempotencyKey: expect.any(String), observedRunId: "run-7" });
     client.clear();
   });
 

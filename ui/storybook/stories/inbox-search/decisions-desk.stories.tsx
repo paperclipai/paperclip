@@ -100,6 +100,7 @@ function item(
     },
     audience: { kind: "user", userId: STORYBOOK_USER_ID, reason: "addressee" },
     stale: null,
+    required: false,
     changeFingerprint: "fixture.other", closeModes: ["archive", "snooze"],
     project: null,
     workspace: null,

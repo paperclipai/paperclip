@@ -16,6 +16,7 @@ const fixture = vi.hoisted(() => ({
   byView: {} as Record<string, AttentionItem[]>,
   calls: [] as Array<Record<string, unknown>>,
   claim: vi.fn(async () => ({})),
+  close: vi.fn(async (..._args: unknown[]) => ({ until: null })),
 }));
 vi.mock("../hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: false, userId: fixture.userId }) }));
 vi.mock("../context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
@@ -27,6 +28,7 @@ vi.mock("../api/decisions", () => ({ decisionsApi: { list: async () => [] } }));
 vi.mock("../api/access", () => ({ accessApi: { listUserDirectory: async () => ({ users: [] }) } }));
 vi.mock("../api/attention", () => ({ attentionApi: {
   claim: fixture.claim,
+  close: fixture.close,
   list: async (_companyId: string, options: Record<string, unknown>) => {
     fixture.calls.push(options);
     const items = fixture.byView[String(options.view)] ?? [];
@@ -39,10 +41,11 @@ vi.mock("../components/DecisionQueueRail", () => ({ DecisionQueueRail: () => nul
 vi.mock("../components/DecisionDateChips", () => ({ DecisionDateChips: () => null }));
 vi.mock("../components/DecisionResolver", () => ({ DecisionResolver: () => null }));
 vi.mock("../components/AttentionQueueRow", () => ({
-  AttentionQueueRow: ({ item, onClaim, currentUserId }: { item: AttentionItem; onClaim?: (item: AttentionItem) => void; currentUserId?: string | null }) => (
+  AttentionQueueRow: ({ item, onClaim, onDismiss, currentUserId }: { item: AttentionItem; onClaim?: (item: AttentionItem) => void; onDismiss?: (item: AttentionItem) => void; currentUserId?: string | null }) => (
     <div data-row={item.id} data-viewer={currentUserId ?? ""}>
       {item.subject.title}
       {onClaim ? <button type="button" onClick={() => onClaim(item)}>Claim {item.id}</button> : null}
+      {onDismiss ? <button type="button" onClick={() => onDismiss(item)}>Archive {item.id}</button> : null}
     </div>
   ),
 }));
@@ -63,6 +66,7 @@ beforeEach(() => {
   fixture.userId = "scott";
   fixture.calls = [];
   fixture.claim.mockClear();
+  fixture.close.mockClear();
   fixture.byView = {
     mine: [card("mine-1", { kind: "user", userId: "scott", reason: "addressee" })],
     unassigned: [card("pool-1", { kind: "pool", userId: null, reason: "none" })],
@@ -116,6 +120,34 @@ describe("classic Decisions views", () => {
     await render();
     expect(client.getQueryCache().find({ queryKey: ["attention", "company", "dotta", "mine", "with-dismissed"], exact: false })).toBeTruthy();
     expect(client.getQueryCache().find({ queryKey: ["attention", "company", "scott", "mine", "with-dismissed"], exact: false })).toBeTruthy();
+  });
+
+  it("moves stale cards to a collapsed Stale group and withdraws them after a confirmation (PAP-749 task 2c)", async () => {
+    const stale = (id: string) => ({ ...card(id, { kind: "user", userId: "scott", reason: "addressee" }), stale: { reason: "aged" }, closeModes: ["withdraw", "archive", "snooze"] }) as unknown as AttentionItem;
+    fixture.byView = { mine: [card("fresh", { kind: "user", userId: "scott", reason: "addressee" }), stale("old-1"), stale("old-2")] };
+    await render();
+    const group = container.querySelector<HTMLElement>("[data-attention-stale-group]")!;
+    expect(group.textContent).toContain("Stale (2)");
+    expect(container.querySelector('[data-row="fresh"]')).not.toBeNull();
+    expect(container.querySelector('[data-row="old-1"]')).toBeNull();
+    await act(async () => group.querySelector<HTMLElement>("[aria-expanded]")!.click());
+    expect(group.querySelector('[data-row="old-1"]')).not.toBeNull();
+    const withdrawAll = [...group.querySelectorAll("button")].find((button) => button.textContent?.includes("Withdraw all stale"))!;
+    await act(async () => withdrawAll.click());
+    const confirm = [...document.querySelectorAll<HTMLButtonElement>("[data-attention-stale-withdraw-dialog] button")].find((button) => button.textContent === "Withdraw 2 requests")!;
+    await act(async () => confirm.click());
+    await flush();
+    expect(fixture.close.mock.calls.map((call) => [call[2], (call[3] as { mode: string }).mode])).toEqual([["old-1-interaction", "withdraw"], ["old-2-interaction", "withdraw"]]);
+  });
+
+  it("archives for me through the one close API (PAP-749 task 2c)", async () => {
+    fixture.byView = { mine: [{ ...card("mine-1", { kind: "user", userId: "scott", reason: "addressee" }), changeFingerprint: "fp.me", closeModes: ["archive", "snooze"] } as unknown as AttentionItem] };
+    await render();
+    const archive = [...container.querySelectorAll("button")].find((button) => button.textContent === "Archive mine-1")!;
+    await act(async () => archive.click());
+    await flush();
+    expect(fixture.close).toHaveBeenCalledWith("company", "issue_thread_interaction", "mine-1-interaction", { mode: "archive", reason: undefined, until: undefined, fingerprint: "fp.me" });
+    expect(container.querySelector('[data-row="mine-1"]')).toBeNull();
   });
 
   it("shows a Company empty state from the URL", async () => {

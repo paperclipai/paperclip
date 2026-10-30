@@ -49,6 +49,10 @@ export function replaceResolvedInteraction(
  * row and renders the existing {@link IssueThreadInteractionCard} inline, so
  * confirmations and questions are answerable in-row without leaving the queue
  * (converged PAP-12628). Reviews never reach here — they deep-link.
+ *
+ * There is no Cancel here: closing a request is the card's Close… menu
+ * ("Withdraw request"), which works for every interaction kind (PAP-749 plan
+ * §2, Rule 6). The task page keeps its own controls.
  */
 export function AttentionInteractionResolver({
   companyId,
@@ -120,12 +124,6 @@ export function AttentionInteractionResolver({
     onSuccess: invalidate,
   });
 
-  const cancelMutation = useMutation({
-    mutationFn: (input: { interactionId: string }) =>
-      issuesApi.cancelInteraction(issueId, input.interactionId),
-    onSuccess: invalidate,
-  });
-
   const verdictsMutation = useMutation({
     mutationFn: (input: {
       interactionId: string;
@@ -173,9 +171,6 @@ export function AttentionInteractionResolver({
       }
       onSubmitInteractionAnswers={(target: AskUserQuestionsInteraction, answers) =>
         respondMutation.mutateAsync({ interactionId: target.id, answers }).then(() => undefined)
-      }
-      onCancelInteraction={(target: AskUserQuestionsInteraction) =>
-        cancelMutation.mutateAsync({ interactionId: target.id }).then(() => undefined)
       }
       onSubmitInteractionVerdicts={(target: RequestItemVerdictsInteraction, verdicts) =>
         verdictsMutation.mutateAsync({ interactionId: target.id, verdicts }).then(() => undefined)

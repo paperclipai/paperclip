@@ -82,6 +82,7 @@ function item(
     stale: overrides.stale ?? null,
     changeFingerprint: overrides.changeFingerprint ?? "fixture.other",
     closeModes: overrides.closeModes ?? ["archive", "snooze"],
+    required: overrides.required ?? false,
     expiresAt: overrides.expiresAt ?? null,
     ruleKey: overrides.ruleKey ?? null,
     originAgentName: overrides.originAgentName ?? null,

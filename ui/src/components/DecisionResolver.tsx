@@ -18,7 +18,7 @@ interface DecisionResolverProps {
   initialDecision?: DecisionOutcome;
   /** Fresh, authorized terminal record owned by an enclosing detail query. */
   recordedDecision?: DecisionOutcome;
-  /** Called after a decide/dismiss so the parent can refresh the feed row. */
+  /** Called after a decide so the parent can refresh the feed row. */
   onResolved?: () => void;
 }
 
@@ -38,8 +38,8 @@ export function signedCancelTreePreviewIds(targetIssueId: string, snapshot: { de
 /**
  * Container for a Decisions-v1 decision surfaced in the attention feed. Fetches
  * the full decision (`get`) plus the shared open-list (for `targetChanged`),
- * resolves referenced issue ids + the cancel-tree preview, owns the decide /
- * dismiss mutations, and invalidates the attention feed + target-issue keys on
+ * resolves referenced issue ids + the cancel-tree preview, owns the decide
+ * mutation, and invalidates the attention feed + target-issue keys on
  * success — same conventions as {@link AttentionInteractionResolver}.
  */
 export function DecisionResolver({ companyId, decisionId, originIssue, agentMap, initialDecision, recordedDecision, onResolved }: DecisionResolverProps) {
@@ -157,14 +157,6 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
     },
   });
 
-  const dismissMutation = useMutation({
-    mutationFn: (reason: string | undefined) => decisionsApi.dismiss(decisionId, reason),
-    onSuccess: (data) => {
-      queryClient.setQueryData(queryKeys.decisions.detail(decisionId), data);
-      invalidate();
-    },
-  });
-
   if (!recordedDecision && detail.isLoading) {
     return (
       <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
@@ -181,11 +173,8 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
     );
   }
 
-  const busy = decideMutation.isPending || dismissMutation.isPending;
-  const errorMessage =
-    (decideMutation.error instanceof Error && decideMutation.error.message) ||
-    (dismissMutation.error instanceof Error && dismissMutation.error.message) ||
-    null;
+  const busy = decideMutation.isPending;
+  const errorMessage = (decideMutation.error instanceof Error && decideMutation.error.message) || null;
 
   return (
     <DecisionCard
@@ -209,7 +198,6 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
       busy={busy}
       errorMessage={errorMessage}
       onDecide={(optionId, inputValues) => decideMutation.mutate({ optionId, inputValues, idempotencyKey: crypto.randomUUID() })}
-      onDismiss={(reason) => dismissMutation.mutate(reason)}
     />
   );
 }
