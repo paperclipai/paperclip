@@ -93,10 +93,12 @@ export async function exportChatAllure({ root, output, expected, selected }) {
   if (!outputStat.isDirectory() || outputStat.isSymbolicLink() || (process.getuid && outputStat.uid !== process.getuid()) || (await readdir(output)).length !== 0) fail();
   const status = result.status === 'passed' && result.cleanup === 'passed' ? 'passed' : 'failed';
   const attachments = [];
+  const attachmentMetadata = [];
   for (const shot of result.screenshots) {
     const source = `${randomUUID()}-attachment.png`;
     await writeFile(path.join(output, source), retained.get(`evidence/${executionId}/attempt-1/${shot.file}`), { flag: 'wx', mode: 0o600 });
     attachments.push({ name: 'Synthetic task and source conversation', source, type: 'image/png' });
+    attachmentMetadata.push({ name: 'Synthetic task and source conversation', contentType: 'image/png', contentLength: retained.get(`evidence/${executionId}/attempt-1/${shot.file}`).length });
   }
   const projection = { campaignId: binding.campaignId, executionId, runId: expected.runId, attempt: 1,
     workflowSha: expected.workflowSha, sourceSha: expected.targetSha, status: result.status, cleanup: result.cleanup,
@@ -107,11 +109,14 @@ export async function exportChatAllure({ root, output, expected, selected }) {
     checks: result.matcherResults.map(check => ({ path: check.matcher.path, passed: check.passed })),
     note: 'Setup usage and AWS billing are not qualified by this result; missing accounting remains unknown.' };
   const source = `${randomUUID()}-attachment.json`;
-  await writeFile(path.join(output, source), JSON.stringify(projection, null, 2), { flag: 'wx', mode: 0o600 });
+  const projectionBytes = Buffer.from(JSON.stringify(projection, null, 2));
+  await writeFile(path.join(output, source), projectionBytes, { flag: 'wx', mode: 0o600 });
+  attachmentMetadata.push({ name: 'Execution provenance and checks', contentType: 'application/json', contentLength: projectionBytes.length });
   attachments.push({ name: 'Execution provenance and checks', source, type: 'application/json' });
   const normalizedSource = `${randomUUID()}-attachment.json`;
   await writeFile(path.join(output, normalizedSource), retained.get('normalized-results.json'), { flag: 'wx', mode: 0o600 });
   attachments.push({ name: 'Sanitized Product E2E record and accounting', source: normalizedSource, type: 'application/json' });
+  attachmentMetadata.push({ name: 'Sanitized Product E2E record and accounting', contentType: 'application/json', contentLength: retained.get('normalized-results.json').length });
   const value = { uuid: randomUUID(), name: 'Create a task backlog through chat', fullName: selected.fullName,
     testCaseId: hash(`${JSON.stringify(selected.fullName)}\n`),
     historyId: hash(JSON.stringify([selected.fullName, result.profileId, result.model, result.environmentId])), status, stage: 'finished',
@@ -125,5 +130,5 @@ export async function exportChatAllure({ root, output, expected, selected }) {
     steps: result.matcherResults.map(check => ({ name: check.matcher.path, status: check.passed ? 'passed' : 'failed', stage: 'finished' })), attachments };
   for (const [key, time] of [['start', result.startedAt], ['stop', result.finishedAt]]) if (Number.isFinite(Date.parse(time))) value[key] = Date.parse(time);
   await writeFile(path.join(output, `${value.uuid}-result.json`), JSON.stringify(value), { flag: 'wx', mode: 0o600 });
-  return { status, caseId: selected.caseId, campaignId: binding.campaignId, count: 1 };
+  return { status, cleanup: result.cleanup, caseId: selected.caseId, campaignId: binding.campaignId, count: 1, attachmentMetadata };
 }

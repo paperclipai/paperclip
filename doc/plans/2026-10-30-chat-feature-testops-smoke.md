@@ -70,3 +70,10 @@ provider-free helper controls pass. Actual registration IDs, tenant API behavior
 provider execution and the TestOps result remain unqualified. Dedicated plan,
 AWS evaluation and final result links remain pending. Source checks alone do not
 satisfy the finish line.
+
+The final source consolidation adds actual admission-wrapper filesystem coverage,
+the existing reviewed lock normalization with frozen installs and a matched
+build/worker receipt, plus same-job server-result readback after Allure upload.
+Focused checks cover 41 admission controls, 31 lock/owner/workflow controls and
+44 API/reporter controls; unchanged profile/oracle evidence is reused. This is
+source verification. The plan and actual model result are still not created.

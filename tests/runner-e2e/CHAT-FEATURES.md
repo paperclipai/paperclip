@@ -213,3 +213,20 @@ integration. The launcher verifies its project, type and enabled state, then bin
 only the newly registered public job to it. It never changes integration settings
 or credentials. Since the job response does not expose that association, only the
 real TestOps-to-GitHub dispatch can qualify it.
+
+After `allurectl watch` finishes, the same protected reporter checks the actual
+TestOps job-run, launch, selected case, result source/status and attachment
+metadata. Processing reads are bounded to 12 polls, five-second gaps and a
+120-second processing deadline. Unknown or missing results remain unverified.
+The check downloads no attachment content and claims no server-side attachment
+byte hash. Its closed receipt is retained separately. An upload success alone
+is not a passing feature result, and verifying an original failure cannot turn
+that failure into a pass.
+
+Build and worker installs use the existing reviewed report-lock policy. Only its
+committed input or output lock is accepted; its authenticated correction is the
+only allowed normalization. Dependency manifests, patch inputs and policy must
+remain unchanged. Installs are frozen with lifecycle scripts disabled. The
+credential-free build rechecks that boundary before packaging, and the worker
+matches the source/lock receipt before installing. Arbitrary resolver drift is
+rejected before provider access.

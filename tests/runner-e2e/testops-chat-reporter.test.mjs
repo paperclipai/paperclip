@@ -55,6 +55,28 @@ test('actual upload facade copies authenticated workspace bytes to owned temp be
     files: [...files].map(([name, bytes]) => ({ path: name, sha256: hash(bytes), bytes: bytes.length })) }));
   assert.equal(await reporter('upload', root, { ...f.env, RUNNER_TEMP: temporary }), 0);
   assert.deepEqual(await readFile(path.join(temporary, 'chat-testops-authenticated-selection.json')), await readFile(f.file));
+  const exported = JSON.parse(await readFile(path.join(temporary, 'chat-testops-upload-state', 'export.json')));
+  const jobRun = { id: 9, job: { id: 7, type: 'github' }, launchId: 10, stage: 'finished', url: 'https://github.com/paperclipai/paperclip/actions/runs/123' };
+  const fetchImpl = async (url, options) => {
+    const parsed = new URL(url), route = parsed.pathname;
+    let value;
+    if (route === '/api/uaa/oauth/token') { assert.equal(options.method, 'POST'); value = { access_token: 'MOCK_ACCESS_TOKEN' }; }
+    else {
+      assert.equal(options.method, 'GET');
+      if (route === '/api/jobrun/9') value = jobRun;
+      else if (route === '/api/launch/10') value = { id: 10, projectId: 1 };
+      else if (route === '/api/testresult') value = { content: [{ id: 45, testCaseId: 91 }], totalElements: 1, totalPages: 1 };
+      else if (route === '/api/testresult/45') value = { id: 45, projectId: 1, launchId: 10, testCaseId: 91, fullName, jobRun, status: 'passed',
+        links: [{ url: jobRun.url }, { url: `https://github.com/paperclipai/paperclip/commit/${context.GITHUB_SHA}` }] };
+      else if (route === '/api/testresult/attachment') value = { content: exported.attachmentMetadata.map((row, i) => ({ ...row, id: i + 1 })), totalElements: exported.attachmentMetadata.length, totalPages: 1 };
+      else assert.fail(route);
+    }
+    return { ok: true, status: 200, json: async () => value, text: async () => JSON.stringify(value) };
+  };
+  assert.equal(await reporter('verify-upload', root, { ...f.env, RUNNER_TEMP: temporary, ALLURE_TOKEN: 'MOCK_API_TOKEN' }, fetchImpl), 0);
+  const verified = JSON.parse(await readFile(path.join(temporary, 'chat-testops-verify-upload-state', 'verification.json')));
+  assert.equal(verified.verification, 'VERIFIED'); assert.equal(verified.caseId, 91); assert.equal(verified.status, 'passed');
+
 });
 
 test('actual launch-plan facade performs metadata-only plan launch once and exits without waiting for child', async t => {

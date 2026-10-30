@@ -312,3 +312,81 @@ test('new job receives only the reviewed enabled GitHub integration; disabled/fo
     assert.equal(server.calls.some(row => row.method), false);
   }
 });
+
+const uploadContext = { GITHUB_REPOSITORY: 'paperclipai/paperclip', GITHUB_REF: 'refs/heads/master', GITHUB_EVENT_NAME: 'workflow_dispatch',
+  GITHUB_RUN_ATTEMPT: '1', GITHUB_SHA: 'a'.repeat(40), GITHUB_RUN_ID: '123', ALLURE_JOB_RUN_ID: '9',
+  GITHUB_WORKFLOW_REF: 'paperclipai/paperclip/.github/workflows/chat-feature-testops.yml@refs/heads/master' };
+const uploadSelection = { runId: '123', attempt: '1', workflowSha: 'a'.repeat(40), targetSha: 'a'.repeat(40), allureJobRunId: '9',
+  executionId: 'chat-features.runner-opencode.local.create-backlog', canonicalScenario: 'tasks.create-backlog', projectId: 1,
+  planId: 8, jobId: 7, caseId: 91, fullName, launchId: 10 };
+const uploadReceipt = { status: 'passed', cleanup: 'passed', caseId: 91, campaignId: 'gha-123-1', count: 1,
+  attachmentMetadata: [{ name: 'Synthetic task and source conversation', contentType: 'image/png', contentLength: 400 },
+    { name: 'Execution provenance and checks', contentType: 'application/json', contentLength: 300 },
+    { name: 'Sanitized Product E2E record and accounting', contentType: 'application/json', contentLength: 800 }] };
+const uploadRun = { id: 9, job: { id: 7, type: 'github' }, launchId: 10, url: 'https://github.com/paperclipai/paperclip/actions/runs/123', stage: 'finished' };
+function uploadApi(change = {}, absent = 0) {
+  let polls = 0;
+  return async (route, method) => {
+    assert.equal(method, 'GET');
+    if (route === '/api/jobrun/9') return uploadRun;
+    if (route === '/api/launch/10') return { id: 10, projectId: 1 };
+    if (route.startsWith('/api/testresult?')) { polls++; return { content: polls <= absent ? [] : [{ id: 45, testCaseId: 91 }], totalElements: polls <= absent ? 0 : 1, totalPages: polls <= absent ? 0 : 1 }; }
+    if (route === '/api/testresult/45') return { id: 45, projectId: 1, launchId: 10, testCaseId: 91, fullName, jobRun: uploadRun, status: 'passed',
+      links: [{ url: uploadRun.url }, { url: `https://github.com/paperclipai/paperclip/commit/${'a'.repeat(40)}` }],
+      get trace() { assert.fail('must not inspect trace'); }, ...change };
+    if (route.startsWith('/api/testresult/attachment?')) return { content: uploadReceipt.attachmentMetadata.map((row, i) => ({ ...row, id: i + 1, missed: false, fromTestCase: false })), totalElements: 3, totalPages: 1 };
+    assert.fail(route);
+  };
+}
+
+test('readback verifies exact current launch/case/source/status and safe attachment metadata after processing lag', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  let waits = 0;
+  const result = await verifyChatUpload(uploadApi({}, 1), uploadContext, uploadSelection, uploadReceipt, { wait: async () => { waits++; }, now: () => 0 });
+  assert.equal(waits, 1); assert.equal(result.verification, 'VERIFIED'); assert.equal(result.resultId, 45);
+  assert.equal(result.status, 'passed'); assert.deepEqual(result.attachments, uploadReceipt.attachmentMetadata);
+  assert.ok(!JSON.stringify(result).includes('trace'));
+});
+
+test('readback rejects wrong launch, case, current jobrun, source and contradictory result status', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  for (const change of [{ launchId: 11 }, { testCaseId: 92 }, { jobRun: { ...uploadRun, id: 11 } }, { links: [] }, { status: 'failed' }]) {
+    await assert.rejects(verifyChatUpload(uploadApi(change), uploadContext, uploadSelection, uploadReceipt), /upload_mismatch/);
+  }
+});
+
+test('readback missing result or screenshot metadata is bounded unverified, never a fabricated pass', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  let waits = 0;
+  await assert.rejects(verifyChatUpload(uploadApi({}, 100), uploadContext, uploadSelection, uploadReceipt,
+    { wait: async () => { waits++; }, now: () => 0 }), /upload_unverified/);
+  assert.equal(waits, 11);
+  const base = uploadApi();
+  await assert.rejects(verifyChatUpload(async (route, ...args) => route.startsWith('/api/testresult/attachment?')
+    ? { content: [], totalElements: 0, totalPages: 0 } : base(route, ...args), uploadContext, uploadSelection, uploadReceipt,
+  { wait: async () => {}, now: () => 0 }), /upload_unverified/);
+});
+
+test('verified failed Product E2E remains failed and cleanup cannot be promoted', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  const result = await verifyChatUpload(uploadApi({ status: 'failed' }), uploadContext, uploadSelection, { ...uploadReceipt, status: 'failed', cleanup: 'failed' });
+  assert.equal(result.status, 'failed'); assert.equal(result.cleanup, 'failed');
+  await assert.rejects(verifyChatUpload(uploadApi(), uploadContext, uploadSelection, { ...uploadReceipt, cleanup: 'failed' }), /upload_mismatch/);
+});
+
+
+test('readback stops immediately after a late GET and gives each client only the remaining deadline', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  let time = 0, calls = 0;
+  await assert.rejects(verifyChatUpload(async (route, method, body, timeout) => {
+    calls++; assert.equal(route, '/api/jobrun/9'); assert.equal(timeout, 30_000); time = 120_001; return uploadRun;
+  }, uploadContext, uploadSelection, uploadReceipt, { now: () => time }), /upload_unverified/);
+  assert.equal(calls, 1);
+  time = 0; calls = 0;
+  await assert.rejects(verifyChatUpload(async (route, method, body, timeout) => {
+    calls++;
+    if (calls === 1) { assert.equal(timeout, 30_000); time = 119_990; return uploadRun; }
+    assert.equal(route, '/api/launch/10'); assert.equal(timeout, 10); time = 120_001; return { id: 10, projectId: 1 };
+  }, uploadContext, uploadSelection, uploadReceipt, { now: () => time }), /upload_unverified/);
+  assert.equal(calls, 2);
+});

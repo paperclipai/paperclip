@@ -17,9 +17,9 @@ const diagnosticCodes = new Set(['untrusted_chat_testops_context', 'testops_toke
   'testops_created_case_identity_invalid', 'testops_created_plan_identity_invalid', 'testops_plan_scope_mismatch',
   'testops_operation_invalid', 'testops_output_invalid', 'untrusted_public_testops_context', 'chat_testops_identity_missing',
   'chat_testops_case_mismatch', 'chat_testops_plan_mismatch', 'chat_testops_plan_job_mismatch', 'chat_testops_job_mismatch',
-  'chat_testops_jobrun_mismatch', 'chat_testops_launch_mismatch', 'chat_testops_selection_mismatch', 'chat_testops_parameter_mismatch', 'chat_testops_nonce_invalid', 'chat_testops_nonce_conflict', 'chat_testops_catalog_incomplete', 'chat_testops_launch_admission', 'chat_testops_github_http', 'chat_testops_integration_mismatch']);
+  'chat_testops_jobrun_mismatch', 'chat_testops_launch_mismatch', 'chat_testops_selection_mismatch', 'chat_testops_parameter_mismatch', 'chat_testops_nonce_invalid', 'chat_testops_nonce_conflict', 'chat_testops_catalog_incomplete', 'chat_testops_launch_admission', 'chat_testops_github_http', 'chat_testops_integration_mismatch', 'chat_testops_upload_mismatch', 'chat_testops_upload_unverified']);
 export function failureProjection(error, stage) {
-  const stages = ['context', 'output_admission', 'authentication', 'metadata_inspection', 'plan_bootstrap', 'selection_validation', 'launch_admission', 'launch_preflight', 'plan_launch', 'bootstrap_job_metadata', 'result_export', 'receipt'];
+  const stages = ['context', 'output_admission', 'authentication', 'metadata_inspection', 'plan_bootstrap', 'selection_validation', 'launch_admission', 'launch_preflight', 'plan_launch', 'bootstrap_job_metadata', 'result_export', 'upload_verification', 'receipt'];
   return { stage: stages.includes(stage) ? stage : 'unknown',
     code: error instanceof SetupFailure && diagnosticCodes.has(error.code) ? error.code : 'unknown_failure',
     httpStatus: error instanceof SetupFailure && Number.isInteger(error.status) && error.status >= 100 && error.status < 600 ? error.status : null };
@@ -35,11 +35,12 @@ export async function testopsClient(token, fetchImpl = fetch) {
   if (!auth.ok) fail(`testops_auth_http_${auth.status}`);
   const value = await auth.json();
   if (typeof value.access_token !== 'string' || !value.access_token) fail('testops_auth_invalid');
-  return async (route, method = 'GET', body) => {
+  return async (route, method = 'GET', body, timeoutMs = 30_000) => {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) fail('chat_testops_upload_unverified');
     if (!route.startsWith('/api/') || route.includes('://')) fail('testops_route_invalid');
     const response = await fetchImpl(`${endpoint}${route}`, { method, redirect: 'error',
       headers: { Accept: 'application/json', Authorization: `Bearer ${value.access_token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-      ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(30_000) });
+      ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) fail(`testops_api_http_${response.status}`);
     if (response.status === 204) return null;
     const text = await response.text();
@@ -271,4 +272,71 @@ export async function launchChatPlan(api, env, markOnce, admission) {
   return { schema: 'paperclip.chat-feature-testops-launch/v1', ...source, nonce, projectId: 1,
     planId: known.planId, jobId: known.jobId, caseId: known.caseId, launchId: launched.id,
     status: 'REQUESTED', integrationId: known.integrationId, integrationBindingRequested: true, integrationAssociationReadback: 'not_exposed_by_job_dto', executionId, canonicalScenario: scenario, actualRunId: null, actualResult: null };
+}
+
+
+export async function verifyChatUpload(api, env, selected, exported, { wait = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now } = {}) {
+  const context = publicContext(env);
+  if (selected.runId !== context.runId || selected.attempt !== '1' || selected.workflowSha !== context.workflowSha
+    || selected.targetSha !== context.targetSha || selected.allureJobRunId !== env.ALLURE_JOB_RUN_ID
+    || selected.executionId !== executionId || selected.canonicalScenario !== scenario || selected.projectId !== 1
+    || !aliases.includes(selected.fullName) || ['planId', 'jobId', 'caseId', 'launchId'].some(key => !id(selected[key]))
+    || exported.caseId !== selected.caseId || exported.campaignId !== `gha-${context.runId}-1` || exported.count !== 1
+    || !['passed', 'failed'].includes(exported.status) || !['passed', 'failed', 'not_started'].includes(exported.cleanup)
+    || exported.status === 'passed' && exported.cleanup !== 'passed' || !Array.isArray(exported.attachmentMetadata)
+    || exported.attachmentMetadata.length < 2 || exported.attachmentMetadata.length > 10) fail('chat_testops_upload_mismatch');
+  const allowedAttachments = new Map([['Synthetic task and source conversation', 'image/png'],
+    ['Execution provenance and checks', 'application/json'], ['Sanitized Product E2E record and accounting', 'application/json']]);
+  if (exported.attachmentMetadata.some(row => allowedAttachments.get(row.name) !== row.contentType
+    || !Number.isSafeInteger(row.contentLength) || row.contentLength <= 0 || row.contentLength > 12 * 1024 * 1024)
+    || exported.attachmentMetadata.filter(row => row.name === 'Execution provenance and checks').length !== 1
+    || exported.attachmentMetadata.filter(row => row.name === 'Sanitized Product E2E record and accounting').length !== 1
+    || exported.status === 'passed' && !exported.attachmentMetadata.some(row => row.contentType === 'image/png')) fail('chat_testops_upload_mismatch');
+  const signature = rows => rows.map(row => JSON.stringify([row.name, row.contentType, row.contentLength])).sort();
+  const runUrl = `https://github.com/paperclipai/paperclip/actions/runs/${context.runId}`;
+  const sourceUrl = `https://github.com/paperclipai/paperclip/commit/${context.targetSha}`;
+  const deadline = now() + 120_000;
+  const get = async route => {
+    const remaining = deadline - now();
+    if (remaining < 1) fail('chat_testops_upload_unverified');
+    const value = await api(route, 'GET', undefined, Math.min(30_000, Math.floor(remaining)));
+    if (now() >= deadline) fail('chat_testops_upload_unverified');
+    return value;
+  };
+  for (let poll = 0; poll < 12 && now() < deadline; poll++) {
+    const run = await get(`/api/jobrun/${selected.allureJobRunId}`);
+    if (run.id !== Number(selected.allureJobRunId) || run.job?.id !== selected.jobId || run.job?.type !== 'github'
+      || run.launchId !== selected.launchId || run.url !== runUrl || !['in_progress', 'finished'].includes(run.stage)) fail('chat_testops_jobrun_mismatch');
+    const launch = await get(`/api/launch/${selected.launchId}`);
+    if (launch.id !== selected.launchId || launch.projectId !== 1) fail('chat_testops_launch_mismatch');
+    const listed = await get(`/api/testresult?${new URLSearchParams({ launchId: String(selected.launchId), page: '0', size: '100' })}`);
+    if (!Array.isArray(listed?.content) || listed.content.length > 1 || !Number.isSafeInteger(listed.totalElements)
+      || listed.totalElements !== listed.content.length || !Number.isSafeInteger(listed.totalPages) || listed.totalPages < 0 || listed.totalPages > 1) fail('chat_testops_upload_mismatch');
+    if (listed.content.length) {
+      const row = listed.content[0];
+      if (!id(row.id) || row.testCaseId !== selected.caseId) fail('chat_testops_upload_mismatch');
+      const result = await get(`/api/testresult/${row.id}`);
+      if (result.id !== row.id || result.projectId !== 1 || result.launchId !== selected.launchId || result.testCaseId !== selected.caseId
+        || result.fullName !== selected.fullName || result.jobRun?.id !== Number(selected.allureJobRunId)
+        || result.jobRun?.job?.id !== selected.jobId || result.jobRun?.launchId !== selected.launchId || result.jobRun?.url !== runUrl
+        || !Array.isArray(result.links) || !result.links.some(link => link.url === runUrl)
+        || !result.links.some(link => link.url === sourceUrl)) fail('chat_testops_upload_mismatch');
+      if (!['passed', 'failed', 'broken', 'skipped', 'unknown'].includes(result.status)) fail('chat_testops_upload_mismatch');
+      if (result.status !== 'unknown' && result.status !== exported.status) fail('chat_testops_upload_mismatch');
+      const attached = await get(`/api/testresult/attachment?${new URLSearchParams({ testResultId: String(row.id), page: '0', size: '100' })}`);
+      if (!Array.isArray(attached?.content) || attached.content.length > 10 || !Number.isSafeInteger(attached.totalElements)
+        || attached.totalElements !== attached.content.length || !Number.isSafeInteger(attached.totalPages) || attached.totalPages < 0 || attached.totalPages > 1
+        || new Set(attached.content.map(value => value.id)).size !== attached.content.length
+        || attached.content.some(value => !id(value.id) || value.missed === true || value.fromTestCase === true)) fail('chat_testops_upload_mismatch');
+      if (now() < deadline && result.status === exported.status && same(signature(attached.content), signature(exported.attachmentMetadata))) {
+        return { schema: 'paperclip.chat-feature-testops-upload-verification/v1', ...context, projectId: 1, planId: selected.planId,
+          jobId: selected.jobId, allureJobRunId: selected.allureJobRunId, launchId: selected.launchId, caseId: selected.caseId,
+          resultId: result.id, executionId, status: result.status, cleanup: exported.cleanup, verification: 'VERIFIED',
+          attachments: exported.attachmentMetadata.map(value => ({ ...value })),
+          launchUrl: `${endpoint}/launch/${selected.launchId}`, resultUrl: `${endpoint}/testresult/${result.id}` };
+      }
+    }
+    if (poll < 11 && now() + 5000 < deadline) await wait(5000);
+  }
+  fail('chat_testops_upload_unverified');
 }

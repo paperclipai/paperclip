@@ -41,18 +41,19 @@ export async function reporter(command, argument, env = process.env, fetchImpl =
     await verifySelectionFile(argument, env);
     return 0;
   }
-  if (!['bootstrap', 'launch-plan', 'selection', 'upload'].includes(command) || !env.RUNNER_TEMP) fail();
+  if (!['bootstrap', 'launch-plan', 'selection', 'upload', 'verify-upload'].includes(command) || !env.RUNNER_TEMP) fail();
   const stage = command === 'selection' ? 'validate-selection' : command === 'upload' ? 'export' : command;
   const stateRoot = path.join(env.RUNNER_TEMP, `chat-testops-${command}-state`);
   const selectionPath = path.join(env.GITHUB_WORKSPACE ?? process.cwd(), 'chat-testops-selection', 'testops-selection.json');
   let copiedSelectionPath = selectionPath;
-  if (command === 'upload') {
+  if (command === 'upload' || command === 'verify-upload') {
     const { bytes } = await readVerifiedSelection(selectionPath, env);
     copiedSelectionPath = path.join(env.RUNNER_TEMP, 'chat-testops-authenticated-selection.json');
-    await writeFile(copiedSelectionPath, bytes, { flag: 'wx', mode: 0o600 });
+    if (command === 'upload') await writeFile(copiedSelectionPath, bytes, { flag: 'wx', mode: 0o600 });
+    else if (!(await readFile(copiedSelectionPath)).equals(bytes)) fail();
   }
   const result = await run({ ...env, CHAT_TESTOPS_OPERATION: stage, CHAT_TESTOPS_STATE_ROOT: stateRoot,
-    ...(command === 'upload' ? { CHAT_TESTOPS_EXPORT_ROOT: path.resolve(argument), CHAT_TESTOPS_SELECTION: copiedSelectionPath,
+    ...(['upload', 'verify-upload'].includes(command) ? { CHAT_TESTOPS_EXPORT_ROOT: path.resolve(argument), CHAT_TESTOPS_SELECTION: copiedSelectionPath,
       ALLURE_RESULTS: env.ALLURE_RESULTS ?? path.join(env.RUNNER_TEMP, 'chat-testops-allure-results') } : {}) }, fetchImpl);
   if (command === 'selection' && result === 0) {
     const bytes = await readFile(path.join(stateRoot, 'selection.json'));

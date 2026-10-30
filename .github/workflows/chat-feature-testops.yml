@@ -177,9 +177,9 @@ jobs:
           NPM_CONFIG_UPDATE_NOTIFIER: 'false'
         with:
           version: 9.15.4
-      - name: Resolve and install the shipped package graph without lifecycle scripts
+      - name: Install only the source-reviewed graph without lifecycle scripts
         run: |
-          pnpm install --lockfile-only --ignore-scripts
+          node tests/runner-e2e/testops-chat-lock.ts > chat-testops-lock.json
           pnpm install --frozen-lockfile --ignore-scripts
       - name: Build the existing TypeScript and native runner owners
         run: |
@@ -189,7 +189,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          tar -czf chat-testops-build.tar.gz pnpm-lock.yaml packages/paperclip-eval-kernel/dist packages/paperclip-runner/dist packages/paperclip-runner/runner/target/debug/paperclip-runnerd packages/paperclip-runner/runner/target/debug/conformance-tracer packages/paperclip-runner/runner/target/debug/fake-harness packages/paperclip-runner/runner/target/debug/fake-codex-app-server packages/paperclip-runner/runner/target/debug/fake-acpx-sidecar
+          node tests/runner-e2e/testops-chat-lock.ts > chat-testops-lock.json
+          tar -czf chat-testops-build.tar.gz chat-testops-lock.json pnpm-lock.yaml packages/paperclip-eval-kernel/dist packages/paperclip-runner/dist packages/paperclip-runner/runner/target/debug/paperclip-runnerd packages/paperclip-runner/runner/target/debug/conformance-tracer packages/paperclip-runner/runner/target/debug/fake-harness packages/paperclip-runner/runner/target/debug/fake-codex-app-server packages/paperclip-runner/runner/target/debug/fake-acpx-sidecar
           sha256sum chat-testops-build.tar.gz > chat-testops-build.tar.gz.sha256
       - name: Retain credential-free immutable outputs
         id: bundle
@@ -252,6 +253,8 @@ jobs:
           (cd chat-testops-build && sha256sum -c chat-testops-build.tar.gz.sha256)
           tar -xzf chat-testops-build/chat-testops-build.tar.gz -C "$GITHUB_WORKSPACE"
           node tests/runner-e2e/testops-chat-reporter.mjs verify-selection chat-testops-selection/testops-selection.json
+          node tests/runner-e2e/testops-chat-lock.ts > chat-testops-worker-lock.json
+          cmp chat-testops-lock.json chat-testops-worker-lock.json
           cp pnpm-lock.yaml .testops-trusted/pnpm-lock.yaml
           pnpm install --frozen-lockfile --ignore-scripts
           (cd .testops-trusted && pnpm install --frozen-lockfile --ignore-scripts --store-dir "$RUNNER_TEMP/chat-retention-store")
@@ -419,7 +422,8 @@ jobs:
           path: chat-testops-selection
       - *allure
       - name: Verify and upload only the bound safe case outcome
-        env:
+        id: allure_upload
+        env: &testops_reporter
           ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
           ALLURE_ENDPOINT: https://paperclip.testops.cloud
           ALLURE_PROJECT_ID: '1'
@@ -427,3 +431,18 @@ jobs:
           EXPECTED_SELECTION_SHA256: ${{ needs.select.outputs.sha256 }}
           ALLURE_RESULTS: ${{ runner.temp }}/chat-testops-allure-results
         run: allurectl watch -- node tests/runner-e2e/testops-chat-reporter.mjs upload runner-e2e-testops
+      - name: Verify the actual TestOps result after upload processing
+        id: verify_upload
+        if: always() && !cancelled() && (steps.allure_upload.outcome == 'success' || steps.allure_upload.outcome == 'failure')
+        env: *testops_reporter
+        run: node tests/runner-e2e/testops-chat-reporter.mjs verify-upload runner-e2e-testops
+      - name: Retain only closed actual TestOps verification metadata
+        if: always() && !cancelled() && (steps.verify_upload.outcome == 'success' || steps.verify_upload.outcome == 'failure')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: chat-testops-verification-${{ github.run_id }}-1
+          path: |
+            ${{ runner.temp }}/chat-testops-verify-upload-state/verification.json
+            ${{ runner.temp }}/chat-testops-verify-upload-state/failure.json
+          retention-days: 30
+          if-no-files-found: error

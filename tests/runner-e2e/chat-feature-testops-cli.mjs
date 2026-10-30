@@ -1,14 +1,14 @@
 import { lstat, mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { publicContext, testopsClient, inspectChatMetadata, ensureChatPlan, validateChatSelection, bootstrapJobMetadata, launchChatPlan, admitLaunchPlan, failureProjection } from './chat-feature-testops-api.mjs';
-import { exportChatAllure, ExportFailure } from './chat-feature-testops-results.mjs';
+import { publicContext, testopsClient, inspectChatMetadata, ensureChatPlan, validateChatSelection, bootstrapJobMetadata, launchChatPlan, admitLaunchPlan, verifyChatUpload, failureProjection } from './chat-feature-testops-api.mjs';
+import { exportChatAllure, readBoundChatExport, ExportFailure } from './chat-feature-testops-results.mjs';
 
 export async function run(env = process.env, fetchImpl = fetch) {
   let stage = 'context', stateRoot;
   try {
     const expected = publicContext(env), operation = env.CHAT_TESTOPS_OPERATION;
-    if (!['bootstrap', 'launch-plan', 'validate-selection', 'export'].includes(operation)) throw new Error('unknown_operation');
+    if (!['bootstrap', 'launch-plan', 'validate-selection', 'export', 'verify-upload'].includes(operation)) throw new Error('unknown_operation');
     if (operation === 'bootstrap' || operation === 'launch-plan') {
       const eventPath = env.GITHUB_EVENT_PATH;
       if (!eventPath) throw new Error('bootstrap_original_event_missing');
@@ -23,15 +23,31 @@ export async function run(env = process.env, fetchImpl = fetch) {
       || path.dirname(path.resolve(requested)) !== path.resolve(env.RUNNER_TEMP)) throw new Error('invalid_output');
     await mkdir(requested, { mode: 0o700 }); stateRoot = requested;
     let result;
-    if (operation === 'export') {
+    if (operation === 'export' || operation === 'verify-upload') {
       stage = 'result_export';
       const selectionPath = env.CHAT_TESTOPS_SELECTION;
       if (!selectionPath || !path.isAbsolute(selectionPath) || !selectionPath.startsWith(`${path.resolve(env.RUNNER_TEMP)}${path.sep}`)) throw new Error('invalid_selection_path');
       const stat = await lstat(selectionPath);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16_384) throw new Error('invalid_selection_file');
       const selected = JSON.parse(await readFile(selectionPath, 'utf8'));
-      result = await exportChatAllure({ root: env.CHAT_TESTOPS_EXPORT_ROOT, output: env.ALLURE_RESULTS, expected, selected });
-      await writeFile(path.join(stateRoot, 'export.json'), JSON.stringify(result, null, 2), { flag: 'wx', mode: 0o600 });
+      if (operation === 'verify-upload') {
+        stage = 'upload_verification';
+        const receiptRoot = path.join(env.RUNNER_TEMP, 'chat-testops-upload-state');
+        const rootStat = await lstat(receiptRoot), file = path.join(receiptRoot, 'export.json');
+        const receiptStat = await lstat(file);
+        if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || !receiptStat.isFile() || receiptStat.isSymbolicLink()
+          || receiptStat.nlink !== 1 || receiptStat.size > 16_384) throw new Error('invalid_export_receipt');
+        const exported = JSON.parse(await readFile(file, 'utf8'));
+        const bound = await readBoundChatExport(env.CHAT_TESTOPS_EXPORT_ROOT, expected);
+        if (exported.status !== (bound.result.status === 'passed' && bound.result.cleanup === 'passed' ? 'passed' : 'failed')
+          || exported.cleanup !== bound.result.cleanup) throw new Error('export_verdict_mismatch');
+        const api = await testopsClient(env.ALLURE_TOKEN, fetchImpl);
+        result = await verifyChatUpload(api, env, selected, exported);
+        await writeFile(path.join(stateRoot, 'verification.json'), JSON.stringify(result, null, 2), { flag: 'wx', mode: 0o600 });
+      } else {
+        result = await exportChatAllure({ root: env.CHAT_TESTOPS_EXPORT_ROOT, output: env.ALLURE_RESULTS, expected, selected });
+        await writeFile(path.join(stateRoot, 'export.json'), JSON.stringify(result, null, 2), { flag: 'wx', mode: 0o600 });
+      }
     } else {
       let launchAdmission;
       if (operation === 'launch-plan') { stage = 'launch_admission'; launchAdmission = await admitLaunchPlan(env, fetchImpl); }

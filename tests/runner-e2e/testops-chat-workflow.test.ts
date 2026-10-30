@@ -123,3 +123,32 @@ it("includes every native Node helper control in the normal unit owner", () => {
     expect(config).toContain(`"${file}"`);
   }
 });
+
+it("verifies the actual server outcome after watch without masking an original failed upload", () => {
+  const steps = workflow.jobs.upload.steps;
+  const watch = steps.find((s: any) => s.id === "allure_upload");
+  const verify = steps.find((s: any) => s.id === "verify_upload");
+  expect(watch.run).toContain("allurectl watch -- node");
+  expect(watch["continue-on-error"]).toBeUndefined();
+  expect(verify.run).toBe("node tests/runner-e2e/testops-chat-reporter.mjs verify-upload runner-e2e-testops");
+  expect(verify.if).toBe("always() && !cancelled() && (steps.allure_upload.outcome == 'success' || steps.allure_upload.outcome == 'failure')");
+  expect(verify.env).toEqual(watch.env);
+  expect(steps.indexOf(verify)).toBeGreaterThan(steps.indexOf(watch));
+  const proof = steps.find((s: any) => s.with?.name?.startsWith("chat-testops-verification-"));
+  expect(proof.with.path.split("\n").filter(Boolean)).toHaveLength(2);
+  expect(proof.with.path).not.toContain("allure-results");
+});
+
+it("carries only the existing source-reviewed lock through build and worker install", () => {
+  const build = workflow.jobs.build.steps;
+  const install = build.find((s: any) => s.run?.includes("pnpm install --frozen-lockfile"));
+  expect(install.run).toContain("node tests/runner-e2e/testops-chat-lock.ts > chat-testops-lock.json");
+  expect(install.run).not.toContain("--lockfile-only");
+  const archive = build.find((s: any) => s.run?.includes("tar -czf chat-testops-build"));
+  expect(archive.run).toContain("node tests/runner-e2e/testops-chat-lock.ts > chat-testops-lock.json");
+  expect(archive.run).toContain("chat-testops-lock.json pnpm-lock.yaml");
+  const worker = workflow.jobs.chat.steps.find((s: any) => s.name === "Verify immutable outputs and token-free TestOps selection");
+  expect(worker.run).toContain("node tests/runner-e2e/testops-chat-lock.ts > chat-testops-worker-lock.json");
+  expect(worker.run).toContain("cmp chat-testops-lock.json chat-testops-worker-lock.json");
+  expect(worker.run.indexOf("cmp chat-testops-lock.json")).toBeLessThan(worker.run.indexOf("pnpm install --frozen-lockfile"));
+});

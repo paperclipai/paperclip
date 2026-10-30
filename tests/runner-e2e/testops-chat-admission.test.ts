@@ -1,6 +1,23 @@
-import { expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, expect, it, vi } from "vitest";
 import { runnerMatrix } from "./catalog.js";
-import { authorizeShippedChat } from "./testops-chat-admission.js";
+import { authorizeShippedChat, shippedChatEvidenceAuthority } from "./testops-chat-admission.js";
+
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
+
+const wrapperDirectories: string[] = [];
+afterEach(async () => {
+  vi.restoreAllMocks();
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  vi.mocked(readFileSync).mockImplementation(actual.readFileSync);
+  for (const directory of wrapperDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
+});
 
 const id = "chat-features.runner-opencode.local.create-backlog";
 function fixture() {
@@ -47,4 +64,86 @@ it.each(["model", "provider", "work", "clock", "retry", "budget"])("rejects chan
   if (field === "retry") selected.task.automaticRetryPolicy = undefined;
   if (field === "budget") selected.suite.definitionMetadata.companyAndAgentBudgetCents = 1000;
   expect(() => authorizeShippedChat(f.env, f.event, selected, "b".repeat(64))).toThrow();
+});
+
+async function wrapperFixture() {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  const directory = mkdtempSync(path.join(tmpdir(), "testops-chat-authority-"));
+  wrapperDirectories.push(directory);
+  const f = fixture(), eventPath = path.join(directory, "event.json"), launchPath = path.join(directory, "launch.ts");
+  const canonicalLaunch = new URL("./launch.ts", import.meta.url);
+  writeFileSync(eventPath, JSON.stringify(f.event));
+  writeFileSync(launchPath, actual.readFileSync(canonicalLaunch));
+  vi.mocked(readFileSync).mockImplementation(actual.readFileSync).mockClear();
+  const env: NodeJS.ProcessEnv = { ...f.env, GITHUB_EVENT_PATH: eventPath };
+  return { ...f, env, directory, eventPath, launchPath, canonicalLaunch, actual };
+}
+
+it("admits the real filesystem wrapper with the actual catalog and canonical launcher without fixture callbacks", async () => {
+  const f = await wrapperFixture();
+  const callbacks = [vi.spyOn(f.selected.profile, "buildAgent"), vi.spyOn(f.selected.task, "buildPrompt")];
+  const result = shippedChatEvidenceAuthority(f.env);
+  expect(result).toMatchObject({ authority: "paperclip.shipped-chat-testops/v1", workflowSha: f.env.GITHUB_SHA,
+    targetSha: f.env.GITHUB_SHA, runId: f.env.GITHUB_RUN_ID, attempt: "1", executionIds: [id], private: true,
+    launchSha256: createHash("sha256").update(f.actual.readFileSync(f.canonicalLaunch)).digest("hex") });
+  expect(Object.isFrozen(result)).toBe(true);
+  expect(callbacks.every(callback => callback.mock.calls.length === 0)).toBe(true);
+  expect(vi.mocked(readFileSync).mock.calls.map(([file]) => String(file))).toEqual([f.eventPath, String(f.canonicalLaunch)]);
+});
+
+it.each(["missing", "absent", "directory", "symlink", "oversize", "invalid-json"])("rejects %s event custody through the real wrapper", async kind => {
+  const f = await wrapperFixture();
+  if (kind === "missing") delete f.env.GITHUB_EVENT_PATH;
+  if (kind === "absent") rmSync(f.eventPath);
+  if (kind === "directory") { rmSync(f.eventPath); mkdirSync(f.eventPath); }
+  if (kind === "symlink") {
+    const target = path.join(f.directory, "real-event.json"); writeFileSync(target, JSON.stringify(f.event));
+    rmSync(f.eventPath); symlinkSync(target, f.eventPath);
+  }
+  if (kind === "oversize") writeFileSync(f.eventPath, " ".repeat(65_537));
+  if (kind === "invalid-json") writeFileSync(f.eventPath, "{invalid");
+  expect(() => shippedChatEvidenceAuthority(f.env)).toThrow();
+  expect(vi.mocked(readFileSync).mock.calls.some(([file]) => String(file) === String(f.canonicalLaunch))).toBe(false);
+});
+
+it.each(["sender", "bootstrap", "model-input", "source"])("rejects a tampered %s through event parsing and wrapper admission", async kind => {
+  const f = await wrapperFixture();
+  if (kind === "sender") f.event.sender.id = 456;
+  if (kind === "bootstrap") f.event.inputs.operation = "bootstrap";
+  if (kind === "model-input") f.event.inputs.model = "foreign/model";
+  if (kind === "source") f.env.TARGET_SHA = "c".repeat(40);
+  writeFileSync(f.eventPath, JSON.stringify(f.event));
+  expect(() => shippedChatEvidenceAuthority(f.env)).toThrow("Invalid shipped chat authority");
+});
+
+it.each(["missing", "model"])("rejects %s selected catalog metadata in the actual wrapper", async kind => {
+  const f = await wrapperFixture();
+  const find = vi.spyOn(runnerMatrix, "find");
+  if (kind === "missing") find.mockReturnValue(undefined);
+  else find.mockReturnValue({ ...f.selected, profile: { ...f.selected.profile, model: "foreign/model" } });
+  expect(() => shippedChatEvidenceAuthority(f.env)).toThrow(kind === "missing" ? "Shipped chat execution is absent" : "Unexpected shipped chat selection or bounds");
+});
+
+it.each(["absent", "directory", "denied"])("propagates a %s launcher read from a test-only filesystem port", async kind => {
+  const f = await wrapperFixture();
+  if (kind === "absent") rmSync(f.launchPath);
+  if (kind === "directory") { rmSync(f.launchPath); mkdirSync(f.launchPath); }
+  vi.mocked(readFileSync).mockImplementation((file, options) => {
+    if (String(file) !== String(f.canonicalLaunch)) return f.actual.readFileSync(file, options);
+    if (kind === "denied") throw Object.assign(new Error("Owned launcher unreadable"), { code: "EACCES" });
+    return f.actual.readFileSync(f.launchPath, options);
+  });
+  expect(() => shippedChatEvidenceAuthority(f.env)).toThrow(expect.objectContaining({ code: kind === "absent" ? "ENOENT" : kind === "directory" ? "EISDIR" : "EACCES" }));
+});
+
+it("binds changed real launcher bytes to new authority rather than inventing an independent trusted hash", async () => {
+  const f = await wrapperFixture();
+  vi.mocked(readFileSync).mockImplementation((file, options) => f.actual.readFileSync(
+    String(file) === String(f.canonicalLaunch) ? f.launchPath : file, options));
+  const original = shippedChatEvidenceAuthority(f.env);
+  writeFileSync(f.launchPath, "source-only changed launcher bytes\n");
+  const changed = shippedChatEvidenceAuthority(f.env);
+  expect(changed.launchSha256).toBe(createHash("sha256").update(f.actual.readFileSync(f.launchPath)).digest("hex"));
+  expect(changed.launchSha256).not.toBe(original.launchSha256);
+  expect(changed.authoritySha256).not.toBe(original.authoritySha256);
 });
