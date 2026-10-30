@@ -168,21 +168,24 @@ async function fence(env = launchEnv, changes = {}, workflowChanges = {}, repoCh
     : url.includes('/actions/runs/') ? { ...ownRun, ...changes }
     : { id: 99, path: '.github/workflows/chat-feature-testops.yml', state: 'active', ...workflowChanges }) }));
 }
-function launchServer({ wrongParameter = false, wrongAssignment = false, uncertainRun = false, integrationChange = {} } = {}) {
-  const calls = [], parameters = [{ id: 17, value: 'bootstrap' }]; let assigned = false, launched = false, requests = 0;
+function launchServer({ wrongParameter = false, wrongAssignment = false, uncertainRun = false, integrationChange = {}, initialParameters = [{ id: 17, value: 'bootstrap' }], expectedParameters = [{ id: 17, value: 'evaluate' }], definitions = {}, jobUrl = 'https://github.com/paperclipai/paperclip/actions/workflows/chat-feature-testops.yml' } = {}) {
+  const calls = [], parameters = structuredClone(initialParameters); let assigned = false, launched = false, requests = 0;
   const api = async (route, method, body) => {
     calls.push({ route, method, body });
     if (route.startsWith('/api/launch?')) return { totalPages: 1, content: launched ? [{ id: 10, name: `Chat feature evals · ${'1'.repeat(32)}` }] : [] };
     if (route === '/api/integration/2/project/1') return { id: 2, projectId: 1, info: { type: 'github' }, disabled: false, ...integrationChange };
-    if (route === '/api/environment/17') return { id: 17, name: wrongParameter ? 'OTHER_PRIVATE_PARAMETER' : 'operation' };
+    if (route.startsWith('/api/environment/')) {
+      const id = Number(route.split('/').at(-1));
+      return definitions[id] ?? { id, name: id === 17 ? wrongParameter ? 'OTHER_PRIVATE_PARAMETER' : 'operation' : 'Branch' };
+    }
     if (route === '/api/job/7') {
-      if (method === 'PATCH') { assert.deepEqual(body, { integrationId: 2, canRun: true, parameters: [{ id: 17, value: 'evaluate' }] }); parameters[0].value = 'evaluate'; }
-      return { id: 7, type: 'github', url: 'https://github.com/paperclipai/paperclip/actions/workflows/chat-feature-testops.yml', parameters };
+      if (method === 'PATCH') { assert.deepEqual(body, { integrationId: 2, canRun: true, parameters: expectedParameters }); parameters.splice(0, parameters.length, ...structuredClone(body.parameters)); }
+      return { id: 7, type: 'github', url: jobUrl, parameters };
     }
     if (route === '/api/testplan/8/job') return wrongAssignment ? [{ job: { id: 70 }, testCasesCount: 1 }]
       : assigned ? [{ job: { id: 7, parameters }, testCasesCount: 1 }] : [];
     if (route === '/api/testplan/8/assign') { assert.equal(method, 'POST'); assert.deepEqual(body, { jobId: 7, selection: { inverted: false, manual: false, leafsInclude: [91] } }); assigned = true; return null; }
-    if (route === '/api/testplan/8/jobparameter') { assert.deepEqual(body, { jobId: 7, parameters: [{ id: 17, value: 'evaluate' }] }); return null; }
+    if (route === '/api/testplan/8/jobparameter') { assert.deepEqual(body, { jobId: 7, parameters: expectedParameters }); return null; }
     if (route === '/api/testplan/8/run') { requests++; assert.equal(method, 'POST'); if (uncertainRun) throw new Error('synthetic uncertain transport'); launched = true; return { id: 10, projectId: 1, name: body.launchName }; }
     return selectedApi()(route);
   };
@@ -431,4 +434,107 @@ test('post-watch reader caps parameter definitions and refuses duplicate IDs', a
   for (const parameters of [Array.from({ length: 5 }, (_, i) => ({ id: i + 1 })), [{ id: 17 }, { id: 17 }]]) {
     await assert.rejects(bootstrapJobMetadata(strictBootstrapApi({ job: { parameters } }), publicEnv, 10));
   }
+});
+
+
+const observedLegacyJobUrl = 'https://github.com/paperclipai/paperclip/actions?query=workflow%3A%22Chat+feature+TestOps%22';
+
+test('official observed legacy and existing workflow URLs pass all three actual job consumers', async () => {
+  for (const url of [observedLegacyJobUrl, 'https://github.com/paperclipai/paperclip/actions/workflows/chat-feature-testops.yml',
+    'https://github.com/paperclipai/paperclip/actions/workflows/99']) {
+    const env = { ...publicEnv, CHAT_TESTOPS_GITHUB_WORKFLOW_ID: '99' };
+    const selected = await validateChatSelection(selectedApi({ '/api/job/7': { id: 7, type: 'github', url } }), env);
+    assert.equal(selected.caseId, 91);
+    const registered = await bootstrapJobMetadata(strictBootstrapApi({ job: { url } }), env, 10);
+    assert.equal(registered.publicWorkflowMatches, true);
+    const server = launchServer({ jobUrl: url });
+    const launched = await launchChatPlan(server.api, launchEnv, async () => {}, await fence());
+    assert.equal(launched.status, 'REQUESTED');
+    assert.equal(server.requests(), 1);
+  }
+});
+
+test('official legacy URL admission rejects foreign workflow repo query credentials and fragment in all consumers', async () => {
+  for (const url of [observedLegacyJobUrl.replace('/paperclip/actions', '/paperclip-cloud/actions'),
+    observedLegacyJobUrl.replace('Chat+feature+TestOps', 'Other+workflow'), `${observedLegacyJobUrl}&extra=1`,
+    observedLegacyJobUrl.replace('https://github.com', 'https://user:password@github.com'), `${observedLegacyJobUrl}#extra`]) {
+    await assert.rejects(validateChatSelection(selectedApi({ '/api/job/7': { id: 7, type: 'github', url } }), publicEnv), /chat_testops_job_mismatch/);
+    await assert.rejects(bootstrapJobMetadata(strictBootstrapApi({ job: { url } }), publicEnv, 10), error => {
+      assert.deepEqual(failureProjection(error, 'bootstrap_context'), { stage: 'bootstrap_context', code: 'chat_testops_job_url_mismatch', httpStatus: null });
+      return true;
+    });
+    const server = launchServer({ jobUrl: url });
+    await assert.rejects(launchChatPlan(server.api, launchEnv, async () => assert.fail('no mutation marker'), await fence()), /chat_testops_job_mismatch/);
+    assert.equal(server.calls.some(call => call.method), false);
+  }
+});
+
+test('bootstrap job predicate failures retain only distinct fixed codes and no observed values', async () => {
+  for (const [job, code] of [
+    [{ id: 99 }, 'chat_testops_job_id_mismatch'],
+    [{ type: 'SYNTHETIC_PRIVATE_TYPE' }, 'chat_testops_job_type_mismatch'],
+    [{ parameters: undefined }, 'chat_testops_job_parameters_shape_mismatch'],
+    [{ parameters: null }, 'chat_testops_job_parameters_shape_mismatch'],
+    [{ parameters: 'SYNTHETIC_PRIVATE_PARAMETERS' }, 'chat_testops_job_parameters_shape_mismatch'],
+    [{ parameters: Array.from({ length: 5 }, (_, i) => ({ id: i + 1 })) }, 'chat_testops_job_parameters_limit'],
+    [{ url: 'https://SYNTHETIC_PRIVATE_URL.invalid/' }, 'chat_testops_job_url_mismatch'],
+  ]) {
+    await assert.rejects(bootstrapJobMetadata(strictBootstrapApi({ job }), publicEnv, 10), error => {
+      const projected = failureProjection(error, 'bootstrap_context');
+      assert.deepEqual(projected, { stage: 'bootstrap_context', code, httpStatus: null });
+      assert.ok(!JSON.stringify(projected).includes('SYNTHETIC_PRIVATE'));
+      return true;
+    });
+  }
+});
+
+
+test('launch preserves exact Branch and defaults evaluate only when operation is genuinely absent', async () => {
+  for (const [parameters, opId, expectedParameters] of [
+    [[{ id: 19, value: 'refs/heads/master' }], undefined, [{ id: 19, value: 'refs/heads/master' }]],
+    [[{ id: 19, value: 'refs/heads/master' }], '', [{ id: 19, value: 'refs/heads/master' }]],
+    [[{ id: 17, value: 'bootstrap' }], '17', [{ id: 17, value: 'evaluate' }]],
+    [[{ id: 19, value: 'refs/heads/master' }, { id: 17, value: 'bootstrap' }], '17', [{ id: 19, value: 'refs/heads/master' }, { id: 17, value: 'evaluate' }]],
+  ]) {
+    const env = { ...launchEnv, CHAT_TESTOPS_OPERATION_PARAMETER_ID: opId };
+    const server = launchServer({ initialParameters: parameters, expectedParameters });
+    let marked = 0;
+    const result = await launchChatPlan(server.api, env, async () => { marked++; assert.equal(server.calls.some(call => call.method), false); }, await fence(env));
+    assert.equal(result.status, 'REQUESTED'); assert.equal(server.requests(), 1); assert.equal(marked, 1);
+    assert.deepEqual(server.calls.filter(call => call.route === '/api/job/7' && call.method === 'PATCH')[0].body.parameters, expectedParameters);
+    assert.deepEqual(server.calls.filter(call => call.route === '/api/testplan/8/jobparameter')[0].body.parameters, expectedParameters);
+  }
+});
+
+test('launch refuses empty unknown duplicate wrong Branch or conflicting operation before any mutation', async () => {
+  const branch = { id: 19, value: 'refs/heads/master' };
+  for (const [parameters, opId, definitions] of [
+    [[], undefined, {}],
+    [[{ id: 19, value: 'refs/heads/other' }], undefined, {}],
+    [[branch, branch], undefined, {}],
+    [[branch, { id: 20, value: 'refs/heads/master' }], undefined, {}],
+    [[{ id: 19, value: 'refs/heads/master' }], undefined, { 19: { id: 99, name: 'Branch' } }],
+    [[{ id: 19, value: 'PRIVATE_PARAMETER_VALUE' }], undefined, { 19: { id: 19, name: 'PRIVATE_PARAMETER_NAME' } }],
+    [[branch], '17', {}],
+    [[branch], 'bad-id', {}],
+    [[{ id: 17, value: 'bootstrap' }], undefined, {}],
+    [[{ id: 17, value: 'bootstrap' }], '18', {}],
+    [[{ id: 17, value: 'launch-plan' }], '17', {}],
+    [[branch, { id: 17, value: 'bootstrap' }, { id: 20, value: 'refs/heads/master' }], '17', {}],
+  ]) {
+    const env = { ...launchEnv, CHAT_TESTOPS_OPERATION_PARAMETER_ID: opId };
+    const server = launchServer({ initialParameters: parameters, definitions });
+    await assert.rejects(launchChatPlan(server.api, env, async () => assert.fail('no mutation marker'), await fence(env)), /chat_testops_(?:identity_missing|parameter_mismatch)/);
+    assert.equal(server.calls.some(call => call.method), false); assert.equal(server.requests(), 0);
+  }
+});
+
+test('bootstrap projects only fixed Branch name and exact master value alongside genuine numeric ID', async () => {
+  const base = strictBootstrapApi({ job: { parameters: [{ id: 19, value: 'refs/heads/master' }] } });
+  const result = await bootstrapJobMetadata(route => route === '/api/environment/19' ? { id: 19, name: 'Branch' } : base(route), publicEnv, 10);
+  assert.deepEqual(result.parameters, [{ id: 19, name: 'Branch', value: 'refs/heads/master' }]);
+  const hidden = strictBootstrapApi({ job: { parameters: [{ id: 19, value: 'PRIVATE_BRANCH_VALUE' }] } });
+  const unknown = await bootstrapJobMetadata(route => route === '/api/environment/19' ? { id: 19, name: 'Branch' } : hidden(route), publicEnv, 10);
+  assert.deepEqual(unknown.parameters, [{ id: 19, name: 'Branch', value: 'NOT_PROJECTED' }]);
+  assert.ok(!JSON.stringify(unknown).includes('PRIVATE_BRANCH'));
 });
