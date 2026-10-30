@@ -87,7 +87,8 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
       `--phase=${phase}`, `--company=${companyId}`, "--limit=50",
     ], { env: { ...process.env, DATABASE_URL: database.connectionString,
       PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "disposable-cloud-cli-fixture",
-      PAPERCLIP_STORAGE_PROVIDER: "local_disk", PAPERCLIP_STORAGE_LOCAL_DIR: path.join(root, "objects") },
+      PAPERCLIP_STORAGE_PROVIDER: "s3", PAPERCLIP_STORAGE_S3_BUCKET: "cloud-cli-fixture",
+      PAPERCLIP_SECRETS_MASTER_KEY: "12345678901234567890123456789012" },
       timeout: 60_000, maxBuffer: 1024 * 1024 });
     await expect(run("eligibility")).rejects.toThrow("Initialize Cloud runtime configuration");
     expect(await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key))).toHaveLength(0);
@@ -96,7 +97,11 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
       const eligibility = JSON.parse((await run("eligibility")).stdout.trim().split("\n").at(-1)!);
       expect(eligibility.results).toEqual([expect.objectContaining({ status: "version_backed" })]);
       const verification = JSON.parse((await run("verification")).stdout.trim().split("\n").at(-1)!);
-      expect(verification.results).toEqual([expect.objectContaining({ status: "local_storage" })]);
+      // Cloud requires S3. The local fixture receipt must be reported as a
+      // mismatch without contacting object storage or rewriting configuration.
+      expect(verification.results).toEqual([expect.objectContaining({ status: "provider_mismatch" })]);
+      expect((await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key)))[0]?.general)
+        .toEqual({ version: 1, revision: 0, config: null });
     } finally {
       await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, key));
     }
