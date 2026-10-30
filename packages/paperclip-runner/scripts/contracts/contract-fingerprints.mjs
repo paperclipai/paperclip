@@ -55,8 +55,12 @@ export function fingerprintContracts(readFile, listDir) {
       const { dirs, suffix, exclude, idPrefix, probes } = contract.expand;
       const candidates = dirs.flatMap(listDir).filter(p => p.endsWith(suffix) && !exclude?.test(p));
       const testOnly = suffix === ".rs" ? rustTestOnlyFiles(candidates, readFile) : new Set();
-      for (const path of candidates.filter(p => !testOnly.has(p)).sort()) {
-        const value = probes.map(p => probe({ ...p, path }, readFile));
+      const sources = candidates.filter(p => !testOnly.has(p)).sort();
+      // Env keys are often passed through `const NAME: &str = "KEY"` defined in
+      // another file, so resolve constant arguments crate-wide.
+      const constants = suffix === ".rs" ? rustStringConstants(sources, readFile) : {};
+      for (const path of sources) {
+        const value = probes.map(p => probe(p.kind === "rust-env-keys" ? { ...p, path, constants } : { ...p, path }, readFile));
         if (isEmpty(value)) continue;
         const id = idPrefix + path.slice(dirs.find(d => path.startsWith(`${d}/`)).length + 1).replace(/\.[a-z]+$/, "");
         out[id] = { fingerprint: digest(value), value };
@@ -118,7 +122,7 @@ function probeUncached(spec, source) {
     case "rust-serde": return rustSerde(source);
     case "rust-json-keys": return rustJsonKeys(source);
     case "rust-match-literals": return rustMatchLiterals(source);
-    case "rust-env-keys": return rustEnvKeys(source);
+    case "rust-env-keys": return rustEnvKeys(source, spec.constants ?? {});
     default: throw new Error(`unknown probe kind ${spec.kind}`);
   }
 }
@@ -294,12 +298,31 @@ function balanced(text, start, open, close) {
   for (; j < text.length; j++) { if (text[j] === open) depth++; else if (text[j] === close && --depth === 0) break; }
   return text.slice(start, j + 1);
 }
-/** Environment keys passed or read in code: `keys.push("K")`, `.env("K", ..)`,
- * `.env_remove("K")` and `env::var("K")` / `env::var_os("K")`. */
-function rustEnvKeys(source) {
+/** Environment keys passed or read in code: `keys.push(K)`, `.env(K, ..)`,
+ * `.env_remove(K)` and `env::var(K)` / `env::var_os(K)`, where K is a string
+ * literal or a string constant. A constant resolves to its value, so renaming
+ * the Rust constant is not a contract change; an unresolved constant keeps its
+ * name so a rename remains visible. */
+function rustEnvKeys(source, constants) {
   const text = withoutTestModules(stripRustComments(source));
   const keys = new Set();
-  const pattern = /(?:keys\.push|\.env|\.env_remove|env::var|env::var_os)\(\s*"([A-Z][A-Z0-9_]*)"/g;
-  for (const m of text.matchAll(pattern)) keys.add(m[1]);
+  const pattern = /(?:keys\.push|\.env|\.env_remove|env::var|env::var_os)\(\s*(?:"([A-Z][A-Z0-9_]*)"|(?:[a-z_][a-z0-9_]*::)*([A-Z][A-Z0-9_]*)\b)/g;
+  for (const m of text.matchAll(pattern)) keys.add(m[1] ?? constants[m[2]] ?? `const:${m[2]}`);
   return [...keys].sort();
+}
+/** String constants (`const NAME: &str = "VALUE";`) across the crate's sources.
+ * Names defined twice with different values are ambiguous and left unresolved. */
+function rustStringConstants(paths, readFile) {
+  const found = new Map();
+  for (const path of paths) {
+    const source = readFile(path);
+    if (source === null) continue;
+    const text = withoutTestModules(stripRustComments(source));
+    for (const m of text.matchAll(/\b(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\s+([A-Z][A-Z0-9_]*)\s*:\s*&(?:'static\s+)?str\s*=\s*"([^"\\]*)"\s*;/g)) {
+      const values = found.get(m[1]) ?? new Set();
+      values.add(m[2]);
+      found.set(m[1], values);
+    }
+  }
+  return Object.fromEntries([...found].filter(([, values]) => values.size === 1).map(([name, values]) => [name, [...values][0]]).sort());
 }

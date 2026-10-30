@@ -39,6 +39,8 @@ test("incidental edits leave the digest unchanged", () => {
     [`${RUST}/acpx_provider_checkpoint.rs`, s => s.replace("pub struct AcpxSuspensionCheckpoint {",
       "pub struct AcpxSuspensionCheckpoint {\n    #[serde(skip)]\n    pub cache: Option<String>,")],
     [`${RUST}/acpx_provider_checkpoint.rs`, s => `${s}\n#[cfg(test)]\nmod extra {\n    #[derive(Serialize)]\n    struct T { a: u8 }\n}\n`],
+    // Renaming the Rust constant that carries an env key keeps the key itself.
+    [`${RUST}/process_supervisor.rs`, s => s.replaceAll("VERIFIED_RUNTIME_EXECUTABLE_ENV", "RUNTIME_EXECUTABLE_HANDOFF_ENV")],
     // A file compiled only through `#[cfg(test)] #[path = ..] mod ..;`.
     [`${RUST}/tests/provider_api_validation.rs`, s => s.replaceAll("PRIVATE_FIELD", "PRIVATE_FIXTURE_FIELD")],
   ];
@@ -60,6 +62,8 @@ test("contract edits change the digest", () => {
     [`${RUST}/acpx_provider_checkpoint.rs`, s => s.replace("pub struct AcpxSuspensionCheckpoint {",
       "pub struct AcpxSuspensionCheckpoint {\n    pub extra: Option<String>,")],
     [`${RUST}/acpx_sidecar_transport.rs`, s => s.replace(/keys\.push\("/, "keys.push(\"PAPERCLIP_NEW_SIDECAR_KEY\");\n        keys.push(\"")],
+    // An env key passed through a constant: the verified executable handoff.
+    [`${RUST}/process_supervisor.rs`, s => s.replace("\"PAPERCLIP_VERIFIED_RUNTIME_EXECUTABLE\"", "\"PAPERCLIP_RUNTIME_EXECUTABLE_PATH\"")],
   ];
   for (const [path, edit] of changed) assert.notEqual(digestWith(path, edit), baseline, `${path} edit changes a contract`);
 });
