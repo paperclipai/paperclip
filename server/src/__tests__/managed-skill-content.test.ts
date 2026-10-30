@@ -92,11 +92,13 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     await expect(run("eligibility")).rejects.toThrow("Initialize Cloud runtime configuration");
     expect(await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key))).toHaveLength(0);
     await db.insert(instanceSettings).values({ singletonKey: key, general: { version: 1, revision: 0, config: null } });
+    const configBefore = await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key));
     try {
       const eligibility = JSON.parse((await run("eligibility")).stdout.trim().split("\n").at(-1)!);
       expect(eligibility.results).toEqual([expect.objectContaining({ status: "version_backed" })]);
       const verification = JSON.parse((await run("verification")).stdout.trim().split("\n").at(-1)!);
       expect(verification.results).toEqual([expect.objectContaining({ status: "local_storage" })]);
+      expect(await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key))).toEqual(configBefore);
     } finally {
       await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, key));
     }
