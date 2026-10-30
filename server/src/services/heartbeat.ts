@@ -2137,6 +2137,9 @@ export function heartbeatService(
           });
           if (staleness.outcome === "cancelled") {
             applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
+            await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true }).catch((err) => {
+              logger.warn({ err, runId: run.id, issueId }, "failed to promote deferred wakes after stale running run cancellation");
+            });
             return;
           }
           throw error;

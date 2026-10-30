@@ -949,6 +949,13 @@ export function createPostgresRunDispatchAdapter(
             ...(decision.errorCode === "execution_reconciliation_required"
               ? { executionWait: decision.details }
               : {}),
+            // A queued run reassigned away never reached the provider. Without
+            // this evidence the release path treats the cancel as a failed
+            // legacy execution needing reconciliation and skips promoting the
+            // wakes deferred behind its lock.
+            ...(decision.errorCode === "issue_assignee_changed" && expectedStatus === "queued"
+              ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
+              : {}),
             effectiveTimeoutSec: 0,
             timeoutConfigured: false,
             timeoutSource: "stale_queued_run_gate",

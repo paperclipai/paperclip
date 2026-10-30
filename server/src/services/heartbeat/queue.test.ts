@@ -437,6 +437,37 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.canStartNewExternalBotWork).not.toHaveBeenCalled();
   });
 
+  it("promotes deferred wakes when the stale queued run gate cancels the lock holder", async () => {
+    const { run, agent, issue, company } = await fixture("queued");
+    const [reviewer] = await db.insert(agents).values({ companyId: company.id, name: "Reviewer", role: "engineer", status: "idle", adapterType: "process", adapterConfig: {} }).returning();
+    await db.update(issues).set({ assigneeAgentId: reviewer.id }).where(eq(issues.id, issue.id));
+    const [pending] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: reviewer.id,
+      source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      payload: { issueId: issue.id, _paperclipWakeContext: { issueId: issue.id, wakeReason: "issue_assigned" } },
+    }).returning();
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    const release = createReleaseIssueExecution({ issueLock: createPostgresWakeQueueAdapter(db, {
+      resolveResponsibleUserId: async () => "responsible-user",
+      getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+    }), recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined } });
+    deps.releaseIssueExecutionAndPromote.mockImplementation(async (cancelled, options) => {
+      await release({ companyId: cancelled.companyId, runId: cancelled.id, now: new Date(), ...options });
+    });
+    const deferredPostCommitEffects: Parameters<ReturnType<typeof createHeartbeatQueue>["claimQueuedRun"]>[2] = [];
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun({ ...run, responsibleUserId: "queue-test-user" }, undefined, deferredPostCommitEffects)).toBeNull();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toMatchObject({ status: "cancelled", errorCode: "issue_assignee_changed" });
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: run.id }), { suppressImmediateRecovery: true, deferredPostCommitEffects },
+    );
+    const [promoted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, pending.id));
+    expect(promoted.status).not.toBe("deferred_issue_execution");
+    expect(promoted.runId).not.toBeNull();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, promoted.runId!)))[0]).toMatchObject({ agentId: reviewer.id, status: "queued" });
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
   it("cancels at the daily run cap before claiming or dispatching", async () => {
     const { run, agent } = await fixture("queued");
     const cappedAgent = { ...agent, runtimeConfig: { heartbeat: { maxDailyRuns: 0 } } };
