@@ -1090,6 +1090,7 @@ describe("agent issue mutation checkout ownership", () => {
     ]);
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
     expect(mockIssueService.listComments).toHaveBeenCalledWith(issueId, {
+      companyId,
       afterCommentId: null,
       order: "desc",
       limit: null,

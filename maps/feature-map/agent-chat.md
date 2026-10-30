@@ -27,6 +27,8 @@ Open `/chats`, choose an agent, or use `/chats/:agentRef` and its conversation s
 
 With Coordinator enabled, the composer exposes the shared model/thinking-level picker for supported agents. The agent stays fixed in this control; switching agents remains in the chat header. Choices save as conversation overrides on send, preserving the agent's configuration. A first message creates the conversation before saving settings and submitting through the ordered comments endpoint.
 
+Standing chats open with the latest 20 contiguous messages. Scroll upward to fetch earlier messages, answer receipts, and created tasks. The loading indicator stays in the thread; history failures offer an inline Retry while preserving the draft and reading position. Opening a chat does not fetch its lifetime comment, activity, or run history. Already observed messages survive live refresh and Back within the query-cache session.
+
 Coordinator answer receipts from this conversation jump to the answer bubble without leaving chat. Answer updates from an execution task link to that source task and its decision context. Compact document links read “Open [document title] in the sidebar”.
 
 ### `project-handoff`
@@ -42,6 +44,8 @@ Open `/board-chat` only when its conference-room gate is enabled.
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Enable the applicable chat feature, use a configured test agent, and distinguish model replies from a mocked conversation fixture.
 
 ### `agent-conversation`
+
+Local browser recipe: [long-chat startup and scrolling](../../tests/perf/agent-chat/agent-chat-startup.spec.ts), with fixture and command details in the [performance README](../../tests/perf/agent-chat/README.md). It covers recent-only reveal, delayed and failed pages, Back, older comment links, and live refresh. Synthetic local data is not deployed acceptance evidence.
 
 Automated: [chat landing](../../ui/src/pages/AgentChats.test.tsx) checks recent-chat routing; [conversation service](../../server/src/__tests__/agent-conversations.test.ts) covers persisted conversation behavior.
 

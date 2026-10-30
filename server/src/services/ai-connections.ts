@@ -1105,7 +1105,7 @@ export function aiConnectionService(db: Db) {
   async function refreshQuotaCredential(row: Parameters<typeof credential>[0], failedValue: string, signal: AbortSignal) {
     return withAccountHomeSecretMutationLock(undefined, row.connection.companyId, async () => {
       const recovery = quotaCredentialRecovery(row.connection.companyId, row.grant.id);
-      let savingReplacement = false;
+      let replacement: { value: string; secretId: string; version: number; epoch: number; base: string; grantUpdatedAt: number; versionSelector: "latest" | number } | undefined;
       const save = () => db.transaction(async (tx) => {
         // Do not wait on a transaction that might itself be waiting for the file
         // lock. All database locks must be available before consuming OAuth tokens.
@@ -1117,11 +1117,20 @@ export function aiConnectionService(db: Db) {
         if (!grant || grant.status !== "active") throw new Error("credentials_unavailable");
         const ref = grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential");
         if (!ref) throw new Error("credentials_unavailable");
-        await tx.select({ id: companySecrets.id }).from(companySecrets).where(and(
+        const [secret] = await tx.select({ id: companySecrets.id, version: companySecrets.latestVersion, epoch: companySecrets.aiSessionEpoch }).from(companySecrets).where(and(
           eq(companySecrets.id, ref.secretId), eq(companySecrets.companyId, companyId),
         )).for("update", { noWait: true });
+        if (!secret) throw new Error("credentials_unavailable");
         const current = await aiConnectionService(tx as unknown as Db).credential({ connection: row.connection, grant });
-        signal.throwIfAborted();
+        if (replacement) {
+          // A lost commit response is reconciled from the authoritative secret.
+          // Reconnect, revocation and a competing saved generation always win.
+          if (current === replacement.value) return current;
+          if (ref.secretId !== replacement.secretId || secret.version !== replacement.version
+            || secret.epoch !== replacement.epoch || current !== replacement.base
+            || grant.updatedAt.getTime() !== replacement.grantUpdatedAt
+            || (ref.versionSelector ?? "latest") !== replacement.versionSelector) return current;
+        } else signal.throwIfAborted();
         let pending = await recovery.read();
         if (pending && (pending.secretId !== ref.secretId || pending.connectionId !== row.connection.id || pending.baseHash !== quotaCredentialHash(current))) {
           // Reconnect may reuse this grant. Once the current authorized token
@@ -1141,10 +1150,9 @@ export function aiConnectionService(db: Db) {
           or(sql`${heartbeatRuns.contextSnapshot}->'aiConnection'->>'grantId' = ${grant.id}`,
             sql`${agents.runtimeConfig}->'aiConnection'->>'provider' = 'openai'`, eq(agents.adapterType, "codex_local")),
         )).limit(1);
-        if (active && !pending) throw new Error("provider_unavailable");
-        let refreshed = pending?.value;
+        if (active && !pending && !replacement) throw new Error("provider_unavailable");
+        let refreshed = replacement?.value ?? pending?.value;
         if (!refreshed) {
-          await recovery.prepare();
           const auth = JSON.parse(current);
           const refreshToken = auth.tokens?.refresh_token;
           if (typeof refreshToken !== "string" || !refreshToken) throw new Error("authentication_required");
@@ -1169,12 +1177,12 @@ export function aiConnectionService(db: Db) {
             ...(typeof tokens.refresh_token === "string" && tokens.refresh_token ? { refresh_token: tokens.refresh_token } : {}),
             ...(typeof tokens.id_token === "string" && tokens.id_token ? { id_token: tokens.id_token } : {}),
           }, last_refresh: new Date().toISOString() });
-          // This fsynced encrypted journal survives transaction rollback and host
-          // restart. Never exchange the consumed token again after a failed save.
-          await recovery.write({ companyId, grantId: grant.id, connectionId: row.connection.id,
-            secretId: ref.secretId, baseHash: quotaCredentialHash(current), value: refreshed });
         }
-        savingReplacement = true;
+        // Only this logical refresh owns the replacement. Save retries must not
+        // consume another single-use token. Process loss before commit can require
+        // signing in again in v1; no secondary credential vault is created.
+        replacement ??= { value: refreshed, secretId: ref.secretId, version: secret.version, epoch: secret.epoch, base: current,
+          grantUpdatedAt: grant.updatedAt.getTime(), versionSelector: ref.versionSelector ?? "latest" };
         // Persist the rotated token even if the quota deadline expires after the
         // successful exchange; losing it would strand all subsequent executions.
         await secretService(tx).rotate(ref.secretId, { value: refreshed, preserveAiSessionEpoch: true }, { userId: grant.subjectUserId });
@@ -1191,9 +1199,9 @@ export function aiConnectionService(db: Db) {
           await recovery.clear().catch((error) => logger.warn({ err: error, grantId: row.grant.id }, "Saved quota credential recovery cleanup pending"));
           return value;
         } catch (error) {
-          if (!savingReplacement || attempt >= 2) throw error;
-          // Saving retries have no provider side effect. Persistent failures
-          // retain the journal for the next quota poll, including after restart.
+          if (!replacement || attempt >= 2) throw error;
+          // Retry only the returned value. Required database reads still fail
+          // closed; exhaustion is an error, never a successful refresh.
         }
       }
     });
