@@ -40,6 +40,15 @@ Native recovery resolves the version, reconstructs its v1 projection and require
 the admitted digest, manifest digest, file count and byte count to match. Adjacent
 compatible releases must preserve that projection contract.
 
+Studio tests deliver the selected saved version through the same native Runner
+path, even without a permanent agent assignment. Their `skill_test` mode remains
+explicit in the execution input. Task-bound credentials and native authorization
+retain the admitted scope through restart and task-mode edits. Native tools expose
+only the harness task and admitted skills; company browsing, task creation,
+connectors and assigned MCP tools are unavailable. A rollback image must understand
+that mode to continue an active Studio test. Settle tests before rolling back to an
+earlier image that rejects it.
+
 Bundled release snapshots remain immutable. Reconciliation preserves an installed
 head; an older process must never promote its shipped bytes over another installed
 version. The shipped release history remains independently selectable. Linked-local

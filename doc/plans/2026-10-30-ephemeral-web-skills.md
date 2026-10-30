@@ -234,8 +234,8 @@ handoff, and production volume removal are outside this slice.
   the Studio acceptance requirement remains pending a deployed retry.
 - Follow-up admits and preserves `skill_test` through the existing native
   selection, execution contract and tool bindings. It does not relabel tests
-  as standard work. Existing task-bound JWT restrictions and read-only assigned
-  MCP behavior remain with their authorization owners. No executor refactor or
+  as standard work. Task-bound JWT restrictions remain with their authorization
+  owners; the native surface is restricted as detailed below. No executor refactor or
   Rust protocol change is needed. Older images that reject this mode cannot
   continue a new Studio test; rollback qualification settles tests first.
 - Follow-up local checks: 78 admission/input tests, 109 Runner contract tests,
@@ -243,3 +243,41 @@ handoff, and production volume removal are outside this slice.
   Initial scope/MCP attempts encountered sandbox socket restrictions; permitted
   retries passed. Runner TypeScript/Rust checks and server TypeScript check
   passed. Maps remain aligned (35 areas, 192 capabilities).
+
+- B's v7 is `e1f96114-6be5-4878-b9ae-269bac0da215`; independent hash of
+  its supporting file is `c2d9b967aa8ddfad7896804ea1a7ae613b8ff631ff6a084cee7553125bc7fd27`.
+  EPH-6 (`c5377e90-c80c-4f97-8ada-c4eaf205af0a`), run
+  `96537d81-b224-442a-9ec1-993fbd89ff56`, completed successfully and saved
+  `server-b-skill-proof`. Direct script output contained the B payload; executable
+  mode remained 555, other managed hashes were unchanged, and repository v1
+  instruction/rule hashes matched the independent exact-commit reference.
+- C home campaign `fleet-campaign-1793366873685` (target
+  `fleet-campaign-target-1793366873686`) succeeded at
+  `2026-10-30T18:36:03.930Z`, preserving both managed env keys and Computer images.
+  Deployment `462e3327-e49b-4096-b5e2-73f5db058a9f`, replica
+  `01c696c4-89b9-4358-9c2b-108faa4c9d50`, served `07fffa749` with home
+  `/tmp/ephemeral-skills-c`. Console verified A and B directories and B's marker
+  absent. Studio cold-read v7 and the exact acknowledged B payload.
+- Unassigned fork v2 identity was independently confirmed as
+  `8b008393-f909-424a-9f68-1995231455a7`. It remained at zero assignments on C;
+  its supporting file was then edited through Studio to a C-specific payload.
+  Execution on the candidate with native Studio admission remains pending.
+- C's remote EPH-7 (`d57f6f66-7072-4fb9-abde-199edf5192ef`), run
+  `c7f89682-ab9b-4f00-940f-88967c6c0264`, completed successfully. The saved
+  `server-c-skill-proof` document (revision `8129375b-f56c-4b80-99b0-637481a31f72`)
+  was independently opened and read. All five hashes matched the B run and
+  independent references. Its new session `7f164893cdc73464e112e2572baed3ddc166bb29485d770c37fbf7449793cdc0`
+  executed the unchanged script with exit 0, mode 0555 and the exact B payload.
+  The managed selected/current version remained v7, and repository selection
+  remained v1 while its current head remained v2.
+- Review of `8821b040` found that native task creation omitted the admitted
+  skill-test scope. Image build `41108317938` was cancelled before deployment.
+  Native authorization now carries the saved scope, denies company/peer tools,
+  task creation and external tools, and checks the scope before mutation receipt
+  replay. Task context contains only the harness task. Real database regressions
+  exercise both fresh tests and persisted tests after their task mode changes.
+- Native scope checks passed: three new real-database cases plus four REST
+  scope/image-access cases. The existing native tool-authority suite passed all
+  37 tests. Server typecheck and map checks passed. The initial new-test attempts
+  corrected a fixture tool name and matched the existing privacy-preserving 404
+  for unrelated tasks; own-task reads returned 200.

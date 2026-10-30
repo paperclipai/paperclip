@@ -220,9 +220,11 @@ skills.test policy, task-assignment authorization, responsible-user intersection
 admitted skill-test JWT scope.
 
 Studio's `skill_test` work mode is admitted through native Runner selection and
-preserved in execution input. The existing task-bound JWT scope still restricts
-REST access, and assigned MCP tools remain read-only in this mode. Admission does
-not convert a test into a standard task or expand its authority.
+preserved in execution input. The admitted task-bound scope restricts REST and
+native authorization, including after task-mode edits and recovery. Native tools
+allow only the harness task and admitted skills. Task creation, company browsing,
+connectors and assigned MCP tools are unavailable; native mutation receipts recheck
+the scope before replay or effects.
 
 Project-source API additions: GET `/api/companies/{companyId}/skill-sources/project-repositories`,
 POST `/api/companies/{companyId}/skill-sources/adopt-project` with `workspaceId`, and
