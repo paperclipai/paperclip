@@ -14,7 +14,7 @@ const pkg = await readJson("package.json");
 assert.equal(manifest.schema, "paperclip.acpx-profiles.v1");
 assert.equal(manifest.acpxVersion, pkg.dependencies.acpx);
 // Copilot, Grok and Pi digests attest upstream releases; they change only when
-// an upstream version, the ACPX patch, a platform closure or the Grok launcher changes.
+// an upstream version, a platform closure or the Grok launcher changes.
 const check = process.argv.includes("--check");
 let attestationsChanged = false;
 for (const agent of ATTESTED_ACPX_AGENTS) {
@@ -53,8 +53,6 @@ assert.equal(manifest.profiles.antigravity.agentServerVersion, antigravityDistri
 assert.equal(manifest.profiles.antigravity.commandDigest, `sha256:${createHash("sha256").update(canonicalJson(antigravityDistributions)).digest("hex")}`, "Antigravity distribution identity is stale");
 const { commandDigest, ...attestation } = contract;
 assert.equal(commandDigest, `sha256:${createHash("sha256").update(canonicalJson(attestation)).digest("hex")}`);
-assert.equal(contract.acpxPatchSha256, createHash("sha256")
-  .update(await readFile(new URL("../../patches/acpx@0.13.1.patch", root))).digest("hex"));
 for (const distribution of Object.values(distributions.platforms)) assert.match(distribution.closureSha256, /^[a-f0-9]{64}$/);
 
 const quote = JSON.stringify;

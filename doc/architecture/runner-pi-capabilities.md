@@ -4,12 +4,13 @@
 
 Pi runs as **profile 37** on `pi-acp` 0.0.33 and
 `@earendil-works/pi-coding-agent` 1.0.0. Its `commandDigest` attests the
-upstream release: the package versions, the ACPX patch, the Node version and the
-complete distribution closure for each qualified platform. The closure includes
-the patched wrapper, the runtime helper and the Paperclip extension, so a change
-to those files changes the closure pins and the digest. Other Paperclip source
-does not; the provider pack's `contractDigest` guards Runner source
-compatibility. Launch and recovery admission require the exact current profile
+upstream release: the package versions, the Node version and the complete
+distribution closure for each qualified platform. The closure includes the
+patched wrapper, the runtime helper and the Paperclip extension, so a change to
+those files changes the closure pins and the digest. Other Paperclip source does
+not. Every ACPX harness binds the shared ACPX layer the same way: saved inputs must
+match the current ACPX version, and the provider pack's `contractDigest` binds
+the Runner's ACPX patch with the other Runner contracts. Launch and recovery admission require the exact current profile
 and digest. Saved inputs with an earlier profile version still decode, so
 recovery can refuse them.
 

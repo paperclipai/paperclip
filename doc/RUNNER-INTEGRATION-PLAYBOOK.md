@@ -347,9 +347,11 @@ admission override must never become the production installation recipe.
 Pass the actual registered profile through every execution-input parser, not only
 the runtime registry. Derive version types from one declaration so a new profile
 cannot be admitted by one layer and rejected by another. A provider's
-`commandDigest` attests its upstream release: upstream versions, platform closure
-pins and any launcher bytes. Never bind Paperclip source, absolute paths or the
-pack layout into it; the provider pack's `contractDigest` covers Runner source
+`commandDigest` attests only its own upstream release: upstream versions, platform
+closure pins and any launcher bytes. Never bind Paperclip source, the shared ACPX
+version or patch, absolute paths or the pack layout into it. Every harness gets
+the ACPX layer the same way: the profile's `acpxVersion` and the provider pack's
+`contractDigest`, which also covers the Runner's ACPX patch and Runner source
 compatibility. Also check generated catalogs against their authoring source.
 
 ### 6.3 Qualify the ordinary setup path as its own integration

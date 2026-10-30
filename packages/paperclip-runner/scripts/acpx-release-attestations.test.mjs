@@ -9,7 +9,6 @@ import { acpxReleaseAttestation, ATTESTED_ACPX_AGENTS } from "./acpx-release-att
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = JSON.parse(readFileSync(join(packageRoot, "acpx-profiles.json"), "utf8"));
-const repositoryFiles = [`patches/acpx@${manifest.acpxVersion}.patch`];
 const packageFiles = [
   "acpx-profiles.json", "package.json", "cursor-distributions.json", "cursor-contract.json", "antigravity-distributions.json",
   "scripts/acpx-release-attestations.mjs", "scripts/generate-acpx-profiles.mjs",
@@ -18,7 +17,9 @@ const packageFiles = [
   "src/drivers/acpx/generated-profiles.ts", "runner/crates/runner-core/src/generated_acpx_profiles.rs",
 ];
 
-/** A relocated runner package containing only the attestation and generator inputs. */
+/** A relocated runner package containing only the attestation and generator
+ * inputs. It has no repository patches: the shared ACPX layer is bound by the
+ * profile's acpxVersion and the pack contract digest, never by one provider. */
 function relocatedPackage(t) {
   const repository = mkdtempSync(join(tmpdir(), "acpx-attestation-relocated-"));
   t.after(() => rmSync(repository, { recursive: true, force: true }));
@@ -26,10 +27,6 @@ function relocatedPackage(t) {
   for (const path of packageFiles) {
     mkdirSync(dirname(join(relocated, path)), { recursive: true });
     copyFileSync(join(packageRoot, path), join(relocated, path));
-  }
-  for (const path of repositoryFiles) {
-    mkdirSync(dirname(join(relocated, "../..", path)), { recursive: true });
-    copyFileSync(join(packageRoot, "../..", path), join(relocated, "../..", path));
   }
   return relocated;
 }
@@ -78,10 +75,6 @@ for (const [name, agents, edit] of [
   ["the Grok launcher bytes", ["grok"], root => {
     const path = join(root, "src/providers/grok/launcher.cjs");
     writeFileSync(path, `${readFileSync(path, "utf8")}\n// changed\n`);
-  }],
-  ["the ACPX patch", ["copilot", "pi"], root => {
-    const path = join(root, "../..", repositoryFiles[0]);
-    writeFileSync(path, `${readFileSync(path, "utf8")}\n`);
   }],
 ]) test(`changing ${name} changes only the affected attestations`, async t => {
   const relocated = relocatedPackage(t);

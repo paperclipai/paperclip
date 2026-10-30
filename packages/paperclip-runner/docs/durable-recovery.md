@@ -72,11 +72,14 @@ real transport; it does not qualify a hosted OpenCode or ACPX deployment.
 
 ## Profile identity
 
-Every ACPX provider's `commandDigest` attests its upstream release. For Copilot
-(profile 92), Grok (20) and Pi (37) it binds the upstream package versions, the
-ACPX patch, the platform closure pins and, for Grok, the launcher bytes.
+Every ACPX provider's `commandDigest` attests only its own upstream release.
+For Copilot (profile 92), Grok (20) and Pi (37) it binds the upstream package
+versions, the platform closure pins and, for Grok, the launcher bytes.
 `scripts/acpx-release-attestations.mjs` computes these digests and
 `generate:acpx-profiles` writes them. Runner source changes do not change them.
+Every ACPX harness binds the shared ACPX layer the same way: saved inputs must
+match the current ACPX version, and the provider pack's `contractDigest` binds
+the Runner's ACPX patch with the other Runner contracts.
 Saved inputs with any profile version from 1 through the current one decode, so
 they reach recovery. Launch and recovery admission require the exact current
 profile and digest, and refuse the rest. A profile identity does not establish

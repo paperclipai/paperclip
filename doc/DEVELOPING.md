@@ -2460,7 +2460,8 @@ The Runner's `src/live/provider-pack-contract.json` declares interface revisions
 bump only the affected interface when its runner/pack contract breaks. Image
 packs must also match the bundled pack's computed `contractDigest`
 (`scripts/contracts/contract-fingerprints.mjs`, over the `protocol/` and
-`generated/` JSON contracts and Rust shapes), so an unbumped contract change
+`generated/` JSON contracts, Rust shapes and the Runner's ACPX patch), so an
+unbumped contract or ACPX patch change
 still retires older image packs. Declare new runner/pack contracts in a schema
 and generate their TypeScript, so the digest covers them. Qualify
 and seal packs at image publication. The fast path requires root-owned,

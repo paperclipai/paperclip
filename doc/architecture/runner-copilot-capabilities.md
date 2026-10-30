@@ -3,10 +3,11 @@
 ## Current profile identity
 
 Copilot runs as **profile 92** on `@github/copilot` 1.0.88. Its `commandDigest`
-attests the upstream release: the package version, the ACPX patch and the
-complete patched distribution closure for each qualified platform. It does not
-bind Paperclip source. The provider pack's `contractDigest` guards Runner source
-compatibility. `generate:acpx-profiles` writes the digest to `acpx-profiles.json`,
+attests the upstream release: the package version and the complete patched
+distribution closure for each qualified platform. It does not bind Paperclip
+source or the shared ACPX layer. Every ACPX harness binds the shared ACPX layer the same way: saved inputs must
+match the current ACPX version, and the provider pack's `contractDigest` binds
+the Runner's ACPX patch with the other Runner contracts. `generate:acpx-profiles` writes the digest to `acpx-profiles.json`,
 and `check:acpx-profiles` refuses drift. Launch and recovery admission require
 the exact current profile and digest. Saved inputs with an earlier profile
 version still decode, so recovery can refuse them.

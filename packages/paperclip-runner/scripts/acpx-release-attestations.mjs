@@ -4,10 +4,11 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 // Copilot, Grok and Pi profile identities attest upstream releases, like Claude,
-// Codex, Cursor and Antigravity. They bind upstream versions and the
-// bytes a repackager copies verbatim: complete platform closures and Grok's
-// launcher. Never bind Paperclip source, absolute paths, the provider-pack
-// manifest digest or install layout; the pack contract digest guards our side.
+// Codex, Cursor and Antigravity. They bind upstream versions and the bytes a
+// repackager copies verbatim: complete platform closures and Grok's launcher.
+// Never bind Paperclip source, the shared ACPX layer, absolute paths, the
+// provider-pack manifest digest or install layout. The profile's acpxVersion and
+// the pack contract digest bind ACPX and Runner source for every harness alike.
 export const ATTESTED_ACPX_AGENTS = Object.freeze(["copilot", "grok", "pi"]);
 
 const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -32,8 +33,7 @@ export async function acpxReleaseAttestation(agent, packageRoot) {
   };
   const declaration = {
     schema: "paperclip.acpx-release-attestation.v1", agent,
-    agentProfileVersion: profile.agentProfileVersion, acpxVersion: manifest.acpxVersion,
-    acpxPatchSha256: sha256(readFileSync(resolve(packageRoot, `../../patches/acpx@${manifest.acpxVersion}.patch`))),
+    agentProfileVersion: profile.agentProfileVersion,
     agentServerPackage: profile.agentServerPackage, agentServerVersion: profile.agentServerVersion,
     agentRuntimePackage: profile.agentRuntimePackage, agentRuntimeVersion: profile.agentRuntimeVersion,
     ...agent === "copilot"

@@ -2,13 +2,17 @@
 
 ## Current profile identity
 
-Every ACPX provider's `commandDigest` attests its upstream release. Copilot
-(profile 92), Grok (20) and Pi (37) bind their upstream package versions, the
-ACPX patch, their platform closure pins and, for Grok, the launcher bytes.
+Every ACPX provider's `commandDigest` attests only its own upstream release.
+Copilot (profile 92), Grok (20) and Pi (37) bind their upstream package
+versions, their platform closure pins and, for Grok, the launcher bytes.
 `scripts/acpx-release-attestations.mjs` computes these digests,
 `generate:acpx-profiles` writes them to `acpx-profiles.json`, and
-`check:acpx-profiles` refuses drift. Runner source changes do not change them;
-the provider pack's `contractDigest` guards Runner source compatibility. Launch
+`check:acpx-profiles` refuses drift. Cursor (17) attests the release declaration
+in `cursor-contract.json`; Claude, Codex and Antigravity attest their upstream
+packages or distributions. Runner source changes do not change any of them.
+Every ACPX harness binds the shared ACPX layer the same way: saved inputs must
+match the current ACPX version, and the provider pack's `contractDigest` binds
+the Runner's ACPX patch with the other Runner contracts. Launch
 and recovery admission require the exact current profile and digest. Saved
 inputs with an earlier profile version still decode, so recovery can refuse
 them. A profile identity is not evidence of live qualification.
