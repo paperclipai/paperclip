@@ -5,6 +5,7 @@ import type {
 } from "../types.js";
 import { asString, parseObject } from "../utils.js";
 import { guardedHttpAdapterFetch } from "./remote-fetch.js";
+import { validateHttpRunAttestationKey, RUN_ATTESTATION_HEADER } from "./run-attestation.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -24,6 +25,11 @@ export async function testEnvironment(
   const config = parseObject(ctx.config);
   const urlValue = asString(config.url, "");
   const method = normalizeMethod(asString(config.method, "POST"));
+  const attest = config.runAttestation === true;
+
+  if (config.runAttestation !== undefined && typeof config.runAttestation !== "boolean") {
+    checks.push({ code: "http_run_attestation_invalid", level: "error", message: "runAttestation must be a boolean." });
+  }
 
   if (!urlValue) {
     checks.push({
@@ -73,6 +79,38 @@ export async function testEnvironment(
     level: "info",
     message: `Configured method: ${method}`,
   });
+
+  if (attest) {
+    const headers = parseObject(config.headers);
+    const payloadTemplate = parseObject(config.payloadTemplate);
+    if (!url || url.protocol !== "https:" || url.username || url.password || url.hash ||
+        method !== "POST" || Object.keys(headers).length > 0 ||
+        Object.keys(payloadTemplate).length > 0) {
+      checks.push({
+        code: "http_run_attestation_config_invalid",
+        level: "error",
+        message: "Attested runs require HTTPS, POST, no URL credentials or fragment, and no custom headers or payload template.",
+      });
+    }
+    if (Object.keys(headers).some((key) => key.toLowerCase() === RUN_ATTESTATION_HEADER)) {
+      checks.push({ code: "http_run_attestation_header_reserved", level: "error", message: "The run attestation header is reserved." });
+    }
+    try {
+      validateHttpRunAttestationKey();
+    } catch (error) {
+      checks.push({
+        code: "http_run_attestation_key_invalid",
+        level: "error",
+        message: error instanceof Error ? error.message : "Attestation key invalid.",
+      });
+    }
+    checks.push({
+      code: "http_run_attestation_probe_skipped",
+      level: "info",
+      message: "Authenticated endpoint was not probed; reachability is checked on invocation.",
+    });
+    return { adapterType: ctx.adapterType, status: summarizeStatus(checks), checks, testedAt: new Date().toISOString() };
+  }
 
   if (url && (url.protocol === "http:" || url.protocol === "https:")) {
     const controller = new AbortController();

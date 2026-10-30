@@ -155,6 +155,19 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expectCleanup(input);
   });
 
+  it("passes an issue to adapters when the persisted run owns it", async () => {
+    const { input, adapter } = await fixture();
+    await executeHeartbeatRuntime(db, input);
+    expect(adapter.execute.mock.calls[0]?.[0].issueId).toBe(input.run.issueId);
+  });
+
+  it("does not pass a different issue reference to the adapter", async () => {
+    const { input, adapter } = await fixture();
+    input.task.issueRef = { ...input.task.issueRef!, id: randomUUID() };
+    await executeHeartbeatRuntime(db, input);
+    expect(adapter.execute.mock.calls[0]?.[0].issueId).toBeNull();
+  });
+
   it("preserves Stop metadata and marks no-work accounting without manufacturing a receipt", async () => {
     const { input, adapter, run } = await fixture();
     await db.update(heartbeatRuns).set({ status: "cancelled", resultJson: { stoppedByUser: true } }).where(eq(heartbeatRuns.id, run.id));

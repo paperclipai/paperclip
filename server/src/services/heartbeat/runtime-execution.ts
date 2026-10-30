@@ -813,6 +813,13 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               agentIdentity,
               observability,
               runId: run.id,
+              issueId:
+                run.scopeKind === "issue" &&
+                run.issueId === issueRef?.id &&
+                run.agentId === agent.id &&
+                run.companyId === agent.companyId
+                  ? run.issueId
+                  : null,
               agent,
               runtime: runtimeForAdapter,
               config: runtimeConfig,
