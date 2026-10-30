@@ -637,6 +637,7 @@ async function isEquivalentAcceptedReplay(
   if (
     !replayAcceptedInteractionIds.includes(row.id)
     || !isRequestConfirmationLikeKind(row.kind)
+    || ["toolAction", "secretProposal", "connectionAuthorization", "qualityReview"].some(key => Object.hasOwn(row.payload, key))
     || row.status !== "accepted"
     || row.result?.outcome !== "accepted"
     || !row.resolvedAt

@@ -24,7 +24,7 @@ describe("native accepted confirmation replay", () => {
     await temporary?.cleanup();
   });
 
-  async function fixture(withPlan = false) {
+  async function fixture(withPlan = false, interactionKind: "confirmation" | "checkbox" = "confirmation") {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const sourceRunId = randomUUID(), runId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Confirmation replay", issuePrefix: `R${companyId.slice(0, 6).toUpperCase()}` });
@@ -35,13 +35,16 @@ describe("native accepted confirmation replay", () => {
       status: "running", invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId } });
     await db.update(issues).set({ executionRunId: sourceRunId }).where(eq(issues.id, issueId));
     const payload: Record<string, unknown> = { acceptLabel: "Approve", rejectLabel: "Request changes", rejectRequiresReason: false, supersedeOnUserComment: false };
+    if (interactionKind === "checkbox") Object.assign(payload, {
+      options: [{ id: "artifact", label: "Create the requested artifact" }], minSelected: 0, maxSelected: 1,
+    });
     let plan: Awaited<ReturnType<ReturnType<typeof documentService>["upsertIssueDocument"]>> | undefined;
     if (withPlan) {
       plan = await documentService(db).upsertIssueDocument({ issueId, key: "plan", title: "Artifact plan", format: "markdown",
         body: "Create the requested file and save its task document.", baseRevisionId: null, createdByAgentId: agentId, createdByRunId: sourceRunId });
       payload.target = { type: "issue_document", key: "plan", revisionId: plan.document.latestRevisionId };
     }
-    const input = { idempotencyKey: "approved-artifact", interactionKind: "confirmation", title: "Approve artifact work",
+    const input = { idempotencyKey: "approved-artifact", interactionKind, title: "Approve artifact work",
       prompt: "Create the requested file and save its task document.", continuationPolicy: "wake_assignee",
       payload };
     const original = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId: sourceRunId });
@@ -50,7 +53,8 @@ describe("native accepted confirmation replay", () => {
       .where(eq(heartbeatRuns.id, sourceRunId));
     await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, issueId));
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
-    const accepted = await issueThreadInteractionService(db).acceptInteraction(issue, created.interaction.id, {}, { userId: "local-board" });
+    const accepted = await issueThreadInteractionService(db).acceptInteraction(issue, created.interaction.id,
+      interactionKind === "checkbox" ? { selectedOptionIds: ["artifact"] } : {}, { userId: "local-board" });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, runtimeMode: "native", nativeIssueId: issueId,
       status: "running", invocationSource: "automation", triggerDetail: "system",
       contextSnapshot: { issueId, interactionId: created.interaction.id, source: "issue.interaction.accept" } });
@@ -69,8 +73,8 @@ describe("native accepted confirmation replay", () => {
       authority: new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId }) };
   }
 
-  it("returns the original accepted confirmation to its resumed native run without another human wait", async () => {
-    const f = await fixture();
+  it.each(["confirmation", "checkbox"] as const)("returns the original accepted %s to its resumed native run without another human wait", async interactionKind => {
+    const f = await fixture(false, interactionKind);
     const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
     const activity = await db.select().from(activityLog).where(eq(activityLog.companyId, f.companyId));
     const [beforeIssue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
@@ -78,6 +82,7 @@ describe("native accepted confirmation replay", () => {
     const result = await f.authority.execute(call);
     expect(result).toMatchObject({ disposition: "duplicate", interaction: { id: f.accepted.id, status: "accepted", sourceRunId: f.sourceRunId,
       resolvedByUserId: "local-board", result: { outcome: "accepted" } } });
+    if (interactionKind === "checkbox") expect(result).toMatchObject({ interaction: { result: { selectedOptionIds: ["artifact"] } } });
     const rows = await db.select().from(issueThreadInteractions).where(and(eq(issueThreadInteractions.companyId, f.companyId), eq(issueThreadInteractions.issueId, f.issueId)));
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe("accepted");
@@ -93,6 +98,25 @@ describe("native accepted confirmation replay", () => {
       idempotencyKey: "approved-child", title: "Create the approved artifact", description: "Create the requested file and task document.",
     } });
     expect(child).toMatchObject({ task: { parentId: f.issueId } });
+  });
+
+  it.each(["toolAction", "secretProposal"] as const)("does not admit governed %s payloads through plain confirmation replay", async field => {
+    const f = await fixture();
+    const expiresAt = new Date(Date.now() + 60000).toISOString();
+    const value = field === "toolAction" ? {
+      version: 1, actionRequestId: randomUUID(), invocationId: randomUUID(), toolName: "write", toolDisplayName: "Write",
+      connectionId: null, applicationId: null, appDisplayName: null, risk: "write", previewMarkdown: "Write a resource.",
+      argumentsSummaryJson: "{}", argumentsHash: "a".repeat(64), expiresAt,
+    } : {
+      version: 1, proposalId: randomUUID(), sourceSecretLabel: "Synthetic credential", configPath: "env.TEST_KEY",
+      targetAgentId: f.agentId, targetAgentName: "Operator", justification: "Configure synthetic access.", expiresAt,
+    };
+    const payload = { ...f.accepted.payload, [field]: value };
+    await db.update(issueThreadInteractions).set({ payload, result: {
+      version: 1, outcome: "accepted", [field]: { version: 1, status: "expired", updatedAt: new Date().toISOString() },
+    } }).where(eq(issueThreadInteractions.id, f.accepted.id));
+    await expect(f.authority.execute({ tool: "request_human_input", callId: randomUUID(), arguments: { ...f.input, payload } }))
+      .rejects.toThrow("Interaction idempotency key already exists for a different request");
   });
 
   it.each([

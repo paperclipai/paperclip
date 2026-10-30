@@ -1132,14 +1132,17 @@ the outcome commits. Resolution records an answer; every continuation, task
 creation, tool/provider call, execution-policy transition, spend, deployment, or
 other effect independently re-runs its own authorization and approval gates.
 
-A native continuation may replay the same confirmation key after receiving its
-accepted response. Only the run's persisted, identity-bound response can nominate
-that replay. The interaction service returns the original accepted record when
-the creator and complete request still match and no newer confirmation exists.
+A native continuation may replay the same plain confirmation or checkbox key
+after receiving its accepted response. Only the run's persisted, identity-bound
+response can nominate that replay. The interaction service returns the original
+accepted record when the creator and complete request still match and no newer
+confirmation exists.
 It preserves the original source run and creates no new request or wake. Changed
 scope and all downstream execution gates still require their ordinary authority.
 The native tool receipt remains recoverable. Reuse of an accepted cross-run
 receipt rechecks the original outcome and newer confirmations before returning it.
+Governed tool, secret, connection, and quality-review confirmations keep their
+separate lifecycle rules and do not use this replay path.
 
 ## 11. Task Watchdog for Issue Trees
 
