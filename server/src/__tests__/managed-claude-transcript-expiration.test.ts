@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { agents, agentTaskSessions, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import {
@@ -282,6 +282,28 @@ describeEmbeddedPostgres("managed Claude transcript expiration", () => {
     expect(result).toMatchObject({ expired: 0, failed: 1, nextDueAt: now.getTime() + MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS });
     expect(await fs.readdir(seeded.transcriptsDir)).toEqual([path.basename(seeded.scopeDir)]);
     expect(await taskSessionCount()).toBe(1);
+  });
+
+  it("retries a task file it could not read instead of treating it as unknown", async () => {
+    const broken = await seed();
+    const healthy = await seed();
+    const brokenTaskFile = path.join(broken.scopeDir, "task.json");
+    const readFile = fs.readFile.bind(fs);
+    const spy = vi.spyOn(fs, "readFile").mockImplementation((async (...args: Parameters<typeof fs.readFile>) => {
+      if (String(args[0]) === brokenTaskFile) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+      return readFile(...args);
+    }) as typeof fs.readFile);
+
+    try {
+      const result = await service().tick();
+
+      expect(result.failed).toBe(1);
+      expect(result.nextDueAt).toBe(now.getTime() + MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS);
+      expect(await exists(broken.scopeDir)).toBe(true);
+      expect(await exists(healthy.scopeDir)).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("continues a bounded batch on the next tick", async () => {

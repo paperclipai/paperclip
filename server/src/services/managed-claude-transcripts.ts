@@ -81,28 +81,51 @@ async function isRealDirectory(target: string): Promise<boolean> {
   return Boolean(stat?.isDirectory() && !stat.isSymbolicLink());
 }
 
+function isMissing(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException)?.code === "ENOENT";
+}
+
 async function readTaskKey(scopeDir: string): Promise<{ taskKey: string; lastUsed: Date } | null> {
+  const file = path.join(scopeDir, TASK_FILE);
+  const stat = await fs.lstat(file).catch((err) => {
+    if (isMissing(err)) return null;
+    throw err;
+  });
+  if (!stat || !stat.isFile() || stat.size > 4096) return null;
+  const raw = await fs.readFile(file, "utf8").catch((err) => {
+    if (isMissing(err)) return null;
+    throw err;
+  });
+  if (raw === null) return null;
   try {
-    const file = path.join(scopeDir, TASK_FILE);
-    const stat = await fs.lstat(file);
-    if (!stat.isFile() || stat.size > 4096) return null;
-    const { taskKey } = JSON.parse(await fs.readFile(file, "utf8")) as { taskKey?: unknown };
+    const { taskKey } = JSON.parse(raw) as { taskKey?: unknown };
     return typeof taskKey === "string" && taskKey ? { taskKey, lastUsed: stat.mtime } : null;
   } catch {
     return null;
   }
 }
 
-async function listTranscriptDirs(root: string): Promise<Owner[]> {
+async function readdirOrFail(dir: string): Promise<{ names: string[]; failed: boolean }> {
+  try {
+    return { names: await fs.readdir(dir), failed: false };
+  } catch (err) {
+    return { names: [], failed: !isMissing(err) };
+  }
+}
+
+async function listTranscriptDirs(root: string): Promise<{ owners: Owner[]; failed: boolean }> {
   const found: Owner[] = [];
-  const companiesDir = path.join(root, "companies");
-  for (const companyId of (await fs.readdir(companiesDir).catch(() => [] as string[])).filter((id) => ID_PATTERN.test(id))) {
-    const agentsDir = path.join(companiesDir, companyId, "agents");
-    for (const agentId of (await fs.readdir(agentsDir).catch(() => [] as string[])).filter((id) => ID_PATTERN.test(id))) {
+  let failed = false;
+  const companies = await readdirOrFail(path.join(root, "companies"));
+  failed = failed || companies.failed;
+  for (const companyId of companies.names.filter((id) => ID_PATTERN.test(id))) {
+    const agents = await readdirOrFail(path.join(root, "companies", companyId, "agents"));
+    failed = failed || agents.failed;
+    for (const agentId of agents.names.filter((id) => ID_PATTERN.test(id))) {
       found.push({ companyId, agentId });
     }
   }
-  return found;
+  return { owners: found, failed };
 }
 
 function transcriptsDirOf(root: string, owner: Owner): string {
@@ -234,13 +257,26 @@ export function managedClaudeTranscriptExpirationService(db: Db, defaults: Manag
     };
 
     const scopes: Scope[] = [];
-    for (const owner of await listTranscriptDirs(root)) {
+    const { owners, failed: listingFailed } = await listTranscriptDirs(root);
+    if (listingFailed) result.failed++;
+    for (const owner of owners) {
       const transcriptsDir = transcriptsDirOf(root, owner);
       await settleLeftovers(transcriptsDir).catch((err) => logger.warn({ err }, "managed Claude transcript cleanup skipped leftovers"));
-      for (const name of await fs.readdir(transcriptsDir).catch(() => [] as string[])) {
+      const { names, failed: scanFailed } = await readdirOrFail(transcriptsDir);
+      if (scanFailed) {
+        result.failed++;
+        logger.warn({ ...owner }, "managed Claude transcript cleanup could not list a transcripts directory");
+        continue;
+      }
+      for (const name of names) {
         if (!SCOPE_PATTERN.test(name)) continue;
         const dir = path.join(transcriptsDir, name);
-        scopes.push({ ...owner, dir, task: await readTaskKey(dir) });
+        try {
+          scopes.push({ ...owner, dir, task: await readTaskKey(dir) });
+        } catch (err) {
+          result.failed++;
+          logger.warn({ err, ...owner }, "managed Claude transcript cleanup could not read a task file");
+        }
       }
     }
     const notYetDue = scopes.filter((scope) => scope.task && scope.task.lastUsed >= cutoff);
