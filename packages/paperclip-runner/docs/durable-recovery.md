@@ -98,6 +98,30 @@ digest, and refuse the rest. A profile identity does not establish hosted
 harness qualification. [`rules/acpx-profile-identity.mdc`](../../../rules/acpx-profile-identity.mdc)
 summarizes these practices for contributors.
 
+Qualified ACPX native executables use Runner's persistent digest cache. The cache
+stores a computed SHA-256 digest under a key made from device, inode, size,
+nanosecond modification time, and nanosecond change time. Each check compares
+that digest with the independently selected build-owned pin. A changed file
+identity, missing entry, or unusable cache causes a full descriptor read and
+hash. A hit reuses the earlier digest; metadata identity is not a fresh content
+hash. Claude, Codex, and Grok use the same native executable admission path.
+
+Cache entries live under the operating-system user's home directory at
+`.cache/paperclip-runner/executable-digests-v1`, outside task workspaces. The
+directory and files are private to that user. Writes use a temporary file and
+atomic rename, so later Runner or sidecar processes can reuse complete entries.
+Cache errors fall back to hashing. The cache stores no credentials or file paths.
+
+Every admission still opens the executable without following its final symlink,
+checks its regular-file type, bounds, execute permission, and before/after file
+identity, and retains the descriptor for launch. Package qualification and the
+preparation-to-launch identity check remain. The cache deliberately trusts the
+operating-system user: a process with that user's access can plant a digest for
+a chosen fingerprint. It is not authenticated with a secret or signature.
+An administrator-owned read-only Runner can therefore use a user-writable cache,
+but this provides weaker protection against that same user than hashing every
+executable on each admission. Removing the cache restores full hashing.
+
 ## External controller checkpoints
 
 The optional controller persistence callback stores recovery control state, not
