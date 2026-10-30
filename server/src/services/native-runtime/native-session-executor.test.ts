@@ -110,6 +110,10 @@ vi.mock("../usage-receipts.js", async (importOriginal) => ({
   createRunUsageRecorder: usageRecorder.create,
 }));
 
+vi.mock("./native-usage-delivery.js", () => ({
+  createNativeUsageDelivery: vi.fn(async () => ({ capture: async () => undefined })),
+}));
+
 const githubAccess = vi.hoisted(() => ({
   activate: vi.fn((_binding: { runId: string }) => vi.fn()),
   stop: vi.fn(async () => undefined),
@@ -7172,6 +7176,8 @@ describe("native terminal-turn accounting", () => {
       expect(firstCapture).toHaveBeenCalledExactlyOnceWith(firstReport);
       await rm(state.createTransport.mock.calls.at(-1)![0].stateDirectory!, { recursive: true, force: true });
       await createRunnerdBackend({ db: leaseDb(second), execution: second, runnerInstanceId: "warm-producer", onAccountingEvent: secondCapture });
+      await expect(retainedHook({ ...firstReport, eventType: "run.attached" })).resolves.toBeUndefined();
+      expect(secondCapture).not.toHaveBeenCalled();
       const secondReport = { ...firstReport, runId: second.binding.runId };
       await retainedHook(secondReport);
       expect(secondCapture).toHaveBeenCalledExactlyOnceWith(secondReport);

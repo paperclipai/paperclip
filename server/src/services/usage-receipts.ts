@@ -77,6 +77,23 @@ export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
     if (!run) throw notFound("Accounting run not found");
     const [existing] = await tx.select().from(runUsageReceipts).where(and(eq(runUsageReceipts.companyId, envelope.companyId), eq(runUsageReceipts.runId, envelope.runId), eq(runUsageReceipts.sourceId, envelope.sourceId), eq(runUsageReceipts.sequence, envelope.sequence)));
     if (existing && existing.receiptHash !== hash) throw conflict("Conflicting usage checkpoint replay");
+    if (!existing && run.costAccountedAt && envelope.producerEvent) {
+      const previous = run.usageJson ?? {};
+      const [saved] = await tx.select({ receiptJson: runUsageReceipts.receiptJson }).from(runUsageReceipts).where(and(
+        eq(runUsageReceipts.companyId, envelope.companyId), eq(runUsageReceipts.runId, envelope.runId),
+        sql`${runUsageReceipts.id}::text = ${previous.accountingReceiptId ?? null}`));
+      const accepted = saved ? envelopeSchema.parse(saved.receiptJson).receipt : undefined;
+      const monetaryAmount = (receipt: UsageReceiptEnvelope["receipt"] | undefined) => {
+        const value = receipt?.cacheAdjustedCostUsd ?? receipt?.costUsdExact ?? receipt?.costUsd;
+        return value == null ? null : usdToUnits(value);
+      };
+      if ((envelope.producerEvent.eventType === "usage.reported" && (!envelope.receipt.usage || !accepted))
+        || Object.entries(envelope.receipt.usage ?? {}).some(([key, value]) => previous[key] !== value)
+        || monetaryAmount(envelope.receipt) !== monetaryAmount(accepted)
+        || receiptFingerprint(envelope.receipt.pricingProvenance ?? null) !== receiptFingerprint(accepted?.pricingProvenance ?? null)) {
+        throw conflict("native_usage_after_finalization_requires_reconciliation");
+      }
+    }
     if (!existing) await tx.insert(runUsageReceipts).values({
       id: envelope.id, companyId: envelope.companyId, runId: envelope.runId, sourceId: envelope.sourceId,
       sequence: envelope.sequence, receiptHash: hash, receiptJson: envelope, complete: envelope.receipt.complete, receivedAt: new Date(envelope.receivedAt),
@@ -368,4 +385,34 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
       return capture(final);
     }),
   };
+}
+
+export async function readAcceptedRunUsageCheckpoint(db: Db, input: { companyId: string; runId: string }): Promise<AdapterUsageCheckpoint | undefined> {
+  const [run] = await db.select({ usageJson: heartbeatRuns.usageJson }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
+  const state = run?.usageJson;
+  if (typeof state?.accountingReceiptId !== "string") return undefined;
+  const [saved] = await db.select({ receiptJson: runUsageReceipts.receiptJson }).from(runUsageReceipts).where(and(
+    eq(runUsageReceipts.companyId, input.companyId), eq(runUsageReceipts.runId, input.runId),
+    sql`${runUsageReceipts.id}::text = ${state.accountingReceiptId}`));
+  if (!saved) return undefined;
+  const receipt = envelopeSchema.parse(saved.receiptJson);
+  if (receipt.sourceId !== state.accountingReceiptSourceId || receipt.sequence !== state.accountingReceiptSequence) return undefined;
+  return { ...receipt.receipt, complete: receipt.receipt.complete && state.accountingReceiptReady === true } as AdapterUsageCheckpoint;
+}
+
+const producerAccountingProjectionFields = [
+  "accountingReceiptOwner", "accountingReceiptSourceId", "accountingReceiptSequence", "accountingReceiptReady",
+  "accountingReceiptId", "accountingReceiptReceivedAt", "accountingCaptureFailed",
+  "inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens",
+  "provider", "biller", "model", "billingType", "usageSource", "providerRequestId", "usageByModel",
+  "costUsd", "costUsdExact", "cacheAdjustedCostUsd", "costStatus", "pricingProvenance", "budgetExposure",
+];
+
+export function preserveAcceptedRunUsageProjectionSql(patch: Record<string, unknown>) {
+  const fields = sql.join(producerAccountingProjectionFields.map(field => sql`${field}`), sql`, `);
+  return sql`case when ${heartbeatRuns.usageJson}->>'accountingReceiptOwner' = 'native_producer'
+    then ${JSON.stringify(patch)}::jsonb || (select coalesce(jsonb_object_agg(key, value), '{}'::jsonb)
+      from jsonb_each(coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb)) where key in (${fields}))
+    else ${JSON.stringify(patch)}::jsonb end`;
 }

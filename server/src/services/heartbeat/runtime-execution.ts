@@ -34,7 +34,7 @@ import {
   NativeWorkspaceFinalizationOwnershipLostError,
   type NativeWorkspaceFinalizationOwnership,
 } from "../native-runtime/native-workspace-finalization-ownership.js";
-import { createRunUsageRecorder } from "../usage-receipts.js";
+import { createRunUsageRecorder, readAcceptedRunUsageCheckpoint } from "../usage-receipts.js";
 import { applyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { isConversation } from "../agent-conversations.js";
@@ -921,6 +921,10 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       if (usageRecorder) {
         const captured = await measureRunPhase("execution.usage", () => usageRecorder.complete(adapterResult));
         adapterResult = { ...adapterResult, ...captured, usageComplete: captured.complete };
+      } else {
+        const accepted = await measureRunPhase("execution.usage", () => readAcceptedRunUsageCheckpoint(db, { companyId: run.companyId, runId: run.id }));
+        adapterResult = { ...adapterResult, ...accepted, usageComplete: accepted?.complete ?? false,
+          ...(!accepted ? { costStatus: "unpriced" as const } : {}) };
       }
     } else {
       // Stop may already own the terminal result. Preserve its metadata

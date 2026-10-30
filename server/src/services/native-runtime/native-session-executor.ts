@@ -1,5 +1,5 @@
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
-import { createNativeTurnAccounting, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery } from "./native-usage-accounting.js";
+import { createNativeTurnAccounting, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent } from "./native-usage-accounting.js";
 export { nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage } from "./native-usage-accounting.js";
 import { measureRunnerOperation, recordRunnerTimingReceipt } from "./runner-operation-timing.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -1778,6 +1778,7 @@ class SessionAuthorityEpoch {
   }
 
   async acceptAccountingEvent(event: PrpEvent) {
+    if (!isNativeUsageAccountingEvent(event)) return;
     this.#assertCurrent();
     if (event.runId !== this.runId) throw new Error("native_usage_run_binding_mismatch");
     await this.onAccountingEvent?.(event);

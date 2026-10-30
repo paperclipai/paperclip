@@ -181,3 +181,7 @@ export function usesNativeUsageDelivery(input: {
   return input.runnerd && input.remote && input.provider !== undefined && input.provider !== null
     && ["codex", "opencode", "acpx", "claude_managed", "aws_agentcore"].includes(input.provider.kind);
 }
+
+export function isNativeUsageAccountingEvent(event: Pick<PrpEvent, "eventType">) {
+  return ["usage.reported", "turn.started", "turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"].includes(event.eventType);
+}

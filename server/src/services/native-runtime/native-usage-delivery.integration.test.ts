@@ -1,3 +1,4 @@
+import { compareCents } from "@paperclipai/shared";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
@@ -40,7 +41,7 @@ describe("producer-owned native usage", () => {
     schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner", sourceInstanceId: input.runnerInstanceId,
     sourceEventId: `usage-${sequence}`, sourceSeq: sequence, priority: 0, runId: input.runId,
     normalizedSessionId: "session-1", turnId, emittedAt: new Date().toISOString(), eventType: type,
-    payload: type === "usage.reported" ? { runDeltaAvailable: true, runDelta: { inputTokens: 120, outputTokens: 10, providerCostUsd: amount } } : {},
+    payload: type === "usage.reported" ? { runDeltaAvailable: true, runDeltaBasis: "run", runDelta: { inputTokens: 120, outputTokens: 10, providerCostUsd: amount } } : {},
   } as PrpEvent);
 
   it("retains the same Runner report through a failed Postgres receipt and an empty replacement receiver", async () => {
@@ -52,9 +53,9 @@ describe("producer-owned native usage", () => {
       normalizedSessionId: randomUUID(), turnId: "turn-1", itemId: "item-1" };
     const expectedRunnerVersion = "0.3.0", expectedRunnerDigest = `sha256:${"c".repeat(64)}`;
     let receiver: ChildProcess | undefined, child: ChildProcess | undefined;
-    let exit: Promise<unknown[]> | undefined, failed = 0;
+    let exit: Promise<unknown[]> | undefined, failed = 0, lastCaptureError = "";
     const receiptFile = resolve(root, "producer.json"), releaseFile = resolve(root, "release"), scriptFile = resolve(root, "script.json");
-    writeFileSync(scriptFile, JSON.stringify({ steps: 2, waitAfter: 2, retentionLimit: 8, receiptFile, releaseFile, accounting: true }));
+    writeFileSync(scriptFile, JSON.stringify({ steps: 3, waitAfter: 2, retentionLimit: 8, receiptFile, releaseFile, accounting: true }));
     const receipts = () => db.select().from(runUsageReceipts).where(eq(runUsageReceipts.runId, input.runId));
     try {
 
@@ -70,7 +71,7 @@ describe("producer-owned native usage", () => {
         process.once("exit", code => { clearTimeout(timer); reject(new Error(`receiver exited ${code}: ${diagnostics}`)); });
         process.on("message", message => {
           const kind = (message as { kind?: string }).kind;
-          if (kind === "capture-failed") failed++;
+          if (kind === "capture-failed") { failed++; lastCaptureError = String((message as { cause?: string }).cause); }
           if (kind === "ready") { clearTimeout(timer); resolve(process); }
         });
       });
@@ -123,6 +124,15 @@ describe("producer-owned native usage", () => {
       const ledger = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId));
       expect(ledger).toHaveLength(1);
       expect(ledger[0].costCents).toBe(25);
+      const failedBeforeLateReport = failed;
+      await request(receiver, { kind: "command", type: "turn.steer", commandId: "release-late-usage" });
+      await vi.waitFor(() => expect(failed).toBeGreaterThan(failedBeforeLateReport), { timeout: 10_000 });
+      expect(lastCaptureError).toContain("native_usage_after_finalization_requires_reconciliation");
+      const retainedLate = producerState().outbox.find(report => report.eventType === "usage.reported");
+      expect(retainedLate).toBeDefined();
+      expect(retainedLate!.envelope.payload).toMatchObject({ runId: input.runId, sourceInstanceId: input.runnerInstanceId });
+      expect((await receipts()).filter(row => (row.receiptJson.producerEvent as Record<string, unknown>)?.eventType === "usage.reported")).toHaveLength(1);
+      expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId))).toHaveLength(1);
       expect(existsSync(usageReceiptSpoolPath())).toBe(false);
     } finally {
       await db.execute(sql`DROP TRIGGER IF EXISTS fail_native_usage ON run_usage_receipts`);
@@ -154,6 +164,58 @@ describe("producer-owned native usage", () => {
     await second.capture(event(replacement, 2, "turn.completed", "turn-2"));
     expect(await accountRunCost(db, input.runId)).toBe(true);
     expect((await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId)))[0].costCents).toBe(50);
+  });
+
+  it.each(["tokens", "cost", "incomplete"])("accepts equal finalized snapshots and rejects changed %s without repricing", async change => {
+    const input = await seed();
+    const delivery = await createNativeUsageDelivery(db, input);
+    await delivery.capture(event(input, 1, "usage.reported"));
+    await delivery.capture(event(input, 2, "turn.completed"));
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, input.runId));
+    expect(await accountRunCost(db, input.runId)).toBe(true);
+    await delivery.capture(event(input, 3, "usage.reported"));
+    const late = event(input, 4, "usage.reported");
+    (late.payload as Record<string, unknown>).runDelta = { inputTokens: change === "tokens" ? 150 : 120, outputTokens: change === "tokens" ? 15 : 10, providerCostUsd: change === "incomplete" ? 0.25 : 0.5 };
+    if (change === "incomplete") (late.payload as Record<string, unknown>).runDeltaAvailable = false;
+    await expect(delivery.capture(late)).rejects.toThrow("native_usage_after_finalization_requires_reconciliation");
+    await expect(delivery.capture(late)).rejects.toThrow("native_usage_after_finalization_requires_reconciliation");
+    expect((await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId)))[0].costCents).toBe(25);
+  });
+
+  it("keeps successor exposure pending after prior-turn accounting invalidates its live snapshot", async () => {
+    const input = await seed();
+    const delivery = await createNativeUsageDelivery(db, input);
+    const paid = event(input, 1, "usage.reported");
+    paid.payload = { runDeltaBasis: "run", runDeltaAvailable: true, runDelta: { inputTokens: 50, outputTokens: 5, providerCostUsd: 0.5 } };
+    await delivery.capture(paid);
+    const invalidated = event(input, 2, "usage.reported");
+    invalidated.payload = { runDeltaBasis: "run", runDeltaAvailable: false, runDelta: {}, reason: "accounting_reconciliation_required",
+      reconciliation: { receivedTurnId: "old-provider-turn", cumulative: { inputTokens: 120, outputTokens: 12 }, priorOrigin: { runId: "old-run" } } };
+    await delivery.capture(invalidated);
+    await delivery.capture(event(input, 3, "turn.failed"));
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "codex_usage_accounting_integrity", finishedAt: new Date() }).where(eq(heartbeatRuns.id, input.runId));
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
+    expect(run).toMatchObject({ costAccountingPending: true, costAccountedAt: null,
+      usageJson: { accountingReceiptReady: false, costStatus: "unpriced" } });
+    expect(compareCents((run.usageJson?.budgetExposure as { costCents: string }).costCents, "50")).toBe(0);
+    const [required] = await db.select().from(runUsageReceipts).where(and(eq(runUsageReceipts.runId, input.runId), eq(runUsageReceipts.sequence, 2)));
+    expect(required.receiptJson.producerEvent).toMatchObject({ usage: { reconciliation: { receivedTurnId: "old-provider-turn", cumulative: { inputTokens: 120 }, priorOrigin: { runId: "old-run" } } } });
+    expect(await accountRunCost(db, input.runId)).toBe(false);
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId))).toHaveLength(0);
+  });
+
+  it("retains unmarked legacy Codex reports as incomplete unpriced debt", async () => {
+    const input = { ...await seed(), provider: { kind: "codex" as const, model: "gpt-6.1-sol" } };
+    const delivery = await createNativeUsageDelivery(db, input);
+    const legacy = event(input, 1, "usage.reported");
+    delete (legacy.payload as Record<string, unknown>).runDeltaBasis;
+    await delivery.capture(legacy);
+    await delivery.capture(event(input, 2, "turn.completed"));
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, input.runId));
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId)))[0]).toMatchObject({
+      costAccountingPending: true, costAccountedAt: null, usageJson: { accountingReceiptReady: false, costStatus: "unpriced" } });
+    expect(await accountRunCost(db, input.runId)).toBe(false);
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId))).toHaveLength(0);
   });
 
   it("replays partial and final usage once after a lost commit response and restores turn aggregation", async () => {

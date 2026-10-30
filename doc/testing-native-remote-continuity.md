@@ -330,3 +330,63 @@ The cold fixture build runs before opening PostgreSQL, with the existing native
 integration build budget. PR CI routes this suite through the existing cached
 native Runner lane. CI builds the release fixture; local execution uses debug.
 The behavior test has its own bounded receiver/process deadline after compilation.
+
+### Codex usage authority and release order
+
+The qualified Codex producer keeps its current-run baseline and latest session
+totals in its existing durable provider state. It observes historical resume
+snapshots, preserves that baseline across process recovery, and resets the
+baseline to the latest totals when attaching the next run. Multiple request
+reports therefore emit the whole run delta, rather than the provider's last
+request. Regressing or incomplete live counters cannot certify completion.
+
+Authoritative Codex reports carry `runDeltaBasis: "run"`. This requires a Runner
+artifact built from the provider baseline implementation in this change. A
+version string alone does not establish support; use the qualified artifact
+digest. Existing unmarked Codex reports remain incomplete and unpriced in the
+new accounting path. Their budget debt remains pending for reconciliation.
+No deployed Runner artifact has been qualified by this source-only change.
+
+PRP negotiates envelope versions and the admitted Runner digest. It does not
+negotiate this usage payload field. The existing event envelope validators leave
+usage payloads open, but an old standalone usage-schema consumer rejects this
+new field. Update receivers and strict usage-schema consumers first, then
+release the matching Runner artifact before claiming this durability guarantee.
+Finish or explicitly reconcile older admitted Codex runs during cutover. Do not
+claim that an old producer's final-request delta is a whole-run receipt.
+
+Heartbeat completion reads the current immutable accepted receipt, including its
+saved exact rate-card amount and provenance. It does not reprice with current
+rates or replace that accepted estimate with an absent provider dollar amount.
+The terminal UPDATE preserves the current producer-owned accounting projection
+atomically. If another report arrived after completion read its checkpoint, the
+newer receipt, readiness, price, and budget exposure win; unrelated session and
+completion metadata can still update. A newer partial receipt stays pending.
+Non-accounting attachment control events keep their existing handoff acceptance;
+an old run's accounting report still cannot acquire a successor's authority.
+
+The provider drains its bounded settled-turn usage tail before publishing the
+terminal event. This keeps a late cumulative increase on the old run before the
+next run resets its baseline. Readiness and attachment retain accounting facts
+in the existing provider checkpoint instead of discarding them, including facts
+consumed before a later quiescence error. An increase
+that arrives after authoritative completion requires explicit reconciliation:
+PostgreSQL rejects changed finalized native usage or authoritative monetary evidence, so the existing Runner
+outbox retains it under the old source identity without another charge. Equal
+snapshots are harmless. No recurring scan or automatic adjustment is added.
+
+If delayed usage arrives after attachment and cannot belong to the current
+provider turn, the provider retains its cumulative evidence and the matching
+saved prior identity, leaves the successor baseline unchanged, and emits a
+failed run terminal. The existing reconciliation lifecycle blocks further work,
+including after restart. Unknown older ownership stays explicit rather than
+being inferred from provider-supplied run identity. Manual reconciliation or a
+fresh session is required for this rare unsupported timing case.
+
+Prior-turn increases are checked against the saved attachment baseline, even
+when a successor has already reported a higher session total. Required usage
+bypasses the optional diagnostic limit. An affected successor publishes an
+explicit incomplete usage report before failure; this preserves known budget
+exposure without settling ambiguous usage. That required report and its receipt
+retain the accounting measurements and matching saved prior identity, so an
+optional diagnostic acknowledgement cannot discard reconciliation evidence.

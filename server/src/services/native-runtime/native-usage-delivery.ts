@@ -23,7 +23,7 @@ export async function createNativeUsageDelivery(db: Db, input: {
 }) {
   const sourceId = uuid(`${input.runId}:${input.runnerInstanceId}`);
   const [bound] = await db.update(heartbeatRuns).set({ usageJson: sql`
-    coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) ||
+    coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingReceiptOwner":"native_producer"}'::jsonb ||
     case when ${heartbeatRuns.usageJson}->>'accountingReceiptSourceId' = ${sourceId}
       then '{}'::jsonb else ${JSON.stringify({ accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0, accountingReceiptReady: false })}::jsonb end`
   }).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
@@ -41,16 +41,18 @@ export async function createNativeUsageDelivery(db: Db, input: {
     const fact = envelope.producerEvent!;
     if (fact.eventType === "turn.started") activeProviderTurn = fact.providerTurnId ?? fact.sourceEventId;
     const accountingTurn = fact.providerTurnId ?? activeProviderTurn ?? fact.turnId;
+    const interpretedUsage = fact.usage ? { ...fact.usage, runDeltaComplete: fact.usage.runDeltaComplete === true
+      && (input.provider.kind !== "codex" || fact.usage.runDeltaBasis === "run") } : undefined;
     const event = { sourceInstanceId: input.runnerInstanceId, sourceSeq: envelope.sequence,
       turnId: accountingTurn, eventType: fact.eventType,
-      payload: fact.usage ? { kind: "usage", usage: fact.usage } : {} } as PrpEvent;
+      payload: interpretedUsage ? { kind: "usage", usage: interpretedUsage } : {} } as PrpEvent;
     if (turnAccounting) {
       turnAccounting.observe(event);
       return turnAccounting.snapshot();
     }
     if (fact.eventType === "turn.started") observedTurn = undefined;
-    if (fact.usage) {
-      observedUsage = fact.usage;
+    if (interpretedUsage) {
+      observedUsage = interpretedUsage;
       observedTurn = normalizeNativeUsage(observedUsage, { inputIncludesCacheReads: input.provider.kind === "codex" }) ? accountingTurn : undefined;
     }
     return { usage: observedUsage, complete: terminal.has(fact.eventType) && observedTurn !== undefined && observedTurn === accountingTurn };
@@ -70,7 +72,8 @@ export async function createNativeUsageDelivery(db: Db, input: {
     const fact: NonNullable<UsageReceiptEnvelope["producerEvent"]> = {
       sourceEventId: event.sourceEventId, turnId: event.turnId, eventType: event.eventType,
       ...(typeof payload.providerTurnId === "string" ? { providerTurnId: payload.providerTurnId } : {}),
-      ...(event.eventType === "usage.reported" ? { usage: { runDelta: payload.runDelta, runDeltaComplete: payload.runDeltaAvailable === true } } : {}),
+      ...(event.eventType === "usage.reported" ? { usage: { runDelta: payload.runDelta, runDeltaComplete: payload.runDeltaAvailable === true, runDeltaBasis: payload.runDeltaBasis,
+        ...(payload.reconciliation && typeof payload.reconciliation === "object" ? { reconciliation: payload.reconciliation } : {}) } } : {}),
     };
     const previous = accepted.get(event.sourceEventId) ?? (pending?.producerEvent?.sourceEventId === event.sourceEventId ? pending : undefined);
     if (previous && (previous.sequence !== event.sourceSeq || previous.receivedAt !== event.emittedAt
@@ -88,7 +91,7 @@ export async function createNativeUsageDelivery(db: Db, input: {
         model: input.provider.model ?? "unknown", usage, usageBasis: "per_run", complete: snapshot.complete && usage !== undefined,
         costUsd: usage ? nativeUsageCostUsd(snapshot.usage, input.provider) ?? null : null,
         costUsdExact: typeof snapshot.usage?.accountingCostUsdExact === "string" ? snapshot.usage.accountingCostUsdExact : undefined,
-        costStatus: snapshot.usage?.accountingCostIncomplete === true ? "unpriced"
+        costStatus: usage === undefined || snapshot.usage?.accountingCostIncomplete === true ? "unpriced"
           : input.provider.kind === "aws_agentcore" ? "estimated" : undefined,
       }));
       envelope.liveCostCents = liveRunUsageCostCents(envelope.receipt as AdapterUsageCheckpoint);

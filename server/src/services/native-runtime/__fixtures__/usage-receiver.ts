@@ -20,7 +20,7 @@ process.on("message", async (message: Start | { kind: "command"; requestId: numb
         expectedRunnerVersion: "0.3.0", expectedRunnerDigest: `sha256:${"c".repeat(64)}`,
         onCommittedEvent: async event => {
           try { await delivery.capture(event); }
-          catch (error) { process.send?.({ kind: "capture-failed" }); throw error; }
+          catch (error) { process.send?.({ kind: "capture-failed", cause: error instanceof Error ? error.message : String(error) }); throw error; }
         },
       });
       core.setCheckpointPersistence(async saved => { checkpoint = saved; });
