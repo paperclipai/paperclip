@@ -8,19 +8,21 @@ import { runnerMatrix } from "./catalog.js";
 import { ANTIGRAVITY_JOURNEY_EXECUTION } from "./antigravity-journey-cases.js";
 import { parseAntigravityJourneyConfig } from "./antigravity-journey-config.js";
 import { createAntigravityResourceWriter, runAntigravityJourneyCampaign } from "./antigravity-journey-launch.js";
-import type { AntigravityJourneyResources } from "./antigravity-journey-fixtures.js";
+import { parseAntigravityOwnedResources, type AntigravityJourneyResources } from "./antigravity-journey-fixtures.js";
 import { buildMatrixJobs, parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import { ConnectionFailure } from "./connection-config.js";
 
 const scenario = vi.hoisted(() => ({ config: undefined as any, authReads: 0, prepare: vi.fn(), flow: vi.fn(), close: vi.fn(), cleanup: vi.fn(), reportOutput: "", failBranding: false }));
 const journalFs = vi.hoisted(() => ({ directory: "", fault: "", events: [] as string[], snapshots: [] as unknown[],
+  persistentFault: false, captureWriterDirectory: false, diagnosticFailure: "",
   gate: undefined as { entered(): void; wait: Promise<void>; used: boolean } | undefined }));
 vi.mock("node:fs/promises", async original => {
   const actual = await original<typeof import("node:fs/promises")>();
-  const owned = (file: unknown) => typeof file === "string" && journalFs.directory !== "" && file.startsWith(`${journalFs.directory}/`);
+  const owned = (file: unknown) => typeof file === "string" && journalFs.directory !== "" && file.startsWith(`${journalFs.directory}/`)
+    && (file === `${journalFs.directory}/owned-resources.json` || file.startsWith(`${journalFs.directory}/.owned-resources-`));
   const fail = (stage: string) => {
     if (journalFs.fault !== stage) return false;
-    journalFs.fault = "";
+    if (!journalFs.persistentFault) journalFs.fault = "";
     return true;
   };
   const recordWrite = async (data: unknown) => {
@@ -34,6 +36,8 @@ vi.mock("node:fs/promises", async original => {
   };
   return { ...actual,
     writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+      if (journalFs.diagnosticFailure && args[0] === `${journalFs.directory}/${journalFs.diagnosticFailure}`)
+        throw new Error("fixture diagnostic write failed");
       if (owned(args[0])) {
         await recordWrite(args[1]);
         if (fail("write")) {
@@ -44,6 +48,8 @@ vi.mock("node:fs/promises", async original => {
       return actual.writeFile(...args);
     },
     open: async (...args: Parameters<typeof actual.open>) => {
+      if (journalFs.captureWriterDirectory && typeof args[0] === "string" && /\/\.owned-resources-[a-f0-9]+\.tmp$/u.test(args[0]))
+        journalFs.directory = args[0].slice(0, args[0].lastIndexOf("/"));
       const handle = await actual.open(...args);
       const directory = args[0] === journalFs.directory;
       if (!directory && !owned(args[0])) return handle;
@@ -113,6 +119,7 @@ const outputs: string[] = [];
 let originalExitCode: typeof process.exitCode;
 beforeEach(() => {
   journalFs.directory = ""; journalFs.fault = ""; journalFs.events = []; journalFs.snapshots = []; journalFs.gate = undefined;
+  journalFs.persistentFault = false; journalFs.captureWriterDirectory = false; journalFs.diagnosticFailure = "";
   originalExitCode = process.exitCode;
   scenario.authReads = 0; scenario.prepare.mockReset(); scenario.flow.mockReset(); scenario.close.mockReset();
   scenario.cleanup.mockReset();
@@ -256,6 +263,71 @@ it("retains cleanup-discovered run identities with unknown usage when their publ
   expect(result.billing.complete).toBe(false);
   expect(result.runtimeUsage.agentRunDurationMs).toBeNull();
   expect(result.cleanup).toBe("failed");
+});
+it.each(["", "attempt-error.json", "progress.json", "attempt-result.json", "browser-close"])("closes the browser and packages a failed campaign after persistent resource sync failure (diagnostic=%s)", async diagnosticFailure => {
+  scenario.authReads = 1;
+  if (diagnosticFailure === "browser-close") scenario.close.mockRejectedValueOnce(new Error("fixture browser close failed"));
+  journalFs.captureWriterDirectory = true;
+  const agentId = "66666666-6666-4666-8666-666666666666";
+  const forbiddenMutation = vi.fn();
+  let previousJournal = "";
+  scenario.flow.mockImplementationOnce(async ({ resources, persistResources, observeRun, phase }) => {
+    await phase("agent_creation");
+    resources.agentId = agentId;
+    resources.agentCreationRequest = { setupId: agentId, companyId: resources.companyId, agentName: resources.agentName,
+      provider: "antigravity", creatorUserId: scenario.config.savedConnection.ownerUserId, origin: resources.origin };
+    resources.retained = true;
+    await persistResources();
+    await observeRun({ id: "44444444-4444-4444-8444-444444444444", agentId, companyId: resources.companyId,
+      status: "failed", costAccountingPending: false, usageJson: { inputTokens: 100, outputTokens: 20, costUsd: 0.25 },
+      startedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-01T00:00:01Z" });
+    previousJournal = await readFile(path.join(journalFs.directory, "owned-resources.json"), "utf8");
+    journalFs.fault = "file-sync";
+    journalFs.persistentFault = true;
+    journalFs.diagnosticFailure = diagnosticFailure === "browser-close" ? "" : diagnosticFailure;
+    throw new ConnectionFailure("fixture_primary_failure");
+  });
+  scenario.cleanup.mockImplementationOnce(async ({ persistResources }) => {
+    await persistResources();
+    forbiddenMutation();
+  });
+  let output: string | undefined;
+  try {
+    output = await runAntigravityJourneyCampaign({ executions: executions(), catalog: runnerMatrix, repositoryRoot });
+    outputs.push(output);
+  } finally {
+    // Also remove red-control output when the broken finally rejects before returning it.
+    if (journalFs.directory) outputs.push(journalFs.directory);
+    expect(scenario.close).toHaveBeenCalledOnce();
+  }
+  expect(scenario.flow).toHaveBeenCalledOnce();
+  expect(scenario.cleanup).toHaveBeenCalledOnce();
+  expect(forbiddenMutation).not.toHaveBeenCalled();
+  expect(journalFs.events.filter(event => event === "file-sync").length).toBeGreaterThanOrEqual(3);
+  expect(await readFile(path.join(output!, "owned-resources.json"), "utf8")).toBe(previousJournal);
+  expect(parseAntigravityOwnedResources(JSON.parse(previousJournal), scenario.config)).toMatchObject({ agentId, retained: true,
+    agentCreationRequest: { setupId: agentId, creatorUserId: scenario.config.savedConnection.ownerUserId } });
+  expect((await stat(path.join(output!, "owned-resources.json"))).mode & 0o777).toBe(0o600);
+  expect((await readdir(output!)).filter(file => file.startsWith(".owned-resources-"))).toEqual([]);
+  expect(process.exitCode).toBe(1);
+  expect(scenario.reportOutput).toBe(output);
+  const primary = diagnosticFailure === "attempt-result.json" ? undefined
+    : JSON.parse(await readFile(path.join(output!, "attempt-result.json"), "utf8"));
+  const retained = JSON.parse(await readFile(path.join(output!, "evidence/result.json"), "utf8"));
+  for (const result of [retained, ...(primary ? [primary] : [])]) {
+    expect(result).toMatchObject({ status: "failed", cleanup: "failed", failureClass: "cleanup_failure", antigravityJourney: { outcome: "failed" } });
+    expect(result.error).toContain("fixture_primary_failure");
+    expect(result.error).toContain("fixture_cleanup_failed");
+    expect(result.billing.llm.reportedCostUsd).toBe(0.25);
+    expect(result.usage.runs).toEqual([{ usage: { inputTokens: 100, outputTokens: 20, costUsd: 0.25 } }]);
+  }
+  if (diagnosticFailure === "attempt-result.json") {
+    await expect(readFile(path.join(output!, "attempt-result.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(retained.error).toContain("journey_attempt_result_write_failed");
+  }
+  if (diagnosticFailure === "browser-close") expect(retained.error).toContain("qa_browser_cleanup_failed");
+  if (diagnosticFailure !== "attempt-error.json")
+    expect(JSON.parse(await readFile(path.join(output!, "attempt-error.json"), "utf8")).error).toBe("fixture_primary_failure");
 });
 it.each(["missing_screenshot", "late_assets"])("preserves the primary failure and accounting when real report packaging fails at %s", async failure => {
   scenario.authReads = 1;

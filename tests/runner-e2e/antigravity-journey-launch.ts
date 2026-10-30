@@ -110,6 +110,21 @@ export async function runAntigravityJourneyCampaign(input: {
     const assertActive = () => { if (signal.aborted) throw new ConnectionBlock("blocked_target", campaignSignal.aborted ? "test_interrupted" : "journey_deadline_reached"); };
     const writeResources = createAntigravityResourceWriter(path.join(output, "owned-resources.json"));
     const persistResources = () => writeResources(resources);
+    let finalizationFailed = false;
+    const retainFinalizationFailure = (code: string, ownershipCleanup = false) => {
+      finalizationFailed = true;
+      result.status = "failed";
+      if (!result.error?.split("; ").includes(code)) result.error = `${result.error ? `${result.error}; ` : ""}${code}`;
+      if (ownershipCleanup) {
+        result.cleanup = "failed"; evidence.outcome = "failed"; result.failureClass = "cleanup_failure";
+        resources.retained = Boolean(resources.agentId || resources.agentCreationRequest);
+      } else result.failureClass ??= "permanent_infrastructure";
+    };
+    // Mutation-bound journal writes remain strict. Only failure-path retries are best effort.
+    const persistAfterFailure = async () => {
+      try { await persistResources(); }
+      catch { retainFinalizationFailure("resource_journal_failed", true); }
+    };
     const captureRun = async (run: Row) => {
       if (typeof run.id !== "string" || run.companyId !== resources.companyId || run.agentId !== resources.agentId)
         throw new ConnectionFailure("observed_run_owner_mismatch");
@@ -229,21 +244,28 @@ export async function runAntigravityJourneyCampaign(input: {
         } catch { /* Preserve the primary failure even when the browser is unavailable. */ }
       }
       const sourceLocation = error instanceof Error ? error.stack?.match(/antigravity-journey-(?:flow|ui)\.ts:\d+:\d+/u)?.[0] : undefined;
-      await save("attempt-error.json", { error: result.error, phase: evidence.phase, outcome: evidence.outcome, sourceLocation, failureScreenshot });
-      await persistResources();
+      try { await save("attempt-error.json", { error: result.error, phase: evidence.phase, outcome: evidence.outcome, sourceLocation, failureScreenshot }); }
+      catch { retainFinalizationFailure("journey_error_diagnostic_write_failed"); }
+      await persistAfterFailure();
     } finally {
       clearTimeout(timer); signal.removeEventListener("abort", abort);
-      try { await fixtures?.teardown(); if (result.cleanup !== "failed") result.cleanup = "passed"; }
-      catch (error) { result.cleanup = "failed"; result.status = "failed"; evidence.outcome = "failed"; result.failureClass = "cleanup_failure";
-        const code = error instanceof AggregateError && error.errors[0] instanceof ConnectionFailure ? error.errors[0].message : "fixture_cleanup_failed";
-        result.error = `${result.error ? `${result.error}; ` : ""}${code}`; resources.retained = Boolean(resources.agentId || resources.agentCreationRequest); await persistResources(); }
-      try { await browser?.close(); }
-      catch { result.cleanup = "failed"; result.status = "failed"; evidence.outcome = "failed"; result.failureClass = "cleanup_failure"; result.error = "qa_browser_cleanup_failed"; }
+      try {
+        try { await fixtures?.teardown(); if (result.cleanup !== "failed") result.cleanup = "passed"; }
+        catch (error) {
+          const code = error instanceof AggregateError && error.errors[0] instanceof ConnectionFailure ? error.errors[0].message : "fixture_cleanup_failed";
+          retainFinalizationFailure(code, true);
+          await persistAfterFailure();
+        }
+      } finally {
+        try { await browser?.close(); }
+        catch { retainFinalizationFailure("qa_browser_cleanup_failed", true); }
+      }
       result.finishedAt = new Date().toISOString(); result.durationMs = Date.parse(result.finishedAt) - Date.parse(startedAt);
       result.issueId = resources.issueId;
-      await save("progress.json", evidence);
+      try { await save("progress.json", evidence); }
+      catch { retainFinalizationFailure("journey_progress_write_failed"); }
       if (operationOnly) {
-        if (!operationPassed || result.cleanup === "failed") process.exitCode = 1;
+        if (!operationPassed || result.cleanup === "failed" || finalizationFailed) process.exitCode = 1;
       } else {
         result.runIds = [...new Set([...resources.runIds, ...observed.keys()])];
         const runs = result.runIds.map(id => observed.get(id) ?? { id });
@@ -257,8 +279,10 @@ export async function runAntigravityJourneyCampaign(input: {
           result.status = "failed"; evidence.outcome = "failed"; result.failureClass = "candidate_failure"; result.error = "antigravity_journey_proof_incomplete";
         }
         const primary = structuredClone(result);
+        try { await save("attempt-result.json", primary); }
+        catch { retainFinalizationFailure("journey_attempt_result_write_failed"); }
+        const presentation = structuredClone(result);
         try {
-          await save("attempt-result.json", primary);
           const packaged = await writeAntigravityJourneyReport({ output, campaignId, result, resources, catalog: input.catalog, secrets: [] });
           if (packaged.status !== "passed" || packaged.cleanup !== "passed") process.exitCode = 1;
           console.log(`[antigravity-agent-journey] ${packaged.status}: ${path.join(output, "dashboard.html")}`);
@@ -286,9 +310,9 @@ export async function runAntigravityJourneyCampaign(input: {
                 } catch { /* Retain malformed source bytes; packaging remains failed. */ }
               }
             }
-            const failed: RunnerE2EResult = { ...primary, status: "failed",
-              failureClass: primary.failureClass ?? "permanent_infrastructure",
-              error: `${primary.error ? `${primary.error}; ` : ""}${code}` };
+            const failed: RunnerE2EResult = { ...presentation, status: "failed",
+              failureClass: presentation.failureClass ?? "permanent_infrastructure",
+              error: `${presentation.error ? `${presentation.error}; ` : ""}${code}` };
             await mkdir(path.join(output, "evidence"), { recursive: true, mode: 0o700 });
             await save("evidence/result.json", failed);
             await save("evidence/evidence-manifest.json", { ...manifest,
