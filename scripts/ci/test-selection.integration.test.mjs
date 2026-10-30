@@ -158,6 +158,25 @@ test("forced modes, config, fixtures, deletions and unknown inputs cannot narrow
   assert.ok(selectionEligibility({ ...plan, forceReason: "full-ci" }));
 });
 
+test("ordinary source names containing config or setup remain graph eligible", (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "ci-names-"));
+  t.after(() => { process.chdir(root); rmSync(directory, { recursive: true, force: true }); });
+  process.chdir(directory);
+  const plan = fixturePlan().plan;
+  for (const file of [
+    "server/src/services/heartbeat/session-config-metadata.test.ts",
+    "server/src/storage/config.ts",
+    "ui/src/pages/apps/chat/slack/setup-state.test.ts",
+  ]) {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "export {};\n");
+    assert.equal(selectionEligibility({ ...plan, changed: [file] }), null, file);
+  }
+  for (const file of ["ui/src/vitest.setup.ts", "server/src/vitest.config.mts"]) {
+    assert.equal(selectionEligibility({ ...plan, changed: [file] }), `Broad input: ${file}`);
+  }
+});
+
 test("the CLI publishes the complete coarse plan if setup mutates tracked inputs", (t) => {
   const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "ci-vd-")));
   t.after(() => rmSync(directory, { recursive: true, force: true }));

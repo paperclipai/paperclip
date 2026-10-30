@@ -1,8 +1,10 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { appendFile, lstat, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { publicContext, aliases, executionId, scenario } from './chat-feature-testops-api.mjs';
+import { publicContext, aliases, executionId, scenario, endpoint, testopsClient, bootstrapJobMetadata, failureProjection } from './chat-feature-testops-api.mjs';
 import { run } from './chat-feature-testops-cli.mjs';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const fail = () => { throw new Error('chat_testops_selection_rejected'); };
@@ -34,8 +36,67 @@ export async function verifySelectionFile(file, env) {
   return (await readVerifiedSelection(file, env)).value;
 }
 
-export async function reporter(command, argument, env = process.env, fetchImpl = fetch) {
+const officialExec = promisify(execFile);
+class BootstrapContextFailure extends Error {}
+const rejectBootstrapContext = () => { throw new BootstrapContextFailure('chat_testops_bootstrap_context_invalid'); };
+
+export function parseOfficialBootstrapContext(stdout) {
+  if (typeof stdout !== 'string' || Buffer.byteLength(stdout) > 16_384) rejectBootstrapContext();
+  const values = new Map();
+  for (const line of stdout.split(/\r?\n/)) {
+    for (const name of ['ALLURE_JOB_RUN_ID', 'ALLURE_LAUNCH_ID']) {
+      if (!line.startsWith(`${name}=`)) continue;
+      const value = line.slice(name.length + 1);
+      if (values.has(name) || !/^[1-9][0-9]{0,15}$/.test(value) || !Number.isSafeInteger(Number(value))) rejectBootstrapContext();
+      values.set(name, value);
+    }
+  }
+  if (values.size !== 2) rejectBootstrapContext();
+  return { jobRunId: values.get('ALLURE_JOB_RUN_ID'), launchId: Number(values.get('ALLURE_LAUNCH_ID')) };
+}
+
+async function captureBootstrapContext(env, fetchImpl, execImpl) {
+  let stateRoot;
+  try {
+    if (env.ALLURE_ENDPOINT !== endpoint || env.ALLURE_PROJECT_ID !== '1' || !env.RUNNER_TEMP
+      || !env.GITHUB_WORKSPACE || !path.isAbsolute(env.GITHUB_WORKSPACE) || !env.GITHUB_EVENT_PATH) rejectBootstrapContext();
+    const eventStat = await lstat(env.GITHUB_EVENT_PATH);
+    if (!eventStat.isFile() || eventStat.isSymbolicLink() || eventStat.nlink !== 1 || eventStat.size > 65_536) rejectBootstrapContext();
+    const event = JSON.parse(await readFile(env.GITHUB_EVENT_PATH, 'utf8'));
+    if (!event.inputs || Object.keys(event.inputs).some(key => !['operation', 'ALLURE_JOB_RUN_ID', 'ALLURE_USERNAME'].includes(key))
+      || event.inputs.operation !== 'bootstrap' || (event.inputs.ALLURE_JOB_RUN_ID ?? '') !== '') rejectBootstrapContext();
+    const requested = path.join(await realpath(env.RUNNER_TEMP), 'chat-testops-bootstrap-state');
+    const stateStat = await lstat(requested);
+    if (!stateStat.isDirectory() || stateStat.isSymbolicLink() || await realpath(requested) !== requested
+      || process.getuid && stateStat.uid !== process.getuid() || stateStat.mode & 0o077) rejectBootstrapContext();
+    stateRoot = requested;
+    for (const name of ['registration.json', 'registration-failure.json']) {
+      try { await lstat(path.join(stateRoot, name)); rejectBootstrapContext(); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    let output;
+    try {
+      output = await execImpl('allurectl', ['job-run', 'env'], { cwd: await realpath(env.GITHUB_WORKSPACE), env,
+        shell: false, encoding: 'utf8', timeout: 30_000, maxBuffer: 16_384, windowsHide: true });
+    } catch { throw new BootstrapContextFailure('chat_testops_bootstrap_command_failed'); }
+    const captured = parseOfficialBootstrapContext(output.stdout);
+    const api = await testopsClient(env.ALLURE_TOKEN, fetchImpl);
+    const registration = await bootstrapJobMetadata(api, { ...env, ALLURE_JOB_RUN_ID: captured.jobRunId }, captured.launchId);
+    await writeFile(path.join(stateRoot, 'registration.json'), JSON.stringify(registration, null, 2), { flag: 'wx', mode: 0o600 });
+    return 0;
+  } catch (error) {
+    const safe = error instanceof BootstrapContextFailure
+      ? { stage: 'bootstrap_context', code: error.message, httpStatus: null }
+      : failureProjection(error, 'bootstrap_context');
+    if (stateRoot) await writeFile(path.join(stateRoot, 'registration-failure.json'), JSON.stringify(safe, null, 2), { flag: 'wx', mode: 0o600 }).catch(() => {});
+    process.stderr.write(`Chat TestOps bootstrap context stopped: ${JSON.stringify(safe)}\n`);
+    return 1;
+  }
+}
+
+export async function reporter(command, argument, env = process.env, fetchImpl = fetch, execImpl = officialExec) {
   publicContext(env);
+  if (command === 'bootstrap-context') return captureBootstrapContext(env, fetchImpl, execImpl);
   if (command === 'verify-selection') {
     if (Object.hasOwn(env, 'ALLURE_TOKEN')) fail();
     await verifySelectionFile(argument, env);
