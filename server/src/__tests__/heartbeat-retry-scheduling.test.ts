@@ -71,6 +71,8 @@ const mockedAppendHeartbeatRunEvent = vi.mocked(appendHeartbeatRunEvent);
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const PROVIDER_QUOTA_TEST_ADAPTER = "provider_quota_test";
+const OPENCODE_TRANSIENT_TEST_ADAPTER = "opencode_transient_test";
+const OPENCODE_TERMINAL_TEST_ADAPTER = "opencode_terminal_test";
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -125,6 +127,40 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         testedAt: new Date().toISOString(),
       }),
     });
+    registerServerAdapter({
+      type: OPENCODE_TRANSIENT_TEST_ADAPTER,
+      execute: async () => ({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: "Upstream request failed: Endpoint is unavailable.",
+        errorCode: "opencode_transient_upstream",
+        errorFamily: "transient_upstream",
+        resultJson: { errorFamily: "transient_upstream", conversationContinuation: "continue_conversation_v1" },
+      }),
+      testEnvironment: async () => ({
+        adapterType: OPENCODE_TRANSIENT_TEST_ADAPTER,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
+    registerServerAdapter({
+      type: OPENCODE_TERMINAL_TEST_ADAPTER,
+      execute: async () => ({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: "Tool crashed while parsing its arguments",
+        resultJson: { conversationContinuation: "continue_conversation_v1" },
+      }),
+      testEnvironment: async () => ({
+        adapterType: OPENCODE_TERMINAL_TEST_ADAPTER,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
   }, 20_000);
 
   afterEach(async () => {
@@ -141,6 +177,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
   afterAll(async () => {
     unregisterServerAdapter(PROVIDER_QUOTA_TEST_ADAPTER);
+    unregisterServerAdapter(OPENCODE_TRANSIENT_TEST_ADAPTER);
+    unregisterServerAdapter(OPENCODE_TERMINAL_TEST_ADAPTER);
     await tempDb?.cleanup();
   });
 
@@ -398,6 +436,101 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         { timeout: 5_000, interval: 50 },
       )
       .toEqual({ status: "idle", errorReason: null });
+  });
+
+  async function seedInvokableAgent(adapterType: string, name: string) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name,
+      role: "engineer",
+      status: "idle",
+      adapterType,
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    return { companyId, agentId };
+  }
+
+  it("schedules a bounded retry and leaves the agent idle on a transient upstream failure", async () => {
+    const { agentId } = await seedInvokableAgent(OPENCODE_TRANSIENT_TEST_ADAPTER, "Transient OpenCode");
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+
+    const failedRun = await waitForRunToFinish(heartbeat, run!.id, 20_000);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("opencode_transient_upstream");
+    expect((failedRun?.resultJson as Record<string, unknown> | null)?.errorFamily).toBe("transient_upstream");
+
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.retryOfRunId, run!.id))
+            .then((rows) => rows.length),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toBe(1);
+
+    const retryRun = await db
+      .select({
+        status: heartbeatRuns.status,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun?.status).toBe("scheduled_retry");
+    expect(retryRun?.scheduledRetryReason).toBe("transient_failure");
+    expect(retryRun?.scheduledRetryAt).toBeInstanceOf(Date);
+
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ status: agents.status, errorReason: agents.errorReason })
+            .from(agents)
+            .where(eq(agents.id, agentId))
+            .then((rows) => rows[0] ?? null),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toEqual({ status: "idle", errorReason: null });
+  });
+
+  it("leaves the agent in error with no retry when the failure is not transient", async () => {
+    const { agentId } = await seedInvokableAgent(OPENCODE_TERMINAL_TEST_ADAPTER, "Terminal OpenCode");
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+
+    const failedRun = await waitForRunToFinish(heartbeat, run!.id, 20_000);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("adapter_failed");
+
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ status: agents.status, errorReason: agents.errorReason })
+            .from(agents)
+            .where(eq(agents.id, agentId))
+            .then((rows) => rows[0] ?? null),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toEqual({ status: "error", errorReason: "Tool crashed while parsing its arguments" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id))).toHaveLength(0);
   });
 
   async function seedMaxTurnFixture(input?: {

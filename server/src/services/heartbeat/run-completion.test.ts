@@ -170,6 +170,65 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, expected, expect.any(String), expect.objectContaining({ keepIdleOnFailure: result.errorCode === "provider_quota" }));
   });
 
+  it("keeps a transiently failed agent idle when a bounded retry is scheduled", async () => {
+    const f = await fixture();
+    Object.assign(f.input.adapterResult, {
+      exitCode: 1,
+      errorCode: "opencode_transient_upstream",
+      errorFamily: "transient_upstream",
+      errorMessage: "Upstream request failed: Endpoint is unavailable.",
+      resultJson: { errorFamily: "transient_upstream" },
+    });
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({
+      outcome: "scheduled", run: { id: randomUUID() }, dueAt: new Date(), attempt: 1, maxAttempts: 2, reusedExisting: false,
+    } as never);
+    await f.completion.completeRun(f.input);
+    expect(await read(f.run.id)).toMatchObject({
+      status: "failed",
+      errorCode: "opencode_transient_upstream",
+      resultJson: { errorFamily: "transient_upstream" },
+    });
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledOnce();
+    expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(
+      f.agent.id, "failed", expect.any(String),
+      expect.objectContaining({ keepIdleOnFailure: true }),
+    );
+  });
+
+  it("keeps the agent in error when transient retries are exhausted", async () => {
+    const f = await fixture();
+    Object.assign(f.input.adapterResult, {
+      exitCode: 1,
+      errorCode: "opencode_transient_upstream",
+      errorFamily: "transient_upstream",
+      errorMessage: "Upstream request failed: Endpoint is unavailable.",
+      resultJson: { errorFamily: "transient_upstream" },
+    });
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({
+      outcome: "retry_exhausted", attempt: 3, maxAttempts: 2,
+    } as never);
+    await f.completion.completeRun(f.input);
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledOnce();
+    expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(
+      f.agent.id, "failed", expect.any(String),
+      expect.objectContaining({ keepIdleOnFailure: false }),
+    );
+  });
+
+  it("does not schedule a retry and keeps the agent in error for a non-transient failure", async () => {
+    const f = await fixture();
+    Object.assign(f.input.adapterResult, {
+      exitCode: 1,
+      errorMessage: "Tool crashed while parsing its arguments",
+    });
+    await f.completion.completeRun(f.input);
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(
+      f.agent.id, "failed", expect.any(String),
+      expect.objectContaining({ keepIdleOnFailure: false }),
+    );
+  });
+
   it.each(["completeRun", "failRun"] as const)("waits for an owned Stop before %s can write a competing outcome", async operation => {
     const f = await fixture();
     let settle!: () => void;

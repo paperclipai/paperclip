@@ -117,3 +117,50 @@ export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): b
     haystack,
   );
 }
+
+// Provider-level usage walls. These do not clear on the retry cadence an
+// in-run retry can afford, so they carry their own family and are handed to
+// the durable quota recovery path instead of being retried in-process.
+const OPENCODE_PROVIDER_QUOTA_RE =
+  /free usage limit reached|usage limit (?:reached|exceeded)|provider quota|quota (?:limit )?exceeded|insufficient (?:credits|balance)|out of credits|credit balance|subscribe to opencode/i;
+
+// Transient transport/provider failures: a short outage, rate limit or
+// capacity wall that may clear while the run is still alive.
+const OPENCODE_TRANSIENT_UPSTREAM_RE =
+  /rate.?limit|too.?many.?requests|\b429\b|overloaded|\b529\b|throttl|model (?:is )?at capacity|at capacity|service.?unavailable|endpoint.?unavailable|\bunavailable\b|\b503\b|socket.?hang.?up|fetch.?failed|econnreset|econnrefused|etimedout|enotfound|\beof\b|cloudflare|gateway.?error|bad.?gateway|\b50[24]\b/i;
+
+export function isOpenCodeProviderQuotaError(stdout: string, stderr: string): boolean {
+  return OPENCODE_PROVIDER_QUOTA_RE.test(`${stdout}\n${stderr}`);
+}
+
+export function isOpenCodeApiError(stdout: string, stderr: string): boolean {
+  const haystack = `${stdout}\n${stderr}`;
+  if (OPENCODE_PROVIDER_QUOTA_RE.test(haystack)) return false;
+  return OPENCODE_TRANSIENT_UPSTREAM_RE.test(haystack);
+}
+
+export type OpenCodeFailureClassification = {
+  errorCode: "provider_quota" | "opencode_transient_upstream";
+  errorFamily: "provider_quota" | "transient_upstream";
+};
+
+/**
+ * Machine-readable classification for a failed OpenCode attempt. A null
+ * result is deliberately terminal: the server must leave a non-transient
+ * failure in `error` rather than retrying it.
+ */
+export function classifyOpenCodeFailure(
+  stdout: string,
+  stderr: string,
+): OpenCodeFailureClassification | null {
+  if (isOpenCodeProviderQuotaError(stdout, stderr)) {
+    return { errorCode: "provider_quota", errorFamily: "provider_quota" };
+  }
+  if (isOpenCodeApiError(stdout, stderr)) {
+    return {
+      errorCode: "opencode_transient_upstream",
+      errorFamily: "transient_upstream",
+    };
+  }
+  return null;
+}

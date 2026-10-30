@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+import {
+  classifyOpenCodeFailure,
+  isOpenCodeApiError,
+  isOpenCodeProviderQuotaError,
+  parseOpenCodeJsonl,
+  isOpenCodeUnknownSessionError,
+} from "./parse.js";
 
 describe("parseOpenCodeJsonl", () => {
   it("parses assistant text, usage, cost, and errors", () => {
@@ -93,5 +99,37 @@ describe("OpenCode reported usage completeness", () => {
     const line = JSON.stringify({ type: "step_finish", part: { tokens: { input: 0, output: 0 } } });
     expect(parseOpenCodeJsonl(line)).toMatchObject({ usageReported: true, usageComplete: true, usage: { inputTokens: 0, outputTokens: 0 }, costUsd: null });
     expect(parseOpenCodeJsonl(line + '\n' + JSON.stringify({ type: "step_finish" }))).toMatchObject({ usageReported: true, usageComplete: false });
+  });
+});
+
+describe("OpenCode failure classification", () => {
+  it.each([
+    "Upstream request failed: Endpoint is unavailable.",
+    "429 Too Many Requests",
+    "529 Overloaded",
+    "Selected model is at capacity. Please try a different model.",
+    "read: connection reset by peer (ECONNRESET)",
+    "Cloudflare 502 Bad Gateway",
+  ])("classifies %s as transient upstream", (message) => {
+    expect(classifyOpenCodeFailure("", message)).toEqual({
+      errorCode: "opencode_transient_upstream",
+      errorFamily: "transient_upstream",
+    });
+  });
+
+  it("classifies a provider usage wall as provider quota", () => {
+    const message =
+      "Free usage limit reached. Connect a provider or subscribe to OpenCode Go to keep going, or switch models.";
+    expect(isOpenCodeProviderQuotaError("", message)).toBe(true);
+    expect(isOpenCodeApiError("", message)).toBe(false);
+    expect(classifyOpenCodeFailure("", message)).toEqual({
+      errorCode: "provider_quota",
+      errorFamily: "provider_quota",
+    });
+  });
+
+  it("returns null for a non-transient failure so the server leaves it terminal", () => {
+    expect(classifyOpenCodeFailure("", "TypeError: cannot read properties of undefined")).toBeNull();
+    expect(classifyOpenCodeFailure("", "tool_use failed: invalid arguments")).toBeNull();
   });
 });

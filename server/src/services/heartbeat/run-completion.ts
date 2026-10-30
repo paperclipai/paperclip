@@ -737,12 +737,17 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     );
 
     const finalizedRun = persistedRun ?? (await getRun(run.id));
+    // A classified transient failure only keeps the agent out of `error`
+    // when a bounded retry was actually queued. Exhaustion is terminal and
+    // must stay visible on the agent row.
+    let transientRetryScheduled = false;
     const settleAgent = () => finalizeAgentStatus(agent.id, outcome, runErrorMessage, {
       keepIdleOnFailure:
         outcome === "failed" &&
-        ((finalizedRun
-          ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota"
-          : runErrorCode === "provider_quota") ||
+        (transientRetryScheduled ||
+          (finalizedRun
+            ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota"
+            : runErrorCode === "provider_quota") ||
           isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
       wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
     });
@@ -947,7 +952,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         outcome === "failed" &&
         readTransientRecoveryContractFromRun(livenessRun)
       ) {
-        await scheduleBoundedRetryForRun(livenessRun, agent);
+        const retry = await scheduleBoundedRetryForRun(livenessRun, agent);
+        transientRetryScheduled = retry?.outcome === "scheduled";
       } else if (
         outcome === "failed" &&
         !(await legacyExecutionNeedsReconciliationWithEvidence(db, livenessRun))
