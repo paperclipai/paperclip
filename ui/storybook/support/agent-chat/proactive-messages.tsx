@@ -35,8 +35,6 @@ const agents = [
   { ...storybookAgents[1], name: "Mira", urlKey: "mira", status: "idle" as const, title: "Research and planning" },
 ];
 
-/** Stateful responses keep the actual read hook and navigation query in sync.
- * They do not qualify persistence, authorization, events, or agent execution. */
 export function prepareProactiveMessageFixtures(readFailure = false) {
   const unread = new Set(agents.map(agent => agent.id));
   const chats = () => agents.map((agent, index): Issue => ({
@@ -74,7 +72,6 @@ export function prepareProactiveMessageFixtures(readFailure = false) {
   ]);
 }
 
-/** Review layout around shipped subjects; this is not a duplicate app page. */
 export function ProactiveMessageReview() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
