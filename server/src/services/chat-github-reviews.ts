@@ -51,7 +51,7 @@ import {
   effectiveGitHubReviewPolicy,
   githubReviewConclusion,
   githubReviewPathIsExcluded,
-  githubReviewLineIsInPatch,
+  githubReviewFindingsOutsidePatch,
   validateGitHubReviewAssessment,
 } from "./chat-github-review-policy.js";
 import {
@@ -811,18 +811,15 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       const byPath = new Map(
         permittedFiles.map((file) => [file.filename, file]),
       );
-      if (
-        assessment.findings.some(
-          (finding) =>
-            !githubReviewLineIsInPatch(
-              byPath.get(finding.path)?.patch,
-              finding.line,
-              finding.side,
-            ),
-        )
-      )
+      const outsideDiff = githubReviewFindingsOutsidePatch(
+        assessment.findings,
+        (path) => byPath.get(path)?.patch,
+      );
+      if (outsideDiff.length)
         throw conflict(
-          "Each inline finding must identify a line and side in GitHub's current diff. Move findings outside the available diff into the summary.",
+          "Each inline finding must identify a line and side in GitHub's current diff. Move findings outside the available diff into the summary. " +
+            `Not in the diff: ${outsideDiff.slice(0, 10).join(", ")}` +
+            (outsideDiff.length > 10 ? ` and ${outsideDiff.length - 10} more.` : "."),
         );
       if (
         assessment.findings.some((f) => !paths.has(f.path)) ||
