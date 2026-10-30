@@ -45,6 +45,7 @@ import {
   ensurePathInEnv,
   isForbiddenConfigEnvKey,
   isPaperclipRuntimeEnvKey,
+  resolveLocalCommandPath,
   refreshPaperclipWorkspaceEnvForExecution,
   renderTemplate,
   hydrateFreshSessionHandoff,
@@ -98,7 +99,7 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
-import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { DEFAULT_CLAUDE_LOCAL_ENV, resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
   createClaudeAcpExecutor,
   resolveClaudeExecutionEngineForRun,
@@ -121,6 +122,8 @@ interface ClaudeExecutionInput {
 
 interface ClaudeRuntimeConfig {
   command: string;
+  /** Absolute path for local targets; the bare command for remote/sandbox ones. */
+  spawnCommand: string;
   resolvedCommand: string;
   cwd: string;
   workspaceId: string | null;
@@ -221,7 +224,10 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const envConfig = parseObject(config.env);
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent, input.agentIdentity) };
+  // Seeded before the adapter-config env is applied below, so an agent that
+  // sets DISABLE_AUTOUPDATER explicitly still wins. This covers agents hired
+  // before the hire-time default existed.
+  const env: Record<string, string> = { ...DEFAULT_CLAUDE_LOCAL_ENV, ...buildPaperclipEnv(agent, input.agentIdentity) };
   env.PAPERCLIP_RUN_ID = runId;
 
   const wakeTaskId =
@@ -342,6 +348,13 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     timeoutSec,
   });
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
+  // Pin local runs to the absolute path we just resolved. Re-resolving at spawn
+  // time re-opens the window where the CLI's autoupdater has unlinked the old
+  // `claude` symlink and not yet linked the new one. Remote and sandbox targets
+  // resolve inside their own filesystem, so they keep the bare command.
+  const spawnCommand = executionTargetIsRemote
+    ? command
+    : (await resolveLocalCommandPath(command, cwd, runtimeEnv)) ?? command;
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
     includeRuntimeKeys: ["HOME", "CLAUDE_CONFIG_DIR"],
@@ -356,6 +369,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
 
   return {
     command,
+    spawnCommand,
     resolvedCommand,
     cwd,
     workspaceId,
@@ -386,7 +400,7 @@ export async function runClaudeLogin(input: {
     authToken: input.authToken,
   });
 
-  const proc = await runAdapterExecutionTargetProcess(input.runId, null, runtime.command, ["login"], {
+  const proc = await runAdapterExecutionTargetProcess(input.runId, null, runtime.spawnCommand, ["login"], {
     cwd: runtime.cwd,
     env: runtime.env,
     timeoutSec: runtime.timeoutSec,
@@ -476,6 +490,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   let {
     command,
+    spawnCommand,
     resolvedCommand,
     cwd,
     workspaceId,
@@ -965,7 +980,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         billingType, model: Object.keys(parseObject(parsed.resultJson?.modelUsage)).length > 1 ? "mixed" : parsed.model || model,
           usageByModel: claudeModelReceipts(parsed.resultJson?.modelUsage), complete: parsed.resultJson !== null };
     });
-    const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+    const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, spawnCommand, args, {
       onProcessStopped: providerStop.beginInvocation(),
       cwd,
       env,
