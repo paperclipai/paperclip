@@ -7,6 +7,7 @@ import {
 } from "../../contracts/completion-result.js";
 
 import { canonicalOpenCodeMcpToolName, startOpenCodeMcpBridge, type OpenCodeMcpBridge } from "./mcp-bridge.js";
+import { requestHumanInputAction } from "../../protocol-actions/request-human-input.js";
 
 const bridges: OpenCodeMcpBridge[] = [];
 
@@ -31,6 +32,20 @@ async function rpc(
 }
 
 describe("OpenCode MCP bridge", () => {
+  it("tells a malformed question caller the expected payload version before any side effect", async () => {
+    const handler = vi.fn(async () => ({ disposition: "applied" }));
+    const bridge = await startOpenCodeMcpBridge({ tools: [{ name: "request_human_input",
+      inputSchema: requestHumanInputAction.live.descriptor.inputSchema }], handler });
+    bridges.push(bridge);
+    const result = await (await rpc(bridge, { id: "invalid-question", method: "tools/call", params: {
+      name: "paperclip_request_human_input", arguments: { idempotencyKey: "question", interactionKind: "questions",
+        title: "Choose a time", prompt: "Morning or Afternoon?", continuationPolicy: "wake_assignee", payload: { version: 2 } },
+    } })).json() as { result: { isError: boolean; content: Array<{ text: string }> } };
+    expect(result.result.isError).toBe(true);
+    expect(result.result.content[0]!.text).toContain("questionSet");
+    expect(result.result.content[0]!.text).toContain("/payload/version must be equal to constant (expected 1)");
+    expect(handler).not.toHaveBeenCalled();
+  });
   it("binds to loopback, requires authentication, and exposes only its closed catalog", async () => {
     const bridge = await startOpenCodeMcpBridge({
       secret: "session-secret",
