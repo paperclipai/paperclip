@@ -12071,7 +12071,7 @@ describe("runnerd provider runtime wiring", () => {
   it.each(["warm", "per_turn"] as const)("defers a %s retained-owner wait before claiming a provider attempt", async mode => {
     const fresh = scopedNativeExecution(`retained-owner-${mode}`);
     fresh.session.lifecyclePolicy = mode === "warm"
-      ? { mode: "warm", idleTimeoutMs: 300_000 } : { mode: "per_turn" };
+      ? { mode: "warm", idleTimeoutMs: 300_000 } : { mode: "per_turn", idleTimeoutMs: null };
     const deadline = new Date(Date.now() + 60_000);
     vi.mocked(controllerRecovery.resolveNativeControllerRecovery).mockResolvedValueOnce({ kind: "waiting_for_owner", deadline });
     const defer = vi.spyOn(controllerRecovery, "deferNativeControllerRecovery").mockResolvedValueOnce();
