@@ -2695,11 +2695,11 @@ checks and current admission authority still govern the next turn.
 
 An active remote owner causes startup recovery to retain the obligation at the
 actual lease deadline. The existing recovery dispatch timer is rearmed on drain
-resume; successful reconciliation leaves no recurring recovery work. Upgrade
+resume; successful reconciliation leaves no recurring recovery work.
 Follow-up waits retain their original dispatch mode and owner across a drain,
 including when another heartbeat service facade resumes the work. A failed
 dispatch retains a bounded retry obligation rather than losing its deadline.
-diagnostics retain their existing `ready` meaning and add bounded retained-pointer
+Upgrade diagnostics retain their existing `ready` meaning and add bounded retained-pointer
 header evidence. That inventory is preliminary, reports partial coverage, and
 does not certify workspace durability or volume removal.
 
