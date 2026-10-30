@@ -7322,3 +7322,61 @@ fn late_codex_usage_requires_durable_reconciliation_before_or_after_handoff() {
         fs::remove_dir_all(directory).unwrap();
     }
 }
+
+#[test]
+fn durable_codex_usage_keeps_completed_turn_through_reconciled_provider_exit() {
+    for exit_flag in [
+        "--exit-after-turn-completion",
+        "--fail-after-turn-completion",
+    ] {
+        let directory = temporary_directory("accounting-reconciled-exit");
+        let config = provider_config(
+            &directory,
+            &[
+                "--durable-turn-ids",
+                "--warm-tail-accounting",
+                "--emit-post-completion-passive-statuses",
+                exit_flag,
+            ],
+        );
+        let mut executor =
+            CodexCommandExecutor::with_runner_config(&directory, &durable_config(&directory));
+        executor
+            .execute(&command(
+                "prepare",
+                1,
+                "run.prepare",
+                json!({"provider":config,"authorizedTools":task_context_tool_set()}),
+            ))
+            .unwrap();
+        executor
+            .execute(&command("open", 2, "session.open", json!({})))
+            .unwrap();
+        executor
+            .execute(&command(
+                "turn",
+                3,
+                "turn.start",
+                json!({"text":"Complete accounting before exiting."}),
+            ))
+            .unwrap();
+        let events = wait_for_executor_event_batch(&mut executor, "turn.completed");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "usage.reported")
+                .last()
+                .unwrap()
+                .payload["runDelta"]["inputTokens"],
+            120
+        );
+        assert!(!events.iter().any(|event| event.event_type == "turn.failed"));
+        let saved: Value =
+            serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
+                .unwrap();
+        assert_ne!(saved["lifecycle"], "reconciliation_required");
+        assert_eq!(saved["completedTurnAuthoritative"], true);
+        executor.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+}

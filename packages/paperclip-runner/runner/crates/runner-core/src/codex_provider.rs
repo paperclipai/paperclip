@@ -1494,6 +1494,15 @@ impl CodexProvider {
                             "Codex warm run attachment observed a post-terminal provider request",
                         ));
                     }
+                    Some(CodexProviderEvent::Exited {
+                        completed_turn_authoritative,
+                        completion_reconciles_exit,
+                        ..
+                    }) if completion_reconciles_exit
+                        || (completed_turn_authoritative && self.process.stdout_drained()) =>
+                    {
+                        return Ok(())
+                    }
                     Some(CodexProviderEvent::Exited { .. }) => {
                         return Err(LocalRunnerError::invalid(
                             "Codex exited while quiescing for warm run attachment",

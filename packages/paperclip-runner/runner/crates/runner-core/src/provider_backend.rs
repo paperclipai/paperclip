@@ -4465,7 +4465,18 @@ impl CodexCommandExecutor {
                     } else {
                         None
                     };
-                    if terminal_event_type.as_deref() == Some("turn.completed") {
+                    let goal_remains_active = match &goal_reconciliation {
+                        Some(Ok(snapshot)) => normalize_codex_goal(snapshot, false)
+                            .is_some_and(|goal| goal.status == "active"),
+                        _ => self
+                            .state
+                            .as_ref()
+                            .and_then(|state| state.goal.as_ref())
+                            .is_some_and(|goal| goal.status == "active"),
+                    };
+                    if terminal_event_type.as_deref() == Some("turn.completed")
+                        && !goal_remains_active
+                    {
                         self.retain_completed_accounting_tail()?;
                     }
                     let working_now = self

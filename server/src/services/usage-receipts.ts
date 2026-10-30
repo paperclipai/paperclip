@@ -87,10 +87,14 @@ export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
         const value = receipt?.cacheAdjustedCostUsd ?? receipt?.costUsdExact ?? receipt?.costUsd;
         return value == null ? null : usdToUnits(value);
       };
+      const incomingMoney = monetaryAmount(envelope.receipt);
+      const authoritativeMoney = incomingMoney !== null && envelope.receipt.pricingProvenance?.source !== "rate_card";
+      const authoritativeProvenance = envelope.receipt.pricingProvenance
+        && !["rate_card", "unknown"].includes(envelope.receipt.pricingProvenance.source);
       if ((envelope.producerEvent.eventType === "usage.reported" && (!envelope.receipt.usage || !accepted))
         || Object.entries(envelope.receipt.usage ?? {}).some(([key, value]) => previous[key] !== value)
-        || monetaryAmount(envelope.receipt) !== monetaryAmount(accepted)
-        || receiptFingerprint(envelope.receipt.pricingProvenance ?? null) !== receiptFingerprint(accepted?.pricingProvenance ?? null)) {
+        || (authoritativeMoney && incomingMoney !== monetaryAmount(accepted))
+        || (authoritativeProvenance && receiptFingerprint(envelope.receipt.pricingProvenance) !== receiptFingerprint(accepted?.pricingProvenance ?? null))) {
         throw conflict("native_usage_after_finalization_requires_reconciliation");
       }
     }

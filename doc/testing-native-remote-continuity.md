@@ -366,7 +366,10 @@ Non-accounting attachment control events keep their existing handoff acceptance;
 an old run's accounting report still cannot acquire a successor's authority.
 
 The provider drains its bounded settled-turn usage tail before publishing the
-terminal event. This keeps a late cumulative increase on the old run before the
+terminal event that closes the run. An authoritative active goal keeps its
+existing continuation path. A completed turn remains authoritative after a
+fully drained provider exit; ordinary session-exit handling still records an
+unavailable process independently. This keeps a late cumulative increase on the old run before the
 next run resets its baseline. Readiness and attachment retain accounting facts
 in the existing provider checkpoint instead of discarding them, including facts
 consumed before a later quiescence error. An increase

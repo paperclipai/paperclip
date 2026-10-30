@@ -1,4 +1,4 @@
-import { compareCents } from "@paperclipai/shared";
+import { compareCents, usdToUnits } from "@paperclipai/shared";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
@@ -180,6 +180,30 @@ describe("producer-owned native usage", () => {
     await expect(delivery.capture(late)).rejects.toThrow("native_usage_after_finalization_requires_reconciliation");
     await expect(delivery.capture(late)).rejects.toThrow("native_usage_after_finalization_requires_reconciliation");
     expect((await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId)))[0].costCents).toBe(25);
+  });
+
+  it("accepts equal finalized rate-card reports without requiring terminal-only derived pricing", async () => {
+    const input = { ...await seed(), provider: { kind: "codex" as const, model: "gpt-6.1-sol" } };
+    const delivery = await createNativeUsageDelivery(db, input);
+    const report = (sequence: number) => {
+      const reported = event(input, sequence, "usage.reported");
+      reported.payload = { runDeltaBasis: "run", runDeltaAvailable: true, runDelta: { inputTokens: 1000, outputTokens: 100000 } };
+      return reported;
+    };
+    await delivery.capture(report(1));
+    await delivery.capture(event(input, 2, "turn.completed"));
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, input.runId));
+    expect(await accountRunCost(db, input.runId)).toBe(true);
+    await delivery.capture(report(3));
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
+    expect(run.usageJson).toMatchObject({ pricingProvenance: { source: "rate_card" }, accountingReceiptReady: true });
+    expect(usdToUnits(run.usageJson!.costUsdExact as string)).toBe(usdToUnits("1.002"));
+    const ledger = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId));
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0].costCents).toBe(100.2);
+    const correction = report(4);
+    (correction.payload as Record<string, unknown>).runDelta = { inputTokens: 1000, outputTokens: 100000, providerCostUsd: 2 };
+    await expect(delivery.capture(correction)).rejects.toThrow("native_usage_after_finalization_requires_reconciliation");
   });
 
   it("keeps successor exposure pending after prior-turn accounting invalidates its live snapshot", async () => {
