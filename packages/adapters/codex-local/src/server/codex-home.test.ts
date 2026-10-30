@@ -23,7 +23,7 @@ import {
 } from "./codex-home.js";
 
 describe("mergeManagedCodexMcpGateways", () => {
-  it("keeps runtime gateways and appends non-overlapping context gateways", () => {
+  it("uses runtime gateways as the authoritative run-bound surface", () => {
     expect(
       mergeManagedCodexMcpGateways(
         [{ name: "runtime", endpointPath: "/runtime", bearerToken: "runtime-token" }],
@@ -32,10 +32,16 @@ describe("mergeManagedCodexMcpGateways", () => {
           { name: "manual", endpointPath: "/manual", bearerToken: "manual-token" },
         ],
       ),
-    ).toEqual([
-      { name: "runtime", endpointPath: "/runtime", bearerToken: "runtime-token" },
-      { name: "manual", endpointPath: "/manual", bearerToken: "manual-token" },
-    ]);
+    ).toEqual([{ name: "runtime", endpointPath: "/runtime", bearerToken: "runtime-token" }]);
+  });
+
+  it("falls back to context gateways when no runtime surface exists", () => {
+    expect(
+      mergeManagedCodexMcpGateways(
+        [],
+        [{ name: "manual", endpointPath: "/manual", bearerToken: "manual-token" }],
+      ),
+    ).toEqual([{ name: "manual", endpointPath: "/manual", bearerToken: "manual-token" }]);
   });
 });
 
