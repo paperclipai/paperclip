@@ -62,6 +62,15 @@ describe("neutral decline evidence", () => {
     expect(passes(input)).toBe(true);
     expect(input.replies).toEqual([]);
   });
+  it("excludes an earlier successful native reply when a later successful run exists", () => {
+    const input = native();
+    input.runs.push({ ...input.runs[0], id: "latest", startedAt: "2026-10-06T22:00:04Z", finishedAt: "2026-10-06T22:00:06Z" });
+    expect(hasConnectionGuidanceDeclineReply(input)).toBe(false);
+    expect(passes(input)).toBe(false);
+    Object.assign(input.nativeFinalReply, { runId: "latest", anchor: "latest:turn" });
+    Object.assign(input.nativeFinalReply.finalEvent, { sourceEventId: "latest-final", sourceInstanceId: "latest-runner" });
+    expect(passes(input)).toBe(true);
+  });
   it("rejects stale, unbound or untruthful native decline output and unread service data", () => {
     for (const change of [{ runId: "other" }, { agentId: "other" }, { source: "summary" }, { observedAfterReload: false },
       { settled: false }, { nativeFinal: false }, { visible: false }, { anchor: "other:turn" }, { finalEvent: null }]) {
