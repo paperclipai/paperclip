@@ -2772,6 +2772,27 @@ export function heartbeatService(
           appendRunEvent,
         },
       }));
+      // Validate before any run/agent status transition or adapter dispatch:
+      // a workspace bound to a non-git path (e.g. a knowledge-vault project)
+      // must fail here, not after the run and agent are already "running".
+      await timePreparation("workspace_validation", () => assertGitSensitiveAdapterWorkspaceValid({
+        adapterType: agent.adapterType,
+        agentId: agent.id,
+        issue: issueRef
+          ? {
+              id: issueRef.id,
+              identifier: issueRef.identifier,
+              projectId: issueRef.projectId,
+              projectWorkspaceId: issueRef.projectWorkspaceId,
+            }
+          : null,
+        resolvedWorkspace,
+        executionWorkspace,
+        persistedExecutionWorkspace,
+        executionTarget,
+        environmentDriver: selectedEnvironment.driver,
+        leaseMetadata: activeEnvironmentLease.lease.metadata,
+      }));
       const preparedInstructions = instructionWorkingCopy = createHeartbeatInstructionWorkingCopy({
         observabilityCompatibilityKey: observability?.compatibilityKey,
         db, instructionCopies, readRun: () => run!, agent, context,
@@ -3213,24 +3234,6 @@ export function heartbeatService(
           const logEntry = formatRuntimeWorkspaceWarningLog(warning);
           await onLog(logEntry.stream, logEntry.chunk);
         }
-        await timePreparation("workspace_validation", () => assertGitSensitiveAdapterWorkspaceValid({
-          adapterType: agent.adapterType,
-          agentId: agent.id,
-          issue: issueRef
-            ? {
-                id: issueRef.id,
-                identifier: issueRef.identifier,
-                projectId: issueRef.projectId,
-                projectWorkspaceId: issueRef.projectWorkspaceId,
-              }
-            : null,
-          resolvedWorkspace,
-          executionWorkspace,
-          persistedExecutionWorkspace,
-          executionTarget,
-          environmentDriver: selectedEnvironment.driver,
-          leaseMetadata: activeEnvironmentLease.lease.metadata,
-        }));
         const adapterEnv = Object.fromEntries(
           Object.entries(parseObject(runtimeConfig.env)).filter(
             (entry): entry is [string, string] =>
