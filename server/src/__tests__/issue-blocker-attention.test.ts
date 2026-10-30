@@ -643,6 +643,36 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("keeps conversations out of task inboxes and search while preserving chat decisions", async () => {
+    const { companyId, agentId } = await createCompany("CHAT");
+    const userId = "chat-owner";
+    const taskId = randomUUID();
+    const chatId = randomUUID();
+    await db.insert(issues).values([
+      { id: taskId, companyId, identifier: "CHAT-1", title: "Shared decision", status: "in_review", assigneeAgentId: agentId },
+      { id: chatId, companyId, identifier: "CHAT-2", title: "Shared decision", status: "in_review", assigneeAgentId: agentId,
+        conversationAgentId: agentId, conversationUserId: userId, conversationState: "waiting" },
+    ]);
+    await db.insert(issueThreadInteractions).values([taskId, chatId].map(issueId => ({
+      companyId, issueId, kind: "connection_intent", status: "pending",
+      createdByAgentId: agentId, addresseeUserId: userId,
+      payload: { version: 1, serviceSlug: "openai", serviceName: "OpenAI",
+        requestingAgentId: agentId, requestingAgentName: "Chat agent", phase: "requested" },
+    })));
+
+    for (const filters of [{}, { q: "Shared decision" }, { attention: "blocked" as const },
+      { attention: "blocked" as const, q: "Shared decision" }]) {
+      expect((await svc.list(companyId, filters)).map(row => row.id)).toEqual([taskId]);
+      expect(await svc.count(companyId, filters)).toBe(1);
+    }
+    expect((await svc.listConversations(companyId, userId)).map(row => row.id)).toEqual([chatId]);
+    expect(await svc.getConversation(companyId, agentId, userId)).toMatchObject({ id: chatId, status: "in_review" });
+    expect(await svc.getById(chatId)).toMatchObject({ id: chatId, conversationAgentId: agentId });
+    const saved = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, chatId));
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ kind: "connection_intent", status: "pending", payload: { phase: "requested" } });
+  });
+
   it("returns blocked inbox attention for an unassigned blocker leaf and supports count/search", async () => {
     const { companyId } = await createCompany("BIA");
     const parentId = await insertIssue({ companyId, identifier: "BIA-1", title: "Blocked source", status: "blocked" });
