@@ -169,7 +169,14 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledTimes(runtimeMode === "native" ? 1 : 3);
     await expectSavedMessages(messages);
     await queue.resumeQueuedRuns();
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledTimes(runtimeMode === "native" ? 1 : 3);
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now + 5 * 60 * 1000);
+    try {
+      await queue.resumeQueuedRuns();
+    } finally { vi.mocked(Date.now).mockRestore(); }
     expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledTimes(runtimeMode === "native" ? 2 : 6);
+    await expectSavedMessages(messages);
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
