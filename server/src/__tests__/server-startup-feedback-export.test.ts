@@ -1341,7 +1341,7 @@ describe("startServer feedback export wiring", () => {
       expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(2);
       expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenLastCalledWith({ staleThresholdMs: 300_000, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true, skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true, skipObsoletePolicyReviews: true, skipAutomaticCompletionReviews: true, skipUnsafeWorkspaceExports: true, skipNativePendingEffects: true, skipNativeResponsePresentation: true, skipNativeReviewResponse: true, skipNativeStatusReassessment: true, skipRetainedNativeSessionCleanup: true, skipNativeWorkspaceFinalization: true, skipNativeResultCommit: true, skipNativeRunProjection: true, skipNativeRecoveryNotices: true, skipExternalConversationSettlement: true, skipExternalAgentSettlement: true, skipNativeEnvironmentSettlement: true });
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
-      expect(heartbeatServiceMock.promoteDueScheduledRetries).toHaveBeenCalledTimes(1);
+      expect(heartbeatServiceMock.promoteDueScheduledRetries).not.toHaveBeenCalled();
       expect(retiredDetector).not.toHaveBeenCalled();
     } finally {
       delete (runtime as Partial<typeof runtime>).reconcileProductivityReviews;
