@@ -413,6 +413,50 @@ describeEmbeddedPostgres("companySkillService.installFromCatalog", () => {
     expect(status?.installedHash).not.toBe(sampleCatalogSkill.contentHash);
   });
 
+  it("reinstalls modified catalog content without conflicting with its own audit", async () => {
+    const companyId = await createCompany();
+    const installed = await svc.installFromCatalog(companyId, { catalogSkillId: sampleCatalogSkill.id });
+    await publishCatalogContent(installed.skill, `${sampleSkillMarkdown}\nModified\n`);
+
+    const result = await svc.installFromCatalog(companyId, { catalogSkillId: sampleCatalogSkill.id, force: true });
+
+    expect(result.action).toBe("updated");
+    expect(result.skill.id).toBe(installed.skill.id);
+    expect(result.skill.metadata).toMatchObject({ auditVerdict: "pass", userModifiedAt: null });
+    await expect(svc.readFile(companyId, installed.skill.id, "SKILL.md")).resolves.toMatchObject({ content: sampleSkillMarkdown });
+  });
+
+  it("reinstalls the same catalog release with a new slug", async () => {
+    const companyId = await createCompany();
+    const installed = await svc.installFromCatalog(companyId, { catalogSkillId: sampleCatalogSkill.id });
+
+    const result = await svc.installFromCatalog(companyId, { catalogSkillId: sampleCatalogSkill.id, slug: "review-renamed" });
+
+    expect(result.action).toBe("updated");
+    expect(result.skill).toMatchObject({ id: installed.skill.id, slug: "review-renamed" });
+    await expect(svc.readFile(companyId, installed.skill.id, "SKILL.md")).resolves.toMatchObject({ content: sampleSkillMarkdown });
+  });
+
+  it("rejects a forced catalog reinstall when metadata changes during preparation", async () => {
+    const companyId = await createCompany();
+    const installed = await svc.installFromCatalog(companyId, { catalogSkillId: sampleCatalogSkill.id });
+    await publishCatalogContent(installed.skill, `${sampleSkillMarkdown}\nModified\n`);
+    const base = (await svc.getById(companyId, installed.skill.id))!;
+    mockCatalogService.copyCatalogSkillFile.mockImplementationOnce(async (_ref: string, _filePath: string, targetPath: string) => {
+      await db.update(companySkills).set({ metadata: { ...base.metadata, concurrentNote: "keep this edit" } })
+        .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, installed.skill.id)));
+      await fs.writeFile(targetPath, sampleSkillMarkdown, "utf8");
+    });
+
+    await expect(svc.installFromCatalog(companyId, { catalogSkillId: sampleCatalogSkill.id, force: true }))
+      .rejects.toMatchObject({ status: 409 });
+    expect(await svc.getById(companyId, installed.skill.id)).toMatchObject({
+      currentVersionId: base.currentVersionId, metadata: expect.objectContaining({ concurrentNote: "keep this edit" }),
+    });
+    await expect(svc.readFile(companyId, installed.skill.id, "SKILL.md"))
+      .resolves.toMatchObject({ content: `${sampleSkillMarkdown}\nModified\n` });
+  });
+
   it("returns unsupported update status when the catalog entry is no longer shipped", async () => {
     const companyId = await createCompany();
     const installed = await svc.installFromCatalog(companyId, { catalogSkillId: sampleCatalogSkill.id });

@@ -141,3 +141,33 @@ handoff, and production volume removal are outside this slice.
 - The Studio route regression suite passed all 64 cases on retry, and server
   typecheck passed. The managed sandbox manager is reused from app construction;
   no provider behavior, permissions or lifecycle ownership changed.
+- Baseline remote task EPH-3 passed on run
+  `07a711a9-a7d7-45e3-8c00-f64f71d2a9cc`: the delivered v6 script ran directly
+  with mode `555`, printed `skill-script-A: durable-skill-payload-A-20261030`,
+  and all three file digests matched independently calculated input digests.
+  Its saved task document records the execution-local installation path.
+- Imported repository skill `581b718a-3681-48c4-96d5-87d12b694550` from
+  `paperclipai/paperclip` commit `dff63551fe07934a82a0942e502adba3fcbb08ca`.
+  The existing import filter admitted 12 files and excluded the API reference.
+  A later explicit source refresh hit the repository size limit and retained
+  the installed revision. That refresh is not counted as a successful update.
+- Test-only env campaign `fleet-campaign-1793366873581` succeeded at
+  `2026-10-30T17:38:00.006Z`, changing only `PAPERCLIP_HOME` to
+  `/tmp/ephemeral-skills-a` on `stack-ephemeral-skills-qa-oct-30`.
+  Audit evidence reports one target, one key, zero removed keys, and unchanged
+  Computer images. Studio reopened v6 with its supporting files afterward.
+  Unassigned fork `6381a0a0-582b-4d26-b858-4e56b606e07c` was created through
+  Studio and saved as v2 with `unassigned-payload-A-20261030` in its reference.
+- Review of `35b6a12fe4` identified a forced catalog reinstall conflicting with
+  its own audit metadata write. A real Postgres regression reproduced the 409.
+  Candidate auditing is now read-only; successful publication commits the new
+  audit metadata, while unchanged/rejected operations retain audit reporting.
+  Regression checks cover forced reinstall, a new slug, and a competing metadata
+  writer. The combined catalog/managed run passed 29 cases and hit one unrelated
+  15-second asset-test timeout; all four focused catalog cases passed on an
+  isolated rerun. Server typecheck passed.
+- Latest browser CI exposed another five-second startup assertion in the
+  feature-disable journey. Its trace showed an active adapter invocation before
+  the fixture's first message. The assertion now uses the existing 30-second
+  cold-start budget; the exact browser journey passed locally in 12.5 seconds.
+  No feature-disable behavior or fixture completion assertions changed.

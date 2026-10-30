@@ -3582,31 +3582,34 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     });
   }
 
-  async function auditSkill(companyId: string, skillId: string): Promise<CompanySkillAuditResult | null> {
-    await ensureSkillInventoryCurrent(companyId);
-    const skill = await getById(companyId, skillId);
-    if (!skill) return null;
+  async function auditSkillContents(skill: CompanySkill): Promise<CompanySkillAuditResult> {
+    const companyId = skill.companyId;
     if (skill.currentVersionId && (skill.sourceType !== "local_path" || skill.metadata?.skillSourceId || skill.metadata?.sourceKind === "paperclip_bundled")) {
       const versionId = skill.currentVersionId;
       return withSkillVersionCacheLock(db, companyId, async () => {
         const version = await readVersionMetadata(companyId, skill.id, versionId);
         if (!version) throw unprocessable("Installed skill version is unavailable.");
         const sourceLocator = await materializeVersionSnapshot(companyId, skill, version);
-        const audit = await auditInstalledSkillBytes({
+        return auditInstalledSkillBytes({
           ...skill,
           sourceType: "local_path",
           sourceLocator,
           fileInventory: version.repositorySnapshotId || version.packageSnapshotId
             ? await packageRuntime.inventory(version) : await packages.versionFiles(version),
         });
-        await persistAuditMetadata(skill, audit);
-        return audit;
       });
     }
     if (skill.sourceType !== "catalog" && skill.sourceType !== "local_path") {
       throw unprocessable("Only local-path and catalog-managed company skills support audit.");
     }
-    const audit = await auditInstalledSkillBytes(skill);
+    return auditInstalledSkillBytes(skill);
+  }
+
+  async function auditSkill(companyId: string, skillId: string): Promise<CompanySkillAuditResult | null> {
+    await ensureSkillInventoryCurrent(companyId);
+    const skill = await getById(companyId, skillId);
+    if (!skill) return null;
+    const audit = await auditSkillContents(skill);
     await persistAuditMetadata(skill, audit);
     return audit;
   }
@@ -5825,9 +5828,9 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         && existingByKey.slug === slug
         && asString(metadata.originHash) === catalogSkill.contentHash
       ) {
-        const audit = existingByKey.currentVersionId ? (await auditSkill(companyId, existingByKey.id))! : await auditInstalledSkillBytes(existingByKey);
-        const audited = await persistAuditMetadata(existingByKey, audit);
+        const audit = await auditSkillContents(existingByKey);
         if (audit.installedHash === catalogSkill.contentHash && audit.verdict !== "fail") {
+          const audited = await persistAuditMetadata(existingByKey, audit);
           return {
             action: "unchanged",
             skill: audited,
@@ -5836,6 +5839,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
           };
         }
         if (!input.force) {
+          await persistAuditMetadata(existingByKey, audit);
           const holdReason = audit.verdict === "fail" ? "audit_hard_stop" : "local_modifications";
           const message = audit.verdict === "fail"
             ? "Catalog skill has hard-stop audit findings; rerun with --force to replace it."
