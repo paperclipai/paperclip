@@ -655,7 +655,13 @@ export function createHeartbeatScheduling(
     }
 
     const scheduledAtIso = claimed.monitorNextCheckAt.toISOString();
-    const nextAttemptCount = (claimed.monitorAttemptCount ?? 0) + 1;
+    // A human pressing "Check now" must not spend the monitor's automatic
+    // budget. `maxAttempts` is sized against an external service's cadence, so
+    // counting board-initiated checks lets a person exhaust it and silently
+    // clear the issue's only live wake path. `timeoutAt` still applies to both.
+    const countsTowardAttempts = input.activitySource !== "manual";
+    const nextAttemptCount =
+      (claimed.monitorAttemptCount ?? 0) + (countsTowardAttempts ? 1 : 0);
     const policy = normalizeIssueExecutionPolicy(
       claimed.executionPolicy ?? null,
     );
@@ -834,6 +840,7 @@ export function createHeartbeatScheduling(
             issue: claimed,
             policy,
             triggeredAt: input.now,
+            countsTowardAttempts,
           })),
           updatedAt: new Date(),
         })

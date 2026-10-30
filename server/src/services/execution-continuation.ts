@@ -507,6 +507,10 @@ export async function buildExecutionContinuation(input: {
       reason: string(input.context.wakeReason) ?? "task_execution",
       interactionId: triggerInteraction?.id ?? null,
       sourceRunId,
+      // `issue_monitor_due` is reported for both a schedule coming due and a
+      // person pressing "Check now". Only the latter sets `manualTrigger`, so
+      // an agent can tell "my external check is due" from "someone asked".
+      ...(input.context.manualTrigger === true ? { manualTrigger: true } : {}),
     },
     originCommentIds,
     objective: latestRequest?.body ?? issue.description ?? issue.title,

@@ -230,12 +230,15 @@ function buildScheduledMonitorState(
 function buildTriggeredMonitorState(input: {
   previous: IssueExecutionMonitorState | null;
   triggeredAt: Date;
+  countsTowardAttempts?: boolean;
 }): IssueExecutionMonitorState {
   return {
     status: "triggered",
     nextCheckAt: null,
     lastTriggeredAt: input.triggeredAt.toISOString(),
-    attemptCount: (input.previous?.attemptCount ?? 0) + 1,
+    attemptCount:
+      (input.previous?.attemptCount ?? 0) +
+      ((input.countsTowardAttempts ?? true) ? 1 : 0),
     notes: input.previous?.notes ?? null,
     scheduledBy: input.previous?.scheduledBy ?? null,
     ...monitorMetadataFromState(input.previous),
@@ -1180,6 +1183,12 @@ export function buildIssueMonitorTriggeredPatch(input: {
   issue: IssueLike;
   policy: IssueExecutionPolicy | null;
   triggeredAt: Date;
+  /**
+   * Whether this dispatch spends one of the monitor's `maxAttempts`. Scheduled
+   * ticks do; a human pressing "Check now" does not, so that a person cannot
+   * exhaust the budget a monitor sized against an external service's cadence.
+   */
+  countsTowardAttempts?: boolean;
 }) {
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentMonitorState = derivePersistedMonitorState({
@@ -1190,6 +1199,7 @@ export function buildIssueMonitorTriggeredPatch(input: {
   const nextMonitorState = buildTriggeredMonitorState({
     previous: currentMonitorState,
     triggeredAt: input.triggeredAt,
+    countsTowardAttempts: input.countsTowardAttempts ?? true,
   });
 
   return {
