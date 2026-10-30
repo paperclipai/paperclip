@@ -2210,11 +2210,121 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const promise = enqueueWakeup(agentId, opts);
     activeWakeupPromises.add(promise);
     void promise
-      .catch(() => {})
+      .catch((error) => {
+        logger.error(
+          {
+            err: error,
+            agentId,
+            source: opts.source ?? "on_demand",
+            reason: opts.reason ?? null,
+          },
+          "trackWakeup: enqueueWakeup failed; the wakeup promise will be caught by the caller but the error is logged here for scheduler observability",
+        );
+      })
       .finally(() => {
         activeWakeupPromises.delete(promise);
       });
     return promise;
+  }
+
+  // Sweep for orphaned wakeup requests: rows with status "queued" and run_id
+  // NULL that are old enough that no live dispatch path should still own them.
+  // These are created when enqueueWakeup inserts the wakeup request but the
+  // corresponding heartbeat-run insert fails, leaving a queued row that will
+  // never execute. The sweep cancels these orphans so they don't linger
+  // forever, and logs them for observability.
+  //
+  // Native-status wake intents are explicitly excluded: the native-status
+  // dispatcher owns rows with requestedByActorType "system" and a
+  // "native-status*" requestedByActorId, keeps them queued with a NULL run_id
+  // while they await (re)dispatch, and resets them to queued (without
+  // refreshing requestedAt) after a transient dispatch failure. Cancelling
+  // those rows here would permanently discard a retryable delivery, so they
+  // are never swept regardless of age.
+  async function sweepOrphanedWakeupRequests(opts?: { staleThresholdMs?: number }) {
+    const staleThresholdMs = opts?.staleThresholdMs ?? 2 * 60 * 1000; // default: 2 minutes
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - staleThresholdMs);
+
+    // Find orphaned wakeups: status "queued", no linked run, older than cutoff,
+    // and outside the native-status dispatch pipeline (null-safe: rows with no
+    // system actor are always eligible).
+    const orphaned = await db
+      .select({
+        id: agentWakeupRequests.id,
+        agentId: agentWakeupRequests.agentId,
+        companyId: agentWakeupRequests.companyId,
+        source: agentWakeupRequests.source,
+        reason: agentWakeupRequests.reason,
+        requestedAt: agentWakeupRequests.requestedAt,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.status, "queued"),
+          isNull(agentWakeupRequests.runId),
+          lte(agentWakeupRequests.requestedAt, cutoff),
+          or(
+            sql`${agentWakeupRequests.requestedByActorType} is distinct from 'system'`,
+            isNull(agentWakeupRequests.requestedByActorId),
+            sql`${agentWakeupRequests.requestedByActorId} not like 'native-status%'`,
+          ),
+        ),
+      )
+      .orderBy(asc(agentWakeupRequests.id))
+      .limit(100);
+
+    if (orphaned.length === 0) return { cancelled: 0 };
+
+    // Cancel each orphaned wakeup with a logged reason. Count only updates
+    // that actually succeed so a partial failure is never reported as a full
+    // sweep.
+    let cancelled = 0;
+    const cancelledWakeupIds: string[] = [];
+    const cancelledAgentIds = new Set<string>();
+    for (const wake of orphaned) {
+      try {
+        const updated = await db
+          .update(agentWakeupRequests)
+          .set({
+            status: "skipped",
+            reason: "orphaned_wakeup_no_run",
+            payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb) || ${JSON.stringify({
+              orphanedRecovery: {
+                reason: "wakeup_request_had_no_linked_heartbeat_run",
+                originalReason: wake.reason,
+                originalSource: wake.source,
+                recoveredAt: now.toISOString(),
+              },
+            })}::jsonb`,
+            finishedAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "queued"), isNull(agentWakeupRequests.runId)))
+          .returning({ id: agentWakeupRequests.id });
+        if (updated.length === 0) continue;
+        cancelled += 1;
+        cancelledWakeupIds.push(wake.id);
+        cancelledAgentIds.add(wake.agentId);
+      } catch (err) {
+        logger.warn(
+          { err, wakeupId: wake.id, agentId: wake.agentId },
+          "sweepOrphanedWakeupRequests: failed to cancel orphaned wakeup",
+        );
+      }
+    }
+
+    logger.warn(
+      {
+        cancelled,
+        wakeupIds: cancelledWakeupIds,
+        agentIds: [...cancelledAgentIds],
+      },
+      "cancelled orphaned wakeup requests (status=queued, run_id=null)",
+    );
+
+    return { cancelled };
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
@@ -5069,6 +5179,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     claimQueuedRun,
     withChatControlRecoveryGate,
     trackWakeup,
+    sweepOrphanedWakeupRequests,
     resumeQueuedRuns,
     resumeQueuedRunsAfterDrain,
     parseHeartbeatPolicy,
