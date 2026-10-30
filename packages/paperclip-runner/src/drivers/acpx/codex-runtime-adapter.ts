@@ -40,6 +40,7 @@ import { createAntigravityAdmission } from "./antigravity-admission.js";
 import { admitAcpxSessionContext } from "./session-context-admission.js";
 import { createAcpxModeBinding } from "./provider-mode.js";
 import { assertCopilotPromptPolicy, createCopilotProtocolGuard } from "./copilot-policy.js";
+import { classifySessionEnsureFailure } from "./session-ensure-failure.js";
 
 const VERIFIED_COMMAND_SENTINEL = "paperclip-verified-acpx-command";
 const DEFAULT_RUNTIME_CLOSE_TIMEOUT_MS = 2_000;
@@ -694,22 +695,6 @@ export async function openQualifiedAcpxRuntime(
 
 /** Backward-compatible name retained for existing Codex-only consumers. */
 export const openCodexAcpxRuntime = openQualifiedAcpxRuntime;
-
-function classifySessionEnsureFailure(error: unknown): Error {
-  if (error instanceof Error) {
-    const details = error as Error & Record<string, unknown>;
-    if (typeof details.code !== "string" || details.code.length === 0) {
-      details.code =
-        error instanceof TypeError
-          ? "ACPX_SESSION_ENSURE_TYPE_ERROR"
-          : "ACPX_SESSION_ENSURE_FAILED";
-    }
-    return error;
-  }
-  return Object.assign(new Error("ACPX session ensure rejected a non-error"), {
-    code: "ACPX_SESSION_ENSURE_NON_ERROR",
-  });
-}
 
 function raceRuntimeHandshakeWithAbort<T>(
   handshake: Promise<T>,

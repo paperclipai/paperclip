@@ -947,6 +947,31 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         "CLAUDE_ACP_SESSION_CREATE_TIMEOUT" => return "claude_session_create_timeout",
         "ACPX_SESSION_HANDSHAKE_TIMEOUT" => return "session_handshake_timeout",
         "ACPX_SESSION_ENSURE_FAILED" => return "session_ensure_failed",
+        "ACPX_SESSION_ENSURE_FAILED.JSONRPC_PARSE_ERROR" => {
+            return "session_ensure_jsonrpc_parse_error"
+        }
+        "ACPX_SESSION_ENSURE_FAILED.JSONRPC_INVALID_REQUEST" => {
+            return "session_ensure_jsonrpc_invalid_request"
+        }
+        "ACPX_SESSION_ENSURE_FAILED.JSONRPC_METHOD_NOT_FOUND" => {
+            return "session_ensure_jsonrpc_method_not_found"
+        }
+        "ACPX_SESSION_ENSURE_FAILED.JSONRPC_INVALID_PARAMS" => {
+            return "session_ensure_jsonrpc_invalid_params"
+        }
+        "ACPX_SESSION_ENSURE_FAILED.JSONRPC_INTERNAL_ERROR" => {
+            return "session_ensure_jsonrpc_internal_error"
+        }
+        "ACPX_SESSION_ENSURE_FAILED.JSONRPC_REQUEST_CANCELLED" => {
+            return "session_ensure_jsonrpc_request_cancelled"
+        }
+        "ACPX_SESSION_ENSURE_FAILED.JSONRPC_AUTH_REQUIRED" => {
+            return "session_ensure_jsonrpc_auth_required"
+        }
+        "ACPX_SESSION_ENSURE_FAILED.JSONRPC_RESOURCE_NOT_FOUND" => {
+            return "session_ensure_jsonrpc_resource_not_found"
+        }
+        "ACPX_SESSION_ENSURE_FAILED.JSONRPC_OTHER" => return "session_ensure_jsonrpc_other",
         "ACPX_SESSION_ENSURE_TYPE_ERROR" => return "session_ensure_type_error",
         "ACPX_SESSION_ENSURE_NON_ERROR" => return "session_ensure_non_error",
         "ACP_SESSION_INIT_FAILED" => return "acp_session_init_failed",
@@ -1217,6 +1242,42 @@ mod tests {
                 "runtime_admission_verification_timeout",
             ),
             ("ACPX_SESSION_ENSURE_FAILED", "session_ensure_failed"),
+            (
+                "ACPX_SESSION_ENSURE_FAILED.JSONRPC_PARSE_ERROR",
+                "session_ensure_jsonrpc_parse_error",
+            ),
+            (
+                "ACPX_SESSION_ENSURE_FAILED.JSONRPC_INVALID_REQUEST",
+                "session_ensure_jsonrpc_invalid_request",
+            ),
+            (
+                "ACPX_SESSION_ENSURE_FAILED.JSONRPC_METHOD_NOT_FOUND",
+                "session_ensure_jsonrpc_method_not_found",
+            ),
+            (
+                "ACPX_SESSION_ENSURE_FAILED.JSONRPC_INVALID_PARAMS",
+                "session_ensure_jsonrpc_invalid_params",
+            ),
+            (
+                "ACPX_SESSION_ENSURE_FAILED.JSONRPC_INTERNAL_ERROR",
+                "session_ensure_jsonrpc_internal_error",
+            ),
+            (
+                "ACPX_SESSION_ENSURE_FAILED.JSONRPC_REQUEST_CANCELLED",
+                "session_ensure_jsonrpc_request_cancelled",
+            ),
+            (
+                "ACPX_SESSION_ENSURE_FAILED.JSONRPC_AUTH_REQUIRED",
+                "session_ensure_jsonrpc_auth_required",
+            ),
+            (
+                "ACPX_SESSION_ENSURE_FAILED.JSONRPC_RESOURCE_NOT_FOUND",
+                "session_ensure_jsonrpc_resource_not_found",
+            ),
+            (
+                "ACPX_SESSION_ENSURE_FAILED.JSONRPC_OTHER",
+                "session_ensure_jsonrpc_other",
+            ),
             (
                 "ACPX_SESSION_ENSURE_TYPE_ERROR",
                 "session_ensure_type_error",

@@ -45,6 +45,26 @@ describe("ACPX sidecar input sequencing", () => {
     error.code = "ACPX_TOOL_CALL_STALE_EXTRA";
     expect(acpxSidecarErrorCode(error)).toBe("acpx_sidecar_command_failed");
   });
+  it("preserves the closed JSON-RPC session ensure categories", () => {
+    for (const code of [
+      "ACPX_SESSION_ENSURE_FAILED.JSONRPC_AUTH_REQUIRED",
+      "ACPX_SESSION_ENSURE_FAILED.JSONRPC_INTERNAL_ERROR",
+      "ACPX_SESSION_ENSURE_FAILED.JSONRPC_INVALID_PARAMS",
+      "ACPX_SESSION_ENSURE_FAILED.JSONRPC_INVALID_REQUEST",
+      "ACPX_SESSION_ENSURE_FAILED.JSONRPC_METHOD_NOT_FOUND",
+      "ACPX_SESSION_ENSURE_FAILED.JSONRPC_OTHER",
+      "ACPX_SESSION_ENSURE_FAILED.JSONRPC_PARSE_ERROR",
+      "ACPX_SESSION_ENSURE_FAILED.JSONRPC_REQUEST_CANCELLED",
+      "ACPX_SESSION_ENSURE_FAILED.JSONRPC_RESOURCE_NOT_FOUND",
+    ]) {
+      const error = Object.assign(new Error("private-token-canary"), { code });
+      expect(acpxSidecarErrorCode(error)).toBe(code);
+    }
+    const unknown = Object.assign(new Error("private-token-canary"), {
+      code: "ACPX_SESSION_ENSURE_FAILED.JSONRPC_PRIVATE",
+    });
+    expect(acpxSidecarErrorCode(unknown)).toBe("acpx_sidecar_command_failed");
+  });
   it("drains initialize, session.open, and suspend in input order", async () => {
     const events: string[] = [];
     let pending = Promise.resolve();
