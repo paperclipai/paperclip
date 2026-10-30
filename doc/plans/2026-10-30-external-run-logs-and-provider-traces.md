@@ -1,11 +1,12 @@
 # Durable run logs and provider traces for disposable web servers
 
-Status: revised implementation plan; operational qualification required before
-implementation design is finalized. No runtime changes or deployment performed.
-Owner: this Codex chat, through planning. Date: 2026-10-30.
+Status: implementation and PR qualification in progress. Runtime storage and
+history migration are implemented behind explicit opt-in. Native pending-tail
+retention and production-provider qualification remain acceptance gates.
+Owner: this Codex chat, through the reviewable PR. Date: 2026-10-30.
 Revision: object-storage-first, following Dotta's operational correction on 2026-10-30.
 Source revision inspected: `0c70cedce9a803bdc201324528abb35e423e7cd0`.
-Parent: [Explore zero-downtime Railway deploy](codex://threads/01a1836e-8c8e-7b83-b09c-5db49a5e89de).
+Parent effort: near-zero-downtime Railway deployment of the main web/API server.
 
 ## Goal and boundary
 
@@ -40,9 +41,11 @@ Firm requirements:
 - Keep task results, usage settlement, and optional diagnostics independent.
 - Preserve bounded work and existing sleep behavior.
 
-Planning ends with this reviewable design, delivery boundaries, migration
-procedure, and acceptance matrix. Implementation, PRs, and deployment are not
-part of this planning turn.
+Dotta approved implementation on 2026-10-30. Delivery ends at a reviewable PR
+with relevant checks and review findings resolved. Deployment, volume removal,
+and production history migration require the parent effort's target and cutover.
+The acceptance matrix below remains the full storage-slice contract; an
+implemented primitive does not establish that every row has passed.
 
 Deferred to the parent effort: managed agent files, workspace recovery,
 accounting/credential journals, workspace-operation logs, readiness/draining,
@@ -87,7 +90,7 @@ network and storage work. Upload each newly sealed segment once instead.
 | Browser live stream / bounded server memory | Immediate progress display; not a durable receipt |
 | Remote Runner spool, where supported | Replayable pending output across web replacement until storage receipt |
 | S3-compatible storage | Immutable log/trace segments and bounded manifest/index pages |
-| Postgres | Company/run ownership, backend/version, writer generation, committed manifest pointer/end cursor, final status and expiry/deletion state |
+| Postgres | Existing company/run ownership, backend/reference, final status and expiry/deletion state; no per-batch writes |
 | Disposable web disk | Optional bounded buffer/read cache; never the only acknowledged copy |
 
 Existing structured `heartbeat_run_events`, task results, usage, and controller
@@ -149,7 +152,7 @@ errors fail explicitly; never select local-only persistence silently. Add only
 small company/run-bound stream metadata, with unique identities and constraints.
 There are **no proposed run-log payload-chunk or raw-trace payload tables**.
 
-Recommended initial publication protocol, subject to the cost gate:
+Selected publication protocol after the local operational experiment:
 
 1. Redact/compact log output through the existing owner and enqueue exact NDJSON
    bytes with stable source/attempt identities in a bounded buffer. A buffered
@@ -162,20 +165,23 @@ Recommended initial publication protocol, subject to the cost gate:
    byte range. Then upload the bounded immutable index/manifest update. Keep
    manifest pages bounded; do not rewrite a growing full-history JSON document
    every few seconds. Retain exact logical bytes even when compressing storage.
-4. Publish the manifest pointer/end cursor in one small DB transaction that
-   checks current writer generation, prior pointer/cursor, run binding, and any
-   tombstone. Only that committed pointer is authoritative. Avoid updating the
-   main heartbeat row per segment: use an owned small stream record.
+4. Publish one bounded head with S3 ETag `If-Match` (or `If-None-Match` for
+   creation). The head carries owner generation, committed cursor, and at most
+   53 immutable index roots. Check the admitted database execution authority
+   before claiming a new generation. No per-batch SQL or new stream table is
+   needed. Conditional head publication fences stale generations and tombstones.
 5. Release durable receipts for the published contiguous range. Reconcile a
-   lost DB response from the pointer/manifest before retrying. Same-source replay
+   lost object response from the exact head before retrying. Same-source replay
    must not duplicate bytes; conflicting replay fails explicitly.
 
 Upload/index retries reuse immutable identities and verify ambiguous results.
-Do not hold a DB transaction or connection during network upload. Metadata must
+Do not hold a DB transaction or connection during network upload. New immutable
+index nodes combine completed binary subtrees; all normally published nodes
+remain referenced, avoiding an obsolete index object for every flush. Metadata must
 not grow with the number or size of individual text records: segment descriptors
 and source indexes live in S3. Keep lifecycle/audit metadata bounded.
 
-Use generation-specific object prefixes. A stale owner may finish an upload,
+Use a company/agent/run prefix with a generation-fenced head. A stale owner may finish an upload,
 but cannot publish it after takeover. A successor adopts the last published
 manifest and replays its uncommitted tail. Per-stream prefix tracking plus scoped,
 paginated enumeration must recover unpublished-object cleanup after a crash;
@@ -411,23 +417,45 @@ At implementation PR handoff run `pnpm -r typecheck`, `pnpm test:run`, and
 `pnpm build`, plus affected Runner checks and user-journey verification. Do not
 claim live-provider or fleet evidence from deterministic fixtures.
 
-## Current state and next action
+## Implementation state and remaining gates
 
-- Revised after Dotta's operational concern: S3 holds payloads from the first
-  stored batch; Postgres holds small metadata. The DB-live-tail proposal is
-  superseded, including its payload tables and DB-to-S3 compaction.
-- Retained requirements: preserve all retained history, durable-receipt survival,
-  privacy/retention/deletion, local compatibility, bounded work, and sleep.
-- Recommended initial mechanism: batched S3 segment/index uploads followed by a
-  small fenced metadata publication. Its steady-state SQL cost remains an
-  explicit measurement gate, not an assumed negligible cost.
-- Unresolved engineering choices: measured batch/queue limits; whether metadata
-  publication needs to move off the per-batch SQL path; actual Runner retention
-  versus ACK batching. Resolve in slice 1 before committing the final schema.
-- Implemented/exercised/deployed: none. This is a plan revision only.
-- Next action: operational/durability prototype and actual-provider capability
-  qualification, before broad implementation or migration.
-- Plan checks: repository references and whitespace validated. Application tests,
-  typecheck, and build are not claimed for this document-only change.
-- No Paperclip issue/run context was supplied; this remains a repository plan in
-  the current Codex worktree, not a registered Paperclip issue work product.
+- Branch: `codex/external-run-logs-traces`; this chat owns integration and PR review.
+- S3 holds payloads from the first committed batch. Conditional object heads
+  hold cursors and writer generations. Existing Postgres rows hold lifecycle and
+  references only. No schema change, per-record SQL, or DB payload compactor.
+- Implemented: stored-backend reader dispatch, bounded batching and I/O,
+  immutable binary range indexes, exact digest/range reads, ownership fencing,
+  encrypted optional trace channels, durable deletion/expiry obligations, and a
+  bounded resumable history importer. Local defaults remain unchanged.
+- Exercised locally with real Postgres and Moto 5.2.5 through the real AWS SDK:
+  encrypted trace replacement/deletion and history import with original source
+  directories removed. Missing, corrupt, and active history blocks migration.
+- Abrupt process qualification: a writer commits 1,000 records, receives storage
+  receipts, dies by `SIGKILL`, and loses its working directory. A separate
+  process reads every record exactly and continues the same journal.
+- App journey: create a deterministic process agent, click Run now, open its
+  run history, kill the web process, restart against the same external services,
+  and reload the viewer. All 31 NDJSON records remained byte-identical through
+  the normal authorized API (6,206 bytes; SHA-256
+  `3e8415c79379c583b1c4c37902187593fd69ebe85db78d6486d6077f205bacba`).
+- Local workload qualification reports burst and eight-stream steady request,
+  transfer, stored-object, and timing counts. It is a synthetic envelope,
+  not a fleet cost forecast. The first index prototype left obsolete COW
+  objects; the selected immutable binary index removes that normal growth.
+- Full workspace typecheck and build passed before the final index change;
+  affected checks are being repeated. The full Vitest run is in progress.
+  The native Postgres package initially lacked its postinstall-created library
+  symlinks; its standard hydration helper repaired that local test prerequisite.
+- The implementation does **not** change native control ACKs or retain a
+  producer's uncommitted tail outside the disposable web process. Durable log
+  receipts and live log messages follow S3 publication. Optional raw capture
+  can remain incomplete after a crash. The stronger pending-tail replay row
+  above remains unpassed; do not advertise lossless generated-output replay.
+- Production remains disabled. Railway Buckets are the parent fleet's current
+  S3 provider; their conditional-write, version/deletion, workload cost, remote
+  capture, and sleep/wake behavior need actual-target qualification. No fleet
+  environment or volume was changed.
+- Next gate: finish fresh-source storage/privacy/retention tests and PR review;
+  retain the pending-tail and actual-provider gates before any volume-free rollout.
+- No Paperclip issue/run context was supplied. This repository plan is the state
+  record; no issue work product or production migration is claimed.
