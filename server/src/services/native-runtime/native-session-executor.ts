@@ -6540,6 +6540,12 @@ function loadWarmNativeCheckpoint(
           issueId: execution.binding.issueId,
           agentId: execution.binding.agentId,
         },
+        ...(execution.provider.kind === "codex" && envelope.snapshot.codexUsageBaseline
+          ? { codexUsageBaseline: {
+              baseline: { ...envelope.snapshot.codexUsageBaseline.latest },
+              latest: { ...envelope.snapshot.codexUsageBaseline.latest },
+            } }
+          : {}),
         // A warm provider can be rebound only after the previous run settled.
         // Its provider identity survives, but run-scoped turn, result, and
         // request authority must not cross into the new heartbeat run.

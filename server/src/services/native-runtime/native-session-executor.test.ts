@@ -9558,7 +9558,12 @@ describe("native warm session supervision", () => {
     await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toEqual({ closed: 0, busy: 0, failed: 0 });
   });
 
-  it("preserves the active turn when a warm checkpoint resumes the same run", async () => {
+  it.each([
+    { sameRun: true, retainBaseline: true },
+    { sameRun: false, retainBaseline: true },
+    { sameRun: true, retainBaseline: false },
+    { sameRun: false, retainBaseline: false },
+  ])("preserves accounting boundaries when a warm checkpoint resumes (same run=$sameRun, retained baseline=$retainBaseline)", async ({ sameRun, retainBaseline }) => {
     const stateBase = await mkdtemp(
       join(tmpdir(), "paperclip-warm-same-run-recovery-"),
     );
@@ -9568,15 +9573,19 @@ describe("native warm session supervision", () => {
       ...execution,
       binding: {
         ...execution.binding,
-        runId: "run-warm-same-run-recovery",
-        executionWorkspaceId: "workspace-warm-same-run-recovery",
+        runId: `run-warm-accounting-${sameRun}-${retainBaseline}`,
+        executionWorkspaceId: `workspace-warm-accounting-${sameRun}-${retainBaseline}`,
       },
       session: {
         ...execution.session,
-        normalizedSessionId: "session-warm-same-run-recovery",
+        normalizedSessionId: `session-warm-accounting-${sameRun}-${retainBaseline}`,
         lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 20 },
       },
     } as NativeExecutionInputV1;
+    const accounting = retainBaseline ? {
+      baseline: { inputTokens: 100, outputTokens: 20 },
+      latest: { inputTokens: 150, outputTokens: 35 },
+    } : undefined;
     const checkpoint = {
       identity: {
         runId: activeRun.binding.runId,
@@ -9588,11 +9597,15 @@ describe("native warm session supervision", () => {
       sessionId: activeRun.session.normalizedSessionId,
       driverSessionId: "driver-warm-same-run-recovery",
       providerSessionId: "provider-warm-same-run-recovery",
-      activeTurnId: "provider-turn-warm-same-run-recovery",
+      activeTurnId: sameRun ? "provider-turn-warm-same-run-recovery" : null,
+      ...(accounting ? { codexUsageBaseline: accounting } : {}),
       semanticResult: null,
       terminal: null,
       terminalTurns: [],
       pendingRuntimeRequests: [],
+    };
+    const resumedRun = sameRun ? activeRun : { ...activeRun,
+      binding: { ...activeRun.binding, runId: `${activeRun.binding.runId}-successor` },
     };
     const result = {
       result: { summary: "completed" },
@@ -9614,17 +9627,7 @@ describe("native warm session supervision", () => {
         options.onSession?.({ close: firstClose });
         return result;
       })
-      .mockImplementationOnce(async (options) => {
-        expect(options.persistedSession).toEqual(
-          expect.objectContaining({
-            identity: checkpoint.identity,
-            driverSessionId: checkpoint.driverSessionId,
-            providerSessionId: checkpoint.providerSessionId,
-            activeTurnId: checkpoint.activeTurnId,
-          }),
-        );
-        return result;
-      });
+      .mockResolvedValueOnce(result);
 
     try {
       await executePaperclipNativeSession({
@@ -9637,11 +9640,25 @@ describe("native warm session supervision", () => {
       });
       await expect(
         executePaperclipNativeSession({
-          db: leaseDb(activeRun),
-          execution: activeRun,
+          db: leaseDb(resumedRun),
+          execution: resumedRun,
           runnerInstanceId: "runner-warm-same-run-recovery",
         }),
       ).resolves.toBeDefined();
+      expect(state.execute.mock.calls[1]![0].persistedSession).toEqual(
+        expect.objectContaining({
+          identity: { ...checkpoint.identity, runId: resumedRun.binding.runId },
+          driverSessionId: checkpoint.driverSessionId,
+          providerSessionId: checkpoint.providerSessionId,
+          activeTurnId: checkpoint.activeTurnId,
+          ...(accounting ? { codexUsageBaseline: {
+            baseline: sameRun ? accounting.baseline : accounting.latest,
+            latest: accounting.latest,
+          } } : {}),
+        }),
+      );
+      if (accounting) expect(accounting.baseline).toEqual({ inputTokens: 100, outputTokens: 20 });
+      else expect(state.execute.mock.calls[1]![0].persistedSession).not.toHaveProperty("codexUsageBaseline");
     } finally {
       if (previousPaperclipHome === undefined) {
         delete process.env.PAPERCLIP_HOME;

@@ -613,6 +613,14 @@ or message content. The event establishes the accounting baseline; it is not a
 new billable usage receipt or a user-facing provider warning. Other provider
 identity checks remain in force.
 
+A cold native warm-session checkpoint keeps the same Codex baseline during
+recovery of the same run. Before it binds a successor run, the checkpoint owner
+copies the prior latest counters into both the new baseline and latest snapshot.
+This matches live run attachment and prevents prior-run usage from entering the
+successor's delta. A checkpoint without a baseline keeps that field absent.
+This boundary does not certify a missing or incomplete receipt, change an old
+ledger entry, or bypass accounting admission.
+
 ## AI subscription contention
 
 A fresh task execution cannot enter this wait. A run that already entered this
