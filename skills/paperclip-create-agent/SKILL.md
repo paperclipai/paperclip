@@ -146,6 +146,9 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
 - monitor and discuss on the approval thread
 - when the board approves, you will be woken with `PAPERCLIP_APPROVAL_ID`; read linked issues and close/comment follow-up
 
+Use the current company issue prefix in these UI paths. Replace the
+placeholder with that prefix before posting the comment.
+
 ```sh
 curl -sS "$PAPERCLIP_API_URL/api/approvals/<approval-id>" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
@@ -153,7 +156,7 @@ curl -sS "$PAPERCLIP_API_URL/api/approvals/<approval-id>" \
 curl -sS -X POST "$PAPERCLIP_API_URL/api/approvals/<approval-id>/comments" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"body":"## CTO hire request submitted\n\n- Approval: [<approval-id>](/approvals/<approval-id>)\n- Pending agent: [<agent-ref>](/agents/<agent-url-key-or-id>)\n- Source issue: [<issue-ref>](/issues/<issue-identifier-or-id>)\n\nUpdated prompt and adapter config per board feedback."}'
+  -d '{"body":"## CTO hire request submitted\n\n- Approval: [<approval-id>](/<company-issue-prefix>/approvals/<approval-id>)\n- Pending agent: [<agent-ref>](/<company-issue-prefix>/agents/<agent-url-key-or-id>)\n- Source issue: [<issue-ref>](/<company-issue-prefix>/issues/<issue-identifier-or-id>)\n\nUpdated prompt and adapter config per board feedback."}'
 ```
 
 If the approval already exists and needs manual linking to the issue:
