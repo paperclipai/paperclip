@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import path from "node:path";
 
 export function resolveRepoEnvLocalPath(serverRoot: string): string {
@@ -6,11 +5,12 @@ export function resolveRepoEnvLocalPath(serverRoot: string): string {
 }
 
 export function devEnvLocalNodeArgs(serverRoot: string): string[] {
-  const envLocalPath = resolveRepoEnvLocalPath(serverRoot);
-  return existsSync(envLocalPath) ? [`--env-file=${envLocalPath}`] : [];
+  return [`--env-file-if-exists=${resolveRepoEnvLocalPath(serverRoot)}`];
 }
 
 export function devEnvLocalWatchArgs(serverRoot: string): string[] {
   const envLocalPath = resolveRepoEnvLocalPath(serverRoot);
-  return existsSync(envLocalPath) ? ["--include", envLocalPath] : [];
+  const fileName = path.basename(envLocalPath);
+  const lastCharacterAsClass = `${fileName.slice(0, -1)}[${fileName.slice(-1)}]`;
+  return ["--include", path.join(path.dirname(envLocalPath), lastCharacterAsClass)];
 }
