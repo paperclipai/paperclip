@@ -40,6 +40,17 @@ journey without another setup. A recipe reports `startingState: recipe`;
 reusing successful onboarding reports `onboarding`. Preconfigured state is never
 counted as onboarding coverage.
 
+The scripted onboarding request orders the child's work: create the files,
+publish the proof file, save its document with the returned file link, then
+report completion. It explains the native completion contract: include actual
+verification, omit the optional schema, and use receipt-derived deliverable
+references in evidence and file artifacts. Local input paths are verification
+details. Correcting rejected tool arguments stays within the same attempt;
+it does not retry the journey. The model still computes the result, publishes
+the file, saves the document, and completes the tasks. Independent download,
+math, provenance, document, and parent-link checks remain authoritative.
+Historical failed attempts retain their original fixture and outcome.
+
 Save this credential-free local target config outside the repository:
 
 ```json
