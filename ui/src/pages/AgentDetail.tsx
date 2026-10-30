@@ -153,6 +153,16 @@ import { AgentAvatar } from "../components/AgentAvatar";
 import { AgentChip, AgentMetricTile, AgentPanel, AgentSectionHeading } from "../components/agent-detail/AgentPanels";
 import { AgentHistoryDialog } from "./agent-detail/AgentHistoryDialog";
 import { InlineEditor } from "../components/InlineEditor";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 export { syncAgentRouteAfterRename };
 import { humanAgentCreatorUserId, resolveAgentCreatorLabel } from "../lib/agent-creator";
 import {
@@ -850,6 +860,8 @@ export function AgentDetail() {
   const [configDirty, setConfigDirty] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const [configJustSaved, setConfigJustSaved] = useState(false);
+  const [pendingLeave, setPendingLeave] = useState<HTMLAnchorElement | null>(null);
+  const leaveBypassRef = useRef(false);
   const configWasSavingRef = useRef(false);
   useEffect(() => {
     if (configWasSavingRef.current && !configSaving && !configDirty) setConfigJustSaved(true);
@@ -1206,14 +1218,16 @@ export function AgentDetail() {
       ) {
         return;
       }
-      if (prepareAgentNavigation()) return;
+      if (leaveBypassRef.current) return;
       event.preventDefault();
       event.stopPropagation();
+      if (activeView === "advanced" && configSaving) return;
+      setPendingLeave(anchor);
     }
 
     document.addEventListener("click", handleDocumentClick, true);
     return () => document.removeEventListener("click", handleDocumentClick, true);
-  }, [configDirty, prepareAgentNavigation]);
+  }, [activeView, configDirty, configSaving]);
 
   useEffect(() => {
     if (!configDirty) return;
@@ -1425,6 +1439,36 @@ export function AgentDetail() {
         </AgentActionButtons>
       </header>
       <AgentHistoryDialog agent={agent} companyId={resolvedCompanyId ?? undefined} open={historyOpen} onOpenChange={setHistoryOpen} />
+      <AlertDialog open={pendingLeave !== null} onOpenChange={(open) => (open ? undefined : setPendingLeave(null))}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
+            <AlertDialogDescription>
+              You have unsaved changes to {agent.name}&rsquo;s {activeView === "runtime" ? "harness settings" : activeView === "secrets" ? "secrets and variables" : activeView === "advanced" ? "configuration" : "instructions"}. If you continue, they&rsquo;ll be lost.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="sm:justify-between">
+            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() => {
+                const anchor = pendingLeave;
+                setPendingLeave(null);
+                cancelConfigActionRef.current?.();
+                if (!anchor) return;
+                leaveBypassRef.current = true;
+                try {
+                  anchor.click();
+                } finally {
+                  leaveBypassRef.current = false;
+                }
+              }}
+            >
+              Discard changes
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {builtInState && (
         <InlineBanner
