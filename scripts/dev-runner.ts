@@ -32,6 +32,16 @@ const BIND_MODES = ["loopback", "lan", "tailnet", "custom"] as const;
 type BindMode = (typeof BIND_MODES)[number];
 
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
+
+const repoEnvLocalPath = path.join(repoRoot, ".env.local");
+if (existsSync(repoEnvLocalPath)) {
+  try {
+    process.loadEnvFile(repoEnvLocalPath);
+  } catch (error) {
+    console.error(`[paperclip] could not load ${repoEnvLocalPath}: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+}
 let cliArgs: string[];
 let dataDir: string | null;
 try {
@@ -80,6 +90,7 @@ const watchedDirectories = [
 
 const watchedFiles = [
   ".env",
+  ".env.local",
   "package.json",
   "pnpm-workspace.yaml",
   "tsconfig.base.json",
