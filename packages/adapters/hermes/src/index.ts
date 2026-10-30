@@ -54,6 +54,8 @@ const sessionManagement: AdapterSessionManagement = {
     maxSessionRuns: 0,
     maxRawInputTokens: 0,
     maxSessionAgeHours: 0,
+    idleTtlMinutes: 0,
+    idleMinContextTokens: 0,
   },
 };
 

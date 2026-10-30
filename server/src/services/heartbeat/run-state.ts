@@ -11,6 +11,8 @@ import {
   eq,
   getTableColumns,
   gt,
+  inArray,
+  isNotNull,
   or,
   sql,
 } from "drizzle-orm";
@@ -756,6 +758,26 @@ function formatCount(value: number | null | undefined) {
   return value.toLocaleString("en-US");
 }
 
+export function shouldRotateIdleSession(input: {
+  finishedAt: Date | null | undefined;
+  contextTokens: unknown;
+  idleTtlMinutes: number;
+  idleMinContextTokens: number;
+  now?: number;
+}): boolean {
+  const finishedAtMs = input.finishedAt instanceof Date
+    ? input.finishedAt.getTime()
+    : Number.NaN;
+  const contextTokens = input.contextTokens;
+  const now = input.now ?? Date.now();
+  return input.idleTtlMinutes > 0 &&
+    input.idleMinContextTokens > 0 &&
+    Number.isFinite(finishedAtMs) &&
+    Number.isFinite(contextTokens) &&
+    (contextTokens as number) >= input.idleMinContextTokens &&
+    (now - finishedAtMs) / 60_000 > input.idleTtlMinutes;
+}
+
 export function parseSessionCompactionPolicy(
   agent: typeof agents.$inferSelect,
 ): SessionCompactionPolicy {
@@ -1379,6 +1401,8 @@ export function createHeartbeatRunState(db: Db) {
       .select({
         id: heartbeatRuns.id,
         createdAt: heartbeatRuns.createdAt,
+        finishedAt: heartbeatRuns.finishedAt,
+        status: heartbeatRuns.status,
         usageJson: heartbeatRuns.usageJson,
         error: heartbeatRuns.error,
         terminalFailureCategory: sql<string | null>`case
@@ -1441,6 +1465,79 @@ export function createHeartbeatRunState(db: Db) {
       sessionAgeHours >= policy.maxSessionAgeHours
     ) {
       reason = `session age reached ${Math.floor(sessionAgeHours)} hours`;
+    }
+
+    if (!reason && policy.idleTtlMinutes > 0 && policy.idleMinContextTokens > 0) {
+      const latestCompletedRun = runs.find((run) =>
+        ["succeeded", "failed", "cancelled", "timed_out"].includes(run.status) &&
+          run.finishedAt instanceof Date &&
+          Number.isFinite(run.finishedAt.getTime()),
+      );
+      const finishedAt = latestCompletedRun?.finishedAt;
+      const finishedAtMs = finishedAt instanceof Date ? finishedAt.getTime() : Number.NaN;
+      const now = Date.now();
+      const idleMinutes = (now - finishedAtMs) / 60_000;
+      if (
+        Number.isFinite(finishedAtMs) &&
+        idleMinutes > policy.idleTtlMinutes
+      ) {
+        const isValidContextMeasurement = (value: unknown): value is number =>
+          typeof value === "number" && Number.isFinite(value) && value >= 0;
+        const contextRun = runs
+          .filter((run) => {
+            const contextTokens = run.usageJson?.contextTokens;
+            return ["succeeded", "failed", "cancelled", "timed_out"].includes(run.status) &&
+              run.finishedAt instanceof Date &&
+              Number.isFinite(run.finishedAt.getTime()) &&
+              isValidContextMeasurement(contextTokens);
+          })
+          .sort((left, right) => {
+            const leftFinishedAt = left.finishedAt instanceof Date ? left.finishedAt.getTime() : 0;
+            const rightFinishedAt = right.finishedAt instanceof Date ? right.finishedAt.getTime() : 0;
+            return rightFinishedAt - leftFinishedAt;
+          })[0];
+        let contextTokens = contextRun?.usageJson?.contextTokens;
+        if (!isValidContextMeasurement(contextTokens)) {
+          const contextMeasurements = await db
+            .select({
+              sessionIdAfter: heartbeatRuns.sessionIdAfter,
+              finishedAt: heartbeatRuns.finishedAt,
+              contextTokens: sql<unknown>`${heartbeatRuns.usageJson} -> 'contextTokens'`.as("contextTokens"),
+            })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.companyId, agent.companyId),
+              eq(heartbeatRuns.agentId, agent.id),
+              inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out"]),
+              isNotNull(heartbeatRuns.finishedAt),
+              isNotNull(heartbeatRuns.startedAt),
+            ))
+            .orderBy(desc(heartbeatRuns.startedAt))
+            .limit(100);
+          const contextMeasurement = contextMeasurements
+            .filter((run) =>
+              run.sessionIdAfter === sessionId &&
+              run.finishedAt instanceof Date &&
+              Number.isFinite(run.finishedAt.getTime()) &&
+              isValidContextMeasurement(run.contextTokens),
+            )
+            .sort((left, right) => {
+              const leftFinishedAt = left.finishedAt instanceof Date ? left.finishedAt.getTime() : 0;
+              const rightFinishedAt = right.finishedAt instanceof Date ? right.finishedAt.getTime() : 0;
+              return rightFinishedAt - leftFinishedAt;
+            })[0];
+          contextTokens = contextMeasurement?.contextTokens;
+        }
+        if (shouldRotateIdleSession({
+          finishedAt,
+          contextTokens,
+          idleTtlMinutes: policy.idleTtlMinutes,
+          idleMinContextTokens: policy.idleMinContextTokens,
+          now,
+        })) {
+          reason = `session idle for ${Math.floor(idleMinutes)} minutes after reaching ${formatCount(contextTokens as number)} context tokens`;
+        }
+      }
     }
 
     if (!reason || !latestRun) {

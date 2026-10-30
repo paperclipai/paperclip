@@ -158,6 +158,23 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, "succeeded", null, expect.any(Object));
   });
 
+  it("persists the adapter's actual session reuse receipt and context token count", async () => {
+    const f = await fixture();
+    f.input.session.runtimeForAdapter.sessionId = "requested-session";
+    Object.assign(f.input.adapterResult, {
+      sessionReused: false,
+      sessionIdBefore: null,
+      contextTokens: 123_456,
+    });
+
+    await f.completion.completeRun(f.input);
+
+    expect(await read(f.run.id)).toMatchObject({
+      sessionIdBefore: null,
+      usageJson: { sessionReused: false, freshSession: true, contextTokens: 123_456 },
+    });
+  });
+
   it.each([
     { timedOut: true, expected: "timed_out", errorCode: "timeout" },
     { signal: "SIGTERM", expected: "failed", errorCode: "adapter_failed" },

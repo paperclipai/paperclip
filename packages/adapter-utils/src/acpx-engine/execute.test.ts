@@ -8985,3 +8985,170 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
     }
   }, 10000);
 });
+
+
+describe("ACPX authoritative fresh session", () => {
+  it("clears an unavailable session when its fresh-session retry also fails", async () => {
+    const root = await makeTempRoot();
+    const ensureInputs: Array<Record<string, unknown>> = [];
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      createRuntime: () => ({
+        ...buildRuntime(),
+        ensureSession: async (input: Record<string, unknown>) => {
+          ensureInputs.push(input);
+          if (ensureInputs.length === 1) {
+            return { sessionKey: input.sessionKey, backendSessionId: "original", agentSessionId: "original", runtimeSessionName: "original" };
+          }
+          if (input.resumeSessionId) throw new Error("resume session not found");
+          throw new Error("fresh session setup failed");
+        },
+      }) as never,
+    });
+    const base = {
+      agent: { id: "agent-1", companyId: "company-1" },
+      config: { agent: "custom", agentCommand: "node fake.js", cwd: root, stateDir: path.join(root, "state") },
+      context: {}, onLog: async () => {}, onMeta: async () => {},
+    };
+    const first = await execute({ ...base, runId: "first", runtime: {} } as never);
+    const failedReplacement = await execute({
+      ...base,
+      runId: "failed-replacement",
+      runtime: { sessionParams: sessionCodec.deserialize(first.sessionParams) },
+    } as never);
+
+    expect(failedReplacement.clearSession).toBe(true);
+    expect(Object.hasOwn(failedReplacement, "sessionReused")).toBe(false);
+    expect(Object.hasOwn(failedReplacement, "sessionIdBefore")).toBe(false);
+    expect(ensureInputs[2]?.resumeSessionId).toBeUndefined();
+  });
+
+  it.each(["resume-error retry", "mismatched handshake"] as const)(
+    "keeps the replacement session resumable after a %s",
+    async (replacementPath) => {
+      const root = await makeTempRoot();
+      const ensureInputs: Array<Record<string, unknown>> = [];
+      const execute = createAcpxEngineExecutor({
+        warmHandles: new Map(),
+        createRuntime: () => ({
+          ...buildRuntime(),
+          ensureSession: async (input: Record<string, unknown>) => {
+            ensureInputs.push(input);
+            if (ensureInputs.length === 1) {
+              return { sessionKey: input.sessionKey, backendSessionId: "original", agentSessionId: "original", runtimeSessionName: "original" };
+            }
+            if (replacementPath === "resume-error retry" && input.resumeSessionId === "original") {
+              throw new Error("resume session not found");
+            }
+            const id = "replacement";
+            return { sessionKey: input.sessionKey, backendSessionId: id, agentSessionId: id, runtimeSessionName: id };
+          },
+        }) as never,
+      });
+      const base = {
+        agent: { id: "agent-1", companyId: "company-1" },
+        config: { agent: "custom", agentCommand: "node fake.js", cwd: root, stateDir: path.join(root, "state") },
+        context: {}, onLog: async () => {}, onMeta: async () => {},
+      };
+      const first = await execute({ ...base, runId: "first", runtime: {} } as never);
+      const replacement = await execute({
+        ...base,
+        runId: "replacement",
+        runtime: { sessionParams: sessionCodec.deserialize(first.sessionParams) },
+      } as never);
+      const resumed = await execute({
+        ...base,
+        runId: "resumed-replacement",
+        runtime: { sessionParams: sessionCodec.deserialize(replacement.sessionParams) },
+      } as never);
+
+      expect(replacement.sessionId).toBe("replacement");
+      expect(replacement.clearSession).not.toBe(true);
+      expect(ensureInputs[ensureInputs.length - 1]?.resumeSessionId).toBe("replacement");
+      expect(resumed.sessionId).toBe("replacement");
+      expect(resumed.sessionReused).toBe(true);
+    },
+  );
+
+  it.each([false, true])("reports a fresh provider handle after replacement, even when turn throws: %s", async (throwTurn) => {
+    const root = await makeTempRoot();
+    let replaceHandle = false;
+    const ensureInputs: Array<Record<string, unknown>> = [];
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      createRuntime: () => ({
+        ...buildRuntime(),
+        startTurn: (input: Record<string, unknown>) => {
+          if (replaceHandle && throwTurn) throw new Error("turn startup failed");
+          return buildRuntime().startTurn(input);
+        },
+        ensureSession: async (input: Record<string, unknown>) => {
+          ensureInputs.push(input);
+          const id = replaceHandle ? "replacement" : "initial";
+          return { sessionKey: input.sessionKey, backendSessionId: id, agentSessionId: id, runtimeSessionName: id };
+        },
+      }) as never,
+    });
+    const base = {
+      agent: { id: "agent-1", companyId: "company-1" },
+      config: { agent: "custom", agentCommand: "node fake.js", cwd: root, stateDir: path.join(root, "state") },
+      context: {}, onLog: async () => {}, onMeta: async () => {},
+    };
+    const first = await execute({ ...base, runId: "first", runtime: {} } as never);
+    replaceHandle = true;
+    const next = await execute({ ...base, runId: "next", runtime: { sessionParams: sessionCodec.deserialize(first.sessionParams) } } as never);
+    expect(ensureInputs[1].resumeSessionId).toBe("initial");
+    expect(next.sessionReused).toBe(false);
+    expect(next.sessionIdBefore).toBeNull();
+    if (!throwTurn) expect(next.sessionId).toBe("replacement");
+    expect(next.contextTokens).toBeUndefined();
+  });
+
+  it("rotates persistent records, resumes the selected generation and reports actual context", async () => {
+    const root = await makeTempRoot();
+    const records = new Map<string, string>();
+    const inputs: Array<Record<string, unknown>> = [];
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      createRuntime: () => ({
+        ...buildRuntime(),
+        ensureSession: async (input: Record<string, unknown>) => {
+          inputs.push(input);
+          const key = input.sessionKey as string;
+          // ACPX persistent mode implicitly reuses a record even without resumeSessionId.
+          const id = records.get(key) ?? `provider-${records.size + 1}`;
+          records.set(key, id);
+          return { sessionKey: key, backendSessionId: id, agentSessionId: id, runtimeSessionName: id };
+        },
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "status", tag: "usage_update", used: 400_000, size: 1_000_000 };
+            yield { type: "status", tag: "usage_update", used: 50_000, size: 1_000_000 };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+      }) as never,
+    });
+    const base = {
+      agent: { id: "agent-1", companyId: "company-1" },
+      config: { agent: "custom", agentCommand: "node fake.js", cwd: root, stateDir: path.join(root, "state") },
+      context: {}, onLog: async () => {}, onMeta: async () => {},
+    };
+    const first = await execute({ ...base, runId: "first", runtime: {} } as never);
+    const fresh = await execute({ ...base, runId: "fresh", runtime: {} } as never);
+    const resumed = await execute({ ...base, runId: "resume", runtime: { sessionParams: sessionCodec.deserialize(fresh.sessionParams) } } as never);
+    expect(first.exitCode).toBe(0);
+    expect(fresh.exitCode).toBe(0);
+    expect(fresh.sessionId).not.toBe(first.sessionId);
+    expect(inputs[1].sessionKey).not.toBe(inputs[0].sessionKey);
+    expect(inputs[2].sessionKey).toBe(inputs[1].sessionKey);
+    expect(resumed.sessionId).toBe(fresh.sessionId);
+    expect(fresh.sessionReused).toBe(false);
+    expect(fresh.sessionIdBefore).toBeNull();
+    expect(resumed.sessionReused).toBe(true);
+    expect(resumed.sessionIdBefore).toBe(fresh.sessionDisplayId);
+    expect(resumed.contextTokens).toBe(50_000);
+  });
+});

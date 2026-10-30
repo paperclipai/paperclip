@@ -3,6 +3,8 @@ export interface SessionCompactionPolicy {
   maxSessionRuns: number;
   maxRawInputTokens: number;
   maxSessionAgeHours: number;
+  idleTtlMinutes: number;
+  idleMinContextTokens: number;
 }
 
 export type NativeContextManagement = "confirmed" | "likely" | "unknown" | "none";
@@ -25,6 +27,8 @@ const DEFAULT_SESSION_COMPACTION_POLICY: SessionCompactionPolicy = {
   maxSessionRuns: 200,
   maxRawInputTokens: 2_000_000,
   maxSessionAgeHours: 72,
+  idleTtlMinutes: 0,
+  idleMinContextTokens: 0,
 };
 
 // Adapters with native context management still participate in session resume,
@@ -34,6 +38,14 @@ const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
   maxSessionRuns: 0,
   maxRawInputTokens: 0,
   maxSessionAgeHours: 0,
+  idleTtlMinutes: 0,
+  idleMinContextTokens: 0,
+};
+
+const CLAUDE_SESSION_POLICY: SessionCompactionPolicy = {
+  ...ADAPTER_MANAGED_SESSION_POLICY,
+  idleTtlMinutes: 60,
+  idleMinContextTokens: 100_000,
 };
 
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
@@ -53,7 +65,7 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
   claude_local: {
     supportsSessionResume: true,
     nativeContextManagement: "confirmed",
-    defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
+    defaultSessionCompaction: CLAUDE_SESSION_POLICY,
   },
   codex_local: {
     supportsSessionResume: true,
@@ -152,11 +164,15 @@ export function readSessionCompactionOverride(runtimeConfig: unknown): Partial<S
   const maxSessionRuns = readNumber(compaction.maxSessionRuns);
   const maxRawInputTokens = readNumber(compaction.maxRawInputTokens);
   const maxSessionAgeHours = readNumber(compaction.maxSessionAgeHours);
+  const idleTtlMinutes = readNumber(compaction.idleTtlMinutes);
+  const idleMinContextTokens = readNumber(compaction.idleMinContextTokens);
 
   if (enabled !== undefined) explicit.enabled = enabled;
   if (maxSessionRuns !== undefined) explicit.maxSessionRuns = maxSessionRuns;
   if (maxRawInputTokens !== undefined) explicit.maxRawInputTokens = maxRawInputTokens;
   if (maxSessionAgeHours !== undefined) explicit.maxSessionAgeHours = maxSessionAgeHours;
+  if (idleTtlMinutes !== undefined) explicit.idleTtlMinutes = idleTtlMinutes;
+  if (idleMinContextTokens !== undefined) explicit.idleMinContextTokens = idleMinContextTokens;
 
   return explicit;
 }
@@ -180,6 +196,8 @@ export function resolveSessionCompactionPolicy(
       maxSessionRuns: explicitOverride.maxSessionRuns ?? basePolicy.maxSessionRuns,
       maxRawInputTokens: explicitOverride.maxRawInputTokens ?? basePolicy.maxRawInputTokens,
       maxSessionAgeHours: explicitOverride.maxSessionAgeHours ?? basePolicy.maxSessionAgeHours,
+      idleTtlMinutes: explicitOverride.idleTtlMinutes ?? basePolicy.idleTtlMinutes,
+      idleMinContextTokens: explicitOverride.idleMinContextTokens ?? basePolicy.idleMinContextTokens,
     },
     adapterSessionManagement,
     explicitOverride,
@@ -193,7 +211,8 @@ export function resolveSessionCompactionPolicy(
 
 export function hasSessionCompactionThresholds(policy: Pick<
   SessionCompactionPolicy,
-  "maxSessionRuns" | "maxRawInputTokens" | "maxSessionAgeHours"
+  "maxSessionRuns" | "maxRawInputTokens" | "maxSessionAgeHours" | "idleTtlMinutes" | "idleMinContextTokens"
 >) {
-  return policy.maxSessionRuns > 0 || policy.maxRawInputTokens > 0 || policy.maxSessionAgeHours > 0;
+  return policy.maxSessionRuns > 0 || policy.maxRawInputTokens > 0 || policy.maxSessionAgeHours > 0 ||
+    (policy.idleTtlMinutes > 0 && policy.idleMinContextTokens > 0);
 }

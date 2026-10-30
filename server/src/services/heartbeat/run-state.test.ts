@@ -48,6 +48,16 @@ function readingDatabase(serverEncoding: string, ...results: unknown[][]) {
 }
 
 describe("heartbeat run state module", () => {
+  it.each([null, new Date(Number.NaN)])("requires a valid finish time before idle rotation", (finishedAt) => {
+    expect(extracted.shouldRotateIdleSession({
+      finishedAt,
+      contextTokens: 400_000,
+      idleTtlMinutes: 60,
+      idleMinContextTokens: 100_000,
+      now: Date.now(),
+    })).toBe(false);
+  });
+
   it("preserves the legacy public helper identities", () => {
     expect(legacy.resolveNextSessionState).toBe(extracted.resolveNextSessionState);
     expect(legacy.buildExplicitResumeSessionOverride).toBe(extracted.buildExplicitResumeSessionOverride);
@@ -511,6 +521,235 @@ describePostgres("heartbeat run state database wiring", () => {
     expect(decision.handoffMarkdown).toContain("Continue our task");
     expect(decision.handoffMarkdown).not.toContain("Foreign task");
     expect(decision.handoffMarkdown).not.toContain("omit this");
+  });
+
+  it("rotates an idle Claude session only when its latest completed run crossed the context threshold", async () => {
+    const { companyId, agent, issue, state } = await fixture();
+    const now = new Date();
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, invocationSource: "assignment", status: "succeeded",
+      sessionIdAfter: "idle-large", createdAt: new Date(now.getTime() - 6 * 60 * 60_000),
+      finishedAt: new Date(now.getTime() - 6 * 60 * 60_000), usageJson: { contextTokens: 400_000 },
+      resultJson: { summary: "Resume with a concise handoff." },
+    });
+
+    const decision = await state.evaluateSessionCompaction({
+      agent: { ...agent, adapterType: "claude_local" }, sessionId: "idle-large", issueId: issue.id,
+    });
+
+    expect(decision).toMatchObject({ rotate: true, reason: expect.stringContaining("idle"), handoffMarkdown: expect.stringContaining("Resume with a concise handoff.") });
+  });
+
+  it("uses the latest known context measurement when a later terminal run has no metric", async () => {
+    const { companyId, agent, issue, state } = await fixture();
+    const oldFinishedAt = new Date(Date.now() - 6 * 60 * 60_000);
+    const now = Date.now();
+    await db.insert(heartbeatRuns).values([
+      {
+        companyId, agentId: agent.id, invocationSource: "assignment", status: "succeeded",
+        sessionIdAfter: "idle-metric-history", createdAt: oldFinishedAt, startedAt: oldFinishedAt, finishedAt: oldFinishedAt,
+        usageJson: { contextTokens: 400_000 },
+      },
+      ...[5, 4, 3, 2].map((ageHours) => {
+        const finishedAt = new Date(now - ageHours * 60 * 60_000);
+        return {
+          companyId, agentId: agent.id, invocationSource: "assignment", status: "succeeded" as const,
+          sessionIdAfter: "idle-metric-history", createdAt: finishedAt, startedAt: finishedAt, finishedAt, usageJson: {},
+        };
+      }),
+    ]);
+
+    const decision = await state.evaluateSessionCompaction({
+      agent: { ...agent, adapterType: "claude_local" }, sessionId: "idle-metric-history", issueId: issue.id,
+    });
+
+    expect(decision).toMatchObject({ rotate: true, reason: expect.stringContaining("400,000") });
+  });
+
+  it("skips the bounded context fallback while the latest terminal run is still warm", async () => {
+    const { companyId, agent, issue } = await fixture();
+    const oldFinishedAt = new Date(Date.now() - 6 * 60 * 60_000);
+    await db.insert(heartbeatRuns).values([
+      {
+        companyId, agentId: agent.id, invocationSource: "assignment", status: "succeeded",
+        sessionIdAfter: "idle-warm-fallback", createdAt: oldFinishedAt, startedAt: oldFinishedAt,
+        finishedAt: oldFinishedAt, usageJson: { contextTokens: 400_000 },
+      },
+      ...[5, 4, 3, 2].map((ageHours) => {
+        const finishedAt = new Date(Date.now() - ageHours * 60 * 60_000);
+        return {
+          companyId, agentId: agent.id, invocationSource: "assignment", status: "succeeded" as const,
+          sessionIdAfter: "idle-warm-fallback", createdAt: finishedAt, startedAt: finishedAt,
+          finishedAt, usageJson: {},
+        };
+      }),
+      {
+        companyId, agentId: agent.id, invocationSource: "assignment", status: "succeeded",
+        sessionIdAfter: "idle-warm-fallback", createdAt: new Date(Date.now() - 10 * 60_000),
+        startedAt: new Date(Date.now() - 10 * 60_000), finishedAt: new Date(Date.now() - 10 * 60_000),
+        usageJson: {},
+      },
+    ]);
+
+    let contextFallbackQueries = 0;
+    const observedDb = new Proxy(db, {
+      get(target, property) {
+        if (property === "select") {
+          return (...args: Parameters<typeof target.select>) => {
+            const selection = args[0];
+            if (Object.hasOwn(selection, "contextTokens")) contextFallbackQueries += 1;
+            return target.select(...args);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as Db;
+
+    const decision = await extracted.createHeartbeatRunState(observedDb).evaluateSessionCompaction({
+      agent: { ...agent, adapterType: "claude_local" }, sessionId: "idle-warm-fallback", issueId: issue.id,
+    });
+
+    expect(decision.rotate).toBe(false);
+    expect(contextFallbackQueries).toBe(0);
+  });
+
+  it("finds an older context measurement within the bounded agent history", async () => {
+    const { companyId, agent, issue, state } = await fixture();
+    const now = Date.now();
+    const oldFinishedAt = new Date(now - 6 * 60 * 60_000);
+    await db.insert(heartbeatRuns).values([
+      {
+        companyId, agentId: agent.id, invocationSource: "assignment", status: "succeeded",
+        sessionIdAfter: "idle-bounded-history", createdAt: oldFinishedAt, startedAt: oldFinishedAt,
+        finishedAt: oldFinishedAt, usageJson: { contextTokens: 400_000 },
+      },
+      ...Array.from({ length: 95 }, (_, index) => {
+        const startedAt = new Date(now - (index + 1) * 60_000);
+        return {
+          companyId, agentId: agent.id, invocationSource: "assignment", status: "succeeded" as const,
+          sessionIdAfter: `other-session-${index}`, createdAt: startedAt, startedAt,
+          finishedAt: startedAt, usageJson: {},
+        };
+      }),
+      ...[5, 4, 3, 2].map((ageHours) => {
+        const finishedAt = new Date(now - ageHours * 60 * 60_000);
+        return {
+          companyId, agentId: agent.id, invocationSource: "assignment", status: "succeeded" as const,
+          sessionIdAfter: "idle-bounded-history", createdAt: finishedAt, startedAt: finishedAt,
+          finishedAt, usageJson: {},
+        };
+      }),
+    ]);
+
+    const decision = await state.evaluateSessionCompaction({
+      agent: { ...agent, adapterType: "claude_local" }, sessionId: "idle-bounded-history", issueId: issue.id,
+    });
+
+    expect(decision).toMatchObject({ rotate: true, reason: expect.stringContaining("400,000") });
+  });
+
+  it("resets idle time when the latest terminal run has no context metric", async () => {
+    const { companyId, agent, issue, state } = await fixture();
+    const oldFinishedAt = new Date(Date.now() - 6 * 60 * 60_000);
+    const latestFinishedAt = new Date(Date.now() - 10 * 60_000);
+    await db.insert(heartbeatRuns).values([
+      {
+        companyId, agentId: agent.id, invocationSource: "assignment", status: "succeeded",
+        sessionIdAfter: "idle-metric-reset", createdAt: oldFinishedAt, finishedAt: oldFinishedAt,
+        usageJson: { contextTokens: 400_000 },
+      },
+      {
+        companyId, agentId: agent.id, invocationSource: "assignment", status: "succeeded",
+        sessionIdAfter: "idle-metric-reset", createdAt: latestFinishedAt, finishedAt: latestFinishedAt,
+        usageJson: {},
+      },
+    ]);
+
+    const decision = await state.evaluateSessionCompaction({
+      agent: { ...agent, adapterType: "claude_local" }, sessionId: "idle-metric-reset", issueId: issue.id,
+    });
+
+    expect(decision.rotate).toBe(false);
+  });
+
+  it.each([
+    { label: "a recent run", ageMinutes: 10, usageJson: { contextTokens: 400_000 }, finished: true },
+    { label: "a small context", ageMinutes: 360, usageJson: { contextTokens: 50_000 }, finished: true },
+    { label: "missing context metrics", ageMinutes: 360, usageJson: {}, finished: true },
+    { label: "missing finishedAt", ageMinutes: 360, usageJson: { contextTokens: 400_000 }, finished: false },
+  ])("does not idle-rotate for $label", async ({ ageMinutes, usageJson, finished = true }) => {
+    const { companyId, agent, issue, state } = await fixture();
+    const now = new Date();
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, invocationSource: "assignment", status: "succeeded",
+      sessionIdAfter: "idle-no-rotate", createdAt: new Date(now.getTime() - ageMinutes * 60_000),
+      finishedAt: finished ? new Date(now.getTime() - ageMinutes * 60_000) : null, usageJson,
+    });
+
+    const decision = await state.evaluateSessionCompaction({
+      agent: { ...agent, adapterType: "claude_local" }, sessionId: "idle-no-rotate", issueId: issue.id,
+    });
+
+    expect(decision.rotate).toBe(false);
+  });
+
+  it("uses inclusive context threshold and requires idle time to exceed the TTL", async () => {
+    const { companyId, agent, issue, state } = await fixture();
+    const finishedAt = new Date(Date.now() - 61 * 60_000);
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, invocationSource: "assignment", status: "succeeded",
+      sessionIdAfter: "idle-boundary", createdAt: finishedAt, finishedAt,
+      usageJson: { contextTokens: 100_000 },
+    });
+
+    const decision = await state.evaluateSessionCompaction({
+      agent: { ...agent, adapterType: "claude_local" }, sessionId: "idle-boundary", issueId: issue.id,
+    });
+
+    expect(decision.rotate).toBe(true);
+  });
+
+  it("does not idle-rotate when the configured context threshold is disabled", async () => {
+    const { companyId, agent, issue, state } = await fixture();
+    const finishedAt = new Date(Date.now() - 6 * 60 * 60_000);
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, invocationSource: "assignment", status: "succeeded",
+      sessionIdAfter: "idle-disabled", createdAt: finishedAt, finishedAt,
+      usageJson: { contextTokens: 400_000 },
+    });
+
+    const decision = await state.evaluateSessionCompaction({
+      agent: {
+        ...agent,
+        adapterType: "claude_local",
+        runtimeConfig: { heartbeat: { sessionCompaction: { idleMinContextTokens: 0 } } },
+      },
+      sessionId: "idle-disabled", issueId: issue.id,
+    });
+
+    expect(decision.rotate).toBe(false);
+  });
+
+  it("does not idle-rotate when session compaction is disabled", async () => {
+    const { companyId, agent, issue, state } = await fixture();
+    const finishedAt = new Date(Date.now() - 6 * 60 * 60_000);
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, invocationSource: "assignment", status: "succeeded",
+      sessionIdAfter: "idle-policy-disabled", createdAt: finishedAt, finishedAt,
+      usageJson: { contextTokens: 400_000 },
+    });
+
+    const decision = await state.evaluateSessionCompaction({
+      agent: {
+        ...agent,
+        adapterType: "claude_local",
+        runtimeConfig: { heartbeat: { sessionCompaction: { enabled: false } } },
+      },
+      sessionId: "idle-policy-disabled", issueId: issue.id,
+    });
+
+    expect(decision.rotate).toBe(false);
   });
 
   it.each(["superseded", "cancelled"] as const)("fences %s conversation session writes and clears", async (scenario) => {
