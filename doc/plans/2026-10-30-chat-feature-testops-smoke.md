@@ -30,8 +30,9 @@ Delegation and the other catalog scenarios are deferred.
 
 Campaign owns public catalog/profile calibration and these progress notes.
 Core owns the public AWS workflow/execution adapter, one coherent public PR,
-and the sole actual operation. Coordinator owns the existing private
-TestOps integration and dedicated plan. Source peers precede publication.
+and the sole actual operation. Coordinator supplies the public TestOps
+selection/reporting helper and the separate private credential sealer.
+The public workflow owns the dedicated plan. Source peers precede publication.
 
 The current Cloud TestOps adapter is scoped to `qa-basics` Product journeys;
 the new chat plan must have its own exact plan/case mapping. Reuse normalized
@@ -44,9 +45,14 @@ The public patch adds only the OpenCode backlog selection while preserving
 the two Codex cells. A genuine parent selector control failed; all 68 focused
 oracle/catalog controls and the owning type check now pass. The expected
 suite-size assertion was updated for the single added cell. Independent source
-review precedes commit and publication. No local app, database, native SDK,
+review passed and the nine-file profile slice is committed as `0a996033`.
+No local app, database, native SDK,
 provider, model, install or build qualification was run.
 
-PR, dedicated TestOps plan, AWS run and final TestOps result links are pending.
-The immediate gate is source review and delivery of the coherent profile,
-workflow and plan mapping. Source checks alone do not satisfy the finish line.
+The separate protected credential bootstrap is limited to sealing the existing reporting token to the source-pinned public
+reporting environment. Its sealer-only source peer passed; no real token has
+been transferred. The public adapter now has 53 focused authority/export/workflow controls and
+30 API/CLI/result controls passing, plus owning typechecking and workflow lint.
+Its final source peer is pending. The actual registration IDs, selected API
+shape, provider execution and TestOps result remain unqualified. The public PR, dedicated plan, AWS run and final TestOps result
+links remain pending. Source checks alone do not satisfy the finish line.

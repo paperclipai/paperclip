@@ -162,3 +162,37 @@ in the history. Across the original final-definition batch and this recheck,
 backlog is 5/5 and delegation is 5/6. The local
 `results/chat-feature-recheck/verification.md` records the follow-up evidence;
 its standard dashboard is explicitly scoped to the latest campaign.
+
+## TestOps-backed AWS backlog cell
+
+The dedicated `Chat feature TestOps` workflow accepts only the shipped default
+branch and the fixed OpenCode backlog cell. `evaluate` is the default operation
+and requires TestOps' `ALLURE_JOB_RUN_ID`. A protected reporting job verifies the
+project, singleton plan, assigned public workflow, selected case and current
+GitHub run before any build or provider access. The evaluated process receives
+no TestOps token. It retains the original one-query, one-work-run, 120-second
+turn, 420-second attempt, 300-second settled-state and zero-retry limits.
+
+Two metadata operations prepare that route. `bootstrap` registers the actual
+public CI job through pinned `allurectl` with an empty results directory and
+reconciles only the dedicated case and singleton plan. It produces no passing
+test result. After the registered job and protected case/plan/job identifiers
+are verified, `launch-plan` sends one TestOps plan-run request and exits.
+The TestOps job then dispatches `evaluate`; an operator must not dispatch a
+second evaluation manually. Missing or ambiguous registration and selection
+metadata stops before inference.
+
+The workflow reuses the existing AWS fleet and strict private evidence storage.
+Its shipped-main authority is separate from manual candidate approval. Original
+logs, provider records and failure evidence remain private. The reporting adapter
+exports only a source/run-bound normalized result, JUnit and screenshots already
+marked by the owned fixture screenshot producer with matching file hashes.
+A separate protected reporting job converts that projection to the exact TestOps
+case. Failed grades and cleanup failures remain failed.
+
+Reporting setup uses the master-only `runner-e2e-testops-reporting` environment,
+with the existing reporting token delivered through the reviewed sealed-box
+bootstrap. `CHAT_TESTOPS_CASE_ID`, `CHAT_TESTOPS_PLAN_ID` and
+`CHAT_TESTOPS_JOB_ID` must name the observed dedicated mapping; the numeric
+`CHAT_TESTOPS_GITHUB_WORKFLOW_ID` supports TestOps' registered workflow URL.
+No arbitrary source, model, case, retry or budget input is accepted.
