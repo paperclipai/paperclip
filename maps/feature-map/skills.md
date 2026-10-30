@@ -39,6 +39,8 @@ Use skill policy/agent selection in the library or an agent’s Skills tab.
 
 ## Driving it with Playwright and the Paperclip CLI
 
+The explicit `create-skill-studio` [Product journey](../../tests/runner-e2e/PRODUCT-JOURNEYS.md) covers `skills/authoring`: native creation of an owned company skill, its task activity card, a Studio edit, reload, and task-card readback. It does not establish policy, source-update, or Studio-test coverage. A deployed target requires its own live result.
+
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use a harmless skill fixture and test agent with skill support. Record whether the source is local, bundled, project, or remote.
 
 ### `library-sources`

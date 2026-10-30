@@ -415,6 +415,7 @@ export function createCommandManagedRuntimeClient(input: {
         args: shellCommandArgs(`rm -rf ${shellQuote(remotePath)}`),
         cwd: input.commandCwd,
         timeoutMs: input.timeoutMs,
+        bypassSession: true,
       });
       requireSuccessfulResult(result, `remove ${remotePath}`);
     },
@@ -424,6 +425,9 @@ export function createCommandManagedRuntimeClient(input: {
         args: shellCommandArgs(command),
         cwd: input.commandCwd,
         timeoutMs: options.timeoutMs,
+        // These helpers consume only exit status. They need neither a
+        // persistent shell nor its separate, streamed output observations.
+        bypassSession: true,
       });
       requireSuccessfulResult(result, command);
     },
@@ -546,6 +550,7 @@ export async function prepareCommandManagedRuntime(input: {
   syncWorkspace?: boolean;
   workspaceInboundMode?: WorkspaceInboundMode;
   workspaceSnapshotIsolation?: "worker";
+  workspaceGitIndexRefresh?: boolean;
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
   workspaceCheckpoint?: boolean;
   onWorkspaceCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
@@ -622,6 +627,7 @@ export async function prepareCommandManagedRuntime(input: {
           syncWorkspace: input.syncWorkspace,
           workspaceInboundMode: input.workspaceInboundMode,
           workspaceSnapshotIsolation: input.workspaceSnapshotIsolation,
+          workspaceGitIndexRefresh: input.workspaceGitIndexRefresh,
           workspaceDurableSeed: input.workspaceDurableSeed,
           workspaceCheckpoint: input.workspaceCheckpoint,
           onWorkspaceCheckpoint: input.onWorkspaceCheckpoint,
@@ -675,6 +681,7 @@ export async function prepareCommandManagedRuntime(input: {
     syncWorkspace: input.syncWorkspace,
     workspaceInboundMode: input.workspaceInboundMode,
     workspaceSnapshotIsolation: input.workspaceSnapshotIsolation,
+    workspaceGitIndexRefresh: input.workspaceGitIndexRefresh,
     workspaceDurableSeed: input.workspaceDurableSeed,
     workspaceCheckpoint: input.workspaceCheckpoint,
     onWorkspaceCheckpoint: input.onWorkspaceCheckpoint,

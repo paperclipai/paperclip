@@ -193,6 +193,19 @@ The rejected call does not create a semantic input event or execution receipt.
 Validated runner diagnostics retain this scalar metadata even when the operation
 is an API or case tool. API request and response bodies keep their existing redaction.
 
+If a declared native completion tool is rejected and the turn ends without an
+accepted replacement report, the runner emits `session.failed` with code
+`semantic_completion_rejected` and `recoverable: false` before the provider's
+original turn terminal. It emits no successful result proposal or human review
+request. Core uses its existing permanent native failure path and does not start
+a missing-result recovery turn. This failure also precedes terminal goal updates;
+Core records the original turn terminal before rejecting goal success or further
+goal continuation. Recoverable goal failures retain their existing behavior.
+The rejection survives same-turn restoration;
+a new turn or run binding clears it. A later accepted completion report keeps
+its normal authority, and ordinary turns with no completion-tool attempt keep
+their existing fallback.
+
 Before interrupting a Codex turn, the runner durably records a
 `harness.diagnostic` event with code `provider_interrupt_requested`, the stop
 reason, provider turn ID, and pending tool call IDs. A harmless identical result

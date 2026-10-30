@@ -20,6 +20,7 @@ import {
   deleteLocalGitRef,
   fetchGitBundleIntoLocalRef,
   GIT_ARCHIVE_EXCLUDES,
+  buildRefreshWorkspaceGitIndexCommand,
   type GitWorkspaceSnapshot,
   integrateImportedGitHead,
   readGitWorkspaceSnapshot,
@@ -1256,6 +1257,8 @@ export async function prepareSandboxManagedRuntime(input: {
   /** Selects authoritative host staging, exact durable-seed replay, or no-overwrite adoption. */
   workspaceInboundMode?: WorkspaceInboundMode;
   workspaceSnapshotIsolation?: "worker";
+  /** Fully await a restored Git index refresh inside the existing inbound barrier. */
+  workspaceGitIndexRefresh?: boolean;
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
   workspaceCheckpoint?: boolean;
   onWorkspaceCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
@@ -1453,10 +1456,6 @@ export async function prepareSandboxManagedRuntime(input: {
 
   const seedGeneration = input.workspaceSeedCacheDirectory && baselineSnapshot && workspaceInboundMode !== "durable_seed"
     ? await runStepSpan("workspace.seed_generation", async () => workspaceSeedGeneration(baselineSnapshot!, gitSnapshot, repositories, input.workspaceSeedCacheScope)) : null;
-  const cachedSeed = seedGeneration
-    ? await runStepSpan("workspace.seed_lookup", () => readWorkspaceSeedGeneration(input.workspaceSeedCacheDirectory!, seedGeneration,
-      { companyDirectory: input.workspaceSeedCacheCompanyDirectory })) : null;
-  const replaySeed = workspaceInboundMode === "durable_seed" ? input.workspaceDurableSeed : cachedSeed;
   const sharedSeed = input.workspaceSeedCacheScope === "company" && seedGeneration !== null;
 
   // Every inbound staging step delegates to the provider through `client.syncIn`:
@@ -1512,6 +1511,10 @@ export async function prepareSandboxManagedRuntime(input: {
     }));
 
   await withTempDir("paperclip-sandbox-sync-", async (tempDir) => {
+    const cachedSeed = seedGeneration
+      ? await runStepSpan("workspace.seed_lookup", () => readWorkspaceSeedGeneration(input.workspaceSeedCacheDirectory!, seedGeneration,
+        { companyDirectory: input.workspaceSeedCacheCompanyDirectory, privateCopyDirectory: tempDir })) : null;
+    const replaySeed = workspaceInboundMode === "durable_seed" ? input.workspaceDurableSeed : cachedSeed;
     const preservedNames = new Set([
       ".paperclip-runtime",
       ...(gitSnapshot ? [".git"] : []),
@@ -1594,7 +1597,7 @@ export async function prepareSandboxManagedRuntime(input: {
           const workspaceFiles: SandboxSyncFileMapping[] = [];
           const workspacePostUploadCommands: SandboxPostUploadCommand[] = [];
           let workspaceUploadBytes = 0;
-          const gitSeedTarPath = path.join(tempDir, sharedSeed ? "git-seed.tar" : "git-workspace.tar");
+          const gitSeedTarPath = cachedSeed?.gitArchivePath ?? path.join(tempDir, sharedSeed ? "git-seed.tar" : "git-workspace.tar");
 
           // Build both host tarballs (the git-history tar and the workspace-overlay
           // tar) inside one host span named `pack`. This span makes the host pack
@@ -1610,7 +1613,7 @@ export async function prepareSandboxManagedRuntime(input: {
             //    which sits under `.paperclip-runtime`, survives to run its own extract.
             if (gitSnapshot || repositories.length) {
               await reportWorkspaceStatus("git_sync", "Syncing git history to environment");
-              const gitTarPath = path.join(tempDir, "git-workspace.tar");
+              const gitTarPath = sharedSeed ? path.join(tempDir, "git-workspace.tar") : gitSeedTarPath;
               const remoteGitTar = path.posix.join(
                 runtimeRootDir,
                 "git-workspace-upload.tar",
@@ -1620,7 +1623,7 @@ export async function prepareSandboxManagedRuntime(input: {
                 if (!durableGitArchive) {
                   throw new Error("workspace_durable_seed_git_missing");
                 }
-                await runStepSpan("workspace.seed_replay", () => copyDurableSeedArchive({
+                if (!cachedSeed) await runStepSpan("workspace.seed_replay", () => copyDurableSeedArchive({
                   sourcePath: durableGitArchive,
                   targetPath: gitSeedTarPath,
                   expectedSha256: replaySeed.gitArchiveSha256,
@@ -1664,9 +1667,9 @@ export async function prepareSandboxManagedRuntime(input: {
             //    extracted git tree (no wipe); a plain workspace wipes every child except
             //    the preserved names first. The extract runs AFTER the git extract.
             await reportWorkspaceStatus("config_sync", "Syncing workspace to environment");
-            const workspaceTarPath = path.join(tempDir, "workspace.tar");
+            const workspaceTarPath = cachedSeed?.workspaceArchivePath ?? path.join(tempDir, "workspace.tar");
             if (replaySeed) {
-              await runStepSpan("workspace.seed_replay", () => copyDurableSeedArchive({
+              if (!cachedSeed) await runStepSpan("workspace.seed_replay", () => copyDurableSeedArchive({
                 sourcePath: replaySeed.workspaceArchivePath,
                 targetPath: workspaceTarPath,
                 expectedSha256:
@@ -1737,6 +1740,7 @@ export async function prepareSandboxManagedRuntime(input: {
                 { ...seed, gitArchivePath }, {
                   companyDirectory: input.workspaceSeedCacheCompanyDirectory,
                   scope: input.workspaceSeedCacheScope,
+                  runtimeSpan: runStepSpan,
                   verify: () => runStepSpan("seed.verify", async () => {
                     const verifiedRoot = path.join(tempDir, "verify-seed");
                     try {
@@ -1775,6 +1779,13 @@ export async function prepareSandboxManagedRuntime(input: {
             progressLabel: "workspace",
             statusPhase: "config_sync",
             progressBytes: workspaceUploadBytes,
+          }).then(async () => {
+            if (input.workspaceGitIndexRefresh && gitSnapshot && workspaceInboundMode === "host_current") {
+              await runStepSpan("workspace.git_index_refresh", () => input.client.run(
+                buildRefreshWorkspaceGitIndexCommand(workspaceRemoteDir),
+                { timeoutMs: input.spec.timeoutMs },
+              ));
+            }
           });
           const [staged] = await Promise.allSettled([staging, publishSeed()]);
           if (staged.status === "rejected") throw staged.reason;

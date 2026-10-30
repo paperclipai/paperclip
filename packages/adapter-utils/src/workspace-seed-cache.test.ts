@@ -26,6 +26,45 @@ async function fixture() {
 }
 const generation = (index: number) => index.toString(16).padStart(64, "0");
 
+it("returns verified private copies that survive subsequent cache changes", async () => {
+  const f = await fixture();
+  const git = path.join(f.root, "git.tar"); await fs.writeFile(git, "git recovery bytes");
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), { ...f.seed, gitArchivePath: git })).toBe(true);
+  const destination = path.join(f.root, "staging"); await fs.mkdir(destination);
+  const copy = await readWorkspaceSeedGeneration(f.workspace, generation(1), { privateCopyDirectory: destination });
+  expect(copy).not.toBeNull();
+  expect(path.dirname(copy!.workspaceArchivePath)).toBe(path.dirname(copy!.gitArchivePath!));
+  expect(path.dirname(path.dirname(copy!.workspaceArchivePath))).toBe(destination);
+  await fs.writeFile(path.join(f.workspace, generation(1), "workspace.tar"), "changed shared cache");
+  await fs.rm(path.join(f.workspace, generation(1), "git.tar"));
+  expect(await fs.readFile(copy!.workspaceArchivePath, "utf8")).toBe("run recovery bytes");
+  expect(await fs.readFile(copy!.gitArchivePath!, "utf8")).toBe("git recovery bytes");
+});
+
+it("rejects corrupted private bytes and removes incomplete materialization", async () => {
+  const f = await fixture();
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed)).toBe(true);
+  const destination = path.join(f.root, "staging"); await fs.mkdir(destination);
+  const copyFile = fs.copyFile.bind(fs);
+  vi.spyOn(fs, "copyFile").mockImplementationOnce(async (...args) => {
+    await copyFile(...args);
+    await fs.writeFile(args[1], "corrupted during copy");
+  });
+  expect(await readWorkspaceSeedGeneration(f.workspace, generation(1), { privateCopyDirectory: destination })).toBeNull();
+  expect(await fs.readdir(destination)).toEqual([]);
+  expect(await fs.readFile(path.join(f.workspace, generation(1), "workspace.tar"), "utf8")).toBe("run recovery bytes");
+});
+
+it("cleans a verified workspace copy if the cached Git archive is corrupt", async () => {
+  const f = await fixture();
+  const git = path.join(f.root, "git.tar"); await fs.writeFile(git, "git recovery bytes");
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), { ...f.seed, gitArchivePath: git })).toBe(true);
+  await fs.writeFile(path.join(f.workspace, generation(1), "git.tar"), "corrupt");
+  const destination = path.join(f.root, "staging"); await fs.mkdir(destination);
+  expect(await readWorkspaceSeedGeneration(f.workspace, generation(1), { privateCopyDirectory: destination })).toBeNull();
+  expect(await fs.readdir(destination)).toEqual([]);
+});
+
 it("stops new workspace generations at capacity while retaining reusable and per-run seeds", async () => {
   const f = await fixture(); const options = { companyDirectory: f.company, limits: { workspaceGenerations: 1 } };
   expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, options)).toBe(true);
@@ -54,6 +93,50 @@ it.each(["companyGenerations", "companyWorkspaces"] as const)("serializes distin
   expect(results.sort()).toEqual([false, true]);
   expect(await fs.readdir(f.company)).toHaveLength(1);
   expect(await fs.readFile(f.archive, "utf8")).toBe("run recovery bytes");
+});
+
+it("keeps company-lock contention outside the locked-publication span", async () => {
+  const f = await fixture();
+  const entered = deferred<void>(), release = deferred<void>(), verified = deferred<void>();
+  const spans: string[][] = [[], []];
+  const runtimeSpan = (index: number) => async <T>(name: string, work: () => Promise<T>): Promise<T> => {
+    spans[index].push(name);
+    if (index === 0 && name === "workspace.seed_cache_locked_publish") {
+      entered.resolve();
+      await release.promise;
+    }
+    return work();
+  };
+  const first = publishWorkspaceSeedGeneration(path.join(f.company, "first"), generation(1), f.seed, {
+    companyDirectory: f.company, runtimeSpan: runtimeSpan(0),
+  });
+  let second: Promise<boolean> | undefined;
+  try {
+    await entered.promise;
+    second = publishWorkspaceSeedGeneration(path.join(f.company, "second"), generation(2), f.seed, {
+      companyDirectory: f.company, runtimeSpan: runtimeSpan(1),
+      verify: async () => { verified.resolve(); return true; },
+    });
+    await verified.promise;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(spans[1]).toContain("workspace.seed_cache_capacity");
+    expect(spans[1]).not.toContain("workspace.seed_cache_locked_publish");
+  } finally {
+    release.resolve();
+    await Promise.all([first, second]);
+  }
+  expect(await first).toBe(true);
+  expect(await second).toBe(true);
+  for (const names of spans) {
+    expect(names).toContain("workspace.seed_cache_locked_publish");
+    expect(names).toContain("workspace.seed_cache_evict");
+    expect(names).toContain("workspace.seed_cache_sync");
+    expect(names).toContain("workspace.seed_cache_hash");
+  }
+  for (const [name, index] of [["first", 1], ["second", 2]] as const) {
+    const cached = await readWorkspaceSeedGeneration(path.join(f.company, name), generation(index), { companyDirectory: f.company });
+    expect(await fs.readFile(cached!.workspaceArchivePath, "utf8")).toBe("run recovery bytes");
+  }
 });
 
 it("applies the company byte cap across workspace roots", async () => {

@@ -1,3 +1,7 @@
+import { stopAndRedirectThroughUi } from "./stop-redirect-flow.js";
+import { downloadStoryArtifact } from "./story-artifact.js";
+import { editCreatedSkillThroughStudio } from "./skill-studio-flow.js";
+import { decideProtectedActionThroughUi, readServiceBriefing, serviceBriefingChecks } from "./protected-action-flow.js";
 import { gradeAgentmailSetup } from "./agentmail-setup-evidence.js";
 import { CONNECTION_GUIDANCE_SUITE, CONNECTION_GUIDANCE_BUDGET_CENTS } from "./connection-guidance-cases.js";
 import { gradeConnectionGuidanceDecline, hasConnectionGuidanceDeclineReply, explainsConnectionUnavailable, type ConnectionGuidanceDeclineInput } from "./connection-guidance-evidence.js";
@@ -477,41 +481,15 @@ export async function runEverydayFlow(input: Input) {
     if (!attachment) throw new Error("Selected delivery is no longer available");
     const issue = ev.issues.find((i) => i.id === issueId)!;
     await openTask(issue);
-    const links = page.locator(
-      `a[href*="/api/attachments/${attachment.id}/content"]`,
-    );
-    const link = links.filter({ hasText: /Download/i }).first();
-    await expect(link).toBeVisible({ timeout: 15_000 });
-    const pending = page.waitForEvent("download", { timeout: 30_000 });
-    await link.click();
-    const file = await pending;
-    const target = path.join(input.privateDir, "snapshots", `${phase}.zip`);
-    await file.saveAs(target);
-    const bytes = await readFile(target);
-    const digest = createHash("sha256").update(bytes).digest("hex");
-    const result = await runCommand(process.env.PYTHON ?? "python3", [
-      path.join(import.meta.dirname, "everyday-artifact.py"),
-      target,
-      "--mode",
-      mode,
-    ], Math.max(1, Math.min(60_000, input.deadlineAt - Date.now())));
-    const oracle = JSON.parse(result.stdout) as { checks: StoryCheck[] };
-    ev.checks.push(
-      ...oracle.checks.map((c) => ({ ...c, id: `${phase}.${c.id}` })),
-    );
-    ev.downloads.push({
-      phase,
-      attachmentId: attachment.id,
-      issueId,
-      sha256: digest,
-      bytes: bytes.length,
-      filename: file.suggestedFilename(),
-      mode,
-    });
+    const delivered = await downloadStoryArtifact({ page, attachmentId: attachment.id,
+      directory: path.join(input.privateDir, "snapshots"), phase, mode, deadlineAt: input.deadlineAt });
+    ev.checks.push(...delivered.checks.map(c => ({ ...c, id: `${phase}.${c.id}` })));
+    const { checks: _checks, ...receipt } = delivered;
+    ev.downloads.push({ phase, issueId, mode, ...receipt });
     note("download-verified", {
       phase,
       attachmentId: attachment.id,
-      sha256: digest,
+      sha256: delivered.sha256,
     });
     await openParent();
   }
@@ -921,24 +899,20 @@ export async function runEverydayFlow(input: Input) {
           "Fault boundary was not exercised: no active execution",
         );
       if (caseId === "stop-redirect") {
-        await page.getByTestId("task-chat-composer-stop").last().click();
         ev.allowedInterruptedRuns.push(active.id);
-        note("stop-clicked", { runId: active.id });
-        await pollUntil({
-          label: "owned runner stopped",
-          deadlineAt: input.deadlineAt,
-          load: () => runnerStopped(active),
-          accept: Boolean,
-          intervalMs: 250,
+        await stopAndRedirectThroughUi({ page, nonce,
+          awaitRetirement: async () => {
+            note("stop-clicked", { runId: active.id });
+            await pollUntil({ label: "owned runner stopped", deadlineAt: input.deadlineAt,
+              load: () => runnerStopped(active), accept: Boolean, intervalMs: 250 });
+          },
+          beforeRedirect: async () => {
+            await recordSource("source-saved-after-interruption", "source-after-interruption.json");
+            stoppedWorkspace = await workspaceFiles();
+            note("stopped-workspace-snapshot", stoppedWorkspace);
+          },
+          reply: async message => { await reply(message); note("new-direction-submitted"); },
         });
-        await recordSource("source-saved-after-interruption", "source-after-interruption.json");
-        stoppedWorkspace = await workspaceFiles();
-        note("stopped-workspace-snapshot", stoppedWorkspace);
-        await reply(
-          `Change direction. Leave the project as it is. Reply with just this short note: "The studio is ready. Reference ${nonce}."`,
-        );
-        note("new-direction-submitted");
-        await page.reload();
       } else {
         await reply(LATE_REQUIREMENT);
         note("followup-submitted-before-interruption");
@@ -1122,19 +1096,24 @@ export async function runEverydayFlow(input: Input) {
           .getByRole("button", { name: "Not now", exact: true })
           .click();
       } else {
-        const dismiss = page.getByRole("button", {
-          name: "Dismiss Approve tool action",
-        });
-        if (await dismiss.isVisible()) await dismiss.click();
-        await page
-          .getByRole("button", { name: "Review request", exact: true })
-          .click();
-        await page
-          .getByRole("button", {
-            name: declining ? "Decline" : "Approve & run",
-            exact: true,
-          })
-          .click();
+        if (review) await decideProtectedActionThroughUi({ page,
+          rows: [pendingInteraction], connectionId: review.connectionId, decline: declining,
+          invocationCount: review.invocationCount });
+        else {
+          const dismiss = page.getByRole("button", {
+            name: "Dismiss Approve tool action",
+          });
+          if (await dismiss.isVisible()) await dismiss.click();
+          await page
+            .getByRole("button", { name: "Review request", exact: true })
+            .click();
+          await page
+            .getByRole("button", {
+              name: declining ? "Decline" : "Approve & run",
+              exact: true,
+            })
+            .click();
+        }
       }
       const decisionStatus = declining ? "rejected" : "accepted";
       const decided = await pollUntil({
@@ -1178,56 +1157,13 @@ export async function runEverydayFlow(input: Input) {
       );
       if (created) {
         await openParent();
-        const card = page.getByRole("article", {
-          name: "Skill created: release-readiness-checklist",
-        });
-        await expect(card).toHaveCount(1);
-        await expect(card).toBeVisible();
-        await card.getByRole("button").click();
-        await expect(page.getByRole("heading", { name: "release-readiness-checklist" })).toBeVisible();
-        await expect(page.getByText("Verify checks.", { exact: true })).toBeVisible();
-        check("feed-card-opened", true, "The task thread card opened the created skill sidebar.");
-        const openStudio = page.getByRole("button", { name: "Open in Skill Studio", exact: true });
-        await expect(openStudio).toBeVisible();
-        await openStudio.click();
-        await expect(page).toHaveURL(new RegExp(`/skills/studio/${created.id}$`));
-        // Studio's skill selector identifies the resource. Headings inside the
-        // authored document can differ from its canonical skill name.
-        await expect(page.getByRole("combobox").filter({ hasText: "release-readiness-checklist" })).toBeVisible();
-        const editor = page.getByRole("textbox", { name: "editable markdown", exact: true });
-        await editor.click();
-        await editor.press("ControlOrMeta+End");
-        await editor.press("Enter");
-        await editor.press("Enter");
-        await editor.pressSequentially("Studio edit marker: verified");
-        await page.getByRole("button", { name: /^Save$/ }).click();
-        await pollUntil({
-          label: "Skill Studio edit persisted",
-          deadlineAt: Math.min(input.deadlineAt, Date.now() + 30_000),
-          load: () => api.get<Row>(
-            `/api/companies/${fixtures.company.id}/skills/${encodeURIComponent(String(created.id))}`,
-          ),
-          accept: (detail) => JSON.stringify(detail).includes("Studio edit marker: verified"),
-        });
-        const detail = await api.get<Row>(
-          `/api/companies/${fixtures.company.id}/skills/${encodeURIComponent(String(created.id))}`,
-        );
-        check(
-          "studio-edit-persisted",
-          JSON.stringify(detail).includes("Studio edit marker: verified"),
-          "The Skill Studio edit remains in the persisted skill after returning to the page.",
-        );
-        check("studio-opened", true, "The skill detail opened in Skill Studio.");
-        await page.goBack();
-        await expect(page).toHaveURL(new RegExp(`/issues/`));
-        const returnedCard = page.getByRole("article", {
-          name: "Skill created: release-readiness-checklist",
-        });
-        await expect(returnedCard).toBeVisible();
-        await returnedCard.getByRole("button").click();
-        await expect(page.getByRole("heading", { name: "release-readiness-checklist" })).toBeVisible();
-        await expect(page.getByText("Studio edit marker: verified", { exact: true })).toBeVisible();
-        check("return-content-persisted", true, "Returning to the task shows the saved Skill Studio edit.");
+        await editCreatedSkillThroughStudio({ page, skillId: created.id, skillName: created.name,
+          marker: "Studio edit marker: verified", deadlineAt: input.deadlineAt,
+          read: () => api.get(`/api/companies/${fixtures.company.id}/skills/${created.id}`) });
+        check("feed-card-opened", true, "The task activity card opens the created skill.");
+        check("studio-opened", true, "The skill opens in Skill Studio.");
+        check("studio-edit-persisted", true, "The Studio edit persists across reload.");
+        check("return-content-persisted", true, "The saved edit is readable from the task card.");
       }
     }
     if (providerChoice) {
@@ -1538,48 +1474,8 @@ export async function runEverydayFlow(input: Input) {
         "Exactly one approved service call; none after decline.",
       );
       if (caseId === "service-approve") {
-        const docs = await api.get<Row[]>(
-          `/api/issues/${parent!.id}/documents`,
-        );
-        const bodies = await Promise.all(
-          docs.map((d) =>
-            api.get<Row>(
-              `/api/issues/${parent!.id}/documents/${encodeURIComponent(d.key)}`,
-            ),
-          ),
-        );
-        const attachments = await api.get<Row[]>(
-          `/api/issues/${parent!.id}/attachments`,
-        );
-        for (const attachment of attachments.filter(
-          (a) =>
-            /\.(?:md|txt)$/i.test(a.originalFilename ?? a.filename ?? "") ||
-            ["text/markdown", "text/plain"].includes(a.contentType),
-        )) {
-          const url = `/api/attachments/${attachment.id}/content`;
-          const response = await api.request.get(url);
-          if (!response.ok()) continue;
-          await expect(page.locator(`a[href*="${url}"]`).first()).toBeVisible();
-          bodies.push({
-            id: attachment.id,
-            title: attachment.originalFilename ?? attachment.filename,
-            body: await response.text(),
-            source: "delivered-attachment",
-          });
-        }
-        const text = bodies
-          .map((d) => String(d.body ?? d.revision?.body ?? ""))
-          .join("\n");
-        check(
-          "briefing-uses-real-result",
-          text.includes(`SERVICE_${nonce}`),
-          "A delivered issue document or Markdown attachment contains the actual service verification code.",
-        );
-        check(
-          "briefing-includes-page-titles",
-          text.includes("Roadmap") && text.includes("Meeting notes"),
-          "The briefing includes both page titles returned by the service.",
-        );
+        const bodies = await readServiceBriefing({ page, api, issueId: parent!.id });
+        for (const result of serviceBriefingChecks(bodies, `SERVICE_${nonce}`)) check(result.id, result.passed, result.detail);
         ev.documents = bodies;
         ev.issues.find((i) => i.id === parent!.id)!.documents = bodies;
       }

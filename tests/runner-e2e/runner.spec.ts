@@ -1,3 +1,4 @@
+import { runPlanRevisionAcceptance, isPendingPlanConfirmation, normalizePlanMarkdown, expectPlanStageVisible } from "./plan-revision-flow.js";
 import { createWorkerTiming } from "./worker-timing.js";
 import { captureTaskChat, type TaskChatEvidence } from "./task-chat.js";
 import { FEEDBACK_PERSISTENCE_SUITE, gradeFeedbackPersistence } from "./feedback-persistence.js";
@@ -425,16 +426,6 @@ function matchingRuns(runs: RunRecord[], issue: IssueRecord) {
   });
 }
 
-function isPendingPlanConfirmation(interaction: InteractionRecord) {
-  return (
-    interaction.kind === "request_confirmation" &&
-    interaction.status === "pending" &&
-    interaction.payload?.target?.type === "issue_document" &&
-    interaction.payload.target.key === "plan" &&
-    typeof interaction.payload.target.revisionId === "string"
-  );
-}
-
 function isPendingQuestion(interaction: InteractionRecord) {
   return (
     interaction.kind === "ask_user_questions" &&
@@ -450,12 +441,6 @@ function isPendingWarmConfirmation(interaction: InteractionRecord) {
     interaction.continuationPolicy === "wake_assignee" &&
     interaction.payload?.target?.type === "custom"
   );
-}
-
-function normalizePlanMarkdown(body: string | null | undefined) {
-  // Provider plan renderers may defensively escape underscores in plain-text
-  // markers. The rendered document and semantic marker are identical.
-  return (body ?? "").replaceAll("\\_", "_");
 }
 
 function nativeRunEventIntegrityFailures(
@@ -566,28 +551,6 @@ function nativeRunEventIntegrityFailures(
     );
   }
   return failures;
-}
-
-async function expectPlanStageVisible(
-  page: Page,
-  options: { native: boolean; revision: number | null },
-) {
-  // A Plan flow is only qualified when the canonical saved document is
-  // projected as a card. Native profiles additionally require that card to be
-  // inside the runner turn, which proves write-boundary embedding rather than
-  // a standalone fallback. The API assertions own exact body-marker identity
-  // because the compact card intentionally shows only its first three lines.
-  const root = options.native
-    ? page.locator('[data-testid="task-chat-turn"][data-settled="true"]')
-    : page.locator("body");
-  const preview = root.getByTestId("task-chat-plan-preview").last();
-  await expect(preview).toBeVisible({ timeout: 30_000 });
-  if (options.revision !== null) {
-    await expect(preview).toHaveAttribute(
-      "aria-label",
-      `Open Plan revision ${options.revision}`,
-    );
-  }
 }
 
 for (const execution of executions) {
@@ -1478,165 +1441,10 @@ for (const execution of executions) {
       } else if (execution.task.flow === "plan_revision_acceptance") {
         const planMarkers = execution.task.buildPlanMarkers?.(nonce);
         const revisionRequest = execution.task.buildRevisionRequest?.(nonce);
-        if (!planMarkers || !revisionRequest) {
-          throw new Error(
-            `Plan fixture ${execution.task.id} is missing lifecycle factories`,
-          );
-        }
-        const draftState = await pollUntil({
-          label: `initial plan confirmation for issue ${issue.id}`,
-          deadlineAt,
-          load: loadTaskState,
-          accept: ({ taskRuns, interactions }) =>
-            taskRuns.length >= 1 &&
-            taskRuns.every((run) => TERMINAL_RUN_STATUSES.has(run.status)) &&
-            interactions.some(isPendingPlanConfirmation),
-          reject: ({ taskRuns, interactions }) =>
-            rejectPlanConfirmationPoll({
-              taskRuns,
-              interactions,
-              minimumRunCount: 1,
-            }),
-        });
-        const draftInteraction = draftState.interactions.find(
-          isPendingPlanConfirmation,
-        )!;
-        const draftPlan = await api.get<IssueDocumentRecord>(
-          `/api/issues/${issue.id}/documents/plan`,
-        );
-        if (
-          !normalizePlanMarkdown(draftPlan.body).includes(planMarkers.draft)
-        ) {
-          throw new Error(
-            `Initial Plan document did not contain ${planMarkers.draft}`,
-          );
-        }
-        if (numberedPlanStepCount(draftPlan.body) !== 2) {
-          throw new Error(
-            "Initial Plan must contain exactly two numbered steps",
-          );
-        }
-        if (
-          draftInteraction.payload?.target?.revisionId !==
-          draftPlan.latestRevisionId
-        ) {
-          throw new Error(
-            "Initial plan confirmation did not target the latest Plan revision",
-          );
-        }
-        await page.goto(
-          `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
-          { waitUntil: "domcontentloaded" },
-        );
-        await expectPlanStageVisible(page, {
-          native: execution.profile.expectedRuntimeMode === "native",
-          revision: draftPlan.latestRevisionNumber ?? null,
-        });
-        await captureScreenshot(
-          "plan-draft",
-          "Initial plan awaiting revision",
-          "plan-draft.png",
-        );
-        await page
-          .getByRole("button", {
-            name: draftInteraction.payload?.rejectLabel ?? "Reject",
-            exact: true,
-          })
-          .last()
-          .click();
-        const revisionComposer = page
-          .getByTestId("plan-revision-composer")
-          .last();
-        await expect(revisionComposer).toBeVisible({ timeout: 10_000 });
-        await revisionComposer
-          .locator('[contenteditable="true"], textarea')
-          .first()
-          .fill(revisionRequest);
-        await page
-          .getByRole("button", {
-            name: draftInteraction.payload?.rejectLabel ?? "Reject",
-            exact: true,
-          })
-          .last()
-          .click();
-
-        const revisedState = await pollUntil({
-          label: `revised plan confirmation for issue ${issue.id}`,
-          deadlineAt,
-          load: loadTaskState,
-          accept: ({ taskRuns, interactions }) =>
-            taskRuns.length >= 2 &&
-            taskRuns.every((run) => TERMINAL_RUN_STATUSES.has(run.status)) &&
-            interactions.some(
-              (interaction) =>
-                isPendingPlanConfirmation(interaction) &&
-                interaction.id !== draftInteraction.id,
-            ),
-          reject: ({ taskRuns, interactions }) =>
-            rejectPlanConfirmationPoll({
-              taskRuns,
-              interactions,
-              minimumRunCount: 2,
-            }),
-        });
-        const revisedInteraction = revisedState.interactions.find(
-          (interaction) =>
-            isPendingPlanConfirmation(interaction) &&
-            interaction.id !== draftInteraction.id,
-        )!;
-        const revisedPlan = await api.get<IssueDocumentRecord>(
-          `/api/issues/${issue.id}/documents/plan`,
-        );
-        const normalizedRevisedPlan = normalizePlanMarkdown(revisedPlan.body);
-        if (
-          !normalizedRevisedPlan.includes(planMarkers.revised) ||
-          normalizedRevisedPlan.includes(planMarkers.draft)
-        ) {
-          throw new Error(
-            `Revised Plan must replace ${planMarkers.draft} with ${planMarkers.revised}`,
-          );
-        }
-        if (numberedPlanStepCount(revisedPlan.body) !== 3) {
-          throw new Error(
-            "Revised Plan must contain exactly three numbered steps",
-          );
-        }
-        if (
-          revisedInteraction.payload?.target?.revisionId !==
-            revisedPlan.latestRevisionId ||
-          revisedPlan.latestRevisionId === draftPlan.latestRevisionId
-        ) {
-          throw new Error(
-            "Revised confirmation did not target a new latest Plan revision",
-          );
-        }
-        await page.goto(
-          `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
-          { waitUntil: "domcontentloaded" },
-        );
-        await expectPlanStageVisible(page, {
-          native: execution.profile.expectedRuntimeMode === "native",
-          revision: revisedPlan.latestRevisionNumber ?? null,
-        });
-        await captureScreenshot(
-          "plan-revised",
-          "Revised plan awaiting acceptance",
-          "plan-revised.png",
-        );
-        await page
-          .getByRole("button", {
-            name: revisedInteraction.payload?.acceptLabel ?? "Approve",
-            exact: true,
-          })
-          .last()
-          .click();
-        planLifecycleEvidence = {
-          draftInteraction,
-          draftPlan,
-          revisedInteraction,
-          revisedPlan,
-          revisionRequest,
-        };
+        if (!planMarkers || !revisionRequest) throw new Error(`Plan fixture ${execution.task.id} is missing lifecycle factories`);
+        planLifecycleEvidence = await runPlanRevisionAcceptance({ page, api, origin: api.baseURL,
+          issue, issuePrefix, native: execution.profile.expectedRuntimeMode === "native", planMarkers, revisionRequest,
+          deadlineAt, load: loadTaskState, reject: rejectPlanConfirmationPoll, capture: captureScreenshot });
       } else if (execution.task.flow === "question_resume_completion") {
         const expectedAnswer = execution.task.buildQuestionAnswer?.(nonce);
         if (!expectedAnswer) {

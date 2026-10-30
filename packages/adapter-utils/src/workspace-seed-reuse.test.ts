@@ -52,7 +52,7 @@ it.each([
   { nested: false, secondBranch: null },
   { nested: true, secondBranch: null },
 ])("reuses company seed content and restores branch identity ($nested, $secondBranch)", async ({ nested, secondBranch }) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-shared-seed-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-shared seed-'"));
   roots.push(root);
   vi.stubEnv("PAPERCLIP_HOME", path.join(root, "home"));
   const source = path.join(root, "source");
@@ -99,6 +99,7 @@ it.each([
     const input: Parameters<typeof prepareSandboxManagedRuntime>[0] = {
       spec: { transport: "sandbox", provider: "filesystem", sandboxId: name, remoteCwd: remote, timeoutMs: 30_000, apiKey: null },
       adapterKey: "test", client: client(), workspaceLocalDir: host, workspaceCheckpoint: true,
+      workspaceGitIndexRefresh: true,
       workspaceSeedCacheScope: "company",
       workspaceSeedCacheDirectory: path.join(companyDirectory, "shared-v1"), workspaceSeedCacheCompanyDirectory: companyDirectory,
       workspaceDurableSeed: { workspaceArchivePath: path.join(durable, "workspace.tar"), gitArchivePath: path.join(durable, "git.tar") },
@@ -128,12 +129,15 @@ it.each([
     expect(await git(cwd, "rev-parse", "--abbrev-ref", "HEAD")).toBe(secondBranch ?? "HEAD");
     expect(await git(cwd, "branch", "--list", "issue/first")).toBe("");
     expect(await fs.readFile(path.join(cwd, "tracked.txt"), "utf8")).toBe("working-tree bytes\n");
+    expect(await git(cwd, "diff", "--cached", "--exit-code")).toBe("");
     expect(await fs.readFile(path.join(cwd, "new.txt"), "utf8")).toBe("untracked overlay\n");
     expect(await fs.readlink(path.join(cwd, "link.txt"))).toBe("tracked.txt");
     await expect(fs.stat(path.join(cwd, "deleted.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.stat(path.join(cwd, "secret.txt"))).rejects.toMatchObject({ code: "ENOENT" });
   }
   expect(first.phases).toContain("workspace.git_clone");
+  expect(first.phases).toContain("workspace.git_index_refresh");
+  expect(second.phases).toContain("workspace.git_index_refresh");
   expect(second.phases).not.toContain("workspace.git_clone");
   expect(second.phases).not.toContain("workspace.seed_publish");
   const generations = await fs.readdir(path.join(company, "shared-v1"));
@@ -142,6 +146,7 @@ it.each([
   expect(current).toHaveLength(1);
   expect(await readWorkspaceSeedGeneration(path.join(company, "shared-v1"), current[0]!, { companyDirectory: company })).not.toBeNull();
   const recovery = path.join(root, "replacement");
+  const refreshCount = second.phases.filter(phase => phase === "workspace.git_index_refresh").length;
   const recovered = await prepareSandboxManagedRuntime({
     ...second.input,
     spec: { ...second.input.spec, remoteCwd: recovery },
@@ -150,6 +155,7 @@ it.each([
     workspaceBaseline: second.prepared.workspaceSyncSnapshot!.baseline,
     workspaceGitSnapshot: second.prepared.workspaceSyncSnapshot!.gitSnapshot,
   });
+  expect(second.phases.filter(phase => phase === "workspace.git_index_refresh")).toHaveLength(refreshCount);
   second.remote = recovery;
   for (const relative of repositories) {
     const cwd = path.join(second.remote, relative);
@@ -170,6 +176,17 @@ it.each([
   const isolated = await prepare("other-company", secondBranch, path.join(root, "other-company-cache"));
   expect(isolated.phases).toContain("workspace.git_clone");
   await isolated.prepared.cleanupWorkspaceSnapshot?.();
+  await fs.writeFile(path.join(company, "shared-v1", current[0]!, "git.tar"), "corrupted cache");
+  const fallback = await prepare("corrupted-cache", secondBranch);
+  expect(fallback.phases).toContain("workspace.git_clone");
+  for (const relative of repositories) {
+    const cwd = path.join(fallback.remote, relative);
+    expect(await git(cwd, "rev-parse", "--abbrev-ref", "HEAD")).toBe(secondBranch ?? "HEAD");
+    expect(await fs.readFile(path.join(cwd, "tracked.txt"), "utf8")).toBe("working-tree bytes\n");
+    expect(await fs.readFile(path.join(cwd, "new.txt"), "utf8")).toBe("untracked overlay\n");
+    await expect(fs.stat(path.join(cwd, "secret.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  }
+  await fallback.prepared.cleanupWorkspaceSnapshot?.();
 }, 30_000);
 
 it("separates shared seeds when file contents, Git head, origin or repository layout differ", async () => {
@@ -190,4 +207,61 @@ it("separates shared seeds when file contents, Git head, origin or repository la
   const second = await captureDirectorySnapshot(root);
   expect(workspaceSeedGeneration(second, git, [], "company")).not.toBe(generation);
   await disposeDirectorySnapshot(first); await disposeDirectorySnapshot(second);
+});
+
+it.each([false, true])("awaits restored-index work before inbound preparation completes (failure=%s)", async failure => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-index-barrier-"));
+  roots.push(root);
+  vi.stubEnv("PAPERCLIP_HOME", path.join(root, "home"));
+  const host = path.join(root, "host"), remote = path.join(root, "remote");
+  await fs.mkdir(host);
+  await git(host, "init", "-q", "-b", "main");
+  await fs.writeFile(path.join(host, "tracked.txt"), "committed\n");
+  await git(host, "add", ".");
+  await git(host, "-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-qm", "Seed");
+  await fs.writeFile(path.join(host, "tracked.txt"), "dirty working tree\n");
+  let release!: () => void, enter!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  let refreshing = false, completed = false;
+  const refreshTimeouts: Array<number | undefined> = [];
+  const transport = client();
+  const preparing = prepareAdapterExecutionTargetRuntime({
+    runId: "index-barrier", adapterKey: "test", workspaceLocalDir: host, workspaceGitIndexRefresh: true,
+    target: { kind: "remote", transport: "sandbox", providerKey: "filesystem", remoteCwd: remote, timeoutMs: 45_000,
+      runner: { syncIn: operations => transport.syncIn!(operations), syncOut: operations => transport.syncOut!(operations),
+        execute: command => {
+          if (refreshing) refreshTimeouts.push(command.timeoutMs);
+          return runChildProcess("index-barrier", refreshing && failure ? "sh" : command.command,
+            refreshing && failure ? ["-c", "exit 7"] : command.args ?? [], {
+              cwd: command.cwd ?? root, env: command.env ?? {}, timeoutSec: (command.timeoutMs ?? 45_000) / 1000,
+              graceSec: 1, onLog: async () => {},
+            });
+        },
+      },
+    },
+    runtimeSpan: async (name, work) => {
+      if (name !== "workspace.git_index_refresh") return work();
+      enter(); await blocked; refreshing = true;
+      try { return await work(); } finally { refreshing = false; }
+    },
+  });
+  void preparing.then(() => { completed = true; }, () => {});
+  try {
+    await Promise.race([entered, preparing.then(() => { throw new Error("Preparation bypassed the index barrier"); })]);
+    expect(await fs.readFile(path.join(remote, "tracked.txt"), "utf8")).toBe("dirty working tree\n");
+    expect(completed).toBe(false);
+    release();
+    if (failure) await expect(preparing).rejects.toThrow();
+    else {
+      const prepared = await preparing;
+      expect(await git(remote, "diff", "--cached", "--exit-code")).toBe("");
+      expect(await git(remote, "diff", "--name-only")).toBe("tracked.txt");
+      await prepared.cleanupWorkspaceSnapshot?.();
+    }
+    expect(refreshTimeouts).toEqual([45_000]);
+  } finally {
+    release();
+    await preparing.catch(() => {});
+  }
 });

@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = resolve(packageRoot, "../..");
-// Versions 1–13 remain decodable historical identities. Versioned fixtures are
+// Versions 1–14 remain decodable historical identities. Versioned fixtures are
 // immutable; advance this version before changing a versioned declaration.
-export const GROK_PROFILE_VERSION = 14;
+export const GROK_PROFILE_VERSION = 15;
 // Contract surfaces: ACPX wire patch; sidecar parsing and error translation;
 // native effort/search/credential admission; host/sandbox/tool-bridge execution;
 // launcher integrity and platform pins; Rust descriptor writes, session state,

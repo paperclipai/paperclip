@@ -1120,6 +1120,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       credentialBindings: [],
       runtimeContext: nativeRuntimeContextFixture(),
     });
+    let resultCommitMarkers = 0;
     const port = new PaperclipControlPlanePort(db, {
       companyId: identity.companyId,
       issueId: taskIssueId,
@@ -1130,7 +1131,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       completionContractSha256: "phase6-task-contract",
       sourceInstanceId: taskRunnerId,
       controlPlaneSourceInstanceId: "phase6-control-plane",
-    });
+    }, {onResultCommitted:async()=>{resultCommitMarkers++;}});
     const completed = await executeNativeSession({
       input: execution,
       backend,
@@ -1210,6 +1211,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       callerResultId: `phase6-scripted-runner:${taskRunId}:result`,
       callerDedupeKey: `${taskRunId}:phase6-task-contract`,
     })).rejects.toThrow("structured_result_replay_conflict");
+    expect(resultCommitMarkers).toBe(1);
     await Promise.all([
       finalizeNativeRun({ db, runId: taskRunId, workspaceFinalizeStatus: "succeeded" }),
       finalizeNativeRun({ db, runId: taskRunId, workspaceFinalizeStatus: "succeeded" }),
@@ -1345,10 +1347,14 @@ describe("PaperclipControlPlanePort conformance", () => {
       nativeSessionId: identity.sessionId, runnerInstanceId: conformanceRunnerId,
       completionContractId: contractId, completionContractSha256: contractSha,
     });
+    let resultCommitted = false;
     const port = kind === "port" ? new PaperclipControlPlanePort(db, {
       ...identity, runId, completionContractId: contractId, completionContractSha256: contractSha,
       sourceInstanceId: conformanceRunnerId, controlPlaneSourceInstanceId: "result-lock-order",
-    }) : new NativeRunCoordinatorStore(db, {
+    }, {onResultCommitted:async()=>{
+      const rows=await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId,runId));
+      expect(rows).toHaveLength(1);resultCommitted=true;
+    }}) : new NativeRunCoordinatorStore(db, {
       ...identity, runId, completionContractId: contractId, completionContractSha256: contractSha,
       normalizedSessionId: identity.sessionId, runnerSourceInstanceId: conformanceRunnerId,
       completionContractRevision: "standalone-v1", completionContractCriterionIds: ["objective"],
@@ -1371,11 +1377,13 @@ describe("PaperclipControlPlanePort conformance", () => {
           await new Promise(resolve => setTimeout(resolve, 10));
         }
         expect(waiting).toBe(true);
+        expect(resultCommitted).toBe(false);
         await tx.execute(sql`set local lock_timeout = '1s'`);
         await tx.update(heartbeatRuns).set({ updatedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
       });
     } finally {
       expect(await completion).toBeNull();
+      expect(resultCommitted).toBe(kind === "port");
     }
   });
 

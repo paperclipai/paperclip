@@ -23,12 +23,12 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "protocolVersion": 1,
     "acpxVersion": "0.13.1",
     "agent": "grok",
-    "agentProfileVersion": 14,
+    "agentProfileVersion": 15,
     "agentServerPackage": "builtin:grok-acp",
     "agentServerVersion": "1",
     "agentRuntimePackage": "native:grok",
     "agentRuntimeVersion": "1.0.13",
-    "commandDigest": "sha256:6e6af5b860470cabfa6f8b97755d395bc4914dac9951d3308c88f5e9775c57ea",
+    "commandDigest": "sha256:658e6d41ce6fc7080aa6655d7a97121b3cae6214f2d4c074284d958b95bbe769",
     "permissionPolicy": "interactive"
   },
   "pi": {
@@ -62,12 +62,12 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "protocolVersion": 1,
     "acpxVersion": "0.13.1",
     "agent": "copilot",
-    "agentProfileVersion": 85,
+    "agentProfileVersion": 86,
     "agentServerPackage": "@github/copilot",
     "agentServerVersion": "1.0.88",
     "agentRuntimePackage": null,
     "agentRuntimeVersion": null,
-    "commandDigest": "sha256:9213c81a5690238cbd245efb50772c63fcd8e3d3fc64d2997b3825f1d9298258",
+    "commandDigest": "sha256:9a36f5b2ffc9ead866fbc732b299afda452bba47c132eaceaac98be60277c40d",
     "permissionPolicy": "interactive"
   },
   "claude": {

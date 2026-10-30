@@ -38,6 +38,28 @@ use crate::provider_events::{
 };
 use crate::qualified_launch::{verify_executable_launch_artifact, verify_launch_artifact};
 
+fn bounded_turn_timing(response: &Value, elapsed: Duration) -> Value {
+    let mut receipt = serde_json::Map::new();
+    for key in [
+        "statusMs",
+        "statusOffsetMs",
+        "promptMs",
+        "promptOffsetMs",
+        "sidecarMs",
+    ] {
+        if let Some(value) = response
+            .get("timing")
+            .and_then(|v| v.get(key))
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite() && *v >= 0.0 && *v <= 300_000.0)
+        {
+            receipt.insert(key.to_owned(), json!(value));
+        }
+    }
+    receipt.insert("runnerMs".to_owned(), json!(elapsed.as_secs_f64() * 1000.0));
+    Value::Object(receipt)
+}
+
 fn is_reserved_terminal_operation_id(operation_id: &str) -> bool {
     matches!(operation_id, "paperclip_finish" | "paperclip_block")
 }
@@ -1536,12 +1558,14 @@ impl AcpxCommandExecutor {
             .as_ref()
             .map(|state| PathBuf::from(&state.descriptor.cwd))
             .expect("ACPX state exists before turn start");
-        if let Err(error) = self
+        let measure = payload.get("performance").and_then(Value::as_bool) == Some(true);
+        let timing_started = std::time::Instant::now();
+        let start_result = self
             .session
             .as_mut()
             .expect("ACPX session exists before turn start")
-            .start_turn(&provider_turn_id, text, &working_directory)
-        {
+            .start_turn_timed(&provider_turn_id, text, &working_directory, measure);
+        if let Err(error) = &start_result {
             let state = self
                 .state
                 .as_mut()
@@ -1555,6 +1579,15 @@ impl AcpxCommandExecutor {
                 "ACPX turn start failed closed: {error}"
             )));
         }
+        // Copy numeric timing fields only. Sidecar contents never enter the receipt.
+        let timing = if measure {
+            bounded_turn_timing(
+                &start_result.ok().unwrap_or(Value::Null),
+                timing_started.elapsed(),
+            )
+        } else {
+            Value::Null
+        };
         let state = self
             .state
             .as_mut()
@@ -1612,7 +1645,11 @@ impl AcpxCommandExecutor {
             }),
         ));
         Ok(CommandExecution {
-            result: json!({"status": "accepted", "providerTurnId": provider_turn_id}),
+            result: if measure {
+                json!({"status":"accepted", "providerTurnId":provider_turn_id, "timing":timing})
+            } else {
+                json!({"status": "accepted", "providerTurnId": provider_turn_id})
+            },
             events,
         })
     }
@@ -2620,6 +2657,21 @@ mod tests {
         json!({"schema":"paperclip.runtime_request.v2","requestId":id,"requestKind":"runtime","type":"input","status":"pending",
             "turnId":"turn-1","itemId":"item-1","prompt":"Choose","input":{"schema":"paperclip.question_set.v1","questions":[{"id":"q","prompt":"Choose","answerMode":"text","required":true}]},
             "origin":{"adapter":"acpx-runtime-sidecar","provider":"cursor","method":"cursor/ask_question"}})
+    }
+
+    #[test]
+    fn timing_receipt_drops_sidecar_contents_and_invalid_numeric_fields() {
+        let receipt = bounded_turn_timing(
+            &json!({"timing":{
+                "statusMs":10, "statusOffsetMs":0, "promptMs":-1,
+                "promptOffsetMs":"private", "sidecarMs":300001, "prompt":"secret"
+            }}),
+            Duration::from_millis(20),
+        );
+        assert_eq!(
+            receipt,
+            json!({"statusMs":10.0,"statusOffsetMs":0.0,"runnerMs":20.0})
+        );
     }
 
     #[test]

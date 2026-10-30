@@ -233,7 +233,7 @@ async function receiveLine(line: string): Promise<void> {
       request.command,
     );
     if (blocked) throw blocked;
-    response(request.id, true, await dispatch(request));
+    response(request.id, true, await dispatch(request, request.params.performance === true ? performance.now() : 0));
   } catch (error) {
     const normalized =
       error instanceof Error ? error : new Error(String(error));
@@ -256,6 +256,7 @@ async function receiveLine(line: string): Promise<void> {
 
 async function dispatch(
   request: AcpxSidecarRequest,
+  receivedAt = 0,
 ): Promise<Record<string, unknown>> {
   if (request.command === "initialize") {
     if (initializedModel)
@@ -420,8 +421,13 @@ async function dispatch(
     });
     activeCopilotEvidence = toolEvidence && "captureSemanticReceipt" in toolEvidence ? toolEvidence as CopilotToolEvidence : undefined;
     let usageBefore: unknown;
+    const timed = request.params.performance === true;
+    const timingStart = receivedAt;
+    let statusMs = 0;
+    const statusStart = timed ? performance.now() : 0;
     try {
       usageBefore = await readSidecarHostStatusWithin(activeHost);
+      if (timed) statusMs = performance.now() - statusStart;
       runtimeTurn = activeHost.startTurn({
         requestId: `${runId}:${currentTurnId}`,
         text: boundedText(request.params.message, "message", 1024 * 1024),
@@ -439,8 +445,9 @@ async function dispatch(
     void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain, activity, toolEvidence);
     // Warm sessions may defer initialize until their first prompt. Publish only
     // the capabilities of that live initialized connection, never old disk state.
+    const promptStart = timed ? performance.now() : 0;
     await runtimeTurn.promptStarted;
-    return { turnId: currentTurnId, turnControls: activeHost.steeringCapability() ?? { steering: false, queuedFollowUp: false } };
+    return { ...(timed ? {timing:{statusMs, statusOffsetMs:statusStart-timingStart, promptMs:performance.now()-promptStart, promptOffsetMs:promptStart-timingStart, sidecarMs:performance.now()-timingStart}} : {}), turnId: currentTurnId, turnControls: activeHost.steeringCapability() ?? { steering: false, queuedFollowUp: false } };
   }
   if (request.command === "turn.steer") {
     const control = parseAcpxTurnControl(request.params);

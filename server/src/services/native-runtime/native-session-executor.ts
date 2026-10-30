@@ -1,3 +1,4 @@
+import { measureRunnerOperation, recordRunnerTimingReceipt } from "./runner-operation-timing.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
 import { releaseRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
@@ -8642,13 +8643,29 @@ async function executePaperclipNativeSessionWithinScope(
       privateKeyPem: input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY,
       assertControllerActive,
       assertRunAdmissionActive,
+      onResultCommitted: async () => {
+        const at=Date.now();
+        await trace.record({name:"completion.result_committed",parentName:"native.session.execute",startedAtMs:at,endedAtMs:at});
+      },
+      onEventPersistence: async (event, startedAtMs, endedAtMs) => {
+        if (["turn.submitted", "turn.started", "turn.accepted", "run.result.accepted"].includes(event.eventType)) {
+          await trace.record({name: "runner.event.persist", parentName: "native.session.execute", startedAtMs, endedAtMs,
+            attributes:{eventKind:event.eventType}});
+        }
+      },
       onCommittedEvent: async (event) => {
+        if (event.eventType === "run.result.proposed") {
+          const at = Date.now();
+          await trace.record({name:"completion.tool_accepted",parentName:"native.session.execute",startedAtMs:at,endedAtMs:at});
+        }
         if (event.eventType === "harness.diagnostic") {
           await recordNativeProviderPerformanceSpans(trace, parseProviderPerformanceSpans(event.payload, Date.now()));
         }
         const textKind = !firstTokenRecorded ? observeDeliverableText(event) : null;
         if (textKind) {
           firstTokenRecorded = true;
+          const textAt = Date.now();
+          await trace.record({name:"response.first_nonempty_text",parentName:"native.session.execute",startedAtMs:textAt,endedAtMs:textAt});
           await trace.record({
             name: "task.time_to_first_token",
             parentName: "task.provider_session",
@@ -8737,7 +8754,7 @@ async function executePaperclipNativeSessionWithinScope(
         if (event.eventType === "turn.started" && turnStartedAtMs === null) {
           turnStartedAtMs = milestoneAtMs;
           await trace.record({
-            name: "provider.turn.queue",
+            name: "runner.turn.submitted_to_started",
             parentName: "agent.turn",
             startedAtMs: turnSubmittedAtMs ?? milestoneAtMs,
             endedAtMs: milestoneAtMs,
@@ -12273,6 +12290,8 @@ async function createRunnerdBackendWithinSessionClaim(
         return nativeCompletionFeedback(input.db, current.runId, result);
       },
       codexTransportFactory: recovery => createRunnerdCodexTransport({ provider: provider.kind, stateDirectory: root,
+        measureOperation: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? measureRunnerOperation : undefined,
+        recordTimingReceipt: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? recordRunnerTimingReceipt : undefined,
         ...owner.driver, runnerArtifact: input.controllerPersistence?.runnerArtifact ?? description.runner,
         controlPlaneRegistration: input.controllerPersistence ? async (authority, identity, signal) => {
           await nativeRunnerCheckpointRegistration({
@@ -13755,6 +13774,8 @@ async function createRunnerdBackendWithinSessionClaim(
     ),
     codexTransportFactory: (recoveryContext) => {
       const bundle = createRunnerdCodexTransport({
+        measureOperation: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? measureRunnerOperation : undefined,
+        recordTimingReceipt: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? recordRunnerTimingReceipt : undefined,
         onSpawn: input.onSpawn,
         ...(input.execution.provider.kind === "codex" ? { disableCodexWebSearch: "webSearch" in input.execution.provider && input.execution.provider.webSearch === "disabled" } : {}),
         homeMode: preconfiguredHome ? "preconfigured" : "isolated",
