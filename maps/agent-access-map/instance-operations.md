@@ -74,6 +74,9 @@ API: `present` — representative operation IDs:
 - `PATCH /api/instance/settings`.
 - `GET /api/instance/settings/experimental`.
 - `PATCH /api/instance/settings/experimental`.
+- `GET /api/adapters`.
+- `GET /api/adapters/{type}`.
+- `PATCH /api/adapters/{type}`.
 
 Agent access: `restricted` — Board/admin instance settings; CLI configure/env; local
 configuration files.
@@ -90,6 +93,15 @@ own policy and access review.
 
 Gaps: Settings APIs cover parts of configuration; pre-start database/binding/storage
 configuration is local operator tooling.
+
+Adapter toggles require instance-admin authority and remain blocked when
+`instance.adapters` is hidden. Ordinary board members can read the catalog;
+agent keys cannot toggle adapters. Managed Cloud preferences are stored in a
+private database singleton. The operator adapter declaration sets the effective
+list and rejects conflicting toggles. [PostgreSQL regression coverage](../../server/src/services/adapter-settings-postgres.test.ts)
+exercises persistence, concurrent writers, admission freshness, activity audit,
+and failed writes; [authorization tests](../../server/src/__tests__/adapter-routes-authz.test.ts)
+cover admin and hidden-setting gates. These are local tests, not deployed proof.
 
 Cloud stack Admins may update experimental settings through the trusted Cloud
 actor without receiving other instance-admin powers. This uses the current

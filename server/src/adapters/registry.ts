@@ -136,7 +136,6 @@ import {
 import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
-import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { NativeEnvironmentProbeCleanupError } from "../vendor/paperclip-runner/index.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
@@ -997,11 +996,6 @@ registerBuiltInAdapters();
 // applies the registry fallback for externals overriding a built-in type.
 // ---------------------------------------------------------------------------
 
-/** Cached sync wrapper — the store is a simple JSON file read, safe to call frequently. */
-function getDisabledAdapterTypesFromStore(): string[] {
-  return getDisabledAdapterTypes();
-}
-
 /**
  * Merge an external adapter module with host-provided session management.
  *
@@ -1186,8 +1180,7 @@ export function listServerAdapters(): ServerAdapterModule[] {
  * Used for menus and agent creation flows — disabled adapters remain
  * functional for existing agents but hidden from selection.
  */
-export function listEnabledServerAdapters(): ServerAdapterModule[] {
-  const disabled = getDisabledAdapterTypesFromStore();
+export function listEnabledServerAdapters(disabled: string[]): ServerAdapterModule[] {
   const disabledSet = disabled.length > 0 ? new Set(disabled) : null;
   return disabledSet
     ? Array.from(adaptersByType.values()).filter((a) => !disabledSet.has(a.type))

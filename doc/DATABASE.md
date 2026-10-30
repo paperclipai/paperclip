@@ -722,6 +722,39 @@ connection, before enabling the new server and UI.
 - The repo keeps only the newest 5 snapshots. `generate` runs `prune:snapshots` afterwards to delete older ones. Drizzle only reads the newest snapshot, and each snapshot is a full copy of the schema (over 1 MB each). Older snapshots are still in git history.
 - `packages/db/src/migration-snapshot-drift.test.ts` is the enforcement backstop. It repeats the diff that `generate` performs and fails when the newest snapshot no longer matches `packages/db/src/schema/`.
 
+## Managed adapter settings
+
+Cloud-managed instances keep adapter selection preferences in the private
+`instance_settings` singleton `adapter-settings:v1`. Its `general` JSON contains
+`version: 1`, a monotonic `revision`, and `disabledTypes`. It is separate from
+the public `default` settings row and never appears in the instance settings API.
+Each update locks this row in a transaction. The update and company activity
+records commit together. Discovery and new-agent admission read the database
+at their asynchronous operation boundaries; no polling or mutable settings cache
+is used. Disabled adapters remain available to existing agents.
+
+`PAPERCLIP_ADAPTERS` and `PAPERCLIP_ADAPTERS_FILE` declare the effective operator
+adapter list. The declaration is parsed once for a process configuration and
+validated at startup. It does not rewrite stored preferences. A conflicting
+adapter toggle returns 403. Removing the declaration restores saved choices.
+Operator file edits require a restart. Self-hosted instances continue to use
+`adapter-settings.json` for saved preferences.
+
+The server-only adapter settings service exposes `inspectStored()` and
+`seedIfAbsent({ disabledTypes }, transaction?)` for migration tooling. Seeding
+uses the unique singleton key, returns `{ seeded, current }`, and never replaces
+an existing record. The caller can use the same transaction for its import
+receipt. Before admission, `initializeAdapterSettings` checks the durable row.
+When absent, it imports a valid legacy settings file once, retaining unknown
+adapter types, or seeds empty preferences if no file exists. It rejects files
+larger than 64 KiB, malformed input, and read failures. An existing durable row
+wins over every stale file. Ordinary Cloud reads do not read a legacy file.
+
+The focused PostgreSQL suite can use an owned disposable PostgreSQL database via
+`PAPERCLIP_ADAPTER_SETTINGS_TEST_DATABASE_URL` when embedded PostgreSQL is
+unavailable. It applies migrations and inserts test data, so never point this
+variable at an existing application database.
+
 ## Cloud runtime identity singleton
 
 The private `instance_settings` row whose singleton key is

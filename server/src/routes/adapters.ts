@@ -19,11 +19,13 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { Router } from "express";
+import { companies, type Db } from "@paperclipai/db";
+import { adapterSettingsService } from "../services/adapter-settings.js";
+import { logActivity, publishActivity, type ActivityPublication } from "../services/activity-log.js";
 import {
   listServerAdapters,
   findServerAdapter,
   findActiveServerAdapter,
-  listEnabledServerAdapters,
   registerServerAdapter,
   resolveExternalAdapterRegistration,
   unregisterServerAdapter,
@@ -37,8 +39,6 @@ import {
   removeAdapterPlugin,
   getAdapterPluginByType,
   getAdapterPluginsDir,
-  getDisabledAdapterTypes,
-  setAdapterDisabled,
 } from "../services/adapter-plugin-store.js";
 import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 import type { ServerAdapterModule, AdapterConfigSchema } from "../adapters/types.js";
@@ -51,7 +51,7 @@ import { logger } from "../middleware/logger.js";
 import { badRequest, forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
-import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin } from "./authz.js";
+import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 import { agentRunnerAvailability, type RunnerTarget } from "../services/agent-runner-selection.js";
 import type { AgentRunnerAvailability } from "@paperclipai/shared";
@@ -209,7 +209,7 @@ function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterP
     loaded: true, // If it's in the registry, it's loaded
     disabled: disabledSet.has(adapter.type),
     capabilities: buildAdapterCapabilities(adapter),
-    ...agentRunnerAvailability(adapter.type, target),
+    ...agentRunnerAvailability(adapter.type, target, [...disabledSet]),
     ...(adapter.acp ? { acp: adapter.acp } : {}),
     overriddenBuiltin: externalRecord ? BUILTIN_ADAPTER_TYPES.has(adapter.type) : undefined,
     overridePaused: BUILTIN_ADAPTER_TYPES.has(adapter.type) ? isOverridePaused(adapter.type) : undefined,
@@ -265,11 +265,13 @@ function registerWithSessionManagement(adapter: ServerAdapterModule): void {
 // ---------------------------------------------------------------------------
 
 export function adapterRoutes(options: {
+  db?: Db;
   getNativeRunnerEnabled?: () => Promise<boolean>;
   getOpenAiDotEnabled?: () => Promise<boolean>;
   resolveRunnerTarget?: (companyId: string, environmentId?: string) => Promise<RunnerTarget>;
 } = {}) {
   const router = Router();
+  const settings = adapterSettingsService(options.db);
 
   /**
    * GET /api/adapters
@@ -303,7 +305,7 @@ export function adapterRoutes(options: {
     const externalRecords = new Map(
       listAdapterPlugins().map((r) => [r.type, r]),
     );
-    const disabledSet = new Set(getDisabledAdapterTypes());
+    const disabledSet = new Set(await settings.getDisabledTypes());
     // One shared implementation, with independent provider rollouts. Explicit
     // adapter-admin disabling still applies to both choices.
 
@@ -477,7 +479,7 @@ export function adapterRoutes(options: {
     }
 
     const externalRecord = getAdapterPluginByType(adapterType);
-    const disabledSet = new Set(getDisabledAdapterTypes());
+    const disabledSet = new Set(await settings.getDisabledTypes());
     res.json(buildAdapterInfo(adapter, externalRecord, disabledSet));
   });
 
@@ -509,7 +511,22 @@ export function adapterRoutes(options: {
       return;
     }
 
-    const changed = setAdapterDisabled(adapterType, disabled);
+    const publications: ActivityPublication[] = [];
+    const changed = await settings.setDisabled(adapterType, disabled, async (tx, current) => {
+      const actor = getActorInfo(req);
+      const companyIds = await tx.select({ id: companies.id }).from(companies);
+      for (const company of companyIds) {
+        await logActivity(tx as Db, {
+          companyId: company.id,
+          ...actor,
+          action: "instance.adapter.updated",
+          entityType: "instance_settings",
+          entityId: "adapter-settings:v1",
+          details: { adapterType, disabled, revision: current.revision },
+        }, publications);
+      }
+    });
+    for (const publication of publications) publishActivity(publication);
 
     if (changed) {
       logger.info({ type: adapterType, disabled }, "Adapter enabled/disabled");

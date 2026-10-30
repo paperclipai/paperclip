@@ -965,6 +965,7 @@ export async function createApp(
   );
   api.use(
     adapterRoutes({
+      db,
       resolveRunnerTarget: (companyId, environmentId) => resolveAgentRunnerTargetForCompany(db, companyId, environmentId),
       getNativeRunnerEnabled: async () =>
         (await instanceSettingsService(db).getExperimental())

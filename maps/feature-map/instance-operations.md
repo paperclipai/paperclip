@@ -65,6 +65,16 @@ unfinished application write must still prevent sleep after its client leaves.
 
 Automated: [experimental settings](../../ui/src/pages/InstanceExperimentalSettings.test.tsx) and [database backup routes](../../server/src/__tests__/instance-database-backups-routes.test.ts) cover their UI/API contracts.
 
+Managed adapters: change a visible adapter preference as an instance admin,
+then use a second application process against the same disposable database to
+confirm catalog and new-agent selection reflect it. Verify saved agents remain
+usable. Restart with an operator adapter declaration, confirm its effective
+list, and reject conflicting toggles. Remove the declaration and confirm saved
+preferences return. [Database tests](../../server/src/services/adapter-settings-postgres.test.ts)
+cover local persistence, concurrent writers, audit rollback, and failure responses;
+[local compatibility tests](../../server/src/services/adapter-settings-local.test.ts)
+cover the legacy file. No deployed walkthrough is claimed.
+
 Manual: Change a harmless experimental setting, reload, and confirm the affected route honors it. Back up a disposable instance, inspect the reported file and metadata, and restore using the documented procedure into a second isolated target. Verify a known record after restoration.
 
 Cloud staging: On a managed `*.staging.paperclip.app` instance, verify experiments
