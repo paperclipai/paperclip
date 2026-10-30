@@ -4,7 +4,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AgentDetail, AgentRuntimeState, HeartbeatRun, Issue } from "@paperclipai/shared";
 import { describe, expect, it, vi } from "vitest";
-import { AgentOverview } from "./AgentDetail";
+import { AgentOverview, getRuntimeStateErrorLabel } from "./AgentDetail";
+import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 
 vi.mock("@/lib/router", async () => {
@@ -30,7 +31,15 @@ describe("AgentOverview", () => {
     } as unknown as AgentDetail;
     const markup = renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>
-        <AgentOverview agent={agent} runs={[]} assignedIssues={[]} directReportCount={0} skillNames={[]} agentRouteId="muse-agent" />
+        <AgentOverview
+          agent={agent}
+          runs={[]}
+          assignedIssues={[]}
+          runtimeState={{} as unknown as AgentRuntimeState}
+          directReportCount={0}
+          skillNames={[]}
+          agentRouteId="muse-agent"
+        />
       </QueryClientProvider>,
     );
     expect(markup).toContain("Muse — Personal agent");
@@ -38,6 +47,7 @@ describe("AgentOverview", () => {
     expect(markup).not.toContain("Adapter default");
     expect(markup).not.toContain("old-model");
     expect(markup).not.toContain("old-runtime-model");
+    expect(markup).toContain("No session");
   });
 
   it("prioritizes identity, capability, runtime, skills, and tasks without duplicating sidebar Audit links", () => {
@@ -97,7 +107,21 @@ describe("AgentOverview", () => {
     expect(markup).not.toContain("Created by");
   });
 
-  function renderOverview(createdByUserId: string | null, client: QueryClient) {
+  it("uses the session ID when the display ID is unavailable", () => {
+    const agent = {
+      id: "agent-1", companyId: "company-1", name: "Codex Coder", role: "engineer", status: "active",
+      adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {},
+    } as unknown as AgentDetail;
+    const runtime = { sessionId: "session-42" } as unknown as AgentRuntimeState;
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentOverview agent={agent} runs={[]} assignedIssues={[]} runtimeState={runtime} directReportCount={0} skillNames={[]} agentRouteId="agent-1" />
+      </QueryClientProvider>,
+    );
+    expect(markup).toContain("session-42");
+  });
+
+  function renderOverview(createdByUserId: string | null, client: QueryClient, runtimeStateErrorLabel?: string) {
     const agent = {
       id: "agent-2",
       companyId: "company-1",
@@ -121,6 +145,7 @@ describe("AgentOverview", () => {
           agent={agent}
           runs={[] as HeartbeatRun[]}
           assignedIssues={[]}
+          runtimeStateErrorLabel={runtimeStateErrorLabel}
           directReportCount={0}
           skillNames={[]}
           agentRouteId="sharedagent"
@@ -166,6 +191,29 @@ describe("AgentOverview", () => {
     const markup = renderOverview("user-alice", failedDirectoryClient());
     expect(markup).toContain("Created by");
     expect(markup).toContain("Could not load creator");
+  });
+
+  it("does not report no session when runtime state cannot be loaded", () => {
+    const markup = renderOverview(
+      "user-alice",
+      new QueryClient(),
+      getRuntimeStateErrorLabel(new ApiError("Forbidden", 403, {})),
+    );
+    expect(markup).toContain("Not available");
+    expect(markup).not.toContain("No session");
+  });
+
+  it("uses a neutral label for forbidden runtime state and an error label for other failures", () => {
+    expect(getRuntimeStateErrorLabel(new ApiError("Forbidden", 403, {}))).toBe("Not available");
+    expect(getRuntimeStateErrorLabel(new ApiError("Unavailable", 500, {}))).toBe("Could not load session");
+    expect(getRuntimeStateErrorLabel(undefined)).toBeUndefined();
+    expect(
+      renderOverview(
+        "user-alice",
+        new QueryClient(),
+        getRuntimeStateErrorLabel(new ApiError("Unavailable", 500, {})),
+      ),
+    ).toContain("Could not load session");
   });
 
   it.each([null, "local-board"])("keeps the creator row hidden for creator %s when the directory failed", (createdByUserId) => {

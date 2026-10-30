@@ -929,11 +929,13 @@ export function AgentDetail() {
           ? "disable"
           : null;
 
-  const { data: runtimeState } = useQuery({
+  const runtimeStateQuery = useQuery({
     queryKey: queryKeys.agents.runtimeState(resolvedAgentId ?? routeAgentRef),
     queryFn: () => agentsApi.runtimeState(resolvedAgentId!, resolvedCompanyId ?? undefined),
     enabled: Boolean(resolvedAgentId) && needsOverviewData,
   });
+  const { data: runtimeState } = runtimeStateQuery;
+  const runtimeStateErrorLabel = getRuntimeStateErrorLabel(runtimeStateQuery.error);
 
   const { data: heartbeats } = useQuery({
     queryKey: queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined),
@@ -1418,6 +1420,7 @@ export function AgentDetail() {
           runs={heartbeats ?? []}
           assignedIssues={assignedIssues}
           runtimeState={runtimeState}
+          runtimeStateErrorLabel={runtimeStateErrorLabel}
           reportsToAgent={reportsToAgent}
           directReportCount={directReports.length}
           skillNames={overviewSkillNames}
@@ -1742,11 +1745,17 @@ function LatestRunCard({
 
 /* ---- Agent Overview ---- */
 
+export function getRuntimeStateErrorLabel(error: unknown): string | undefined {
+  if (!error) return undefined;
+  return error instanceof ApiError && error.status === 403 ? "Not available" : "Could not load session";
+}
+
 export function AgentOverview({
   agent,
   runs,
   assignedIssues,
   runtimeState,
+  runtimeStateErrorLabel,
   reportsToAgent,
   directReportCount,
   skillNames,
@@ -1756,6 +1765,7 @@ export function AgentOverview({
   runs: HeartbeatRun[];
   assignedIssues: Issue[];
   runtimeState?: AgentRuntimeState;
+  runtimeStateErrorLabel?: string;
   reportsToAgent?: Agent;
   directReportCount: number;
   skillNames: string[];
@@ -1836,7 +1846,7 @@ export function AgentOverview({
           <div className="space-y-3">
             <SummaryRow label="Adapter"><span className="text-sm">{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span></SummaryRow>
             {agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "grok_bot" ? <><SummaryRow label="Execution"><span className="text-sm">Runs in Grok Bot</span></SummaryRow><SummaryRow label="Usage"><span className="text-sm">Not reported</span></SummaryRow></> : <SummaryRow label="Model"><span className="max-w-64 truncate text-sm font-mono">{configuredModel}</span></SummaryRow>}
-            <SummaryRow label="Session"><span className="max-w-64 truncate text-sm font-mono">{runtimeState?.sessionDisplayId ?? runtimeState?.sessionId ?? "No session"}</span></SummaryRow>
+            <SummaryRow label="Session"><span className="max-w-64 truncate text-sm font-mono">{runtimeState?.sessionDisplayId ?? runtimeState?.sessionId ?? runtimeStateErrorLabel ?? "No session"}</span></SummaryRow>
             <SummaryRow label="Last run">
               <span className="text-sm">{lastRun ? `${lastRun.status} · ${relativeTime(lastRun.createdAt)}` : "No runs"}</span>
             </SummaryRow>
