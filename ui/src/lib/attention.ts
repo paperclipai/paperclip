@@ -264,10 +264,14 @@ export function attentionImageUrl(assetId: string): string {
 }
 
 /**
- * The sidebar badge: distinct items that either surfaced today or carry an
+ * The sidebar badge: distinct desk items that either surfaced today or carry an
  * explicit decide-by deadline that is due today/past. The server computes this
  * before pagination (`deskBadgeCount`), so badge polling can fetch a small
  * first page without losing the company-wide signal.
+ *
+ * Shelved (aged-out) rows are excluded server-side, matching the desk: they
+ * render in the aging curtain, not the queue. The badge and the page's
+ * "You're all caught up" state therefore flip together.
  */
 export function attentionBadgeCount(feed: AttentionFeed | null | undefined): number {
   return feed?.deskBadgeCount ?? 0;
