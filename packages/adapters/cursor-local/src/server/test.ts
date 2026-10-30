@@ -13,6 +13,7 @@ import {
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
+  isAdapterExecutionTargetUnavailableError,
   maybeRunSandboxInstallCommand,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
@@ -119,6 +120,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "cursor_cwd_invalid",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Invalid working directory",
       detail: cwd,
@@ -173,6 +175,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "cursor_command_unresolvable",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Command is not executable",
       detail: command,
