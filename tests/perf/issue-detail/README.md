@@ -64,6 +64,8 @@ Coordinator list navigation, and the responder identity through reassignment,
 comment acknowledgement and legacy runtime discovery. The last case uses a
 deterministic local process, records identity continuity on each frame, and saves
 startup/running screenshots. It does not call a model provider.
+Each send fixture uses a unique task title so repeated runs cannot reuse a
+previous task and its cancelled run through ordinary task deduplication.
 
 `layout-stability.spec.ts` exercises the real task route, including Inbox
 navigation, with 160 Markdown comments and a resolved interaction. It delays

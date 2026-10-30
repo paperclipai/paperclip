@@ -246,11 +246,13 @@ test("the selected responder stays mounted through comment acknowledgement and l
   expect(agentResponse.ok(), await agentResponse.text()).toBeTruthy();
   const agent = await agentResponse.json();
   const issueResponse = await request.post(`/api/companies/${source.companyId}/issues`, { data: {
-    title: "Keep the selected responder visible", status: "in_review", assigneeUserId: "local-board",
+    title: `Keep the selected responder visible ${Date.now()}`, status: "in_review", assigneeUserId: "local-board",
     description: "This disposable process fixture verifies the send transition without a model provider.",
   } });
   expect(issueResponse.ok(), await issueResponse.text()).toBeTruthy();
   const issue = await issueResponse.json();
+  // Repeated runs must not adopt the previous fixture through same-title dedup.
+  expect(issue).toMatchObject({ status: "in_review", assigneeUserId: "local-board", assigneeAgentId: null });
   await coordinatorPreference(page);
   await page.addInitScript(() => {
     const frames: { visible: boolean; same: boolean }[] = [];

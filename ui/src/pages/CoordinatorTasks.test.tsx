@@ -22,14 +22,14 @@ vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mocks.breadcrumbs }) }));
-vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, onViewChange }: { filters: { onChange: (value: { liveOnly?: boolean; priorities?: string[]; assignees?: string[]; statuses?: string[] }) => void }; onViewChange: (view: "blocked") => void }) => <>
+vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, onViewChange, onLayoutChange }: { filters: { onChange: (value: { liveOnly?: boolean; priorities?: string[]; assignees?: string[]; statuses?: string[] }) => void }; onViewChange: (view: "blocked") => void; onLayoutChange: (layout: "board") => void }) => <>
   <button onClick={() => filters.onChange({ liveOnly: true })}>Live runs only</button>
   <button onClick={() => filters.onChange({ priorities: ["high"] })}>High priority</button>
   <button onClick={() => filters.onChange({ assignees: [], statuses: [] })}>Clear assignee and status</button>
   <button onClick={() => filters.onChange({ assignees: ["first", "second"], statuses: ["todo"] })}>Change assignee and status</button>
   <button onClick={() => onViewChange("blocked")}>Needs attention</button>
+  <button onClick={() => onLayoutChange("board")}>Board view</button>
 </> }));
-vi.mock("@/components/KanbanBoard", () => ({ KanbanBoard: () => null }));
 vi.mock("@/components/TaskList", async importOriginal => ({
   ...await importOriginal<typeof import("@/components/TaskList")>(),
   TaskList: ({ items, emptyState }: { items: { issue: { id: string; title: string } }[]; emptyState: React.ReactNode }) =>
@@ -49,7 +49,7 @@ describe("Coordinator tasks using the proposed table", () => {
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   });
-  afterEach(() => { flushSync(() => root.unmount()); client.clear(); host.remove(); });
+  afterEach(() => { flushSync(() => root.unmount()); client.clear(); host.remove(); vi.unstubAllGlobals(); });
   async function mount(url: string) {
     flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[url]}><CoordinatorTasks /></MemoryRouter></QueryClientProvider>));
     await vi.waitFor(() => expect(host.textContent).not.toContain("Loading tasks"));
@@ -58,6 +58,40 @@ describe("Coordinator tasks using the proposed table", () => {
     await mount("/issues");
     expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "index", limit: 200 }), expect.anything());
     expect(mocks.get).not.toHaveBeenCalled();
+  });
+
+  it("loads diagnostics for visible production board cards and retains their next-step badges", async () => {
+    vi.stubGlobal("IntersectionObserver", class {
+      constructor(private callback: IntersectionObserverCallback) {}
+      observe(target: Element) { this.callback([{ target, isIntersecting: !target.closest("[hidden]") } as IntersectionObserverEntry], this as unknown as IntersectionObserver); }
+      unobserve() {}
+      disconnect() {}
+    });
+    const index = createIssue({ id: "board-task", companyId: "company", status: "in_progress", parentId: null, listProjection: "index" });
+    const details = { ...index, listProjection: "rows", successfulRunHandoff: {
+      required: true, hasLiveContinuation: false, state: "required", sourceRunId: "source-run", correctiveRunId: null,
+      assigneeAgentId: null, detectedProgressSummary: null, createdAt: null,
+    } };
+    mocks.list.mockImplementation(async (_company, filters) => filters.projection === "rows" ? [details] : [index]);
+    await mount("/issues");
+    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Board view")!.click());
+    await vi.waitFor(() => expect(host.querySelector('[aria-label="Needs next step"]')).not.toBeNull());
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "rows", ids: [index.id] }), expect.anything());
+  });
+
+  it("enriches cards mounted by board pagination without replacing the collection", async () => {
+    const indexes = Array.from({ length: 12 }, (_, index) => createIssue({ id: `board-task-${index}`, companyId: "company", status: "in_progress", parentId: null, listProjection: "index" }));
+    mocks.list.mockImplementation(async (_company, filters) => filters.projection === "rows"
+      ? indexes.filter(issue => filters.ids.includes(issue.id)).map(issue => ({ ...issue, successfulRunHandoff: {
+        required: issue.id === "board-task-10", hasLiveContinuation: false,
+      } })) : indexes);
+    await mount("/issues");
+    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Board view")!.click());
+    await vi.waitFor(() => expect(mocks.list.mock.calls.some(call => call[1].projection === "rows")).toBe(true));
+    expect(host.querySelector('[aria-label="Needs next step"]')).toBeNull();
+    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent?.trim() === "Show 2 more")!.click());
+    await vi.waitFor(() => expect(host.querySelector('[aria-label="Needs next step"]')).not.toBeNull());
+    expect(mocks.list.mock.calls.filter(call => call[1].projection === "index")).toHaveLength(1);
   });
 
   it("batches pending task reads instead of fetching one enriched detail per decision", async () => {
