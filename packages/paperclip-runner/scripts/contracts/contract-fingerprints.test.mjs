@@ -94,8 +94,24 @@ test("a field that names a differently shaped type changes the digest", () => {
     return fingerprintContracts(p => p === path ? edited : sources.read(p), sources.list);
   };
   const before = fingerprints(nested), after = fingerprints(s => nested(s).replace("a: u8", "a: u16"));
-  const outer = contracts => contracts["rust.acpx_provider_checkpoint"].value[0].find(shape => shape.includes("inner:"));
+  const outer = contracts => contracts.rust.value[0].find(shape => shape.includes("inner:"));
   assert.notEqual(outer(before), outer(after));
+});
+
+test("an env key handed to the sidecar in a key list is part of the contract", () => {
+  const path = `${RUST}/acpx_sidecar_transport.rs`;
+  assert.notEqual(digestWith(path, s => s.replace("\"PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT\",", "\"PAPERCLIP_ACPX_PACKAGE_ROOT\",")), baseline);
+  // Lists outside compiled code are not contracts.
+  assert.equal(digestWith(path, s => s.replace("\"LD_API_KEY\", \"DYLD_API_KEY\"", "\"LD_API_KEY\", \"DYLD_OTHER_KEY\"")), baseline);
+});
+
+test("moving Rust code to another file leaves the digest unchanged", () => {
+  const from = `${RUST}/acpx_provider_checkpoint.rs`, to = `${RUST}/acpx_saved_suspension.rs`;
+  const moved = packContractDigest(root, {
+    read: p => p === from ? null : p === to ? sources.read(from) : sources.read(p),
+    list: dir => sources.list(dir).map(p => p === from ? to : p),
+  });
+  assert.equal(moved, baseline);
 });
 
 test("recursive serde types resolve", () => {

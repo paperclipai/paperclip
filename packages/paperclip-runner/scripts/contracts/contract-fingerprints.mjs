@@ -21,7 +21,9 @@ const DOC_KEYS = new Set(["description", "title", "$comment", "examples", "markd
 export const CONTRACTS = [
   { id: "prp.schemas", expand: { kind: "json-dir", dirs: [`${R}/protocol/schemas`, `${R}/protocol/provider-schemas`] } },
   { id: "generated", expand: { dirs: [`${R}/generated`], suffix: ".json", idPrefix: "generated.", probes: [{ kind: "json", stripDocs: true }] } },
-  { id: "rust", expand: { dirs: [RUST], suffix: ".rs", idPrefix: "rust.", probes: [
+  // Rust file and module names are private, so the crate is one contract whose
+  // values are merged across files; moving code between files changes nothing.
+  { id: "rust", expand: { dirs: [RUST], suffix: ".rs", aggregate: true, probes: [
     { kind: "rust-serde" }, { kind: "rust-json-keys" }, { kind: "rust-match-literals" }, { kind: "rust-env-keys" },
   ] } },
   // Reserved and forwarded runtime env keys are const lists in Rust.
@@ -52,7 +54,7 @@ export function fingerprintContracts(readFile, listDir) {
       continue;
     }
     if (contract.expand) {
-      const { dirs, suffix, exclude, idPrefix, probes } = contract.expand;
+      const { dirs, suffix, exclude, idPrefix, aggregate, probes } = contract.expand;
       const candidates = dirs.flatMap(listDir).filter(p => p.endsWith(suffix) && !exclude?.test(p));
       const testOnly = suffix === ".rs" ? rustTestOnlyFiles(candidates, readFile) : new Set();
       const sources = candidates.filter(p => !testOnly.has(p)).sort();
@@ -63,11 +65,17 @@ export function fingerprintContracts(readFile, listDir) {
       // referenced type's shape, which may be defined in another file.
       const typeShapes = suffix === ".rs" ? rustSerdeTypeShapes(sources, readFile) : {};
       const crateWide = { "rust-env-keys": { constants }, "rust-serde": { typeShapes } };
+      const values = [];
       for (const path of sources) {
         const value = probes.map(p => probe({ ...p, path, ...crateWide[p.kind] }, readFile));
         if (isEmpty(value)) continue;
+        if (aggregate) { values.push(value); continue; }
         const id = idPrefix + path.slice(dirs.find(d => path.startsWith(`${d}/`)).length + 1).replace(/\.[a-z]+$/, "");
         out[id] = { fingerprint: digest(value), value };
+      }
+      if (aggregate) {
+        const value = probes.map((_, i) => union(values.map(v => v[i])));
+        out[contract.id] = { fingerprint: digest(value), value };
       }
       continue;
     }
@@ -106,6 +114,13 @@ export function checkoutSources(root) {
   };
 }
 
+/** Merges probe values from several files: lists become sorted sets and
+ * objects merge by key. */
+function union(values) {
+  if (values.every(Array.isArray)) return [...new Set(values.flat())].sort();
+  const keys = [...new Set(values.flatMap(Object.keys))].sort();
+  return Object.fromEntries(keys.map(k => [k, union(values.map(v => v[k] ?? []))]));
+}
 /** Files that expose no contract artifacts produce no contract. */
 function isEmpty(value) {
   const empty = v => v == null || (Array.isArray(v) ? v.every(empty) : typeof v === "object" ? Object.values(v).every(empty) : false);
@@ -376,14 +391,27 @@ function balanced(text, start, open, close) {
 }
 /** Environment keys passed or read in code: `keys.push(K)`, `.env(K, ..)`,
  * `.env_remove(K)` and `env::var(K)` / `env::var_os(K)`, where K is a string
- * literal or a string constant. A constant resolves to its value, so renaming
- * the Rust constant is not a contract change; an unresolved constant keeps its
- * name so a rename remains visible. */
+ * literal or a string constant, and key lists: `vec![..]` or `&[..]` literals
+ * whose elements are all key-shaped strings or constants, at least one of them
+ * an upper-case `NAME_WITH_UNDERSCORE`. A constant resolves to its value, so
+ * renaming the Rust constant is not a contract change; an unresolved constant
+ * keeps its name so a rename remains visible. */
 function rustEnvKeys(source, constants) {
   const text = withoutTestModules(stripRustComments(source));
   const keys = new Set();
-  const pattern = /(?:keys\.push|\.env|\.env_remove|env::var|env::var_os)\(\s*(?:"([A-Z][A-Z0-9_]*)"|(?:[a-z_][a-z0-9_]*::)*([A-Z][A-Z0-9_]*)\b)/g;
-  for (const m of text.matchAll(pattern)) keys.add(m[1] ?? constants[m[2]] ?? `const:${m[2]}`);
+  const constant = String.raw`(?:[a-z_][a-z0-9_]*::)*([A-Z][A-Z0-9_]*)\b`;
+  const resolve = (literal, name) => literal ?? constants[name] ?? `const:${name}`;
+  const pattern = new RegExp(String.raw`(?:keys\.push|\.env|\.env_remove|env::var|env::var_os)\(\s*(?:"([A-Z][A-Z0-9_]*)"|${constant})`, "g");
+  for (const m of text.matchAll(pattern)) keys.add(resolve(m[1], m[2]));
+  const element = new RegExp(String.raw`^\s*(?:"([A-Za-z_][A-Za-z0-9_]*)"|${constant})\s*$`);
+  for (const m of text.matchAll(/(?:vec!\s*|&\s*)\[/g)) {
+    const body = balanced(text, m.index + m[0].length - 1, "[", "]").slice(1, -1);
+    const parts = body.split(",").filter((part, i, all) => i < all.length - 1 || part.trim());
+    const matches = parts.map(part => element.exec(part));
+    if (!matches.length || matches.some(e => !e)) continue;
+    const list = matches.map(e => resolve(e[1], e[2]));
+    if (list.some(key => /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(key))) for (const key of list) keys.add(key);
+  }
   return [...keys].sort();
 }
 /** String constants (`const NAME: &str = "VALUE";`) across the crate's sources.
