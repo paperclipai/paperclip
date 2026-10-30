@@ -16,13 +16,11 @@ import {
   BIND_MODES,
   DEPLOYMENT_EXPOSURES,
   SECRET_PROVIDERS,
-  STORAGE_PROVIDERS,
   type BindMode,
   type AuthBaseUrlMode,
   type DeploymentExposure,
   type DeploymentMode,
   type SecretProvider,
-  type StorageProvider,
   inferBindModeFromHost,
   resolveRuntimeBind,
   validateConfiguredBindMode,
@@ -31,9 +29,9 @@ import {
   resolveDefaultBackupDir,
   resolveDefaultEmbeddedPostgresDir,
   resolveDefaultSecretsKeyFilePath,
-  resolveDefaultStorageDir,
   resolveHomeAwarePath,
 } from "./home-paths.js";
+import { loadStorageConfig, type StorageConfig } from "./storage/config.js";
 
 if (!isCloudManagedInstance()) {
   const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
@@ -63,7 +61,7 @@ const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
 
 type DatabaseMode = "embedded-postgres" | "postgres";
 
-export interface Config {
+export interface Config extends StorageConfig {
   deploymentMode: DeploymentMode;
   deploymentExposure: DeploymentExposure;
   bind: BindMode;
@@ -116,13 +114,6 @@ export interface Config {
   secretsProvider: SecretProvider;
   secretsStrictMode: boolean;
   secretsMasterKeyFilePath: string;
-  storageProvider: StorageProvider;
-  storageLocalDiskBaseDir: string;
-  storageS3Bucket: string;
-  storageS3Region: string;
-  storageS3Endpoint: string | undefined;
-  storageS3Prefix: string;
-  storageS3ForcePathStyle: boolean;
   feedbackExportBackendUrl: string | undefined;
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
@@ -162,7 +153,6 @@ export function loadConfig(fileConfig: PaperclipConfig | null = readConfigFile()
       : undefined;
   const fileDatabaseBackup = fileConfig?.database.backup;
   const fileSecrets = fileConfig?.secrets;
-  const fileStorage = fileConfig?.storage;
 
   const providerFromEnvRaw = process.env.PAPERCLIP_SECRETS_PROVIDER;
   const providerFromEnv =
@@ -172,25 +162,7 @@ export function loadConfig(fileConfig: PaperclipConfig | null = readConfigFile()
   const providerFromFile = fileSecrets?.provider;
   const secretsProvider: SecretProvider = providerFromEnv ?? providerFromFile ?? "local_encrypted";
 
-  const storageProviderFromEnvRaw = process.env.PAPERCLIP_STORAGE_PROVIDER;
-  const storageProviderFromEnv =
-    storageProviderFromEnvRaw && STORAGE_PROVIDERS.includes(storageProviderFromEnvRaw as StorageProvider)
-      ? (storageProviderFromEnvRaw as StorageProvider)
-      : null;
-  const storageProvider: StorageProvider = storageProviderFromEnv ?? fileStorage?.provider ?? "local_disk";
-  const storageLocalDiskBaseDir = resolveHomeAwarePath(
-    process.env.PAPERCLIP_STORAGE_LOCAL_DIR ??
-      fileStorage?.localDisk?.baseDir ??
-      resolveDefaultStorageDir(),
-  );
-  const storageS3Bucket = process.env.PAPERCLIP_STORAGE_S3_BUCKET ?? fileStorage?.s3?.bucket ?? "paperclip";
-  const storageS3Region = process.env.PAPERCLIP_STORAGE_S3_REGION ?? fileStorage?.s3?.region ?? "us-east-1";
-  const storageS3Endpoint = process.env.PAPERCLIP_STORAGE_S3_ENDPOINT ?? fileStorage?.s3?.endpoint ?? undefined;
-  const storageS3Prefix = process.env.PAPERCLIP_STORAGE_S3_PREFIX ?? fileStorage?.s3?.prefix ?? "";
-  const storageS3ForcePathStyle =
-    process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE !== undefined
-      ? process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE === "true"
-      : (fileStorage?.s3?.forcePathStyle ?? false);
+  const storage = loadStorageConfig(fileConfig);
   const feedbackExportBackendUrl =
     process.env.PAPERCLIP_FEEDBACK_EXPORT_BACKEND_URL?.trim() ||
     process.env.PAPERCLIP_TELEMETRY_BACKEND_URL?.trim() ||
@@ -447,13 +419,7 @@ export function loadConfig(fileConfig: PaperclipConfig | null = readConfigFile()
           fileSecrets?.localEncrypted.keyFilePath ??
           resolveDefaultSecretsKeyFilePath(),
       ),
-    storageProvider,
-    storageLocalDiskBaseDir,
-    storageS3Bucket,
-    storageS3Region,
-    storageS3Endpoint,
-    storageS3Prefix,
-    storageS3ForcePathStyle,
+    ...storage,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",

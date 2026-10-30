@@ -2,7 +2,7 @@
 
 ### Proactive agent chat messages
 
-Migration `0417_regular_dorian_gray.sql` adds an agent-scoped unique constraint
+Migration `0418_powerful_lady_ursula.sql` adds an agent-scoped unique constraint
 on `issue_comments(issue_id, author_agent_id, client_request_id)` alongside the
 existing human request constraint. Proactive delivery stores a source-task-scoped
 retry key and server-authored `metadata.chatMessage` provenance/content fingerprint.
@@ -1559,6 +1559,15 @@ It uses disposable embedded PostgreSQL by default. A disposable local database
 named `review_wait_benchmark...` can be supplied through
 `PAPERCLIP_TEST_DATABASE_URL` to compare another PostgreSQL major version.
 DataRow bytes exclude response metadata and transport overhead.
+
+## Object-backed run evidence
+
+Optional segmented run logs and raw provider traces store their payloads and
+range indexes directly in S3-compatible storage. Existing `heartbeat_runs` and
+`provider_trace_records` contain backend/reference and lifecycle metadata;
+there is no new payload table or per-segment SQL publication. Object manifests
+use conditional writes to fence publication. Existing structured events retain
+their database append contract. See [run evidence storage](run-evidence-storage.md).
 
 ## Cloud runtime configuration singleton
 

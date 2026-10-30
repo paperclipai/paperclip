@@ -7,7 +7,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 
 const support = await getEmbeddedPostgresTestSupport();
 const indexName = "issue_comments_agent_client_request_uq";
-const migrationFile = "0417_regular_dorian_gray.sql";
+const migrationFile = "0418_powerful_lady_ursula.sql";
 
 (support.supported ? describe : describe.skip)("agent chat message migration", () => {
   it("repairs an interrupted index build and backfills old chat owners only once", async () => {

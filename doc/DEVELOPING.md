@@ -146,19 +146,19 @@ New workflow versions merged into master then receive runner access without a
 separate SHA allowlist update. Dependabot leaves this first-party reference on
 master.
 
-Runner selection calls `ci-routing.yml@master` on the dedicated
-`paperclip-ci-routing-x64` AWS Fleet. The `paperclip-ci-routing` runner group
-admits only `paperclipai/paperclip/.github/workflows/ci-routing.yml@refs/heads/master`
-and repository ID `1170821064`. GitHub evaluates the canonical repository, author, and sender checks before
-allocating reserved capacity. The validated admission snapshot (`AWS_CI_ROUTING_USER_IDS_SOURCE` and
-`AWS_CI_ROUTING_USER_IDS`) must match `AWS_CI_TRUSTED_USER_IDS`. Refresh it through
-the runner-group configuration helper when the roster changes. Missing, stale,
-or malformed settings keep hosted routing available without evaluating JSON
-in the job's placement expression. Unapproved PRs use hosted metadata routing;
-approved manual canaries on master can use the reserved pool. The routing
-workflow reads GitHub metadata without checking out or executing PR code. Its author, sender, rerun actor,
-repository, head, and merge validation still decide whether tests can use AWS.
-Unapproved test workloads continue to use GitHub-hosted runners.
+Runner selection calls `ci-routing.yml@master` on a GitHub-hosted runner. It
+verifies authorization before allocating any AWS capacity and never checks out
+or executes PR code. The author, event sender and rerun actor must each be both
+in `AWS_CI_TRUSTED_USER_IDS` and a current owner of `.github/**` in CODEOWNERS.
+The resolver and CODEOWNERS are read from the same protected master revision;
+PR edits cannot change the trusted owner list. Documentation-only owners,
+unsupported owner rules and failed identity lookups do not authorize AWS.
+Repository, head and merge validation also apply. Missing or malformed settings
+and unverifiable authorization use GitHub-hosted runners. A maintainer rerunning
+an outside contributor's PR does not grant it AWS access.
+Authorized test jobs and the final `verify` and `e2e` aggregates use the selected
+AWS fleet. The metadata authorization job remains hosted even for maintainers,
+so stale admission snapshots cannot allocate an AWS runner before verification.
 
 The routing workflow also selects the CI scope. Middle PRs in a stack and PRs
 whose diff changes only release notes (`releases/v*.md` or
@@ -213,7 +213,11 @@ coverage without paying for another graph traversal. Filesystem, subprocess, net
 dynamic-loader, unresolved, and unapproved external-package consumers are
 retained conservatively, including indirect consumers through local helpers.
 The selector explicitly tracks setup/configuration dependencies as well as test
-imports. The small pure-dependency allowlist lives in
+imports. Ordinary source names such as `session-config-metadata.test.ts` or
+`setup-state.ts` remain eligible; the words `config` and `setup` alone do not
+force full CI. Conventional Vite/Vitest config and setup files remain broad
+inputs. Other resolved setup/config dependencies invalidate their entire project.
+The small pure-dependency allowlist lives in
 `scripts/ci/vitest-selection-graph.mjs`; new external packages remain opaque
 until reviewed. This is deliberately broader than `vitest related` alone.
 For conservative retention, explicit complete local mock factories cut the
@@ -236,6 +240,9 @@ existing selection/execution rules. The job summary reports files and jobs
 selected per lane, and the `vitest-selection` artifact records the manifest and
 dependency audit. Selected jobs execute exact Vitest test specifications, so
 similarly named `.test.ts` and `.test.tsx` files cannot overlap between shards.
+The wrapper consumes and validates the selection before launching Vitest, then
+removes selection environment variables from the test process. Nested runner
+fixtures therefore use their own checkout and test inventory.
 
 Missing/deleted/renamed source files, non-exempt non-source inputs, unrecognized graph inputs,
 setup/config changes, failed dependency installs, graph errors and timeouts use
@@ -288,13 +295,10 @@ explicit. When changing shard layout, update `.github/ci-task-matrix.json` and
 the full fallback matrices in `pr-trusted.yml`; the contract tests require them
 to agree. Add new cache-affecting environment settings to `globalEnv`.
 
-The routing Fleet has two warm On-Demand runners and a four-runner ceiling.
-Test fleets cannot consume its runner slots. Hosted test queues therefore do
-not block AWS runner selection. A manual dispatch of `ci-routing.yml` on master
-checks placement without launching the test matrix; its non-PR event returns
-the hosted test-runner output. Configure and verify the group and Fleet before
-merging this caller. To roll back, restore the hosted gate and retain the routing
-workflow authorization until assigned jobs finish.
+The former reserved routing Fleet is no longer selected by this workflow.
+Keep its existing authorization until older assigned jobs finish. A manual
+dispatch of `ci-routing.yml` on master exercises the hosted metadata job without
+launching the test matrix; its non-PR event returns the hosted test-runner output.
 
 Keep the `.github/**` rule in `.github/CODEOWNERS` and the active master ruleset's
 code-owner review requirement enabled. This covers the caller, the trusted
@@ -2694,6 +2698,24 @@ and hard restarts with live and dead runners, the result-finalization race,
 incomplete bootstrap, repeated crashes with steering, and fail-closed process
 identity mismatches.
 
+## Version-based skill authoring and delivery
+
+Managed content uses `managed-skill-content.ts`: prepare and verify outside the
+publication transaction, then compare the captured head and publish version,
+projections, audit and applicable receipt together. `skill-execution-content.ts`
+owns disposable filesystem bindings. Do not write managed installed directories
+or infer missing content from an absent cache. Keep linked-local behavior explicit.
+
+The [conversion and qualification guide](skill-ephemeral-web-servers.md) documents
+bounded eligibility/verification commands and the one-time writer maintenance
+boundary. `managed-skill-content.test.ts` covers the focused domain behavior;
+`ephemeral-skills-process.test.ts` requires independent disposable Postgres and
+S3 fixtures and starts separate Node processes. The optional
+`PAPERCLIP_TEST_POSTGRES_ADMIN_URL` creates a random test database per suite.
+On hosts with unavailable Tailscale, set `PAPERCLIP_TAILNET_BIND_HOST=127.0.0.1`
+for local fixtures to avoid repeated CLI discovery. Do not use fixture timings
+collected during builds as hosted performance evidence.
+
 ## App-Shipped Skills Catalog
 
 Skill-library reads still reconcile bundled releases, folders, and direct local
@@ -3882,6 +3904,16 @@ in `_test` for `PAPERCLIP_MCP_SLEEP_TEST_DATABASE_URL`,
 `PAPERCLIP_DOT_RUNNER_TEST_DATABASE_URL`. The interaction-service regression suite
 also accepts `PAPERCLIP_INTERACTIONS_TEST_DATABASE_URL`. The suites migrate and write to those
 URLs; the sleep suite truncates company data between tests.
+
+## S3-backed run evidence
+
+New logs and opted-in provider traces automatically use the instance's existing
+S3 storage configuration, bucket, credentials and prefix, under `run-logs/` and
+`provider-traces/`. No extra storage switches are needed. Local-disk instances
+remain local. See [run evidence storage](run-evidence-storage.md) for required provider
+capabilities, stable keys, operating limits, automatic history migration and qualification.
+Do not remove a web volume until its complete retained evidence inventory and
+the independent disposable-server requirements are satisfied.
 
 ## Cloud startup configuration
 

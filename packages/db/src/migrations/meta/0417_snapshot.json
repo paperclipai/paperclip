@@ -1,5 +1,5 @@
 {
-  "id": "853541f2-ea76-419d-820f-ca44188ff669",
+  "id": "c2c69a4a-8281-419c-9eeb-a7bcbc2beaae",
   "prevId": "bbaeecd8-ff3f-4e70-a069-291bf3dc97bb",
   "version": "7",
   "dialect": "postgresql",
@@ -19052,6 +19052,98 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.company_skill_mutation_receipts": {
+      "name": "company_skill_mutation_receipts",
+      "schema": "",
+      "columns": {
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "skill_id": {
+          "name": "skill_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version_id": {
+          "name": "version_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "response": {
+          "name": "response",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "company_skill_mutation_receipts_key_idx": {
+          "name": "company_skill_mutation_receipts_key_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "company_skill_mutation_receipts_company_id_companies_id_fk": {
+          "name": "company_skill_mutation_receipts_company_id_companies_id_fk",
+          "tableFrom": "company_skill_mutation_receipts",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.company_skill_repository_snapshots": {
       "name": "company_skill_repository_snapshots",
       "schema": "",
@@ -37010,15 +37102,6 @@
           "columns": [
             "issue_id",
             "author_user_id",
-            "client_request_id"
-          ]
-        },
-        "issue_comments_agent_client_request_uq": {
-          "name": "issue_comments_agent_client_request_uq",
-          "nullsNotDistinct": false,
-          "columns": [
-            "issue_id",
-            "author_agent_id",
             "client_request_id"
           ]
         },

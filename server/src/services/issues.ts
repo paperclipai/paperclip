@@ -189,7 +189,8 @@ import {
   resolveIssueGoalId,
   resolveNextIssueGoalId,
 } from "./issue-goal-fallback.js";
-import { getRunLogStore } from "./run-log-store.js";
+import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
+import { recoverSettledNativeRunLog } from "./native-runtime/native-run-log-recovery.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import {
@@ -6713,13 +6714,14 @@ export async function readIssueCommentRunLogText(run: {
   logStore: string | null;
   logRef: string | null;
   logBytes: number | null;
-}) {
-  if (run.logStore !== "local_file" || !run.logRef) return "";
+}, db?: Db) {
+  if (!isRunLogStoreType(run.logStore) || !run.logRef) return "";
   // A timed-out finalization leaves size unknown even when earlier entries
   // exist. Read those logs within the same byte budget as a known-size log.
   if (run.logBytes !== null && (!Number.isFinite(run.logBytes) || run.logBytes <= 0)) return "";
 
   const logRef = run.logRef;
+  const storeType = run.logStore;
   const store = getRunLogStore();
   let offset = 0;
   let content = "";
@@ -6728,6 +6730,8 @@ export async function readIssueCommentRunLogText(run: {
   let readTimer: NodeJS.Timeout | undefined;
 
   const readChunks = async () => {
+    if (db && storeType === "s3_segments") await recoverSettledNativeRunLog(db, store, logRef, undefined, controller.signal)
+      .catch(() => { controller.signal.throwIfAborted(); });
     while (nextOffset !== undefined) {
       controller.signal.throwIfAborted();
       const remainingBytes =
@@ -6735,7 +6739,7 @@ export async function readIssueCommentRunLogText(run: {
         Buffer.byteLength(content, "utf8");
       if (remainingBytes <= 0) break;
       const chunk = await store.read(
-        { store: "local_file", logRef },
+        { store: storeType, logRef },
         {
           offset,
           limitBytes: Math.min(ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES, remainingBytes),
@@ -7260,7 +7264,7 @@ export function issueService(db: Db) {
           );
           await Promise.all(
             batch.map(async (run) => {
-              logByRunId.set(run.runId, await readIssueCommentRunLogText(run));
+              logByRunId.set(run.runId, await readIssueCommentRunLogText(run, db));
             }),
           );
         }

@@ -210,7 +210,7 @@ export interface NativeExecutionInputV2 extends Omit<NativeExecutionInputV1, "sc
   schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V2;
   executionMode: NativeExecutionMode;
   task: Omit<NativeExecutionInputV1["task"], "workMode"> & {
-    workMode: "standard" | "planning" | "ask";
+    workMode: "standard" | "planning" | "ask" | "skill_test";
   };
   planningContext: NativePlanningContext | null;
 }
@@ -486,8 +486,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   const contract = record(completionContract.contract, "input.completionContract.contract");
   exactKeys(contract, ["revision", "objective", "criteria"], "input.completionContract.contract");
 
-  if (task.workMode !== "standard" && (!isV2 || task.workMode !== "planning" && task.workMode !== "ask")) {
-    throw new NativeExecutionInputError("input.task.workMode must be standard, planning, or ask");
+  if (task.workMode !== "standard" && (!isV2 || task.workMode !== "planning" && task.workMode !== "ask" && task.workMode !== "skill_test")) {
+    throw new NativeExecutionInputError("input.task.workMode must be standard, planning, ask, or skill_test");
   }
   const executionMode: NativeExecutionMode = isV2 && input.executionMode === "plan" ? "plan" : "default";
   if (isV2 && input.executionMode !== "default" && input.executionMode !== "plan") {
@@ -871,7 +871,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       // Recovery must retain those runs, so derive the same bounded model
       // prompt from their task fields instead of making them unrecoverable.
       prompt: text(task.prompt ?? task.description ?? task.title, "input.task.prompt"),
-      workMode: task.workMode as "standard" | "planning" | "ask",
+      workMode: task.workMode as "standard" | "planning" | "ask" | "skill_test",
     },
     workspace: {
       cwd: text(workspace.cwd, "input.workspace.cwd"),
