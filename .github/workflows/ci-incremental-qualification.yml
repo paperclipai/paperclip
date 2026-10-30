@@ -39,6 +39,30 @@ jobs:
       - uses: ./.github/actions/setup-ci-dependencies
       - name: Prove conservative graphs, exact partitions, manifests and failure fallbacks
         run: node --test scripts/ci/test-selection*.test.mjs scripts/ci/vitest-impact-report.integration.test.mjs
+      - name: Qualify selection against the real Paperclip workspace
+        env:
+          NODE_ENV: test
+          VITEST: 'true'
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          import { planTasks } from './.github/scripts/ci-plan.mjs';
+          import { createTestSelection } from './scripts/ci/select-tests.mjs';
+          const plan = planTasks({
+            config: JSON.parse(readFileSync('turbo.json', 'utf8')),
+            lanes: JSON.parse(readFileSync('.github/ci-task-matrix.json', 'utf8')),
+            paths: ['ui/src/pages/Inbox.tsx'],
+          });
+          const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          const selected = await createTestSelection(plan, head);
+          const ui = selected.graphs.find(graph => graph.project === '@paperclipai/ui');
+          assert.ok(ui.related.includes('ui/src/pages/Inbox.test.tsx'));
+          assert.ok(ui.alwaysRun.length > 0, 'Filesystem contracts must remain covered');
+          assert.ok(ui.selected.length < ui.inventory.length, 'The real workspace must support narrowing');
+          console.log(JSON.stringify(selected.plan.testSelection.stats, null, 2));
+          NODE
 
   qualify:
     runs-on: ubuntu-latest

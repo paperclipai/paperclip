@@ -216,7 +216,7 @@ export async function selectProjectTests({ root = process.cwd(), project, change
         }
       }
       const queue = [spec.moduleId], visited = new Set();
-      let opaque = setupChanged || owner.config.isolate === false;
+      let opaque = setupChanged || owner.config.isolate === false || !localImports.has(spec.moduleId);
       while (queue.length && !opaque) {
         const file = queue.pop();
         if (visited.has(file)) continue;
