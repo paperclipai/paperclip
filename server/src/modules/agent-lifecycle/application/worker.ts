@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { LifecycleDriver, LifecycleStore, LifecycleFailure } from "./ports.js";
+import type { LifecycleDriver, LifecycleStore, LifecycleFailure, LifecycleAgent } from "./ports.js";
 import { isLifecycleWorkPending } from "../domain/policy.js";
 import { lifecycleFailureMessage } from "./failure.js";
 
@@ -7,6 +7,20 @@ import { lifecycleFailureMessage } from "./failure.js";
 export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDriver, reportFailure: (context: LifecycleFailure, error: unknown) => void, canRun = () => true) {
   let stopped = false;
   const active = new Map<string, Promise<void>>();
+  // A host stop that never settles (dead run, zombie lease, recycled pid) must not
+  // wedge an agent forever: after this bound the worker forces the phase forward.
+  const STALL_TIMEOUT_MS = Number(globalThis.process.env.PAPERCLIP_LIFECYCLE_STALL_TIMEOUT_MS ?? 300_000);
+  function stalledFor(operation: NonNullable<LifecycleAgent["lifecycleOperation"]>) {
+    const started = operation.startedAt ? Date.parse(operation.startedAt) : Number.NaN;
+    return Number.isFinite(started) ? Date.now() - started : operation.attempts * 2_000;
+  }
+  const lifecycleStalled = (operation: NonNullable<LifecycleAgent["lifecycleOperation"]>) =>
+    stalledFor(operation) >= STALL_TIMEOUT_MS;
+  function warnForced(agent: LifecycleAgent, operation: NonNullable<LifecycleAgent["lifecycleOperation"]>, stage: string, extra: Record<string, unknown> = {}) {
+    console.warn(JSON.stringify({ level: 40, msg: "lifecycle watchdog forced completion", stage,
+      agentId: agent.id, operationId: operation.id, phase: agent.lifecycleState,
+      attempts: operation.attempts, stalledMs: stalledFor(operation), ...extra }));
+  }
   let running: Promise<void> | undefined;
 
   async function attempt<T>(context: LifecycleFailure, work: () => Promise<T>): Promise<T> {
@@ -40,10 +54,12 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
         }
         if (!operation.hostComplete) {
           if (!await runStep("renew", () => store.renew(agent, owner, new Date()))) continue;
-          if (await runStep("host", () => driver.runHost(agent)) === "pending") {
+          const hostResult = await runStep("host", () => driver.runHost(agent));
+          if (hostResult === "pending" && !lifecycleStalled(operation)) {
             if (!await runStep("defer", () => store.defer(agent, owner, null, new Date()))) continue;
             return;
           }
+          if (hostResult === "pending") warnForced(agent, operation, "host");
           if (!await runStep("complete_host", () => store.completeHost(agent, owner))) continue;
         }
         for (const pluginId of pluginIds) {
@@ -53,10 +69,12 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
             return;
           }
           if (!await runStep("renew", () => store.renew(agent, owner, new Date()))) continue phase;
-          if (await runStep("plugin", () => driver.runPlugin(agent, pluginId), pluginId) === "pending") {
+          const pluginResult = await runStep("plugin", () => driver.runPlugin(agent, pluginId), pluginId);
+          if (pluginResult === "pending" && !lifecycleStalled(operation)) {
             if (!await runStep("defer", () => store.defer(agent, owner, null, new Date()))) continue phase;
             return;
           }
+          if (pluginResult === "pending") warnForced(agent, operation, "plugin", { pluginId });
           if (!await runStep("complete_plugin", () => store.completePlugin(agent, owner, pluginId), pluginId)) continue phase;
         }
         const changed = await runStep("transition", () => store.change(id, "complete", { version: agent.lifecycleVersion, owner }));

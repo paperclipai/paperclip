@@ -1,7 +1,7 @@
 import { notifyApprovalWork } from "./approval-work-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { addCents, compareCents, normalizeCents } from "@paperclipai/shared";
-import { and, desc, eq, inArray, sql, or, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, sql, or, isNull, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 
 import {
@@ -186,13 +186,110 @@ function unpricedUsageBlocks(policy: PolicyRow, observed: ObservedSpend) {
     && (observed.unpricedEventCount > 0 || observed.unknownBrowserRunCount > 0);
 }
 
-function observedBlocks(policy: PolicyRow, observed: Awaited<ReturnType<typeof computeObservedSpend>>) {
-  if (!policy.isActive || !policy.hardStopEnabled || policy.amount <= 0) return false;
-  return compareCents(observed.totalExact, policy.amount) >= 0 || (observed.pendingRunCount - observed.recoveringRunCount) > 0 || unpricedUsageBlocks(policy, observed);
+/** A run's cost ledger entry normally lands within moments of it finishing.
+ * Before this many milliseconds elapse, `cost_accounting_pending = true` is
+ * expected settlement latency, not a stuck run — it must not read as a budget
+ * breach or block fresh work. Past this window the run counts as genuinely
+ * stale and surfaces as such (see `stalePendingRunCount` below). Kept in sync
+ * with the longer watchdog-alert window in accounting-integrity.ts, which
+ * only pages operators once a run has been stuck much longer than this.
+ * See JEN-42. */
+export const ACCOUNTING_PENDING_GRACE_MS = 5 * 60 * 1000;
+
+/** A run that never produced a usage receipt cannot be settled no matter how long
+ * it is waited on — the provider process died mid-turn, the receipt spool lost it,
+ * or the capture failed. Past this age the debt stops blocking new work; the gap
+ * stays visible through accountingLastError and the integrity report, and a late
+ * receipt is still replayed when it arrives. Without an upper bound a single lost
+ * receipt paused an agent permanently (spend $0, pause_reason 'budget'). */
+export const ACCOUNTING_ABANDONED_MS = 10 * 60 * 1000;
+
+const STALE_PENDING_RUN_ID_SAMPLE = 5;
+
+type StalePendingRunInfo = { stalePendingRunCount: number; stalePendingRunIds: string[] };
+
+/** budget-exposure's ObservedSpend only carries a count of pending runs, not
+ * their age or ids — not enough to tell "still settling" apart from "stuck."
+ * This module-local extension adds that, so a hard-stop decision (and its
+ * message) can name the actual stale runs instead of blocking on any pending
+ * accounting at all. See JEN-42. */
+export type ObservedSpendWithStalePending = ObservedSpend & StalePendingRunInfo;
+
+/** Batched per-policy scan of terminal runs whose accounting is still
+ * pending past ACCOUNTING_PENDING_GRACE_MS. Mirrors the "pending run" scope
+ * predicate that budget-exposure.ts aggregates into `pendingRunCount`, but
+ * keyed on run age instead of just existence — that aggregate alone cannot
+ * tell a run that finished moments ago from one stuck for hours. */
+async function computeStalePendingRunInfo(db: Db, policies: PolicyRow[], now = new Date()): Promise<StalePendingRunInfo[]> {
+  const billable = policies.map((policy, index) => ({ policy, index })).filter(({ policy }) => policy.metric === "billed_cents");
+  const staleCutoff = new Date(now.getTime() - ACCOUNTING_PENDING_GRACE_MS);
+  const columns: Record<string, SQL> = {};
+  const predicates: SQL[] = [];
+  for (const { policy, index } of billable) {
+    const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind, now);
+    const inWindow = policy.windowKind === "calendar_month_utc"
+      ? sql`coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) >= ${start.toISOString()}::timestamptz
+        and coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) < ${end.toISOString()}::timestamptz` : sql`true`;
+    const scoped = and(
+      eq(heartbeatRuns.companyId, policy.companyId),
+      eq(heartbeatRuns.costAccountingPending, true),
+      inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out", "cancelled", "interrupted"]),
+      policy.scopeType === "agent" ? eq(heartbeatRuns.agentId, policy.scopeId) : undefined,
+      policy.scopeType === "project" ? sql`${heartbeatRuns.usageJson}->'ledgerScope'->>'projectId' = ${policy.scopeId}` : undefined,
+      inWindow,
+    )!;
+    const abandonedCutoff = new Date(now.getTime() - ACCOUNTING_ABANDONED_MS);
+    const stale = and(
+      scoped,
+      sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) < ${staleCutoff.toISOString()}::timestamptz`,
+      sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${abandonedCutoff.toISOString()}::timestamptz`,
+    )!;
+    predicates.push(scoped);
+    columns[`count${index}`] = sql`count(*) filter (where ${stale})::int`;
+    columns[`ids${index}`] = sql`coalesce(array_agg(${heartbeatRuns.id}::text order by coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}))
+      filter (where ${stale}), '{}')`;
+  }
+  const [row = {}] = billable.length ? await db.select(columns).from(heartbeatRuns).where(or(...predicates)) : [];
+  return policies.map((_, index) => ({
+    stalePendingRunCount: Number(row[`count${index}`] ?? 0),
+    stalePendingRunIds: ((row[`ids${index}`] ?? []) as string[]).slice(0, STALE_PENDING_RUN_ID_SAMPLE),
+  }));
+}
+
+async function computeObservedSpendsWithStalePending(db: Db, policies: PolicyRow[]): Promise<ObservedSpendWithStalePending[]> {
+  const [observed, stale] = await Promise.all([computeObservedSpends(db, policies), computeStalePendingRunInfo(db, policies)]);
+  return observed.map((entry, index) => ({ ...entry, ...stale[index] }));
+}
+
+async function computeObservedSpendWithStalePending(db: Db, policy: PolicyRow): Promise<ObservedSpendWithStalePending> {
+  return (await computeObservedSpendsWithStalePending(db, [policy]))[0];
+}
+
+/** A block triggered purely by unsettled accounting (stale pending runs) or
+ * unpriced usage is real, but it is not a spend breach — `observed.total` is
+ * frequently $0 in that case. Callers that write an incident or a pause
+ * reason must say so explicitly instead of letting a $0-observed "hard stop"
+ * read as a false overspend claim. See JEN-42. */
+export type BudgetBlockReason = "spend_exceeded" | "accounting_pending" | "unpriced_usage";
+
+function observedBlockReasons(policy: PolicyRow, observed: ObservedSpendWithStalePending): BudgetBlockReason[] {
+  if (!policy.isActive || !policy.hardStopEnabled || policy.amount <= 0) return [];
+  const reasons: BudgetBlockReason[] = [];
+  if (compareCents(observed.totalExact, policy.amount) >= 0) reasons.push("spend_exceeded");
+  // Pending accounting younger than ACCOUNTING_PENDING_GRACE_MS is expected
+  // settlement latency, not a stuck run — only genuinely stale pending runs
+  // block fresh work, and never one an active native recovery already owns.
+  if ((observed.stalePendingRunCount - observed.recoveringRunCount) > 0) reasons.push("accounting_pending");
+  if (unpricedUsageBlocks(policy, observed)) reasons.push("unpriced_usage");
+  return reasons;
+}
+
+function observedBlocks(policy: PolicyRow, observed: ObservedSpendWithStalePending) {
+  return observedBlockReasons(policy, observed).length > 0;
 }
 export async function policyBlocks(db: Db, policy: PolicyRow) {
   if (!policy.isActive || !policy.hardStopEnabled || policy.amount <= 0) return false;
-  return observedBlocks(policy, await computeObservedSpend(db, policy));
+  return observedBlocks(policy, await computeObservedSpendWithStalePending(db, policy));
 }
 
 /** Supplemental handoff check after authoritative accounting admission commits.
@@ -213,7 +310,7 @@ export async function recheckAdmittedRunBudgetReadOnly(db: Db, input: {
     const policies = await db.select().from(budgetPolicies).where(and(eq(budgetPolicies.companyId, input.companyId),
       eq(budgetPolicies.isActive, true), eq(budgetPolicies.hardStopEnabled, true), eq(budgetPolicies.metric, "billed_cents"),
       sql`${budgetPolicies.amount} > 0`, budgetPoliciesForRun(input.companyId, input.agentId, input.projectId)));
-    const observations = await computeObservedSpends(db, policies);
+    const observations = await computeObservedSpendsWithStalePending(db, policies);
     for (const [index, policy] of policies.entries()) {
       const observed = observations[index];
       if (observedBlocks(policy, observed)) return "Applicable budget no longer permits provider work";
@@ -336,7 +433,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       eq(budgetPolicies.companyId, policy.companyId), eq(budgetPolicies.scopeType, policy.scopeType),
       eq(budgetPolicies.scopeId, policy.scopeId), eq(budgetPolicies.isActive, true), eq(budgetPolicies.hardStopEnabled, true),
     ));
-    const observations = await computeObservedSpends(db, policies);
+    const observations = await computeObservedSpendsWithStalePending(db, policies);
     if (policies.some((candidate, index) => observedBlocks(candidate, observations[index]))) return;
     const now = new Date();
     if (policy.scopeType === "agent") {
@@ -396,7 +493,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
 
   async function buildPolicySummary(policy: PolicyRow): Promise<BudgetPolicySummary> {
     const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
-    const observed = await computeObservedSpend(db, policy);
+    const observed = await computeObservedSpendWithStalePending(db, policy);
     const { total: observedAmount, totalExact: observedAmountExact, unpricedEventCount, pendingRunCount } = observed;
     const { windowStart: start, windowEnd: end } = observed;
     const amount = policy.isActive ? policy.amount : 0;
@@ -436,7 +533,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
   async function createIncidentIfNeeded(
     policy: PolicyRow,
     thresholdType: BudgetThresholdType,
-    observed: Awaited<ReturnType<typeof computeObservedSpend>>,
+    observed: ObservedSpend,
   ) {
     const { windowStart: start, windowEnd: end } = observed;
     const existing = await db
@@ -586,24 +683,50 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
   }
 
   async function reconcileScope(companyId: string, scopeType: BudgetScopeType, scopeId: string,
-    prepared?: { scope: ScopeRecord; policies: PolicyRow[]; observations: ObservedSpend[] }) {
+    prepared?: { scope: ScopeRecord; policies: PolicyRow[]; observations: ObservedSpendWithStalePending[] }) {
     const scope = prepared?.scope ?? await resolveScopeRecord(db, scopeType, scopeId);
     if (scope.companyId !== companyId) throw notFound("Budget scope not found");
     const policies = prepared?.policies ?? await db.select().from(budgetPolicies).where(and(
       eq(budgetPolicies.companyId, companyId), eq(budgetPolicies.scopeType, scopeType), eq(budgetPolicies.scopeId, scopeId),
     ));
     let recoveringPolicy: PolicyRow | undefined;
-    const observations = prepared?.observations ?? await computeObservedSpends(db, policies);
+    const observations = prepared?.observations ?? await computeObservedSpendsWithStalePending(db, policies);
     for (const [index, policy] of policies.entries()) {
       const observed = observations[index];
-      if (observedBlocks(policy, observed)) {
-        await createIncidentIfNeeded(policy, "hard", observed);
+      const reasons = observedBlockReasons(policy, observed);
+      if (reasons.length) {
+        const incident = await createIncidentIfNeeded(policy, "hard", observed);
         await pauseAndCancelScopeForBudget(policy, !scope.budgetHeld);
         const title = scopeType === "company" ? "Company" : scopeType === "agent" ? "Agent" : "Project";
-        if (observed.pendingRunCount > 0) {
-          return { scopeType, scopeId, scopeName: scope.name, reason: `${title} cannot start work while completed runs await accounting.` };
-        }
-        if (unpricedUsageBlocks(policy, observed)) {
+        // A block caused only by stale pending accounting or unpriced usage is
+        // real, but `observed.total` can be $0 in that case — never let it read
+        // as a spend breach. Name the actual stale runs so the pause is
+        // explainable without inspecting the ledger. See JEN-42.
+        if (!reasons.includes("spend_exceeded")) {
+          if (incident?.created) {
+            await recordActivity({
+              companyId: policy.companyId,
+              actorType: "system",
+              actorId: "budget_service",
+              action: "budget.accounting_pending_blocked",
+              entityType: "budget_incident",
+              entityId: incident.incident.id,
+              details: {
+                scopeType: policy.scopeType,
+                scopeId: policy.scopeId,
+                reasons,
+                stalePendingRunIds: observed.stalePendingRunIds,
+                stalePendingRunCount: observed.stalePendingRunCount,
+                unpricedEventCount: observed.unpricedEventCount,
+              },
+            });
+          }
+          if (reasons.includes("accounting_pending")) {
+            const ids = observed.stalePendingRunIds;
+            const idList = ids.length < observed.stalePendingRunCount ? `${ids.join(", ")}, +${observed.stalePendingRunCount - ids.length} more` : ids.join(", ");
+            return { scopeType, scopeId, scopeName: scope.name,
+              reason: `${title} cannot start work: ${observed.stalePendingRunCount} completed run(s) have unsettled cost accounting for over ${Math.round(ACCOUNTING_PENDING_GRACE_MS / 60000)} minutes (${idList}). This is not a spend breach — resolve or retry accounting for those runs.` };
+          }
           return { scopeType, scopeId, scopeName: scope.name, reason: `${title} cannot start work because recorded usage has no reliable price.` };
         }
         return { scopeType, scopeId, scopeName: scope.name, reason: scopeType === "project"
@@ -647,7 +770,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       );
 
     const policies = candidatePolicies.filter(policy => policy.metric === "billed_cents" && policy.amount > 0);
-    const observations = await computeObservedSpends(db, policies);
+    const observations = await computeObservedSpendsWithStalePending(db, policies);
     for (const [index, policy] of policies.entries()) {
       const observed = observations[index];
       const observedAmount = observed.total;
@@ -673,7 +796,8 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
         }
       }
 
-      if (observedBlocks(policy, observed)) {
+      const reasons = observedBlockReasons(policy, observed);
+      if (reasons.length) {
         await resolveOpenSoftIncidents(policy.id);
         const hardIncident = await createIncidentIfNeeded(policy, "hard", observed);
         await pauseAndCancelScopeForBudget(policy);
@@ -691,6 +815,13 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
               amountObserved: observedAmount,
               amountLimit: policy.amount,
               approvalId: hardIncident.incident.approvalId ?? null,
+              // A reason set without "spend_exceeded" means this $0-observed
+              // "hard" incident is an accounting/pricing block, not an
+              // overspend — named so the audit trail cannot be misread as a
+              // false breach claim. See JEN-42.
+              reasons,
+              stalePendingRunIds: observed.stalePendingRunIds,
+              stalePendingRunCount: observed.stalePendingRunCount,
             },
           });
         }
@@ -718,7 +849,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     if (records.some(scope => scope.companyId !== companyId)) throw notFound("Budget scope not found");
     const policies = await db.select().from(budgetPolicies).where(and(eq(budgetPolicies.companyId, companyId),
       budgetPoliciesForRun(companyId, agentId, context?.projectId ?? null)));
-    const observations = await computeObservedSpends(db, policies);
+    const observations = await computeObservedSpendsWithStalePending(db, policies);
     const reservationIndexes = policies.map((policy, i) => policy.isActive && policy.hardStopEnabled && policy.metric === "billed_cents" && policy.amount > 0 ? i : -1).filter(i => i >= 0);
     const admission = (block: Awaited<ReturnType<typeof reconcileScope>>) => ({ block,
       policies: reservationIndexes.map(i => policies[i]), observations: reservationIndexes.map(i => observations[i]) });
@@ -841,7 +972,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       }
 
       if (row.isActive && amount > 0) {
-        const observed = await computeObservedSpend(db, row);
+        const observed = await computeObservedSpendWithStalePending(db, row);
         if (!observedBlocks(row, observed)) {
           await resumeScopeFromBudget(row);
           await resolveOpenIncidentsForPolicy(row.id, "approved", actorUserId ?? "budget_service", "hard");
@@ -927,11 +1058,14 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       const policy = await getPolicyRow(incident.policyId);
       if (input.action === "raise_budget_and_resume") {
         const nextAmount = Math.max(0, Math.floor(input.amount ?? 0));
-        const observed = await computeObservedSpend(db, policy);
+        const observed = await computeObservedSpendWithStalePending(db, policy);
         if (unpricedUsageBlocks(policy, observed)) {
           throw unprocessable("Resolve unpriced usage or explicitly allow it in the budget policy before resuming");
         }
-        if (observed.pendingRunCount > 0) throw unprocessable("Completed runs must finish accounting before resuming");
+        // A recently finished run's accounting may simply not have settled yet
+        // (see ACCOUNTING_PENDING_GRACE_MS) — that must not block a manual
+        // resume. Only genuinely stale pending accounting still does. See JEN-42.
+        if ((observed.stalePendingRunCount - observed.recoveringRunCount) > 0) throw unprocessable("Completed runs must finish accounting before resuming");
         if (compareCents(observed.totalExact, nextAmount) >= 0) {
           throw unprocessable("New budget must exceed current observed spend");
         }

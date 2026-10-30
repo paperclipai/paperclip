@@ -330,6 +330,7 @@ export type ExecutionWorkspaceServiceOptions = {
   // becomes terminal before it archives the workspace. A value of 0 disables
   // the cooldown. The default is 1 day.
   workspaceReaperCooldownDays?: number;
+  workspaceReaperAllowUnmergedDays?: number | null;
   // The reaper removes regenerable files (installed dependencies, build output,
   // tool caches) from a terminal workspace this long after its issue tree
   // becomes terminal. The worktree, its branch, its commits, and every source
@@ -1743,6 +1744,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     0,
     (opts.workspaceReaperCooldownDays ?? 1) * 24 * 60 * 60 * 1000,
   );
+  // Unmerged work is normally never reaped. When an operator sets an age, an
+  // abandoned (terminal for longer than that) clean worktree becomes eligible
+  // anyway: its commits live on the branch, so only uncommitted files are lost.
+  const workspaceReaperAllowUnmergedMs = opts.workspaceReaperAllowUnmergedDays
+    ? Math.max(0, opts.workspaceReaperAllowUnmergedDays) * 24 * 60 * 60 * 1000
+    : null;
   const workspaceCompactionDelayMs = typeof opts.workspaceCompactionDelayMs === "number"
     ? Math.max(0, opts.workspaceCompactionDelayMs)
     : null;
@@ -2436,6 +2443,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     workspace: ExecutionWorkspaceRow,
     expectedHeadSha: string | null,
     capturedGeneration: number,
+    options: { forceWorktreeRemoval?: boolean } = {},
   ): Promise<{ cleaned: boolean; warnings: string[]; skippedReopened?: boolean }> {
     // The gateway holds the per-workspace lifecycle lock across the destructive
     // actions. A reopen takes the same lock, so a reopen cannot rebuild the
@@ -2454,11 +2462,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         message: "execution workspace cleanup skipped because it was reopened",
       },
       onSkip: () => ({ cleaned: false, warnings: [], skippedReopened: true }),
-      write: () => runTerminalWorkspaceCleanup(workspace, expectedHeadSha),
+      write: () => runTerminalWorkspaceCleanup(workspace, expectedHeadSha, options),
     });
   }
 
-  async function runTerminalWorkspaceCleanup(workspace: ExecutionWorkspaceRow, expectedHeadSha: string | null) {
+  async function runTerminalWorkspaceCleanup(
+    workspace: ExecutionWorkspaceRow,
+    expectedHeadSha: string | null,
+    options: { forceWorktreeRemoval?: boolean } = {},
+  ) {
     if (workspace.providerType === "plugin") {
       if (await workspaceHasActiveRun(workspace)) throw conflict("Workspace still has active execution");
       await removePluginWorkspace(db, opts.pluginWorkerManager, workspace, expectedHeadSha);
@@ -2506,6 +2518,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         executionWorkspaceId: workspace.id,
         workspaceCwd: workspace.cwd,
       });
+      // A local_fs workspace can be a binding to the shared project directory:
+      // the row is the task's lease on files it does not own. Closing such a row
+      // must archive the binding and never touch the source tree, otherwise the
+      // reaper would try to delete the project checkout itself.
+      const ownsDirectory = workspace.providerType !== "local_fs"
+        || (projectWorkspace?.cwd ?? null) !== (workspace.cwd ?? null);
+      if (!ownsDirectory) {
+        return { cleaned: true, warnings: [] };
+      }
       const cleanup = await cleanupExecutionWorkspaceArtifacts({
         workspace,
         projectWorkspace,
@@ -2523,7 +2544,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         // after non-forced worktree removal, then deletion is anchored to the
         // verified HEAD so a raced ref update fails closed.
         runCleanupCommands: false,
-        forceWorktreeRemoval: false,
+        // Untracked dependencies and build output make a plain `git worktree
+        // remove` refuse. Forcing still cannot lose commits: the branch is only
+        // deleted with `git branch -d`, which refuses unmerged branches.
+        forceWorktreeRemoval: options.forceWorktreeRemoval === true,
       });
       if (cleanup.cleaned && workspace.mode === "shared_workspace") {
         await db
@@ -3734,13 +3758,31 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedNonTerminalTree += 1;
           continue;
         }
-        if (assessment.workspaceDirty) {
+        // An abandoned workspace is one whose issue tree has been terminal for
+        // longer than the operator's override. Untracked files (dependencies,
+        // build output, scratch) are expected in any old worktree and do not
+        // represent work that only lives here, so the override tolerates them.
+        // Tracked edits never pass: those are uncommitted changes to source.
+        const abandonedSince = assessment.cooldownAnchor?.getTime() ?? null;
+        const abandonedLongEnough = workspaceReaperAllowUnmergedMs !== null
+          && abandonedSince !== null
+          && now().getTime() - abandonedSince > workspaceReaperAllowUnmergedMs;
+        // A shared_workspace row is a lease on a project directory that outlives
+        // it: the tree belongs to the project, not to this row. Dirtiness and
+        // delivery describe the checkout the whole project shares, so they must
+        // not hold the lease open forever. Archiving the row deletes no files.
+        const bindingOnly = workspace.mode === "shared_workspace";
+        if (!bindingOnly
+          && assessment.workspaceDirty
+          && !(abandonedLongEnough && !git?.hasDirtyTrackedFiles)) {
           result.skippedUndelivered += 1;
           continue;
         }
         if (
-          assessment.deliveryState !== "merged_via_pr"
+          !bindingOnly
+          && assessment.deliveryState !== "merged_via_pr"
           && assessment.deliveryState !== "merged_by_ancestry"
+          && !abandonedLongEnough
         ) {
           result.skippedUndelivered += 1;
           continue;
@@ -3959,7 +4001,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           archived.metadata as Record<string, unknown> | null,
         );
         try {
-          const cleanup = await cleanupTerminalWorkspace(archived, assessment.workspaceHeadSha, capturedGeneration);
+          const cleanup = await cleanupTerminalWorkspace(archived, assessment.workspaceHeadSha, capturedGeneration, {
+            forceWorktreeRemoval: abandonedLongEnough,
+          });
           if (cleanup.skippedReopened) result.skippedReopened += 1;
           else if (!cleanup.cleaned) result.cleanupFailed += 1;
           else result.archived += 1;

@@ -74,6 +74,7 @@ async function changeLockedAgent(tx: Db, effects: LifecycleEffects, agent: Lifec
   const operation: AgentLifecycleOperation = {
     responsibleUserId: agent.lifecycleOperation?.responsibleUserId,
     id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0,
+    startedAt: new Date().toISOString(),
     resumeState: next === "pausing"
       ? agent.lifecycleState === "preparing" || agent.lifecycleState === "verifying" ? agent.lifecycleState : agent.lifecycleOperation?.resumeState ?? "ready"
       : agent.lifecycleOperation?.resumeState,

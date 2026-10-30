@@ -87,6 +87,7 @@ export interface Config {
   nestedCloneMigrationEnabled: boolean;
   nestedCloneMigrationDryRun: boolean;
   workspaceReaperCooldownDays: number;
+  workspaceReaperAllowUnmergedDays: number | null;
   workspaceCompactionDelayHours: number | null;
   skillVersionRetentionEnabled: boolean;
   skillVersionRetentionDryRun: boolean;
@@ -320,6 +321,21 @@ export function loadConfig(): Config {
       && workspaceReaperCooldownDaysRaw >= 0
       ? workspaceReaperCooldownDaysRaw
       : 1;
+  // Workspaces whose work was never merged are held by the delivery gate, so a
+  // long-lived instance accumulates them without bound. When this is set, a
+  // workspace whose issue tree has been terminal for more than N days becomes
+  // eligible even though its branch never merged. Commits survive on the branch;
+  // only uncommitted files are lost, and a dirty tree still blocks the sweep.
+  // Unset (the default) keeps the original never-reap-unmerged behaviour.
+  const workspaceReaperAllowUnmergedDaysEnv =
+    process.env.PAPERCLIP_WORKSPACE_REAPER_ALLOW_UNMERGED_DAYS?.trim();
+  const workspaceReaperAllowUnmergedDaysRaw = Number(workspaceReaperAllowUnmergedDaysEnv);
+  const workspaceReaperAllowUnmergedDays =
+    workspaceReaperAllowUnmergedDaysEnv
+      && Number.isFinite(workspaceReaperAllowUnmergedDaysRaw)
+      && workspaceReaperAllowUnmergedDaysRaw > 0
+      ? workspaceReaperAllowUnmergedDaysRaw
+      : null;
   // The terminal-workspace reaper removes regenerable files (installed
   // dependencies, build output, tool caches) from a terminal workspace this
   // many hours after its issue tree becomes terminal. The worktree and every
@@ -411,6 +427,7 @@ export function loadConfig(): Config {
     nestedCloneMigrationEnabled: process.env.PAPERCLIP_NESTED_CLONE_MIGRATION_ENABLED === "true",
     nestedCloneMigrationDryRun: process.env.PAPERCLIP_NESTED_CLONE_MIGRATION_DRY_RUN === "true",
     workspaceReaperCooldownDays,
+    workspaceReaperAllowUnmergedDays,
     workspaceCompactionDelayHours,
     skillVersionRetentionEnabled: process.env.PAPERCLIP_SKILL_VERSION_RETENTION_ENABLED !== "false",
     skillVersionRetentionDryRun: process.env.PAPERCLIP_SKILL_VERSION_RETENTION_DRY_RUN === "true",

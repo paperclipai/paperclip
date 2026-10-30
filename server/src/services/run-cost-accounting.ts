@@ -15,6 +15,23 @@ const object = (value: unknown): Record<string, unknown> => value && typeof valu
 const text = (value: unknown) => typeof value === "string" && value.length > 0 ? value : null;
 const amount = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 
+/** Drop a hold that can never be settled on its own.
+ *
+ * A reservation is the agent's budget exposure: dispatch, idle-sleep safety and
+ * the pause guard all read `held`, so one that nobody releases pins the agent
+ * forever. A run that dies before any usage arrives never bills, and its hold
+ * must outlive nothing.
+ */
+async function releaseHeldRunReservations(db: Pick<Db, "update">, companyId: string, runId: string) {
+  await db.update(budgetReservations)
+    .set({ state: "released", settledAt: new Date() })
+    .where(and(
+      eq(budgetReservations.companyId, companyId),
+      eq(budgetReservations.runId, runId),
+      eq(budgetReservations.state, "held"),
+    ));
+}
+
 /** The run's persisted usage is a durable receipt. Ledger, runtime totals, and
  * acknowledgement commit together, including after a restart or failed run. */
 export async function accountRunCost(db: Db, runId: string, hooks: BudgetServiceHooks = {}, receiptIndex?: UsageReceiptIndex) {
@@ -22,7 +39,13 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     pending: heartbeatRuns.costAccountingPending, accountedAt: heartbeatRuns.costAccountedAt,
     issueId: sql<string | null>`${heartbeatRuns.usageJson}->'ledgerScope'->>'issueId'`,
   }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-  if (!identity || !identity.pending || !terminalStatuses.includes(identity.status)) return false;
+  if (!identity || !terminalStatuses.includes(identity.status)) return false;
+  if (!identity.pending && !identity.accountedAt) {
+    // No usage receipt ever marked this run pending, so nothing will bill it.
+    await releaseHeldRunReservations(db, identity.companyId, runId);
+    return false;
+  }
+  if (!identity.pending) return false;
   // Finalization can call twice. Settled or active runs owe no accounting work.
   // Pending acknowledgements still receive the locked stale-marker cleanup.
   const index = identity.pending && !identity.accountedAt && terminalStatuses.includes(identity.status)
@@ -53,7 +76,13 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     }
     // A failed capture may follow an older complete attempt. Neither replay
     // nor terminal status can certify that the missing work was free.
-    if (object(run.usageJson).accountingCaptureFailed === true) return false;
+    if (object(run.usageJson).accountingCaptureFailed === true) {
+      // The receipt is lost, so the cost stays unknown and the pending marker stays
+      // for the integrity watchdog to report. The hold is different: it blocks new
+      // work, and waiting longer cannot recover a capture that already failed.
+      await releaseHeldRunReservations(tx, run.companyId, run.id);
+      return false;
+    }
     const preProviderFailure = object(object(run.resultJson).executionRecovery).providerWorkStarted === false
       || object(run.usageJson).accountingProviderWorkStarted === false;
     // A failed native turn is not necessarily the end of this heartbeat: the

@@ -14,6 +14,8 @@ export interface AgentLifecycleOperation {
   leaseUntil?: string;
   retryAt?: string;
   attempts: number;
+  /** When the operation first started; the watchdog uses it to bound stalls. */
+  startedAt?: string;
   responsibleUserId?: string | null;
 }
 
