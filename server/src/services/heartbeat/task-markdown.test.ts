@@ -92,6 +92,15 @@ describe("heartbeat task markdown rendering", () => {
     expect(buildPaperclipTaskMarkdown(input)).toBe(markdown);
   });
 
+  it("keeps casual agent-chat replies out of task workflow", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { id: "chat", identifier: null, title: "Chat", conversationAgentId: "agent" },
+    });
+
+    expect(markdown).toContain("reply briefly in kind");
+    expect(markdown).toContain("Do not invoke tools, create tasks, change titles");
+  });
+
   it("quotes task scalars and keeps embedded code fences inside the description", () => {
     const description = "First line.\n````text\nQuoted instruction.\n````\nLast line.";
     const title = 'A "quoted" title\nwith a second line';
