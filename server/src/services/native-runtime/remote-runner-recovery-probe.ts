@@ -22,7 +22,7 @@ export async function readRemoteRunnerRecoveryProbe(input: {
   // signals still have one attempt because their outcome may be unknown.
   for (let attempt = 0; ; attempt++) {
     const remaining = input.deadline - Date.now();
-    if (remaining <= 0) break;
+    if (!Number.isFinite(remaining) || remaining <= 0) break;
     try {
       const result = await input.runner.execute({
         ...input.request,

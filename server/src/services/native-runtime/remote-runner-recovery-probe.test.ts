@@ -7,6 +7,16 @@ afterEach(() => vi.useRealTimers());
 
 const timeout = { exitCode: null, signal: null, timedOut: true, stdout: "", stderr: "", pid: null, startedAt: "2026-10-15T00:00:00Z" };
 
+it.each([NaN, Infinity, -Infinity])("rejects a non-finite deadline (%s) before a probe", async deadline => {
+  const execute = vi.fn().mockResolvedValue({ ...timeout, timedOut: false, exitCode: 0 });
+  const result = await readRemoteRunnerRecoveryProbe({
+    runner: { execute }, request: { command: "sh" }, stage: "process_verification",
+    readOnly: true, deadline,
+  }).catch(readRemoteRunnerRecoveryError);
+  expect(result).toEqual({ stage: "process_verification", reason: "probe_timeout" });
+  expect(execute).not.toHaveBeenCalled();
+});
+
 it("uses the read deadline when a transport outage outlasts three fast probes", async () => {
   vi.useFakeTimers();
   const unavailable = Object.assign(new Error("Request failed with status code 502"), { response: { status: 502 } });

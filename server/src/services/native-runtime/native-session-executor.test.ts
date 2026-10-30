@@ -692,6 +692,8 @@ describe("remote controller restart adoption", () => {
         remoteRunnerRecovery: { stage: "identity_marker", reason } });
   });
   it.each(["timeout", "transport"] as const)("records a marker %s without retaining transport text", async failure => {
+    vi.useFakeTimers();
+    onTestFinished(() => vi.useRealTimers());
     const { target, execute } = fixture();
     const transportError = new Error("private bridge response");
     const original = execute.getMockImplementation()!;
@@ -700,7 +702,9 @@ describe("remote controller restart adoption", () => {
       if (failure === "transport") throw transportError;
       return { stdout: "", stderr: "private bridge response", exitCode: -1, timedOut: true };
     });
-    const error = await verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" }).catch(error => error);
+    const outcome = verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" }).catch(error => error);
+    await vi.advanceTimersByTimeAsync(30_000);
+    const error = await outcome;
     const diagnostic = readRemoteRunnerRecoveryError(error);
     expect(diagnostic).toEqual({ stage: "identity_marker", reason: failure === "timeout" ? "probe_timeout" : "probe_transport_failed" });
     expect(JSON.stringify(diagnostic)).not.toContain("private");
@@ -752,6 +756,8 @@ describe("remote controller restart adoption", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it.each(["liveness", "timeout", "transport"] as const)("retains the reason for a failed process %s probe", async failure => {
+    vi.useFakeTimers();
+    onTestFinished(() => vi.useRealTimers());
     const { target, execute } = fixture();
     const original = execute.getMockImplementation()!;
     const transportError = new Error("provider_transport_failed: private bridge response");
@@ -760,7 +766,9 @@ describe("remote controller restart adoption", () => {
       if (failure === "transport") throw transportError;
       return { stdout: "", stderr: "private probe output", exitCode: failure === "liveness" ? 45 : -1, timedOut: failure === "timeout" };
     });
-    const error = await verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" }).catch(error => error);
+    const outcome = verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" }).catch(error => error);
+    await vi.advanceTimersByTimeAsync(30_000);
+    const error = await outcome;
     const diagnostic = readRemoteRunnerRecoveryError(error);
     expect(diagnostic).toEqual({ stage: "process_verification", reason: failure === "liveness" ? "process_not_running" : failure === "timeout" ? "probe_timeout" : "probe_transport_failed" });
     expect(JSON.stringify(diagnostic)).not.toContain("private");
