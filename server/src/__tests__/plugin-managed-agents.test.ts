@@ -628,4 +628,48 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
       managedResourceKey: "wiki-maintainer",
     });
   });
+
+  it("materializes declared instructions and creates the hire approval when board approval is required", async () => {
+    const previousHome = process.env.PAPERCLIP_HOME;
+    const previousInstance = process.env.PAPERCLIP_INSTANCE_ID;
+    const tempHome = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-managed-agent-home-")));
+    process.env.PAPERCLIP_HOME = tempHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test";
+    try {
+      const pluginManifest = manifest();
+      pluginManifest.agents![0] = {
+        ...pluginManifest.agents![0]!,
+        adapterType: "claude_local",
+        adapterConfig: {},
+        instructions: {
+          entryFile: "AGENTS.md",
+          content: "# Wiki Maintainer\n\nMaintain the wiki.\n",
+        },
+      };
+      const { companyId, services } = await seedCompanyAndPlugin({ manifest: pluginManifest, requireApproval: true });
+
+      const created = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+
+      expect(created.status).toBe("created");
+      expect(created.agent?.status).toBe("pending_approval");
+      expect(created.approvalId).toBeTruthy();
+      const instructionsFilePath = created.agent?.adapterConfig.instructionsFilePath;
+      expect(typeof instructionsFilePath).toBe("string");
+      expect(await fs.readFile(instructionsFilePath as string, "utf8")).toContain("Maintain the wiki.");
+      const [approval] = await db.select().from(approvals).where(eq(approvals.id, created.approvalId!));
+      expect(approval).toMatchObject({ type: "hire_agent", status: "pending" });
+      expect((approval?.payload as { adapterConfig: Record<string, unknown> }).adapterConfig.instructionsFilePath)
+        .toBe(instructionsFilePath);
+
+      const again = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+      expect(again.agentId).toBe(created.agentId);
+      expect(await db.select().from(approvals)).toHaveLength(1);
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousHome;
+      if (previousInstance === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousInstance;
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
+  });
 });
