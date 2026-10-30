@@ -381,6 +381,12 @@ fn finish_turn_with_send(
         "method": "turn/completed",
         "params": {"turn": {"id": turn_id, "status": status}}
     }))?;
+    if std::env::args().any(|arg| arg == "--accounting-tail-after-terminal") {
+        send(
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":state.thread_id,"turnId":turn_id,
+            "tokenUsage":{"total":{"inputTokens":120,"outputTokens":12},"last":{"inputTokens":20,"outputTokens":2}}}}),
+        )?;
+    }
     Ok(())
 }
 

@@ -747,14 +747,21 @@ fn normalize_provider_notification(
     }
 }
 
+fn terminal_completion_rejected(state: &CodexProviderState) -> bool {
+    state.active_terminal_tool_rejected && state.active_provider_result_fingerprint.is_none()
+}
+
+fn goal_continues_after_turn(state: &CodexProviderState, goal_active: bool) -> bool {
+    goal_active && !terminal_completion_rejected(state)
+}
+
 fn terminal_events(
     state: &CodexProviderState,
     event_type: &str,
     goal_status: Option<&str>,
 ) -> Vec<NormalizedProviderEvent> {
-    let rejected_completion =
-        state.active_terminal_tool_rejected && state.active_provider_result_fingerprint.is_none();
-    if goal_status == Some("active") && !rejected_completion {
+    let rejected_completion = terminal_completion_rejected(state);
+    if goal_continues_after_turn(state, goal_status == Some("active")) {
         return Vec::new();
     }
     let Some(contract) = state.completion_contract.as_ref() else {
@@ -4474,9 +4481,11 @@ impl CodexCommandExecutor {
                             .and_then(|state| state.goal.as_ref())
                             .is_some_and(|goal| goal.status == "active"),
                     };
-                    if terminal_event_type.as_deref() == Some("turn.completed")
-                        && !goal_remains_active
-                    {
+                    let run_continues = self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| goal_continues_after_turn(state, goal_remains_active));
+                    if terminal_event_type.as_deref() == Some("turn.completed") && !run_continues {
                         self.retain_completed_accounting_tail()?;
                     }
                     let working_now = self

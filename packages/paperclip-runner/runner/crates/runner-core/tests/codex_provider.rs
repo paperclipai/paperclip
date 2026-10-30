@@ -6286,6 +6286,9 @@ fn rejected_declared_completion_stays_failed_when_the_provider_completes() {
         let mut config = provider_config(&directory, &["--complete-after-tool-call"]);
         if scenario == "controller-goal" {
             config.args.push("--agent-created-goal-on-open".to_owned());
+            config
+                .args
+                .push("--accounting-tail-after-terminal".to_owned());
         }
         config.args.extend([
             "--terminal-result-file".to_owned(),
@@ -6357,6 +6360,13 @@ fn rejected_declared_completion_stays_failed_when_the_provider_completes() {
             .unwrap();
         assert!(failure < turn && turn < terminal);
         if scenario == "controller-goal" {
+            let final_usage = emitted
+                .iter()
+                .rposition(|event| event.event_type == "usage.reported")
+                .unwrap();
+            assert!(final_usage < failure && final_usage < turn && final_usage < terminal);
+            assert_eq!(emitted[final_usage].payload["runDelta"]["inputTokens"], 120);
+            assert_eq!(emitted[final_usage].payload["runDeltaAvailable"], true);
             let settled_goal = emitted
                 .iter()
                 .rposition(|event| {
