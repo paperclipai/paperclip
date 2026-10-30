@@ -308,6 +308,13 @@ function nearMatch(key: string, candidates: string[]): string | null {
   return best?.candidate ?? null;
 }
 
+export const KNOWN_CONFIG_KEY_ALIASES: Record<string, string> = {
+  "database.url": "database.connectionString",
+  "database.pgliteDataDir": "database.embeddedPostgresDataDir",
+  "database.pglitePort": "database.embeddedPostgresPort",
+  "auth.publicUrl": "auth.publicBaseUrl",
+};
+
 function collectConfigKeyWarnings(
   value: Record<string, unknown>,
   schema: z.ZodTypeAny,
@@ -324,11 +331,12 @@ function collectConfigKeyWarnings(
     const childSchema = shape[key];
     const childPath = prefix ? `${prefix}.${key}` : key;
     if (childSchema === undefined) {
-      const suggestion = nearMatch(key, knownKeys);
+      const alias = KNOWN_CONFIG_KEY_ALIASES[childPath];
+      const suggestion = alias ?? nearMatch(key, knownKeys);
       if (suggestion) {
         warnings.push({
           path: childPath,
-          suggestion: prefix ? `${prefix}.${suggestion}` : suggestion,
+          suggestion: alias ? suggestion : (prefix ? `${prefix}.${suggestion}` : suggestion),
         });
       }
       continue;
@@ -347,3 +355,121 @@ export function findPaperclipConfigKeyWarnings(config: unknown): ConfigKeyWarnin
   collectConfigKeyWarnings(config, paperclipConfigSchema, "", warnings);
   return warnings;
 }
+
+export function migrateLegacyConfig(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+  const config = { ...(raw as Record<string, unknown>) };
+  const databaseRaw = config.database;
+  if (typeof databaseRaw !== "object" || databaseRaw === null || Array.isArray(databaseRaw)) {
+    return config;
+  }
+
+  const database = { ...(databaseRaw as Record<string, unknown>) };
+  if (database.mode === "pglite") {
+    database.mode = "embedded-postgres";
+
+    if (typeof database.embeddedPostgresDataDir !== "string" && typeof database.pgliteDataDir === "string") {
+      database.embeddedPostgresDataDir = database.pgliteDataDir;
+    }
+    if (
+      typeof database.embeddedPostgresPort !== "number" &&
+      typeof database.pglitePort === "number" &&
+      Number.isFinite(database.pglitePort)
+    ) {
+      database.embeddedPostgresPort = database.pglitePort;
+    }
+  }
+
+  config.database = database;
+  return config;
+}
+
+export type ConfigValidationIssue = {
+  path: string;
+  message: string;
+  code?: string;
+  expected?: string;
+  received?: unknown;
+};
+
+export type ConfigValidationResult = {
+  valid: boolean;
+  errors: string[];
+  issues: ConfigValidationIssue[];
+  warnings: ConfigKeyWarning[];
+  data?: PaperclipConfig;
+};
+
+function getValueByPath(obj: unknown, pathParts: string[]): unknown {
+  let curr: unknown = obj;
+  for (const part of pathParts) {
+    if (typeof curr !== "object" || curr === null) return undefined;
+    curr = (curr as Record<string, unknown>)[part];
+  }
+  return curr;
+}
+
+export function validatePaperclipConfig(
+  raw: unknown,
+  options: { migrateLegacy?: boolean } = {},
+): ConfigValidationResult {
+  const shouldMigrate = options.migrateLegacy ?? true;
+  const target = shouldMigrate ? migrateLegacyConfig(raw) : raw;
+  const warnings = findPaperclipConfigKeyWarnings(target);
+  const parsed = paperclipConfigSchema.safeParse(target);
+
+  if (parsed.success) {
+    return {
+      valid: true,
+      errors: [],
+      issues: [],
+      warnings,
+      data: parsed.data,
+    };
+  }
+
+  const issues: ConfigValidationIssue[] = parsed.error.issues.map((issue) => {
+    const pathParts = issue.path.map(String);
+    const path = pathParts.length > 0 ? pathParts.join(".") : "config";
+    let message = issue.message;
+
+    const anyIssue = issue as unknown as Record<string, unknown>;
+    const enumValues = (
+      Array.isArray(anyIssue.values)
+        ? anyIssue.values
+        : Array.isArray(anyIssue.options)
+          ? anyIssue.options
+          : undefined
+    ) as string[] | undefined;
+
+    if (enumValues && enumValues.length > 0) {
+      const expected = enumValues.map((opt) => `'${opt}'`).join(" | ");
+      const received = anyIssue.received !== undefined ? anyIssue.received : getValueByPath(target, pathParts);
+      message = `Invalid enum value. Expected ${expected}, received '${String(received)}'`;
+      return {
+        path,
+        message,
+        code: issue.code,
+        expected,
+        received,
+      };
+    }
+
+    return {
+      path,
+      message,
+      code: issue.code,
+    };
+  });
+
+  const errors = issues.map((issue) => `${issue.path}: ${issue.message}`);
+
+  return {
+    valid: false,
+    errors,
+    issues,
+    warnings,
+  };
+}
+
+export * from "./config-options.js";
