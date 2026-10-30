@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
+import { isCloudManagedInstance } from "./cloud-instance.js";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { assertDistributionManifestCapabilities, readDistributionPluginCatalog, type DistributionPlugin } from "./distribution-plugin-catalog.js";
 
@@ -117,6 +118,13 @@ export const BUNDLED_PLUGIN_CATALOG: readonly BundledPluginCatalogEntry[] = [
  * auto-installed when its bundle is present, nothing else.
  */
 export const SELF_HOSTED_AUTO_INSTALL_KEYS: readonly string[] = ["kubernetes"];
+
+export function resolveManagedBundledPluginKeys(
+  keys: readonly string[] | null | undefined,
+  env: Record<string, string | undefined> = process.env,
+): readonly string[] | null {
+  return keys ?? (isCloudManagedInstance(env) ? [] : null);
+}
 
 export function resolveBundledCatalogRoot(
   env: Record<string, string | undefined>,

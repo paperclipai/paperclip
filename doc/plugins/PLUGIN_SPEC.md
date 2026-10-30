@@ -37,7 +37,10 @@ In practice, that means the current implementation is a good fit for local devel
 ### Managed image packages
 
 Managed Cloud provisions only plugins selected from the current release image
-catalog. The database registration's plugin key, package name, version and
+catalog. A Cloud tenant token or managed configuration keeps this image-only
+policy active. Without an explicit selected package list, Cloud selects no
+packages and cannot fall back to local installs. An explicit operator-managed
+list also keeps this policy active outside Cloud. The database registration's plugin key, package name, version and
 approved manifest identify that package. Its legacy `packagePath` remains for
 local/self-hosted compatibility; Cloud never uses that path to locate code.
 Workers, plugin migrations and UI files resolve through the same current-image

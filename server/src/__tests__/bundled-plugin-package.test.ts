@@ -1,4 +1,4 @@
-import { rmSync, writeFileSync, symlinkSync, mkdirSync } from "node:fs";
+import { rmSync, writeFileSync, symlinkSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { bundledImageFixture } from "./helpers/bundled-image-fixture.js";
@@ -6,6 +6,17 @@ import { createBundledPluginPackageResolver } from "../services/bundled-plugin-p
 import { BUNDLED_PLUGIN_CATALOG, resolveBundledPluginInstalls } from "../services/bundled-plugins.js";
 import { readDistributionPluginCatalog } from "../services/distribution-plugin-catalog.js";
 
+import boxd from "../../../packages/plugins/sandbox-providers/boxd/src/manifest.js";
+import createos from "../../../packages/plugins/sandbox-providers/createos/src/manifest.js";
+import cloudflare from "../../../packages/plugins/sandbox-providers/cloudflare/src/manifest.js";
+import daytona from "../../../packages/plugins/sandbox-providers/daytona/src/manifest.js";
+import e2b from "../../../packages/plugins/sandbox-providers/e2b/src/manifest.js";
+import exe_dev from "../../../packages/plugins/sandbox-providers/exe-dev/src/manifest.js";
+import kubernetes from "../../../packages/plugins/sandbox-providers/kubernetes/src/manifest.js";
+import modal from "../../../packages/plugins/sandbox-providers/modal/src/manifest.js";
+import novita from "../../../packages/plugins/sandbox-providers/novita/src/manifest.js";
+
+const manifests = { boxd, createos, cloudflare, daytona, e2b, "exe-dev": exe_dev, kubernetes, modal, novita };
 const roots: string[] = [];
 function fixture() { const result = bundledImageFixture(); roots.push(result.root); return result; }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -56,11 +67,20 @@ describe("bundled image package identity", () => {
     expect(() => resolver.resolve(registration)).toThrow(/escapes/);
   });
 
-  it("applies the same identity and containment checks to managed built-in packages", () => {
-    const { root, packageRoot, manifest, registration } = fixture();
-    const installs = resolveBundledPluginInstalls(["kubernetes"], { catalogRoot: root, enforceCatalogRoot: true, distributionPlugins: [], env: {} });
-    installs[0] = { ...installs[0]!, localPath: packageRoot, pluginKey: manifest.id };
-    expect(createBundledPluginPackageResolver(installs).resolve(registration)).toBe(packageRoot);
-    expect(() => createBundledPluginPackageResolver(installs).resolve({ ...registration, version: "2.0.0" })).toThrow(/identity\/version/);
+  it.each(BUNDLED_PLUGIN_CATALOG)("accepts the real shipped $key package and manifest contract", (entry) => {
+    const manifest = manifests[entry.key as keyof typeof manifests];
+    const pkg = JSON.parse(readFileSync(new URL(`../../../packages/plugins/${entry.relativePath}/package.json`, import.meta.url), "utf8"));
+    const { root } = fixture();
+    const packageRoot = path.join(root, entry.relativePath);
+    mkdirSync(path.join(packageRoot, "dist"), { recursive: true });
+    writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify(pkg));
+    writeFileSync(path.join(packageRoot, "dist", "manifest.js"), `export default ${JSON.stringify(manifest)};`);
+    writeFileSync(path.join(packageRoot, "dist", "worker.js"), "export default {};");
+    const installs = resolveBundledPluginInstalls([entry.key], { catalogRoot: root, enforceCatalogRoot: true, distributionPlugins: [], env: {} });
+    const resolver = createBundledPluginPackageResolver(installs);
+    const registration = { pluginKey: entry.pluginKey, packageName: pkg.name, version: manifest.version, manifestJson: manifest };
+    expect(pkg.version).toBe(manifest.version);
+    expect(resolver.resolve(registration)).toBe(packageRoot);
+    expect(resolver.inspect(registration, manifest)).toMatchObject({ compatible: true });
   });
 });

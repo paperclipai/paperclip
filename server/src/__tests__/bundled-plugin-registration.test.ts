@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { execFileSync } from "node:child_process";
-import { rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { rmSync, mkdirSync, writeFileSync, cpSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { applyPendingMigrations, closeRegisteredClients, companies, createDb, plugins } from "@paperclipai/db";
@@ -14,6 +14,7 @@ import { pluginUiStaticRoutes } from "../routes/plugin-ui-static.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { derivePluginDatabaseNamespace } from "../services/plugin-database.js";
 import { ensureBundledPlugins } from "../services/bundled-plugins.js";
+import daytonaManifest from "../../../packages/plugins/sandbox-providers/daytona/src/manifest.js";
 import { bundledImageFixture } from "./helpers/bundled-image-fixture.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -191,6 +192,29 @@ describePostgres("bundled image registration in PostgreSQL", () => {
     expect(result.success).toBe(true);
     expect(current.services.workerManager.startWorker).toHaveBeenCalledWith(row!.id, expect.objectContaining({ databaseNamespace: derivePluginDatabaseNamespace(image.manifest.id) }));
     await db.execute((await import("drizzle-orm")).sql.raw(`DROP SCHEMA "${derivePluginDatabaseNamespace(image.manifest.id)}" CASCADE`));
+  });
+
+  it("retains registry-install provider credentials for an ordinary npm package", async () => {
+    const npmManifest = { ...daytonaManifest, id: "paperclip.image-npm-fixture" };
+    const image = bundledImageFixture(npmManifest);
+    roots.push(image.root);
+    const localPluginDir = path.join(image.root, "npm-home");
+    const packageRoot = path.join(localPluginDir, "node_modules", "@paperclipai", "plugin-daytona");
+    mkdirSync(path.dirname(packageRoot), { recursive: true });
+    cpSync(image.packageRoot, packageRoot, { recursive: true });
+    const metadata = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+    metadata.name = "@paperclipai/plugin-daytona";
+    writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify(metadata));
+    const registry = pluginRegistryService(db);
+    const row = (await registry.install({ packageName: metadata.name }, npmManifest))!;
+    await registry.updateStatus(row.id, { status: "ready" });
+    vi.stubEnv("DAYTONA_API_KEY", "synthetic-provider-key");
+    try {
+      const current = runtime();
+      const loader = pluginLoader(db, { localPluginDir, enableNpmDiscovery: false, enableLocalFilesystem: false }, current.services as unknown as PluginRuntimeServices);
+      expect((await loader.loadSingle(row.id)).success).toBe(true);
+      expect(current.services.workerManager.startWorker).toHaveBeenCalledWith(row.id, expect.objectContaining({ env: expect.objectContaining({ DAYTONA_API_KEY: "synthetic-provider-key" }) }));
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it("keeps self-hosted local-path loading available without a managed resolver", async () => {

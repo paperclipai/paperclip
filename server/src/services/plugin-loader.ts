@@ -2338,7 +2338,7 @@ export function pluginLoader(
         env: buildPluginWorkerEnv({
           manifest,
           packageName: activePlugin.packageName,
-          packagePath: packageRoot,
+          packagePath: resolvePackageRoot ? packageRoot : activePlugin.packagePath,
           instanceInfo,
         }),
         // Authorize the worker to act on each configured company from its
