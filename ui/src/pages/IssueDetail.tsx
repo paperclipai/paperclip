@@ -3649,7 +3649,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       createdFromIssueId: issue!.id,
       includeRoutineExecutions: true,
     }),
-    enabled: streamlinedTaskDetailEnabled && !!resolvedCompanyId && !!issue?.id && !tasksTab,
+    enabled: !!resolvedCompanyId && !!issue?.id && !issue.id.startsWith("chat:") && (
+      (taskChatShellEnabled && !conversation) || (streamlinedTaskDetailEnabled && !tasksTab)
+    ),
   });
 
   const {

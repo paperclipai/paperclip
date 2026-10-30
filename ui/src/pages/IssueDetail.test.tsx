@@ -1584,6 +1584,18 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => expect(container.textContent).not.toContain("Could not load created tasks."));
   });
 
+  it("loads standalone follow-up cards in the task feed when Streamlined UI is off", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: false, enableClassicTaskInterface: false });
+    const issue = createIssue();
+    const followup = createIssue({ id: "standalone", parentId: null, createdByAgentId: "agent-1" });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.listAll.mockImplementation(async (_companyId, filters) => filters?.createdFromIssueId ? [followup] : []);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]?.createdTasks).toEqual([followup]));
+    expect(container.querySelector('[data-testid="task-chat-thread"]')).not.toBeNull();
+    expect(mockIssuesApi.listAll).toHaveBeenCalledWith(issue.companyId, { createdFromIssueId: issue.id, includeRoutineExecutions: true });
+  });
+
   it("uses Coordinator task presentation and panel scope without changing the Classic preference", async () => {
     coordinatorPreference.enabled = true;
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
