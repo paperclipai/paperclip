@@ -210,5 +210,13 @@ export const issues = pgTable(
     onboardingFirstTaskIdx: uniqueIndex("issues_onboarding_first_task_uq")
       .on(table.companyId)
       .where(sql`${table.originKind} = 'onboarding_first_task'`),
+    executionRunIdx: index("issues_execution_run_idx")
+      .on(table.executionRunId)
+      .concurrently()
+      .where(sql`${table.executionRunId} is not null`),
+    checkoutRunIdx: index("issues_checkout_run_idx")
+      .on(table.checkoutRunId)
+      .concurrently()
+      .where(sql`${table.checkoutRunId} is not null`),
   }),
 );

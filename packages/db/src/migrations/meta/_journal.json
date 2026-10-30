@@ -2906,6 +2906,13 @@
       "when": 1793320102041,
       "tag": "0416_salty_domino",
       "breakpoints": true
+    },
+    {
+      "idx": 417,
+      "version": "7",
+      "when": 1793370966995,
+      "tag": "0417_tranquil_silver_samurai",
+      "breakpoints": true
     }
   ]
 }
