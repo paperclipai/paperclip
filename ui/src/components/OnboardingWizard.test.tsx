@@ -37,15 +37,6 @@ const managedApi = vi.hoisted(() => ({
   create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
 }));
 vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: managedApi }));
-// Keep the wizard tests focused on binding/model/creation boundaries. The
-// connection component has its own tests; the ordinary-install UI canary
-// exercises its real token storage and default selection.
-vi.mock("./ai-connections/AiConnectionField", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./ai-connections/AiConnectionField")>();
-  return { ...actual, AiConnectionField: (props: { environmentId?: string; onChange: (value: import("@paperclipai/shared").AiConnectionBinding) => void }) => (
-    <button data-environment={props.environmentId} onClick={() => props.onChange({ provider: "github", method: "api_key", mode: "responsible_user" })}>Use saved Copilot connection</button>
-  ) };
-});
 vi.mock("../api/auth", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/auth")>();
   return { ...actual, authApi: { ...actual.authApi, getSession: mockAuthApi.getSession } };
@@ -500,12 +491,12 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       try {
         expect(document.body.querySelector('button[aria-checked="true"]')).toBeNull();
-        expect(document.body.textContent).not.toContain("Use saved Copilot connection");
+        expect(document.body.textContent).not.toContain("Connect GitHub Copilot");
         const connect = [...document.body.querySelectorAll("button")].find(button => isArcPrimary(button.textContent?.trim() ?? ""));
         expect(connect?.disabled).toBe(true);
         expect(mockAgentsApi.hire).not.toHaveBeenCalled();
         expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({
-          adapterType: "claude_local", model: "",
+          adapterType: "claude_local", runner: "auto", model: "",
         });
       } finally { await act(async () => root.unmount()); }
     });
@@ -522,9 +513,11 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       } finally { await act(async () => root.unmount()); }
     });
 
-    it("explains how to proceed when both onboarding providers are disabled", async () => {
+    it.each([false, true])("explains unavailable onboarding providers and clears an old Copilot draft: %s", async savedCopilot => {
       mockAdapterRegistry.disabled = new Set(["claude_local", "codex_local"]);
-      const root = await openProviderChoices();
+      const root = await openProviderChoices(savedCopilot ? {
+        adapterType: "paperclip_runner", onboardingCopilot: true, runner: "paperclip", model: "copilot-model",
+      } : {});
       try {
         expect(document.body.querySelectorAll("button[aria-checked]")).toHaveLength(0);
         expect(document.body.textContent).toContain("Claude and Codex are unavailable on this instance.");
@@ -532,6 +525,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         const next = [...document.body.querySelectorAll("button")].find(button => isArcPrimary(button.textContent?.trim() ?? ""));
         expect(next?.disabled).toBe(true);
         expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        const saved = JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!);
+        expect(saved).toMatchObject({ adapterType: "claude_local", runner: "auto", model: "" });
+        expect(saved).not.toHaveProperty("onboardingCopilot");
       } finally { await act(async () => root.unmount()); }
     });
   });
@@ -2674,6 +2670,34 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       for (const [, body] of saves.filter(([, body]) => body.adapterConfig)) expect(body.adapterConfig).toMatchObject({ model: "server-model", customSetting: "preserve" });
       expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!).model).toBe("server-model");
       await act(async () => root.unmount());
+    });
+
+    it.each([false, true])("migrates a stored Copilot setup without reusing its model or binding, with providers disabled: %s", async providersDisabled => {
+      const setupId = "00000000-0000-4000-8000-000000000095";
+      if (providersDisabled) mockAdapterRegistry.disabled = new Set(["claude_local", "codex_local"]);
+      mockAgentsApi.create.mockResolvedValueOnce({ id: setupId, companyId: "company-new", name: "Ada", role: "general",
+        adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "copilot-model" },
+        runtimeConfig: { aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } },
+        pauseReason: "setup", defaultEnvironmentId: "env-sandbox-1" } as never);
+      const { root } = await openStep4({ adapterType: "paperclip_runner", onboardingCopilot: true, setupAgentId: setupId });
+      try {
+        const saved = JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!);
+        expect(saved).toMatchObject({ adapterType: "claude_local", runner: "auto", model: "", setupAgentId: setupId });
+        expect(saved).not.toHaveProperty("onboardingCopilot");
+        expect(document.body.querySelector('button[aria-checked="true"]')).toBeNull();
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        if (!providersDisabled) {
+          await pickSource(/Claude/);
+          const saves = mockAgentsApi.update.mock.calls.filter(([id, body]) => id === setupId && body.adapterConfig);
+          expect(saves.length).toBeGreaterThan(0);
+          for (const [, body] of saves) {
+            expect(body).toMatchObject({ adapterType: "claude_local", runner: "auto" });
+            expect(body.adapterConfig).not.toHaveProperty("acpxAgent", "copilot");
+            expect(body.adapterConfig).not.toHaveProperty("model", "copilot-model");
+            expect(body.runtimeConfig).not.toHaveProperty("aiConnection.provider", "github");
+          }
+        }
+      } finally { await act(async () => root.unmount()); }
     });
 
     it("tests and hires in the restored setup environment instead of the instance default", async () => {

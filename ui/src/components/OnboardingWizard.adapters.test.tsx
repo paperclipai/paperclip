@@ -296,7 +296,9 @@ describe("OnboardingWizard adapter selection", () => {
     window.localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify({ step: 0, adapterType: "paperclip_runner", onboardingCopilot: true, model: "gpt-5.6-luna" }));
     const { root } = await mount(nativeRunnerEnabled);
     try {
-      expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({ adapterType: "codex_local", onboardingCopilot: false, model: "" });
+      const saved = JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!);
+      expect(saved).toMatchObject({ adapterType: "codex_local", runner: "auto", model: "" });
+      expect(saved).not.toHaveProperty("onboardingCopilot");
     } finally {
       await act(async () => root.unmount());
     }

@@ -39,6 +39,9 @@ Cloud-managed instances reuse their existing company for agent setup.
 First-agent onboarding offers only Claude and Codex, subject to instance adapter
 availability. GitHub Copilot and other providers remain available through Add
 agent after onboarding. A saved draft for another provider requires a new choice.
+Old Copilot drafts discard the retired selection and model, including when both
+onboarding providers are disabled. The wizard no longer contains Copilot setup
+UI, connection state, or model discovery; later Add agent retains that support.
 Changing an unavailable saved provider clears its model. If both first-onboarding
 providers are unavailable, the wizard explains how to enable one or use New Agent
 from the Agents page for another provider.
