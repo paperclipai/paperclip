@@ -339,6 +339,7 @@ describe("PaperclipControlPlanePort conformance", () => {
     finally { db.$client.options.debug = previousDebug; }
     expect(statements.filter(statement => /^begin\b/i.test(statement.trim()))).toHaveLength(1);
     expect(statements.filter(statement => /^update\s+"heartbeat_runs"/i.test(statement.trim()))).toHaveLength(1);
+    expect(statements.filter(statement => /^(?:with|select)\b/i.test(statement.trim()))).toHaveLength(1);
     const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
     expect(saved.runnerProfileJson).toMatchObject({ unrelated: "preserve", sessionCheckpoint: snapshot,
       nativeControllerRecovery: { schema: "paperclip.native-controller-recovery.v1", snapshotSha256: nativeSha256(saved.runnerProfileJson?.sessionCheckpoint),

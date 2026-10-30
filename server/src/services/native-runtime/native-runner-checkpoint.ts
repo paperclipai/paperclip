@@ -27,6 +27,19 @@ function decryptPart(cipher: ReturnType<typeof createLocalEncryptedCipher>, bind
 
 type CheckpointTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
+/** A dependent run-lock query can consume this CTE to preserve coordinator-first
+ * lock order without adding a second database round trip. */
+export function nativeRunnerCheckpointOwnerLock(tx: CheckpointTransaction, owner: NativeRunnerCheckpointOwner) {
+  return tx.$with("checkpoint_owner").as(tx.select({
+    leaseOwner: nativeRunFinalizations.leaseOwner,
+    leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt,
+    resultId: nativeRunFinalizations.resultId,
+  }).from(nativeRunFinalizations).where(and(
+    eq(nativeRunFinalizations.companyId, owner.companyId), eq(nativeRunFinalizations.issueId, owner.issueId),
+    eq(nativeRunFinalizations.runId, owner.authorityRunId), eq(nativeRunFinalizations.controllerBootId, owner.bootId),
+    eq(nativeRunFinalizations.controllerGeneration, owner.generation))).for("update"));
+}
+
 /** Locks the coordinator before callers lock a run. A caller that subsequently
  * waits for another lock must recheck the fence before writing. */
 export async function lockNativeRunnerCheckpointOwner(
@@ -35,11 +48,7 @@ export async function lockNativeRunnerCheckpointOwner(
   // A locking CTE acquires ownership before the outer projection samples
   // wall time. Sampling in the locking SELECT can precede its lock wait.
   // Keep both steps in one statement without another database round trip.
-  const locked = tx.$with("checkpoint_owner").as(tx.select().from(nativeRunFinalizations)
-    .where(and(eq(nativeRunFinalizations.companyId, owner.companyId),
-      eq(nativeRunFinalizations.issueId, owner.issueId), eq(nativeRunFinalizations.runId, owner.authorityRunId),
-      eq(nativeRunFinalizations.controllerBootId, owner.bootId),
-      eq(nativeRunFinalizations.controllerGeneration, owner.generation))).for("update"));
+  const locked = nativeRunnerCheckpointOwnerLock(tx, owner);
   const [owned] = await tx.with(locked).select({ leaseOwner: locked.leaseOwner,
     leaseExpiresAt: locked.leaseExpiresAt, resultId: locked.resultId, now: sql<Date>`clock_timestamp()` }).from(locked);
   if (!owned) throw new Error("native_runner_checkpoint_owner_lost");

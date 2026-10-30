@@ -32,7 +32,7 @@ import { publishLiveEvent } from "../live-events.js";
 import { nativeSha256 } from "./canonical.js";
 import { redactRunnerApiEvent, redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 import { createNativeControllerRecovery, type NativeControllerCompatibility } from "./native-controller-recovery.js";
-import { lockNativeRunnerCheckpointOwner, validateNativeRunnerCheckpointOwner, inspectNativeRunnerUpgradeHeader, type NativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
+import { lockNativeRunnerCheckpointOwner, nativeRunnerCheckpointOwnerLock, validateNativeRunnerCheckpointOwner, inspectNativeRunnerUpgradeHeader, type NativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
 
 export interface PaperclipControlPlaneBinding {
   companyId: string;
@@ -210,7 +210,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     ) throw new Error("native_session_checkpoint_binding_mismatch");
     await this.#db.transaction(async (tx) => {
       const recovery = this.#nativeRecovery;
-      const owner = recovery ? await lockNativeRunnerCheckpointOwner(tx, recovery.owner) : null;
+      const ownerLock = recovery ? nativeRunnerCheckpointOwnerLock(tx, recovery.owner) : null;
       const lockedRun = tx.$with("snapshot_run").as(tx.select({
         companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
         runtimeMode: heartbeatRuns.runtimeMode, nativeIssueId: heartbeatRuns.nativeIssueId,
@@ -219,17 +219,24 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         completionContractSha256: heartbeatRuns.completionContractSha256,
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
       }).from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, this.#binding.runId)).for("update"));
+        .where(and(eq(heartbeatRuns.id, this.#binding.runId), ownerLock
+          ? sql`exists (select 1 from ${ownerLock})` : undefined)).for("update"));
       // Project the locking CTE's tuples, including any update committed while
       // the lock waited. A second scan of heartbeat_runs could see an old MVCC tuple.
-      const selected = await tx.with(lockedRun).select({ run: {
+      // The run CTE depends on the coordinator CTE: both locks precede the
+      // outer clock sample, including when either lock waits.
+      const selected = await tx.with(...(ownerLock ? [ownerLock, lockedRun] : [lockedRun])).select({ run: {
         companyId: lockedRun.companyId, agentId: lockedRun.agentId,
         runtimeMode: lockedRun.runtimeMode, nativeIssueId: lockedRun.nativeIssueId,
         nativeSessionId: lockedRun.nativeSessionId, runnerInstanceId: lockedRun.runnerInstanceId,
         completionContractId: lockedRun.completionContractId,
         completionContractSha256: lockedRun.completionContractSha256,
         runnerProfileJson: lockedRun.runnerProfileJson,
-      }, now: sql<Date>`clock_timestamp()`, ...(recovery ? {
+      }, now: sql<Date>`clock_timestamp()`, ...(ownerLock ? {
+        leaseOwner: sql<string | null>`(select ${ownerLock.leaseOwner} from ${ownerLock})`,
+        leaseExpiresAt: sql<Date | null>`(select ${ownerLock.leaseExpiresAt} from ${ownerLock})`.mapWith(nativeRunFinalizations.leaseExpiresAt),
+        resultId: sql<string | null>`(select ${ownerLock.resultId} from ${ownerLock})`,
+      } : {}), ...(recovery ? {
         checkpointHeader: sql<Record<string, unknown> | null>`(select material from ${nativeRunnerCheckpoints}
           where ${nativeRunnerCheckpoints.runId} = ${this.#binding.runId}
             and ${nativeRunnerCheckpoints.companyId} = ${this.#binding.companyId}
@@ -240,13 +247,15 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         .then((rows) => rows[0] ?? null);
       const run = selected?.run;
       this.#assertActive(options);
+      if (recovery && !selected) throw new Error("native_runner_checkpoint_owner_lost");
       if (!run || !this.#matchesPersistedBinding(run)) {
         throw new Error("native_session_checkpoint_binding_mismatch");
       }
       // The run row lock may have waited beyond our lease. Generation cannot
       // change while we hold the coordinator, but wall-clock expiry still can.
-      if (recovery && owner) await validateNativeRunnerCheckpointOwner(tx, recovery.owner,
-        { ...owner, now: selected!.now }, !snapshot.semanticResult);
+      if (recovery && selected) await validateNativeRunnerCheckpointOwner(tx, recovery.owner,
+        { leaseOwner: selected.leaseOwner ?? null, leaseExpiresAt: selected.leaseExpiresAt ?? null,
+          resultId: selected.resultId ?? null, now: selected.now }, !snapshot.semanticResult);
       const header = recovery && selected?.checkpointHeader
         ? inspectNativeRunnerUpgradeHeader(this.#binding, selected.checkpointHeader) : null;
       if (header && (header.normalizedSessionId !== identity.sessionId || header.runnerInstanceId !== this.#binding.sourceInstanceId)) {
