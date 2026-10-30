@@ -84,8 +84,12 @@ Unexpected browser/API errors retain only a closed `task_search_<stage>_failed`
 code. Stage names come from the journey source; raw exception text, URLs, form
 values, and response bodies are not added to reporting. Existing owned evidence
 failures keep their specific codes and the screenshot privacy guard stays in place.
-It does not depend on row order or an otherwise empty company. This selection is
-manual until a separate target owner records a fresh pass and admits it to a daily
+It does not depend on row order or an otherwise empty company. The browser reads
+the visible links together. Per-row indexed locators can disappear
+while a search replaces the old collection; a detached snapshot is retried within
+the existing poll deadline. Duplicates, unknown destinations, and extra controls
+remain evidence failures. This does not add a journey retry or extend its timeout.
+The selection stays manual until a separate target owner records a fresh pass and admits it to a daily
 plan; adding the shared journey does not qualify any deployed target.
 
 Supported acquisitions are managed self-hosted (`local`), registered existing
