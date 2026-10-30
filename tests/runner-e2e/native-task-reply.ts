@@ -54,13 +54,13 @@ export function uniqueBoundTaskReply(all: TaskReplyObservation[], run: Row, agen
 
 export function observeTaskReplyElements(elements: Array<HTMLElement | SVGElement>): TaskReplyObservation[] {
   return elements.map(element => {
-    const content: Array<{ text: string } | { href: string }> = [];
+    const content: Array<{ text: string } | { href: string; label: string }> = [];
     const walk = (node: Node) => {
       if (node.nodeType === Node.TEXT_NODE) { content.push({ text: node.textContent ?? "" }); return; }
       if (!(node instanceof HTMLElement) || node.getAttribute("aria-hidden") === "true"
         || getComputedStyle(node).display === "none" || getComputedStyle(node).visibility === "hidden") return;
       if (node instanceof HTMLAnchorElement) {
-        if (node.getClientRects().length && (node.innerText.trim() || node.getAttribute("aria-label"))) content.push({ href: node.href });
+        if (node.getClientRects().length && node.innerText.trim()) content.push({ href: node.href, label: node.innerText });
         return;
       }
       const block = ["P", "DIV", "BR", "LI", "PRE", "BLOCKQUOTE", "H1", "H2", "H3", "H4", "H5", "H6"].includes(node.tagName);

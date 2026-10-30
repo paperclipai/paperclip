@@ -66,7 +66,7 @@ describe("neutral decline evidence", () => {
     const input = native();
     const body = "Contacts are unavailable. See [Connection outcome](/QA/issues/QA-123#document-outcome).";
     Object.assign(input.nativeFinalReply, { sourceBody: body, body: "Contacts are unavailable. See QA-123.", origin: "https://fixture.test",
-      content: [{ text: "Contacts are unavailable. See " }, { href: "/QA/issues/QA-123#document-outcome" }, { text: "." }] });
+      content: [{ text: "Contacts are unavailable. See " }, { href: "/QA/issues/QA-123#document-outcome", label: "QA-123" }, { text: "." }] });
     input.nativeFinalReply.finalEvent.body = body;
     expect(passes(input)).toBe(true);
     Object.assign(input.nativeFinalReply, { sourceBody: body.replace("Connection outcome", "PRIVATE_MARKER") });

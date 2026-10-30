@@ -1,6 +1,6 @@
 import { fromMarkdown } from "mdast-util-from-markdown";
 
-export type ReplyContentPart = { text: string } | { href: string };
+export type ReplyContentPart = { text: string } | { href: string; label?: string };
 type MarkdownNode = { type: string; value?: string; url?: string; children?: MarkdownNode[] };
 
 function normalized(parts: ReplyContentPart[], origin: string) {
@@ -28,6 +28,13 @@ export function taskReplyContentMatches(
   observation: { body: string; content?: ReplyContentPart[]; origin?: string },
   markdown: string,
 ) {
+  if (observation.content) {
+    // Bind the structured projection to the independently observed innerText.
+    // A destination alone cannot attest to arbitrary visible wording.
+    if (observation.content.some(part => "href" in part && (typeof part.label !== "string" || !part.label.trim()))) return false;
+    const displayed = observation.content.map(part => "text" in part ? part.text : part.label!).join("").replace(/\s+/g, " ").trim();
+    if (displayed !== observation.body.replace(/\s+/g, " ").trim()) return false;
+  }
   const parts: ReplyContentPart[] = [];
   const inlineLabel = (node: MarkdownNode): boolean => ["text", "inlineCode", "strong", "emphasis"].includes(node.type)
     && (node.children ?? []).every(inlineLabel);
