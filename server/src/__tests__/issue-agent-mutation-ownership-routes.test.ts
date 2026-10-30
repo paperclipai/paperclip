@@ -13,6 +13,8 @@ const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
+const existingBlockerId = "88888888-8888-4888-8888-888888888888";
+const cleanupBlockerId = "99999999-9999-4999-8999-999999999999";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -1837,6 +1839,143 @@ describe("agent issue mutation checkout ownership", () => {
     });
 
     const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent cannot resolve another owner's recovery action");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows run-attributed additive blocker-only routing for an unowned board recovery action", async () => {
+    const sourceIssue = makeIssue({
+      status: "blocked",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    });
+    const existingBlocker = makeIssue({
+      id: existingBlockerId,
+      status: "in_progress",
+    });
+    const cleanupBlocker = makeIssue({
+      id: cleanupBlockerId,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockImplementation(async (id: string) => {
+      if (id === issueId) return sourceIssue;
+      if (id === existingBlockerId) return existingBlocker;
+      if (id === cleanupBlockerId) return cleanupBlocker;
+      return null;
+    });
+    mockIssueService.getRelationSummaries
+      .mockResolvedValueOnce({
+        blockedBy: [existingBlocker],
+        blocks: [],
+      })
+      .mockResolvedValue({
+        blockedBy: [existingBlocker, cleanupBlocker],
+        blocks: [],
+      });
+    mockIssueService.update.mockResolvedValue({
+      ...sourceIssue,
+      blockedByIssueIds: [existingBlockerId, cleanupBlockerId],
+    });
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: recoveryActionId,
+      ownerType: "board",
+      ownerAgentId: null,
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [existingBlockerId, cleanupBlockerId] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        blockedByIssueIds: [existingBlockerId, cleanupBlockerId],
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.blockers_updated",
+        agentId: peerAgentId,
+        runId: peerActor().runId,
+      }),
+    );
+    expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["removes an existing blocker", { blockedByIssueIds: [cleanupBlockerId] }, peerActor(), "in_progress"],
+    ["adds a terminal blocker", { blockedByIssueIds: [existingBlockerId, cleanupBlockerId] }, peerActor(), "done"],
+    ["also changes status", { blockedByIssueIds: [existingBlockerId, cleanupBlockerId], status: "done" }, peerActor(), "in_progress"],
+    ["has no audited run", { blockedByIssueIds: [existingBlockerId, cleanupBlockerId] }, peerActor({ runId: null }), "in_progress"],
+  ])("rejects unowned board recovery routing that %s", async (_label, body, actor, addedBlockerStatus) => {
+    const sourceIssue = makeIssue({
+      status: "blocked",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    });
+    const existingBlocker = makeIssue({ id: existingBlockerId, status: "in_progress" });
+    const cleanupBlocker = makeIssue({ id: cleanupBlockerId, status: addedBlockerStatus });
+    mockIssueService.getById.mockImplementation(async (id: string) => {
+      if (id === issueId) return sourceIssue;
+      if (id === existingBlockerId) return existingBlocker;
+      if (id === cleanupBlockerId) return cleanupBlocker;
+      return null;
+    });
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [existingBlocker],
+      blocks: [],
+    });
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: recoveryActionId,
+      ownerType: "board",
+      ownerAgentId: null,
+    });
+
+    const res = await request(await createApp(actor)).patch(`/api/issues/${issueId}`).send(body);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent cannot resolve another owner's recovery action");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["terminal", "done", companyId],
+    ["cross-company", "in_progress", "other-company-id"],
+  ])("rejects mixed unresolved and %s blocker additions", async (_label, secondStatus, secondCompanyId) => {
+    const sourceIssue = makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: null });
+    const existingBlocker = makeIssue({ id: existingBlockerId, status: "in_progress" });
+    const cleanupBlocker = makeIssue({ id: cleanupBlockerId, status: "in_progress" });
+    const secondBlockerId = "00000000-0000-4000-8000-000000000099";
+    const secondBlocker = makeIssue({
+      id: secondBlockerId,
+      status: secondStatus,
+      companyId: secondCompanyId,
+    });
+    mockIssueService.getById.mockImplementation(async (id: string) => {
+      if (id === issueId) return sourceIssue;
+      if (id === existingBlockerId) return existingBlocker;
+      if (id === cleanupBlockerId) return cleanupBlocker;
+      if (id === secondBlockerId) return secondBlocker;
+      return null;
+    });
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [existingBlocker],
+      blocks: [],
+    });
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: recoveryActionId,
+      ownerType: "board",
+      ownerAgentId: null,
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [existingBlockerId, cleanupBlockerId, secondBlockerId] });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Agent cannot resolve another owner's recovery action");
