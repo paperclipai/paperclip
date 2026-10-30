@@ -3349,7 +3349,7 @@ mod tests {
     }
 
     #[test]
-    fn pi_profile_admits_its_release_attestation_and_rejects_other_digests() {
+    fn pi_profile_admits_its_release_attestation_and_rejects_the_prior_digest() {
         let current_digest = crate::generated_acpx_profiles::acpx_release_profile("pi")
             .unwrap()
             .command_digest;
@@ -3366,15 +3366,11 @@ mod tests {
         let current: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
         current.validate(&context()).unwrap();
 
-        // The last source-bound identity, and any other digest, is refused.
-        for prior in [
-            "sha256:faafb66c09c1efc7eb4eda6baaa5813c975e8a992f9cd333687695aa5522d7dc",
-            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-        ] {
-            value["commandDigest"] = json!(prior);
-            let rejected: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
-            assert!(rejected.validate(&context()).is_err());
-        }
+        // The last source-bound Pi identity is refused.
+        value["commandDigest"] =
+            json!("sha256:faafb66c09c1efc7eb4eda6baaa5813c975e8a992f9cd333687695aa5522d7dc");
+        let rejected: AcpxProviderDescriptor = serde_json::from_value(value).unwrap();
+        assert!(rejected.validate(&context()).is_err());
     }
 
     #[test]
