@@ -41,33 +41,33 @@ export async function sendAgentChatMessage(
   const result = await db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${actor.companyId}`}, 0))`);
-    if (options.authorizeNative) await options.authorizeNative(tx);
     const runWhere = and(eq(heartbeatRuns.id, actor.runId), eq(heartbeatRuns.companyId, actor.companyId), eq(heartbeatRuns.agentId, actor.agentId));
     const [initial] = await tx.select().from(heartbeatRuns).where(runWhere);
     const sourceId = initial && runTask(initial);
     if (typeof sourceId !== "string" || !isUuidLike(sourceId)) throw forbidden("Chat delivery requires a task-bound run");
-    const [source] = await tx.select().from(issues).where(and(eq(issues.id, sourceId), eq(issues.companyId, actor.companyId))).for("update");
-    const [context] = await tx.select({ run: heartbeatRuns, agent: agents }).from(heartbeatRuns)
+    const sourceQuery = () => tx.select().from(issues).where(and(eq(issues.id, sourceId), eq(issues.companyId, actor.companyId)));
+    const [initialSource] = await sourceQuery();
+    if (!initialSource) throw forbidden("This run no longer owns the source task");
+    let source = initialSource;
+    const contextQuery = () => tx.select({ run: heartbeatRuns, agent: agents }).from(heartbeatRuns)
       .innerJoin(agents, and(eq(agents.id, heartbeatRuns.agentId), eq(agents.companyId, heartbeatRuns.companyId)))
-      .where(runWhere).for("update");
-    if (!source || !context || context.run.status !== "running" || agentRunWritesRevoked(context.run)
-      || runTask(context.run) !== sourceId || source.assigneeAgentId !== actor.agentId
-      || source.executionRunId !== actor.runId || (source.checkoutRunId && source.checkoutRunId !== actor.runId)
-      || ["paused", "terminated", "pending_approval", "error"].includes(context.agent.status)) {
-      throw forbidden("This run no longer owns the source task");
-    }
-    if (source.conversationAgentId) throw forbidden("Reply normally in this conversation; send_chat_message is for execution tasks");
-    if (source.workMode !== "standard" || ["done", "cancelled"].includes(source.status)
-      || readNativeReviewAssignmentContext(context.run.contextSnapshot)
-      || (await resolveTaskWatchdogMutationScope(tx, { ...actor, type: "agent" })).kind !== "none") {
-      throw forbidden("Chat delivery requires an ordinary task in standard execution mode");
-    }
-    await assertAgentRunWriteAllowed(tx, actor.companyId, actor);
-    if (await issueTreeControlService(tx).getActivePauseHoldGate(actor.companyId, source.id)) throw forbidden("This task is paused");
-    const [finished] = await tx.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
-      eq(nativeRunResults.companyId, actor.companyId), eq(nativeRunResults.runId, actor.runId), eq(nativeRunResults.schemaStatus, "accepted"),
-    )).limit(1);
-    if (finished) throw forbidden("Send the message before finishing the run");
+      .where(runWhere);
+    const validateContext = (context: { run: typeof heartbeatRuns.$inferSelect; agent: typeof agents.$inferSelect } | undefined) => {
+      if (!context || context.run.status !== "running" || agentRunWritesRevoked(context.run)
+        || runTask(context.run) !== sourceId || source.assigneeAgentId !== actor.agentId
+        || source.executionRunId !== actor.runId || (source.checkoutRunId && source.checkoutRunId !== actor.runId)
+        || ["paused", "terminated", "pending_approval", "error"].includes(context.agent.status)) {
+        throw forbidden("This run no longer owns the source task");
+      }
+      if (source.conversationAgentId) throw forbidden("Reply normally in this conversation; send_chat_message is for execution tasks");
+      if (source.workMode !== "standard" || ["done", "cancelled"].includes(source.status)
+        || readNativeReviewAssignmentContext(context.run.contextSnapshot)) {
+        throw forbidden("Chat delivery requires an ordinary task in standard execution mode");
+      }
+      return context;
+    };
+    const [initialContext] = await contextQuery();
+    const context = validateContext(initialContext);
     if (!(await instanceSettingsService(tx).getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
     const userId = context.run.responsibleUserId;
     if (!userId) throw forbidden("This task has no responsible human to receive the message");
@@ -88,8 +88,7 @@ export async function sendAgentChatMessage(
     }
     const svc = issueService(tx);
     let conversation = await svc.getConversation(actor.companyId, actor.agentId, userId);
-    if (!conversation && options.receiptOnly) return null;
-    if (!conversation) {
+    if (!conversation && !options.receiptOnly) {
       conversation = await svc.create(actor.companyId, {
         title: `Chat with ${context.agent.name}`, assigneeAgentId: actor.agentId,
         conversationAgentId: actor.agentId, conversationUserId: userId,
@@ -101,11 +100,32 @@ export async function sendAgentChatMessage(
         details: { agentId: actor.agentId, conversationUserId: userId } });
       publications.push(opened.publication);
     }
+    if (conversation) await tx.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.id, conversation.id), eq(issues.companyId, actor.companyId),
+    )).for("update");
+    const [lockedSource] = await sourceQuery().for("update");
+    if (!lockedSource) throw forbidden("This run no longer owns the source task");
+    source = lockedSource;
+    if (options.authorizeNative) await options.authorizeNative(tx);
+    const [lockedContext] = await contextQuery().for("update");
+    const current = validateContext(lockedContext);
+    if (current.run.responsibleUserId !== userId) throw forbidden("The responsible human changed before this message was saved");
+    if ((await resolveTaskWatchdogMutationScope(tx, { ...actor, type: "agent" })).kind !== "none") {
+      throw forbidden("Chat delivery requires an ordinary task in standard execution mode");
+    }
+    await assertAgentRunWriteAllowed(tx, actor.companyId, actor);
+    if (await issueTreeControlService(tx).getActivePauseHoldGate(actor.companyId, source.id)) throw forbidden("This task is paused");
+    const [finished] = await tx.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
+      eq(nativeRunResults.companyId, actor.companyId), eq(nativeRunResults.runId, actor.runId), eq(nativeRunResults.schemaStatus, "accepted"),
+    )).limit(1);
+    if (finished) throw forbidden("Send the message before finishing the run");
+    if (!(await instanceSettingsService(tx).getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
+    await authorize(source.id, "issue:read");
+    if (!conversation) return null;
     await authorize(conversation.id, "issue:comment");
     const recipientDecision = await authorizationService(tx).decide({ actor: { type: "board", userId, source: "session", ignoreInstanceAdmin: true },
       action: "issue:read", resource: { type: "issue", companyId: actor.companyId, issueId: conversation.id } });
     if (!recipientDecision.allowed) throw forbidden("The responsible human cannot access this chat");
-    await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, conversation.id)).for("update");
     const requestId = `chat:${source.id}:${createHash("sha256").update(input.idempotencyKey).digest("hex")}`;
     const [prior] = await tx.select().from(issueComments).where(and(eq(issueComments.companyId, actor.companyId),
       eq(issueComments.issueId, conversation.id), eq(issueComments.authorAgentId, actor.agentId), eq(issueComments.clientRequestId, requestId)));

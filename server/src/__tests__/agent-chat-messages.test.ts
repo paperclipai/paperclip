@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { agents, authUsers, chatCompletionDeliveries, chatTaskHandoffs, companyMemberships, heartbeatRuns, issueComments, issueThreadInteractions, issues, projects } from "@paperclipai/db";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
@@ -9,6 +9,8 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import { activityService } from "../services/activity.js";
 import { recordAcceptedChatHandoff } from "../services/chat-completion-delivery.js";
+import { conversationReplay, deliverConversationComments, undeliveredConversationComments } from "../services/agent-conversations.js";
+import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.js";
 
@@ -94,6 +96,85 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     expect(await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(2);
     expect((await f.snapshot()).comments).toHaveLength(3);
   });
+
+  it("never enqueues a digest during recovery or the next human reply", async () => {
+    const f = await fixture(), svc = issueService(server.db);
+    const receipt = (await send(f))!;
+    const conversation = (await svc.getById(receipt.conversationId))!;
+    const enqueue = vi.fn(async (_agentId: string, _options: unknown) => null);
+    expect(await undeliveredConversationComments(server.db, f.companyId, conversation.id)).toEqual([]);
+    await deliverConversationComments(server.db, conversation, enqueue);
+    expect(enqueue).not.toHaveBeenCalled();
+    const reply = await svc.addComment(conversation.id, "Which PR should I review first?", { userId: f.responsibleUserId! }, { clientRequestId: randomUUID() });
+    expect((await undeliveredConversationComments(server.db, f.companyId, conversation.id)).map(comment => comment.id)).toEqual([reply.id]);
+    await deliverConversationComments(server.db, conversation, enqueue);
+    expect(enqueue).toHaveBeenCalledOnce();
+    expect(enqueue.mock.calls[0]?.[1]).toMatchObject({ requestedByActorType: "user", requestedByActorId: f.responsibleUserId,
+      contextSnapshot: { wakeCommentId: reply.id, wakeCommentIds: [reply.id] } });
+    expect(await conversationReplay(server.db, f.companyId, conversation.id, reply.id))
+      .toContain(JSON.stringify({ author: "agent", body: input.body }));
+  });
+
+  it.each([
+    { transport: "native", replay: false }, { transport: "native", replay: true },
+    { transport: "http", replay: false }, { transport: "http", replay: true },
+  ])("serializes $transport delivery with a native chat mutation, replay=$replay", async ({ transport, replay }) => {
+    const f = await fixture(), receipt = (await send(f))!, chatRunId = randomUUID();
+    await server.db.update(agents).set({ runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false, maxConcurrentRuns: 2 } } }).where(eq(agents.id, f.agentId));
+    await server.db.insert(heartbeatRuns).values({ id: chatRunId, companyId: f.companyId, agentId: f.agentId, status: "running",
+      runtimeMode: "native", nativeIssueId: receipt.conversationId, responsibleUserId: f.responsibleUserId,
+      contextSnapshot: { issueId: receipt.conversationId, conversationSessionGeneration: 0 } });
+    await server.db.update(issues).set({ executionRunId: chatRunId, conversationState: "active" }).where(eq(issues.id, receipt.conversationId));
+    const chat = new PaperclipRunnerToolAuthority(server.db, { companyId: f.companyId, agentId: f.agentId,
+      issueId: receipt.conversationId, runId: chatRunId, apiUrl: server.apiUrl, apiToolsEnabled: false });
+    let unlock!: () => void, ready!: (pid: number) => void;
+    const locked = new Promise<number>(resolve => { ready = resolve; });
+    const release = new Promise<void>(resolve => { unlock = resolve; });
+    const gate = server.db.transaction(async tx => {
+      const [{ pid }] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid() as pid`);
+      await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, f.agentId)).for("update");
+      ready(pid);
+      await release;
+    });
+    const pid = await locked;
+    const waitForBlocked = async (count: number) => vi.waitFor(async () => {
+      const [row] = await server.db.execute(sql<{ count: number }>`with recursive blocked(pid) as (
+        select pid from pg_stat_activity where datname = current_database() and ${pid} = any(pg_blocking_pids(pid))
+        union select activity.pid from pg_stat_activity activity join blocked on blocked.pid = any(pg_blocking_pids(activity.pid))
+        where activity.datname = current_database()
+      ) select count(*)::int as count from blocked`);
+      expect(row.count).toBeGreaterThanOrEqual(count);
+    }, { timeout: 5000, interval: 10 });
+    const message = replay ? input : { ...input, idempotencyKey: "concurrent-message" };
+    let settled: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    let observedDelivery: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    try {
+      const delivery = transport === "native"
+        ? f.authority.execute({ tool: "send_chat_message", arguments: message, callId: randomUUID() })
+        : httpSend(f, message).then(async response => {
+          expect(response.status, await response.clone().text()).toBe(replay ? 200 : 201);
+          return response.json();
+        });
+      observedDelivery = Promise.allSettled([delivery]);
+      await waitForBlocked(1);
+      const mutation = chat.execute({ tool: "write_document", callId: randomUUID(), arguments: {
+        key: "concurrent-note", title: "Concurrent note", body: "The chat reply stays independent.", baseRevisionId: null, idempotencyKey: "concurrent-note",
+      } });
+      settled = Promise.allSettled([delivery, mutation]);
+      await waitForBlocked(2);
+      unlock();
+      await gate;
+      const results = await settled;
+      expect(results.map(result => result.status), JSON.stringify(results)).toEqual(["fulfilled", "fulfilled"]);
+      expect(results[1]).toMatchObject({ status: "fulfilled", value: { disposition: "applied", document: { key: "concurrent-note" } } });
+      expect(await issueService(server.db).getById(receipt.conversationId)).toMatchObject({ conversationState: "active" });
+    } finally {
+      unlock();
+      await gate;
+      await settled;
+      await observedDelivery;
+    }
+  }, 30_000);
 
   it("isolates two humans sharing an agent and two agents serving one human", async () => {
     const f = await fixture();
