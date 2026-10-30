@@ -26,6 +26,10 @@ const cloudRuntimeStartupMocks = vi.hoisted(() => ({
   telemetry: vi.fn(),
 }));
 
+vi.mock("../services/adapter-settings.js", async () => ({
+  ...await vi.importActual<typeof import("../services/adapter-settings.js")>("../services/adapter-settings.js"),
+  initializeAdapterSettings: vi.fn(async () => null),
+}));
 vi.mock("../services/cloud-runtime-config.js", () => ({ initializeCloudRuntimeConfig: cloudRuntimeStartupMocks.initialize }));
 vi.mock("../telemetry.js", () => ({ initTelemetry: cloudRuntimeStartupMocks.telemetry, getTelemetryClient: vi.fn(() => null) }));
 
