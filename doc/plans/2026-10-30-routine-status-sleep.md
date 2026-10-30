@@ -18,7 +18,9 @@ and belong to a routine in that company. This is the existing routine status
 owner contract. Origin labels can change when a plugin declaration changes or
 is removed; retained reciprocal links preserve historical execution custody. Repair
 locks the routine and task and rechecks the linked invocation before writing.
-It preserves skipped/coalesced history and unrelated dispatch failures. A task
+Direct route hooks also lock the execution task and linked invocation in their
+own transaction, nested under caller transactions when present. An older hook
+cannot write after a newer task status has committed. It preserves skipped/coalesced history and unrelated dispatch failures. A task
 that resumes clears an execution-task transient failure through the same owner
 used by native completion and issue routes.
 

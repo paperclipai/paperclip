@@ -174,6 +174,40 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.transaction(async tx => { await notifyRoutineExecutionStatus(tx, otherRun.linkedIssueId!); });
     await projected(otherRun.id, "completed"); await quiet(); expect(errors).toEqual([]);
   });
+  it("serializes a direct status hook with later task changes before projecting the routine", async () => {
+    const f = await fixture(), run = await dispatch(f); await start(); await quiet();
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, run.linkedIssueId!));
+    let entered!: () => void, release!: () => void;
+    const enteredGate = new Promise<void>(resolve => { entered = resolve; });
+    const releaseGate = new Promise<void>(resolve => { release = resolve; });
+    const holding = db.transaction(async tx => {
+      await tx.select().from(routineRuns).where(eq(routineRuns.id, run.id)).for("update");
+      entered(); await releaseGate;
+    });
+    let direct: Promise<unknown> | undefined, changing: Promise<unknown> | undefined;
+    let directPid: number | undefined;
+    try {
+      await enteredGate; direct = f.service.syncRunStatusForIssue(run.linkedIssueId!);
+      await vi.waitFor(async () => {
+        const rows = await db.execute(sql`select pid from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'
+            and (query like 'update "routine_runs"%' or query like 'select %"routine_runs"%')`);
+        expect(rows).toHaveLength(1); directPid = Number(rows[0]!.pid);
+      }, { timeout: 5000 });
+      await expect(db.transaction(tx => tx.select({ id: issues.id }).from(issues)
+        .where(eq(issues.id, run.linkedIssueId!)).for("update", { noWait: true })))
+        .rejects.toMatchObject({ cause: expect.objectContaining({ code: "55P03" }) });
+      changing = issueService(db).update(run.linkedIssueId!, { status: "blocked" });
+      await vi.waitFor(async () => {
+        const rows = await db.execute(sql`select count(*)::int as count from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'
+            and ${directPid}::int = any(pg_blocking_pids(pid))`);
+        expect(Number(rows[0]?.count)).toBeGreaterThan(0);
+      }, { timeout: 5000 });
+      release(); await holding; await direct; await changing;
+      await projected(run.id, "failed"); await quiet(); expect(errors).toEqual([]);
+    } finally { release(); await holding; await direct; await changing; }
+  });
   it("waits for the real outer transaction and forgets a rolled-back nested status write", async () => {
     const f = await fixture(), run = await dispatch(f); await start(); await quiet();
     let release!: () => void, entered!: () => void;

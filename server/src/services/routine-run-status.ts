@@ -51,6 +51,10 @@ export async function finalizeRoutineRun(executor: Db, runId: string, patch: Par
 }
 
 export async function syncRoutineRunStatusForIssue(executor: Db, issueId: string) {
+  return executor.transaction(tx => syncLockedRoutineRunStatusForIssue(tx as unknown as Db, issueId));
+}
+
+async function syncLockedRoutineRunStatusForIssue(executor: Db, issueId: string) {
   const issue = await executor
     .select({
       id: issues.id,
@@ -60,7 +64,8 @@ export async function syncRoutineRunStatusForIssue(executor: Db, issueId: string
       originRunId: issues.originRunId,
     })
     .from(issues)
-    .where(eq(issues.id, issueId))
+    .where(and(eq(issues.id, issueId), eq(issues.originKind, "routine_execution")))
+    .for("update")
     .then((rows) => rows[0] ?? null);
   if (!issue || issue.originKind !== "routine_execution" || !issue.originRunId) return null;
   const run = await executor
@@ -75,6 +80,7 @@ export async function syncRoutineRunStatusForIssue(executor: Db, issueId: string
     .innerJoin(routines, and(eq(routines.id, routineRuns.routineId), eq(routines.companyId, issue.companyId)))
     .where(and(eq(routineRuns.id, issue.originRunId), eq(routineRuns.companyId, issue.companyId),
       eq(routineRuns.linkedIssueId, issue.id)))
+    .for("update", { of: routineRuns })
     .then((rows) => rows[0] ?? null);
   if (!run || ["received", "skipped", "coalesced"].includes(run.status)) return null;
   if (issue.status === "done") {
