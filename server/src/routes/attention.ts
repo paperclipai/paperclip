@@ -1,6 +1,8 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import type { AttentionSortMode } from "@paperclipai/shared";
+import type { AttentionFeedView, AttentionSortMode } from "@paperclipai/shared";
+
+const ATTENTION_FEED_VIEWS: readonly AttentionFeedView[] = ["mine", "unassigned", "company", "all"];
 import { attentionService } from "../services/attention.js";
 import { decisionHistoryService } from "../services/decision-history.js";
 import { z } from "zod";
@@ -44,6 +46,11 @@ export function attentionRoutes(db: Db) {
     const includeDismissed = req.query.includeDismissed === "true";
     const archived = req.query.archived === "true";
     const all = req.query.all === "true";
+    const viewValue = optionalQueryString(req.query.view, "view");
+    if (viewValue !== undefined && !ATTENTION_FEED_VIEWS.includes(viewValue as AttentionFeedView)) {
+      throw badRequest(`view must be one of ${ATTENTION_FEED_VIEWS.join(", ")}`);
+    }
+    const view = viewValue as AttentionFeedView | undefined;
     const activitySince = optionalQueryString(req.query.activitySince, "activitySince");
     const activityUntil = optionalQueryString(req.query.activityUntil, "activityUntil");
     const queue = optionalQueryString(req.query.queue, "queue");
@@ -60,6 +67,7 @@ export function attentionRoutes(db: Db) {
       includeDismissed,
       actor: req.actor,
       archived,
+      view,
       all,
       allowUnscopedAll: all,
       activitySince,

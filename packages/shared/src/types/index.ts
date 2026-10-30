@@ -39,12 +39,16 @@ export type {
   WriteSummarySlotResponse,
 } from "./summary-slot.js";
 export type {
+  AttentionAudience,
+  AttentionAudienceKind,
+  AttentionAudienceReason,
   AttentionDecisionVerb,
   DecisionHistoryItem,
   DecisionHistoryQuery,
   DecisionHistoryPage,
   AttentionDetailImage,
   AttentionFeed,
+  AttentionFeedView,
   AttentionItem,
   AttentionItemDetail,
   AttentionItemDismissal,

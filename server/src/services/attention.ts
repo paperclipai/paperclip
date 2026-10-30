@@ -29,9 +29,11 @@ import {
 } from "@paperclipai/db";
 import { deriveProjectUrlKey } from "@paperclipai/shared";
 import type {
+  AttentionAudience,
   AttentionDecisionVerb,
   AttentionFeed,
   AttentionFeedQuery,
+  AttentionFeedView,
   AttentionDetailImage,
   AttentionItem,
   AttentionItemDetail,
@@ -60,6 +62,7 @@ import { executionIssueCondition, visibleIssueCondition } from "./issue-visibili
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { humanCreatedIssueCondition } from "./issue-participation.js";
 import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
 import { canonicalizeStoredResolverPolicy } from "./issue-thread-interaction-resolution.js";
 import { decisionQueueService } from "./decision-queues.js";
@@ -370,6 +373,7 @@ type CreateAttentionItemInput = Omit<AttentionItem,
   | "dismissalKey"
   | "rank"
   | "dismissal"
+  | "audience"
   | "project"
   | "workspace"
   | "expiresAt"
@@ -401,6 +405,9 @@ function createItem(input: CreateAttentionItemInput): AttentionItem {
     id: itemId(input.sourceKind, input.dedupKey),
     dismissalKey: `attention:${input.dedupKey}`,
     dismissal: null,
+    // Placeholder; the audience post-pass overwrites this once per item once the
+    // per-issue context is loaded (PAP-749 plan §1, Rule 2).
+    audience: { kind: "pool", userId: null, reason: "none" },
     project: input.project ?? null,
     workspace: input.workspace ?? null,
     expiresAt: input.expiresAt ?? null,
@@ -1168,6 +1175,162 @@ async function listFailedRunBatchWithNewerRun(db: Db, companyId: string, failedR
   return rows.map((row) => row.id);
 }
 
+/**
+ * Raw audience inputs a single source branch already has in hand. The resolver
+ * reads these plus the per-issue context; it deliberately has no field for
+ * `responsibleUserId`, the routine creator, a connected account, the agent
+ * owner, or a manual routine starter, so it is structurally impossible to route
+ * a card by any of them (PAP-749 plan §1, Rule 2).
+ */
+export type AttentionAudienceInput = {
+  /** The issue the card hangs on, if any; keys the per-issue context lookup. */
+  issueId: string | null;
+  /** `issue_thread_interactions.addressee_user_id`. */
+  addresseeUserId?: string | null;
+  /** `approvals.requested_by_user_id`. */
+  requestedByUserId?: string | null;
+  /** A blocker/recovery owner that names a concrete user (never `"board"`). */
+  ownerUserId?: string | null;
+  /** The current execution review participant, when it is a user. */
+  reviewParticipantUserId?: string | null;
+  /** Company-operations alert (failed run, budget, agent error, join request, board-owned recovery). */
+  companyScoped?: boolean;
+};
+
+/**
+ * Per-issue participation facts the resolver consults for the "issue chain"
+ * steps. `instigatorUserId` is the creator of the nearest human-created
+ * ancestor (reusing {@link humanCreatedIssueCondition}); it is `null` for work
+ * that only agents or routines created.
+ */
+export type IssueAudienceContext = {
+  conversationUserId: string | null;
+  assigneeUserId: string | null;
+  instigatorUserId: string | null;
+};
+
+const MAX_INSTIGATOR_CHAIN_DEPTH = 50;
+
+/**
+ * Compute where a card shows (PAP-749 plan §1, Rule 2). Apply the first step in
+ * the table that yields a user; otherwise the card goes to the claimable
+ * Unassigned pool. Placement only — the resolver policy still gates who may act.
+ */
+export function resolveAttentionAudience(
+  input: AttentionAudienceInput,
+  ctx: IssueAudienceContext | null,
+): AttentionAudience {
+  // Company-operations alerts belong to the operator "Company" view, never a person.
+  if (input.companyScoped) return { kind: "company", userId: null, reason: "none" };
+  // Step 1: an explicit addressee always wins, even on an automated task.
+  if (input.addresseeUserId) return { kind: "user", userId: input.addresseeUserId, reason: "addressee" };
+  // Source-specific owners that stand in for an explicit recipient.
+  if (input.requestedByUserId) return { kind: "user", userId: input.requestedByUserId, reason: "requester" };
+  if (input.ownerUserId) return { kind: "user", userId: input.ownerUserId, reason: "assignee" };
+  // Step 2: the chat user.
+  if (ctx?.conversationUserId) return { kind: "user", userId: ctx.conversationUserId, reason: "conversation" };
+  // Step 3: the current review participant, or the human assignee.
+  if (input.reviewParticipantUserId) return { kind: "user", userId: input.reviewParticipantUserId, reason: "reviewer" };
+  if (ctx?.assigneeUserId) return { kind: "user", userId: ctx.assigneeUserId, reason: "assignee" };
+  // Step 4: the instigator — the human who created the original work, up the parent chain.
+  if (ctx?.instigatorUserId) return { kind: "user", userId: ctx.instigatorUserId, reason: "instigator" };
+  // Step 5 (escalation owner / decision pool) arrives with task 1d configuration.
+  // Step 6: no owner — the card goes to the claimable Unassigned pool.
+  return { kind: "pool", userId: null, reason: "none" };
+}
+
+/** Whether a resolved audience belongs in the requested view (PAP-749 plan §1, Rule 3). */
+export function audienceMatchesView(
+  audience: AttentionAudience,
+  view: AttentionFeedView,
+  userId: string | null | undefined,
+): boolean {
+  switch (view) {
+    // `all` is the pre-PAP-749 superset; the existing per-source filters already
+    // shaped `collected`, so every surviving item belongs in it.
+    case "all":
+      return true;
+    case "mine":
+      return audience.kind === "user" && audience.userId != null && audience.userId === userId;
+    case "unassigned":
+      return audience.kind === "pool";
+    case "company":
+      return audience.kind === "company";
+  }
+}
+
+/**
+ * Load the per-issue audience context for `startIssueIds`: the chat user and
+ * human assignee of each start issue, plus the instigator found by walking the
+ * parent chain to the nearest human-created ancestor. The human-created test is
+ * the shared {@link humanCreatedIssueCondition} predicate (no copy), so this
+ * never attributes agent- or routine-created work to a person.
+ */
+async function resolveIssueAudienceContextMap(
+  db: Db,
+  companyId: string,
+  startIssueIds: Array<string | null | undefined>,
+): Promise<Map<string, IssueAudienceContext>> {
+  const starts = [...new Set(startIssueIds.filter((value): value is string => Boolean(value)))];
+  if (starts.length === 0) return new Map();
+
+  type ChainNode = { parentId: string | null; instigatorSelf: string | null };
+  const chain = new Map<string, ChainNode>();
+  const starterContext = new Map<string, { conversationUserId: string | null; assigneeUserId: string | null }>();
+
+  let frontier = starts;
+  for (let depth = 0; depth <= MAX_INSTIGATOR_CHAIN_DEPTH && frontier.length > 0; depth += 1) {
+    const need = [...new Set(frontier)].filter((id) => !chain.has(id));
+    if (need.length === 0) break;
+    const rows = await db
+      .select({
+        id: issues.id,
+        parentId: issues.parentId,
+        conversationUserId: issues.conversationUserId,
+        assigneeUserId: issues.assigneeUserId,
+        createdByUserId: issues.createdByUserId,
+        humanCreated: humanCreatedIssueCondition(),
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, need)));
+    for (const row of rows) {
+      chain.set(row.id, {
+        parentId: row.parentId,
+        instigatorSelf: row.humanCreated ? row.createdByUserId : null,
+      });
+      if (depth === 0) {
+        starterContext.set(row.id, {
+          conversationUserId: row.conversationUserId,
+          assigneeUserId: row.assigneeUserId,
+        });
+      }
+    }
+    frontier = rows.map((row) => row.parentId).filter((id): id is string => Boolean(id));
+  }
+
+  const result = new Map<string, IssueAudienceContext>();
+  for (const start of starts) {
+    let cursor: string | null = start;
+    let instigatorUserId: string | null = null;
+    for (let steps = 0; cursor && steps <= MAX_INSTIGATOR_CHAIN_DEPTH; steps += 1) {
+      const node = chain.get(cursor);
+      if (!node) break;
+      if (node.instigatorSelf) {
+        instigatorUserId = node.instigatorSelf;
+        break;
+      }
+      cursor = node.parentId;
+    }
+    const context = starterContext.get(start);
+    result.set(start, {
+      conversationUserId: context?.conversationUserId ?? null,
+      assigneeUserId: context?.assigneeUserId ?? null,
+      instigatorUserId,
+    });
+  }
+  return result;
+}
+
 export function attentionService(db: Db, serviceOptions: AttentionServiceOptions = {}) {
   const openDecisionLimit = Math.min(
     Math.max(Math.trunc(serviceOptions.openDecisionLimit ?? OPEN_DECISION_DEFAULT_LIMIT), 1),
@@ -1187,9 +1350,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       ]);
       const includeDismissed = options.includeDismissed === true;
       const now = serviceOptions.now?.() ?? Date.now();
+      const view: AttentionFeedView = options.view ?? "all";
       const collected: AttentionItem[] = [];
+      // Raw audience inputs captured per item during collection, keyed by dedup
+      // key, then resolved once after dedup (PAP-749 plan §1, Rule 2).
+      const audienceInputByDedupKey = new Map<string, AttentionAudienceInput>();
 
-      const add = (item: AttentionItem) => {
+      const add = (item: AttentionItem, audienceInput: AttentionAudienceInput) => {
+        audienceInputByDedupKey.set(item.dedupKey, audienceInput);
         const dismissal = activeDismissalState(dismissals, item.dismissalKey, item.activityAt, now);
         if (!includeDismissed && dismissal?.isActive) return;
         collected.push({ ...item, dismissal });
@@ -1258,7 +1426,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             updatedAt: toIso(approval.updatedAt),
             relatedIssue: null,
             detail: approvalDetail(approval.type, approval.payload),
-          }));
+          }), { issueId: linkedIssueId, requestedByUserId: approval.requestedByUserId });
         }
 
       }
@@ -1371,7 +1539,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             interaction,
             (agentId) => companyAgentMap.get(agentId)?.name ?? null,
           ),
-        }));
+        }), { issueId: interaction.issueId, addresseeUserId: interaction.addresseeUserId });
       }
 
       const openDecisionQuery = db.select({
@@ -1428,7 +1596,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           relatedIssue: issue ? issueSubject(prefix, issue) : null,
           ...issueContext(issue),
           detail: { kind: "generic", summaryExcerpt: decision.body.slice(0, DETAIL_EXCERPT_LENGTH), images: [] },
-        }));
+        }), { issueId: decision.originIssueId });
       }
 
       if (!options.excludeSources?.includes("join_request")) {
@@ -1490,7 +1658,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           updatedAt: toIso(join.updatedAt),
           relatedIssue: null,
           detail: genericDetail(label, []),
-        }));
+        }), { issueId: null, companyScoped: true });
       }
 
       }
@@ -1558,7 +1726,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           relatedIssue: sourceIssue ? issueSubject(prefix, sourceIssue) : null,
           ...issueContext(sourceIssue),
           detail: genericDetail(recovery.nextAction, issueImages(recoveryImageMap, recovery.sourceIssueId)),
-        }));
+        }), {
+          issueId: recovery.sourceIssueId,
+          ownerUserId: recovery.ownerType === "user" ? recovery.ownerUserId : null,
+          companyScoped: recovery.ownerType === "board",
+        });
       }
 
       const blockedIssues = await issueService(db).list(companyId, { status: "blocked", includeBlockedBy: true, readCondition });
@@ -1625,7 +1797,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
               blockingIssue: resolveBlockingIssue(issue, blockingIssues.get(issue.id)),
               images: issueImages(blockerImageMap, issue.id),
             },
-          }));
+          }), {
+            issueId: issue.id,
+            // A named user owner receives the card; a "board" owner falls through
+            // to the issue chain (PAP-749 plan §1, "Other sources").
+            ownerUserId: descriptor.owner && typeof descriptor.owner === "object" && "userId" in descriptor.owner
+              ? descriptor.owner.userId
+              : null,
+          });
         }
         const blockerAttention = issue.blockerAttention;
         if (blockerAttention?.state !== "stalled" && blockerAttention?.state !== "needs_attention") continue;
@@ -1679,7 +1858,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             blockedTaskCount,
             images: issueImages(blockerImageMap, terminalIssueId),
           },
-        }));
+        }), { issueId: terminalIssueId });
       }
 
       const reviewRows = await db
@@ -1775,7 +1954,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           relatedIssue: null,
           ...issueContext(issue),
           detail: genericDetail(review.title, issueImages(reviewImageMap, review.id)),
-        }));
+        }), {
+          issueId: review.id,
+          reviewParticipantUserId: currentParticipant?.type === "user" ? currentParticipant.userId : null,
+        });
       }
 
       const failedRows = await listAttentionExhaustedRuns(db, companyId);
@@ -1844,7 +2026,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             failureReasonExcerpt: excerpt(run.error ?? run.exhaustionMessage ?? run.errorCode),
             images: issueImages(failedImageMap, issueId),
           },
-        }));
+        }), { issueId, companyScoped: true });
       }
 
       const budgetOverview = await budgetService(db).overview(companyId);
@@ -1898,7 +2080,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             amountLimit: incident.amountLimit,
             images: [],
           },
-        }));
+        }), { issueId: null, companyScoped: true });
       }
 
       const erroredAgents = await db
@@ -1951,7 +2133,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             failureReasonExcerpt: excerpt(agent.errorReason),
             images: [],
           },
-        }));
+        }), { issueId: null, companyScoped: true });
       }
 
       const deduped = new Map<string, AttentionItem>();
@@ -1960,7 +2142,22 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         deduped.set(item.dedupKey, current ? betterDuplicate(current, item) : item);
       }
 
-      const collectedItems = [...deduped.values()].sort(compareAttentionItems);
+      // Resolve each surviving item's audience exactly once (PAP-749 plan §1,
+      // Rule 2). The instigator step walks the parent chain, so batch the
+      // per-issue context lookup across every item rather than per source.
+      const dedupedItems = [...deduped.values()];
+      const audienceContext = await resolveIssueAudienceContextMap(
+        db,
+        companyId,
+        dedupedItems.map((item) => audienceInputByDedupKey.get(item.dedupKey)?.issueId ?? null),
+      );
+      for (const item of dedupedItems) {
+        const input = audienceInputByDedupKey.get(item.dedupKey) ?? { issueId: null };
+        const ctx = input.issueId ? audienceContext.get(input.issueId) ?? null : null;
+        item.audience = resolveAttentionAudience(input, ctx);
+      }
+
+      const collectedItems = dedupedItems.sort(compareAttentionItems);
       await decisionQueueService(db).materializeSeededQueues(companyId, collectedItems);
       const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems, now);
 
@@ -1971,6 +2168,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       }
       const queueKey = options.queue?.trim() || null;
       const visibleItems = enrichedItems.filter((item) => {
+        // `all` (the default) keeps the pre-PAP-749 superset; the other views
+        // partition by resolved audience (PAP-749 plan §1, Rule 3).
+        if (view !== "all" && !audienceMatchesView(item.audience, view, options.userId)) return false;
         if (options.archived === true ? !item.archivedAt : Boolean(item.archivedAt)) return false;
         if (!includeDismissed && item.snoozedUntil && timestamp(item.snoozedUntil) > now) return false;
         const activity = timestamp(item.activityAt);

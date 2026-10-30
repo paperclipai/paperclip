@@ -78,6 +78,7 @@ function item(
     detail: null,
     dismissal: null,
     ...overrides,
+    audience: overrides.audience ?? { kind: "pool", userId: null, reason: "none" },
     expiresAt: overrides.expiresAt ?? null,
     ruleKey: overrides.ruleKey ?? null,
     originAgentName: overrides.originAgentName ?? null,

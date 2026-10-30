@@ -45,6 +45,7 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     createdAt: "2026-07-09T12:00:00Z",
     updatedAt: "2026-07-09T12:00:00Z",
     relatedIssue: null,
+    audience: { kind: "pool", userId: null, reason: "none" },
     project: null,
     workspace: null,
     expiresAt: null,

@@ -63,6 +63,7 @@ const stalledReviewRow: AttentionItem = {
   createdAt: "2026-08-02T00:00:00.000Z",
   updatedAt: "2026-08-02T00:30:00.000Z",
   relatedIssue: null,
+  audience: { kind: "pool", userId: null, reason: "none" },
   project: null,
   workspace: null,
   detail: null,

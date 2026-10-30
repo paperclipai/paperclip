@@ -85,6 +85,11 @@ export type AttentionSortMode = "activity" | "decide";
 export interface AttentionFeedQuery {
   includeDismissed?: boolean;
   archived?: boolean;
+  /**
+   * Which audience slice to return (PAP-749 plan §1). Defaults to `all`, the
+   * pre-PAP-749 superset, so omitting it keeps the current user-visible feed.
+   */
+  view?: AttentionFeedView;
   /** Return the complete filtered snapshot in one response. */
   all?: boolean;
   activitySince?: string;
@@ -218,6 +223,44 @@ export interface AttentionResolverAudience {
   createdByAgentName: string | null;
 }
 
+/**
+ * Where a card *shows* (PAP-749 plan §1, Rule 2) — distinct from
+ * {@link AttentionResolverAudience}, which says who may *act*. The server
+ * computes this once per item from participation facts (an explicit addressee,
+ * the chat user, the review participant or human assignee, or the instigator
+ * who created the originating human work) and never from `responsibleUserId`,
+ * the routine creator, a connected account, the agent owner, or a manual
+ * routine starter. `kind` drives the three-view switch: `user` belongs in that
+ * user's "For you" list, `pool` belongs in the claimable "Unassigned" pool, and
+ * `company` belongs in the operator "Company" view. Audience governs placement
+ * only; the resolver policy still gates every action.
+ */
+export type AttentionAudienceKind = "user" | "pool" | "company";
+
+export type AttentionAudienceReason =
+  | "addressee"
+  | "conversation"
+  | "reviewer"
+  | "assignee"
+  | "instigator"
+  | "requester"
+  | "escalation_owner"
+  | "none";
+
+export interface AttentionAudience {
+  kind: AttentionAudienceKind;
+  userId: string | null;
+  reason: AttentionAudienceReason;
+}
+
+/**
+ * Which slice of the attention feed to return. `all` is the default and is a
+ * superset that preserves the pre-PAP-749 behaviour (no user-visible change);
+ * `mine`, `unassigned`, and `company` partition the feed by {@link
+ * AttentionAudience.kind}.
+ */
+export type AttentionFeedView = "mine" | "unassigned" | "company" | "all";
+
 export interface AttentionItem {
   id: string;
   companyId: string;
@@ -237,6 +280,8 @@ export interface AttentionItem {
   createdAt: string;
   updatedAt: string;
   relatedIssue: AttentionSubject | null;
+  /** Where this card shows (PAP-749 plan §1, Rule 2). Placement only; never authority. */
+  audience: AttentionAudience;
   project: AttentionProjectRef | null;
   workspace: AttentionWorkspaceRef | null;
   expiresAt: string | null;

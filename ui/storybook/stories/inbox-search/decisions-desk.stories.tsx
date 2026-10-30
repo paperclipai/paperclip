@@ -94,6 +94,7 @@ function item(
       href: "/PAP/issues/PAP-1000",
       metadata: {},
     },
+    audience: { kind: "pool", userId: null, reason: "none" },
     project: null,
     workspace: null,
     expiresAt: null,
