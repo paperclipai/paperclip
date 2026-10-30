@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { agents, decisionRetention, decisions, heartbeatRuns,
   issueApprovals, issueRecoveryActions, issueThreadInteractions, issues, approvals, type Db } from "@paperclipai/db";
 import type { AttentionSourceKind } from "@paperclipai/shared";
@@ -22,6 +22,18 @@ type Scope = { companyId?: string; sourceKind?: AttentionSourceKind; sourceId?: 
 type Candidate = { sourceKind: Kind; sourceId: string; companyId: string; activityAt: string; deadlineAt: number };
 type Entry = Candidate & { id: string; dueAt: number; rootId: string; variant?: "owner" | "terminal" };
 type Cursor = { sourceKind: string; sourceId: string };
+
+type PageIssue = typeof issues.$inferSelect & { activityAt: string; deadlineAt: number;
+  blockedActivityAt: string | null; blockedDeadlineAt: number | null };
+type PageEvidence = {
+  decisions: Map<string, { originIssueId: string }>;
+  recoveries: Map<string, typeof issueRecoveryActions.$inferSelect>;
+  runs: Map<string, typeof heartbeatRuns.$inferSelect>;
+  agents: Set<string>;
+  visibleIssues: Map<string, PageIssue>;
+  newerRuns: Set<string>;
+  blockers: Awaited<ReturnType<ReturnType<typeof issueService>["listBlockerAttention"]>>;
+};
 
 const sourceTables: Record<Kind, SQL> = {
   decision: sql`decisions`, issue_thread_interaction: sql`issue_thread_interactions`,
@@ -137,56 +149,106 @@ export function attentionRetentionService(db: Db) {
     return result;
   }
 
-  async function eligible(database: Db, candidate: Candidate, variant?: "owner" | "terminal", lock = false, reviewAttention?: Map<string, boolean>, interactionAttention?: Map<string, boolean>): Promise<Entry | null> {
+  async function pageEvidence(database: Db, candidates: Candidate[]) {
+    const byCompany = new Map<string, Candidate[]>();
+    for (const candidate of candidates) {
+      if (!["decision", "recovery_action", "failed_run", "blocker_attention"].includes(candidate.sourceKind)) continue;
+      const rows = byCompany.get(candidate.companyId) ?? [];
+      rows.push(candidate);
+      byCompany.set(candidate.companyId, rows);
+    }
+    const result = new Map<string, PageEvidence>();
+    for (const [companyId, rows] of byCompany) {
+      const ids = (kind: Kind) => rows.filter(row => row.sourceKind === kind).map(row => row.sourceId);
+      const decisionIds = ids("decision"), recoveryIds = ids("recovery_action"), runIds = ids("failed_run"), blockerIds = ids("blocker_attention");
+      const decisionRows = decisionIds.length ? await database.select({ id: decisions.id, originIssueId: decisions.originIssueId })
+        .from(decisions).where(and(eq(decisions.companyId, companyId), inArray(decisions.id, decisionIds), eq(decisions.status, "open"))) : [];
+      const recoveryRows = recoveryIds.length ? await database.select().from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.id, recoveryIds))) : [];
+      const runRows = runIds.length ? await database.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, runIds))) : [];
+      const runAgents = runRows.length ? await database.select({ id: agents.id }).from(agents).where(and(
+        eq(agents.companyId, companyId), inArray(agents.id, [...new Set(runRows.map(row => row.agentId))]),
+        sql`${agents.status} <> 'terminated'`)) : [];
+      const readIssues = async (issueIds: string[]) => issueIds.length ? database.select({ ...getTableColumns(issues),
+        activityAt: sql<string>`${issues.updatedAt}::text`,
+        deadlineAt: sql<number>`ceil(extract(epoch from ${issues.updatedAt}) * 1000 + ${archiveDelay})`.mapWith(Number),
+        blockedActivityAt: sql<string | null>`${issues.blockedTransitionAt}::text`,
+        blockedDeadlineAt: sql<number | null>`ceil(extract(epoch from ${issues.blockedTransitionAt}) * 1000 + ${archiveDelay})`.mapWith(Number),
+      }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, [...new Set(issueIds)]),
+        attentionIssueCondition(false))) : [];
+      const issueIds = [...blockerIds, ...decisionRows.map(row => row.originIssueId), ...recoveryRows.map(row => row.sourceIssueId),
+        ...runRows.map(row => readRunIssueId(row.contextSnapshot))].filter((id): id is string => Boolean(id));
+      const visibleRows = await readIssues(issueIds);
+      const visible = new Map(visibleRows.map(row => [row.id, row]));
+      const blockerRoots = visibleRows.filter(row => blockerIds.includes(row.id));
+      const blockers: PageEvidence["blockers"] = blockerRoots.length ? await issueService(database).listBlockerAttention(companyId, blockerRoots) : new Map();
+      const terminalIds = [...blockers.values()].filter(terminalBlockerRequiresAttention)
+        .map(attention => attention.terminalBlockerIssueId).filter((id): id is string => id != null && !visible.has(id));
+      for (const row of await readIssues(terminalIds)) visible.set(row.id, row);
+      result.set(companyId, {
+        decisions: new Map(decisionRows.map(row => [row.id, row])), recoveries: new Map(recoveryRows.map(row => [row.id, row])),
+        runs: new Map(runRows.map(row => [row.id, row])), agents: new Set(runAgents.map(row => row.id)), visibleIssues: visible,
+        newerRuns: await listFailedRunsWithNewerRun(database, companyId,
+          runRows.map(run => ({ ...run, issueId: readRunIssueId(run.contextSnapshot) }))), blockers,
+      });
+    }
+    return result;
+  }
+
+  async function eligible(database: Db, candidate: Candidate, variant?: "owner" | "terminal", lock = false, reviewAttention?: Map<string, boolean>, interactionAttention?: Map<string, boolean>, evidence?: PageEvidence): Promise<Entry | null> {
     let sourceId = candidate.sourceId;
     let activityAt = candidate.activityAt;
     let dueAt = candidate.deadlineAt;
     if (candidate.sourceKind === "decision") {
-      const [row] = await database.select({ originIssueId: decisions.originIssueId }).from(decisions)
-        .where(and(eq(decisions.companyId, candidate.companyId), eq(decisions.id, sourceId), eq(decisions.status, "open")));
-      if (!row || row.originIssueId && !await visibleIssue(database, candidate.companyId, row.originIssueId)) return null;
+      const row = evidence ? evidence.decisions.get(sourceId) : (await database.select({ originIssueId: decisions.originIssueId }).from(decisions)
+        .where(and(eq(decisions.companyId, candidate.companyId), eq(decisions.id, sourceId), eq(decisions.status, "open"))))[0];
+      if (!row || row.originIssueId && !(evidence ? evidence.visibleIssues.has(row.originIssueId)
+        : await visibleIssue(database, candidate.companyId, row.originIssueId))) return null;
     } else if (candidate.sourceKind === "issue_thread_interaction") {
       const attention = interactionAttention ?? await interactionEligibility(database, [candidate]);
       if (!attention.get(sourceId)) return null;
     } else if (candidate.sourceKind === "recovery_action") {
-      const [row] = await database.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, candidate.companyId), eq(issueRecoveryActions.id, sourceId)));
-      if (!row || !await visibleIssue(database, candidate.companyId, row.sourceIssueId)) return null;
+      const row = evidence ? evidence.recoveries.get(sourceId) : (await database.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, candidate.companyId), eq(issueRecoveryActions.id, sourceId))))[0];
+      if (!row || !(evidence ? evidence.visibleIssues.has(row.sourceIssueId)
+        : await visibleIssue(database, candidate.companyId, row.sourceIssueId))) return null;
     } else if (candidate.sourceKind === "review") {
       const attention = reviewAttention ?? await reviewEligibility(database, [candidate]);
       if (!attention.get(sourceId)) return null;
     } else if (candidate.sourceKind === "blocker_attention") {
-      const row = await visibleIssue(database, candidate.companyId, sourceId);
+      const row = evidence ? evidence.visibleIssues.get(sourceId) : await visibleIssue(database, candidate.companyId, sourceId);
       if (!row) return null;
       if (variant === "owner") {
         if (row.unblockDescriptor?.owner !== "board" || !isProspectiveBlockedTransition(row)) return null;
-        const [activity] = await database.execute(sql`select blocked_transition_at::text as at,
+        const activity = evidence ? { at: evidence.visibleIssues.get(sourceId)!.blockedActivityAt!, due: evidence.visibleIssues.get(sourceId)!.blockedDeadlineAt! } : (await database.execute(sql`select blocked_transition_at::text as at,
           ceil(extract(epoch from blocked_transition_at) * 1000 + ${archiveDelay}) as due from issues
-          where company_id = ${candidate.companyId}::uuid and id = ${row.id}::uuid`) as unknown as Array<{ at: string; due: string }>;
+          where company_id = ${candidate.companyId}::uuid and id = ${row.id}::uuid`) as unknown as Array<{ at: string; due: string }>)[0];
         activityAt = activity.at; dueAt = Number(activity.due);
       } else {
-        const attention = (await issueService(database).listBlockerAttention(candidate.companyId, [row])).get(row.id);
+        const attention = evidence ? evidence.blockers.get(row.id) : (await issueService(database).listBlockerAttention(candidate.companyId, [row])).get(row.id);
         if (!terminalBlockerRequiresAttention(attention)) return null;
         sourceId = attention.terminalBlockerIssueId ?? row.id;
         if (lock && sourceId !== candidate.sourceId) await database.execute(sql`select id from issues
           where company_id = ${candidate.companyId}::uuid and id = ${sourceId}::uuid for update`);
-        const terminal = await visibleIssue(database, candidate.companyId, sourceId);
+        const terminal = evidence ? evidence.visibleIssues.get(sourceId) : await visibleIssue(database, candidate.companyId, sourceId);
         if (!terminal) return null;
-        const [activity] = await database.execute(sql`select updated_at::text as at,
+        const activity = evidence ? { at: evidence.visibleIssues.get(sourceId)!.activityAt, due: evidence.visibleIssues.get(sourceId)!.deadlineAt } : (await database.execute(sql`select updated_at::text as at,
           ceil(extract(epoch from updated_at) * 1000 + ${archiveDelay}) as due from issues
-          where company_id = ${candidate.companyId}::uuid and id = ${sourceId}::uuid`) as unknown as Array<{ at: string; due: string }>;
+          where company_id = ${candidate.companyId}::uuid and id = ${sourceId}::uuid`) as unknown as Array<{ at: string; due: string }>)[0];
         activityAt = activity.at; dueAt = Number(activity.due);
       }
       const [retention] = await database.select().from(decisionRetention).where(and(eq(decisionRetention.companyId, candidate.companyId),
         eq(decisionRetention.sourceKind, candidate.sourceKind), eq(decisionRetention.sourceId, sourceId)));
       if (retention?.keep || retention?.archivedAt) return null;
     } else if (candidate.sourceKind === "failed_run") {
-      const [run] = await database.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, candidate.companyId), eq(heartbeatRuns.id, sourceId)));
+      const run = evidence ? evidence.runs.get(sourceId) : (await database.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, candidate.companyId), eq(heartbeatRuns.id, sourceId))))[0];
       if (!run) return null;
-      const [agent] = await database.select({ id: agents.id }).from(agents).where(and(eq(agents.companyId, candidate.companyId),
-        eq(agents.id, run.agentId), sql`${agents.status} <> 'terminated'`));
+      const agent = evidence ? evidence.agents.has(run.agentId) : (await database.select({ id: agents.id }).from(agents).where(and(eq(agents.companyId, candidate.companyId),
+        eq(agents.id, run.agentId), sql`${agents.status} <> 'terminated'`)))[0];
       const issueId = readRunIssueId(run.contextSnapshot);
-      if (!agent || issueId && !await visibleIssue(database, candidate.companyId, issueId)) return null;
-      if ((await listFailedRunsWithNewerRun(database, candidate.companyId, [{ ...run, issueId }])).has(run.id)) return null;
+      if (!agent || issueId && !(evidence ? evidence.visibleIssues.has(issueId)
+        : await visibleIssue(database, candidate.companyId, issueId))) return null;
+      if ((evidence ? evidence.newerRuns : await listFailedRunsWithNewerRun(database, candidate.companyId, [{ ...run, issueId }])).has(run.id)) return null;
     }
     return { ...candidate, sourceId, activityAt, rootId: candidate.sourceId, variant,
       id: `${candidate.sourceKind}:${candidate.sourceId}:${variant ?? "source"}`, dueAt };
@@ -198,10 +260,11 @@ export function attentionRetentionService(db: Db) {
     const entries: Entry[] = [];
     const reviews = await reviewEligibility(db, rows);
     const interactions = await interactionEligibility(db, rows);
+    const evidence = await pageEvidence(db, rows);
     for (const row of rows) {
       if (signal?.aborted) return { rows: null, complete: true };
       for (const variant of row.sourceKind === "blocker_attention" ? ["owner", "terminal"] as const : [undefined]) {
-        const entry = await eligible(db, row, variant, false, reviews, interactions);
+        const entry = await eligible(db, row, variant, false, reviews, interactions, evidence.get(row.companyId));
         if (entry) entries.push(entry);
       }
     }

@@ -171,6 +171,91 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(statements.filter(query => query.includes('from "agents"'))).toHaveLength(1);
   });
 
+  it("batches decision and recovery source links and rechecks a late hidden origin", async () => {
+    const origins = await db.insert(issues).values(Array.from({ length: 100 }, () => ({ companyId,
+      title: randomUUID(), status: "todo", updatedAt: old() }))).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded" }).returning();
+    const decisionRows = await db.insert(decisions).values(origins.map(origin => ({ companyId,
+      originAgentId: agentId, originIssueId: origin.id, originRunId: run.id, title: "Decision", body: "Choose",
+      options: [], signedSpec: "fixture", targetSnapshots: {}, expiresAt: new Date(Date.now() + 86_400_000), updatedAt: old() }))).returning();
+    const recoveryRows = await db.insert(issueRecoveryActions).values(origins.map(origin => ({ companyId,
+      sourceIssueId: origin.id, kind: "execution", ownerType: "board", cause: "fixture", fingerprint: "fixture",
+      nextAction: "Choose", updatedAt: old() }))).returning();
+    const service = attentionRetentionService(db);
+    const pages = [];
+    for (const sourceKind of ["decision", "recovery_action"] as const) {
+      statements.length = 0;
+      const page = await service.load({ companyId, sourceKind });
+      expect(page.rows).toHaveLength(100); expect(page.complete).toBe(false);
+      expect(statements.length).toBeLessThanOrEqual(3);
+      pages.push(page.rows!);
+    }
+    await db.update(issues).set({ hiddenAt: new Date() }).where(eq(issues.id, origins[99].id));
+    const hiddenDecision = pages[0].find(entry => entry.sourceId === decisionRows[99].id)!;
+    const hiddenRecovery = pages[1].find(entry => entry.sourceId === recoveryRows[99].id)!;
+    expect(await service.check(hiddenDecision)).toBeNull(); expect(await service.check(hiddenRecovery)).toBeNull();
+    expect(await state("decision", hiddenDecision.sourceId)).toBeNull(); expect(await state("recovery_action", hiddenRecovery.sourceId)).toBeNull();
+    expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
+  });
+
+  it("batches 100 failed runs and rechecks late visibility and supersession before archive", async () => {
+    const origins = await db.insert(issues).values(Array.from({ length: 100 }, () => ({ companyId,
+      title: randomUUID(), status: "todo", updatedAt: old() }))).returning();
+    const runs = await db.insert(heartbeatRuns).values(origins.map(origin => ({ companyId, agentId,
+      status: "failed", contextSnapshot: { issueId: origin.id }, createdAt: old(), finishedAt: old() }))).returning();
+    await db.insert(heartbeatRunEvents).values(runs.map(run => ({ companyId, agentId, runId: run.id,
+      seq: 1, eventType: "lifecycle", message: "Bounded retry exhausted: batch fixture" })));
+    const service = attentionRetentionService(db), scope = { companyId, sourceKind: "failed_run" as const };
+    statements.length = 0;
+    const page = await service.load(scope);
+    expect(page.rows).toHaveLength(100); expect(page.complete).toBe(false);
+    expect(statements.length).toBeLessThanOrEqual(6);
+    const hiddenRun = runs[98], supersededRun = runs[99];
+    const hidden = page.rows!.find(entry => entry.sourceId === hiddenRun.id)!;
+    const superseded = page.rows!.find(entry => entry.sourceId === supersededRun.id)!;
+    await db.update(issues).set({ hiddenAt: new Date() }).where(eq(issues.id, origins[98].id));
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded",
+      contextSnapshot: { issueId: origins[99].id }, createdAt: new Date(old().getTime() + 60_000), finishedAt: old() });
+    expect(await service.check(hidden)).toBeNull(); expect(await service.check(superseded)).toBeNull();
+    expect(await state("failed_run", hiddenRun.id)).toBeNull(); expect(await state("failed_run", supersededRun.id)).toBeNull();
+    expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
+    expect((await service.load(scope)).complete).toBe(true);
+    const refreshed = await service.load(scope);
+    expect(refreshed.rows).toHaveLength(98);
+    expect(refreshed.rows!.some(entry => [hiddenRun.id, supersededRun.id].includes(entry.sourceId))).toBe(false);
+  });
+
+  it("batches 100 blocker graphs with exact terminal timestamps and fresh terminal visibility", async () => {
+    const roots = await db.insert(issues).values(Array.from({ length: 100 }, () => ({ companyId,
+      title: randomUUID(), status: "blocked", updatedAt: old(), blockedTransitionAt: old(),
+      unblockDescriptor: { owner: "board", action: "Pick an owner" } }))).returning();
+    const terminals = await db.insert(issues).values(Array.from({ length: 100 }, () => ({ companyId,
+      title: randomUUID(), status: "backlog", assigneeAgentId: agentId, updatedAt: old() }))).returning();
+    await db.insert(issueRelations).values(roots.map((root, index) => ({ companyId,
+      issueId: terminals[index].id, relatedIssueId: root.id, type: "blocks" })));
+    await db.execute(sql`update issues set updated_at = updated_at + interval '0.000321 seconds' where id = ${terminals[99].id}::uuid`);
+    const service = attentionRetentionService(db), scope = { companyId, sourceKind: "blocker_attention" as const };
+    statements.length = 0;
+    const page = await service.load(scope);
+    const queries = [...statements];
+    expect(page.rows).toHaveLength(200); expect(page.complete).toBe(false);
+    const retentionReads = queries.filter(query => query.includes('from "decision_retention"'));
+    expect(retentionReads).toHaveLength(200);
+    expect(queries.length - retentionReads.length).toBeLessThanOrEqual(30);
+    const terminal = page.rows!.find(entry => entry.rootId === roots[99].id && entry.variant === "terminal")!;
+    expect(terminal.sourceId).toBe(terminals[99].id);
+    const [expected] = await db.execute(sql`select updated_at::text as at,
+      ceil(extract(epoch from updated_at) * 1000 + ${delay}) as due from issues where id = ${terminals[99].id}::uuid`);
+    expect(terminal.activityAt).toBe(expected.at); expect(terminal.dueAt).toBe(Number(expected.due));
+    await db.update(issues).set({ hiddenAt: new Date() }).where(eq(issues.id, terminals[99].id));
+    expect(await service.check(terminal)).toBeNull();
+    expect(await state("blocker_attention", terminals[99].id)).toBeNull();
+    expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
+    expect((await service.load(scope)).complete).toBe(true);
+    const refreshed = await service.load(scope);
+    expect(refreshed.rows!.some(entry => entry.sourceId === terminals[99].id)).toBe(false);
+  });
+
   it("scopes ordinary execution-control writes to their company", async () => {
     const otherCompany = randomUUID();
     await db.insert(companies).values({ id: otherCompany, name: "Other", issuePrefix: "OTHER" });
