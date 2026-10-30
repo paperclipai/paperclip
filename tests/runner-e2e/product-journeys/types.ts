@@ -3,7 +3,7 @@ import type { ConnectionApi } from "../connection-target.js";
 
 export type JourneyOutcome = "passed" | "failed" | "blocked" | "unsupported";
 export type JourneyId = "task-properties" | "task-create" | "project-task-context" | "task-document-persistence" | "task-search-filter" | "ask-question" | "cloud-onboarding"
-  | "plan-revise-accept" | "build-revise" | "protected-actions" | "create-skill-studio" | "stop-redirect";
+  | "question-answer-resume" | "followup-while-running" | "plan-revise-accept" | "build-revise" | "protected-actions" | "create-skill-studio" | "stop-redirect";
 export type TargetMode = "managed-self-hosted" | "existing-cloud" | "new-cloud";
 export interface DeploymentIdentity {
   kind: "self-hosted" | "cloud";
