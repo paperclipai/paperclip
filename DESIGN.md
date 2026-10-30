@@ -110,6 +110,9 @@ an answer fallback only after the run ends and its final transcript fetch
 completes without a provider reply. Preserve the reply through persistence.
 
 Task chat shows execution errors and waits only while they remain relevant.
+Exhausted attempts use a padded, rounded notice with a destructive-tinted background,
+an error icon, and foreground text. The surrounding layout supplies separation from
+the conversation. Automatic retry countdowns keep their quieter inline styling.
 Completing or cancelling a task hides its old execution notices. A newer attempt by
 the same agent or an explicit successor supersedes earlier run notices; an
 unresolved execution hold remains visible. Historical turns keep their responses,
