@@ -1,5 +1,6 @@
+import { publishNativeHarnessBackup } from "../services/native-runtime/native-harness-backup-publication.js";
 import { registerNativeHarnessBackupExpirationWork } from "../services/native-runtime/native-harness-backup-expiration-work.js";
-import { noteNativeHarnessBackupChange, notifyNativeHarnessBackupExpiration } from "../services/native-harness-backup-expiration-notifications.js";
+import { noteNativeHarnessBackupChange } from "../services/native-harness-backup-expiration-notifications.js";
 import { writeEnvironmentCleanup } from "../services/environment-cleanup-notifications.js";
 import { issueService } from "../services/issues.js";
 import { applyPendingMigrations } from "@paperclipai/db";
@@ -583,6 +584,10 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     if (history) {
       const session = await seedSession();
       await fs.rm(path.join(session.root, "failover-backups"), { recursive: true });
+      await db.insert(heartbeatRuns).values(Array.from({ length: 500 }, () => ({
+        companyId: session.companyId, agentId: session.agentId, status: "succeeded", issueId: session.issueId,
+        nativeIssueId: session.issueId, nativeSessionId: randomUUID(), finishedAt: now,
+      })));
       for (let index = 0; index < 250; index++) await fs.mkdir(path.join(stateBase,
         createHash("sha256").update(String(index)).digest("hex")));
     }
@@ -607,6 +612,68 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     expect(await taskSessionCount(session.agentId)).toBe(0);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, session.runId))).toHaveLength(1);
     expect(backupErrors).toEqual([]); await quiet();
+  });
+
+  it("ordinary backup publication after quiet schedules its actual file age and leaves a durable cleanup result", async () => {
+    const session = await seedSession();
+    const backupRoot = path.dirname(session.current);
+    const pendingRoot = path.join(backupRoot, "pending-publication");
+    await fs.rename(session.current, pendingRoot);
+    await startBackups(); await settled(); await quiet();
+    const publishedAt = Date.now();
+    await fs.utimes(pendingRoot, new Date(publishedAt), new Date(publishedAt));
+    await publishNativeHarnessBackup({ db, companyId: session.companyId, scopeDigest: session.scope, backupRoot, pendingRoot });
+    const stat = await fs.stat(session.current);
+    const due = stat.mtime.getTime() + 7 * DAY_MS + 1;
+    await settled(due); await vi.advanceTimersByTimeAsync(due - Date.now()); await settled();
+    expect(await exists(session.current)).toBe(false); expect(await taskSessionCount(session.agentId)).toBe(0);
+    expect(await fs.readdir(backupRoot)).toEqual([]); await quiet();
+  });
+
+  it("a committed earlier close timestamp replaces the later deadline without early cleanup", async () => {
+    const session = await seedSession({ closedDaysAgo: 2 });
+    await startBackups(); await settled(now.getTime() + 5 * DAY_MS + 1);
+    const earlier = new Date(now.getTime() - 6 * DAY_MS);
+    await issueService(db).update(session.issueId, { completedAt: earlier });
+    const due = earlier.getTime() + 7 * DAY_MS + 1;
+    await settled(due); await quiet(60_000);
+    await vi.advanceTimersByTimeAsync(due - Date.now()); await settled();
+    expect(await exists(session.current)).toBe(false); await quiet();
+  });
+
+  it("holds nested ordinary close activation until the outer transaction commits", async () => {
+    const session = await seedSession({ issueStatus: "todo" });
+    await startBackups(); await settled();
+    let release!: () => void, written!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const staged = new Promise<void>(resolve => { written = resolve; });
+    const transaction = db.transaction(async outer => {
+      await outer.transaction(nested => issueService(db).update(session.issueId, { status: "done" }, nested));
+      written(); await gate;
+    });
+    await staged;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await exists(session.current)).toBe(true);
+    expect(await taskSessionCount(session.agentId)).toBe(1);
+    release(); await transaction;
+    const [closed] = await db.select().from(issues).where(eq(issues.id, session.issueId));
+    const due = new Date(closed!.completedAt!).getTime() + 7 * DAY_MS + 1;
+    await settled(due); await vi.advanceTimersByTimeAsync(due - Date.now()); await settled();
+    expect(await exists(session.current)).toBe(false); await quiet();
+  });
+
+  it("preserves failed cleanup retry across drain, then finishes its physical tombstone on resume", async () => {
+    const session = await seedSession(); const remove = fs.rm;
+    const fault = vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+      if (String(args[0]).includes(".expired-")) throw new Error("controlled drain retry failure");
+      return remove(...args);
+    });
+    await startBackups();
+    expect(backupErrors).toHaveLength(1); admitted = false; fault.mockRestore();
+    await quiet(60_000);
+    expect((await fs.readdir(path.dirname(session.current))).some(name => name.startsWith(".expired-"))).toBe(true);
+    admitted = true; await settled();
+    expect(await fs.readdir(path.dirname(session.current))).toEqual([]); await quiet();
   });
 
   it("reopen cancels a saved deadline and a later ordinary close restores retention", async () => {

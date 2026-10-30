@@ -1,4 +1,4 @@
-import { noteNativeHarnessBackupChange } from "../native-harness-backup-expiration-notifications.js";
+import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeTurnAccounting, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent } from "./native-usage-accounting.js";
 export { nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage } from "./native-usage-accounting.js";
@@ -13277,42 +13277,15 @@ async function createRunnerdBackendWithinSessionClaim(
                 });
                 renameSync(temporaryManifest, manifestPath);
 
-                const currentRoot = resolve(backupRoot, "current");
-                const previousRoot = resolve(backupRoot, "previous");
-                removeNativeHarnessBackup(previousRoot);
-                let movedCurrent = false;
-                if (existsSync(currentRoot)) {
-                  renameSync(currentRoot, previousRoot);
-                  movedCurrent = true;
-                }
-                try {
-                  renameSync(pendingRoot, currentRoot);
-                  if (
-                    remoteTarget?.transport === "sandbox" &&
-                    remoteTarget.leaseId
-                  ) {
+                await publishNativeHarnessBackup({
+                  db: input.db, companyId: input.execution.binding.companyId,
+                  scopeDigest: createHash("sha256").update(sessionScopeId).digest("hex"), backupRoot, pendingRoot,
+                  stamp: remoteTarget?.transport === "sandbox" && remoteTarget.leaseId ? async currentRoot => {
                     await recordHarnessBackupStampForCurrentLease({
-                      root: currentRoot,
-                      manifest,
-                      bytes: backupSpanAttributes.bytesTransferred,
+                      root: currentRoot, manifest, bytes: backupSpanAttributes.bytesTransferred,
                     });
-                  }
-                } catch (error) {
-                  if (existsSync(currentRoot)) {
-                    removeNativeHarnessBackup(currentRoot);
-                  }
-                  if (
-                    movedCurrent &&
-                    existsSync(previousRoot) &&
-                    !existsSync(currentRoot)
-                  ) {
-                    renameSync(previousRoot, currentRoot);
-                  }
-                  throw error;
-                }
-                removeNativeHarnessBackup(previousRoot);
-                noteNativeHarnessBackupChange(input.db, { companyId: input.execution.binding.companyId,
-                  scopeDigest: createHash("sha256").update(sessionScopeId).digest("hex") });
+                  } : undefined,
+                });
               } finally {
                 removeNativeHarnessBackup(pendingRoot);
               }

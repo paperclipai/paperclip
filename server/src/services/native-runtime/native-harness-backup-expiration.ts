@@ -764,7 +764,7 @@ export function nativeHarnessBackupExpirationService(
     }));
     if ("reason" in blocker) return null;
     const retentionMs = Math.max(1, defaults.closedForDays ?? NATIVE_HARNESS_BACKUP_EXPIRATION_DEFAULT_DAYS) * DAY_MS;
-    return { id: scopeDigest, ...owner, dueAt: Math.max(stat!.mtimeMs, blocker.closedAt) + retentionMs + 1 };
+    return { id: scopeDigest, ...owner, dueAt: Math.max(stat!.mtime.getTime(), blocker.closedAt) + retentionMs + 1 };
   }
 
   async function backupScopes(after?: string, limit = 100) {
