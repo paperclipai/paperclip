@@ -5,7 +5,8 @@ export type DatabaseBackupHealthWarningCode =
   | "database_backup_check_failed"
   | "database_backup_last_failure"
   | "database_backup_missing"
-  | "database_backup_stale";
+  | "database_backup_stale"
+  | "database_backup_truncated";
 
 export type DatabaseBackupHealthWarning = {
   code: DatabaseBackupHealthWarningCode;
@@ -93,13 +94,42 @@ function findLatestBackup(backupDir: string, nowMs: number) {
   const latest = candidates[0];
   if (!latest) return null;
 
+  const otherSizes = candidates.slice(1).map((candidate) => candidate.stat.size).sort((a, b) => a - b);
+  const medianOtherSizeBytes = otherSizes.length > 0
+    ? otherSizes[Math.floor(otherSizes.length / 2)]!
+    : null;
+
   return {
     name: basename(latest.fullPath),
     path: latest.fullPath,
     mtime: new Date(latest.stat.mtimeMs).toISOString(),
     ageHours: roundHours((nowMs - latest.stat.mtimeMs) / 3_600_000),
     sizeBytes: latest.stat.size,
+    medianOtherSizeBytes,
+    otherCount: otherSizes.length,
   };
+}
+
+// A finished dump of even an empty database carries schema and session
+// boilerplate and compresses to several hundred bytes. A newest backup
+// far below that — or far below the size of the backups before it — is a
+// truncated artifact of a crashed backup run, not a usable backup. See
+// #15351.
+const TRUNCATED_ABSOLUTE_FLOOR_BYTES = 200;
+const TRUNCATED_MEDIAN_FRACTION = 0.25;
+const TRUNCATED_MEDIAN_MIN_SAMPLES = 3;
+
+function isImplausiblySmall(latest: { sizeBytes: number; medianOtherSizeBytes: number | null; otherCount: number }): boolean {
+  if (latest.sizeBytes < TRUNCATED_ABSOLUTE_FLOOR_BYTES) return true;
+  if (
+    latest.otherCount >= TRUNCATED_MEDIAN_MIN_SAMPLES &&
+    latest.medianOtherSizeBytes !== null &&
+    latest.medianOtherSizeBytes > 0 &&
+    latest.sizeBytes < latest.medianOtherSizeBytes * TRUNCATED_MEDIAN_FRACTION
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function inspectDatabaseBackupHealth(
@@ -113,7 +143,16 @@ export function inspectDatabaseBackupHealth(
   let lastFailure: DatabaseBackupHealthStatus["lastFailure"] = null;
 
   try {
-    latestBackup = findLatestBackup(opts.backupDir, now.getTime());
+    const found = findLatestBackup(opts.backupDir, now.getTime());
+    latestBackup = found
+      ? {
+          name: found.name,
+          path: found.path,
+          mtime: found.mtime,
+          ageHours: found.ageHours,
+          sizeBytes: found.sizeBytes,
+        }
+      : null;
     lastFailure = readLastFailure(alertFileCandidates(opts));
 
     if (!latestBackup) {
@@ -125,6 +164,13 @@ export function inspectDatabaseBackupHealth(
       warnings.push({
         code: "database_backup_stale",
         message: `Latest database backup is ${latestBackup.ageHours}h old, exceeding ${maxAgeHours}h.`,
+      });
+    }
+
+    if (found && isImplausiblySmall(found)) {
+      warnings.push({
+        code: "database_backup_truncated",
+        message: `Latest database backup ${found.name} is only ${found.sizeBytes} bytes, which is implausibly small for a finished backup. It is likely a truncated artifact of a crashed backup run.`,
       });
     }
 
