@@ -60,6 +60,38 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     return id;
   }
 
+  it("imports supporting files from a root-level package without truncating their paths", async () => {
+    const companyId = await company();
+    const service = companySkillService(db);
+    const [imported] = await service.importPackageFiles(companyId, {
+      "SKILL.md": "---\nname: Root package\n---\n# Root\n",
+      "references/guide.md": "complete root guide",
+    });
+    expect(imported).toBeTruthy();
+    const skills = await service.list(companyId);
+    const skill = skills.find(entry => entry.name === "Root package")!;
+    expect(await service.readFile(companyId, skill.id, "references/guide.md"))
+      .toMatchObject({ content: "complete root guide" });
+  });
+
+  it("forks live linked-local content even when an older saved version exists", async () => {
+    const companyId = await company();
+    const directory = path.join(root, `linked-${randomUUID()}`);
+    await fs.mkdir(directory);
+    await fs.writeFile(path.join(directory, "SKILL.md"), "# Linked\n");
+    await fs.writeFile(path.join(directory, "support.txt"), "old saved content");
+    const [linked] = await db.insert(companySkills).values({ companyId, key: "linked", slug: "linked", name: "Linked",
+      markdown: "# Linked\n", sourceType: "local_path", sourceLocator: directory,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "support.txt", kind: "other" }] }).returning();
+    const service = companySkillService(db);
+    const saved = await service.createVersion(companyId, linked!.id);
+    await fs.writeFile(path.join(directory, "support.txt"), "current local content");
+    const forked = await service.createLocalSkill(companyId, { name: "Live fork", forkedFromSkillId: linked!.id });
+    expect(await service.readFile(companyId, forked.id, "support.txt")).toMatchObject({ content: "current local content" });
+    expect((await service.getVersion(companyId, linked!.id, saved.id))?.fileInventory)
+      .toContainEqual(expect.objectContaining({ path: "support.txt", content: "old saved content" }));
+  });
+
   it("keeps an unassigned skill, supporting bytes and executable mode across fresh homes", async () => {
     const companyId = await company();
     const a = companySkillService(db);

@@ -1128,7 +1128,7 @@ function readInlineSkillImports(companyId: string, files: Record<string, string>
     const inventory = Object.keys(normalizedFiles)
       .filter((entry) => entry === skillPath || (skillDir ? entry.startsWith(`${skillDir}/`) : true))
       .map((entry) => {
-        const relative = entry === skillPath ? "SKILL.md" : entry.slice(skillDir.length + 1);
+        const relative = entry === skillPath ? "SKILL.md" : skillDir ? entry.slice(skillDir.length + 1) : entry;
         return {
           path: normalizePortablePath(relative),
           kind: classifyInventoryKind(relative),
@@ -3658,8 +3658,11 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   }
 
   async function detail(companyId: string, id: string, actor?: SkillActor | null): Promise<CompanySkillDetail | null> {
-    await ensureSkillInventoryCurrent(companyId);
-    const skill = await getByRouteRef(companyId, id);
+    let skill = await getByRouteRef(companyId, id);
+    if (!skill) {
+      await ensureSkillInventoryCurrent(companyId);
+      skill = await getByRouteRef(companyId, id);
+    }
     if (!skill) return null;
     const usedByAgents = await usage(companyId, skill.key);
     const existingForks = await existingForkSummaries(companyId, skill.id, actor);
@@ -3698,8 +3701,10 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     companyId: string,
     skill: CompanySkill,
   ): Promise<CompanySkillVersionFileInventoryEntry[]> {
-    if (skill.currentVersionId && (skill.sourceType !== "local_path" || skill.metadata?.sourceKind === "paperclip_bundled")) {
-      return (await managedContent.read(companyId, skill.id, skill.currentVersionId)).files;
+    if (skill.currentVersionId && (skill.sourceType !== "local_path" || skill.metadata?.skillSourceId || skill.metadata?.sourceKind === "paperclip_bundled")) {
+      const version = await getCurrentVersion(skill);
+      if (!version) throw notFound("Skill version not found");
+      return runtimeVersionInventory(companyId, version);
     }
     const out: CompanySkillVersionFileInventoryEntry[] = [];
     for (const entry of skill.fileInventory) {
@@ -4592,10 +4597,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     if (forkSource?.accessSourceId && input.sharingScope === "public_link") {
       throw forbidden("Project skills cannot be published through a public link.");
     }
-    const forkVersion = forkSource ? await getCurrentVersion(forkSource) : null;
-    const files = forkVersion
-      ? await runtimeVersionInventory(companyId, forkVersion)
-      : forkSource ? await collectVersionFileInventory(companyId, forkSource) : [];
+    const files = forkSource ? await collectVersionFileInventory(companyId, forkSource) : [];
     const fallbackMarkdown = ["---", stringifyFrontmatter({ name: input.name,
       ...(input.description?.trim() ? { description: input.description.trim() } : {}) }),
       "---", "", `# ${input.name}`, "", input.description?.trim() || "Describe what this skill does.", ""].join("\n");

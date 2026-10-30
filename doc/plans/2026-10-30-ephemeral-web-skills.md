@@ -33,6 +33,7 @@ handoff, and production volume removal are outside this slice.
 
 - Worktree: `/Users/dotta/.codex/worktrees/d084/paperclip`
 - Branch: `codex/skills-ephemeral-web`
+- Draft PR: https://github.com/paperclipai/paperclip/pull/18334
 - Approved plan: this chat, “Skills on ephemeral web servers,” nine sections.
 - Implemented managed create/read/edit/delete-file/fork/rename/restore publication,
   immutable catalog installation/reset, Studio version conflict recovery, durable
@@ -57,7 +58,18 @@ handoff, and production volume removal are outside this slice.
 - Disposable staging tenant created through normal onboarding:
   https://ephemeral-skills-qa-oct-30.staging.paperclip.app
   Agent `dfd238b5-5e5d-43ef-b34a-cb5bff2267f3` (Skills Qualification), paused.
-  Model setup and candidate deployment remain; no live run claimed.
+  OpenAI API-key setup uses the explicitly authorized local credential. Candidate
+  `6518b323528b2b595c5949c3ed2c57a8d2438cb6` is building under release run
+  https://github.com/paperclipai/paperclip/actions/runs/41085949238.
+  Single-tenant deploy request: `c65f3677-4b4e-4687-957a-28e2bfb89451`.
+  Stack `stack-pool-50f5009d5644` is user-managed during qualification so unrelated
+  fleet rollouts cannot replace the test candidate. No live run claimed yet.
+- Greptile's first review found root-package path truncation, linked-local fork
+  and restore regressions, and a concurrent receipt replay race. Fixed all four;
+  focused review checks passed 76 server and 16 Studio tests. CI also exposed
+  obsolete host-path fixtures and a company-deletion/publication race. Updated
+  those fixtures and publication locking; 20 targeted integration tests passed.
+  Skill detail now resolves existing metadata without seeding the entire library.
 - Remaining: finish repository checks and PR review, candidate deployment and
-  fresh-home remote Runner
-  qualification including compatible rollback. No PR or deployment claimed yet.
+  fresh-home remote Runner qualification including compatible rollback. The PR
+  stays draft until hosted qualification and the final checks are complete.

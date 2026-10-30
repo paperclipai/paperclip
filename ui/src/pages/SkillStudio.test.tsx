@@ -570,6 +570,39 @@ describe("SkillStudio editor frontmatter", () => {
     routeState.skillId = "source-skill";
   });
 
+  it.each(["local_path", "managed"] as const)("restores %s history through its supported authoring path", async (sourceType) => {
+    mockCompanySkillsApi.detail.mockResolvedValue(makeSkill({ sourceType, currentVersionId: "head-version" }));
+    mockCompanySkillsApi.versions.mockResolvedValue([{ id: "old-version", revisionNumber: 1, createdAt: new Date() }]);
+    mockCompanySkillsApi.version.mockResolvedValue({ revisionNumber: 1, fileInventory: [
+      { path: "SKILL.md", content: "# Restored" }, { path: "support.txt", content: "support" },
+    ] });
+    if (sourceType === "local_path") {
+      mockCompanySkillsApi.updateFile.mockResolvedValueOnce({ versionId: "first-save" }).mockResolvedValueOnce({ versionId: "second-save" });
+    }
+    const node = await renderStudio();
+    await waitFor(() => expect(buttonsNamed(node, "Version history")[0]).toBeTruthy());
+    await click(buttonsNamed(node, "Version history")[0]!);
+    await waitFor(() => expect(buttonsNamed(document, "Restore as v2")[0]).toBeTruthy());
+    await click(buttonsNamed(document, "Restore as v2")[0]!);
+    await waitFor(() => expect(mockCompanySkillsApi.createVersion).toHaveBeenCalled());
+    if (sourceType === "managed") {
+      expect(mockCompanySkillsApi.updateFile).not.toHaveBeenCalled();
+      expect(mockCompanySkillsApi.createVersion).toHaveBeenCalledWith("company-1", "source-skill", {
+        sourceVersionId: "old-version", expectedVersionId: "head-version", label: "Restored saved version",
+      });
+    } else {
+      expect(mockCompanySkillsApi.updateFile).toHaveBeenNthCalledWith(1, "company-1", "source-skill", "SKILL.md", "# Restored", {
+        executable: false, expectedVersionId: "head-version",
+      });
+      expect(mockCompanySkillsApi.updateFile).toHaveBeenNthCalledWith(2, "company-1", "source-skill", "support.txt", "support", {
+        executable: false, expectedVersionId: "first-save",
+      });
+      expect(mockCompanySkillsApi.createVersion).toHaveBeenCalledWith("company-1", "source-skill", {
+        label: "Restore of v1", expectedVersionId: "second-save",
+      });
+    }
+  });
+
   it("does not show the frontmatter section when the selected markdown file has no frontmatter", async () => {
     mockCompanySkillsApi.file.mockResolvedValueOnce({
       path: "SKILL.md",

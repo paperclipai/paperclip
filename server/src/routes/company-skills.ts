@@ -1414,7 +1414,14 @@ export function companySkillRoutes(db: Db) {
           if (publication) publishCommittedActivity(publication);
           res.json(idempotencyKey ? receipt : result);
         } catch (error) {
-          if (error !== replayed) throw error;
+          if (error !== replayed) {
+            if (!receiptKey) throw error;
+            receipt = await db.transaction(async tx => {
+              await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${receiptKey}, 0))`);
+              return replay(tx as unknown as Db);
+            });
+            if (!receipt) throw error;
+          }
           res.json(receipt);
         }
         return;

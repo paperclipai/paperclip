@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { StorageService } from "../storage/index.js";
-import { companySkills, companySkillVersions, companySkillRepositorySnapshots, type Db } from "@paperclipai/db";
+import { companies, companySkills, companySkillVersions, companySkillRepositorySnapshots, type Db } from "@paperclipai/db";
 import type { CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -60,7 +60,7 @@ export function managedSkillContent(db: Db, packageDb: Db = db, storage?: Storag
   }
 
   async function append(tx: SkillContentTransaction, skill: SkillContentRow, candidate: PreparedSkillContent,
-    actor: SkillContentActor | null, options: SkillContentPublication) {
+    actor: SkillContentActor | null, options: SkillContentPublication, fields: Partial<typeof companySkills.$inferInsert> = {}) {
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillPackages);
     await notifySkillVersionRetention(tx, skill.companyId);
     if (candidate.packageSnapshotId) {
@@ -75,8 +75,10 @@ export function managedSkillContent(db: Db, packageDb: Db = db, storage?: Storag
         eq(companySkillVersions.id, skill.currentVersionId)));
       if (version && !version.repositorySnapshotId && version.packageSnapshotId === candidate.packageSnapshotId
         && JSON.stringify(version.packageFileMap) === JSON.stringify(candidate.packageFileMap)) {
-        await options.afterPublish?.(tx, skill, version);
-        return { skill, version };
+        const [saved] = await tx.update(companySkills).set({ ...fields, updatedAt: new Date() })
+          .where(and(eq(companySkills.companyId, skill.companyId), eq(companySkills.id, skill.id))).returning();
+        await options.afterPublish?.(tx, saved!, version);
+        return { skill: saved!, version };
       }
     }
     const [revision] = await tx.select({ next: sql<number>`coalesce(max(${companySkillVersions.revisionNumber}), 0) + 1` })
@@ -89,7 +91,7 @@ export function managedSkillContent(db: Db, packageDb: Db = db, storage?: Storag
       authorAgentId: actor?.type === "agent" ? actor.agentId : null,
       authorUserId: actor?.type === "user" ? actor.userId : null,
     }).returning();
-    const [saved] = await tx.update(companySkills).set({ currentVersionId: version!.id, updatedAt: new Date() })
+    const [saved] = await tx.update(companySkills).set({ ...fields, currentVersionId: version!.id, updatedAt: new Date() })
       .where(and(eq(companySkills.companyId, skill.companyId), eq(companySkills.id, skill.id))).returning();
     await options.afterPublish?.(tx, saved!, version!);
     return { skill: saved!, version: version! };
@@ -113,15 +115,16 @@ export function managedSkillContent(db: Db, packageDb: Db = db, storage?: Storag
         throw conflict("Skill version changed. Read the current version before retrying.");
       }
       await options.validate?.(tx);
-      const [updated] = await tx.update(companySkills).set({ ...fields, updatedAt: new Date() })
-        .where(and(eq(companySkills.companyId, base.companyId), eq(companySkills.id, base.id))).returning();
-      return append(tx, updated!, candidate, actor, options);
+      return append(tx, current, candidate, actor, options, fields);
     });
   }
 
   async function create(values: typeof companySkills.$inferInsert, candidate: PreparedSkillContent,
     actor: SkillContentActor | null = null, options: SkillContentPublication = {}) {
     return db.transaction(async tx => {
+      const [company] = await tx.select({ id: companies.id }).from(companies)
+        .where(eq(companies.id, values.companyId)).for("share");
+      if (!company) throw notFound("Company not found");
       await options.beforeLock?.(tx);
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${values.companyId}:${values.slug}`}, 0))`);
       await options.validate?.(tx);

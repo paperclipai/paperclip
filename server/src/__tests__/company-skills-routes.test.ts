@@ -1,4 +1,5 @@
 import express from "express";
+import { createHash } from "node:crypto";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
@@ -294,7 +295,7 @@ describe("company skill mutation permissions", () => {
     return { companySkillRoutes, errorHandler };
   });
 
-  function createApp(actor: Record<string, unknown>, onResponse?: (res: express.Response) => void) {
+  function createApp(actor: Record<string, unknown>, onResponse?: (res: express.Response) => void, database: any = {}) {
     const { companySkillRoutes, errorHandler } = routeModules.value;
     const app = express();
     app.use(express.json());
@@ -303,7 +304,7 @@ describe("company skill mutation permissions", () => {
       onResponse?.(res);
       next();
     });
-    app.use("/api", companySkillRoutes({} as any));
+    app.use("/api", companySkillRoutes(database));
     app.use(errorHandler);
     return app;
   }
@@ -713,6 +714,25 @@ describe("company skill mutation permissions", () => {
       remediation: null,
     }));
     mockReflectionCoachMutationGate.assertConsented.mockResolvedValue(undefined);
+  });
+
+  it("replays a concurrent identical save committed after the first receipt lookup", async () => {
+    const expectedVersionId = "11111111-1111-4111-8111-111111111111";
+    const input = { path: "SKILL.md", content: "# Saved", expectedVersionId };
+    const receipt = { skillId: "skill-1", path: "SKILL.md", versionId: "22222222-2222-4222-8222-222222222222", studioPath: "/skills/studio/skill-1" };
+    const where = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([{ details: {
+      fingerprint: createHash("sha256").update(JSON.stringify(input)).digest("hex"), receipt,
+    } }]);
+    const database = { select: () => ({ from: () => ({ where }) }), execute: vi.fn(), transaction: vi.fn() };
+    database.transaction.mockImplementation(callback => callback(database));
+    mockCompanySkillService.getById.mockResolvedValue({ id: "skill-1", sourceType: "managed" });
+    mockCompanySkillService.updateFile.mockRejectedValueOnce(Object.assign(new Error("Skill version changed"), { status: 409 }));
+    const app = createApp(boardActor(), undefined, database);
+    const response = await request(app).patch("/api/companies/company-1/skills/skill-1/files")
+      .send({ ...input, idempotencyKey: "same-save" }).expect(200);
+    expect(response.body).toEqual(receipt);
+    expect(database.execute).toHaveBeenCalledOnce();
+    expect(where).toHaveBeenCalledTimes(2);
   });
 
   it("allows local board operators to mutate company skills", async () => {

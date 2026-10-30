@@ -3504,6 +3504,19 @@ function VersionHistorySheet({
 
   const restore = useMutation({
     mutationFn: async (selection: { id: string }) => {
+      if (skill.sourceType === "local_path") {
+        const version = await companySkillsApi.version(companyId, skillId, selection.id);
+        let expectedVersionId = skill.currentVersionId;
+        for (const file of version.fileInventory) {
+          const saved = await companySkillsApi.updateFile(companyId, skillId, file.path, file.content, {
+            encoding: file.encoding, executable: file.executable ?? false, expectedVersionId,
+          });
+          expectedVersionId = saved.versionId ?? expectedVersionId;
+        }
+        return companySkillsApi.createVersion(companyId, skillId, {
+          label: `Restore of v${version.revisionNumber}`, expectedVersionId,
+        });
+      }
       return companySkillsApi.createVersion(companyId, skillId, {
         sourceVersionId: selection.id, expectedVersionId: skill.currentVersionId,
         label: "Restored saved version",
