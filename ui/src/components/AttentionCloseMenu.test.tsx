@@ -41,7 +41,7 @@ function card(id: string, overrides: Partial<AttentionItem> = {}) {
     relatedIssue: { id: "issue-1", identifier: "PAP-1", title: "Task", kind: "issue" },
     audience: forScott,
     stale: null,
-    closeModes: ["withdraw", "archive", "snooze"],
+    closeModes: ["withdraw", "archive", "snooze"], obligationKey: null, obligationLeadId: null,
     changeFingerprint: "fp.me",
     whyNow: "",
     ...overrides,

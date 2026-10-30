@@ -19,11 +19,13 @@ import { COORDINATOR_RECENT_DECISION_MS, recentDecisionReceipts } from "@/lib/co
 import { attentionDetailLine, isInlineResolvable } from "@/lib/attention";
 import { ATTENTION_VIEW_PARAM, parseAttentionView } from "@/lib/attention-views";
 import { splitArchivedAttentionItems, splitStaleAttentionItems } from "@/lib/attention-close";
+import { attentionObligationEvidence, foldAttentionObligations } from "@/lib/attention-obligations";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
 import { AttentionAudienceLine, AttentionReceiptList, AttentionUnassignedBanner, AttentionViewSwitch } from "@/components/AttentionViews";
 import { AttentionCloseMenu, AttentionForOtherGate, AttentionHiddenChip, AttentionSnoozedGroup, AttentionStaleChip, AttentionStaleGroup } from "@/components/AttentionCloseMenu";
 import { BudgetAlertActions, FailedRunActions } from "@/components/AttentionInlineVerbs";
 import { AttentionInteractionResolver } from "@/components/AttentionInteractionResolver";
+import { AttentionObligationEvidence } from "@/components/AttentionObligationEvidence";
 import { StalledReviewActions } from "@/components/StalledReviewActions";
 import { DecisionHistoryPanel } from "@/components/DecisionHistoryPanel";
 import { DecisionResolver } from "@/components/DecisionResolver";
@@ -144,12 +146,15 @@ export function CoordinatorNeedsYou() {
     }
     return [...result];
   }, [visibleRecentItems, groupBy]);
+  // One card for each obligation (PAP-749 Rule 11): evidence folds into its
+  // lead before the page hides, splits or groups anything.
+  const obligations = useMemo(() => foldAttentionObligations(feed.data?.items ?? []), [feed.data]);
   const pendingItems = useMemo(() => {
     const receipts = new Set(recentItems.map((item) => item.id));
-    const items = new Map((feed.data?.items ?? []).map((item) => [`${item.sourceKind}:${item.subject.id}`, item]));
+    const items = new Map(obligations.cards.map((item) => [`${item.sourceKind}:${item.subject.id}`, item]));
     for (const item of settling) if (!items.has(`${item.sourceKind}:${item.subject.id}`)) items.set(`${item.sourceKind}:${item.subject.id}`, item);
     return [...items].filter(([key]) => settlingIds.has(key) || (!receipts.has(key) && !savedIds.has(key))).map(([, item]) => item);
-  }, [feed.data, settling, settlingIds, recentItems, savedIds]);
+  }, [obligations, settling, settlingIds, recentItems, savedIds]);
   const filtered = useMemo(() => pendingItems.filter((item) => {
     const agentId = String(item.subject.metadata?.createdByAgentId ?? item.subject.metadata?.originAgentId ?? "");
     if (agentFilter && agentId !== agentFilter && item.originAgentName !== agentMap.get(agentFilter)?.name) return false;
@@ -266,6 +271,7 @@ export function CoordinatorNeedsYou() {
         : budget ? <>{heading}<BudgetAlertActions item={item} companyId={selectedCompanyId!} onResolved={refetchAll} /></>
         : <>{heading}<Button disabled={!item.subject.href} onClick={() => { if (item.subject.href) navigate(item.subject.href); }}>{openLabel(item)}<ArrowUpRight className="size-4" /></Button></>}
       </AttentionForOtherGate>
+      <AttentionObligationEvidence item={item} evidence={attentionObligationEvidence(obligations, item)} />
       {!interaction && !stalledReview && !failedRun ? taskLink : null}
     </article>}
     </CoordinatorTaskMotion>

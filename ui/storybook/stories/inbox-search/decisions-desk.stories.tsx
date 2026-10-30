@@ -101,7 +101,7 @@ function item(
     audience: { kind: "user", userId: STORYBOOK_USER_ID, reason: "addressee" },
     stale: null,
     required: false,
-    changeFingerprint: "fixture.other", closeModes: ["archive", "snooze"],
+    changeFingerprint: "fixture.other", closeModes: ["archive", "snooze"], obligationKey: null, obligationLeadId: null,
     project: null,
     workspace: null,
     expiresAt: null,

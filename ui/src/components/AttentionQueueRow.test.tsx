@@ -119,6 +119,8 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     stale: overrides.stale ?? null,
     changeFingerprint: overrides.changeFingerprint ?? "fixture.other",
     closeModes: overrides.closeModes ?? ["archive", "snooze"],
+    obligationKey: overrides.obligationKey ?? null,
+    obligationLeadId: overrides.obligationLeadId ?? null,
     required: overrides.required ?? false,
     expiresAt: overrides.expiresAt ?? null,
     ruleKey: overrides.ruleKey ?? null,
@@ -295,6 +297,25 @@ describe("AttentionQueueRow", () => {
     );
     expect(el.textContent).toContain("Open");
     expect(el.textContent).not.toContain("Send back to work");
+  });
+
+  it("folds the rest of its obligation into the row as evidence (PAP-749 task 2d)", () => {
+    const lead = buildItem({ obligationKey: "approval:approval-1", obligationLeadId: "a1" });
+    const review = buildItem({
+      id: "review:t1",
+      sourceKind: "review",
+      subject: { kind: "issue", id: "t1", companyId: "c1", title: "Launch page", identifier: "PAP-8", status: "in_review", href: "/PAP/issues/PAP-8" },
+      whyNow: "Issue is in review with a linked pending approval.",
+      obligationKey: "approval:approval-1",
+      obligationLeadId: "a1",
+    });
+    const el = render(
+      <AttentionQueueRow item={lead} companyId="c1" expanded={false} onToggleExpand={noop} onDismiss={noop} evidence={[review]} />,
+    );
+    const list = el.querySelector('[data-attention-obligation="approval:approval-1"]');
+    expect(list?.getAttribute("aria-label")).toBe("Part of this request");
+    expect(list?.querySelector('[data-attention-evidence="review:t1"]')?.textContent)
+      .toBe("Task waiting on this approval: PAP-8 Launch page — Issue is in review with a linked pending approval.");
   });
 
   it("puts Archive for me in the Close… menu", () => {

@@ -97,7 +97,8 @@ async function main() {
     await printStale("after startup sweep");
 
     console.log(`\n=== Needs You demo card counts by view (company ${company.id}, prefix ${company.prefix}) ===`);
-    // `badge` is the shared For you badge (task 1b); it must equal `mine`.
+    // `badge` is the shared For you badge (task 1b). The columns count cards;
+    // the badge counts obligations, so it is `mine` minus folded evidence (task 2d).
     console.log("user   | all | mine | unassigned | company | badge");
     console.log("-------+-----+------+------------+---------+------");
     for (const [name, email] of Object.entries(DEMO_EMAILS)) {
@@ -177,6 +178,34 @@ async function main() {
         console.log(`${(outcome ?? "all").padEnd(12)} ${String(page.items.length).padStart(3)} entr${page.items.length === 1 ? "y" : "ies"} (${approvals} approval${approvals === 1 ? "" : "s"})`);
         if (outcome) for (const item of page.items) console.log(`  - ${item.sourceKind.padEnd(24)} ${item.label}${item.reason ? ` (reason: ${item.reason})` : ""}: ${item.title}`);
       }
+    }
+
+    // Task 2d: one card for each obligation. The feed keeps every card; the
+    // page folds evidence into its lead, and the view counts and badge count
+    // each obligation once.
+    console.log("\n=== One card for each obligation (task 2d) ===");
+    for (const [name, email] of Object.entries(DEMO_EMAILS)) {
+      const userId = idByEmail.get(email);
+      if (!userId) continue;
+      const shown: string[] = [];
+      for (const view of ["mine", "unassigned", "company"] as const) {
+        const feed = await svc.list(company.id, { userId, view, all: true, allowUnscopedAll: true });
+        const leads = feed.items.filter((item) => !item.obligationLeadId || item.obligationLeadId === item.id);
+        shown.push(`${view} ${feed.items.length} cards -> ${leads.length} shown (count ${feed.viewCounts[view]})`);
+      }
+      console.log(`${name}: ${shown.join("; ")}`);
+    }
+    if (scottForHidden) {
+      const feed = await svc.list(company.id, { userId: scottForHidden, view: "all", all: true, allowUnscopedAll: true });
+      for (const lead of feed.items.filter((item) => item.obligationKey && item.obligationLeadId === item.id)) {
+        const place = lead.audience.kind === "user" ? (lead.audience.userId === scottForHidden ? "Scott" : lead.audience.userId) : lead.audience.kind;
+        console.log(`  ${lead.obligationKey} -> ${place}: ${lead.sourceKind} "${lead.subject.title}"`);
+        for (const evidence of feed.items.filter((item) => item.obligationLeadId === lead.id && item !== lead)) {
+          console.log(`      + ${evidence.sourceKind} "${evidence.subject.title}"`);
+        }
+      }
+      const gated = feed.items.filter((item) => item.subject.title?.startsWith("Independent gate") || item.subject.title === "Approve the reviewed task");
+      for (const item of gated) console.log(`  separate gate: ${item.sourceKind} "${item.subject.title}" (obligationKey ${item.obligationKey})`);
     }
 
     // Per-source-kind breakdown for Scott's mine view, to show the composition.

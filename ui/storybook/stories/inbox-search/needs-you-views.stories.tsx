@@ -11,12 +11,14 @@ import { AttentionSnoozedGroup, AttentionStaleGroup } from "@/components/Attenti
 import { AttentionQueueRow } from "@/components/AttentionQueueRow";
 import { AttentionUnassignedBanner, AttentionViewSwitch } from "@/components/AttentionViews";
 import { splitArchivedAttentionItems, splitStaleAttentionItems } from "@/lib/attention-close";
+import { attentionObligationEvidence, foldAttentionObligations } from "@/lib/attention-obligations";
 
-// PAP-749 tasks 1b, 2c and 2e: the view switch, the "Why me?" line, the "For
-// @name" chip, Claim and the Unassigned banner, plus the Close… menu, the Stale
-// chip and the collapsed Stale (N) group with "Withdraw all stale", and the
-// Archived view with Restore and its Snoozed group, as the classic Decisions
-// page and Coordinator Needs You render them. Scott is the viewer.
+// PAP-749 tasks 1b, 2c, 2e and 2d: the view switch, the "Why me?" line, the
+// "For @name" chip, Claim and the Unassigned banner, plus the Close… menu, the
+// Stale chip and the collapsed Stale (N) group with "Withdraw all stale", the
+// Archived view with Restore and its Snoozed group, and one card for each
+// obligation, as the classic Decisions page and Coordinator Needs You render
+// them. Scott is the viewer.
 const companyId = "company-storybook";
 const SCOTT = "user-scott";
 const DOTTA = "user-dotta";
@@ -77,7 +79,7 @@ function card(
     audience,
     stale: null,
     required: false,
-    changeFingerprint: "fixture.me", closeModes: ["archive", "snooze"],
+    changeFingerprint: "fixture.me", closeModes: ["archive", "snooze"], obligationKey: null, obligationLeadId: null,
     project: null,
     workspace: null,
     expiresAt: null,
@@ -176,6 +178,34 @@ const ARCHIVED: AttentionItem[] = [
     { ...WITHDRAWABLE, ...hiddenBy("snooze", NOW - 2 * HOUR, NOW + 21 * HOUR) }),
 ];
 
+// One card for each obligation (Rule 11): an approval with the in-review task
+// that waits on it, and a failed run with the task it blocks. The feed returns
+// all four cards; the page shows two.
+const OBLIGATIONS: AttentionItem[] = [
+  card("ob-approval", "approval", "Approve the launch budget", "You asked for this approval.", forScott("requester"), {
+    ...WITHDRAWABLE,
+    obligationKey: "approval:launch", obligationLeadId: "ob-approval", relatedIssue: null,
+    subject: { kind: "approval", id: "approval-launch", companyId, title: "Approve the launch budget", identifier: null, status: "pending", href: "/PAP/approvals/approval-launch", metadata: { issueId: "issue-1001" } },
+  }),
+  card("ob-review", "review", "Launch page", "Issue is in review with a linked pending approval.", forScott("requester"), {
+    obligationKey: "approval:launch", obligationLeadId: "ob-approval", relatedIssue: null,
+    subject: { kind: "issue", id: "issue-1001", companyId, title: "Launch page", identifier: "PAP-1001", status: "in_review", href: "/PAP/issues/PAP-1001", metadata: {} },
+  }),
+  card("ob-run", "failed_run", "Flaky Runner run failed", "Run failed after automatic retries were exhausted.", forScott("instigator"), {
+    severity: "high",
+    inlineResolvable: true,
+    decisionVerbs: [{ id: "retry", label: "Retry", description: null }, { id: "inspect", label: "Open run", description: null }],
+    obligationKey: "blocked:nightly", obligationLeadId: "ob-run",
+    subject: { kind: "run", id: "run-1002", companyId, title: "Flaky Runner run failed", identifier: null, status: "failed", href: "/PAP/agents/flaky/runs/run-1002", metadata: { issueId: "issue-1002" } },
+    relatedIssue: { kind: "issue", id: "issue-1002", companyId, title: "Nightly sync", identifier: "PAP-1002", status: "blocked", href: "/PAP/issues/PAP-1002", metadata: {} },
+  }),
+  card("ob-blocked", "blocker_attention", "Nightly sync", "Automatic retries exhausted. Retry or reassign the task.", forScott("instigator"), {
+    severity: "high",
+    obligationKey: "blocked:nightly", obligationLeadId: "ob-run", relatedIssue: null,
+    subject: { kind: "issue", id: "issue-1002", companyId, title: "Nightly sync", identifier: "PAP-1002", status: "blocked", href: "/PAP/issues/PAP-1002", metadata: {} },
+  }),
+];
+
 const COUNTS: AttentionViewCounts = { mine: FOR_YOU.length, unassigned: UNASSIGNED.length, company: COMPANY_CARDS.length, archived: ARCHIVED.length };
 const ITEMS: Record<AttentionPersonalView, AttentionItem[]> = { mine: FOR_YOU, unassigned: UNASSIGNED, company: COMPANY_CARDS, archived: ARCHIVED };
 
@@ -199,7 +229,9 @@ function NeedsYouViews({
   const [expandedId, setExpandedId] = useState<string | null>(initialExpandedId);
   const [snoozedOpen, setSnoozedOpen] = useState(true);
   const hide = (entry: AttentionItem) => setHidden((current) => new Set(current).add(entry.id));
-  const visible = items[view].filter((item) => !hidden.has(item.id));
+  // Evidence folds into its lead before anything is hidden or split (Rule 11).
+  const obligations = foldAttentionObligations(items[view]);
+  const visible = obligations.cards.filter((item) => !hidden.has(item.id));
   // The Archived view keeps stale cards in place and puts snoozed cards in their own group.
   const archivedSplit = splitArchivedAttentionItems(visible);
   const { current, stale, snoozed } = view === "archived"
@@ -220,6 +252,7 @@ function NeedsYouViews({
       currentUserId={SCOTT}
       userLabelMap={USER_LABELS}
       onClaim={hide}
+      evidence={attentionObligationEvidence(obligations, item)}
     />
   );
   return (
@@ -257,7 +290,7 @@ const meta: Meta<typeof NeedsYouViews> = {
       ],
       "implementation": "production",
       "boundary": "fixtures",
-      "notes": "Mounts the shipped view switch, Unassigned banner, AttentionQueueRow (audience line, Stale chip, Close… menu, For-other gate, inline Retry and budget verbs) and the Stale (N) group with fixture cards; Scott is the viewer. Claim, the Close… verbs and Withdraw all stale only hide rows locally here; the real close/claim/transfer endpoints, live updates and per-user server views need the running app."
+      "notes": "Mounts the shipped view switch, Unassigned banner, AttentionQueueRow (audience line, Stale chip, Close… menu, For-other gate, inline Retry and budget verbs, obligation evidence) and the Stale (N) group with fixture cards; Scott is the viewer. Claim, the Close… verbs and Withdraw all stale only hide rows locally here; the real close/claim/transfer endpoints, live updates and per-user server views need the running app."
     },
   },
 };
@@ -303,6 +336,16 @@ export const CompanyInlineVerbs: Story = {
  * is never in the For you badge.
  */
 export const Archived: Story = { args: { initialView: "archived" } };
+
+/**
+ * One card for each obligation (PAP-749 plan §2, Rule 11): the approval card
+ * names the task in review that waits on it, and the failed run names the task
+ * it blocks and keeps the one action (Retry). Two obligations, two cards, and
+ * the badge counts two.
+ */
+export const OneObligation: Story = {
+  args: { items: { ...ITEMS, mine: OBLIGATIONS }, counts: { ...COUNTS, mine: 2 }, expandedId: "ob-run" },
+};
 
 /** Nothing waits in the pool, so For you shows no banner. */
 export const ForYouNoBanner: Story = {

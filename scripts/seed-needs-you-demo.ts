@@ -64,6 +64,13 @@
  * Withdrawn, Expired and Closed with task filters each match their own rows;
  * the closed-with-task card is stored as `expired` like the product stores it,
  * and the Expired filter leaves it out.
+ *
+ * One card for each obligation (PAP-749 task 2d): Scott's For you shows the
+ * approval with its in-review task as one card, and the failed run with the
+ * task it blocked (blocked by exhausted retries, board-owned next action) as
+ * one card with Retry; the run moves from Company to Scott with the task. A
+ * task with a configured human review stage plus an approval stays two cards,
+ * because the review is an independent quality gate.
  */
 import { randomUUID, createHash } from "node:crypto";
 import { createRequire } from "node:module";
@@ -693,18 +700,34 @@ async function seed(db: Db) {
   }
 
   // =========================================================================
-  // GROUP: One obligation — an approval with its in-review task, and a blocked
-  //        task with the failed run that caused it.
+  // GROUP: One obligation (task 2d, Rule 11) — an approval with its in-review
+  //        task, and a blocked task with the failed run that caused it, each
+  //        shown as one card. A configured human review stage is an
+  //        independent quality gate, so that pair stays two cards.
   // =========================================================================
   {
-    const obIssue = await makeIssue({ title: "Obligation: approval + in-review task", status: "todo", createdByUserId: scott, responsibleUserId: scott });
-    await issuesSvc.update(obIssue.id, { status: "in_review", assigneeAgentId: null, assigneeUserId: scott, responsibleUserId: scott, executionState: reviewExecutionState(scott) } as never);
+    // The task is in review only because it waits on the approval: one card.
+    const obIssue = await makeIssue({ title: "Obligation: approval + in-review task", status: "in_review", createdByUserId: scott, responsibleUserId: scott });
     const obApproval = await approvalSvc.create(companyId, { type: "request_board_approval", status: "pending", requestedByUserId: scott, payload: { title: "Approve the in-review task", summary: "One obligation: the approval and the in-review task are the same ask." } } as never);
     await db.insert(issueApprovals).values({ companyId, issueId: obIssue.id, approvalId: (obApproval as { id: string }).id });
-    card("One obligation", "approval paired with its in-review task");
+    card("One obligation", "approval paired with its in-review task (one card: the approval, with the task as evidence)");
+  }
+  {
+    // Scott is also the configured reviewer: the review verdict and the
+    // approval are separate gates, so they stay two cards.
+    const gateIssue = await makeIssue({ title: "Independent gate: human review + approval", status: "todo", createdByUserId: scott, responsibleUserId: scott });
+    await issuesSvc.update(gateIssue.id, { status: "in_review", assigneeAgentId: null, assigneeUserId: scott, responsibleUserId: scott, executionState: reviewExecutionState(scott) } as never);
+    const gateApproval = await approvalSvc.create(companyId, { type: "request_board_approval", status: "pending", requestedByUserId: scott, payload: { title: "Approve the reviewed task", summary: "A separate gate from the human review stage on the same task." } } as never);
+    await db.insert(issueApprovals).values({ companyId, issueId: gateIssue.id, approvalId: (gateApproval as { id: string }).id });
+    card("One obligation", "independent quality gate: a human review stage and an approval stay two cards");
   }
   {
     const blockedIssue = await makeIssue({ title: "Obligation: blocked task + failed run", status: "blocked", createdByUserId: scott, responsibleUserId: scott, assigneeAgentId: failingAgent!.id });
+    // What exhausted retries leave on the task: blocked, with a board-owned next action.
+    await db.update(issuesTable).set({
+      unblockDescriptor: { owner: "board", action: "Automatic retries exhausted. Retry the run or reassign the task." },
+      blockedTransitionAt: hoursAgo(4),
+    }).where(eq(issuesTable.id, blockedIssue.id));
     const [brun] = await db.insert(heartbeatRuns).values({
       companyId, agentId: failingAgent!.id, scopeKind: "issue", issueId: blockedIssue.id, status: "failed",
       invocationSource: "on_demand", responsibleUserId: scott, error: "Run failed and blocked the task.",
@@ -714,7 +737,7 @@ async function seed(db: Db) {
       companyId, runId: brun!.id, agentId: failingAgent!.id, seq: 1, eventType: "lifecycle",
       message: "Bounded retry exhausted after 3 scheduled attempts; the task is blocked.", createdAt: hoursAgo(4),
     });
-    card("One obligation", "blocked task paired with its failed run");
+    card("One obligation", "blocked task paired with its failed run (one card: the run with Retry, with the blocked task as evidence)");
   }
 
   // Keep the demo deterministic (plan section 7: "Agents in the demo company do

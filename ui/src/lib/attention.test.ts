@@ -48,7 +48,7 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     audience: { kind: "pool", userId: null, reason: "none" },
     stale: null,
     required: false,
-    changeFingerprint: "fixture.other", closeModes: ["archive", "snooze"],
+    changeFingerprint: "fixture.other", closeModes: ["archive", "snooze"], obligationKey: null, obligationLeadId: null,
     project: null,
     workspace: null,
     expiresAt: null,

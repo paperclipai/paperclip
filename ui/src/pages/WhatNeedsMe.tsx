@@ -20,6 +20,7 @@ import { DecisionHistoryPanel } from "../components/DecisionHistoryPanel";
 import { Button } from "../components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "../components/ui/sheet";
 import { splitArchivedAttentionItems } from "../lib/attention-close";
+import { attentionObligationEvidence, foldAttentionObligations } from "../lib/attention-obligations";
 import { queryKeys } from "../lib/queryKeys";
 import {
   ATTENTION_AGING_DAYS,
@@ -254,7 +255,10 @@ function ClassicWhatNeedsMe() {
     setPendingHide(new Set());
   }, [feed?.generatedAt]);
 
-  const allItems = useMemo(() => feed?.items ?? [], [feed]);
+  // One card for each obligation (PAP-749 Rule 11): evidence folds into its
+  // lead before any split, so a lead and its evidence always move together.
+  const obligations = useMemo(() => foldAttentionObligations(feed?.items ?? []), [feed]);
+  const allItems = obligations.cards;
 
   const activeItems = useMemo(
     () => allItems.filter((item) => !pendingHide.has(item.id)),
@@ -719,6 +723,7 @@ function ClassicWhatNeedsMe() {
                                   onClaim={handleClaim}
                                   claiming={claimingId === item.id}
                                   selected={selectionFromKeyboard && selectedAttentionId === item.id}
+                                  evidence={attentionObligationEvidence(obligations, item)}
                                 />
                               </div>
                             </Fragment>
@@ -760,6 +765,7 @@ function ClassicWhatNeedsMe() {
                 userLabelMap={userLabelMap}
                 onClaim={handleClaim}
                 claiming={claimingId === item.id}
+                evidence={attentionObligationEvidence(obligations, item)}
               />
             ))}
           </AttentionStaleGroup>
@@ -790,6 +796,7 @@ function ClassicWhatNeedsMe() {
                 userLabelMap={userLabelMap}
                 onClaim={handleClaim}
                 claiming={claimingId === item.id}
+                evidence={attentionObligationEvidence(obligations, item)}
               />
             ))}
           </AttentionSnoozedGroup>
@@ -817,6 +824,7 @@ function ClassicWhatNeedsMe() {
                   onToggleExpand={handleToggleExpand}
                   onDismiss={handleDismiss}
                   onSnooze={handleSnooze}
+                  evidence={attentionObligationEvidence(obligations, item)}
                 />
               ))}
             </Curtain>

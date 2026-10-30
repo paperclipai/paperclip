@@ -30,6 +30,7 @@ import { cn, relativeTime } from "../lib/utils";
 import { DecisionTriageStrip } from "./DecisionTriageStrip";
 import { InteractionAudienceLine } from "./InteractionAudienceLine";
 import { AttentionAudienceLine } from "./AttentionViews";
+import { AttentionObligationEvidence } from "./AttentionObligationEvidence";
 import { StatusGlyph } from "./StatusGlyph";
 import { Button } from "./ui/button";
 import { Collapsible, CollapsibleContent } from "./ui/collapsible";
@@ -82,6 +83,11 @@ interface AttentionQueueRowProps {
   onClaim?: (item: AttentionItem) => void;
   claiming?: boolean;
   selected?: boolean;
+  /**
+   * The rest of this card's obligation (PAP-749 plan §2, Rule 11), folded in
+   * as one line each. Pass a stable array; the row is memoized.
+   */
+  evidence?: readonly AttentionItem[];
 }
 
 /**
@@ -110,6 +116,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   onClaim,
   claiming = false,
   selected = false,
+  evidence,
 }: AttentionQueueRowProps) {
   const meta = sourceMeta(item.sourceKind);
   // Colour + glyph are borrowed wholesale from the task status system, so a
@@ -333,6 +340,10 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         claiming={claiming}
         className="-mt-2"
       />
+
+      {/* One card for each obligation (PAP-749 Rule 11): the task waiting on
+          this approval, or the work this failed run blocks. */}
+      <AttentionObligationEvidence item={item} evidence={evidence} />
 
       {/* Collapsed-only content. It has no counterpart to morph into — the
           thumbnail strip becomes a full gallery, and an inline row's footer is

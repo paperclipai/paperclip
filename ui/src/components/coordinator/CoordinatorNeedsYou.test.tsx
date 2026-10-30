@@ -77,7 +77,7 @@ async function renderPage(url = fixture.url) {
 describe("Coordinator Needs You — Archived view and history filters (PAP-749 task 2e)", () => {
   const hidden = (id: string, kind: "dismiss" | "snooze", snoozedUntil: string | null = null) => ({
     id, sourceKind: "issue_thread_interaction", inlineResolvable: false, dismissalKey: `attention:${id}`, changeFingerprint: `${id}.me`,
-    closeModes: ["withdraw", "archive", "snooze"], audience: { kind: "user", userId: "reviewer", reason: "addressee" },
+    closeModes: ["withdraw", "archive", "snooze"], obligationKey: null, obligationLeadId: null, audience: { kind: "user", userId: "reviewer", reason: "addressee" },
     dismissal: { kind, dismissedAt: "2026-10-29T12:00:00.000Z", snoozedUntil, isActive: true },
     subject: { id: `${id}-interaction`, kind: "interaction", title: `Hidden ${id}`, href: `/PAP/issues/PAP-9#${id}`, metadata: {} },
     relatedIssue: null, activityAt: new Date().toISOString(),
@@ -437,6 +437,41 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await render(client);
     expect(container.textContent).not.toContain("Open to review");
+    await click("Retry");
+    expect(fixture.retryTask).toHaveBeenCalledWith("task-7", { idempotencyKey: expect.any(String), observedRunId: "run-7" });
+    client.clear();
+  });
+
+  it("shows one card for each obligation, with the rest folded in as evidence (PAP-749 task 2d)", async () => {
+    const now = new Date().toISOString();
+    const forMe = { kind: "user", userId: "reviewer", reason: "instigator" };
+    const run = { id: "failed", sourceKind: "failed_run", inlineResolvable: true, decisionVerbs: [{ id: "retry", label: "Retry" }, { id: "inspect", label: "Open run" }],
+      subject: { id: "run-7", kind: "run", title: "Flaky Runner run failed", href: "/PAP/agents/a/runs/run-7", metadata: { issueId: "task-7" } },
+      relatedIssue: { id: "task-7", identifier: "PAP-7", title: "Nightly sync", href: "/PAP/issues/PAP-7" }, closeModes: ["archive", "snooze"],
+      obligationKey: "blocked:task-7", obligationLeadId: "failed", activityAt: now, audience: forMe } as unknown as AttentionItem;
+    const blocked = { id: "blocked", sourceKind: "blocker_attention", inlineResolvable: false, whyNow: "Automatic retries exhausted. Retry or reassign the task.",
+      subject: { id: "task-7", kind: "issue", identifier: "PAP-7", title: "Nightly sync", href: "/PAP/issues/PAP-7" }, relatedIssue: null, closeModes: ["archive", "snooze"],
+      obligationKey: "blocked:task-7", obligationLeadId: "failed", activityAt: now, audience: forMe } as unknown as AttentionItem;
+    const approval = { id: "approval", sourceKind: "approval", inlineResolvable: false, whyNow: "Approval is pending a board decision.",
+      subject: { id: "appr-1", kind: "approval", title: "Approve the launch", href: "/PAP/approvals/appr-1", metadata: { issueId: "task-8" } }, relatedIssue: null,
+      closeModes: ["withdraw", "archive", "snooze"], obligationKey: "approval:appr-1", obligationLeadId: "approval", activityAt: now, audience: forMe } as unknown as AttentionItem;
+    const review = { id: "review", sourceKind: "review", inlineResolvable: false, whyNow: "Issue is in review with a linked pending approval.",
+      subject: { id: "task-8", kind: "issue", identifier: "PAP-8", title: "Launch page", href: "/PAP/issues/PAP-8" }, relatedIssue: null, closeModes: ["archive", "snooze"],
+      obligationKey: "approval:appr-1", obligationLeadId: "approval", activityAt: now, audience: forMe } as unknown as AttentionItem;
+    fixture.byView = { mine: [run, blocked, approval, review] };
+    fixture.viewCounts = { mine: 2, unassigned: 0, company: 0 };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(client);
+    // Two obligations, two cards; the evidence cards are never cards of their own.
+    expect([...container.querySelectorAll("[data-attention-card]")].map((card) => card.getAttribute("data-attention-card"))).toEqual(["failed", "approval"]);
+    const runCard = container.querySelector<HTMLElement>('[data-attention-card="failed"]')!;
+    expect(runCard.querySelector('[data-attention-evidence="blocked"]')?.textContent)
+      .toBe("Blocked by this run: PAP-7 Nightly sync — Automatic retries exhausted. Retry or reassign the task.");
+    const approvalCard = container.querySelector<HTMLElement>('[data-attention-card="approval"]')!;
+    expect(approvalCard.querySelector('[data-attention-evidence="review"]')?.textContent)
+      .toBe("Task waiting on this approval: PAP-8 Launch page — Issue is in review with a linked pending approval.");
+    expect(approvalCard.querySelector('[data-attention-evidence="review"] a')?.getAttribute("href")).toBe("/PAP/issues/PAP-8");
+    // The run keeps the one action for the blocked work.
     await click("Retry");
     expect(fixture.retryTask).toHaveBeenCalledWith("task-7", { idempotencyKey: expect.any(String), observedRunId: "run-7" });
     client.clear();

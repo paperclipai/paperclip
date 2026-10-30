@@ -501,6 +501,19 @@ export interface AttentionItem {
    * actions instead.
    */
   closeModes: AttentionCloseMode[];
+  /**
+   * One card for each obligation (PAP-749 plan §2, Rule 11). Cards with the
+   * same key are one obligation: a pending approval with the in-review state of
+   * its task (`approval:<approvalId>`), or a blocked task with the failed run
+   * that caused it (`blocked:<issueId>`). The UI shows the lead card and folds
+   * the others into it as evidence; the feed still returns every card, keeps
+   * the evidence right after its lead, and shows or hides it with the lead.
+   * `null` when the card is its own obligation. A configured human review
+   * stage is an independent quality gate, so it keeps its own card.
+   */
+  obligationKey: string | null;
+  /** The `id` of the card that leads the obligation; set with `obligationKey`. */
+  obligationLeadId: string | null;
   project: AttentionProjectRef | null;
   workspace: AttentionWorkspaceRef | null;
   expiresAt: string | null;
@@ -535,7 +548,10 @@ export interface AttentionFeed {
    * count until a person answers it. Unassigned and Company are never in it.
    */
   deskBadgeCount: number;
-  /** Per-view counts for the three-view switch and the Unassigned banner. */
+  /**
+   * Per-view counts for the three-view switch and the Unassigned banner. Each
+   * obligation counts once, so a lead and its evidence are one (Rule 11).
+   */
   viewCounts: AttentionViewCounts;
   nextCursor: string | null;
   countsBySourceKind: Record<AttentionSourceKind, number>;

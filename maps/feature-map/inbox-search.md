@@ -65,6 +65,12 @@ reason** chip and sit in a collapsed **Stale (N)** group at the bottom of each
 view; **Withdraw all stale** lists every card first and withdraws only those
 with a real withdraw. "Dismiss — no effects" and the questions-only Cancel are
 gone; archived and snoozed cards live in the **Archived** view.
+One obligation is one card: a pending approval leads, with the in-review task
+that waits on it as a line under it, and a failed run leads (with **Retry**),
+with the task it blocks under it; the run then shows where the blocked task
+does. The feed still returns every card, the evidence hides and returns with
+its lead, and each view count and the badge count the obligation once. A task
+with a configured human review stage keeps its review card next to the approval.
 Search, filter by agent/project, sort, and group by task/agent/project apply to
 both open decisions and the visible Recent Decisions receipts. Successful
 resolutions resize into compact receipts while the same contained Gather Light
@@ -157,14 +163,18 @@ and decision cancel, personal archive/snooze, transfer, history labels, and the
 cover the shared active-request predicate with Mine, the 30-day, closed-task,
 decision-deadline and 7-day Unassigned stale rules, stale approval escalation
 without withdrawal, fingerprint-only resurfacing of dismissed and snoozed cards,
-and the idempotent closed-task sweep. The
+and the idempotent closed-task sweep.
+[Obligation tests](../../server/src/__tests__/attention-obligations.test.ts)
+cover the approval/review and blocked-task/failed-run joins, the separate human
+review gate, placement with the blocked task's person, one count per obligation,
+evidence that hides and restores with its lead, and the split after an answer. The
 [Needs You component test](../../ui/src/components/coordinator/CoordinatorNeedsYou.test.tsx)
 checks that a chat-sourced canonical question reaches its original resolver and context,
 and the view switch, banner, Why me?, For @name and Claim; the
 [classic page view test](../../ui/src/pages/WhatNeedsMe.views.test.tsx) checks the same on Decisions,
 plus the Archived view with Restore, Change time and Decision history on both pages.
 The [Decisions views stories](../../ui/storybook/stories/inbox-search/needs-you-views.stories.tsx)
-show For you, Unassigned, Company, Archived and a different person's cards.
+show For you, Unassigned, Company, Archived, a different person's cards and one card for each obligation.
 It also checks simultaneous resize/light and delayed movement to Recent Decisions.
 [Shared card-motion tests](../../ui/src/components/coordinator/CoordinatorTaskCommitment.test.tsx)
 cover reduced-motion settlement and returning to a resolved card without replay.

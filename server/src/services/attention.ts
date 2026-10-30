@@ -413,6 +413,8 @@ type CreateAttentionItemInput = Omit<AttentionItem,
   | "required"
   | "changeFingerprint"
   | "closeModes"
+  | "obligationKey"
+  | "obligationLeadId"
   | "project"
   | "workspace"
   | "expiresAt"
@@ -452,6 +454,9 @@ function createItem(input: CreateAttentionItemInput): AttentionItem {
     required: false,
     changeFingerprint: "",
     closeModes: attentionCloseModes(input.sourceKind, input.subject),
+    // Set by the obligation pass (PAP-749 plan §2, Rule 11).
+    obligationKey: null,
+    obligationLeadId: null,
     project: input.project ?? null,
     workspace: input.workspace ?? null,
     expiresAt: input.expiresAt ?? null,
@@ -1455,6 +1460,90 @@ export function escalateStaleAudience(input: {
 }
 
 /**
+ * What a card says about the obligation it belongs to (PAP-749 plan §2, Rule
+ * 11), captured per card during collection. `anchor` marks the card that makes
+ * the obligation real: the approval itself, or a card for the blocked task. A
+ * key with no anchor card in the feed (only failed runs, or a review whose
+ * approval is not shown) forms no obligation.
+ */
+export type AttentionObligationHint = { key: string; anchor: boolean };
+
+/** Lower leads: the card that carries the one action for its obligation. */
+function obligationLeadRank(item: AttentionItem) {
+  switch (item.sourceKind) {
+    case "approval":
+      return 0;
+    // The failed run carries the working action (Retry) for the task it blocks.
+    case "failed_run":
+      return 1;
+    case "blocker_attention":
+      return item.dedupKey.startsWith("blocked-owner:") ? 2 : 3;
+    default:
+      return 4;
+  }
+}
+
+/**
+ * Join the cards that are one obligation (PAP-749 plan §2, Rule 11) and pick
+ * the lead: the approval, else the failed run that caused the block, else the
+ * blocked task. Every member keeps its own record (the server keeps all the
+ * evidence); the members share one placement, so the obligation shows in one
+ * view and counts once. A company alert that is not a required gate (a failed
+ * run) goes with the work it blocks, to that person. Mutates `items`.
+ */
+export function assignAttentionObligations(
+  items: AttentionItem[],
+  hintByDedupKey: ReadonlyMap<string, AttentionObligationHint>,
+) {
+  const groups = new Map<string, { members: AttentionItem[]; anchored: boolean }>();
+  for (const item of items) {
+    const hint = hintByDedupKey.get(item.dedupKey);
+    if (!hint) continue;
+    const group = groups.get(hint.key) ?? { members: [], anchored: false };
+    group.members.push(item);
+    group.anchored ||= hint.anchor;
+    groups.set(hint.key, group);
+  }
+  for (const [key, group] of groups) {
+    if (!group.anchored || group.members.length < 2) continue;
+    const [lead, ...evidence] = [...group.members].sort((left, right) =>
+      obligationLeadRank(left) - obligationLeadRank(right) || compareAttentionItems(left, right));
+    const audience = lead!.audience.kind === "company" && !lead!.required
+      ? evidence.find((member) => member.audience.kind === "user")?.audience ?? lead!.audience
+      : lead!.audience;
+    for (const member of group.members) {
+      member.obligationKey = key;
+      member.obligationLeadId = lead!.id;
+      member.audience = audience;
+    }
+  }
+}
+
+function isObligationEvidence(item: AttentionItem) {
+  return item.obligationLeadId != null && item.obligationLeadId !== item.id;
+}
+
+/**
+ * Put each obligation's evidence right after its lead, in the lead's place, so
+ * a page keeps them together. Evidence whose lead is not in `items` stays put.
+ */
+function keepObligationsTogether(items: AttentionItem[]) {
+  const evidenceByLeadId = new Map<string, AttentionItem[]>();
+  for (const item of items) {
+    if (!isObligationEvidence(item)) continue;
+    evidenceByLeadId.set(item.obligationLeadId!, [...(evidenceByLeadId.get(item.obligationLeadId!) ?? []), item]);
+  }
+  if (evidenceByLeadId.size === 0) return items;
+  const ids = new Set(items.map((item) => item.id));
+  const ordered: AttentionItem[] = [];
+  for (const item of items) {
+    if (isObligationEvidence(item) && ids.has(item.obligationLeadId!)) continue;
+    ordered.push(item, ...(evidenceByLeadId.get(item.id) ?? []));
+  }
+  return ordered;
+}
+
+/**
  * Load the per-issue audience context for `startIssueIds`: the chat user and
  * human assignee of each start issue, plus the instigator found by walking the
  * parent chain to the nearest human-created ancestor. The human-created test is
@@ -1561,10 +1650,17 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       // audience, so it is applied in the same post-pass.
       const audienceInputByDedupKey = new Map<string, AttentionAudienceInput>();
       const changeBasisByDedupKey = new Map<string, AttentionChangeBasis>();
+      const obligationHintByDedupKey = new Map<string, AttentionObligationHint>();
 
-      const add = (item: AttentionItem, audienceInput: AttentionAudienceInput, change: AttentionChangeBasis) => {
+      const add = (
+        item: AttentionItem,
+        audienceInput: AttentionAudienceInput,
+        change: AttentionChangeBasis,
+        obligation?: AttentionObligationHint | null,
+      ) => {
         audienceInputByDedupKey.set(item.dedupKey, audienceInput);
         changeBasisByDedupKey.set(item.dedupKey, change);
+        if (obligation) obligationHintByDedupKey.set(item.dedupKey, obligation);
         collected.push(item);
       };
 
@@ -1637,7 +1733,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             content: { type: approval.type, payload: approval.payload },
             since: approval.updatedAt,
             required: true,
-          });
+          }, { key: `approval:${approval.id}`, anchor: true });
         }
 
       }
@@ -2044,7 +2140,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           }, {
             content: { action: descriptor.action },
             since: issue.blockedTransitionAt,
-          });
+          }, { key: `blocked:${issue.id}`, anchor: true });
         }
         const blockerAttention = issue.blockerAttention;
         if (blockerAttention?.state !== "stalled" && blockerAttention?.state !== "needs_attention") continue;
@@ -2101,7 +2197,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }), { issueId: terminalIssueId }, {
           content: { state: candidate.state },
           since: candidate.terminalSummary.updatedAt,
-        });
+        }, { key: `blocked:${terminalIssueId}`, anchor: true });
       }
 
       const reviewRows = await db
@@ -2138,8 +2234,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             eq(approvals.companyId, companyId),
             inArray(issueApprovals.issueId, reviewIssueIds),
             eq(approvals.status, "pending"),
-          ));
-      const pendingApprovalByIssueId = new Map(pendingReviewApprovalRows.map((row) => [row.issueId, row.approvalId]));
+          ))
+          .orderBy(asc(approvals.createdAt), asc(approvals.id));
+      // The oldest pending approval per task, so the review joins the same
+      // approval card on every read (Rule 11).
+      const pendingApprovalByIssueId = new Map<string, string>();
+      for (const row of pendingReviewApprovalRows) {
+        if (!pendingApprovalByIssueId.has(row.issueId)) pendingApprovalByIssueId.set(row.issueId, row.approvalId);
+      }
       const [reviewAttentionByIssueId, reviewIssueMap, reviewImageMap] = await Promise.all([
         issueService(db).listReviewAttention(companyId, reviewRows),
         issueSummaryMap(db, companyId, reviewIssueIds, readCondition),
@@ -2210,7 +2312,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             lastDecisionId: state?.lastDecisionId ?? null,
           },
           since: review.updatedAt,
-        });
+          // Rule 11: the in-review state of a task that waits on its approval is
+          // the approval's obligation. A configured human review stage is an
+          // independent quality gate and keeps its own card.
+        }, pendingApprovalId && !hasHumanParticipant && !stalled
+          ? { key: `approval:${pendingApprovalId}`, anchor: false }
+          : null);
       }
 
       const failedRows = await listAttentionExhaustedRuns(db, companyId);
@@ -2289,7 +2396,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           // Each failed run is its own card; nothing about it changes later.
           content: null,
           since: run.finishedAt ?? run.updatedAt ?? run.createdAt,
-        });
+          // Rule 11: a failed run joins the card for the task it blocks, if any.
+        }, issueId ? { key: `blocked:${issueId}`, anchor: false } : null);
       }
 
       const budgetOverview = await budgetService(db).overview(companyId);
@@ -2450,6 +2558,13 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           now,
           companyConfig: audienceConfig,
         });
+        currentItems.push(item);
+      }
+      // Rule 11: one card for each obligation. Members share one placement, so
+      // the fingerprint below reads the obligation's audience.
+      assignAttentionObligations(currentItems, obligationHintByDedupKey);
+      for (const item of currentItems) {
+        const change = changeBasisByDedupKey.get(item.dedupKey) ?? { content: null, since: item.createdAt };
         item.changeFingerprint = attentionChangeFingerprint({
           sourceKind: item.sourceKind,
           content: change.content,
@@ -2460,7 +2575,6 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         // Hidden cards stay in the snapshot so the Archived view and its tab
         // count can read them; the view filter below drops them elsewhere.
         item.dismissal = activeDismissalState(dismissals, item, now);
-        currentItems.push(item);
       }
 
       // "Transferred by @x" on a card that reached its person through a
@@ -2478,7 +2592,13 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       }
       const queueKey = options.queue?.trim() || null;
       const hiddenForViewer = (item: AttentionItem) => item.dismissal?.isActive === true;
-      const visibleItems = enrichedItems.filter((item) => {
+      // Rule 11: evidence shows and hides with its lead, so archiving, snoozing
+      // or filtering the one card never leaves part of the obligation behind.
+      const enrichedById = new Map(enrichedItems.map((item) => [item.id, item]));
+      const obligationLeadOf = (item: AttentionItem) =>
+        isObligationEvidence(item) ? enrichedById.get(item.obligationLeadId!) ?? item : item;
+      const visibleItems = enrichedItems.filter((member) => {
+        const item = obligationLeadOf(member);
         if (view === "archived") {
           // The person's own Archived view (PAP-749 plan §3): open cards they
           // archived or snoozed, and nothing else.
@@ -2503,10 +2623,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const selectedComparator = sort === "decide"
         ? (left: AttentionItem, right: AttentionItem) => compareDecideItems(left, right, now)
         : compareAttentionItems;
-      const rankedItems = orderBlockedAttentionByWeight(
+      const rankedItems = keepObligationsTogether(orderBlockedAttentionByWeight(
         visibleItems.sort(selectedComparator),
         selectedComparator,
-      )
+      ))
         .map((item, index) => ({ ...item, rank: index + 1 }));
       let items: AttentionItem[];
       let nextCursor: string | null;
@@ -2576,8 +2696,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       // filters and pagination, so every surface reads the same numbers. The
       // three audience views skip the cards this person archived or snoozed;
       // the Archived tab counts exactly those (plan §3), never in the badge.
+      // Each obligation counts once, as its lead (Rule 11).
       const viewCounts: AttentionViewCounts = { mine: 0, unassigned: 0, company: 0, archived: 0 };
       for (const item of enrichedItems) {
+        if (obligationLeadOf(item) !== item) continue;
         if (item.archivedAt) continue;
         if (item.snoozedUntil && timestamp(item.snoozedUntil) > now) continue;
         if (hiddenForViewer(item)) {

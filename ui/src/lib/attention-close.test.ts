@@ -23,7 +23,7 @@ function item(id: string, overrides: Partial<AttentionItem> = {}) {
     subject: { id: `${id}-subject` },
     audience: { kind: "user", userId: "scott", reason: "addressee" },
     stale: null,
-    closeModes: ["withdraw", "archive", "snooze"],
+    closeModes: ["withdraw", "archive", "snooze"], obligationKey: null, obligationLeadId: null,
     ...overrides,
   } as unknown as AttentionItem;
 }
