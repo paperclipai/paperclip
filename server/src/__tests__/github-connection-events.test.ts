@@ -1,3 +1,4 @@
+import { externalObjectService } from "../services/external-objects.js";
 import { startToolHealthWorker } from "./helpers/tool-health-worker.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
@@ -35,7 +36,7 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
   beforeAll(async () => {
     if (!externalTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-github-events-");
     if (externalTestDatabaseUrl) await applyPendingMigrations(externalTestDatabaseUrl);
-    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
+    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 6 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
@@ -171,12 +172,27 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
       expect(connector.leaseEvents).toHaveBeenCalledTimes(5);
     }
 
+    let releaseRefresh!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>(resolve => { markStarted = resolve; });
+    const held = new Promise<void>(resolve => { releaseRefresh = resolve; });
+    const resolver = externalObjectService(db, { github: false, resolvers: [{
+      providerKey: "github", resolve: async () => {
+        markStarted(); await held;
+        return { ok: true, snapshot: { statusKey: "open", statusCategory: "open", statusTone: "info", isTerminal: false } };
+      },
+    }] });
+    const oldRefresh = resolver.refreshObject(externalObjectId, { companyId, force: true });
+    await started;
+
     const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
     await expect(service.pollOnce({ forSetup: activeSetup })).resolves.toMatchObject({ leased: 2, processed: 1, duplicate: 0, failed: 1 });
     expect(warning.mock.calls).toEqual([[{
       deliveryId: "undecryptable-delivery", reason: "inner_event_authentication_failed",
     }, "GitHub connector event retained for retry"]]);
     warning.mockRestore();
+    releaseRefresh();
+    await expect(oldRefresh).resolves.toMatchObject({ refreshed: false, reason: "refresh_superseded" });
     const [snapshot] = await db.select().from(externalObjects).where(eq(externalObjects.id, externalObjectId));
     expect(snapshot).toMatchObject({
       statusKey: "merged",
@@ -184,6 +200,8 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
       statusCategory: "succeeded",
       statusTone: "success",
       isTerminal: true,
+      refreshToken: null,
+      refreshStartedAt: null,
       remoteVersion: "2026-09-04T11:59:01.000Z",
       data: expect.objectContaining({ marker: "preserved", merged: true, headRef: "feature", baseSha: "b".repeat(40) }),
     });

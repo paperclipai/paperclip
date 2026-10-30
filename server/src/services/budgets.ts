@@ -1,5 +1,6 @@
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
 import { notifyAttentionRetentionWork, notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { addCents, compareCents, normalizeCents } from "@paperclipai/shared";
@@ -306,6 +307,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     await notifyRunDispatch(db, { companyId: policy.companyId });
     await notifyCompanyRetentionWork(db, policy.companyId);
     await notifyStatusCardIssueChange(db, policy.companyId);
+    await notifyExternalObjectRefresh(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.issueMonitors);
@@ -369,6 +371,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     await notifyRunDispatch(db, { companyId: policy.companyId });
     await notifyCompanyRetentionWork(db, policy.companyId);
     await notifyStatusCardIssueChange(db, policy.companyId);
+    await notifyExternalObjectRefresh(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.issueMonitors);

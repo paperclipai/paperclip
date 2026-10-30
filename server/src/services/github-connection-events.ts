@@ -1,3 +1,4 @@
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { dispatchGitHubBotCloudEvent } from "./chat-github-cloud-ingress.js";
 import { chatEndpoints } from "@paperclipai/db";
@@ -244,25 +245,31 @@ export function githubConnectionEventService(
     const snapshot = githubSnapshotUpdate(event.payload);
     if (!snapshot) return;
     const appliedAt = now();
-    await db.update(externalObjects).set({
-      statusKey: snapshot.statusKey,
-      statusLabel: snapshot.statusLabel,
-      statusCategory: snapshot.statusCategory,
-      statusTone: snapshot.statusTone,
-      statusIconKey: snapshot.statusIconKey,
-      isTerminal: snapshot.merged || snapshot.state === "closed",
-      data: sql`${externalObjects.data} || ${JSON.stringify(snapshot.data)}::jsonb`,
-      remoteVersion: snapshot.remoteVersion,
-      lastResolvedAt: appliedAt,
-      lastChangedAt: appliedAt,
-      nextRefreshAt: appliedAt,
-      updatedAt: appliedAt,
-    }).where(and(
-      eq(externalObjects.companyId, companyId),
-      eq(externalObjects.providerKey, "github"),
-      eq(externalObjects.objectType, "pull_request"),
-      sql`lower(${externalObjects.externalId}) = lower(${snapshot.externalId})`,
-    ));
+    await db.transaction(async tx => {
+      await notifyExternalObjectRefresh(tx, companyId, { providerKey: "github", objectType: "pull_request",
+        externalId: snapshot.externalId, ignoreExternalIdCase: true });
+      await tx.update(externalObjects).set({
+        statusKey: snapshot.statusKey,
+        statusLabel: snapshot.statusLabel,
+        statusCategory: snapshot.statusCategory,
+        statusTone: snapshot.statusTone,
+        statusIconKey: snapshot.statusIconKey,
+        isTerminal: snapshot.merged || snapshot.state === "closed",
+        data: sql`${externalObjects.data} || ${JSON.stringify(snapshot.data)}::jsonb`,
+        remoteVersion: snapshot.remoteVersion,
+        lastResolvedAt: appliedAt,
+        lastChangedAt: appliedAt,
+        nextRefreshAt: appliedAt,
+        refreshStartedAt: null,
+        refreshToken: null,
+        updatedAt: appliedAt,
+      }).where(and(
+        eq(externalObjects.companyId, companyId),
+        eq(externalObjects.providerKey, "github"),
+        eq(externalObjects.objectType, "pull_request"),
+        sql`lower(${externalObjects.externalId}) = lower(${snapshot.externalId})`,
+      ));
+    });
     if (snapshot.merged && event.action === "closed") {
       await issueThreadInteractionService(db, { wakeup: options.wakeup })
         .sweepMergedPullRequestConfirmations([{

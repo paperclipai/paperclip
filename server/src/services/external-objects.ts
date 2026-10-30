@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, isNull, lte, not, or, sql } from "drizzle-orm";
+import { and, asc, eq, exists, gt, inArray, isNotNull, isNull, lte, not, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companies, documents, externalObjectMentions, externalObjects, issueComments, issueDocuments, issues, plugins } from "@paperclipai/db";
+import { companies, documents, externalObjectMentions, externalObjects, issueComments, issueDocuments, issues, plugins, pluginCompanySettings } from "@paperclipai/db";
 import {
   formatExternalObjectMentionSourceLabel,
   type ExternalObjectCanonicalUrl,
@@ -18,6 +18,10 @@ import { notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import { createGitHubExternalObjectProvider, type GitHubExternalObjectProviderOptions } from "./github-external-object-provider.js";
+import { notifyExternalObjectRefresh, type ExternalObjectRefreshIdentity } from "./external-object-refresh-notifications.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { registerScopedDeadlineWork } from "./scoped-deadline-work.js";
 import { publishLiveEvent } from "./live-events.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
@@ -95,6 +99,18 @@ const DEFAULT_REFRESH_TTL_SECONDS = 300;
 const DEFAULT_RETRY_AFTER_SECONDS = 300;
 const DEFAULT_REFRESH_LEASE_SECONDS = 300;
 const REFRESH_LEASE_RENEW_INTERVAL_MS = 60_000;
+
+type RefreshScope = { companyId: string; objectId?: string; identity?: ExternalObjectRefreshIdentity };
+type RefreshDeadline = { id: string; companyId: string; dueAt: number; providerKey: string; objectType: string; externalId: string };
+
+
+function refreshableObjectWhere() {
+  return or(eq(externalObjects.isTerminal, false), and(
+    eq(externalObjects.providerKey, "github"),
+    eq(externalObjects.statusKey, "not_found"),
+    not(sql`coalesce(${externalObjects.data}->>'probeVerified', 'false') = 'true'`),
+  ))!;
+}
 
 function sourceWhere(input: ExternalObjectSourceContext) {
   const conditions = [
@@ -246,7 +262,7 @@ function objectSnapshot(object: ExternalObjectRecord): PluginExternalObjectRecor
   };
 }
 
-async function readyObjectReferencePlugins(db: Db) {
+async function readyObjectReferencePlugins(db: Db, companyId?: string) {
   return db
     .select({
       id: plugins.id,
@@ -254,7 +270,12 @@ async function readyObjectReferencePlugins(db: Db) {
       manifestJson: plugins.manifestJson,
     })
     .from(plugins)
-    .where(eq(plugins.status, "ready"))
+    .where(and(eq(plugins.status, "ready"), companyId ? not(exists(db.select({ id: pluginCompanySettings.id })
+      .from(pluginCompanySettings).where(and(
+        eq(pluginCompanySettings.pluginId, plugins.id),
+        eq(pluginCompanySettings.companyId, companyId),
+        eq(pluginCompanySettings.enabled, false),
+      )))) : undefined))
     .orderBy(asc(plugins.installOrder))
     .then((rows) =>
       rows.filter((row) => (row.manifestJson.objectReferences?.length ?? 0) > 0),
@@ -268,7 +289,7 @@ function createPluginProviderDetector(
   return {
     key: "plugin-object-reference-providers",
     async detect(input) {
-      const providers = await readyObjectReferencePlugins(db);
+      const providers = await readyObjectReferencePlugins(db, input.companyId);
       const detections: ExternalObjectDetection[] = [];
 
       for (const provider of providers) {
@@ -327,7 +348,7 @@ async function resolveViaPluginProvider(
   object: ExternalObjectRecord,
 ): Promise<PluginExternalObjectResolveResult | null> {
   if (!pluginWorkerManager) return null;
-  const providers = await readyObjectReferencePlugins(db);
+  const providers = await readyObjectReferencePlugins(db, object.companyId);
   for (const provider of providers) {
     const manifest = provider.manifestJson;
     if (!manifest.capabilities.includes("external.objects.read")) continue;
@@ -375,10 +396,38 @@ export function externalObjectService(
     ...(opts.detectors ?? []),
     ...(githubProvider ? [githubProvider.detector] : []),
   ]);
-  const resolverRegistry = createExternalObjectResolverRegistry([
+  const resolvers = [
     ...(opts.resolvers ?? []),
     ...(githubProvider?.resolvers ?? []),
-  ]);
+  ];
+  const resolverRegistry = createExternalObjectResolverRegistry(resolvers);
+
+  function automaticRefreshWhere(database: Db = db) {
+    const supported = resolvers.map(resolver => and(
+      eq(externalObjects.providerKey, resolver.providerKey),
+      resolver.objectType ? eq(externalObjects.objectType, resolver.objectType) : undefined,
+    )!);
+    if (opts.pluginWorkerManager) supported.push(exists(database.select({ id: plugins.id }).from(plugins).where(and(
+      eq(plugins.status, "ready"),
+      sql`${plugins.manifestJson}->'capabilities' ? 'external.objects.read'`,
+      sql`exists (select 1 from jsonb_array_elements(coalesce(${plugins.manifestJson}->'objectReferences', '[]'::jsonb)) as reference
+        where reference->>'providerKey' = ${externalObjects.providerKey}
+          and reference->'objectTypes' ? ${externalObjects.objectType})`,
+      not(exists(database.select({ id: pluginCompanySettings.id }).from(pluginCompanySettings).where(and(
+        eq(pluginCompanySettings.pluginId, plugins.id),
+        eq(pluginCompanySettings.companyId, externalObjects.companyId),
+        eq(pluginCompanySettings.enabled, false),
+      )))),
+    ))));
+    return and(
+      refreshableObjectWhere(), isNotNull(externalObjects.nextRefreshAt),
+      supported.length ? or(...supported) : sql`false`,
+      exists(database.select({ id: externalObjectMentions.id }).from(externalObjectMentions).where(and(
+        eq(externalObjectMentions.companyId, externalObjects.companyId),
+        eq(externalObjectMentions.objectId, externalObjects.id),
+      ))),
+    )!;
+  }
 
   async function isEnabled() {
     if (typeof opts.enabled === "function") return await opts.enabled();
@@ -423,6 +472,7 @@ export function externalObjectService(
       nextRefreshAt: now,
       updatedAt: now,
     };
+    await notifyExternalObjectRefresh(dbOrTx, companyId, { providerKey: detection.providerKey, objectType: detection.objectType, externalId: detection.externalId });
     const inserted = await dbOrTx
       .insert(externalObjects)
       .values(values)
@@ -452,6 +502,9 @@ export function externalObjectService(
     dbOrTx: any = db,
   ) {
     const urls = extractExternalObjectCanonicalUrls(input.text ?? "");
+    const previous: Array<{ objectId: string | null }> = await dbOrTx.selectDistinct({ objectId: externalObjectMentions.objectId })
+      .from(externalObjectMentions).where(sourceWhere(input));
+    for (const row of previous) if (row.objectId) await notifyExternalObjectRefresh(dbOrTx, input.companyId, row.objectId);
     await dbOrTx.delete(externalObjectMentions).where(sourceWhere(input));
     if (urls.length === 0) return;
 
@@ -470,6 +523,7 @@ export function externalObjectService(
       if (seen.has(sourceKey)) continue;
       seen.add(sourceKey);
       const object = await upsertObjectFromDetection(input.companyId, detection, dbOrTx);
+      await notifyExternalObjectRefresh(dbOrTx, input.companyId, object.id);
       values.push({
         companyId: input.companyId,
         sourceIssueId: input.sourceIssueId,
@@ -521,6 +575,14 @@ export function externalObjectService(
     return dbOrTx === db ? db.transaction(runSync) : runSync(dbOrTx);
   }
 
+  async function deleteMissingSourceMentions(kind: "comment" | "document", recordId: string, tx: any) {
+    const source = and(eq(externalObjectMentions.sourceKind, kind), eq(externalObjectMentions.sourceRecordId, recordId));
+    const owners: Array<{ companyId: string; objectId: string | null }> = await tx.selectDistinct({ companyId: externalObjectMentions.companyId, objectId: externalObjectMentions.objectId })
+      .from(externalObjectMentions).where(source);
+    for (const owner of owners) if (owner.objectId) await notifyExternalObjectRefresh(tx, owner.companyId, owner.objectId);
+    await tx.delete(externalObjectMentions).where(source);
+  }
+
   async function syncComment(commentId: string, dbOrTx: any = db) {
     const runSync = async (tx: any) => {
       if (!(await isEnabled())) return;
@@ -535,9 +597,7 @@ export function externalObjectService(
         .where(eq(issueComments.id, commentId))
         .then((rows: Array<{ id: string; companyId: string; issueId: string; body: string }>) => rows[0] ?? null);
       if (!comment) {
-        await tx
-          .delete(externalObjectMentions)
-          .where(and(eq(externalObjectMentions.sourceKind, "comment"), eq(externalObjectMentions.sourceRecordId, commentId)));
+        await deleteMissingSourceMentions("comment", commentId, tx);
         return;
       }
       await replaceSourceMentions({
@@ -569,9 +629,7 @@ export function externalObjectService(
         .where(eq(documents.id, documentId))
         .then((rows: Array<{ documentId: string; companyId: string; issueId: string; key: string; body: string }>) => rows[0] ?? null);
       if (!document) {
-        await tx
-          .delete(externalObjectMentions)
-          .where(and(eq(externalObjectMentions.sourceKind, "document"), eq(externalObjectMentions.sourceRecordId, documentId)));
+        await deleteMissingSourceMentions("document", documentId, tx);
         return;
       }
       await replaceSourceMentions({
@@ -781,6 +839,8 @@ export function externalObjectService(
     companyId: string;
     actor?: Pick<LogActivityInput, "actorType" | "actorId" | "agentId" | "runId">;
     force?: boolean;
+    scheduled?: boolean;
+    signal?: AbortSignal;
     now?: Date;
   };
 
@@ -802,39 +862,48 @@ export function externalObjectService(
     return { object: toObjectPayload(latest, now), refreshed: false, reason: "refresh_superseded" as const };
   }
 
+  async function persistRefresh(object: ExternalObjectRecord, token: string,
+    patch: Partial<typeof externalObjects.$inferInsert>, scheduled = false) {
+    return db.transaction(async tx => {
+      await notifyExternalObjectRefresh(tx, object.companyId, object.id);
+      const rows = await tx.update(externalObjects).set(patch)
+        .where(and(refreshOwnerWhere(object, token), scheduled ? automaticRefreshWhere(tx as unknown as Db) : undefined)).returning();
+      if (scheduled && rows.length === 0) await tx.update(externalObjects)
+        .set({ refreshStartedAt: null, refreshToken: null }).where(refreshOwnerWhere(object, token));
+      return rows;
+    });
+  }
+
   async function resolveObjectRefresh(
     object: ExternalObjectRecord,
     input: RefreshObjectInput,
     now: Date,
     refreshToken: string,
   ) {
-    const pluginResult = await resolveViaPluginProvider(db, opts.pluginWorkerManager, object);
+    input.signal?.throwIfAborted();
+    const pluginResult = await observeRefreshCancellation(resolveViaPluginProvider(db, opts.pluginWorkerManager, object), input.signal);
     const resolver = pluginResult ? null : resolverRegistry.find(object);
     if (!pluginResult && !resolver) {
-      const [updated] = await db
-        .update(externalObjects)
-        .set({
+      const [updated] = await persistRefresh(object, refreshToken, {
           liveness: object.isTerminal ? object.liveness : visibleLiveness(object, now) === "fresh" ? "stale" : object.liveness,
           nextRefreshAt: addSeconds(now, DEFAULT_RETRY_AFTER_SECONDS),
           refreshStartedAt: null,
           refreshToken: null,
           updatedAt: now,
-        })
-        .where(refreshOwnerWhere(object, refreshToken))
-        .returning();
+        }, input.scheduled);
       if (!updated) return refreshSupersededResult(object, now);
       return { object: toObjectPayload(updated ?? object, now), refreshed: false, reason: "no_resolver" as const };
     }
 
-    const result = pluginResult ?? await resolver!.resolve({ companyId: object.companyId, object });
+    const result = pluginResult ?? await observeRefreshCancellation(
+      resolver!.resolve({ companyId: object.companyId, object, signal: input.signal }), input.signal);
+    input.signal?.throwIfAborted();
     if (!result.ok) {
       // A failed refresh means the object's status is currently unknown, not
       // terminal. Clear a previous terminal verdict so the object keeps being
       // scheduled for automatic refresh and self-heals (e.g. a GitHub "not
       // found" that later resolves once repo access improves).
-      const [updated] = await db
-        .update(externalObjects)
-        .set({
+      const [updated] = await persistRefresh(object, refreshToken, {
           liveness: result.liveness,
           isTerminal: false,
           lastErrorAt: now,
@@ -844,9 +913,7 @@ export function externalObjectService(
           refreshStartedAt: null,
           refreshToken: null,
           updatedAt: now,
-        })
-        .where(refreshOwnerWhere(object, refreshToken))
-        .returning();
+        }, input.scheduled);
       if (!updated) return refreshSupersededResult(object, now);
       publishLiveEvent({
         companyId: object.companyId,
@@ -880,14 +947,10 @@ export function externalObjectService(
       refreshToken: null,
       updatedAt: now,
     };
-    const [updated] = await db
-      .update(externalObjects)
-      .set({
+    const [updated] = await persistRefresh(object, refreshToken, {
           ...patch,
           lastChangedAt: objectChanged(object, { ...object, ...patch }) ? now : object.lastChangedAt,
-        })
-      .where(refreshOwnerWhere(object, refreshToken))
-      .returning();
+        }, input.scheduled);
     if (!updated) return refreshSupersededResult(object, now);
     const next = updated ?? object;
     if (objectChanged(object, next) && input.actor) {
@@ -948,6 +1011,8 @@ export function externalObjectService(
         eq(externalObjects.id, object.id),
         eq(externalObjects.companyId, object.companyId),
         dueOrForced,
+        input.scheduled ? automaticRefreshWhere() : undefined,
+        input.scheduled ? sql`exists (select 1 from ${companies} where ${companies.id} = ${externalObjects.companyId} and ${companies.status} = 'active')` : undefined,
       ))
       .returning();
     return claimed ?? null;
@@ -970,6 +1035,16 @@ export function externalObjectService(
     };
   }
 
+  function observeRefreshCancellation<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) return work;
+    return new Promise((resolve, reject) => {
+      const abort = () => reject(signal.reason);
+      work.then(value => { signal.removeEventListener("abort", abort); resolve(value); },
+        error => { signal.removeEventListener("abort", abort); reject(error); });
+      if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true });
+    });
+  }
+
   const objectRefreshesInFlight = new Map<string, Promise<Awaited<ReturnType<typeof resolveObjectRefresh>>>>();
 
   async function refreshObject(
@@ -989,7 +1064,7 @@ export function externalObjectService(
 
     const refreshKey = `${object.companyId}:${object.id}`;
     const existingRefresh = objectRefreshesInFlight.get(refreshKey);
-    if (existingRefresh) return existingRefresh;
+    if (existingRefresh) return observeRefreshCancellation(existingRefresh, input.signal);
 
     const claimed = await claimObjectRefresh(object, input, now);
     if (!claimed) {
@@ -1006,7 +1081,10 @@ export function externalObjectService(
     }
 
     const stopRenewingRefreshLease = startRefreshLeaseRenewal(object, claimed.refreshToken);
-    const refresh = resolveObjectRefresh(object, input, now, claimed.refreshToken).finally(() => {
+    const refresh = resolveObjectRefresh(object, input, now, claimed.refreshToken).catch(async error => {
+      if (input.signal?.aborted) await persistRefresh(object, claimed.refreshToken!, { refreshStartedAt: null, refreshToken: null });
+      throw error;
+    }).finally(() => {
       stopRenewingRefreshLease();
       objectRefreshesInFlight.delete(refreshKey);
     });
@@ -1031,73 +1109,66 @@ export function externalObjectService(
     return results;
   }
 
-  async function refreshDueObjectsUnchecked(companyId: string, limit = 50, now = new Date()) {
-    const staleRefreshStartedBefore = new Date(now.getTime() - DEFAULT_REFRESH_LEASE_SECONDS * 1000);
-    // Terminal objects are usually skipped forever, but a GitHub "not found"
-    // verdict is only trustworthy while the repository is actually visible to
-    // the configured credentials. GitHub hides inaccessible (often private)
-    // repos behind a 404, so a not-found object can become resolvable later
-    // when credentials or repo visibility improve. Re-check objects that were
-    // frozen as "not found" before the repository probe existed so they
-    // self-heal instead of freezing. Once the provider has probed the repo and
-    // confirmed it is visible (data.probeVerified = "true"), the not-found
-    // verdict is definitive, so stop re-polling that object to avoid burning
-    // the company's GitHub API budget on deleted references forever.
-    const probeVerifiedNotFound = sql`coalesce(${externalObjects.data}->>'probeVerified', 'false') = 'true'`;
-    const refreshable = or(
-      eq(externalObjects.isTerminal, false),
-      and(
-        eq(externalObjects.isTerminal, true),
-        eq(externalObjects.providerKey, "github"),
-        eq(externalObjects.statusKey, "not_found"),
-        not(probeVerifiedNotFound),
-      ),
-    )!;
-    const due = await db
-      .select({ id: externalObjects.id })
-      .from(externalObjects)
-      .where(
-        and(
-          eq(externalObjects.companyId, companyId),
-          refreshable,
-          lte(externalObjects.nextRefreshAt, now),
-          or(
-            isNull(externalObjects.refreshStartedAt),
-            lte(externalObjects.refreshStartedAt, staleRefreshStartedBefore),
-          ),
-        ),
-      )
-      .limit(limit);
-    const results = [];
-    for (const row of due) {
-      results.push(await refreshObject(row.id, {
-        companyId,
-        actor: { actorType: "system", actorId: "external-object-resolver", agentId: null, runId: null },
-        now,
-      }));
+  function registerRefreshWork(
+    coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+    canRun: () => boolean,
+  ) {
+    const cursors = new Map<string, string>();
+    const scopeKey = (scope?: RefreshScope) => JSON.stringify(scope ?? null);
+    async function load(scope?: RefreshScope) {
+      if (!(await isEnabled())) { cursors.clear(); return []; }
+      const key = scopeKey(scope);
+      const cursor = cursors.get(key);
+      const rows = await db.select({ id: externalObjects.id, companyId: externalObjects.companyId,
+        nextRefreshAt: externalObjects.nextRefreshAt, refreshStartedAt: externalObjects.refreshStartedAt,
+        providerKey: externalObjects.providerKey, objectType: externalObjects.objectType, externalId: externalObjects.externalId }).from(externalObjects)
+        .innerJoin(companies, eq(companies.id, externalObjects.companyId))
+        .where(and(
+          eq(companies.status, "active"), automaticRefreshWhere(),
+          scope ? eq(externalObjects.companyId, scope.companyId) : undefined,
+          scope?.objectId ? eq(externalObjects.id, scope.objectId) : undefined,
+          scope?.identity ? and(eq(externalObjects.providerKey, scope.identity.providerKey),
+            eq(externalObjects.objectType, scope.identity.objectType), scope.identity.ignoreExternalIdCase
+              ? sql`lower(${externalObjects.externalId}) = lower(${scope.identity.externalId})`
+              : eq(externalObjects.externalId, scope.identity.externalId)) : undefined,
+          cursor ? gt(externalObjects.id, cursor) : undefined,
+        )).orderBy(asc(externalObjects.id)).limit(250);
+      const entries = rows.map(deadline);
+      if (rows.length === 250) cursors.set(key, rows[rows.length - 1]!.id);
+      else cursors.delete(key);
+      return { rows: entries, complete: rows.length < 250 };
     }
-    return results;
-  }
-
-  async function refreshDueObjects(companyId: string, limit = 50, now = new Date()) {
-    if (!(await isEnabled())) return [];
-    return refreshDueObjectsUnchecked(companyId, limit, now);
-  }
-
-  async function refreshDueObjectsForActiveCompanies(limitPerCompany = 50, now = new Date()) {
-    if (!(await isEnabled())) return { companies: 0, checked: 0, refreshed: 0 };
-    const activeCompanies = await db
-      .select({ id: companies.id })
-      .from(companies)
-      .where(eq(companies.status, "active"));
-    let checked = 0;
-    let refreshed = 0;
-    for (const company of activeCompanies) {
-      const results = await refreshDueObjectsUnchecked(company.id, limitPerCompany, now);
-      checked += results.length;
-      refreshed += results.filter((result) => result.refreshed).length;
+    function deadline(object: Pick<ExternalObjectRecord, "id" | "companyId" | "nextRefreshAt" | "refreshStartedAt" | "providerKey" | "objectType" | "externalId">): RefreshDeadline {
+      return { id: object.id, companyId: object.companyId, providerKey: object.providerKey, objectType: object.objectType, externalId: object.externalId,
+        dueAt: Math.max(object.nextRefreshAt!.getTime(), object.refreshStartedAt
+          ? object.refreshStartedAt.getTime() + DEFAULT_REFRESH_LEASE_SECONDS * 1000 : 0) };
     }
-    return { companies: activeCompanies.length, checked, refreshed };
+    return registerScopedDeadlineWork<RefreshDeadline, RefreshScope>(coordinator, {
+      queue: DELIVERY_QUEUES.externalObjectRefresh,
+      batchSize: 50,
+      minimumPassIntervalMs: 0,
+      decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint) as RefreshScope,
+      matches: (entry, scope) => !scope || (entry.companyId === scope.companyId
+        && (!scope.objectId || entry.id === scope.objectId)
+        && (!scope.identity || (entry.providerKey === scope.identity.providerKey && entry.objectType === scope.identity.objectType
+          && (scope.identity.ignoreExternalIdCase ? entry.externalId.toLowerCase() === scope.identity.externalId.toLowerCase()
+            : entry.externalId === scope.identity.externalId)))),
+      load,
+      check: async (entry, signal) => {
+        if (signal?.aborted || !canRun()) return entry;
+        const current = await load({ companyId: entry.companyId, objectId: entry.id });
+        const scheduled = Array.isArray(current) ? current[0] : current.rows[0];
+        if (!scheduled || scheduled.dueAt > Date.now()) return scheduled ?? null;
+        await refreshObject(entry.id, {
+          companyId: entry.companyId,
+          scheduled: true,
+          signal,
+          actor: { actorType: "system", actorId: "external-object-resolver", agentId: null, runId: null },
+        });
+        const updated = await load({ companyId: entry.companyId, objectId: entry.id });
+        return (Array.isArray(updated) ? updated[0] : updated.rows[0]) ?? null;
+      },
+    }, canRun);
   }
 
   return {
@@ -1113,7 +1184,6 @@ export function externalObjectService(
     getProjectSummary,
     refreshObject,
     refreshIssueObjects,
-    refreshDueObjects,
-    refreshDueObjectsForActiveCompanies,
+    registerRefreshWork,
   };
 }

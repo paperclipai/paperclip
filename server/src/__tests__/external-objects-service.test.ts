@@ -1,9 +1,11 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   companies,
+  applyPendingMigrations,
   createDb,
   activityLog,
   externalObjectMentions,
@@ -12,6 +14,7 @@ import {
   issues,
   plugins,
 } from "@paperclipai/db";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -27,8 +30,8 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { createGitHubExternalObjectProvider } from "../services/github-external-object-provider.js";
 
-const external = resolveExternalTestDatabaseUrl("PAPERCLIP_EXTERNAL_OBJECTS_TEST_DATABASE_URL");
-const embeddedPostgresSupport = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_EXTERNAL_OBJECTS_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -711,9 +714,10 @@ describeEmbeddedPostgres("externalObjectService", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-external-objects-");
-    db = createDb(external ?? tempDb!.connectionString, { maxConnections: 6 });
-  }, 20_000);
+    if (externalDatabaseUrl) await applyPendingMigrations(externalDatabaseUrl);
+    if (!externalDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-external-objects-");
+    db = createDb(externalDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 6 });
+  }, 90_000);
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -730,6 +734,18 @@ describeEmbeddedPostgres("externalObjectService", () => {
     await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
+
+  async function runRefreshWork(service: ReturnType<typeof externalObjectService>) {
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      onError: error => errors.push(error) });
+    try {
+      await service.registerRefreshWork(coordinator, () => true).ready;
+      expect(errors).toEqual([]);
+    } finally {
+      await coordinator.stop();
+    }
+  }
 
   async function createIssue(companyId = randomUUID()) {
     const issueId = randomUUID();
@@ -880,9 +896,9 @@ describeEmbeddedPostgres("externalObjectService", () => {
 
     expect(object.nextRefreshAt).toBeInstanceOf(Date);
 
-    const refreshed = await svc.refreshDueObjects(companyId, 50, new Date(Date.now() + 1_000));
+    await runRefreshWork(svc);
 
-    expect(refreshed).toHaveLength(1);
+    expect((await db.select().from(externalObjects))[0]?.lastResolvedAt).toBeInstanceOf(Date);
     expect(resolve).toHaveBeenCalledTimes(1);
   });
 
@@ -919,15 +935,13 @@ describeEmbeddedPostgres("externalObjectService", () => {
     await svc.syncIssue(issueId);
     const object = await db.select().from(externalObjects).then((rows) => rows[0]!);
 
-    const dueRefresh = svc.refreshDueObjects(companyId, 50, new Date(Date.now() + 1_000));
+    const dueRefresh = runRefreshWork(svc);
     await resolverStarted;
     const manualRefresh = svc.refreshObject(object.id, { companyId, force: true });
     finishResolver();
 
-    const [dueResults, manualResult] = await Promise.all([dueRefresh, manualRefresh]);
+    const [, manualResult] = await Promise.all([dueRefresh, manualRefresh]);
 
-    expect(dueResults).toHaveLength(1);
-    expect(dueResults[0]?.refreshed).toBe(true);
     expect(manualResult.refreshed).toBe(true);
     expect(manualResult.object.statusLabel).toBe("Open");
     expect(resolve).toHaveBeenCalledTimes(1);
@@ -967,14 +981,12 @@ describeEmbeddedPostgres("externalObjectService", () => {
     await scheduledService.syncIssue(issueId);
     const object = await db.select().from(externalObjects).then((rows) => rows[0]!);
 
-    const dueRefresh = scheduledService.refreshDueObjects(companyId, 50, new Date(Date.now() + 1_000));
+    const dueRefresh = runRefreshWork(scheduledService);
     await resolverStarted;
     const manualRefresh = await manualService.refreshObject(object.id, { companyId, force: true });
     finishResolver();
-    const dueResults = await dueRefresh;
+    await dueRefresh;
 
-    expect(dueResults).toHaveLength(1);
-    expect(dueResults[0]?.refreshed).toBe(true);
     expect(manualRefresh.refreshed).toBe(false);
     expect(manualRefresh.reason).toBe("refresh_in_progress");
     expect(manualRefresh.object).not.toHaveProperty("refreshToken");
@@ -1030,7 +1042,7 @@ describeEmbeddedPostgres("externalObjectService", () => {
     const object = await db.select().from(externalObjects).then((rows) => rows[0]!);
     const claimedAt = new Date(Date.now() + 1_000);
 
-    const dueRefresh = scheduledService.refreshDueObjects(companyId, 50, claimedAt);
+    const dueRefresh = runRefreshWork(scheduledService);
     await resolverStarted;
     const replacementResult = await replacementService.refreshObject(object.id, {
       companyId,
@@ -1038,11 +1050,10 @@ describeEmbeddedPostgres("externalObjectService", () => {
       now: new Date(claimedAt.getTime() + 301_000),
     });
     finishResolver();
-    const dueResults = await dueRefresh;
+    await dueRefresh;
     const finalObject = await db.select().from(externalObjects).then((rows) => rows[0]!);
 
     expect(replacementResult.refreshed).toBe(true);
-    expect(dueResults[0]).toMatchObject({ refreshed: false, reason: "refresh_superseded" });
     expect(finalObject.statusLabel).toBe("Closed");
     expect(finalObject.refreshStartedAt).toBeNull();
     expect(finalObject.refreshToken).toBeNull();
@@ -1076,9 +1087,7 @@ describeEmbeddedPostgres("externalObjectService", () => {
     await svc.syncIssue(active.issueId);
     await svc.syncIssue(paused.issueId);
 
-    const result = await svc.refreshDueObjectsForActiveCompanies(50, new Date(Date.now() + 1_000));
-
-    expect(result).toEqual({ companies: 1, checked: 1, refreshed: 1 });
+    await runRefreshWork(svc);
     expect(resolve).toHaveBeenCalledTimes(1);
     const rows = await db.select().from(externalObjects);
     const activeObject = rows.find((row) => row.companyId === active.companyId);
@@ -1137,9 +1146,8 @@ describeEmbeddedPostgres("externalObjectService", () => {
       .set({ nextRefreshAt: new Date(0) })
       .where(eq(externalObjects.id, object.id));
 
-    const refreshed = await svc.refreshDueObjects(companyId);
+    await runRefreshWork(svc);
 
-    expect(refreshed).toEqual([]);
     expect(resolve).toHaveBeenCalledTimes(1);
   });
 
@@ -1182,7 +1190,7 @@ describeEmbeddedPostgres("externalObjectService", () => {
   });
 
   it("re-checks previously frozen GitHub not-found objects so they can self-heal", async () => {
-    const { companyId } = await createIssue();
+    const { companyId, issueId } = await createIssue();
     const canonical = canonicalizeExternalObjectUrl("https://github.com/acme/app/pull/42");
     if (!canonical) throw new Error("expected canonical url");
     const inserted = await db.insert(externalObjects).values({
@@ -1223,9 +1231,10 @@ describeEmbeddedPostgres("externalObjectService", () => {
     const svc = externalObjectService(db, { resolvers: [resolver], github: false });
     expect(object.isTerminal).toBe(true);
 
-    const refreshed = await svc.refreshDueObjects(companyId);
-    expect(refreshed).toHaveLength(1);
-    expect(refreshed[0]?.refreshed).toBe(true);
+    const [linked] = await db.select().from(externalObjects).where(eq(externalObjects.companyId, companyId));
+    await db.insert(externalObjectMentions).values({ companyId, sourceIssueId: issueId,
+      sourceKind: "description", objectId: linked!.id });
+    await runRefreshWork(svc);
 
     const updated = await db.select().from(externalObjects).then((rows) => rows[0]!);
     expect(updated.statusLabel).toBe("Open");
@@ -1234,7 +1243,7 @@ describeEmbeddedPostgres("externalObjectService", () => {
   });
 
   it("does not re-check probe-verified GitHub not-found objects (deleted references are terminal)", async () => {
-    const { companyId } = await createIssue();
+    const { companyId, issueId } = await createIssue();
     const canonical = canonicalizeExternalObjectUrl("https://github.com/acme/app/pull/42");
     if (!canonical) throw new Error("expected canonical url");
     await db.insert(externalObjects).values({
@@ -1271,14 +1280,16 @@ describeEmbeddedPostgres("externalObjectService", () => {
     };
     const svc = externalObjectService(db, { resolvers: [resolver], github: false });
 
-    const refreshed = await svc.refreshDueObjects(companyId);
+    const [linked] = await db.select().from(externalObjects).where(eq(externalObjects.companyId, companyId));
+    await db.insert(externalObjectMentions).values({ companyId, sourceIssueId: issueId,
+      sourceKind: "description", objectId: linked!.id });
+    await runRefreshWork(svc);
 
-    expect(refreshed).toEqual([]);
     expect(resolver.resolve).not.toHaveBeenCalled();
   });
 
   it("does not re-check terminal objects that are not GitHub not-found verdicts", async () => {
-    const { companyId } = await createIssue();
+    const { companyId, issueId } = await createIssue();
     const canonical = canonicalizeExternalObjectUrl("https://github.com/acme/app/pull/42");
     if (!canonical) throw new Error("expected canonical url");
     await db.insert(externalObjects).values({
@@ -1314,9 +1325,11 @@ describeEmbeddedPostgres("externalObjectService", () => {
     };
     const svc = externalObjectService(db, { resolvers: [resolver], github: false });
 
-    const refreshed = await svc.refreshDueObjects(companyId);
+    const [linked] = await db.select().from(externalObjects).where(eq(externalObjects.companyId, companyId));
+    await db.insert(externalObjectMentions).values({ companyId, sourceIssueId: issueId,
+      sourceKind: "description", objectId: linked!.id });
+    await runRefreshWork(svc);
 
-    expect(refreshed).toEqual([]);
     expect(resolver.resolve).not.toHaveBeenCalled();
   });
 
