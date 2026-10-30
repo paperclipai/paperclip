@@ -161,6 +161,17 @@ describe("native history readiness and stable projection", () => {
     expect(eventsMock.mock.calls.map(([id]) => id)).toEqual(["one", "two", "one", "two"]);
   });
 
+  it("restarts an interrupted explicit refresh when history membership changes", async () => {
+    eventsMock.mockResolvedValueOnce([]).mockImplementationOnce(() => new Promise(() => {})).mockResolvedValue([]);
+    const one = { id: "one", status: "succeeded", runtimeMode: "native" as const };
+    await act(async () => { root.render(<StateProbe runs={[one]} />); });
+    await act(async () => { latest.retry(); });
+    const interruptedSignal = eventsMock.mock.calls[1][3].signal;
+    await act(async () => { root.render(<StateProbe runs={[one, { ...one, id: "two" }]} />); });
+    expect(interruptedSignal.aborted).toBe(true);
+    expect(eventsMock.mock.calls.map(([id]) => id)).toEqual(["one", "one", "one", "two"]);
+  });
+
   it("revalidates settled history after a disabled view resumes", async () => {
     eventsMock.mockResolvedValue([]);
     const runs = [{ id: "one", status: "succeeded", runtimeMode: "native" as const }];
