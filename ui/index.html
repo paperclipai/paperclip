@@ -9,10 +9,10 @@
     <!-- PAPERCLIP_RUNTIME_BRANDING_START -->
     <!-- PAPERCLIP_RUNTIME_BRANDING_END -->
     <!-- PAPERCLIP_FAVICON_START -->
-    <link rel="icon" href="/favicon.ico" sizes="48x48" />
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
-    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="icon" href="/favicon.ico" sizes="48x48" data-favicon-light="/favicon.ico" data-favicon-dark="/favicon-dark.ico" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" data-favicon-light="/favicon-light.svg" data-favicon-dark="/favicon-dark.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" data-favicon-light="/favicon-32x32.png" data-favicon-dark="/favicon-dark-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" data-favicon-light="/favicon-16x16.png" data-favicon-dark="/favicon-dark-16x16.png" />
     <!-- PAPERCLIP_FAVICON_END -->
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" crossorigin="use-credentials" />
@@ -38,6 +38,32 @@
         } catch {
           document.documentElement.classList.add("dark");
           document.documentElement.style.colorScheme = "dark";
+        }
+      })();
+      (() => {
+        // Browsers rasterize an SVG favicon once and cache the bitmap by URL, so
+        // one icon that adapts with prefers-color-scheme can stay stuck in the
+        // scheme that was active at first fetch. Point each icon at a URL with
+        // fixed colours for the current browser scheme instead. Follow the
+        // browser scheme, not the in-app theme: the tab strip follows the browser.
+        try {
+          if (typeof window.matchMedia !== "function") return;
+          const query = window.matchMedia("(prefers-color-scheme: dark)");
+          const applyFavicons = () => {
+            const attribute = query.matches ? "data-favicon-dark" : "data-favicon-light";
+            for (const link of document.querySelectorAll("link[data-favicon-light][data-favicon-dark]")) {
+              const href = link.getAttribute(attribute);
+              if (href && link.getAttribute("href") !== href) link.setAttribute("href", href);
+            }
+          };
+          applyFavicons();
+          if (typeof query.addEventListener === "function") {
+            query.addEventListener("change", applyFavicons);
+          } else if (typeof query.addListener === "function") {
+            query.addListener(applyFavicons);
+          }
+        } catch {
+          // Keep the default icons.
         }
       })();
     </script>
