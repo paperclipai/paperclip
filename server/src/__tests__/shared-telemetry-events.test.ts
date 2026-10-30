@@ -5,6 +5,7 @@ import {
   trackAgentFirstHeartbeat,
   trackAgentTaskCompleted,
   trackAgentTaskRun,
+  trackCloudOrganizationIdentified,
   trackInteractionCreated,
   trackInteractionResolved,
   trackInstallCompleted,
@@ -23,6 +24,19 @@ function runtimeValue<T>(value: string): T {
 }
 
 describe("shared telemetry agent events", () => {
+  it("links the telemetry installation to its opaque Cloud organization id", () => {
+    const client = createClient();
+
+    trackCloudOrganizationIdentified(client, {
+      organization_id: "account-group-1",
+    });
+
+    expect(client.hashPrivateRef).not.toHaveBeenCalled();
+    expect(client.track).toHaveBeenCalledWith("cloud.organization_identified", {
+      organization_id: "account-group-1",
+    });
+  });
+
   it("includes agent_id for agent.created", () => {
     const client = createClient();
 
