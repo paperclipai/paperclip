@@ -418,6 +418,7 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
     const issuePath = Array.from({ length: 17 }, () => randomUUID());
     const rootIssueId = issuePath[0];
     const deepDescendantIssueId = issuePath.at(-1)!;
+    const unrelatedRunId = randomUUID();
     const rootRunId = randomUUID();
     const deepDescendantRunId = randomUUID();
     const forgedRunId = randomUUID();
@@ -514,6 +515,15 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
     ]);
     await db.insert(heartbeatRuns).values([
       {
+        id: unrelatedRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "queued",
+        contextSnapshot: { issueId: deepDescendantIssueId },
+      },
+      {
         id: rootRunId,
         companyId,
         agentId,
@@ -579,7 +589,7 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
 
     const issueSvc = issueService(db);
     await expect(
-      issueSvc.checkout(deepDescendantIssueId, agentId, ["todo"], randomUUID()),
+      issueSvc.checkout(deepDescendantIssueId, agentId, ["todo"], unrelatedRunId),
     ).rejects.toMatchObject({
       status: 409,
       details: expect.objectContaining({
