@@ -95,7 +95,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
   it("can reapply the creation migration without losing a committed intent", async () => {
     loseReply = true; await expect(acquire()).rejects.toThrow("Lost provider reply");
     const [before] = await db.select().from(sandboxCreationOperations);
-    const migration = await readFile(new URL("../../../packages/db/src/migrations/0417_vengeful_loners.sql", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../../../packages/db/src/migrations/0418_curved_lady_mastermind.sql", import.meta.url), "utf8");
     for (let attempt = 0; attempt < 2; attempt++) {
       for (const statement of migration.split("--> statement-breakpoint").map(value => value.trim()).filter(Boolean)) {
         await db.execute(sql.raw(statement));

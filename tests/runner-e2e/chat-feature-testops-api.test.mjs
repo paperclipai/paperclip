@@ -390,3 +390,45 @@ test('readback stops immediately after a late GET and gives each client only the
   }, uploadContext, uploadSelection, uploadReceipt, { now: () => time }), /upload_unverified/);
   assert.equal(calls, 2);
 });
+
+function strictBootstrapApi(patch = {}) {
+  const run = { id: 9, job: { id: 7, type: 'github' }, launchId: 10, url: 'https://github.com/paperclipai/paperclip/actions/runs/123', ...patch.run };
+  const launch = { id: 10, projectId: 1, ...patch.launch };
+  const job = { id: 7, type: 'github', url: 'https://github.com/paperclipai/paperclip/actions/workflows/chat-feature-testops.yml',
+    parameters: [{ id: 17, value: 'bootstrap' }, { id: 18, get value() { assert.fail('unrelated parameter value must stay unopened'); } }], ...patch.job };
+  return async (route, method) => {
+    assert.equal(method, undefined);
+    if (route === '/api/jobrun/9') return run;
+    if (route === '/api/launch/10') return launch;
+    if (route === '/api/job/7') return job;
+    if (route === '/api/environment/17') return { id: 17, name: 'operation', ...patch.definition };
+    if (route === '/api/environment/18') return { id: 18, name: 'SYNTHETIC_PRIVATE_NAME' };
+    assert.fail(route);
+  };
+}
+
+test('post-watch reader binds actual current run source project launch and public workflow without claiming runnable', async () => {
+  const result = await bootstrapJobMetadata(strictBootstrapApi(), publicEnv, 10);
+  assert.equal(result.jobId, 7); assert.equal(result.runId, publicEnv.GITHUB_RUN_ID);
+  assert.equal(result.workflowSha, publicEnv.GITHUB_SHA); assert.equal(result.capturedAfterWatch, true);
+  assert.equal(result.runnableBindingQualified, false); assert.equal(result.actualResult, null);
+  assert.deepEqual(result.parameters[1], { id: 18, name: 'UNKNOWN', value: 'NOT_PROJECTED' });
+  assert.ok(!JSON.stringify(result).includes('SYNTHETIC_PRIVATE'));
+});
+
+test('post-watch reader rejects stale foreign project launch source and job identity', async () => {
+  for (const patch of [{ run: { id: 99 } }, { run: { url: 'https://github.com/paperclipai/paperclip/actions/runs/999' } },
+    { run: { launchId: 20 } }, { run: { job: { id: 7, type: 'foreign' } } }, { launch: { projectId: 2 } },
+    { launch: { id: 20 } }, { job: { url: 'https://github.com/other/repo/actions/workflows/chat-feature-testops.yml' } },
+    { job: { type: 'foreign' } }, { definition: { id: 99 } }]) {
+    await assert.rejects(bootstrapJobMetadata(strictBootstrapApi(patch), publicEnv, 10));
+  }
+  await assert.rejects(bootstrapJobMetadata(() => assert.fail('no API'), { ...publicEnv, GITHUB_SHA: 'untrusted' }, 10));
+  await assert.rejects(bootstrapJobMetadata(() => assert.fail('no API'), { ...publicEnv, ALLURE_JOB_RUN_ID: '' }, 10));
+});
+
+test('post-watch reader caps parameter definitions and refuses duplicate IDs', async () => {
+  for (const parameters of [Array.from({ length: 5 }, (_, i) => ({ id: i + 1 })), [{ id: 17 }, { id: 17 }]]) {
+    await assert.rejects(bootstrapJobMetadata(strictBootstrapApi({ job: { parameters } }), publicEnv, 10));
+  }
+});

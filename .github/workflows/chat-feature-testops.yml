@@ -89,6 +89,7 @@ jobs:
         run: |
           mkdir -m 700 "$ALLURE_RESULTS"
           allurectl watch -- node tests/runner-e2e/testops-chat-reporter.mjs bootstrap
+          node tests/runner-e2e/testops-chat-reporter.mjs bootstrap-context
       - name: Validate the one real TestOps selection before any build or provider access
         id: selection
         if: needs.authorize.outputs.operation == 'evaluate'
@@ -134,6 +135,8 @@ jobs:
             ${{ runner.temp }}/chat-testops-bootstrap-state/plan.json
             ${{ runner.temp }}/chat-testops-bootstrap-state/job.json
             ${{ runner.temp }}/chat-testops-bootstrap-state/failure.json
+            ${{ runner.temp }}/chat-testops-bootstrap-state/registration.json
+            ${{ runner.temp }}/chat-testops-bootstrap-state/registration-failure.json
           retention-days: 30
           if-no-files-found: error
       - name: Retain the one plan-launch receipt and stop state

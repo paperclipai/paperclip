@@ -192,8 +192,8 @@ The explicit-only `necessary-question` suite has four development cells: the
 recorded Codex and Claude models, on local and Daytona environments. It requests
 one essential booking reference that only the test user knows. The browser must
 show the actual free-text prompt and its explanation, then submit the real answer.
-The oracle checks the unchanged question, its server-owned provider or semantic
-receipt, the exact stored user answer, and one bound continuation. The saved
+The oracle checks the unchanged question, its server-owned provider, semantic or
+native API receipt, the exact stored user answer, and one bound continuation. The saved
 confirmation must contain that answer exactly. The final reply's link must open
 that same task document and display its confirmation.
 A title, success claim, replacement card, duplicate wake, or uncommitted result
@@ -1705,13 +1705,18 @@ placement; it is not a statistical comparison with the former prompt arrangement
 
 The separate explicit-only `question-resume` suite uses the same neutral two-question
 request on native Codex and ACPX Claude. It qualifies the user journey through
-either the provider's built-in question or Paperclip's semantic question tool.
+the provider's built-in question, Paperclip's semantic question tool, or its native API fallback.
 It does not replace or regrade `question-tool-documentation`.
 
 The oracle classifies each wait from its exact task/agent/run identity. Provider
 questions require the server-generated request key and retain the paused run.
-Semantic questions require an applied `request_human_input` receipt and one new
-response wake bound to that interaction and source run. Only a verified provider
+Durable questions require an applied `request_human_input` receipt or a completed
+server-owned native `POST /api/issues/{id}/interactions` receipt. An API creation
+receipt must report HTTP 201 and preserve the original pending card's exact task,
+company, agent, source run, idempotency key and complete normalized form. It must
+remain unchanged after the answer. Both durable paths require one new response
+wake bound to that interaction and source run. Missing, pending, foreign or
+mismatched receipts fail; form shape and run counts cannot replace them. Only a verified provider
 choice may carry the adapter's optional Other field. A second substantive question
 is still rejected; the subsequent reference question must be text-only. Both real
 board answers must remain bound to unchanged forms, and one saved document must

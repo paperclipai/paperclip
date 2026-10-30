@@ -1548,7 +1548,7 @@ DataRow bytes exclude response metadata and transport overhead.
 
 ### Sandbox creation ownership
 
-Migration 0417 adds `sandbox_creation_operations`. Admission commits company,
+Migration 0418 adds `sandbox_creation_operations`. Admission commits company,
 original environment, run, request key and provider identity before external
 creation. Configuration contains nonsecret values and existing secret references.
 The original identity survives environment, run, task and company deletion; only

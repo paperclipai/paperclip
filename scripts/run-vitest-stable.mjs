@@ -400,6 +400,10 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
     PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
     TMPDIR: path.join(testRoot, "t"),
   };
+  // The wrapper has already validated and consumed this shard's manifest.
+  // Tests may launch independent runner fixtures with a different root/inventory.
+  delete env.PAPERCLIP_CI_TEST_SELECTION;
+  delete env.PAPERCLIP_CI_SELECTION_HASH;
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
   if (testShard) {

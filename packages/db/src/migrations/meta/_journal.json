@@ -2910,8 +2910,15 @@
     {
       "idx": 417,
       "version": "7",
-      "when": 1793380028222,
-      "tag": "0417_vengeful_loners",
+      "when": 1793371684483,
+      "tag": "0417_chunky_red_hulk",
+      "breakpoints": true
+    },
+    {
+      "idx": 418,
+      "version": "7",
+      "when": 1793395364937,
+      "tag": "0418_curved_lady_mastermind",
       "breakpoints": true
     }
   ]
