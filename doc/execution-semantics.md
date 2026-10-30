@@ -2707,8 +2707,9 @@ public run projections and contains no session parameters or credentials.
 A terminal snapshot can arrive before result acceptance. That snapshot publishes
 neither a continuation pointer nor a handled publication receipt. The existing
 post-acceptance checkpoint completes publication in its normal transaction.
-The first production release containing recovery readers and redaction for both
-private recovery fields is the disk-independent rollback floor. Earlier
+The first production release containing recovery readers, complete attachment
+identity handling and redaction for both private recovery fields is the
+disk-independent rollback floor. Earlier
 development-reader probes do not establish a published rollback target.
 
 Active remote adoption and compatible idle warm reuse carry an existing verified
@@ -2717,6 +2718,11 @@ then preserves its in-place harness state. The later protocol attachment still
 authenticates the durable PRP authority. A provider lease acquisition described as
 `resumed` does not establish that this already-running harness was suspended.
 Ordinary resumed leases retain their verified suspension and backup checks.
+
+Reattachment keeps the complete durable PRP binding, including its turn and item
+attachment IDs. A healthy warm handoff can create new attachment IDs within the
+retained Runner. Replacing that run's controller must preserve those IDs; deriving
+them again from the business run ID would request an invalid authority rotation.
 
 For per-turn direct sandbox recovery, the executor reads the retained Runner's
 suspended lifecycle through the recorded sandbox lease and validates its complete

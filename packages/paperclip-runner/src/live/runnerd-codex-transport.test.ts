@@ -7646,6 +7646,122 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
   }
 }, 30_000);
 
+it("recovers an active second warm business run with its opaque attachment identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-warm-second-active-"));
+  const firstRoot = join(root, "first-controller"), nextRoot = join(root, "next-controller");
+  const server = createServer();
+  let authority: DurablePrpControlPlane | null = null, generation = 0;
+  let checkpoint: durableControlPlane.DurablePrpCheckpoint | undefined;
+  const registered = new WeakSet<DurablePrpControlPlane>();
+  server.on("upgrade", (request, socket, head) => authority
+    ? authority.handleUpgrade(request, socket, "/runner", head) : socket.destroy());
+  await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing owned Runner route");
+  const registration = async (core: DurablePrpControlPlane) => {
+    if (!registered.has(core)) {
+      core.setCheckpointPersistence(async value => { checkpoint = value; });
+      registered.add(core);
+    }
+    authority = core; const current = ++generation;
+    return { connectUrl: `ws://127.0.0.1:${address.port}/runner`, release: async () => { if (generation === current) authority = null; } };
+  };
+  const initialIdentity = { runnerInstanceId: "runner-warm-second-active", environmentLeaseId: "lease-warm-second-active",
+    runId: "run-warm-first-healthy", normalizedSessionId: "session-warm-second-active", turnId: "turn-first", itemId: "item-first" };
+  const options = { runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(root, "--emit-tool-call", "--durable-tool-ids"), stateDirectory: firstRoot,
+    prpIdentity: initialIdentity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 }, controlPlaneRegistration: registration };
+  const first = createCapabilityRunnerdCodexTransport(options);
+  const within = async <T>(label: string, promise: Promise<T>) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`warm active recovery stage timed out: ${label}`)), 5_000); })]); }
+    finally { clearTimeout(timer); }
+  };
+  const waitComplete = async (transport: typeof first.transport) => {
+    for await (const notification of transport.notifications()) if (notification.method === "turn/completed") return;
+  };
+  let calls = 0, runnerPid: number | null = null, providerPid: number | null = null;
+  let recovered: ReturnType<typeof createCapabilityRunnerdCodexTransport> | undefined;
+  const result = { ok: true, task: { id: "task-1" } };
+  first.transport.setServerRequestHandler(async () => ++calls === 1
+    ? { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] }
+    : new Promise<Record<string, unknown>>(() => undefined));
+  try {
+    const opened = await within("first thread/start", first.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [{ name: "get_task_context", description: "Read current task",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false } }] }));
+    runnerPid = first.evidence().runnerPid;
+    providerPid = first.evidence().codexPid;
+    expect(providerPid).toEqual(expect.any(Number));
+    const providerStart = execFileSync("ps", ["-p", String(providerPid), "-o", "lstart="], { encoding: "utf8" }).trim();
+    const startedAt = first.transport.processInfo().startedAt;
+    const firstCompleted = waitComplete(first.transport);
+    await within("first turn/start", first.transport.request("turn/start", { input: [{ type: "text", text: "first healthy business run" }] }));
+    await within("healthy first turn completion", firstCompleted);
+    const attachment = { runId: "run-warm-second-active", turnId: `turn_attachment_${randomUUID()}`, itemId: `item_attachment_${randomUUID()}` };
+    await within("warm second business attachment", first.transport.attachRun!(attachment));
+    const active = await within("second active turn/start", first.transport.request("turn/start", { input: [{ type: "text", text: "second business run held at tool" }] }));
+    await vi.waitFor(() => expect(calls).toBe(2), { timeout: 5_000 });
+    const activeCore = authority!;
+    const savedIdentity = { ...activeCore.store.state.identity };
+    expect(savedIdentity).toEqual({ ...initialIdentity, ...attachment });
+    await activeCore.flushCheckpoint();
+    await within("controller detach", first.detachControllerForRestart());
+    expect(() => process.kill(runnerPid!, 0)).not.toThrow();
+    checkpoint!.restoreSessionDirectory(nextRoot);
+    const noSpawn = vi.fn(() => { throw new Error("Duplicate Runner launch"); });
+    const openedThread = opened.thread as Record<string, unknown>;
+    const activeTurn = active.turn as Record<string, unknown>;
+    expect(openedThread.id).toEqual(expect.any(String));
+    expect(activeTurn.id).toEqual(expect.any(String));
+    const shared = { ...options, stateDirectory: nextRoot,
+      resumeProviderSession: { driverSessionId: String(openedThread.id), providerSessionId: String(openedThread.sessionId) },
+      resumeActiveTurnId: String(activeTurn.id), runnerArtifact: readRunnerdArtifactBinding(options.runnerBinary),
+      runnerStateDirectory: join(firstRoot, "runner"), readRunnerState: async () => JSON.parse(await readFile(join(firstRoot, "runner/runner-state.json"), "utf8")),
+      prepareExternalRunnerState: async () => {}, archiveExternalRunnerState: async () => { throw new Error("Active authority must not rotate"); },
+      runnerProcessLauncher: noSpawn, adoptExistingRunner: { pid: runnerPid!, processGroupId: runnerPid, startedAt,
+        isAlive: () => { try { process.kill(runnerPid!, 0); return true; } catch { return false; } },
+        signal: (signal: NodeJS.Signals) => { try { process.kill(runnerPid!, signal); return true; } catch { return false; } } } };
+    // The old server's synthetic pair must continue failing the strict Runner guard.
+    const wrong = createCapabilityRunnerdCodexTransport({ ...shared, prpIdentity: { ...savedIdentity,
+      turnId: `turn-${attachment.runId}`, itemId: `item-${attachment.runId}` } });
+    await expect(wrong.transport.request("thread/read", {})).rejects.toThrow("PRP recovery identity does not match the durable session binding");
+    await wrong.detachControllerForRestart();
+    // Leave the pending tool outcome unknown. Reattachment must authenticate
+    // and preserve it without fabricating a receipt or redispatching its handler.
+    recovered = createCapabilityRunnerdCodexTransport({ ...shared, prpIdentity: savedIdentity });
+    await within("replacement thread/read", recovered.transport.request("thread/read", {}));
+    expect(recovered.evidence()).toMatchObject({ runnerPid, runnerExited: false });
+    expect(authority!.activeRunnerConnectionCount()).toBe(1);
+    expect(() => process.kill(providerPid!, 0)).not.toThrow();
+    expect(execFileSync("ps", ["-p", String(providerPid), "-o", "lstart="], { encoding: "utf8" }).trim()).toBe(providerStart);
+    expect(calls).toBe(2);
+    expect(authority!.store.state.commands.filter(command => command.type === "semantic_tool.result")).toHaveLength(0);
+    expect(recovered.transport.processInfo().startedAt).toBe(startedAt);
+    expect(authority!.store.state.identity).toEqual(savedIdentity);
+    expect(authority!.store.state.commands.filter(command => command.type === "turn.start")).toHaveLength(1);
+    expect(noSpawn).not.toHaveBeenCalled();
+  } catch (error) {
+    const saved = JSON.parse(await readFile(join(firstRoot, "runner/runner-state.json"), "utf8").catch(() => "{}"));
+    const stderr = await readFile(join(firstRoot, "diagnostics/runnerd.stderr.log"), "utf8").catch(() => "");
+    throw new Error(`${String(error)}; owned protocol evidence ${JSON.stringify({
+      transport: recovered?.evidence(), connections: authority?.activeRunnerConnectionCount(),
+      identity: authority?.store.state.identity, commands: authority?.store.state.commands.map(c => ({type:c.type,status:c.status})),
+      events: authority?.store.state.committedEvents.map(e => e.eventType).slice(-8),
+      runner: { lifecycle:saved.lifecycle, runId:saved.runId, turnId:saved.turnId, itemId:saved.itemId,
+        outbox:saved.outbox?.length }, stderr:stderr.slice(-1500),
+    })}`);
+  } finally {
+    await (recovered ? within("recovered cleanup", recovered.transport.close()).catch(() => undefined) : undefined);
+    await within("first cleanup", first.transport.close()).catch(() => undefined);
+    if (providerPid) { try { process.kill(providerPid, "SIGKILL"); } catch {} }
+    await (authority as DurablePrpControlPlane | null)?.stop();
+    if (runnerPid) { try { process.kill(-runnerPid, "SIGKILL"); } catch {} }
+    server.closeAllConnections();
+    if (server.listening) await new Promise<void>(done => server.close(() => done()));
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it("waits for a warm runner to re-authenticate before probing attachment readiness", async () => {
   const stateDirectory = await mkdtemp(
     join(tmpdir(), "runnerd-warm-reattach-before-probe-"),

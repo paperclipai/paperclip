@@ -12581,7 +12581,7 @@ describe("runnerd provider runtime wiring", () => {
     } as NativeExecutionInputV1;
     const identity = { runId: current.binding.runId, normalizedSessionId: current.session.normalizedSessionId!,
       runnerInstanceId: `admitted-${provider}`, environmentLeaseId: "admitted-lease",
-      turnId: `turn-${current.binding.runId}`, itemId: `item-${current.binding.runId}` };
+      turnId: `turn_attachment_${randomUUID()}`, itemId: `item_attachment_${randomUUID()}` };
     const root = await initializeScopedRunnerRoot(current, identity.runnerInstanceId);
     await mkdir(join(root, "control-plane"), { recursive: true });
     await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(identity)));

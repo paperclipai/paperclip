@@ -13910,6 +13910,16 @@ async function createRunnerdBackendWithinSessionClaim(
           normalizedSessionId: input.remoteWarmRecovery.identity.normalizedSessionId,
           turnId: input.remoteWarmRecovery.identity.turnId,
           itemId: input.remoteWarmRecovery.identity.itemId,
+        } : input.restartRecovery?.kind === "reattach_remote_runner" ? {
+          // Reattachment verified all six durable fields against the surviving
+          // Runner. Warm handoff uses opaque attachment turn/item IDs; deriving
+          // replacements from runId would request a different same-run authority.
+          runnerInstanceId: durableIdentity!.runnerInstanceId as string,
+          environmentLeaseId: durableIdentity!.environmentLeaseId as string,
+          runId: durableIdentity!.runId as string,
+          normalizedSessionId: durableIdentity!.normalizedSessionId as string,
+          turnId: durableIdentity!.turnId as string,
+          itemId: durableIdentity!.itemId as string,
         } : {
           runnerInstanceId: effectiveRunnerInstanceId,
           environmentLeaseId: effectiveEnvironmentLeaseId,
