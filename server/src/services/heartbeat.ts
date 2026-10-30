@@ -16469,9 +16469,14 @@ export function heartbeatService(
     };
   }
 
-  function parseHeartbeatActiveHours(heartbeat: Record<string, unknown>): ActiveHoursWindow | null {
+  // null means no window is configured. "invalid" means a window is stored but
+  // malformed; the timer treats that as closed instead of silently unrestricted.
+  function parseHeartbeatActiveHours(
+    heartbeat: Record<string, unknown>,
+  ): ActiveHoursWindow | "invalid" | null {
+    if (heartbeat.activeHours === undefined || heartbeat.activeHours === null) return null;
     const parsed = activeHoursWindowSchema.safeParse(heartbeat.activeHours);
-    return parsed.success ? parsed.data : null;
+    return parsed.success ? parsed.data : "invalid";
   }
 
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
@@ -29292,6 +29297,14 @@ export function heartbeatService(
         ).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+        if (policy.activeHours === "invalid") {
+          logger.warn(
+            { agentId: agent.id, companyId: agent.companyId },
+            "Skipping timer heartbeat: heartbeat.activeHours is malformed",
+          );
+          skipped += 1;
+          continue;
+        }
         if (!isWithinActiveHours(policy.activeHours, now)) {
           skipped += 1;
           continue;

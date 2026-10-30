@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { agentRuntimeConfigSchema, createAgentSchema } from "./agent.js";
 
 describe("agentRuntimeConfigSchema heartbeat.activeHours", () => {
+  it("keeps previously accepted string heartbeat values compatible", () => {
+    const parsed = agentRuntimeConfigSchema.parse({
+      heartbeat: { enabled: "true", intervalSec: "300" },
+    });
+    expect(parsed.heartbeat).toMatchObject({ enabled: "true", intervalSec: "300" });
+  });
+
   it("accepts a valid timer window", () => {
     const parsed = agentRuntimeConfigSchema.parse({
       heartbeat: {

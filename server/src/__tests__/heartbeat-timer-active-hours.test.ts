@@ -215,6 +215,21 @@ describeEmbeddedPostgres("heartbeat timer active hours", () => {
     expect(snapshot?.lastHeartbeatAt?.getTime()).toBe(lastHeartbeatAt.getTime());
   });
 
+  it("skips a due timer tick when the stored window is malformed", async () => {
+    const { agentId } = await seedTimerAgent({
+      activeHours: { start: "9am", end: "18:00", timezone: "UTC" },
+    });
+    const lastHeartbeatAt = new Date("2026-07-15T10:00:00.000Z");
+    await markTimerDue(agentId, lastHeartbeatAt);
+    const now = new Date("2026-07-15T12:00:00.000Z");
+
+    const tick = await heartbeat.tickTimers(now);
+
+    expect(tick.enqueued).toBe(0);
+    expect(tick.skipped).toBeGreaterThanOrEqual(1);
+    expect(await runCount(agentId)).toBe(0);
+  });
+
   it("ticks as before when activeHours is omitted", async () => {
     const { agentId } = await seedTimerAgent({});
     const lastHeartbeatAt = new Date("2026-07-15T10:00:00.000Z");

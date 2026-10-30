@@ -66,9 +66,11 @@ export const agentRuntimeConfigSchema = z.object({
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),
+  // Only the new activeHours field is validated here. Other heartbeat keys keep
+  // the scheduler's lenient parsing so previously stored values (for example
+  // enabled: "true" or intervalSec: "300") still round-trip through PATCH and
+  // configuration-revision restores.
   heartbeat: z.object({
-    enabled: z.boolean().optional(),
-    intervalSec: z.number().optional(),
     activeHours: activeHoursWindowSchema.nullable().optional(),
   }).catchall(z.unknown()).optional(),
 }).catchall(z.unknown()).superRefine((value, ctx) => {
