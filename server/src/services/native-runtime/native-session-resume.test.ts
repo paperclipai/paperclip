@@ -53,6 +53,17 @@ import {
   retainedNativeCleanupJournalMatches,
 } from "./native-session-executor.js";
 import * as publicationSignals from "../chat-publication-reconciliation.js";
+const fixtureProvider = vi.hoisted(() => ({ command: undefined as string | undefined }));
+vi.mock("@paperclipai/paperclip-runner", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/paperclip-runner")>();
+  return {
+    ...actual,
+    createRunnerdCodexTransport: (options: Parameters<typeof actual.createRunnerdCodexTransport>[0]) =>
+      actual.createRunnerdCodexTransport(fixtureProvider.command
+        ? { ...options, codexCommand: fixtureProvider.command }
+        : options),
+  };
+});
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import {
   LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION,
@@ -586,6 +597,7 @@ const recoveryFakeCodex = resolve(
         `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(recoveryFakeCodex)} "$CODEX_HOME/fake-state.json" 16\n`,
       );
       await chmod(command, 0o700);
+      fixtureProvider.command = command;
       await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
       const address = server.address();
       if (!address || typeof address === "string")
@@ -857,7 +869,7 @@ const recoveryFakeCodex = resolve(
         sourceInstanceId: runnerInstanceId,
         controlPlaneSourceInstanceId: controlPlaneInstanceId,
       });
-      await expect(
+      const recoveryResult = await
         executeNativeSession({
           input: currentExecution,
           backend,
@@ -900,8 +912,8 @@ const recoveryFakeCodex = resolve(
             `${error instanceof Error ? error.message : String(error)}\nDisposable recovery fixture runner diagnostics:\n${runnerDiagnostics.join("").slice(-12_000)}\nPersisted event codes: ${JSON.stringify(eventCodes)}\nFake provider state: ${JSON.stringify(fakeProvider)}`,
             { cause: error },
           );
-        }),
-      ).resolves.toMatchObject({
+        });
+      expect(recoveryResult, JSON.stringify(recoveryResult) + "\n" + runnerDiagnostics.join("")).toMatchObject({
         result: {
           summary: "Fixture complete.",
           reportedWorkDisposition: "done",
@@ -1052,6 +1064,7 @@ const recoveryFakeCodex = resolve(
         .where(eq(issues.id, issueId));
       expect(task).toEqual({ id: issueId, assigneeAgentId: agentId });
     } finally {
+      fixtureProvider.command = undefined;
       // onSession(null) quarantines the runtime owner before close finishes;
       // keep every published handle so an assertion/error cannot lose cleanup.
       if (firstSession) ownedSessions.add(firstSession);

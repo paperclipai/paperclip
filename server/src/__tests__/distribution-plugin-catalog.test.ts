@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, unlinkSync, writeFileSync, symlinkSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -47,7 +47,7 @@ describe("image-owned plugin catalogs", () => {
     expect(() => readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG)).toThrow();
     save(); symlinkSync(os.tmpdir(), path.join(localPath, "outside"));
     expect(() => readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG)).toThrow(/symlinks/);
-    rmSync(path.join(localPath, "outside")); rmSync(path.join(localPath, "dist", "worker.js"));
+    unlinkSync(path.join(localPath, "outside")); rmSync(path.join(localPath, "dist", "worker.js"));
     save([{ ...entry, digest: distributionBundleDigest(localPath) }]);
     expect(() => readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG)).toThrow();
   });

@@ -18,12 +18,17 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
-async function writeFakeCursorCommand(commandPath: string): Promise<void> {
-  const script = `#!/usr/bin/env node
-const fs = require("node:fs");
+function nodeScript(source: string, nodeExecutable = process.execPath): string {
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  return "#!/bin/sh\nexec " + quote(nodeExecutable) + " -e " + quote(source) + ' "$0" "$@"\n';
+}
+
+async function writeFakeCursorCommand(commandPath: string, nodeExecutable = process.execPath): Promise<void> {
+  const source = `const fs = require("node:fs");
 
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
 const payload = {
+  nodeCommand: process.argv0,
   argv: process.argv.slice(2),
   prompt: fs.readFileSync(0, "utf8"),
   paperclipEnvKeys: Object.keys(process.env)
@@ -50,13 +55,12 @@ console.log(JSON.stringify({
   result: "ok",
 }));
 `;
-  await fs.writeFile(commandPath, script, "utf8");
+  await fs.writeFile(commandPath, nodeScript(source, nodeExecutable), "utf8");
   await fs.chmod(commandPath, 0o755);
 }
 
-async function writeFakeSandboxCursorAgent(commandPath: string, capturePath: string): Promise<void> {
-  const script = `#!/usr/bin/env node
-const fs = require("node:fs");
+async function writeFakeSandboxCursorAgent(commandPath: string, capturePath: string, nodeExecutable = process.execPath): Promise<void> {
+  const source = `const fs = require("node:fs");
 
 const payload = {
   command: process.argv[1],
@@ -83,7 +87,7 @@ console.log(JSON.stringify({
 }));
 `;
   await fs.mkdir(path.dirname(commandPath), { recursive: true });
-  await fs.writeFile(commandPath, script, "utf8");
+  await fs.writeFile(commandPath, nodeScript(source, nodeExecutable), "utf8");
   await fs.chmod(commandPath, 0o755);
 }
 
@@ -466,4 +470,21 @@ describe("cursor execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+});
+
+it("launches a fake command with spaces and quotes in the Node path", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip cursor runtime-"));
+  try {
+    const nodeExecutable = path.join(root, "node with ' quotes");
+    await fs.symlink(process.execPath, nodeExecutable);
+    const command = path.join(root, "agent");
+    const capture = path.join(root, "capture.json");
+    await writeFakeCursorCommand(command, nodeExecutable);
+    const result = await runChildProcess("quoted-node-fixture", command, [], {
+      cwd: root, env: { PATH: "/usr/bin:/bin", PAPERCLIP_TEST_CAPTURE_PATH: capture }, timeoutSec: 10, graceSec: 1,
+      onLog: async () => {},
+    });
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(await fs.readFile(capture, "utf8")).nodeCommand).toBe(nodeExecutable);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

@@ -2,7 +2,7 @@ import express from "express";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import request from "supertest";
+import request, { type Response } from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { errorHandler } from "../middleware/index.js";
@@ -138,18 +138,24 @@ describe("workspace Git scan route load regression", () => {
     // accept/close races can reset clients before they reach the scheduler.
     const server = app.listen(0, "127.0.0.1");
     await new Promise<void>(resolve => server.once("listening", resolve));
-    const pendingResponses = Array.from({ length: 500 }, (_, index) => request(server)
-      .get(`/api/issues/issue-${index}/file-resources/list`)
-      .set("x-test-actor", `actor-${index % 73}`)
-      .query({ mode: "changed" })
-      .then((response) => response));
-    // Observe every client rejection immediately, including on assertion failure.
-    const settledResponses = Promise.allSettled(pendingResponses);
+    const pendingResponses: Promise<Response>[] = [];
     try {
-      await vi.waitFor(
-        () => expect(scheduler.snapshot().totals.singleFlightJoins).toBe(498),
-        { timeout: 15_000, interval: 20 },
-      );
+      for (let start = 0; start < 500; start += 64) {
+        const end = Math.min(start + 64, 500);
+        for (let index = start; index < end; index += 1) {
+          const response = request(server)
+            .get(`/api/issues/issue-${index}/file-resources/list`)
+            .set("x-test-actor", `actor-${index % 73}`)
+            .query({ mode: "changed" })
+            .then((response) => response);
+          void response.catch(() => {});
+          pendingResponses.push(response);
+        }
+        await vi.waitFor(
+          () => expect(scheduler.snapshot().totals.singleFlightJoins).toBe(end - 2),
+          { timeout: 15_000, interval: 20 },
+        );
+      }
       const loadedSnapshot = scheduler.snapshot();
       expect(loadedSnapshot).toMatchObject({ activeCount: 2, queuedCount: 0, inFlightCount: 2 });
 
@@ -165,7 +171,7 @@ describe("workspace Git scan route load regression", () => {
       expect(healthP99Ms).toBeLessThan(250);
 
       releaseScans();
-      const responses = (await settledResponses).map(result => {
+      const responses = (await Promise.allSettled(pendingResponses)).map(result => {
         if (result.status === "rejected") throw result.reason;
         return result.value;
       });
@@ -190,7 +196,7 @@ describe("workspace Git scan route load regression", () => {
     } finally {
       releaseScans();
       server.closeAllConnections();
-      await settledResponses;
+      await Promise.allSettled(pendingResponses);
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     }
   }, 60_000);
