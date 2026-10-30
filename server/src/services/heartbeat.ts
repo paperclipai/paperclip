@@ -607,6 +607,9 @@ const nativeSessionResumeDispatchTimers = new Map<
   string,
   ReturnType<typeof setTimeout>
 >();
+// Routes and the scheduler can drain/resume through different service facades.
+// Rearm through the original owner so its database and dispatch mode survive.
+const nativeRecoveryDeadlines = new Map<string, { rearm: () => void }>();
 // Shared with HTTP admission so an idle hold fences work before inspection.
 export { computeTaskDrain, applyTaskDrain, startTaskDrain, stopTaskDrain } from "./task-admission.js";
 
@@ -1335,8 +1338,8 @@ export function heartbeatService(
   }
 
   function resumeQueuedRunsAfterDrain() {
-    for (const [runId, deadline] of nativeRecoveryDeadlines) {
-      scheduleNativeSessionResumeDispatch(runId, deadline, "restart");
+    for (const pending of nativeRecoveryDeadlines.values()) {
+      pending.rearm();
     }
     const promise = heartbeatQueue.resumeQueuedRunsAfterDrain();
     activeWakeupPromises.add(promise);
@@ -1715,13 +1718,13 @@ export function heartbeatService(
 
   // Native ownership waits survive a temporary drain without adding a polling
   // loop. A process restart rediscovers the same deadlines from coordinator rows.
-  const nativeRecoveryDeadlines = new Map<string, Date>();
   function scheduleNativeSessionResumeDispatch(
     runId: string,
     nextAttemptAt: Date,
     mode?: "restart",
   ) {
-    if (mode === "restart") nativeRecoveryDeadlines.set(runId, nextAttemptAt);
+    const pending = { rearm: () => scheduleNativeSessionResumeDispatch(runId, nextAttemptAt, mode) };
+    nativeRecoveryDeadlines.set(runId, pending);
     const prior = nativeSessionResumeDispatchTimers.get(runId);
     if (prior) clearTimeout(prior);
     const delayMs = Math.max(0, nextAttemptAt.getTime() - Date.now());
@@ -1730,8 +1733,9 @@ export function heartbeatService(
       nativeSessionResumeDispatchTimers.delete(runId);
       void (async () => {
         if ((await getSchedulingSuppression()).suppressed) return;
+        if (nativeRecoveryDeadlines.get(runId) !== pending) return;
+        nativeRecoveryDeadlines.delete(runId);
         if (mode === "restart") {
-          nativeRecoveryDeadlines.delete(runId);
           await recoverNativeRunsAfterRestart(new Date(), [runId]);
           return;
         }
@@ -1756,7 +1760,9 @@ export function heartbeatService(
           },
         });
       })().catch((error) => {
-        if (mode === "restart") scheduleNativeSessionResumeDispatch(runId, new Date(Date.now() + 30_000), "restart");
+        if (!nativeRecoveryDeadlines.has(runId)) {
+          scheduleNativeSessionResumeDispatch(runId, new Date(Date.now() + 30_000), mode);
+        }
         logger.error(
           { err: error, runId },
           "failed to dispatch scheduled native session resume",
