@@ -6,7 +6,7 @@ import { measureRunPhase } from "../execution-preparation-timing.js";
 import { measureRunTransaction } from "../execution-transaction-timing.js";
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { connectionGrants, toolConnections } from "@paperclipai/db";
+import { companies, connectionGrants, toolConnections } from "@paperclipai/db";
 import { conflict, HttpError, notFound, unprocessable } from "../../errors.js";
 import { PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../paperclip-cloud-connector.js";
 
@@ -235,19 +235,27 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
         eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId),
       )).for("update").limit(1);
       if (!liveConnection || liveConnection.status !== "active" || !liveConnection.enabled) return current;
+      const [company] = await tx.select({ status: companies.status }).from(companies)
+        .where(eq(companies.id, connection.companyId)).for("share").limit(1);
+      if (company?.status !== "active") return current;
       const github = current.providerTenant?.github;
       if (!github?.bindingSync || github.bindingSync.id !== grant.providerTenant?.github?.bindingSync?.id) return current;
       const subject = current.kind === "agent" && current.subjectAgentId ? `agent:${current.subjectAgentId}`
         : current.kind === "user" ? current.subjectUserId : null;
       if (!subject) throw unprocessable("GitHub webhook subject is unavailable");
-      for (const installationId of github.installationIds) await cloudConnector.setWebhookBinding({
-        subject, companyId: connection.companyId, id: `${current.id}_${installationId}`,
-        installationId, connectionId: connection.id, grantId: current.id, active: true, accessToken: token!,
-      });
-      for (const installationId of github.bindingSync.removeInstallationIds) await cloudConnector.setWebhookBinding({
-        subject, companyId: connection.companyId, id: `${current.id}_${installationId}`,
-        installationId, connectionId: connection.id, grantId: current.id, active: false,
-      });
+      const changes = [
+        ...github.installationIds.map(installationId => ({ installationId, active: true as const })),
+        ...github.bindingSync.removeInstallationIds.map(installationId => ({ installationId, active: false as const })),
+      ];
+      for (let offset = 0; offset < changes.length; offset += 4) {
+        const outcomes = await Promise.allSettled(changes.slice(offset, offset + 4).map(change => cloudConnector.setWebhookBinding({
+          subject, companyId: connection.companyId, id: `${current.id}_${change.installationId}`,
+          installationId: change.installationId, connectionId: connection.id, grantId: current.id,
+          ...change.active ? { active: true, accessToken: token! } : { active: false },
+        })));
+        const failure = outcomes.find(outcome => outcome.status === "rejected");
+        if (failure?.status === "rejected") throw failure.reason;
+      }
       await notifyGitHubCredentialChange(tx, connection);
       const [settled] = await tx.update(connectionGrants).set({
         providerTenant: sql`${connectionGrants.providerTenant} #- '{github,bindingSync}' #- '{github,continuityRetry}'`,

@@ -99,9 +99,10 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
     const ew = registerGitHubConnectionEventWork(db, coordinator, events, () => true);
     const cw = registerGitHubConnectionContinuityWork(db, coordinator, f.service, () => true);
     try {
-      await Promise.all([ew.ready, cw.ready]); expect(leases).toBe(0);
+      await Promise.all([ew.ready, cw.ready]); expect(leases).toBe(1);
+      const startupLeases = leases;
       await f.service.refreshManagedGitHubGrantAccess(f.connection, f.grant, { actorType: "system", actorId: "test" });
-      await vi.waitFor(() => expect(leases).toBeGreaterThan(0));
+      await vi.waitFor(() => expect(leases).toBeGreaterThan(startupLeases));
       await vi.advanceTimersByTimeAsync(31_000); await settled(coordinator);
       const [saved] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id));
       expect(saved!.providerTenant!.github!.installationIds).toEqual(["101"]);
@@ -140,6 +141,16 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
     await db.update(toolConnections).set({ enabled: true }).where(eq(toolConnections.id, f.connection.id));
     await db.update(companies).set({ status: "archived" }).where(eq(companies.id, f.company.id));
     expect(await restarted.nextGitHubConnectionContinuityAt()).toBeNull();
+  });
+
+  it("settles only the company and grant that own saved binding debt", async () => {
+    const f = await fixture(["101"]), other = await fixture(["202"]);
+    await db.update(connectionGrants).set({ providerTenant: { ...f.grant.providerTenant, github: { ...f.grant.providerTenant!.github!,
+      bindingSync: { id: randomUUID(), removeInstallationIds: [] } } } }).where(eq(connectionGrants.id, f.grant.id));
+    await f.service.sweepGitHubConnectionContinuity();
+    expect(bindings).toHaveLength(1); expect(bindings[0]).toMatchObject({ grantId: f.grant.id, installationId: "101" });
+    const [untouched] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, other.grant.id));
+    expect(untouched!.providerTenant).toEqual(other.grant.providerTenant);
   });
 
   it("retains a real deadline when successful renewal leaves a short-lived credential unchanged", async () => {
