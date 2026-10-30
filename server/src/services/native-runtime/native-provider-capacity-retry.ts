@@ -50,7 +50,7 @@ export async function materializeNativeProviderCapacityRetry(input: {
     scheduledRetryAt: dueAt.toISOString(),
     executionRetryAccounting: accountingForScheduledRetry(run, NATIVE_PROVIDER_OVERLOADED_CODE, attempt),
   };
-  await notifyRunDispatch(input.tx);
+  await notifyRunDispatch(input.tx, { companyId: run.companyId });
   const [wake] = await input.tx.insert(agentWakeupRequests).values({
     companyId: run.companyId, agentId: run.agentId, source: "automation", triggerDetail: "system",
     reason: NATIVE_PROVIDER_OVERLOADED_CODE, status: "queued", runId: retryId,

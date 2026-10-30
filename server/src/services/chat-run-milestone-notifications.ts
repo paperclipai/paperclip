@@ -12,7 +12,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 export type ChatRunMilestoneScope = { companyId: string; issueId?: string; runId?: string };
 
 export async function notifyChatRunMilestones(tx: object, scope: ChatRunMilestoneScope) {
-  if (!scope.issueId && !scope.runId) await notifyRunDispatch(tx);
+  if (!scope.issueId && !scope.runId) await notifyRunDispatch(tx, scope);
   if (scope.issueId || scope.runId) {
     await notifyIssueReviewState(tx, { companyId: scope.companyId, issueId: scope.issueId,
       runId: scope.issueId ? undefined : scope.runId });

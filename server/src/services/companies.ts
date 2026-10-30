@@ -333,7 +333,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         const renamedPrefix = await resolveRenamedIssuePrefix(tx, id, companyPatch);
 
         if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
-          await notifyRunDispatch(tx);
+          await notifyRunDispatch(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
@@ -490,7 +490,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         const wasAlreadyArchived = existing.status === "archived";
 
         if (!wasAlreadyArchived) {
-          await notifyRunDispatch(tx);
+          await notifyRunDispatch(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
