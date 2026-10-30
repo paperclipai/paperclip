@@ -34,6 +34,32 @@ Current limitations to keep in mind:
 
 In practice, that means the current implementation is a good fit for local development and self-hosted persistent deployments, but not yet for multi-instance cloud plugin distribution.
 
+### Managed image packages
+
+Managed Cloud provisions only plugins selected from the current release image
+catalog. The database registration's plugin key, package name, version and
+approved manifest identify that package. Its legacy `packagePath` remains for
+local/self-hosted compatibility; Cloud never uses that path to locate code.
+Workers, plugin migrations and UI files resolve through the same current-image
+package resolver. Cloud does not install npm dependencies, build packages, use
+the development UI proxy, or fall back to a server home directory.
+
+Equivalent packages at different image roots reuse the existing registration,
+configuration, approval status and company scopes without rewriting its stored
+path. Concurrent first registration of the same package retains one plugin ID.
+Conflicting package identities fail explicitly. Normal maintenance boot retains
+the existing bundled manifest/version reconciliation and approval gates.
+
+`createBundledPluginPackageResolver(...).inspect(registration, verifiedManifest)`
+is a read-only qualification hook. Resolve the current image path, load its
+manifest with the validated plugin loader, and inspect the registration before
+normal boot reconciliation. Missing manifest evidence and incompatible packages
+produce explicit blockers. Distribution packages retain their catalog digest
+verification; built-in packages trust the immutable release image and must bump
+their version when their code changes. Qualification supports identical package
+sets only. This package-resolution boundary does not coordinate workers,
+background jobs, or deployment overlap between servers.
+
 ## 1. Scope
 
 This spec covers:

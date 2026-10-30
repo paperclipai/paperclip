@@ -184,6 +184,7 @@ import {
   resolveBundledCatalogRoot,
   resolveBundledPluginInstalls,
 } from "./services/bundled-plugins.js";
+import { createBundledPluginPackageResolver } from "./services/bundled-plugin-package.js";
 import { readDistributionPluginCatalog, distributionPluginActivationGuard } from "./services/distribution-plugin-catalog.js";
 import {
   createPluginWorkerManager,
@@ -636,6 +637,7 @@ export async function createApp(
       distributionPlugins,
     },
   );
+  const bundledPackageResolver = managedAutoInstallKeys === null ? undefined : createBundledPluginPackageResolver(bundledPluginInstalls);
   const managedBundledPluginKeys =
     managedAutoInstallKeys !== null
       ? bundledPluginInstalls.map((install) => install.pluginKey)
@@ -906,7 +908,11 @@ export async function createApp(
     {
       localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
       migrationDb: opts.pluginMigrationDb,
-      assertPackageActivation: distributionPluginActivationGuard(bundledCatalogRoot, distributionPlugins, managedAutoInstallKeys),
+      assertPackageActivation: bundledPackageResolver?.assertActivation ?? distributionPluginActivationGuard(bundledCatalogRoot, distributionPlugins, managedAutoInstallKeys),
+      resolvePackageRoot: bundledPackageResolver?.resolve,
+      prebuiltOnly: managedAutoInstallKeys !== null,
+      enableLocalFilesystem: managedAutoInstallKeys === null,
+      enableNpmDiscovery: managedAutoInstallKeys === null,
     },
     {
       workerManager,
@@ -1015,6 +1021,7 @@ export async function createApp(
   app.use(
     pluginUiStaticRoutes(db, {
       localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
+      resolvePackageRoot: bundledPackageResolver?.resolve,
     }),
   );
 
@@ -1300,7 +1307,7 @@ export async function createApp(
     // owns provisioning); self-hosted leaves an operator's uninstall alone.
     // Disabled plugins never start automatically. Added distribution permissions
     // still enter upgrade_pending so enabling them requires an operator decision.
-    { reinstallUninstalled: managedAutoInstallKeys !== null },
+    { reinstallUninstalled: managedAutoInstallKeys !== null, preservePackagePath: managedAutoInstallKeys !== null },
   )
     .then(() => loader.loadAll())
     .then((result) => {
