@@ -3,7 +3,7 @@ import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceE
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { TaskAttachmentPanel } from "./TaskAttachmentPanel";
 import { useTaskBrowsers } from "@/hooks/useTaskBrowsers";
-import { taskPluginPanelId, type TaskPluginPanel } from "@/hooks/useTaskPluginPanels";
+import { taskPluginPanelActivationKey, taskPluginPanelId, type TaskPluginPanel } from "@/hooks/useTaskPluginPanels";
 import { PluginSlotMount } from "@/plugins/slots";
 import { TaskBrowserPanel } from "./TaskBrowserPanel";
 import {
@@ -102,6 +102,7 @@ import { TaskSkillPanel } from "./TaskSkillPanel";
 export interface TaskSidePanelProps {
   issue: Issue;
   pluginPanels?: TaskPluginPanel[];
+  pluginPanelsLoading?: boolean;
   openedPluginPanelKeys?: Set<string>;
   dismissedPluginPanelKeys?: Set<string>;
   openBrowserId?: string | null;
@@ -258,6 +259,7 @@ export function TaskSidePanel(props: TaskSidePanelProps) {
 
 function TaskSidePanelForScope({
   pluginPanels = EMPTY_PLUGIN_PANELS,
+  pluginPanelsLoading = false,
   openedPluginPanelKeys,
   dismissedPluginPanelKeys,
   openBrowserId,
@@ -371,22 +373,23 @@ function TaskSidePanelForScope({
   const openedPluginPanels = openedPluginPanelKeys ?? localOpenedPluginPanels.current;
   const localDismissedPluginPanels = useRef(new Set<string>());
   const dismissedPluginPanels = dismissedPluginPanelKeys ?? localDismissedPluginPanels.current;
-  const pluginPanelKey = useCallback((panel: TaskPluginPanel) => JSON.stringify([accountScope, issue.companyId, issue.id, panel.runId, taskPluginPanelId(panel)]), [accountScope, issue.companyId, issue.id]);
+  const pluginPanelKey = useCallback((panel: TaskPluginPanel) => taskPluginPanelActivationKey(panel, accountScope, issue), [accountScope, issue.companyId, issue.id]);
   useEffect(() => {
     const ids = new Set(pluginPanels.map(taskPluginPanelId));
     for (const tab of controller.tabs) {
-      if (tab.payload.kind === "plugin-panel" && !ids.has(tab.id)) controller.closeTab(tab.id);
+      if (!pluginPanelsLoading && tab.payload.kind === "plugin-panel" && !ids.has(tab.id)) controller.closeTab(tab.id);
     }
     for (const panel of pluginPanels) {
+      if (!panel.autoOpen || !panel.runId) continue;
       const key = pluginPanelKey(panel);
       if (dismissedPluginPanels.has(key)) continue;
       const firstArrival = !openedPluginPanels.has(key);
       openedPluginPanels.add(key);
-      if (controller.tabs.some(tab => tab.id === taskPluginPanelId(panel))) continue;
+      if (!firstArrival && controller.tabs.some(tab => tab.id === taskPluginPanelId(panel))) continue;
       if (firstArrival) setLauncherOpen(false);
       controller.openTab(taskPanelPluginTab(panel), firstArrival);
     }
-  }, [dismissedPluginPanels, openedPluginPanels, pluginPanelKey, pluginPanels, controller.tabs, controller.closeTab, controller.openTab]);
+  }, [dismissedPluginPanels, openedPluginPanels, pluginPanelKey, pluginPanels, pluginPanelsLoading, controller.tabs, controller.closeTab, controller.openTab]);
   const browsersQuery = useTaskBrowsers(issue.id);
   const newestLiveBrowser = browsersQuery.data?.findLast((browser) => browser.status === "running" || browser.status === "idle");
   useEffect(() => {
@@ -799,7 +802,7 @@ function TaskSidePanelForScope({
   } else if (activeTab.payload.kind === "plugin-panel") {
     const panel = pluginPanels.find(panel => taskPluginPanelId(panel) === activeTab.id);
     content = panel ? (
-      <PluginSlotMount key={panel.runId} slot={panel.slot} context={{ companyId: issue.companyId, projectId: issue.projectId, entityId: panel.entityId, entityType: "agent" }} />
+      <PluginSlotMount key={taskPluginPanelId(panel)} slot={panel.slot} context={{ companyId: issue.companyId, projectId: issue.projectId, entityId: panel.entityId, entityType: "agent" }} />
     ) : null;
   } else if (activeTab.payload.kind === "properties") {
     content = (

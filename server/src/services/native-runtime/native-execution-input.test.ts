@@ -9,7 +9,7 @@ import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 
 describe("LCA-05 explicit native work mode", () => {
-  it.each(["standard", "planning", "ask"])("title and description cannot override %s mode", (workMode) => {
+  it.each(["standard", "planning", "ask", "skill_test"])("title and description cannot override %s mode", (workMode) => {
     for (const text of ["Inspect files", "Making a plan", "Create a report", "Research proposal", "Implement now; no plan needed"]) {
       const input = buildNativeExecutionInput({
         companyId: "10000000-0000-4000-8000-000000000001",
