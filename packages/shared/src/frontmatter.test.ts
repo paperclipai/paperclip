@@ -120,6 +120,15 @@ describe("parseFrontmatterMarkdown", () => {
 
     expect(parsed.frontmatter.version).toBe("1.");
   });
+
+  it("detects frontmatter and reads fields when the document uses CRLF line endings", () => {
+    const parsed = parseFrontmatterMarkdown(
+      ["---", "name: crlf-skill", "description: Checked out on Windows", "---", "", "# Body"].join("\r\n"),
+    );
+
+    expect(parsed.hasFrontmatter).toBe(true);
+    expect(parsed.frontmatter).toMatchObject({ name: "crlf-skill", description: "Checked out on Windows" });
+  });
 });
 
 describe("splitFrontmatterBlock", () => {
