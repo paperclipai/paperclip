@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import * as chatFlow from "./chat-flow.js";
-import type { ChatFlowInput, ChatIssue } from "./chat-flow.js";
+import type { ChatFlowInput, ChatIssue, ChatRun } from "./chat-flow.js";
 import { runChatFeatureFlow } from "./chat-feature-flow.js";
 import { chatFeatureScenarios } from "./chat-feature-cases.js";
 
@@ -13,8 +13,11 @@ vi.mock("@playwright/test", async importOriginal => ({
 }));
 vi.mock("./api.js", async importOriginal => ({
   ...await importOriginal<typeof import("./api.js")>(),
-  pollUntil: async (input: { label: string; load(): Promise<unknown> }) => {
+  pollUntil: async (input: { label: string; load(): Promise<unknown>; accept?(value: unknown): boolean; reject?(value: unknown): string | undefined }) => {
     const value = await input.load();
+    if (input.accept?.(value)) return value;
+    const rejection = input.reject?.(value);
+    if (rejection) throw new Error(rejection);
     if (polling.failScenario && input.label.startsWith("chat scenario")) throw new Error("Original scenario failure");
     return value;
   },
@@ -73,12 +76,18 @@ function fixture(boundary?: string) {
     evidence, capture, check: (id: string, passed: boolean) => checks.push({ id, passed }),
   } as unknown as ChatFlowInput;
   let refreshes = 0;
-  const context = { input, issue: () => source, allRuns: async () => runs,
+  const context: Parameters<typeof runChatFeatureFlow>[0] = { input, issue: () => source, allRuns: async () => runs,
     refreshIssue: async () => {
       if (++refreshes > 1 && boundary === "refresh") throw new Error("Final observation read failed");
     },
   };
   return { context, checks, evidence, capture };
+}
+
+function oldAssignment(startedAt: string | null = null): ChatRun {
+  return { id: "old-assignment", companyId: "company", agentId: "ceo", status: "cancelled", runtimeMode: "legacy",
+    startedAt, nativeIssueId: null, errorCode: "issue_assignee_changed", contextSnapshot: { issueId: "task" },
+    resultJson: { stopReason: "issue_assignee_changed", timeoutSource: "stale_queued_run_gate", timeoutFired: false } };
 }
 
 it.each(["refresh", "save"])("keeps the last observed checks when final %s fails", async boundary => {
@@ -91,6 +100,28 @@ it.each(["refresh", "save"])("keeps the last observed checks when final %s fails
     { id: "completion-result-access", passed: false },
   ]));
   expect(checks).toHaveLength(14);
+});
+
+it.each([1, 3])("continues observation past a superseded wake with %s actual work runs", async count => {
+  const { context, evidence } = fixture("superseded");
+  const runs: ChatRun[] = await context.allRuns();
+  if (count === 3) runs.push(
+    { id: "writing", companyId: "company", agentId: "morgan", status: "queued", runtimeMode: "native", contextSnapshot: { issueId: "task" } },
+    { id: "delivery", companyId: "company", agentId: "ceo", status: "queued", runtimeMode: "native", contextSnapshot: { issueId: "chat" } },
+  );
+  runs.push(oldAssignment());
+  context.allRuns = async () => runs;
+  await expect(runChatFeatureFlow(context)).rejects.toThrow("Original scenario failure");
+  expect(evidence).toHaveBeenCalledWith("chat-feature.json", expect.objectContaining({
+    observation: expect.objectContaining({ runs }), grade: expect.objectContaining({ passed: false }),
+  }));
+});
+
+it("still rejects a cancelled assignment that actually started", async () => {
+  const { context } = fixture("started");
+  const runs = [...await context.allRuns(), oldAssignment("2026-10-30T10:00:01Z")];
+  context.allRuns = async () => runs;
+  await expect(runChatFeatureFlow(context)).rejects.toThrow("An observed provider run failed");
 });
 
 it("retains required final evidence after the feature flow verifies browser readback", async () => {
