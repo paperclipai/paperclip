@@ -1,3 +1,4 @@
+import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { connectionHealthSchedule } from "./tool-access/catalog/health-schedule.js";
@@ -787,7 +788,7 @@ export function toolAccessService(
   const refreshLeases = createOAuthRefreshLeases(db, now, getConnectionRow, getOAuthGrantRow);
   const maybeRefreshOAuthCredentials = createLegacyOAuthRefresh(db, { now, secrets, store: credentialStore, leases: refreshLeases, getConnectionRow, exchangeOAuthToken });
   const refreshOAuthGrantCredentials = createOAuthGrantRefresh(db, { now, store: credentialStore, leases: refreshLeases, currentCloudConnector, getConnectionRow, exchangeOAuthToken });
-  const { refreshManagedGitHubGrantAccess, syncGitHubGrantBindings, sweepGitHubConnectionContinuity, nextGitHubConnectionContinuityAt } = createGitHubGrantContinuity(db, { now, currentCloudConnector, refreshOAuthGrantCredentials, resolveOAuthGrantSecret });
+  const { refreshManagedGitHubGrantAccess, syncGitHubGrantBindings, sweepGitHubConnectionContinuity, nextGitHubConnectionContinuityAt, githubConnectionContinuitySchedule } = createGitHubGrantContinuity(db, { now, currentCloudConnector, refreshOAuthGrantCredentials, resolveOAuthGrantSecret });
   const vercelCredentials = createVercelCredentialService(db, now, vercelConnect);
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercelCredentials;
   const credentialAccess = createConnectionCredentialAccess(db, { secrets, audit, vercel: vercelCredentials, resolveOAuthGrantSecret, maybeRefreshOAuthCredentials, refreshOAuthGrantCredentials });
@@ -3152,6 +3153,7 @@ export function toolAccessService(
         await tx.select({ id: toolApplications.id }).from(toolApplications)
           .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, companyId)))
           .for("update");
+        await notifyGitHubCredentialChange(tx, connection);
         await notifyToolConnectionHealth(tx, connection);
         const [row] = await tx.update(toolConnections).set({ config, transportConfig: config, status: "active", enabled: true, ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}), updatedAt: new Date() })
           .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId))).returning();
@@ -3510,6 +3512,7 @@ export function toolAccessService(
         },
         tx,
       );
+      await notifyGitHubCredentialChange(tx, connection);
       await notifyToolConnectionHealth(tx, connection);
       const [updatedConnection] = await tx
         .update(toolConnections)
@@ -4673,6 +4676,10 @@ export function toolAccessService(
             return rows;
           })
         : await writeToolConnectionHealthChange(db, existing, async tx => {
+            if (input.enabled !== undefined || input.status !== undefined || input.config !== undefined || input.transportConfig !== undefined || input.credentialSecretRefs !== undefined || input.credentialRefs !== undefined) {
+              await notifyGitHubCredentialChange(tx, existing);
+              await notifyGitHubCredentialChange(tx, { companyId: existing.companyId, config });
+            }
             if (existing.transport === "voice") await notifyVoiceChange(tx, { kind: "connection", id: existing.id });
             const rows = await write(tx);
             await syncCredentialBindings(rows[0]!, [], tx);
@@ -4733,6 +4740,7 @@ export function toolAccessService(
 
     sweepGitHubConnectionContinuity,
     nextGitHubConnectionContinuityAt,
+    githubConnectionContinuitySchedule,
     ...catalogReader,
     ...toolActionReviewQueue,
     ...profileService,

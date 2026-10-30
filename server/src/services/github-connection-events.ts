@@ -237,6 +237,8 @@ export function githubConnectionEventService(
         eq(toolConnections.companyId, connectionGrants.companyId),
       ))
       .where(and(
+        sql`${toolConnections.config}->>'sourceTemplateKey' = 'github'`,
+        sql`${toolConnections.config}->'oauth'->>'connectorProfile' = 'github.code'`,
         eq(connectionGrants.status, "active"),
         eq(toolConnections.status, "active"),
         eq(toolConnections.enabled, true),
@@ -245,11 +247,11 @@ export function githubConnectionEventService(
     return bindingRows(rows);
   }
 
-  async function applyPullRequestEvent(companyId: string, event: LeasedEvent) {
+  async function applyPullRequestEvent(database: Db, companyId: string, event: LeasedEvent, effects: Array<(committedDb: Db) => Promise<void>>) {
     const snapshot = githubSnapshotUpdate(event.payload);
     if (!snapshot) return;
     const appliedAt = now();
-    await db.update(externalObjects).set({
+    await database.update(externalObjects).set({
       statusKey: snapshot.statusKey,
       statusLabel: snapshot.statusLabel,
       statusCategory: snapshot.statusCategory,
@@ -269,13 +271,13 @@ export function githubConnectionEventService(
       sql`lower(${externalObjects.externalId}) = lower(${snapshot.externalId})`,
     ));
     if (snapshot.merged && event.action === "closed") {
-      await issueThreadInteractionService(db, { wakeup: options.wakeup })
+      await issueThreadInteractionService(database, { wakeup: options.wakeup })
         .sweepMergedPullRequestConfirmations([{
           companyId,
           owner: snapshot.owner,
           repo: snapshot.repo,
           number: snapshot.number,
-        }]);
+        }], { deferConfirmationCommitEffects: effect => effects.push(effect) });
     }
   }
 
@@ -337,7 +339,7 @@ export function githubConnectionEventService(
         webhookHealth: unavailable ? "unhealthy" as const : "healthy" as const,
       },
     };
-    await notifyGitHubCredentialChange(database, { config: { sourceTemplateKey: "github" } });
+    await notifyGitHubCredentialChange(database, { companyId: binding.companyId, config: { sourceTemplateKey: "github" } });
     await database.update(connectionGrants).set({ providerTenant, updatedAt: now() })
       .where(and(eq(connectionGrants.id, binding.grantId), eq(connectionGrants.companyId, binding.companyId)));
     await notifyToolConnectionHealth(database, { companyId: binding.companyId, id: binding.connectionId });
@@ -380,6 +382,7 @@ export function githubConnectionEventService(
 
     }
     const postCommitPublications: ActivityPublication[] = [];
+    const postCommitEffects: Array<(committedDb: Db) => Promise<void>> = [];
     let applied = true;
     try {
       const applyAndFinalize = async (database: Db) => {
@@ -391,7 +394,7 @@ export function githubConnectionEventService(
         if (!receipt) await database.update(connectionEventDeliveries).set({
           status: "received", attempts: sql`${connectionEventDeliveries.attempts} + 1`, lastError: null, updatedAt: receiptAt,
         }).where(eq(connectionEventDeliveries.id, locked!.id));
-        if (event.event === "pull_request") await applyPullRequestEvent(companyId, normalizedEvent);
+        if (event.event === "pull_request") await applyPullRequestEvent(database, companyId, normalizedEvent, postCommitEffects);
         if (event.event === "installation" || event.event === "installation_repositories") {
           for (const binding of bindings) await applyInstallationEvent(database, binding, normalizedEvent);
         } else {
@@ -470,6 +473,7 @@ export function githubConnectionEventService(
         }, "GitHub webhook activity publication failed after commit");
       }
     }
+    for (const effect of postCommitEffects) await effect(db);
     return applied ? "processed" as const : "duplicate" as const;
   }
 

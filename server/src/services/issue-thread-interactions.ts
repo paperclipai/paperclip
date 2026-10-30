@@ -2986,6 +2986,7 @@ export function issueThreadInteractionService(
         repo: string;
         number: number;
       }> = [],
+      mutationOptions: InteractionResolutionMutationOptions = {},
     ) => {
       const rows = await db
         .select({
@@ -3005,6 +3006,7 @@ export function issueThreadInteractionService(
           and(
             eq(issueThreadInteractions.kind, "request_confirmation"),
             eq(issueThreadInteractions.status, "pending"),
+            mergedHints.length ? inArray(issues.companyId, [...new Set(mergedHints.map(hint => hint.companyId))]) : undefined,
           ),
         );
 
@@ -3087,6 +3089,7 @@ export function issueThreadInteractionService(
             issue: candidate.issue,
             current: candidate.interaction,
             input: {},
+            mutationOptions,
             actor: {
               systemId: "system:pr-merged",
               resolutionDetails: {
@@ -3123,7 +3126,7 @@ export function issueThreadInteractionService(
         ) {
           continue;
         }
-        await opts.wakeup(wakeIssue.assigneeAgentId, {
+        const wake = async () => { await opts.wakeup!(wakeIssue.assigneeAgentId!, {
           source: "automation",
           triggerDetail: "system",
           reason: "issue_commented",
@@ -3154,6 +3157,9 @@ export function issueThreadInteractionService(
             source: "merged_pull_request_sweep",
           },
         });
+        };
+        if (mutationOptions.deferConfirmationCommitEffects) mutationOptions.deferConfirmationCommitEffects(wake);
+        else await wake();
         woken += 1;
       }
 

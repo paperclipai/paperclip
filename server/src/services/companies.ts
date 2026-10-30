@@ -1,3 +1,4 @@
+import { notifyGitHubCompanyChange } from "./github-connection-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -332,8 +333,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         const renamedPrefix = await resolveRenamedIssuePrefix(tx, id, companyPatch);
 
         if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
-          await notifyDeliveryWork(tx, DELIVERY_QUEUES.connectionEvents);
-          await notifyDeliveryWork(tx, DELIVERY_QUEUES.connectionContinuity);
+          await notifyGitHubCompanyChange(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
@@ -490,8 +490,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         const wasAlreadyArchived = existing.status === "archived";
 
         if (!wasAlreadyArchived) {
-          await notifyDeliveryWork(tx, DELIVERY_QUEUES.connectionEvents);
-          await notifyDeliveryWork(tx, DELIVERY_QUEUES.connectionContinuity);
+          await notifyGitHubCompanyChange(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);

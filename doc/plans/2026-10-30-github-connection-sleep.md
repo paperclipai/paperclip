@@ -14,7 +14,11 @@ events, validates their bindings, persists company-scoped receipts, applies the
 existing installation or pull-request behavior, and acknowledges completed work.
 A receipt row lock prevents overlapping receivers from applying an installation
 delta twice. Completed receipts remain passive history. The existing normalized
-merged-pull-request callback remains unchanged.
+merged-pull-request callback keeps its normalized key. Snapshot and confirmation
+reads/writes share the receipt transaction, including at pool size one; existing
+confirmation publications and direct wakes flush only after the outer commit.
+The pre-existing non-chat direct-wake crash gap remains: chat-bound continuations
+have their existing durable outbox, while an unbound direct wake is best effort.
 
 A new tenant sends signed event-lease claim `ewv=1`. A compatible Cloud broker
 records delivery version 1 on the existing instance registration before returning
@@ -50,6 +54,15 @@ or unchanged retains a one-hour retry obligation instead of causing rapid calls.
 Changed credential metadata invalidates the old retry revision, so an earlier new
 expiry can preempt it. Disabled connections and archived companies do not perform
 credential work. Reactivation uses the normal committed configuration signal.
+
+GitHub owners receive only relevant credential/configuration signals, not generic
+health or receiver notifications. Continuity reconstruction is company-scoped
+after the startup scan. Event draining retains instance-wide binding matching
+because Cloud leases an instance queue. Event hints coalesce with a five-second
+minimum pass spacing; an unrelated connection PATCH cannot trigger that drain.
+OAuth rotation merges only its owned OAuth fields, lease acquisition compares
+current metadata, and cleanup atomically removes only the matching lease path,
+preserving concurrent GitHub installation changes and binding-removal debt.
 
 Supported local producers are the owning connection, OAuth, grant and company
 services in one tenant process. Their notifications belong to the outer database

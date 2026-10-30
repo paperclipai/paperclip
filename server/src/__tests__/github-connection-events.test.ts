@@ -10,6 +10,8 @@ import {
   connectionGrants,
   createDb,
   externalObjects,
+  issues,
+  issueThreadInteractions,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   toolApplications,
   toolConnections,
@@ -35,12 +37,14 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
   beforeAll(async () => {
     if (!externalTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-github-events-");
     if (externalTestDatabaseUrl) await applyPendingMigrations(externalTestDatabaseUrl);
-    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 4 });
+    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 1 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(connectionEventDeliveries);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issues);
     await db.delete(externalObjects);
     await db.delete(connectionGrants);
     await db.delete(toolConnections);
@@ -105,6 +109,10 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
         },
       },
     });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Merge release", status: "in_progress" }).returning();
+    const [confirmation] = await db.insert(issueThreadInteractions).values({ companyId, issueId: issue!.id,
+      kind: "request_confirmation", title: "Confirm pull request merged", continuationPolicy: "none",
+      payload: { version: 1, prompt: "Confirm https://github.com/paperclipai/paperclip/pull/123 is merged" } }).returning();
     const externalObjectId = randomUUID();
     await db.insert(externalObjects).values({
       id: externalObjectId,
@@ -172,11 +180,15 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
     }
 
     const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
-    await expect(service.pollOnce({ forSetup: activeSetup })).resolves.toMatchObject({ leased: 2, processed: 1, duplicate: 0, failed: 1 });
+    const outcome = await service.pollOnce({ forSetup: activeSetup });
+    const [processingReceipt] = await db.select().from(connectionEventDeliveries).where(eq(connectionEventDeliveries.providerDeliveryId, leasedEvent.id));
+    expect(processingReceipt?.lastError).toBeNull();
+    expect(outcome).toMatchObject({ leased: 2, processed: 1, duplicate: 0, failed: 1 });
     expect(warning.mock.calls).toEqual([[{
       deliveryId: "undecryptable-delivery", reason: "inner_event_authentication_failed",
     }, "GitHub connector event retained for retry"]]);
     warning.mockRestore();
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, confirmation!.id)))[0]!.status).toBe("accepted");
     const [snapshot] = await db.select().from(externalObjects).where(eq(externalObjects.id, externalObjectId));
     expect(snapshot).toMatchObject({
       statusKey: "merged",

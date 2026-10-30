@@ -204,7 +204,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
       return { updated, previousGitHub };
     });
 
-    return syncGitHubGrantBindings(connection, updated, actor, accessToken);
+    return measureRunPhase("connectors.github.webhooks", () => syncGitHubGrantBindings(connection, updated, actor, accessToken));
   }
 
   async function syncGitHubGrantBindings(
@@ -287,7 +287,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
     });
   }
 
-  async function continuityRows() {
+  async function continuityRows(companyId?: string) {
     return db
       .select({ grant: connectionGrants, connection: toolConnections })
       .from(connectionGrants)
@@ -296,6 +296,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
         eq(toolConnections.companyId, connectionGrants.companyId),
       ))
       .where(and(
+        companyId ? eq(connectionGrants.companyId, companyId) : undefined,
         eq(connectionGrants.status, "active"),
         eq(toolConnections.status, "active"),
         eq(toolConnections.enabled, true),
@@ -306,16 +307,16 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
       ));
   }
 
-  async function nextGitHubConnectionContinuityAt(): Promise<number | null> {
-    const deadlines = (await continuityRows()).flatMap(({ grant, connection }) => {
+  async function nextGitHubConnectionContinuityAt(companyId?: string): Promise<number | null> {
+    const deadlines = (await continuityRows(companyId)).flatMap(({ grant, connection }) => {
       const deadline = githubGrantContinuityDeadline(connection, grant);
       return deadline === null ? [] : [deadline];
     });
     return deadlines.length ? Math.min(...deadlines) : null;
   }
 
-  async function sweepGitHubConnectionContinuity() {
-    const rows = await continuityRows();
+  async function sweepGitHubConnectionContinuity(companyId?: string) {
+    const rows = await continuityRows(companyId);
     const due = rows.filter(({ grant, connection }) => {
       const deadline = githubGrantContinuityDeadline(connection, grant);
       return deadline !== null && deadline <= now().getTime();
@@ -340,7 +341,15 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
     }
     return { checked: rows.length, due: due.length, refreshed, failed };
   }
-  return { refreshManagedGitHubGrantAccess, syncGitHubGrantBindings, sweepGitHubConnectionContinuity, nextGitHubConnectionContinuityAt };
+  async function githubConnectionContinuitySchedule(companyId?: string) {
+    const schedule = new Map<string, number>();
+    for (const { grant, connection } of await continuityRows(companyId)) {
+      const dueAt = githubGrantContinuityDeadline(connection, grant);
+      if (dueAt !== null) schedule.set(connection.companyId, Math.min(schedule.get(connection.companyId) ?? Infinity, dueAt));
+    }
+    return [...schedule].map(([companyId, dueAt]) => ({ id: companyId, companyId, dueAt }));
+  }
+  return { githubConnectionContinuitySchedule, refreshManagedGitHubGrantAccess, syncGitHubGrantBindings, sweepGitHubConnectionContinuity, nextGitHubConnectionContinuityAt };
 }
 
 /** Credential expiry and provider continuity are obligations, not a scan cadence. */

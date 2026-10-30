@@ -1,3 +1,4 @@
+import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
 import type { createGitHubGrantContinuity } from "../github-grant-continuity.js";
 import { randomUUID } from "node:crypto";
 import { notifyIssueReviewState } from "../../issue-review-state-notifications.js";
@@ -304,6 +305,7 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
         accessRef,
         ...(refreshRef ? [refreshRef] : []),
       ];
+      await notifyGitHubCredentialChange(tx, connection);
       await notifyToolConnectionHealth(tx, connection);
       const grantValues = {
         providerTenant: {

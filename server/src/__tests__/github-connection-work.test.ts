@@ -1,10 +1,12 @@
+import { notifyChatEndpointConfiguration } from "../services/chat-channels/configuration-work-notifications.js";
+import { toolAccessService } from "../services/tool-access.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { randomUUID, generateKeyPairSync, verify, createHash } from "node:crypto";
+import { randomUUID, generateKeyPairSync, verify, createHash, diffieHellman, hkdfSync, randomBytes, createCipheriv } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { once } from "node:events";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
-import { applyPendingMigrations, companies, connectionGrants, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, toolApplications, toolConnections } from "@paperclipai/db";
+import { eq, sql } from "drizzle-orm";
+import { applyPendingMigrations, companies, activityLog, companySecrets, connectionGrants, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, toolApplications, toolConnections } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createGitHubGrantContinuity, githubGrantContinuityDeadline } from "../services/tool-access/github-grant-continuity.js";
 import { createPaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
@@ -12,6 +14,13 @@ import { githubConnectionEventService } from "../services/github-connection-even
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { registerGitHubConnectionContinuityWork, registerGitHubConnectionEventWork } from "../services/github-connection-work.js";
 import { notifyGitHubCredentialChange } from "../services/github-connection-notifications.js";
+import { createOAuthCredentialStore } from "../services/tool-access/oauth/credential-store.js";
+import { createOAuthRefreshLeases } from "../services/tool-access/oauth/refresh-leases.js";
+import { createOAuthGrantRefresh } from "../services/tool-access/oauth/grant-refresh.js";
+import { secretService } from "../services/secrets.js";
+import { writeConnectionCredential } from "../services/connection-credentials.js";
+import { GITHUB_CONNECTOR_PROFILES } from "@paperclipai/shared";
+import { notifyToolConnectionHealth } from "../services/tool-connection-health-notifications.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const databaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_GITHUB_WORK_TEST_DATABASE_URL");
@@ -24,12 +33,16 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
   let server: Server, origin: string;
   let bindings: Array<Record<string, unknown>>, leases: number, failBindings: boolean, githubRequests: number;
   const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
+  let releaseRefresh: (() => void) | undefined, refreshArrived: (() => void) | undefined;
+  let refreshGate: Promise<void> | undefined;
   const realFetch = globalThis.fetch;
   let companyIds: string[] = [];
   beforeAll(async () => {
     if (databaseUrl) await applyPendingMigrations(databaseUrl);
     else temporaryDatabase = await startEmbeddedPostgresTestDatabase("paperclip-github-work-");
     db = createDb(databaseUrl ?? temporaryDatabase!.connectionString, { maxConnections: 4 });
+    // This explicitly assigned external test database is exclusive to this suite.
+    await db.transaction(async tx => { await tx.execute(sql`SET LOCAL client_min_messages = warning`); await tx.execute(sql`TRUNCATE companies CASCADE`); });
     server = createServer(async (req, res) => {
       const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
       const raw = Buffer.concat(chunks).toString();
@@ -39,6 +52,23 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
         const claims = JSON.parse(Buffer.from(payload, "base64url").toString());
         expect(claims.iss).toBe("instance"); expect(claims.env).toBe("test");
         expect(claims.aud).toBe(`${origin}${req.url}`);
+        if (req.url!.endsWith("/refresh")) {
+          refreshArrived?.(); await refreshGate;
+          const scopes = [...GITHUB_CONNECTOR_PROFILES["github.code"].scopes];
+          const algorithm = "X25519-HKDF-SHA256-A256GCM";
+          const purpose = "access";
+          const aad = Buffer.from([1, algorithm, purpose, "instance", "test", "github", "github.code", scopes.sort().join(" ")].join("\n"));
+          const ephemeral = generateKeyPairSync("x25519");
+          const epk = Buffer.from(ephemeral.publicKey.export({ format: "jwk" }).x!, "base64url");
+          const recipient = Buffer.from(sealing.publicKey.export({ format: "jwk" }).x!, "base64url");
+          const key = Buffer.from(hkdfSync("sha256", diffieHellman({ privateKey: ephemeral.privateKey, publicKey: sealing.publicKey }), Buffer.concat([epk, recipient]), aad, 32));
+          const iv = randomBytes(12), cipher = createCipheriv("aes-256-gcm", key, iv); cipher.setAAD(aad);
+          const credentials = { v: 1, accessToken: "rotated-access", refreshToken: "rotated-refresh", tokenType: "Bearer", scopes,
+            accessTokenExpiresAt: new Date(Date.now() + 8 * 3600_000).toISOString(), refreshTokenExpiresAt: null,
+            subject: claims.sub, companyId: claims.cid, instanceId: "instance", environment: "test", provider: "github", profile: "github.code" };
+          const ct = Buffer.concat([cipher.update(JSON.stringify(credentials)), cipher.final(), cipher.getAuthTag()]);
+          res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ sealed: { v: 1, alg: algorithm, purpose, provider: "github", profile: "github.code", epk: epk.toString("base64url"), iv: iv.toString("base64url"), ct: ct.toString("base64url") } })); return;
+        }
         if (req.url!.endsWith("/events/lease")) {
           leases++; res.setHeader("content-type", "application/json");
           res.end(JSON.stringify({ events: [], ...(claims.ewv === 1 ? { eventWakeVersion: 1 } : {}) })); return;
@@ -59,7 +89,7 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterEach(async () => {
     vi.restoreAllMocks(); vi.useRealTimers();
-    for (const id of companyIds) await db.delete(companies).where(eq(companies.id, id)); companyIds = [];
+    for (const id of companyIds) { await db.delete(activityLog).where(eq(activityLog.companyId, id)); await db.delete(companySecrets).where(eq(companySecrets.companyId, id)); await db.delete(companies).where(eq(companies.id, id)); } companyIds = [];
   });
   afterAll(async () => { server.close(); await once(server, "close"); await db.$client.end({ timeout: 1 }); await temporaryDatabase?.cleanup(); });
 
@@ -106,6 +136,7 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
       await Promise.all([ew.ready, cw.ready]); expect(leases).toBe(1);
       const startupLeases = leases;
       await f.service.refreshManagedGitHubGrantAccess(f.connection, f.grant, { actorType: "system", actorId: "test" });
+      await vi.advanceTimersByTimeAsync(6_000);
       await vi.waitFor(() => expect(leases).toBeGreaterThan(startupLeases));
       await vi.advanceTimersByTimeAsync(31_000); await settled(coordinator);
       const [saved] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id));
@@ -146,6 +177,111 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
     await db.update(toolConnections).set({ enabled: true }).where(eq(toolConnections.id, f.connection.id));
     await db.update(companies).set({ status: "archived" }).where(eq(companies.id, f.company.id));
     expect(await restarted.nextGitHubConnectionContinuityAt()).toBeNull();
+  });
+
+  it("preserves webhook removal debt across an actual signed, held Cloud token rotation and lease cleanup", async () => {
+    const f = await fixture(["101"]);
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "01234567890123456789012345678901");
+    const refs = [];
+    for (const path of ["oauth.access_token", "oauth.refresh_token"]) {
+      const saved = await writeConnectionCredential(db, { companyId: f.company.id, connectionName: "GitHub", configPath: path, label: path, value: path, ownerUserId: "owner" });
+      refs.push({ configPath: path, secretId: saved.secret.id, versionSelector: "latest" as const });
+    }
+    const [connection] = await db.update(toolConnections).set({ credentialSource: "paperclip_vault", config: { ...f.connection.config,
+      oauth: { strategy: "paperclip_cloud_connector", connectorProfile: "github.code" } } }).where(eq(toolConnections.id, f.connection.id)).returning();
+    const [grant] = await db.update(connectionGrants).set({ credentialSecretRefs: refs }).where(eq(connectionGrants.id, f.grant.id)).returning();
+    const getConnection = async () => (await db.select().from(toolConnections).where(eq(toolConnections.id, connection!.id)))[0]!;
+    const store = createOAuthCredentialStore(db, secretService(db));
+    await store.syncCredentialBindings(connection!, refs);
+    const leases = createOAuthRefreshLeases(db, () => new Date(), getConnection, store.getOAuthGrantRow);
+    const rotation = createOAuthGrantRefresh(db, { now: () => new Date(), store, leases, getConnectionRow: getConnection,
+      currentCloudConnector: () => f.connector, exchangeOAuthToken: vi.fn() });
+    const arrived = new Promise<void>(resolve => { refreshArrived = resolve; });
+    refreshGate = new Promise<void>(resolve => { releaseRefresh = resolve; });
+    const pending = rotation({ companyId: f.company.id, connectionId: connection!.id, grantId: grant!.id, forceRefresh: true });
+    const result = Promise.allSettled([pending]);
+    try {
+      await Promise.race([arrived, pending.then(() => { throw new Error("Rotation returned before the Cloud HTTP boundary"); })]);
+      const connector = { ...f.connector, acknowledgeEvents: async () => 1, leaseEvents: async () => ({ leaseId: "removal", events: [{ id: randomUUID(), provider: "github" as const,
+        event: "installation", action: "deleted", installationId: "101", repositoryId: null, createdAt: new Date(Date.now() + 1000).toISOString(), bindingIds: [`${grant!.id}_101`], payload: { installationId: "101" } }] }) };
+      expect(await githubConnectionEventService(db, { connector }).pollOnce()).toMatchObject({ processed: 1 });
+      const [before] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));
+      expect(before!.providerTenant!.github!.bindingSync!.removeInstallationIds).toEqual(["101"]);
+      releaseRefresh!();
+      const [completion] = await result; if (completion.status === "rejected") throw completion.reason;
+      const [saved] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));
+      expect(saved!.providerTenant!.github).toEqual(before!.providerTenant!.github);
+      expect(saved!.providerTenant!.oauth).toMatchObject({ tokenType: "Bearer" });
+      expect(saved!.providerTenant!.oauth!.refreshLease).toBeUndefined();
+      await f.service.syncGitHubGrantBindings(connection!, saved!);
+      expect(bindings).toContainEqual(expect.objectContaining({ installationId: "101", active: false }));
+      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id)))[0]!.providerTenant!.github!.bindingSync).toBeUndefined();
+    } finally { releaseRefresh?.(); await result; refreshGate = undefined; refreshArrived = undefined; vi.unstubAllEnvs(); }
+  });
+
+  it("lease acquire and cleanup cannot replace a concurrent webhook metadata revision", async () => {
+    const f = await fixture(["101"]);
+    let interleave = true;
+    const removal = { id: randomUUID(), removeInstallationIds: ["202"] };
+    const getGrant = async () => {
+      const [snapshot] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id));
+      if (interleave) {
+        interleave = false;
+        await db.update(connectionGrants).set({ providerTenant: sql`jsonb_set(${connectionGrants.providerTenant}, '{github,bindingSync}', ${JSON.stringify(removal)}::jsonb)` }).where(eq(connectionGrants.id, f.grant.id));
+      }
+      return snapshot!;
+    };
+    const leaseOwner = createOAuthRefreshLeases(db, () => new Date(), async () => f.connection, getGrant);
+    const lease = await leaseOwner.acquireOAuthGrantRefreshLease(f.connection, f.grant, true);
+    expect(lease.leaseId).toBeTruthy();
+    expect(lease.grant.providerTenant!.github!.bindingSync).toEqual(removal);
+    // Cleanup deliberately reads a stale snapshot immediately before a new delta.
+    const second = { ...removal, id: randomUUID(), removeInstallationIds: ["202", "303"] };
+    const cleanup = createOAuthRefreshLeases(db, () => new Date(), async () => f.connection, async () => {
+      const snapshot = await getGrant();
+      await db.update(connectionGrants).set({ providerTenant: sql`jsonb_set(${connectionGrants.providerTenant}, '{github,bindingSync}', ${JSON.stringify(second)}::jsonb)` }).where(eq(connectionGrants.id, f.grant.id));
+      return snapshot;
+    });
+    const cleared = await cleanup.clearOAuthGrantRefreshLease(lease.grant, lease.leaseId!);
+    expect(cleared.providerTenant!.github!.bindingSync).toEqual(second);
+    expect(cleared.providerTenant!.oauth!.refreshLease).toBeUndefined();
+  });
+
+  it("ignores unrelated health write bursts and scopes credential reconstruction to its owning company", async () => {
+    const f = await fixture(["101"]), other = await fixture(["202"]); fakeClock();
+    // A large unrelated company set must not enter a targeted credential reload.
+    for (let index = 0; index < 50; index++) {
+      const id = randomUUID(); companyIds.push(id);
+      await db.insert(companies).values({ id, name: "Unrelated credential owner", issuePrefix: `U${index}${id.slice(0, 6)}` });
+    }
+    const [unrelatedConnection] = await db.update(toolConnections).set({ config: {}, transportConfig: {}, transport: "rest_api", authKind: "none", credentialRefs: [], credentialSecretRefs: [] }).where(eq(toolConnections.id, other.connection.id)).returning();
+    await db.update(connectionGrants).set({ credentialSecretRefs: [] }).where(eq(connectionGrants.id, other.grant.id));
+    const api = toolAccessService(db);
+    const load = vi.spyOn(f.service, "githubConnectionContinuitySchedule");
+    const sweep = vi.spyOn(f.service, "sweepGitHubConnectionContinuity");
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true });
+    const continuity = registerGitHubConnectionContinuityWork(db, coordinator, f.service, () => true);
+    const events = registerGitHubConnectionEventWork(db, coordinator, githubConnectionEventService(db, { connector: f.connector }), () => true);
+    try {
+      await Promise.all([continuity.ready, events.ready]);
+      await vi.waitFor(() => expect(leases).toBe(1));
+      await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+      load.mockClear(); sweep.mockClear();
+      for (let i = 0; i < 30; i++) {
+        await db.transaction(async tx => { await notifyToolConnectionHealth(tx, other.connection); await notifyChatEndpointConfiguration(tx, { id: randomUUID(), provider: "discord" }); });
+        await api.updateConnection(unrelatedConnection!.id, { name: `Unrelated patch ${i}` });
+      }
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(load).not.toHaveBeenCalled(); expect(sweep).not.toHaveBeenCalled(); expect(leases).toBe(1);
+      for (let index = 0; index < 30; index++) await db.transaction(async tx => { await notifyGitHubCredentialChange(tx, f.connection); });
+      expect(leases).toBe(1);
+      await vi.advanceTimersByTimeAsync(6_000);
+      await vi.waitFor(() => expect(load).toHaveBeenCalledWith(f.company.id));
+      expect(load.mock.calls.every(([companyId]) => companyId === f.company.id)).toBe(true);
+      expect(sweep).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(leases).toBe(2));
+      expect(load).toHaveBeenCalledTimes(1);
+    } finally { await events.stop(); await continuity.stop(); await coordinator.stop(); }
   });
 
   it("settles only the company and grant that own saved binding debt", async () => {

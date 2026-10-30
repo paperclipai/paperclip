@@ -492,6 +492,7 @@ vi.mock("../services/index.js", () => ({
       failed: 0,
     })),
     nextGitHubConnectionContinuityAt: vi.fn(async () => null),
+    githubConnectionContinuitySchedule: vi.fn(async () => []),
     sweepGitHubConnectionContinuity: vi.fn(async () => ({
       checked: 0,
       due: 0,
@@ -1303,7 +1304,9 @@ describe("startServer feedback export wiring", () => {
       }
       const polls = vi.mocked(githubConnectionEventService).mock.results.map(result => result.value.pollOnce);
       const sweeps = vi.mocked(toolAccessService).mock.results.map(result => result.value.sweepGitHubConnectionContinuity);
-      const count = () => [...polls, ...sweeps].reduce((sum, call) => sum + call.mock.calls.length, 0);
+      const schedules = vi.mocked(toolAccessService).mock.results.map(result => result.value.githubConnectionContinuitySchedule);
+      expect(sweeps.reduce((sum, call) => sum + call.mock.calls.length, 0)).toBe(0);
+      const count = () => [...polls, ...sweeps, ...schedules].reduce((sum, call) => sum + call.mock.calls.length, 0);
       const startup = count();
       expect(startup).toBe(2);
       for (let i = 0; i < 3; i++) for (const tick of ticks) tick();
