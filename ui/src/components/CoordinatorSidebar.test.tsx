@@ -138,6 +138,15 @@ describe("Coordinator Needs You badge", () => {
 
 
 describe("Coordinator collection reads", () => {
+  it("does not replace a resolved count with an older summary that arrives later", async () => {
+    const key = coordinatorAttentionSummaryQueryKey("company");
+    client.setQueryDefaults(key, { staleTime: Infinity });
+    client.setQueryData(key, { ...summary([pending("old")]), generatedAt: "2026-10-27T12:00:00Z" }, { updatedAt: 20 });
+    client.setQueryData(coordinatorAttentionQueryKey("company"), { ...feed([]), generatedAt: "2026-10-27T12:01:00Z" }, { updatedAt: 10 });
+    await renderSidebar();
+    expect(decisionLink().querySelector('[data-slot="badge"]')).toBeNull();
+  });
+
   it("keeps a newer resolved count when returning to a cached navigation summary", async () => {
     const key = coordinatorAttentionSummaryQueryKey("company");
     client.setQueryDefaults(key, { staleTime: Infinity });

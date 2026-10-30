@@ -17,7 +17,9 @@ export function useCoordinatorAttentionCount(companyId: string | null | undefine
     queryFn: () => attentionApi.taskIndex(companyId!), enabled: false });
   // These are three projections of the same company/person count. Keep the
   // newest known count during route changes, including an explicit fresh zero.
+  // Server generation time wins over a delayed older response arriving later.
   const snapshots = feedPage ? [attention, tasks, summary] : taskPage ? [tasks, attention, summary] : [summary, attention, tasks];
   return snapshots.filter(snapshot => snapshot.data !== undefined)
-    .sort((a, b) => b.dataUpdatedAt - a.dataUpdatedAt)[0]?.data?.totalCount ?? 0;
+    .sort((a, b) => ((Date.parse(b.data?.generatedAt ?? "") || 0) - (Date.parse(a.data?.generatedAt ?? "") || 0))
+      || b.dataUpdatedAt - a.dataUpdatedAt)[0]?.data?.totalCount ?? 0;
 }
