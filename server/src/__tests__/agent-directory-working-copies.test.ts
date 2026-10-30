@@ -1186,6 +1186,7 @@ describe("persistent agent directories", () => {
     let copy = await prepare();
     const original = copy;
     await fs.writeFile(path.join(copy.executionRoot, "image.bin"), Buffer.alloc(32768, 93));
+    await new Promise(resolve => setTimeout(resolve, 2_500));
     for (let turn = 1; turn <= 3; turn++) {
       await fs.appendFile(path.join(copy.executionRoot, "memory.txt"), `turn ${turn}\n`);
       const saved = (await copies.checkpointWarm({ companyId, runId: copy.runId, target: executionTarget }))!;

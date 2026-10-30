@@ -14,6 +14,7 @@ describe("incremental managed file checkpoints", () => {
     const image = Buffer.alloc(64 * 1024 * 1024, 0x93);
     await fs.writeFile(path.join(live(), "image.bin"), image);
     await fs.writeFile(path.join(live(), "note.txt"), "one");
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5_000);
     const first = await captureAgentFiles(live());
     await fs.writeFile(path.join(live(), "note.txt"), "two");
     const delta = await captureAgentFileCheckpoint({ runId: "fixture", localRoot: live(), executionRoot: live(), previous: first.manifest });
@@ -29,6 +30,7 @@ describe("incremental managed file checkpoints", () => {
   it("records deletions and empty directories without resending unchanged data", async () => {
     await fs.writeFile(path.join(live(), "deleted"), "gone");
     await fs.writeFile(path.join(live(), "kept"), "keep");
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5_000);
     const first = await captureAgentFiles(live());
     await fs.rm(path.join(live(), "deleted"));
     await fs.mkdir(path.join(live(), "empty"));
@@ -128,5 +130,35 @@ describe("incremental managed file checkpoints", () => {
     expect(second.stats.copiedFiles).toBe(1);
     expect(await fs.readFile(path.join(root, "first", "files", "note"), "utf8")).toBe("one");
     expect(await fs.readFile(path.join(root, "second", "files", "note"), "utf8")).toBe("two");
+  });
+  it("rehashes a file whose stamp stays equal after a write inside the racy window", async () => {
+    const note = path.join(live(), "note");
+    const clock = vi.spyOn(Date, "now");
+    const newestMs = async (filename: string) => {
+      const s = await fs.lstat(filename, { bigint: true });
+      return Number(s.mtimeNs > s.ctimeNs ? s.mtimeNs : s.ctimeNs) / 1e6;
+    };
+    await fs.writeFile(note, "one");
+    clock.mockReturnValue((await newestMs(note)) + 1);
+    const first = await captureAgentFiles(live());
+    expect(first.manifest.entries[0]![1].racy).toBe(true);
+    await fs.writeFile(note, "two");
+    clock.mockReturnValue((await newestMs(note)) + 1);
+    const s = await fs.lstat(note, { bigint: true });
+    const previous = structuredClone(first.manifest);
+    previous.entries[0]![1].stamp = [s.dev, s.ino, s.size, s.mode, s.mtimeNs, s.ctimeNs].map(String).join(":");
+    const second = await captureAgentFiles(live(), previous, path.join(root, "delta"));
+    expect(second.stats.hashedBytes).toBe(3);
+    expect(second.stats.copiedFiles).toBe(1);
+    expect(await fs.readFile(path.join(root, "delta", "files", "note"), "utf8")).toBe("two");
+    expect(second.manifest.entries[0]![1].hash).not.toBe(first.manifest.entries[0]![1].hash);
+    expect(second.manifest.entries[0]![1].racy).toBe(true);
+    clock.mockReturnValue((await newestMs(note)) + 5_000);
+    const third = await captureAgentFiles(live(), second.manifest);
+    expect(third.stats.hashedBytes).toBe(3);
+    expect(third.manifest.entries[0]![1].racy).toBeUndefined();
+    const fourth = await captureAgentFiles(live(), third.manifest);
+    expect(fourth.stats.hashedBytes).toBe(0);
+    expect(fourth.manifest.entries[0]![1].hash).toBe(third.manifest.entries[0]![1].hash);
   });
 });
