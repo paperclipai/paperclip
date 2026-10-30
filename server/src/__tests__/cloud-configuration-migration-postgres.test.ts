@@ -55,6 +55,7 @@ const keys = ["adapter-settings:v1", "cloud-runtime-config:v1", "cloud-configura
     const config = paperclipConfigSchema.parse({
       $meta: { version: 1, updatedAt: "2026-10-30T00:00:00.000Z", source: "configure" },
       database: { mode: "postgres" }, logging: { mode: "cloud" },
+      storage: { provider: "s3", s3: { bucket: "migration-bucket" } },
       server: { port: 3199 }, telemetry: { enabled: false },
     });
     await fs.writeFile(path.join(homeA, "config.json"), JSON.stringify(config));
@@ -118,6 +119,18 @@ const keys = ["adapter-settings:v1", "cloud-runtime-config:v1", "cloud-configura
       expect((await loaderFor(newImage, peer, services).loadSingle(row.id)).success).toBe(true);
       expect(await manager.call(row.id, "health", {})).toMatchObject({ status: "ok", details: { source: expect.stringContaining(newImage.packageRoot) } });
     } finally { await manager.stopAll(); }
+  });
+
+  it("does not seed rejected storage and imports the corrected legacy file on retry", async () => {
+    const config = await legacy();
+    config.storage.provider = "local_disk";
+    await fs.writeFile(path.join(homeA, "config.json"), JSON.stringify(config));
+    await expect(migration().migrate()).rejects.toThrow(/PAPERCLIP_STORAGE_PROVIDER=s3/);
+    expect(await peer.select().from(instanceSettings).where(inArray(instanceSettings.singletonKey, keys))).toEqual([]);
+    config.storage.provider = "s3";
+    await fs.writeFile(path.join(homeA, "config.json"), JSON.stringify(config));
+    expect((await migration(peer).migrate()).migration.config.authority).toBe("legacy_file");
+    expect((await cloudRuntimeConfigService(peer).inspectStored())?.config?.storage.provider).toBe("s3");
   });
 
   it("serializes concurrent attempts and never imports stale inputs over later DB changes", async () => {
