@@ -8,6 +8,9 @@ removed. Secret and key bytes, database credentials, artifacts, logs, local
 storage, workspaces, and plugin state outside PostgreSQL need their own storage
 and replacement checks. This includes the decision signing key and local
 encryption keys. Their byte authority is unchanged by this procedure.
+Runtime environment and secret equality, plus an actual HTTP handoff between
+application processes, remain separate rollout prerequisites. The package digest
+does not establish those conditions.
 
 ## Migration prerequisite
 
