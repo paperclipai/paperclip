@@ -230,6 +230,10 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
     }
   }
 
+  // Nullable columns that later migrations add to retained tables. Migrating
+  // adds them empty; every value that existed before stays as it was.
+  const companyColumnsAddedLater = { default_decision_owner_user_id: null, budget_owner_user_id: null };
+
   async function seedRetainedRows(sql: ReturnType<typeof postgres>, withMuse: boolean) {
     const userId = randomUUID(), clientId = `migration-client-${randomUUID()}`;
     const [company] = await sql`INSERT INTO companies (name, issue_prefix) VALUES ('Retained migration company', 'MRG') RETURNING id`;
@@ -294,6 +298,7 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
       const beforeHistory = baseline === "fresh" ? [] : await historyRows(sql);
       const retainedRows = baseline === "fresh" ? null : await seedRetainedRows(sql, baseline === "muse0348");
       const beforeRows = await retainedRows?.();
+      const migratedRows = beforeRows && { ...beforeRows, company: { ...beforeRows.company, ...companyColumnsAddedLater } };
       const state = await inspectMigrations(connectionString);
       expect(state.status).toBe("needsMigrations");
       const laterMigrations = journal.entries.filter(entry => entry.idx > 353).map(entry => `${entry.tag}.sql`);
@@ -319,7 +324,7 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
         const currentHash = await migrationHash(entry.file);
         expect(afterHistory.filter(row => row.hash === currentHash)).toHaveLength(1);
       }
-      if (retainedRows) expect(await retainedRows()).toEqual(beforeRows);
+      if (retainedRows) expect(await retainedRows()).toEqual(migratedRows);
       const indexes = await sql`
         SELECT c.relname, i.indisvalid, i.indisready, pg_get_indexdef(c.oid) AS definition
         FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -336,7 +341,7 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
       expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
       expect(await historyRows(sql)).toEqual(afterHistory);
       expect(await schemaShape(sql)).toEqual(finalShape);
-      if (retainedRows) expect(await retainedRows()).toEqual(beforeRows);
+      if (retainedRows) expect(await retainedRows()).toEqual(migratedRows);
     } finally {
       await Promise.all([sql.end(), reference.end()]);
     }
