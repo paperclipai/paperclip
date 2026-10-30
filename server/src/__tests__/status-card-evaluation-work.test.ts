@@ -3,7 +3,7 @@ import { documentService } from "../services/documents.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, agentWakeupRequests, agents, approvals, budgetIncidents, budgetPolicies, costEvents, companies, companyMemberships, createDb, documents,
+import { activityLog, agentWakeupRequests, agents, approvals, budgetIncidents, budgetPolicies, costEvents, companies, companyMemberships, createDb, documents, withDedicatedDbConnection,
   heartbeatRuns, instanceSettings, issueComments, issues, statusCards, statusCardUpdates, documentRevisions } from "@paperclipai/db";
 import { companySearchQuerySchema, statusCardRefreshPolicySchema } from "@paperclipai/shared";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -188,6 +188,86 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       .toHaveLength(1);
   });
 
+  it("finishes generation and writeback with a one-connection pool and releases dedicated locks", async () => {
+    vi.useRealTimers();
+    const previousDb = db;
+    db = createDb(external ?? temporary!.connectionString, { maxConnections: 1, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    try {
+      const created = await card("reactive", { ...policy(), debounceSeconds: 1 });
+      const countLocks = async () => Number((await db.execute<{ count: string }>(sql`
+        select count(*) from pg_stat_activity where datname = current_database()
+        and application_name = 'paperclip-workspace-finalization-lock'`))[0]!.count);
+      const baseline = await countLocks();
+      await issueService(db).create(companyId, { title: "Pool-one blocker", status: "blocked", priority: "medium" });
+      const service = statusCardEvaluationService(db, { wakeup });
+      const acquired = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+      const holder = withDedicatedDbConnection(db, connection => connection.transaction(async tx => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${created.id}, 0))`);
+        acquired.resolve(); await release.promise;
+      }));
+      await acquired.promise;
+      try {
+        await service.run(new AbortController().signal);
+        expect(wakeup).not.toHaveBeenCalled();
+        expect(await service.next()).toBeGreaterThan(Date.now());
+      } finally { release.resolve(); await holder; }
+      await service.run(new AbortController().signal);
+      expect((await statusCardService(db).getById(created.id))!.pendingChangeCount).toBeGreaterThan(0);
+      await vi.waitFor(async () => {
+        await service.run(new AbortController().signal);
+        expect(wakeup).toHaveBeenCalledOnce();
+      }, { timeout: 5000, interval: 100 });
+      await writeback(created.id, (await statusCardService(db).getById(created.id))!.generatingIssueId!);
+      await service.run(new AbortController().signal);
+      expect(await service.next()).toBeNull();
+      expect(idleWorkSnapshot().active).toBe(0);
+      await vi.waitFor(async () => expect(await countLocks()).toBe(baseline));
+      // Failure exits also release the physical connection and advisory lock.
+      await db.update(statusCards).set({ queries: [{ scope: "invalid" } as never], nextEvalAt: new Date() }).where(eq(statusCards.id, created.id));
+      await service.run(new AbortController().signal);
+      expect((await statusCardService(db).getById(created.id))!.nextEvalReason).toBe("retry");
+      await vi.waitFor(async () => expect(await countLocks()).toBe(baseline));
+      await withDedicatedDbConnection(db, connection => connection.transaction(async tx => {
+        expect((await tx.execute<{ acquired: boolean }>(sql`select pg_try_advisory_xact_lock(hashtextextended(${created.id}, 0)) as acquired`))[0]!.acquired).toBe(true);
+      }));
+    } finally { await db.$client.end({ timeout: 1 }); db = previousDb; }
+  }, 15_000);
+
+  it.each([false, true])("recovers a lost committed hint before a future membership deadline (legacy=%s)", async legacy => {
+    await issueService(db).create(companyId, { title: "Original blocker", status: "blocked", priority: "medium" });
+    compiledQuery = companySearchQuerySchema.parse({ scope: "issues", status: ["blocked"], updatedWithin: "1d" });
+    const created = await card();
+    expect(created.nextEvalReason).toBe("membership");
+    const oldExpiry = created.nextEvalAt!.getTime();
+    // No coordinator exists to receive this committed source hint. A fresh
+    // service has no in-memory hint and must reconstruct from durable truth.
+    await issueService(db).create(companyId, { title: "Committed before crash", status: "blocked", priority: "medium" });
+    if (legacy) await db.update(statusCards).set({ nextEvalReason: null }).where(eq(statusCards.id, created.id));
+    const restarted = statusCardEvaluationService(db, { wakeup });
+    await restarted.run(new AbortController().signal);
+    const pending = (await statusCardService(db).getById(created.id))!;
+    expect(pending.pendingChangeCount).toBe(1);
+    expect(pending.nextEvalReason).toBe("policy");
+    expect(pending.nextEvalAt!.getTime()).toBeLessThan(oldExpiry);
+    expect(wakeup).not.toHaveBeenCalled();
+    vi.setSystemTime(pending.nextEvalAt!); await restarted.run(new AbortController().signal);
+    expect(wakeup).toHaveBeenCalledOnce();
+    await writeback(created.id, (await statusCardService(db).getById(created.id))!.generatingIssueId!);
+    expect((await statusCardService(db).getById(created.id))!.nextEvalReason).toBe("membership");
+  });
+
+  it("preserves a legacy ambiguous five-minute claim without extending it on restart", async () => {
+    const created = await card();
+    const retry = new Date(Date.now() + 240_000);
+    await db.update(statusCards).set({ nextEvalAt: retry, nextEvalReason: null }).where(eq(statusCards.id, created.id));
+    await issueService(db).create(companyId, { title: "Unconsumed source", status: "blocked", priority: "medium" });
+    const restarted = statusCardEvaluationService(db, { wakeup });
+    await restarted.run(new AbortController().signal);
+    expect(await restarted.next()).toBe(retry.getTime());
+    vi.setSystemTime(retry); await restarted.run(new AbortController().signal);
+    expect((await statusCardService(db).getById(created.id))!.pendingChangeCount).toBeGreaterThan(0);
+  });
+
   it.each(["debounce", "hours", "rate", "budget"] as const)("restores pending %s eligibility after restart without advancing it or acting early", async gate => {
     vi.setSystemTime(new Date("2026-11-02T18:00:00Z"));
     const refreshPolicy = { ...policy(), ...(gate === "hours" ? { activeHours: { start: "09:00", end: "17:00", timezone: "UTC" } } : {}),
@@ -335,8 +415,12 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await issueService(db).create(companyId, { title: "Assignment blocker", status: "blocked", priority: "medium" });
     await vi.waitFor(async () => expect((await statusCardService(db).getById(created.id))?.pendingChangeCount).toBeGreaterThan(0));
     await vi.advanceTimersByTimeAsync(60_000); await settled();
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect((await statusCardService(db).getById(created.id))!.state).toBe("error");
+    });
     const failed = (await statusCardService(db).getById(created.id))!;
-    expect(failed).toMatchObject({ state: "error", generatingIssueId: null, nextEvalAt: null });
+    expect(failed).toMatchObject({ state: "error", generatingIssueId: null, nextEvalAt: null, nextEvalReason: null });
     expect(errors.length).toBeGreaterThan(0);
     const history = await db.select().from(statusCardUpdates).where(eq(statusCardUpdates.cardId, created.id));
     const ledger = history.find(row => row.status === "failed")!;

@@ -1,6 +1,6 @@
 import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
 import { createHash } from "node:crypto";
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lte, ne, or, sql, type SQL } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -11,6 +11,7 @@ import {
   issueComments,
   statusCards,
   statusCardUpdates,
+  withDedicatedDbConnection,
   type Db,
 } from "@paperclipai/db";
 import type {
@@ -301,11 +302,12 @@ export function statusCardService(
       ...(input.refreshPolicy !== undefined
         ? {
             refreshPolicy: input.refreshPolicy,
+            nextEvalReason: "refresh",
             nextEvalAt: card.archivedAt ? null : input.refreshPolicy.mode === "reactive" && card.queries.length > 0 ? now : nextStatusCardEvaluationAt(input.refreshPolicy, now),
           }
         : {}),
       ...(archiveChanged && input.archived
-        ? { archivedAt: now, archivedByAgentId: actor.agentId, archivedByUserId: actor.userId, nextEvalAt: null }
+        ? { archivedAt: now, archivedByAgentId: actor.agentId, archivedByUserId: actor.userId, nextEvalAt: null, nextEvalReason: null }
         : {}),
       ...(archiveChanged && !input.archived
         ? {
@@ -315,6 +317,7 @@ export function statusCardService(
             lastChangeAt: now,
             lastUpdateRunKind: null,
             nextEvalAt: card.queries.length > 0 ? now : null,
+            nextEvalReason: "refresh",
           }
         : {}),
     };
@@ -537,9 +540,10 @@ export function statusCardService(
     companyId: string,
     issueIds: string[],
     options: StatusCardReadOptions = {},
+    queryDb: Db = db,
   ): Promise<CompanySearchIssueSummary[]> {
     if (issueIds.length === 0) return [];
-    const rows = await db
+    const rows = await queryDb
       .select({
         id: issues.id,
         identifier: issues.identifier,
@@ -589,11 +593,11 @@ export function statusCardService(
     return loadIssueSummaries(card.companyId, card.mentionedIssueIds ?? [], options);
   }
 
-  async function executeQueries(card: StatusCardRow, options: StatusCardReadOptions = {}, onNextMembershipChange?: (at: Date | null) => void) {
+  async function executeQueries(card: StatusCardRow, options: StatusCardReadOptions = {}, onNextMembershipChange?: (at: Date | null) => void, queryDb: Db = db) {
     const issueMap = new Map<string, CompanySearchIssueSummary>();
     for (const storedQuery of card.queries) {
       const query = companySearchQuerySchema.parse(storedQuery);
-      const response = await searchSvc.search(card.companyId, query, {
+      const response = await companySearchService(queryDb).search(card.companyId, query, {
         issueReadCondition: options.issueReadCondition, onNextMembershipChange,
       });
       for (const result of response.results) {
@@ -605,12 +609,12 @@ export function statusCardService(
     const mentioned = await loadIssueSummaries(
       card.companyId,
       (card.mentionedIssueIds ?? []).filter((issueId) => !issueMap.has(issueId)),
-      options,
+      options, queryDb,
     );
     for (const issue of mentioned) issueMap.set(issue.id, issue);
     const snapshot = [...issueMap.values()];
     if (snapshot.length === 0) return snapshot;
-    const latestHumanComments = await db
+    const latestHumanComments = await queryDb
       .select({
         issueId: issueComments.issueId,
         // The postgres-js driver returns the `max()` aggregate over a timestamp
@@ -672,6 +676,7 @@ export function statusCardService(
         lastChangeAt: null,
         state: "active",
         nextEvalAt,
+        nextEvalReason: nextEvalAt ? card.refreshPolicy.mode === "reactive" ? "membership" : "refresh" : null,
       }).where(eq(statusCards.id, card.id)).returning());
       return { card: next!, generatingIssue: null, alreadyGenerating: false, enqueued: false };
     }
@@ -699,6 +704,7 @@ export function statusCardService(
         pendingChangeHash,
         lastChangeAt,
         state: decision.action === "pause_budget" ? "paused_budget" : decision.action === "pause_hours" ? "paused_hours" : "active",
+        nextEvalReason: "policy",
         nextEvalAt: nextStatusCardPolicyEligibility({
           policy: card.refreshPolicy, now, lastChangeAt,
           completedUpdateTimes: recent.filter(row => row.kind !== "compile" && row.finishedAt).map(row => row.startedAt),
@@ -755,6 +761,7 @@ export function statusCardService(
       lastChangeAt,
       state: "active",
       nextEvalAt,
+      nextEvalReason: nextEvalAt ? card.refreshPolicy.mode === "reactive" ? "membership" : "refresh" : null,
       failureReason: null,
     }).where(and(eq(statusCards.id, card.id), isNull(statusCards.archivedAt), or(isNull(statusCards.generatingIssueId), priorGenerationPredicate))).returning());
     if (!next) {
@@ -788,9 +795,16 @@ export function statusCardService(
   async function tickDueStatusCards(now = new Date(), reactiveCompanies?: ReadonlySet<string> | "changed", reconstruct = false) {
     const changedScope = reactiveCompanies === "changed" ? sql`true` : reactiveCompanies?.size
       ? inArray(statusCards.companyId, [...reactiveCompanies]) : sql`false`;
-    // Startup restores every disarmed reactive scope. A concurrent committed
-    // source hint can additionally preempt its company's saved future deadline.
-    const reactiveScope = or(reconstruct ? isNull(statusCards.nextEvalAt) : undefined, changedScope);
+    // Startup recovers lost source hints for membership deadlines as well as
+    // disarmed cards. Saved policy gates and retry leases keep their owner.
+    // Legacy untagged leases are at most five minutes from their claim time:
+    // preserve that bounded ambiguity, never a days-away membership deadline.
+    const startupScope = reconstruct ? or(
+      isNull(statusCards.nextEvalAt), eq(statusCards.nextEvalReason, "membership"),
+      and(isNull(statusCards.nextEvalReason), isNull(statusCards.pendingChangeHash),
+        eq(statusCards.state, "active"), gt(statusCards.nextEvalAt, new Date(now.getTime() + 5 * 60_000))),
+    ) : undefined;
+    const reactiveScope = or(startupScope, changedScope);
     const due = await db.select({ card: statusCards }).from(statusCards)
       .innerJoin(companies, eq(companies.id, statusCards.companyId))
       .where(and(eq(companies.status, "active"), isNull(statusCards.archivedAt), isNull(statusCards.generatingIssueId),
@@ -805,13 +819,13 @@ export function statusCardService(
       // event may preempt a genuine future deadline, so serialize scheduler
       // evaluation across connections without holding a row lock while the
       // existing issue/card services commit through their own transactions.
-      await db.transaction(async lockTx => {
+      await withDedicatedDbConnection(db, connection => connection.transaction(async lockTx => {
         const [lock] = await lockTx.execute<{ acquired: boolean }>(
           sql`select pg_try_advisory_xact_lock(hashtextextended(${candidate.id}, 0)) as acquired`,
         );
         if (!lock?.acquired) { deferredCompanyIds.add(candidate.companyId); return; }
         const claimUntil = new Date(now.getTime() + 5 * 60 * 1000);
-        const [claimed] = await mutate(candidate.companyId, tx => tx.update(statusCards).set({ nextEvalAt: claimUntil })
+        const [claimed] = await mutate(candidate.companyId, tx => tx.update(statusCards).set({ nextEvalAt: claimUntil, nextEvalReason: "retry" })
           .where(and(eq(statusCards.id, candidate.id), isNull(statusCards.archivedAt), isNull(statusCards.generatingIssueId),
             candidate.nextEvalAt ? eq(statusCards.nextEvalAt, candidate.nextEvalAt) : isNull(statusCards.nextEvalAt)))
           .returning());
@@ -826,7 +840,7 @@ export function statusCardService(
             "status card scheduled refresh failed",
           );
         }
-      });
+      }));
     }
     return { evaluated, enqueued, deferredCompanyIds };
   }
@@ -859,7 +873,9 @@ export function statusCardService(
       // Current watched membership: compiled-query matches plus the issues this
       // summary mentions.
       let membershipAt: Date | null = null;
-      const watchedSnapshot = await executeQueries({ ...current, mentionedIssueIds }, {}, at => { if (at && (!membershipAt || at < membershipAt)) membershipAt = at; });
+      // All watched-source reads use this transaction. Borrowing the root
+      // pool here would deadlock a one-connection installation.
+      const watchedSnapshot = await executeQueries({ ...current, mentionedIssueIds }, {}, at => { if (at && (!membershipAt || at < membershipAt)) membershipAt = at; }, tx as unknown as Db);
       const watchedNow = buildStatusCardFingerprint(watchedSnapshot);
       let snapshot: StatusCardFingerprint;
       if (payloadFingerprint) {
@@ -931,6 +947,9 @@ export function statusCardService(
         pendingChangeCount: 0,
         pendingChangeHash: null,
         lastChangeAt: null,
+        nextEvalReason: current.refreshPolicy.mode === "reactive" &&
+          filterStatusCardChanges(diffStatusCardFingerprint(snapshot, watchedNow), current.refreshPolicy).length > 0
+          ? "refresh" : membershipAt ? "membership" : null,
         nextEvalAt: current.refreshPolicy.mode === "reactive" &&
           filterStatusCardChanges(diffStatusCardFingerprint(snapshot, watchedNow), current.refreshPolicy).length > 0
           ? now : nextEvaluationAt(current, membershipAt, now),

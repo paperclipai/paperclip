@@ -47,6 +47,7 @@ export async function finalizeStatusCardsForStalledGeneration(
       failureReason,
       generatingIssueId: null,
       nextEvalAt: null,
+      nextEvalReason: null,
       updatedAt: now,
     })
     .where(
