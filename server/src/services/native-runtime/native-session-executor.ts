@@ -9165,7 +9165,8 @@ async function executePaperclipNativeSessionWithinScope(
       return input.runnerEnvironment;
     };
     const overlapGitHubPreparation = needsCoreGitHubAccess(input) && input.useRunnerd && input.backend === undefined
-      && input.runnerExecutionTarget?.kind === "remote" && input.execution.provider.kind === "codex"
+      && input.runnerExecutionTarget?.kind === "remote"
+      && (input.execution.provider.kind === "codex" || input.execution.provider.kind === "opencode")
       && input.execution.schema !== "paperclip.native-execution-input.v6"
       && input.execution.schema !== "paperclip.native-execution-input.v8";
     if (!overlapGitHubPreparation) await prepareRunnerEnvironment();

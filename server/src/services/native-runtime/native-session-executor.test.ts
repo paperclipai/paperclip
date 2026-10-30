@@ -12341,7 +12341,14 @@ describe("runnerd provider runtime wiring", () => {
     }
   });
 
-  it.each(["github", "assigned"] as const)("cleans run-owned access after overlapping executor failure: %s", async failure => {
+  it.each((["codex", "opencode"] as const).flatMap(provider =>
+    (["github", "assigned"] as const).map(failure => ({ provider, failure })),
+  ))("cleans run-owned access after overlapping $provider executor failure: $failure", async ({ provider, failure }) => {
+    const current = {
+      ...execution,
+      provider: provider === "codex" ? execution.provider : { kind: "opencode", model: null },
+      session: { ...execution.session, driverKind: provider === "codex" ? "codex_app_server" : "opencode_server" },
+    } as NativeExecutionInputV1;
     const issueService = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({
       update: vi.fn(async () => ({ status: "blocked", statusVersion: 1 })),
     } as unknown as ReturnType<typeof issueServiceModule.issueService>);
@@ -12367,7 +12374,7 @@ describe("runnerd provider runtime wiring", () => {
     state.createBackend.mockClear();
     let settled = false;
     const running = executePaperclipNativeSession({
-      db: leaseDb(execution), execution, runnerInstanceId: "runner-overlap-cleanup",
+      db: leaseDb(current), execution: current, runnerInstanceId: "runner-overlap-cleanup",
       useRunnerd: true, managedGitHub: true,
       runnerEnvironment: {
         PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
@@ -12393,7 +12400,7 @@ describe("runnerd provider runtime wiring", () => {
       expect(state.execute).not.toHaveBeenCalled();
       expect(state.createBackend).not.toHaveBeenCalled();
       if (failure === "assigned") {
-        expect(activate).toHaveBeenCalledWith(execution.binding);
+        expect(activate).toHaveBeenCalledWith(current.binding);
         expect(deactivate).toHaveBeenCalledOnce();
         expect(stop).toHaveBeenCalledOnce();
       }

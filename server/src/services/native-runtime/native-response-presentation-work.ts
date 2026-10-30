@@ -7,6 +7,7 @@ import type { NativeResponsePresentationScope } from "../native-response-present
 import { onCommittedChatResponseAuthorityRegistered } from "../durable-chat-wakeup.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { recoverCommittedNativeChatResponse } from "./native-run-finalizer.js";
+import { measureRunPhase, withRunResponsePresentationTiming } from "../execution-preparation-timing.js";
 
 export function registerNativeResponsePresentationWork(db: Db,
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
@@ -31,16 +32,19 @@ export function nativeResponsePresentationWork(db: Db) {
     }
     throw new Error("Native response presentation discovery stopped");
   }
-  async function check(entry: Entry, signal?: AbortSignal): Promise<Entry | null> {
+  function check(entry: Entry, signal?: AbortSignal): Promise<Entry | null> {
+    return withRunResponsePresentationTiming(entry.id, () => checkWithinTrace(entry, signal));
+  }
+  async function checkWithinTrace(entry: Entry, signal?: AbortSignal): Promise<Entry | null> {
     if (signal?.aborted) throw new Error("Native response presentation recovery stopped");
     const scope = { companyId: entry.companyId, issueId: entry.issueId };
-    const [current] = await candidates(scope, undefined, entry.id);
+    const [current] = await measureRunPhase("response.resolve", () => candidates(scope, undefined, entry.id));
     if (!current) return null;
     if (current.nextAttemptAt && current.nextAttemptAt.getTime() > Date.now()) return { ...entry, dueAt: current.nextAttemptAt.getTime() };
     if (signal?.aborted) throw new Error("Native response presentation recovery stopped");
     const recoveryStartedAt = Date.now();
     await recoverCommittedNativeChatResponse(db, { ...scope, runId: entry.id, onlyWhenDue: true });
-    const [remaining] = await candidates(scope, undefined, entry.id);
+    const [remaining] = await measureRunPhase("response.resolve", () => candidates(scope, undefined, entry.id));
     return remaining?.nextAttemptAt && remaining.nextAttemptAt.getTime() > recoveryStartedAt
       ? { ...entry, dueAt: remaining.nextAttemptAt.getTime() } : null;
   }
