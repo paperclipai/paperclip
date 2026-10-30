@@ -1,6 +1,9 @@
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
-export async function notifyRunDispatch(transaction: object) {
-  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.scheduledRetryDispatch);
-  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.queuedRunDispatch);
+export type RunDispatchScope = { companyId: string };
+
+export async function notifyRunDispatch(transaction: object, scope?: RunDispatchScope) {
+  const hint = scope ? JSON.stringify(scope) : "*";
+  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.scheduledRetryDispatch, hint);
+  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.queuedRunDispatch, hint);
 }

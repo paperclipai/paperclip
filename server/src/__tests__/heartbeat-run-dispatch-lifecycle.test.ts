@@ -1,3 +1,4 @@
+import { idleWorkSnapshot } from "../services/task-admission.js";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
@@ -28,7 +29,7 @@ function fixture(input: { due?: number; suppressed?: boolean; draining?: boolean
     if (state.due !== null && state.due <= Date.now()) state.due = null;
   });
   const next = vi.fn(async () => state.due);
-  const dispatch = vi.fn(async () => {});
+  const dispatch = vi.fn(async (_scope?: { companyId: string }) => {});
   const coordinator = createDeliveryWorkCoordinator({ owner: db,
     canRun: () => !state.draining && !state.standby, canReconcile: () => !state.standby, onError: vi.fn() });
   const worker = registerRunDispatchWork(coordinator, {
@@ -37,8 +38,8 @@ function fixture(input: { due?: number; suppressed?: boolean; draining?: boolean
   }, () => !state.draining && !state.standby);
   cleanup.push(() => coordinator.stop());
   return { db, state, promote, next, dispatch, coordinator, worker,
-    notify: () => db.transaction(tx => notifyRunDispatch(tx)),
-    settle: () => vi.advanceTimersByTimeAsync(0) };
+    notify: (scope?: { companyId: string }) => db.transaction(tx => notifyRunDispatch(tx, scope)),
+    settle: () => vi.advanceTimersByTimeAsync(1_000) };
 }
 
 describe("run dispatch obligations", () => {
@@ -67,20 +68,39 @@ describe("run dispatch obligations", () => {
     const before = f.next.mock.calls.length;
     await vi.advanceTimersByTimeAsync(20 * 60_000); expect(f.next).toHaveBeenCalledTimes(before);
   });
+  it("batches repeated tenant writes and passes only their company to queued dispatch", async () => {
+    const f = fixture(); await f.worker.ready;
+    for (let index = 0; index < 100; index++) {
+      await f.notify({ companyId: "company-a" });
+      await vi.advanceTimersByTimeAsync(10);
+    }
+    expect(f.promote.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(f.dispatch.mock.calls.length).toBeLessThanOrEqual(2);
+    await f.settle();
+    expect(f.dispatch).toHaveBeenLastCalledWith({ companyId: "company-a" });
+    expect(f.dispatch.mock.calls.slice(1).every(([scope]) => scope?.companyId === "company-a")).toBe(true);
+    expect(f.coordinator.nextWakeAt()).toBeNull();
+    const count = f.dispatch.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(20 * 60_000); expect(f.dispatch).toHaveBeenCalledTimes(count);
+  });
   it("remembers the first producer arriving during drain without owner SQL", async () => {
     const f = fixture(); await f.worker.ready; f.state.draining = true;
     await f.notify(); await f.settle(); await vi.advanceTimersByTimeAsync(90_000);
     expect(f.promote).toHaveBeenCalledOnce(); expect(f.next).toHaveBeenCalledOnce();
+    expect(idleWorkSnapshot().active).toBe(0);
     f.state.draining = false; await vi.advanceTimersByTimeAsync(30_000);
     expect(f.promote).toHaveBeenCalledTimes(2); expect(f.dispatch).toHaveBeenCalledTimes(2);
     expect(f.coordinator.nextWakeAt()).toBeNull();
   });
-  it("retains failed work across drain and settles after recovery", async () => {
-    const f = fixture(); f.state.fail = true; await f.worker.ready;
+  it("releases a failed producer hold during drain and retains recovery for resume", async () => {
+    const f = fixture(); await f.worker.ready;
+    f.state.fail = true; await f.notify(); await f.settle();
+    expect(f.promote).toHaveBeenCalledTimes(2);
     f.state.draining = true; await vi.advanceTimersByTimeAsync(90_000);
-    expect(f.promote).toHaveBeenCalledOnce(); expect(f.next).not.toHaveBeenCalled();
+    expect(f.promote).toHaveBeenCalledTimes(2); expect(f.next).toHaveBeenCalledOnce();
+    expect(idleWorkSnapshot().active).toBe(0);
     f.state.fail = false; f.state.draining = false; await vi.advanceTimersByTimeAsync(30_000);
-    expect(f.promote).toHaveBeenCalledTimes(2); expect(f.coordinator.nextWakeAt()).toBeNull();
+    expect(f.promote).toHaveBeenCalledTimes(3); expect(f.coordinator.nextWakeAt()).toBeNull();
   });
   it("preserves a notification during a nonoverlapping pass", async () => {
     const f = fixture(); await f.worker.ready;

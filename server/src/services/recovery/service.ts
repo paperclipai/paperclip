@@ -2717,7 +2717,7 @@ export function recoveryService(
     const now = new Date();
     const retryAt = readProviderQuotaRetryAt(input.latestRun, now);
     return database.transaction(async (tx) => {
-      await notifyRunDispatch(tx);
+      await notifyRunDispatch(tx, { companyId: input.issue.companyId });
       const wakeup = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -3318,7 +3318,7 @@ export function recoveryService(
           created = Boolean(enqueuedRun);
         } else {
           scheduledRun = await db.transaction(async (tx) => {
-            await notifyRunDispatch(tx);
+            await notifyRunDispatch(tx, { companyId: input.issue.companyId });
             const wakeup = await tx
               .insert(agentWakeupRequests)
               .values({

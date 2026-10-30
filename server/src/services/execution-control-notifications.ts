@@ -1,9 +1,9 @@
-import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyRunDispatch, type RunDispatchScope } from "./run-dispatch-notifications.js";
 import type { Db } from "@paperclipai/db";
 import { DELIVERY_QUEUES, notifyDeliveryWork, type DeliveryQueue } from "./delivery-work-notifications.js";
 
-export async function notifyExecutionRunWork(transaction: object) {
-  await notifyRunDispatch(transaction);
+export async function notifyExecutionRunWork(transaction: object, scope?: RunDispatchScope) {
+  await notifyRunDispatch(transaction, scope);
   for (const queue of [DELIVERY_QUEUES.executionStatus, DELIVERY_QUEUES.executionFinalization,
     DELIVERY_QUEUES.executionReplacement, DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.issueMonitors]) {
     await notifyDeliveryWork(transaction, queue);

@@ -40,7 +40,7 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
     notifyWork: tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle),
     async beforeStatusChange(tx, companyId, agentId, before, after) {
       if (before !== after) {
-        await notifyRunDispatch(tx);
+        await notifyRunDispatch(tx, { companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       }
       if (!isAgentStatusInvokable(before) && isAgentStatusInvokable(after)) {

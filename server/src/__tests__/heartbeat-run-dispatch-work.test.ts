@@ -1,3 +1,4 @@
+import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -76,9 +77,11 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
     return db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]);
   }
   async function completed(id: string) {
-    await vi.waitFor(async () => expect((await status(id))?.status).toBe("succeeded"), { timeout: 10_000 });
+    await vi.waitFor(async () => expect(["running", "succeeded"]).toContain((await status(id))?.status), { timeout: 10_000 });
     await heartbeat.drainActiveRunExecutions();
-    expect((await status(id)).stdoutExcerpt).toContain("dispatch-proof");
+    const completed = await status(id);
+    expect(completed.status).toBe("succeeded");
+    expect(completed.stdoutExcerpt).toContain("dispatch-proof");
   }
   it("keeps fresh empty, configured idle and retained terminal history quiet", async () => {
     await start(); await quiet();
@@ -87,10 +90,10 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
   });
   it("ordinary retry creation wakes the worker, respects the exact deadline, dispatches and settles", async () => {
     const f = await fixture(); await start(); await quiet();
-    const result = await heartbeat.scheduleBoundedRetry(f.runId, { delayMs: 2_000, random: () => 0 });
+    const result = await heartbeat.scheduleBoundedRetry(f.runId, { delayMs: 4_000, random: () => 0 });
     expect(result.outcome).toBe("scheduled");
     if (result.outcome !== "scheduled") throw new Error("Expected retry creation");
-    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(result.dueAt.getTime()));
+    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(result.dueAt.getTime()), { timeout: 5_000 });
     expect((await status(result.run.id)).status).toBe("scheduled_retry");
     await new Promise(resolve => setTimeout(resolve, 100));
     expect(Date.now()).toBeLessThan(result.dueAt.getTime());
@@ -110,7 +113,7 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
     const f = await fixture(); await start();
     const scheduled = await heartbeat.scheduleBoundedRetry(f.runId, { delayMs: 600_000 });
     if (scheduled.outcome !== "scheduled") throw new Error("Expected retry creation");
-    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(scheduled.dueAt.getTime()));
+    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(scheduled.dueAt.getTime()), { timeout: 5_000 });
     await heartbeat.cancelRun(scheduled.run.id, "operator stop", { suppressImmediateRecovery: true });
     await quiet(); expect((await status(scheduled.run.id)).status).toBe("cancelled");
   });
@@ -118,7 +121,14 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
     const f = await fixture(); await start(); await quiet(); draining = true;
     const scheduled = await heartbeat.scheduleBoundedRetry(f.runId, { delayMs: 200 });
     if (scheduled.outcome !== "scheduled") throw new Error("Expected retry creation");
-    await new Promise(resolve => setTimeout(resolve, 400));
+    await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+    const count = reads.mock.calls.length;
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(reads).toHaveBeenCalledTimes(count);
+      expect(idleWorkSnapshot().active).toBe(0);
+    } finally { vi.useRealTimers(); }
     expect((await status(scheduled.run.id)).status).toBe("scheduled_retry");
     draining = false; worker!.wake();
     await completed(scheduled.run.id); await quiet();
@@ -151,12 +161,38 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
         await blocker.select().from(agents).where(eq(agents.id, f.agentId)).for("update");
         writing = agentService(db).clearError(f.agentId);
         void writing.catch(() => {});
-        await vi.waitFor(() => expect(databaseWorkPending(db, DELIVERY_QUEUES.queuedRunDispatch)).toBe(true));
+        await new Promise(resolve => setTimeout(resolve, 100));
+        expect(databaseWorkPending(db, DELIVERY_QUEUES.queuedRunDispatch)).toBe(false);
         expect((await status(queued.id)).status).toBe("queued");
         expect((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0].status).toBe("error");
       });
     } finally { await writing; }
     await completed(queued.id); await quiet();
+  });
+  it("leaves cancellation-owned retries quiet even when their old promotion time is overdue", async () => {
+    const f = await fixture();
+    const scheduled = await heartbeat.scheduleBoundedRetry(f.runId, { now: new Date(Date.now() - 60_000), delayMs: 1_000 });
+    if (scheduled.outcome !== "scheduled") throw new Error("Expected retry creation");
+    await db.update(heartbeatRuns).set({ resultJson: { startupCancellation: { requestedAt: new Date().toISOString() },
+      cancellation: { expected: true, reason: "operator stop", source: "operator" } } }).where(eq(heartbeatRuns.id, scheduled.run.id));
+    await start(); await quiet();
+    expect((await status(scheduled.run.id)).status).toBe("scheduled_retry");
+    expect(await heartbeat.promoteDueScheduledRetries()).toEqual({ promoted: 0, runIds: [] });
+    await quiet();
+  });
+  it("rejects an error clear without publishing work when the lifecycle is no longer ready", async () => {
+    const f = await fixture(); await start(); await quiet();
+    await db.update(agents).set({ status: "error", lifecycleState: "paused" }).where(eq(agents.id, f.agentId));
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      await expect(agentService(db).clearError(f.agentId)).rejects.toThrow("Only agents in error status");
+      expect(coordinator!.nextWakeAt()).toBeNull();
+      const count = reads.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(reads).toHaveBeenCalledTimes(count);
+    } finally { vi.useRealTimers(); }
+    expect((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0].status).toBe("error");
+    await quiet();
   });
   it("keeps a foreign company's future retry intact while concurrent workers claim one due retry", async () => {
     const selected = await fixture(), foreign = await fixture(); await start();
