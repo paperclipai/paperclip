@@ -244,6 +244,12 @@ interface ParsedOutput {
   usage?: UsageSummary;
   costUsd?: number;
   errorMessage?: string;
+  /**
+   * True when the Hermes session footer reports the session contains only
+   * the user message and zero tool calls — the agent never produced a turn,
+   * so any "response" text is just the prompt echo and CLI chrome.
+   */
+  producedNoTurns?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +338,39 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
       .filter((line) => !/INFO|DEBUG|warn/i.test(line)); // skip log-level noise
     if (errorLines.length > 0) {
       result.errorMessage = errorLines.slice(0, 5).join("\n");
+    }
+  }
+
+  // Hermes ends a non-quiet run with a session footer:
+  //   Resume this session with: hermes --resume <id>
+  //   Session: <id>
+  //   Duration: 43.27s
+  //   Messages: 1 (1 user, 0 tool calls)
+  // When the session holds only the user message and zero tool calls, the
+  // agent never produced a turn — typically every provider call failed and
+  // Hermes still exited 0. The text parsed as the "response" in that case is
+  // the prompt echo ("Query: <prompt>") plus CLI chrome, not an agent reply,
+  // so drop it and surface the run as a zero-turn failure instead of letting
+  // it record as a success whose summary is the prompt itself. See #16443.
+  // Only the LAST footer-shaped line counts: the prompt echo or the reply
+  // itself can quote an earlier session's footer (an agent debugging this
+  // very failure mode would), and the real footer is the one Hermes prints
+  // at the end of the run.
+  const footerMatches = [
+    ...combined.matchAll(/Messages:\s*(\d+)\s*\(\s*(\d+)\s+user,\s*(\d+)\s+tool calls?\)/g),
+  ];
+  const footerMatch = footerMatches[footerMatches.length - 1];
+  if (footerMatch) {
+    const totalMessages = parseInt(footerMatch[1], 10);
+    const userMessages = parseInt(footerMatch[2], 10);
+    const toolCalls = parseInt(footerMatch[3], 10);
+    if (totalMessages <= 1 && userMessages <= 1 && toolCalls === 0) {
+      result.producedNoTurns = true;
+      result.response = undefined;
+      if (!result.errorMessage) {
+        result.errorMessage =
+          "Hermes session contained only the user message with 0 tool calls; the agent produced no response (its provider calls likely failed).";
+      }
     }
   }
 
@@ -615,6 +654,17 @@ export async function execute(
     executionResult.errorMessage = parsed.errorMessage;
   } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
+  }
+
+  // A session whose footer shows only the user message ran zero agent turns
+  // even though Hermes exited 0 (#16443). Classify it like other zero-turn
+  // failures so retries, budgets, and run history see the failure.
+  if (parsed.producedNoTurns && !result.timedOut && result.exitCode === 0) {
+    executionResult.errorCode = "zero_agent_turns";
+    if (!executionResult.errorMessage) {
+      executionResult.errorMessage =
+        "Hermes completed zero agent turns: the session contained only the user message and no tool calls.";
+    }
   }
 
   if (parsed.usage) {
