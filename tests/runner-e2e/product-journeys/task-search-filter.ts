@@ -68,13 +68,14 @@ export async function taskSearchFilter(context: JourneyContext, session: TargetS
   await page.goto(`${api.origin}/${company.issuePrefix}/issues`);
   await expect(page.locator("main#main-content")).toBeVisible();
   const search = page.getByRole("textbox", { name: "Search tasks", exact: true });
-  await expect(search).toBeVisible();
   // Both supported task shells expose their normal All tasks view here.
   const views = page.getByRole("button", { name: /^(Change view — currently |Task view: )/ });
+  await expect(views.or(search).first()).toBeVisible();
   if (await views.isVisible()) {
     await views.click();
     await page.getByRole("menuitem", { name: /^All tasks/ }).or(page.getByRole("menuitemradio", { name: "All tasks", exact: true })).click();
   }
+  await expect(search).toBeVisible();
   const listView = page.getByRole("button", { name: "List view", exact: true });
   if (await listView.isVisible()) await listView.click();
   const filters = await openFilters(page);
