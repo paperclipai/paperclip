@@ -5,11 +5,14 @@ import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/se
 import { materializeSelectedSkills, rehydratePinnedSkillAssets } from "../services/native-runtime/runtime-context.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { applyPendingMigrations, agents, heartbeatRuns, companySkills, companySkillVersions, companies, createDb } from "@paperclipai/db";
+import { applyPendingMigrations, agents, heartbeatRuns, companySkills, companySkillVersions, companies, createDb, instanceSettings } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
 import * as storageModule from "../storage/index.js";
 import { createStorageService } from "../storage/service.js";
@@ -73,6 +76,31 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     expect(await service.readFile(companyId, skill.id, "references/guide.md"))
       .toMatchObject({ content: "complete root guide" });
   });
+
+  it("loads persisted Cloud configuration for read-only maintenance without seeding it", async () => {
+    const companyId = await company();
+    await companySkillService(db).createLocalSkill(companyId, { name: "Cloud CLI", markdown: "# Cloud CLI" });
+    const key = "cloud-runtime-config:v1";
+    const run = (phase: string) => promisify(execFile)(process.execPath, [
+      "--import", fileURLToPath(import.meta.resolve("tsx")),
+      fileURLToPath(new URL("../../scripts/migrate-skill-packages.ts", import.meta.url)),
+      `--phase=${phase}`, `--company=${companyId}`, "--limit=50",
+    ], { env: { ...process.env, DATABASE_URL: database.connectionString,
+      PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "disposable-cloud-cli-fixture",
+      PAPERCLIP_STORAGE_PROVIDER: "local_disk", PAPERCLIP_STORAGE_LOCAL_DIR: path.join(root, "objects") },
+      timeout: 60_000, maxBuffer: 1024 * 1024 });
+    await expect(run("eligibility")).rejects.toThrow("Initialize Cloud runtime configuration");
+    expect(await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key))).toHaveLength(0);
+    await db.insert(instanceSettings).values({ singletonKey: key, general: { version: 1, revision: 0, config: null } });
+    try {
+      const eligibility = JSON.parse((await run("eligibility")).stdout.trim().split("\n").at(-1)!);
+      expect(eligibility.results).toEqual([expect.objectContaining({ status: "version_backed" })]);
+      const verification = JSON.parse((await run("verification")).stdout.trim().split("\n").at(-1)!);
+      expect(verification.results).toEqual([expect.objectContaining({ status: "local_storage" })]);
+    } finally {
+      await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, key));
+    }
+  }, 180_000);
 
   it("forks live linked-local content even when an older saved version exists", async () => {
     const companyId = await company();

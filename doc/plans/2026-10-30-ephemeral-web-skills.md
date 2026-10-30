@@ -12,17 +12,24 @@ deployment.
 - **Passed:** independent-process PostgreSQL/S3 failure matrix; hosted A → B → C
   replacement with predecessor homes absent; C reads and executes B's acknowledged
   save; historical repository pin delivery while a newer revision is installed.
-- **Passed:** latest code review at `9200e3fcb4`, confidence 5/5, no unresolved
-  findings. Workspace typecheck/build, 33 execution/Studio tests, 16 managed-content
-  tests and the separate-process replacement matrix passed locally.
+- **Passed:** full CI and code review at `7ec495de77`, confidence 5/5, no
+  unresolved findings. Workspace typecheck/build, focused regressions and the
+  separate-process replacement matrix passed. Local timeout attempts remain
+  recorded below; their results are not counted as passes.
 - **Passed:** compatible image rollback to `6518b323` retained the newer managed
   revisions and delivered their bytes plus the historical repository pin remotely.
-- **In progress:** deployed unassigned-skill Studio retry after fixing selection
-  and native completion. Full CI at `040dad3dc3` was green. Current CI found one
-  obsolete restart-scope fixture in two jobs; the corrected 52-case HTTP suite passes.
+- **Passed:** deployed unassigned-skill Studio retry: the exact fork v3 was
+  delivered and executed, Studio reached `succeeded`, and its output snapshot
+  persisted. Independent package verification found zero blockers.
+- The maintenance CLI configuration bootstrap regression and server typecheck
+  passed. The PR records final CI/review status for the commit containing this
+  evidence update.
 
 Runtime candidate `9200e3fcb4` contains the native Studio selection/completion and
-legacy completeness fixes. Its image is building. The chronological record below
+legacy completeness fixes. It is deployed and qualified. Later changes integrate
+master, protect drafts during a delayed UI reload, and load persisted Cloud
+configuration in the maintenance CLI; their verification is recorded separately.
+The chronological record below
 retains earlier failures and intermediate pending states; this section describes
 the current qualification status.
 
@@ -413,3 +420,43 @@ handoff, and production volume removal are outside this slice.
   and draft remain current. All 17 Studio component cases passed, including a
   delayed response while the user continues typing. This client-only follow-up
   is separate from the `9200e3fcb4` server image used for remote delivery proof.
+- Full CI run `41124309799` passed at `7ec495de77`; Greptile review 14 is 5/5
+  with zero unresolved findings. The isolated local execution retry stopped
+  producing progress and was interrupted; no success is claimed for that attempt.
+  The full CI suites cover the integrated execution and HTTP cases.
+- Candidate `9200e3fcb45082ad73fbb75863d56eb2e6ce526c` deployed successfully
+  through Cloud run `41124147876`, ready at `2026-10-30T20:36:46Z`.
+  Deployment `3daed721-eefe-4947-afe3-d8fd1db6aa2c`, replica
+  `29375d2e-50ea-467e-9492-a2d4bc7e628e`, retained the temporary C home setting.
+  Console inspection confirmed A/B homes and the rollback marker absent.
+- The Studio retry created test `7c55d51d-c2c9-426e-a2fa-3606c486d41a`, task
+  `e8405564-1d2e-4013-8aeb-145de0a76fbd`, and remote run
+  `c6ebc90d-1411-404b-ad6d-789d960a7a48`. It delivered only the selected
+  unassigned fork `ef34d9e5-2533-497e-8411-a797117afb4a` (v3), with
+  `unassigned-payload-C-20261030\n`, stdout
+  `skill-script-A: unassigned-payload-C-20261030\n`, exit 0 and mode 0555.
+  Studio visibly reached `succeeded` and displayed the durable output snapshot.
+  The fork still has zero assignments. SHA-256 values match the expected fixture:
+  `SKILL.md` = `a97ee4d33cac28f9affcc53e48b3de00f72a9a8b70a0b3a53bb81569b1111ae6`,
+  reference = `0d5a7396baaf395ef24e9136b2f9892e9878d863b42ff3195d376f61248d1f5f`,
+  script = `8830c87e4e56e76dbe70bfac5fa4260d1e33d62eaa3289d1f8887a3fa9521da0`.
+- Independent database inspection confirmed task EPH-10 is done, its native run
+  succeeded, and its exact durable selection contains only the unassigned fork v3.
+  The Studio row is `succeeded` with a 1,915-character output snapshot. Runner
+  command event sequence 204 independently confirms all three hashes, actual
+  script stdout, exit 0 and mode 0555; these are tool results, not only the agent's
+  report. The Studio success screenshot is retained with the handoff.
+- Final eligibility inspected 14 installations, all `version_backed`.
+  Independent verification inspected 25 versions: 23 `remote_storage`, two
+  `database_release_snapshot`, zero blockers, and zero rows at the next cursor.
+  The first standalone command incorrectly reported packages unavailable because
+  it had not loaded Cloud's persisted runtime configuration. The same services
+  passed after loading that snapshot. The CLI now loads it read-only and fails
+  explicitly if absent, without seeding configuration. A real child-process test
+  covers missing configuration, no write on inspection, eligibility, and object
+  verification; it passed. An initial diagnostic wrapper also used a nonexistent
+  compiled DB entry point; correcting it to the image's source entry point allowed
+  the bounded verification to run. Neither diagnostic failure changed skill data.
+- The CLI child-process regression passed in 46.52 seconds, and server typecheck
+  passed after the bootstrap correction. The CLI reads existing configuration
+  without creating or changing it; no new maintenance process or listener exists.
