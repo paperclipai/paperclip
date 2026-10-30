@@ -899,3 +899,73 @@ second-line\" status=401`,
     });
   });
 });
+
+describe("redaction of long letter/digit runs", () => {
+  const typescriptSource = [
+    "export function compactRunLogChunk(chunk: string, maxChars = 65536) {",
+    "  const normalized = redactSensitiveText(chunk);",
+    "  if (normalized.length <= maxChars) return normalized;",
+    "  return normalized.slice(0, maxChars);",
+    "}",
+    "",
+  ].join("\n");
+
+  function base64OfTypeScriptSource(length: number) {
+    const repeatedSource = typescriptSource.repeat(Math.ceil(length / typescriptSource.length));
+    return Buffer.from(repeatedSource).toString("base64").slice(0, length);
+  }
+
+  function redactWithinTimeBudget(input: string) {
+    const startedAt = performance.now();
+    const output = redactSensitiveText(input);
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+    return output;
+  }
+
+  it("redacts secret field names that carry a prefix in plain and escaped JSON", () => {
+    const cases = [
+      [`{"myApiKey": "plain-prefixed-secret"}`, `{"myApiKey": "${REDACTED_EVENT_VALUE}"}`],
+      [`{"x_auth_token":"snake-prefixed-secret","status":"ok"}`, `{"x_auth_token":"${REDACTED_EVENT_VALUE}","status":"ok"}`],
+      [`GITHUB_TOKEN: "upper-prefixed-secret"`, `GITHUB_TOKEN: "${REDACTED_EVENT_VALUE}"`],
+      [`{'db_password': 'single-quoted-secret'}`, `{'db_password': '${REDACTED_EVENT_VALUE}'}`],
+      [`text"apiKey":"glued-quote-secret"`, `text"apiKey":"${REDACTED_EVENT_VALUE}"`],
+      [`aGVsbG8apiKey:"glued-run-secret"`, `aGVsbG8apiKey:"${REDACTED_EVENT_VALUE}"`],
+      [String.raw`{\"myApiKey\":\"escaped-prefixed-secret\"}`, String.raw`{\"myApiKey\":\"${REDACTED_EVENT_VALUE}\"}`],
+      [
+        String.raw`{\"x_auth_token\":\"escaped-snake-secret\",\"status\":\"ok\"}`,
+        String.raw`{\"x_auth_token\":\"${REDACTED_EVENT_VALUE}\",\"status\":\"ok\"}`,
+      ],
+      [String.raw`aGVsbG8\"GITHUB_TOKEN\":\"escaped-glued-secret\"`, String.raw`aGVsbG8\"GITHUB_TOKEN\":\"${REDACTED_EVENT_VALUE}\"`],
+    ];
+
+    for (const [input, expected] of cases) {
+      expect(redactSensitiveText(input)).toBe(expected);
+      expect(redactSensitiveText(expected)).toBe(expected);
+    }
+  });
+
+  it("keeps base64 of source text intact and fast while redacting a secret glued to its end", () => {
+    const blob = base64OfTypeScriptSource(48 * 1024);
+    expect(blob).toMatch(/^[A-Za-z0-9]+$/);
+
+    const shellCommand = `printf '%s' '${blob}' | base64 -d > src/compact.ts`;
+    expect(redactWithinTimeBudget(shellCommand)).toBe(shellCommand);
+
+    const toolCallLine = JSON.stringify({ type: "tool_use", input: { command: shellCommand } });
+    expect(redactWithinTimeBudget(toolCallLine)).toBe(toolCallLine);
+    const serializedToolCallLine = JSON.stringify(toolCallLine);
+    expect(redactWithinTimeBudget(serializedToolCallLine)).toBe(serializedToolCallLine);
+
+    const gluedSecret = redactWithinTimeBudget(`${blob}apiKey:"run-glued-secret"`);
+    expect(gluedSecret).toBe(`${blob}apiKey:"${REDACTED_EVENT_VALUE}"`);
+  });
+
+  it("scans long dash-separated runs in linear time", () => {
+    for (const run of ["a-".repeat(60_000), "a--".repeat(40_000)]) {
+      expect(redactWithinTimeBudget(`${run} Authorization: Bearer dash-run-secret`))
+        .toBe(`${run} Authorization: ${REDACTED_EVENT_VALUE}`);
+      expect(redactWithinTimeBudget(`${run}Authorization: Bearer glued-run-secret`))
+        .toBe(`${run}Authorization: ${REDACTED_EVENT_VALUE}`);
+    }
+  });
+});
