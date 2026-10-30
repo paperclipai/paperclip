@@ -63,8 +63,6 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
     appendRunEvent,
     getCurrentUserRedactionOptions,
   } = input;
-  // Only sanitized performance diagnostics may outlive their callback. Slow
-  // persistence applies backpressure instead of retaining an unbounded backlog.
   let diagnosticTail = Promise.resolve();
   let pendingDiagnostics = 0;
   let pendingDiagnosticBytes = 0;
@@ -81,8 +79,6 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       pendingDiagnostics -= 1;
       pendingDiagnosticBytes -= bytes;
     });
-    // An oversized event is never retained behind other work or acknowledged
-    // before its write settles.
     if (bytes > 256 * 1024) await diagnosticTail;
   };
   const flushDiagnosticEvents = async () => {
