@@ -9,6 +9,7 @@ import { createKimiLifecycleTiming, finishBudgetedEvalSetup, type EvalSetupObser
 import { runKimiLifecycleFlow } from "./kimi-lifecycle.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
+import { runnerE2EPlaywrightCaseTimeoutMs, runnerE2EPlaywrightWatchdogMs } from "./web-server-command.js";
 
 const identity = { executionId: "fixture-execution", attemptId: "fixture-attempt" };
 const ready = { id: "agent", companyId: "company", status: "idle", lifecycleState: "ready", lifecycleError: null };
@@ -155,4 +156,39 @@ it("keeps a finite setup cap and one full graded Kimi window after the recorded 
   for (const elapsed of [300_000, 301_000]) {
     expect(() => createKimiLifecycleTiming({ startedAt, deadlineMs }).beginWork(startedAt + elapsed)).toThrow("setup deadline expired");
   }
+});
+
+it.each([60_000, 300_000])("lets Kimi cleanup and its final report finish after %sms of server startup", async startupMs => {
+  vi.useFakeTimers();
+  try {
+    const execution = selectRunnerExecutions(parseRunnerSelectors(["--id", "kimi-qualification.runner-acpx-kimi.daytona.native-write-provider-loss"]))[0]!;
+    const deadlineMs = execution.task.attemptTimeoutMs[execution.environment.id];
+    const spawnedAt = Date.now();
+    let killed = false, cleanupFinished = false, reportSaved = false;
+    const watchdog = setTimeout(() => { killed = true; }, runnerE2EPlaywrightWatchdogMs([execution]));
+    await vi.advanceTimersByTimeAsync(startupMs);
+    const timing = createKimiLifecycleTiming({ startedAt: Date.now(), deadlineMs });
+    setTimeout(() => { if (!killed) cleanupFinished = true; }, timing.cleanupDeadlineAt - Date.now() - 1);
+    setTimeout(() => { if (!killed && cleanupFinished) reportSaved = true; }, timing.playwrightTimeoutMs - 1);
+    await vi.advanceTimersByTimeAsync(timing.playwrightTimeoutMs - 1);
+    expect({ killed, cleanupFinished, reportSaved }).toEqual({ killed: false, cleanupFinished: true, reportSaved: true });
+    expect(runnerE2EPlaywrightCaseTimeoutMs(execution.task.flow, deadlineMs)).toBe(timing.playwrightTimeoutMs);
+    expect(Date.now() - spawnedAt).toBe(startupMs + 690_000 - 1);
+    await vi.advanceTimersByTimeAsync(300_000 - startupMs + 1);
+    expect(killed).toBe(true);
+    clearTimeout(watchdog);
+  } finally { vi.clearAllTimers(); vi.useRealTimers(); }
+});
+
+it("keeps other launcher case and startup allowances unchanged", () => {
+  const executions = selectRunnerExecutions(parseRunnerSelectors(["--suite", "kimi-qualification"]));
+  const others = executions.filter(execution => execution.task.flow !== "kimi_native_lifecycle");
+  expect(others.length).toBeGreaterThan(0);
+  for (const execution of others) {
+    const deadlineMs = execution.task.attemptTimeoutMs[execution.environment.id];
+    expect(runnerE2EPlaywrightCaseTimeoutMs(execution.task.flow, deadlineMs)).toBe(deadlineMs + 90_000);
+    expect(runnerE2EPlaywrightWatchdogMs([execution])).toBe(deadlineMs + 90_000 + 300_000);
+  }
+  expect(runnerE2EPlaywrightWatchdogMs(executions)).toBe(executions.reduce((total, execution) => total +
+    (execution.task.flow === "kimi_native_lifecycle" ? 2 : 1) * execution.task.attemptTimeoutMs[execution.environment.id] + 90_000, 300_000));
 });

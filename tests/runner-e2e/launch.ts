@@ -5,7 +5,7 @@ import { readRecoveredFeedback } from "./feedback-recovery.js";
 import { readInterruptedAttemptTrace } from "./trace-recovery.js";
 import { EVAL_OBSERVABILITY_SECRET_NAMES, evalBraintrustConfig, finalizeEvalAttemptTrace } from "./braintrust.js";
 import { finalizeEvalAttemptThroughRelay } from "./eval-finalization-relay.js";
-import { runnerE2EPlaywrightInvocation, runnerE2EPlaywrightShutdownSignal } from "./web-server-command.js";
+import { runnerE2EPlaywrightCaseTimeoutMs, runnerE2EPlaywrightInvocation, runnerE2EPlaywrightShutdownSignal, runnerE2EPlaywrightWatchdogMs } from "./web-server-command.js";
 import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import { assertInstalledCliSelection, assertInstalledStartupOnly, verifyInstalledCli } from "./installed-cli.js";
 import { createProcessTreeOwner, stopOwnedProcessTree } from "./process-tree-owner.js";
@@ -583,9 +583,9 @@ async function runAttempt(input: {
         Math.max(
           ...executions.map(
             (candidate) =>
-              candidate.task.attemptTimeoutMs[candidate.environment.id],
+              runnerE2EPlaywrightCaseTimeoutMs(candidate.task.flow, candidate.task.attemptTimeoutMs[candidate.environment.id]),
           ),
-        ) + 90_000,
+        ),
       ),
       PAPERCLIP_HOME: paperclipHome,
       PAPERCLIP_INSTANCE_ID: instanceId,
@@ -617,14 +617,7 @@ async function runAttempt(input: {
     const watchdog =
       options.ui || options.debug
         ? null
-        : executions.reduce(
-            (total, candidate) =>
-              total +
-              candidate.task.attemptTimeoutMs[candidate.environment.id] +
-              90_000,
-            0,
-          ) +
-          5 * 60_000;
+        : runnerE2EPlaywrightWatchdogMs(executions);
     const processResult = await runProcess(
       runnerE2EPlaywrightInvocation(repositoryRoot, playwrightArgs),
       childEnv,

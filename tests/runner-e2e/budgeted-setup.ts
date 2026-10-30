@@ -2,6 +2,7 @@ import type { RunnerEnvironmentId } from "./types.js";
 import type { Agent } from "../../packages/shared/src/types/agent.js";
 import { pollUntil, type RunnerApi } from "./api.js";
 import { beginEvalAgentPhase } from "./attempt-phase.js";
+import { runnerE2EPlaywrightCaseTimeoutMs } from "./web-server-command.js";
 
 type SetupState = Pick<Agent, "id" | "companyId" | "status" | "lifecycleState" | "lifecycleError"> & { lifecycleHolds?: string[] };
 export type EvalSetupObservation = SetupState & { observedAt: string };
@@ -52,7 +53,7 @@ export async function finishBudgetedEvalSetup(input: EvalAgentSetupInput, env: N
 export function createKimiLifecycleTiming(input: { startedAt: number; deadlineMs: number }) {
   const setupDeadlineAt = input.startedAt + input.deadlineMs;
   let workStarted = false;
-  return { setupDeadlineAt, playwrightTimeoutMs: 2 * input.deadlineMs + 90_000,
+  return { setupDeadlineAt, playwrightTimeoutMs: runnerE2EPlaywrightCaseTimeoutMs("kimi_native_lifecycle", input.deadlineMs),
     cleanupDeadlineAt: input.startedAt + 2 * input.deadlineMs + 60_000,
     beginWork(readyAt: number) {
       if (workStarted) throw new Error("Kimi lifecycle work window already started");
