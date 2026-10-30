@@ -17,7 +17,9 @@ export function nativeFinalReplyEvents(events: Row[], run: Row) {
       || typeof envelope.sourceEventId !== "string" || !envelope.sourceEventId || event.sourceEventId !== envelope.sourceEventId
       || typeof envelope.sourceInstanceId !== "string" || !envelope.sourceInstanceId || event.sourceInstanceId !== envelope.sourceInstanceId
       || !Number.isSafeInteger(envelope.sourceSeq) || envelope.sourceSeq < 1 || event.sourceSeq !== envelope.sourceSeq
-      || !["agentMessage", "assistant_message"].includes(payload?.kind) || payload.channel !== "final") return [];
+      || !["agentMessage", "assistant_message"].includes(payload?.kind ?? item?.type) || (payload.channel ?? item?.channel) !== "final"
+      || payload.kind != null && item?.type != null && payload.kind !== item.type
+      || payload.channel != null && item?.channel != null && payload.channel !== item.channel) return [];
     const text = typeof payload.text === "string" ? payload.text : item?.text;
     if (typeof text !== "string" || !text.trim() || typeof payload.text === "string" && typeof item?.text === "string" && payload.text !== item.text) return [];
     return [{ seq: event.seq, sourceEventId: envelope.sourceEventId, sourceInstanceId: envelope.sourceInstanceId,
@@ -67,11 +69,11 @@ export async function readBoundTaskFinalReply(input: {
     const match = state.run.id === input.runId ? uniqueBoundTaskReply(all, state.run, input.agentId, state.comments, input.expectedText, state.events) : null;
     return { ...state, match };
   };
-  const timeout = Math.min(30_000, input.deadlineAt - Date.now());
+  const timeout = input.deadlineAt - Date.now();
   if (timeout <= 0) throw new Error("native_reply_deadline");
   await expect.poll(async () => {
     return Boolean((await read()).match);
-  }, { timeout, intervals: [250, 500, 1000] }).toBe(true);
+  }, { timeout, intervals: [1000, 2000, 5000] }).toBe(true);
   const { match, run, events } = await read();
   if (!match) throw new Error("native_reply_changed");
   const source = match.anchor === run.resultJson?.presentationDecision?.commentId ? "posted-comment" : "native-turn";

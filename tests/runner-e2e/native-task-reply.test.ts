@@ -25,6 +25,19 @@ it("requires one exact visible answer and rejects duplicates, stale answers and 
     expect(uniqueBoundTaskReply(all, run, "owned-agent", [], observed.body, events())).toBeNull();
 });
 
+it("accepts item-normalized final messages but rejects contradictory payload fields", () => {
+  const copy: any[] = events();
+  const payload = copy[0].payload.prpEvent.payload;
+  payload.item = { type: payload.kind, channel: payload.channel, text: payload.text };
+  delete payload.kind; delete payload.channel; delete payload.text;
+  expect(taskReplyBelongsToRun(observed, run, "owned-agent", [], copy)).toBe(true);
+  for (const change of [{ kind: "tool_call" }, { channel: "commentary" }, { text: "other reply" }]) {
+    expect(taskReplyBelongsToRun(observed, run, "owned-agent", [], [{ ...copy[0], payload: { prpEvent: {
+      ...copy[0].payload.prpEvent, payload: { ...payload, ...change },
+    } } }])).toBe(false);
+  }
+});
+
 it("rejects a rendered finish summary with no durable final assistant message", () => {
   const summaryOnly = { ...run, resultJson: { nativeResult: { summary: observed.body } } };
   expect(taskReplyBelongsToRun(observed, summaryOnly, "owned-agent", [])).toBe(false);
