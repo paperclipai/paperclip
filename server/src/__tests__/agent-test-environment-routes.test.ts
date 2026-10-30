@@ -331,6 +331,33 @@ describe("agent test-environment route", () => {
     expect(mockEnvironmentService.findManagedSandboxEnvironment).not.toHaveBeenCalled();
   });
 
+  it.each([undefined, "auto"] as const)("tests the prospective managed Cursor API default without converting saved Legacy agents (%s)", async runner => {
+    const { getServerAdapter } = await import("../adapters/index.js");
+    const native = getServerAdapter("paperclip_runner");
+    const probe = vi.spyOn(native, "testEnvironment").mockImplementation(async () => ({ adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
+      checks: [{ code: "cursor_cloud_account_ready", level: "info" as const, message: "Synthetic account probe; no prompt." }] }));
+    try {
+      const settings = { defaultEnvironmentId: null, experimental: { enableManagedSandboxOnly: true, enableNativeRunner: true } };
+      mockInstanceSettingsService.get.mockResolvedValue(settings);
+      mockInstanceSettingsService.getExperimental.mockResolvedValue(settings.experimental);
+      const adapterConfig = { model: "caller-model", repoUrl: "https://github.com/example/qualification", env: { CURSOR_API_KEY: "synthetic" } };
+      const app = await createApp();
+      const response = await request(app).post("/api/companies/company-1/adapters/cursor_cloud/test-environment").send({ runner, adapterConfig });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body).toMatchObject({ adapterType: "paperclip_runner", checks: [{ code: "cursor_cloud_account_ready" }] });
+      expect(probe).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: null, environmentName: null,
+        config: expect.objectContaining({ provider: "cursor_cloud", model: "caller-model" }) }));
+      expect(mockEnvironmentService.findManagedSandboxEnvironment).not.toHaveBeenCalled();
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      mockAgentService.getById.mockResolvedValue({ id, companyId: "company-1", adapterType: "cursor_cloud", adapterConfig, defaultEnvironmentId: null });
+      const legacy = await request(app).post("/api/companies/company-1/adapters/cursor_cloud/test-environment").send({ agentId: id, adapterConfig });
+      expect(legacy.status).toBe(422);
+      expect(legacy.body.details?.code).toBe("managed_sandbox_unavailable");
+      expect(probe).toHaveBeenCalledOnce();
+    } finally { probe.mockRestore(); }
+  });
+
   it("accepts a managed Dot environment without allocating an idle sandbox", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
     mockInstanceSettingsService.getExperimental.mockResolvedValue({

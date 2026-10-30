@@ -103,6 +103,7 @@ export function AgentBasicsDialog({
         cloud,
         nativeRunnerEnabled: experimental.data?.enableNativeRunner === true,
       }) &&
+      (!cloud || adapter.type !== "cursor_cloud" || adapter.supportedRunners?.includes("paperclip")) &&
       !["process", "http"].includes(adapter.type) &&
       !getAdapterDisplay(adapter.type).comingSoon,
   ), ...(copilotAvailable ? [{ ...nativeRunner!, type: "copilot_runtime" }] : []),
@@ -139,8 +140,10 @@ export function AgentBasicsDialog({
         if (active.current) setName(agent.name);
       }
       saved.current = agent;
-      const nextAdapter = ["openai_dot", "copilot_runtime", "antigravity_runtime"].includes(adapterType) ? "paperclip_runner" : adapterType;
-      const nextProvider = adapterType === "antigravity_runtime" ? "antigravity" : adapterType === "copilot_runtime" ? "copilot" : adapterType === "openai_dot" ? "openai_dot" : adapterType === "paperclip_runner" ? runnerProvider : "codex";
+      const hostedCursor = cloud && adapterType === "cursor_cloud";
+      const nextAdapter = hostedCursor || ["openai_dot", "copilot_runtime", "antigravity_runtime"].includes(adapterType) ? "paperclip_runner" : adapterType;
+      const nextProvider = hostedCursor ? "cursor_cloud" : adapterType === "antigravity_runtime" ? "antigravity" : adapterType === "copilot_runtime" ? "copilot" : adapterType === "openai_dot" ? "openai_dot" : adapterType === "paperclip_runner" ? runnerProvider : "codex";
+      const nextRunner = hostedCursor ? "paperclip" as const : "auto" as const;
       // Pending providers can show setup while the saved name-only draft stays held.
       const pendingAntigravity = nextProvider === "antigravity" && !antigravityQualified;
       if (step === "adapter" || (!creatingRecord && agent.name !== name.trim())) {
@@ -152,7 +155,7 @@ export function AgentBasicsDialog({
               setupAdapterChoice: { adapterType: nextAdapter, runnerProvider: nextProvider, runner: "auto" } },
           } : {}),
           ...(step === "adapter" && !pendingAntigravity ? {
-            adapterType: nextAdapter, runner: "auto" as const,
+            adapterType: nextAdapter, runner: nextRunner,
             adapterConfig: nextAdapter === "paperclip_runner" ? {
               provider: ["claude", "grok", "copilot", "antigravity"].includes(nextProvider) ? "acpx" : nextProvider,
               ...(["claude", "grok", "copilot", "antigravity"].includes(nextProvider) ? { acpxAgent: nextProvider } : {}),
@@ -168,7 +171,7 @@ export function AgentBasicsDialog({
       if (!active.current) return;
       if (step === "name") setStep("adapter");
       else onContinue({ name: agent.name, adapterType: nextAdapter, runnerProvider: nextProvider,
-        runner: "auto", setupAgentId: agent.id });
+        runner: nextRunner, setupAgentId: agent.id });
     } catch (cause) {
       if (active.current) setSaveError(cause instanceof Error ? cause.message : "Could not save agent setup.");
     } finally {

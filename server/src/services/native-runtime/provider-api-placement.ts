@@ -10,6 +10,12 @@ export interface ProviderApiPlacement {
   controller: "paperclip";
 }
 
+export function managedCursorApiDefaultEnabled(experimental: {
+  enableManagedSandboxOnly?: boolean; enableNativeRunner?: boolean;
+} | null | undefined): boolean {
+  return experimental?.enableManagedSandboxOnly === true && experimental.enableNativeRunner === true;
+}
+
 export function assertProviderApiPlacementPolicy(policy: ExecutionPolicy): void {
   if (isExecutionForcedToKubernetes(policy)) {
     throw unprocessable("Cursor Cloud API execution is unavailable under the Kubernetes-only policy.", {

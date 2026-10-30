@@ -1,4 +1,4 @@
-import { assertProviderApiPlacementPolicy, resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
+import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import type { Db } from "@paperclipai/db";
 import { agentHarnessType, paperclipRunnerProfileForHarness, isEnvironmentDriverSupportedForAdapter, paperclipRunnerSupportsPlatform, type AgentRunnerChoice, type AgentRunnerAvailability } from "@paperclipai/shared";
 import { normalizeLegacyRunnerProvider, PAPERCLIP_RUNNER_DEFAULT_MODELS } from "@paperclipai/adapter-utils";
@@ -361,18 +361,27 @@ function resolveAgentRunner(input: AgentRunnerSelection): { adapterType: string;
 }
 
 export async function resolveNewAgentRunnerForCompany(db: Db, companyId: string, input: AgentRunnerSelection & { defaultEnvironmentId?: string | null }) {
-  const nativeCursor = agentHarnessType(input.adapterType ?? "process", input.adapterConfig) === "cursor_cloud"
-    && input.runner !== "legacy" && (input.adapterType === "paperclip_runner" || input.runner === "paperclip");
-  if (nativeCursor) {
+  const cursor = agentHarnessType(input.adapterType ?? "process", input.adapterConfig) === "cursor_cloud";
+  const nativeCursor = cursor && input.runner !== "legacy"
+    && (input.adapterType === "paperclip_runner" || input.runner === "paperclip");
+  const cursorSetupDefault = cursor && input.setupOnly === true
+    && (input.runner === undefined || input.runner === "auto");
+  if (nativeCursor || cursorSetupDefault) {
     const { instanceSettingsService } = await import("./instance-settings.js");
-    assertProviderApiPlacementPolicy((await instanceSettingsService(db).get()).general ?? {});
-    const selected = resolveNewAgentRunner({ ...input, target: localAgentRunnerTarget() });
-    try { if (!input.setupOnly) resolveProviderApiPlacement({ agent: selected }); }
-    catch (error) {
-      if (error instanceof PaperclipRunnerProviderProfileError) throw unprocessable(error.message, { code: error.code });
-      throw error;
+    const settings = await instanceSettingsService(db).get();
+    // Only a held new setup may adopt the API-only managed default. Existing
+    // legacy agents still require an explicit conversion decision.
+    const useSetupDefault = cursorSetupDefault && managedCursorApiDefaultEnabled(settings.experimental);
+    if (nativeCursor || useSetupDefault) {
+      assertProviderApiPlacementPolicy(settings.general ?? {});
+      const selected = resolveNewAgentRunner({ ...input, ...(useSetupDefault ? { runner: "paperclip" as const } : {}), target: localAgentRunnerTarget() });
+      try { if (!input.setupOnly) resolveProviderApiPlacement({ agent: selected }); }
+      catch (error) {
+        if (error instanceof PaperclipRunnerProviderProfileError) throw unprocessable(error.message, { code: error.code });
+        throw error;
+      }
+      return { ...selected, defaultEnvironmentId: null };
     }
-    return { ...selected, defaultEnvironmentId: null };
   }
   if (!paperclipRunnerProfileForHarness(agentHarnessType(input.adapterType ?? "process", input.adapterConfig))
     || input.runner === "legacy" || (input.adapterType === "paperclip_runner" && (input.runner === undefined || input.runner === "paperclip"))) return resolveNewAgentRunner(input);

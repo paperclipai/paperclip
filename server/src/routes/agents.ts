@@ -1,4 +1,4 @@
-import { assertProviderApiPlacementPolicy, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
+import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
 import { latestFailedRunsByAgent } from "@paperclipai/shared";
 import { agentConfigurationSpec } from "@paperclipai/shared";
@@ -1965,6 +1965,9 @@ export function agentRoutes(
       return input.nextAdapterConfig;
     }
     if (["openai_dot", "muse"].includes(String(input.nextAdapterConfig.provider))) return input.nextAdapterConfig;
+    // A provisional setup harness supplies no Cursor model or permissions.
+    // Legacy Cursor conversion still retains its provider-specific defaults.
+    if (input.nextAdapterConfig.provider === "cursor_cloud" && input.previousAdapterType !== "cursor_cloud") return input.nextAdapterConfig;
     const defaults = paperclipRunnerTransitionConfig(input.previousAdapterType, input.previousAdapterConfig.model, input.nextAdapterConfig.provider);
     if (!["claude_local", "codex_local", "opencode_local", "pi_local", "grok_local"].includes(input.previousAdapterType)
       && !isPaperclipRunnerProvider(input.nextAdapterConfig.provider)) {
@@ -2210,6 +2213,7 @@ export function agentRoutes(
     );
     const incompleteModelSetup = input.setupOnly && input.adapterType === "paperclip_runner"
       && (normalizedAdapterConfig.provider === "opencode"
+        || normalizedAdapterConfig.provider === "cursor_cloud"
         || (normalizedAdapterConfig.provider === "acpx" && normalizedAdapterConfig.acpxAgent === "pi"))
       && (normalizedAdapterConfig.model === undefined || normalizedAdapterConfig.model === "");
     // Inactive drafts can precede model selection. Test/hire always validate the complete profile.
@@ -3275,11 +3279,15 @@ export function agentRoutes(
       }
       const testingSetup = savedAgent ? isAgentSetupDraft(savedAgent) : false;
       const poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
+      const prospectiveCursorDefault = type === "cursor_cloud" && !savedAgent
+        && (req.body.runner === undefined || req.body.runner === "auto")
+        && managedCursorApiDefaultEnabled((await instanceSettings.get()).experimental);
+      const testRunner = prospectiveCursorDefault ? "paperclip" : req.body.runner;
       let providerApiTest;
       try {
         providerApiTest = resolveProviderApiPlacement({ agent: {
-          adapterType: type === "cursor_cloud" && req.body.runner === "paperclip" ? "paperclip_runner" : type,
-          adapterConfig: type === "cursor_cloud" && req.body.runner === "paperclip"
+          adapterType: type === "cursor_cloud" && testRunner === "paperclip" ? "paperclip_runner" : type,
+          adapterConfig: type === "cursor_cloud" && testRunner === "paperclip"
             ? { ...inputAdapterConfig, provider: "cursor_cloud" } : inputAdapterConfig,
         } });
       } catch (error) {
@@ -3333,7 +3341,7 @@ export function agentRoutes(
         ? { adapterType: type, adapterConfig: adapterConfigForTest }
         : await resolveNewAgentRunnerForCompany(db, companyId, {
           adapterType: type, adapterConfig: adapterConfigForTest,
-          runner: req.body.runner,
+          runner: testRunner,
           defaultEnvironmentId: requestedEnvironmentId,
         });
       type = selection.adapterType;

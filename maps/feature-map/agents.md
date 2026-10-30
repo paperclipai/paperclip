@@ -44,7 +44,10 @@ query observes actual readiness. **Assign a Task** then hands that current
 record to the composer, so its status does not come from an older paused draft.
 Manual/import pauses and required hire approval remain blocking states.
 
-For **Cursor Cloud**, choose **Paperclip Runner** in Advanced. Bind a Cursor Cloud
+For **Cursor Cloud**, choose its card in Cloud when native Runner is enabled and
+the qualified controller is available. Its held setup draft uses the API
+controller without a Computer, before model or credential selection. Local
+operators can choose **Paperclip Runner** in Advanced. Bind a Cursor Cloud
 API key, enter the exact model and select a repository/ref or a named Cursor
 cloud environment. Cursor hosts the agent's environment; this native setup has
 no Paperclip Computer selection. Save, reopen, and run Test. Test checks the

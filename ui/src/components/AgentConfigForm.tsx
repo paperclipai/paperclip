@@ -1216,6 +1216,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const aiConnection = isCreate ? undefined : aiRuntimeConnectionBindingSchema.safeParse(
         (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection,
       ).data;
+      const testRunnerSelection = isCursorCloudRunner
+        ? { runner: "paperclip" as const }
+        : isRunnerHarness && (isCreate ? runner !== "auto" : overlay.runner !== undefined) ? { runner } : {};
       if (!isCreate && props.agent.adapterType === "paperclip_runner" && adapterType === "paperclip_runner"
         && runnerAvailability?.defaultRunner !== "paperclip"
         && !isExternalRunner && aiConnection?.mode !== "router" && !isDirty && environmentId && canQualifyRunnerEnvironment(environmentList.find(environment => environment.id === environmentId))) {
@@ -1235,9 +1238,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             : adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "claude" ? "claude_local"
               : adapterType
           : adapterType;
-        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, agentId, aiConnection, environmentId, ...(isRunnerHarness && (isCreate ? runner !== "auto" : overlay.runner !== undefined) ? { runner } : {}) });
+        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, agentId, aiConnection, environmentId, ...testRunnerSelection });
       }
-      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, agentId, aiConnection, environmentId, ...(isRunnerHarness && (isCreate ? runner !== "auto" : overlay.runner !== undefined) ? { runner } : {}) });
+      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, agentId, aiConnection, environmentId, ...testRunnerSelection });
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);

@@ -36,6 +36,12 @@ environment. Save/reopen and Test use the same account/configuration contract as
 run admission. The Cloud front door must pass the exact authenticated native-run
 callback to the tenant; Core still enforces live run authority and per-turn scope.
 
+The ordinary Cloud card is available only with native rollout and a qualified
+controller. A server-held new setup draft can use that managed API default before
+model selection. It keeps its setup hold and does not inherit another harness's
+model or permissions. Unsaved automatic Test uses the advertised native default;
+saved Legacy agents still require an explicit conversion.
+
 This correction requires fresh hosted acceptance on its final image. Local and
 synthetic checks do not qualify that deployed journey or erase prior failures.
 

@@ -29,6 +29,13 @@ callback scope remain enforced. Local Computer execution stays denied under
 managed-sandbox-only policy. Verify the actual saved agent and live run; a board
 Test result does not prove agent task-tool access.
 
+On managed-only instances with native Runner enabled, a server-held Cursor setup
+draft can resolve an automatic runner to the API controller before it has a
+model. Unsaved automatic Test requests use the same advertised default and still
+validate the full profile. Existing active Legacy agents and explicit Legacy
+choices do not convert automatically. A client-supplied setup flag does not grant
+draft status or bypass active model validation.
+
 ## `hire`
 
 Capability ID: `agents/hire`.

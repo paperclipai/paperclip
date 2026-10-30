@@ -1353,6 +1353,20 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.querySelector('[aria-label="Environment override"]')).toBeNull();
   });
 
+  it("tests the native default explicitly when creating Cursor Cloud with automatic runner selection", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true, enableManagedSandboxOnly: true });
+    mockAdaptersApi.list.mockResolvedValue([{ type: "cursor_cloud", supportedRunners: ["paperclip"], defaultRunner: "paperclip" }]);
+    const result = await renderCreateForm([], {
+      adapterType: "cursor_cloud", runner: "auto", model: "claude-sonnet-4-5",
+      adapterSchemaValues: { provider: "cursor_cloud", repoUrl: "https://github.com/example/qualification" },
+    }, { showAdapterTestEnvironmentButton: true });
+    roots.push(result.root);
+    await runTest(result.container);
+    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledExactlyOnceWith("company-1", "cursor_cloud", expect.objectContaining({
+      environmentId: null, runner: "paperclip",
+    }));
+  });
+
   it.each(["api_key", "subscription"] as const)("loads saved Antigravity %s models through its selected connection without a Claude fallback", async method => {
     const binding = { provider: "google", method, mode: "responsible_user" } as const;
     const accounts = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({ currentUserId: "you", canManageConnections: true, connections: [{

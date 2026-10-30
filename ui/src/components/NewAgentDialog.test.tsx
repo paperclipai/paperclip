@@ -218,6 +218,36 @@ it("offers one Codex harness without a runner/provider tile", async () => {
   expect(document.querySelectorAll('input[value="codex_local"]')).toHaveLength(1);
   expect(document.querySelector("select")).toBeNull();
 });
+it("opens native Cursor Cloud from the ordinary hosted adapter picker", async () => {
+  await act(async () => {
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+    cache.setQueryData(queryKeys.adapters.availability("company-1", null), [...state.adapters,
+      { type: "cursor_cloud", loaded: true, supportedRunners: ["paperclip"], defaultRunner: "paperclip" }]);
+  });
+  await name();
+  const cursor = document.querySelector<HTMLInputElement>('input[value="cursor_cloud"]');
+  expect(cursor).not.toBeNull();
+  await act(async () => cursor!.click());
+  await click("Configure agent");
+  expect(agents.update).toHaveBeenCalledWith(agents.create.mock.calls[0][1].setupId, expect.objectContaining({
+    adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: { provider: "cursor_cloud" },
+  }), "company-1");
+  const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
+  expect(query.get("adapterType")).toBe("paperclip_runner");
+  expect(query.get("runnerProvider")).toBe("cursor_cloud");
+  expect(query.get("runner")).toBe("paperclip");
+});
+
+it.each(["gate off", "native unavailable"])("keeps hosted Cursor Cloud hidden when %s", async reason => {
+  await act(async () => {
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+    if (reason === "gate off") cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner: false });
+    cache.setQueryData(queryKeys.adapters.availability("company-1", null), [...state.adapters,
+      { type: "cursor_cloud", loaded: true, supportedRunners: reason === "native unavailable" ? ["legacy"] : ["paperclip"], defaultRunner: "legacy" }]);
+  });
+  await name();
+  expect(document.querySelector('input[value="cursor_cloud"]')).toBeNull();
+});
 it.each([true, false, undefined])("opens saved-token Copilot setup without an experimental override (%s)", async enableNativeRunner => {
   await act(async () => cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner }));
   await name();

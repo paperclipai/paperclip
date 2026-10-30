@@ -61,6 +61,34 @@ describe("server-owned Codex runner selection", () => {
     expect(state.ssh).not.toHaveBeenCalled();
     expect(state.sandboxQualification).not.toHaveBeenCalled();
   });
+  it.each([undefined, "auto"] as const)("defaults a new managed Cursor setup draft to the native API controller without a Computer (%s)", async runner => {
+    state.settings = { experimental: { enableManagedSandboxOnly: true, enableNativeRunner: true } };
+    state.managedEnvironment.mockResolvedValue(null);
+    const saved = await resolveNewAgentRunnerForCompany({} as never, "company", {
+      adapterType: "cursor_cloud", runner, setupOnly: true, adapterConfig: {},
+    });
+    expect(saved).toMatchObject({ adapterType: "paperclip_runner", defaultEnvironmentId: null,
+      adapterConfig: { provider: "cursor_cloud", lifecycleMode: "per_turn" } });
+    expect(state.managedEnvironment).not.toHaveBeenCalled();
+    expect(state.getEnvironment).not.toHaveBeenCalled();
+  });
+  it.each([
+    { setupOnly: false, enabled: true },
+    { setupOnly: true, enabled: false },
+  ])("does not use the new-draft Cursor API default outside its admission scope (%j)", async ({ setupOnly, enabled }) => {
+    state.settings = { experimental: { enableManagedSandboxOnly: true, enableNativeRunner: enabled } };
+    state.managedEnvironment.mockResolvedValue(null);
+    await expect(resolveNewAgentRunnerForCompany({} as never, "company", {
+      adapterType: "cursor_cloud", runner: "auto", setupOnly, adapterConfig: {},
+    })).rejects.toMatchObject({ status: 422, details: { code: "managed_sandbox_unavailable" } });
+  });
+  it("preserves an explicit Legacy choice on a held Cursor setup draft", async () => {
+    state.settings = { experimental: { enableManagedSandboxOnly: true, enableNativeRunner: true } };
+    expect(await resolveNewAgentRunnerForCompany({} as never, "company", {
+      adapterType: "cursor_cloud", runner: "legacy", setupOnly: true, adapterConfig: {},
+    })).toEqual({ adapterType: "cursor_cloud", adapterConfig: {} });
+    expect(state.managedEnvironment).not.toHaveBeenCalled();
+  });
   it("refuses native Cursor save and availability under Kubernetes-only policy without provisioning", async () => {
     state.settings = { general: { executionMode: "kubernetes" } };
     await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "cursor_cloud", runner: "paperclip",

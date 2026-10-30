@@ -412,6 +412,7 @@ function Setup({
   const cloud = Boolean(useCloudInstance());
   const available =
     (!nativeCursorCloud || experimental.data?.enableNativeRunner === true) &&
+    (!cloud || adapterType !== "cursor_cloud" || nativeCursorCloud) &&
     isNewAgentAdapterAllowed(adapterType, {
       cloud,
       nativeRunnerEnabled: experimental.data?.enableNativeRunner === true,
