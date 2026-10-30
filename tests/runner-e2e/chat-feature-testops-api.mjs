@@ -19,7 +19,7 @@ const diagnosticCodes = new Set(['untrusted_chat_testops_context', 'testops_toke
   'chat_testops_case_mismatch', 'chat_testops_plan_mismatch', 'chat_testops_plan_job_mismatch', 'chat_testops_job_mismatch',
   'chat_testops_jobrun_mismatch', 'chat_testops_launch_mismatch', 'chat_testops_selection_mismatch', 'chat_testops_parameter_mismatch', 'chat_testops_nonce_invalid', 'chat_testops_nonce_conflict', 'chat_testops_catalog_incomplete', 'chat_testops_launch_admission', 'chat_testops_github_http', 'chat_testops_integration_mismatch', 'chat_testops_upload_mismatch', 'chat_testops_upload_unverified']);
 export function failureProjection(error, stage) {
-  const stages = ['context', 'output_admission', 'authentication', 'metadata_inspection', 'plan_bootstrap', 'selection_validation', 'launch_admission', 'launch_preflight', 'plan_launch', 'bootstrap_job_metadata', 'result_export', 'upload_verification', 'receipt'];
+  const stages = ['context', 'output_admission', 'authentication', 'metadata_inspection', 'plan_bootstrap', 'selection_validation', 'launch_admission', 'launch_preflight', 'plan_launch', 'bootstrap_job_metadata', 'result_export', 'upload_verification', 'bootstrap_context', 'receipt'];
   return { stage: stages.includes(stage) ? stage : 'unknown',
     code: error instanceof SetupFailure && diagnosticCodes.has(error.code) ? error.code : 'unknown_failure',
     httpStatus: error instanceof SetupFailure && Number.isInteger(error.status) && error.status >= 100 && error.status < 600 ? error.status : null };
@@ -188,21 +188,38 @@ async function registeredPlan(api, env) {
   return { ...ids, selected, plan, job };
 }
 
-export async function bootstrapJobMetadata(api, env) {
-  if (!positive(env.ALLURE_JOB_RUN_ID)) return { status: 'official_job_run_id_missing', actualResult: null };
+export async function bootstrapJobMetadata(api, env, expectedLaunchId) {
+  const strict = expectedLaunchId !== undefined;
+  const context = strict ? publicContext(env) : undefined;
+  if (strict && !id(expectedLaunchId)) fail('chat_testops_launch_mismatch');
+  if (!positive(env.ALLURE_JOB_RUN_ID)) {
+    if (strict) fail('chat_testops_jobrun_mismatch');
+    return { status: 'official_job_run_id_missing', actualResult: null };
+  }
   const run = await api(`/api/jobrun/${env.ALLURE_JOB_RUN_ID}`);
   if (!id(run?.job?.id)) fail('chat_testops_jobrun_mismatch');
+  if (strict) {
+    if (run.id !== Number(env.ALLURE_JOB_RUN_ID) || run.job.type !== 'github' || run.launchId !== expectedLaunchId
+      || run.url !== `https://github.com/paperclipai/paperclip/actions/runs/${context.runId}`) fail('chat_testops_jobrun_mismatch');
+    const launch = await api(`/api/launch/${expectedLaunchId}`);
+    if (launch.id !== expectedLaunchId || launch.projectId !== 1) fail('chat_testops_launch_mismatch');
+  }
   const job = await api(`/api/job/${run.job.id}`);
   if (job.id !== run.job.id || job.type !== 'github' || !Array.isArray(job.parameters) || job.parameters.length > 4) fail('chat_testops_job_mismatch');
+  if (strict && !publicJobUrl(job.url, env)) fail('chat_testops_job_mismatch');
   const parameters = [];
+  const seen = new Set();
   for (const parameter of job.parameters) {
-    if (!id(parameter.id)) fail('chat_testops_parameter_mismatch');
+    if (!id(parameter.id) || strict && seen.has(parameter.id)) fail('chat_testops_parameter_mismatch');
+    seen.add(parameter.id);
     const definition = await api(`/api/environment/${parameter.id}`);
+    if (strict && definition.id !== parameter.id) fail('chat_testops_parameter_mismatch');
     const known = ['operation', 'ALLURE_JOB_RUN_ID', 'ALLURE_USERNAME'].includes(definition.name);
     parameters.push({ id: parameter.id, name: known ? definition.name : 'UNKNOWN',
       value: definition.name === 'operation' && ['bootstrap', 'evaluate', 'launch-plan'].includes(parameter.value) ? parameter.value : 'NOT_PROJECTED' });
   }
-  return { status: 'observed', projectId: 1, jobId: job.id, allureJobRunId: env.ALLURE_JOB_RUN_ID,
+  return { ...(strict ? { schema: 'paperclip.chat-feature-testops-bootstrap-registration/v1', ...context, capturedAfterWatch: true, runnableBindingQualified: false } : {}),
+    status: 'observed', projectId: 1, jobId: job.id, allureJobRunId: env.ALLURE_JOB_RUN_ID,
     publicWorkflowMatches: publicJobUrl(job.url, env), currentRunUrlMatches: run.url === `https://github.com/paperclipai/paperclip/actions/runs/${env.GITHUB_RUN_ID}`,
     launchId: id(run.launchId) ? run.launchId : null, parameters, actualResult: null };
 }
