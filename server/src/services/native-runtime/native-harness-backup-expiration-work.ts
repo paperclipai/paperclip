@@ -15,6 +15,26 @@ export function registerNativeHarnessBackupExpirationWork(
 ) {
   const service = nativeHarnessBackupExpirationService(db, { ...options, duty: "backups" });
   const cursors = new Map<string, string>();
+  const roots = new Map<string, Set<string>>();
+  const owners = new Map<string, string>();
+  function remember(id: string, companyId?: string) {
+    const previous = owners.get(id);
+    if (previous && previous !== companyId) {
+      const companyRoots = roots.get(previous)!;
+      companyRoots.delete(id);
+      if (!companyRoots.size) roots.delete(previous);
+      owners.delete(id);
+    }
+    if (!companyId) return;
+    let companyRoots = roots.get(companyId);
+    if (!companyRoots) { companyRoots = new Set(); roots.set(companyId, companyRoots); }
+    companyRoots.add(id); owners.set(id, companyId);
+  }
+  async function reconcile(id: string): Promise<Entry | null> {
+    const source = await service.reconcileBackup(id);
+    remember(id, source?.companyId);
+    return source && source.dueAt !== null ? { ...source, dueAt: source.dueAt } : null;
+  }
   const worker = registerScopedDeadlineWork(coordinator, {
     queue: DELIVERY_QUEUES.nativeHarnessBackupExpiration, batchSize: options.maxRemovals ?? 25,
     decodeScope: (hint: string): NativeHarnessBackupExpirationScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
@@ -22,12 +42,16 @@ export function registerNativeHarnessBackupExpirationWork(
       && (!scope.scopeDigest || entry.id === scope.scopeDigest),
     load: async (scope, signal) => {
       const key = scope ? JSON.stringify(scope) : "*";
+      const limit = options.maxEntries ?? 100;
+      const indexed = scope ? [...roots.get(scope.companyId) ?? []]
+        .filter(id => !cursors.get(key) || id > cursors.get(key)!).sort() : null;
       const page = scope?.scopeDigest ? { names: [scope.scopeDigest], complete: true }
-        : await service.backupScopes(cursors.get(key), options.maxEntries ?? 100);
+        : indexed ? { names: indexed.slice(0, limit), complete: indexed.length <= limit }
+        : await service.backupScopes(cursors.get(key), limit);
       const rows: Entry[] = [];
       for (const name of page.names) {
         if (signal?.aborted || !canRun()) throw new Error("Backup expiration discovery paused");
-        const entry = await service.inspectBackup(name);
+        const entry = await reconcile(name);
         if (entry && (!scope || entry.companyId === scope.companyId)) rows.push(entry);
       }
       if (page.complete) cursors.delete(key); else cursors.set(key, page.names.at(-1)!);
@@ -35,19 +59,22 @@ export function registerNativeHarnessBackupExpirationWork(
     },
     check: async (entry, signal) => {
       if (signal?.aborted || !canRun()) throw new Error("Backup expiration paused");
-      const current = await service.inspectBackup(entry.id);
+      const current = await reconcile(entry.id);
       if (!current || current.companyId !== entry.companyId) return null;
       if (current.dueAt > Date.now()) return current;
       const result = await service.expireBackup(entry.id);
       if (result.candidates || result.failed) logger.info({ ...result, dryRun: options.dryRun ?? false }, "native harness backup expiration");
       if (options.dryRun) return null;
-      const remaining = await service.inspectBackup(entry.id);
+      const remaining = await reconcile(entry.id);
       if (!remaining) return null;
       if (result.skipped.session_active) throw new Error("Backup session is active");
       return remaining;
     },
   }, canRun);
-  const unsubscribe = onNativeHarnessBackupChange(db, scope => worker.invalidate(JSON.stringify(scope)));
+  const unsubscribe = onNativeHarnessBackupChange(db, scope => {
+    if (scope.scopeDigest) remember(scope.scopeDigest, scope.companyId);
+    worker.invalidate(JSON.stringify(scope));
+  });
   const release = onRetainedNativeSessionCleanupRelease(db, scope => worker.invalidate(JSON.stringify({ companyId: scope.companyId })));
   return { ...worker, async stop() { unsubscribe(); release(); await worker.stop(); } };
 }

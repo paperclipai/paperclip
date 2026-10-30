@@ -739,30 +739,29 @@ export function nativeHarnessBackupExpirationService(
     });
   }
 
-  async function inspectBackup(scopeDigest: string) {
+  async function reconcileBackup(scopeDigest: string) {
     const base = path.resolve(defaults.stateBase ?? nativeHarnessStateBase());
     const root = path.join(base, scopeDigest);
     if (!SCOPE_PATTERN.test(scopeDigest) || !(await isRealDirectory(root))) return null;
     const backupRoot = path.join(root, "failover-backups");
     if (!(await isRealDirectory(backupRoot))) return null;
-    const names = await fs.readdir(backupRoot);
+    if (!defaults.dryRun) await settleLeftovers(backupRoot);
     const current = path.join(backupRoot, "current");
     const stat = await fs.lstat(current).catch(missingPath);
-    const leftovers = names.some(name => [RETIRING_PREFIX, EXPIRED_PREFIX].some(prefix =>
-      name.startsWith(prefix) && UUID_PATTERN.test(name.slice(prefix.length))));
-    if ((!stat?.isDirectory() || stat.isSymbolicLink()) && !leftovers) return null;
-    if (defaults.dryRun && !stat?.isDirectory()) return null;
+    if (!stat?.isDirectory() || stat.isSymbolicLink()) return null;
     const identity = await readSessionIdentity(root);
     if (!identity) return null;
     const [owner] = await db.select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
     if (!owner) return null;
-    if (leftovers && !defaults.dryRun) return { id: scopeDigest, ...owner, dueAt: 0 };
-    if (await fs.lstat(path.join(root, "cleanup-activation.json")).then(() => true, () => false)) return null;
+    const source = { id: scopeDigest, ...owner };
+    if (await fs.lstat(path.join(root, "cleanup-activation.json")).then(() => true, () => false)) {
+      return { ...source, dueAt: null };
+    }
     const blocker = await db.transaction(tx => sessionRetentionBlocker(tx, {
       scopeDigest, identity, closedBefore: new Date(8_000_000_000_000_000),
     }));
-    if ("reason" in blocker) return null;
+    if ("reason" in blocker) return { ...source, dueAt: null };
     const retentionMs = Math.max(1, defaults.closedForDays ?? NATIVE_HARNESS_BACKUP_EXPIRATION_DEFAULT_DAYS) * DAY_MS;
     return { id: scopeDigest, ...owner, dueAt: Math.max(stat!.mtime.getTime(), blocker.closedAt) + retentionMs + 1 };
   }
@@ -789,5 +788,5 @@ export function nativeHarnessBackupExpirationService(
   }
 
   return { tick, noteEvidence, nextEvidenceAt, tickCheckpoints, registerCheckpointExpiration,
-    inspectBackup, backupScopes, expireBackup };
+    reconcileBackup, backupScopes, expireBackup };
 }

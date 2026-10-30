@@ -14,7 +14,9 @@ must invalidate the source when it changes. A busy process or failed I/O leaves
 real unresolved cleanup and uses the shared retry backoff. Dry-run reports an
 eligible source once and waits for source invalidation or restart.
 
-Startup pages existing disk scopes. Roots without backup or cleanup tombstones
+Startup pages existing disk scopes and indexes company ownership, including
+protected backups. Company notifications inspect only that index; local backup
+publication adds newly created roots. Roots without backup or cleanup tombstones
 perform no backup SQL. After discovery and all obligations settle, there is no
 recurring SQL or filesystem scan. Startup reconstructs future work; inspecting a
 source never changes its business timestamps. Runtime task close/reopen and
@@ -32,7 +34,9 @@ no permanent database listener and does not add a polling table or migration.
 The existing issue share locks now remain held through the retirement rename.
 This fences task reopen while the backup becomes unavailable. A failed database
 transaction restores `.retiring-*`; a process interruption is recovered from
-that existing file journal at startup. After database settlement, `.expired-*`
+that existing file journal at startup. Journal reconciliation runs before
+identity or owner lookup, so an agent purge cannot strand expired physical
+cleanup or prevent restoration of a retiring backup. After database settlement, `.expired-*`
 records outstanding physical removal so a partial delete retries idempotently.
 Ownership, session identity, live run, lease and local execution safety checks
 remain in the backup owner. No host-sleep blocker or expiry-on-use rule changes.

@@ -1,3 +1,4 @@
+import { agentService } from "../services/agents.js";
 import { publishNativeHarnessBackup } from "../services/native-runtime/native-harness-backup-publication.js";
 import { registerNativeHarnessBackupExpirationWork } from "../services/native-runtime/native-harness-backup-expiration-work.js";
 import { noteNativeHarnessBackupChange } from "../services/native-harness-backup-expiration-notifications.js";
@@ -708,6 +709,64 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     noteNativeHarnessBackupChange(db, { companyId: session.companyId, scopeDigest: session.scope });
     await settled();
     expect(report.mock.calls.filter(call => call[1] === "native harness backup expiration")).toHaveLength(2);
+    await quiet();
+  });
+
+  it("company-only notifications inspect only the indexed company's blocked backup sources", async () => {
+    const own = await seedSession({ issueStatus: "todo" });
+    const other = await seedSession({ issueStatus: "todo" });
+    await startBackups({ maxEntries: 1 }); await settled(); await quiet();
+    const sql: Array<{ query: string; parameters: unknown[] }> = [];
+    const previous = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query, parameters) => { sql.push({ query, parameters }); };
+    const directories = vi.spyOn(fs, "readdir");
+    try {
+      const closed = await issueService(db).update(own.issueId, { status: "done" });
+      await settled(new Date(closed!.completedAt!).getTime() + 7 * DAY_MS + 1);
+      const unrelated = [other.companyId, other.agentId, other.runId, other.sessionId, other.issueId];
+      expect(sql.filter(query => query.parameters.some(parameter =>
+        unrelated.some(id => String(parameter).includes(id))))).toEqual([]);
+      expect(directories.mock.calls.some(call => call[0] === stateBase
+        || String(call[0]).startsWith(other.root))).toBe(false);
+      expect(await exists(other.current)).toBe(true);
+    } finally { db.$client.options.debug = previous; directories.mockRestore(); }
+    await quiet();
+  });
+
+  it.each([false, true])("finishes cleanup journals after ordinary agent deletion (restart %s)", async restart => {
+    const session = await seedSession(); const remove = fs.rm;
+    const fault = vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+      if (String(args[0]).includes(".expired-")) throw new Error("controlled orphan cleanup failure");
+      return remove(...args);
+    });
+    await startBackups();
+    expect(backupErrors).toHaveLength(1);
+    const retryAt = coordinator!.nextWakeAt()!;
+    const backupRoot = path.dirname(session.current);
+    expect((await fs.readdir(backupRoot)).some(name => name.startsWith(".expired-"))).toBe(true);
+    if (restart) { await backupWorker!.stop(); await coordinator!.stop(); }
+    await db.update(agents).set({ status: "terminated", lifecycleState: "terminated" }).where(eq(agents.id, session.agentId));
+    await agentService(db).remove(session.agentId);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, session.runId))).toEqual([]);
+    fault.mockRestore();
+    if (restart) await startBackups(); else await vi.advanceTimersByTimeAsync(retryAt - Date.now());
+    await settled();
+    expect(await fs.readdir(backupRoot)).toEqual([]); expect(await taskSessionCount(session.agentId)).toBe(0);
+    await quiet();
+  });
+
+  it("restores an orphan retiring journal without expiring the recovered backup or unrelated names", async () => {
+    const session = await seedSession(); const backupRoot = path.dirname(session.current);
+    const retiring = path.join(backupRoot, `.retiring-${randomUUID()}`);
+    await fs.rename(session.current, retiring);
+    await fs.mkdir(path.join(backupRoot, ".expired-unrecognized"));
+    await db.update(agents).set({ status: "terminated", lifecycleState: "terminated" }).where(eq(agents.id, session.agentId));
+    await agentService(db).remove(session.agentId);
+    await fs.rm(path.join(session.root, "control-plane"), { recursive: true });
+    await startBackups(); await settled();
+    expect(await exists(session.current)).toBe(true); expect(await exists(retiring)).toBe(false);
+    expect(await exists(path.join(session.current, "manifest.json"))).toBe(true);
+    expect(await exists(path.join(backupRoot, ".expired-unrecognized"))).toBe(true);
     await quiet();
   });
 
