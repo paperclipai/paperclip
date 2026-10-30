@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { checkoutSources, packContractDigest } from "./contract-fingerprints.mjs";
+import { checkoutSources, fingerprintContracts, packContractDigest } from "./contract-fingerprints.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const sources = checkoutSources(root);
@@ -78,6 +78,30 @@ test("variant names stay part of the shape even when they match a type name", ()
   const withEnum = original => `${original}\n#[derive(Serialize)]\nenum ProbeShape {\n    AcpxSuspensionCheckpoint(AcpxSuspensionCheckpoint),\n}\n`;
   const renamedVariant = original => `${original}\n#[derive(Serialize)]\nenum ProbeShape {\n    Checkpoint(AcpxSuspensionCheckpoint),\n}\n`;
   assert.notEqual(digestWith(path, withEnum), digestWith(path, renamedVariant));
+});
+
+test("a field that names a differently shaped type changes the digest", () => {
+  const path = `${RUST}/acpx_provider_checkpoint.rs`;
+  // AcpxProviderSessionIdentity, defined in another file, lets permissionMode be absent.
+  assert.notEqual(digestWith(path, s => s.replace("    identity: PersistedAcpxProviderSessionIdentity,\n}",
+    "    identity: AcpxProviderSessionIdentity,\n}")), baseline);
+  // Renaming the referenced type keeps its shape and the digest.
+  assert.equal(digestWith(path, s => s.replaceAll("PersistedAcpxProviderSessionIdentity", "SavedProviderSessionIdentity")), baseline);
+  // A change inside the referenced type also reaches the field that names it.
+  const nested = original => `${original}\n#[derive(Serialize)]\nstruct ProbeInner {\n    a: u8,\n}\n#[derive(Serialize)]\nstruct ProbeOuter {\n    inner: ProbeInner,\n}\n`;
+  const fingerprints = edit => {
+    const edited = edit(sources.read(path));
+    return fingerprintContracts(p => p === path ? edited : sources.read(p), sources.list);
+  };
+  const before = fingerprints(nested), after = fingerprints(s => nested(s).replace("a: u8", "a: u16"));
+  const outer = contracts => contracts["rust.acpx_provider_checkpoint"].value[0].find(shape => shape.includes("inner:"));
+  assert.notEqual(outer(before), outer(after));
+});
+
+test("recursive serde types resolve", () => {
+  const path = `${RUST}/acpx_provider_checkpoint.rs`;
+  const recursive = name => original => `${original}\n#[derive(Serialize)]\nstruct ${name} {\n    children: Vec<${name}>,\n}\n`;
+  assert.equal(digestWith(path, recursive("ProbeTree")), digestWith(path, recursive("ProbeNode")));
 });
 
 test("a build context without a registered source fails instead of producing another digest", () => {

@@ -59,9 +59,10 @@ export function fingerprintContracts(readFile, listDir) {
       // Env keys are often passed through `const NAME: &str = "KEY"` defined in
       // another file, so resolve constant arguments crate-wide.
       const constants = suffix === ".rs" ? rustStringConstants(sources, readFile) : {};
-      // Serde type names never reach JSON; references to them are normalized.
-      const typeNames = suffix === ".rs" ? rustSerdeTypeNames(sources, readFile) : [];
-      const crateWide = { "rust-env-keys": { constants }, "rust-serde": { typeNames } };
+      // Serde type names never reach JSON; a reference to one is replaced by the
+      // referenced type's shape, which may be defined in another file.
+      const typeShapes = suffix === ".rs" ? rustSerdeTypeShapes(sources, readFile) : {};
+      const crateWide = { "rust-env-keys": { constants }, "rust-serde": { typeShapes } };
       for (const path of sources) {
         const value = probes.map(p => probe({ ...p, path, ...crateWide[p.kind] }, readFile));
         if (isEmpty(value)) continue;
@@ -122,7 +123,7 @@ function probeUncached(spec, source) {
   switch (spec.kind) {
     case "json": return canonicalJson(JSON.parse(source), spec);
     case "rust-consts": return rustConsts(source);
-    case "rust-serde": return rustSerde(source, new Set(spec.typeNames ?? []));
+    case "rust-serde": return rustSerde(source, spec.typeShapes ?? {});
     case "rust-json-keys": return rustJsonKeys(source);
     case "rust-match-literals": return rustMatchLiterals(source);
     case "rust-env-keys": return rustEnvKeys(source, spec.constants ?? {});
@@ -250,12 +251,22 @@ const isSerdeItem = attrs => /derive\([^)]*\b(Serialize|Deserialize)\b/.test(att
 
 /** Serialized shapes of a file's derive(Serialize|Deserialize) items: serde
  * attributes and field/variant bodies. Rust type names never reach JSON, so
- * item names are dropped and references to crate serde types are normalized;
- * renaming a type is not a contract change, while field and variant names,
- * field types and serde attributes are. */
-function rustSerde(source, typeNames) {
+ * item names are dropped and a reference to a crate serde type is replaced by
+ * that type's shape digest; renaming a type is not a contract change, while
+ * field and variant names, field types (including which shape a reference
+ * names) and serde attributes are. */
+function rustSerde(source, typeShapes) {
+  return rustSerdeItems(source)
+    .map(item => serdeShape(item, name => Object.hasOwn(typeShapes, name) ? typeShapes[name] : null))
+    .sort();
+}
+function serdeShape({ kind, serde, body }, shapeOf) {
+  return stableStringify({ kind, serde, body: withNormalizedTypeReferences(body, shapeOf) });
+}
+/** derive(Serialize|Deserialize) items with whitespace-normalized bodies. */
+function rustSerdeItems(source) {
   const text = withoutTestModules(stripRustComments(source));
-  const shapes = [];
+  const items = [];
   for (const m of text.matchAll(SERDE_ITEM)) {
     const attrs = m[1];
     if (!isSerdeItem(attrs)) continue;
@@ -271,18 +282,20 @@ function rustSerde(source, typeNames) {
     // `#[serde(skip)]` fields never reach the wire or the persisted file.
     const normalized = body.replace(/#\[serde\(skip\)\]\s*(?:pub(?:\([^)]*\))?\s+)?\w+\s*:[^,{}]*(?:<[^>]*>)?[^,{}]*,?/g, "")
       .replace(/\bpub(\([^)]*\))?\s+/g, "").replace(/\s+/g, " ").replace(/\s*([{}(),:<>;\[\]=])\s*/g, "$1").replace(/,([})\]])/g, "$1");
-    shapes.push(stableStringify({
+    items.push({
+      name: m[3],
       kind: m[2],
       serde: (attrs.match(/#\[serde\([^\]]*\)\]/g) ?? []).map(a => a.replace(/\s+/g, "")).sort(),
-      body: withNormalizedTypeReferences(normalized, typeNames),
-    }));
+      body: normalized,
+    });
   }
-  return shapes.sort();
+  return items;
 }
 /** Replaces crate serde type names in type positions (after `:`, or inside
- * `(..)` and `<..>`). Names directly inside `{..}` after `{`, `,` or an
- * attribute are field or variant names, which serialize, and stay. */
-function withNormalizedTypeReferences(body, typeNames) {
+ * `(..)` and `<..>`) with `$type:<shape>`. Names directly inside `{..}` after
+ * `{`, `,` or an attribute are field or variant names, which serialize, and
+ * stay. */
+function withNormalizedTypeReferences(body, shapeOf) {
   const stack = [];
   let previous = "";
   // Quoted strings (serde renames) are wire names and pass through unchanged.
@@ -291,7 +304,8 @@ function withNormalizedTypeReferences(body, typeNames) {
     if (/^[A-Za-z_]/.test(token)) {
       const namePosition = stack.at(-1) === "{" && ["{", ",", "]"].includes(previous);
       previous = "ident";
-      return !namePosition && typeNames.has(token) ? "$type" : token;
+      const shape = namePosition ? null : shapeOf(token);
+      return shape === null ? token : `$type:${shape}`;
     }
     if ("{(<[".includes(token)) stack.push(token);
     else if ("})>]".includes(token)) stack.pop();
@@ -299,15 +313,36 @@ function withNormalizedTypeReferences(body, typeNames) {
     return token;
   });
 }
-/** Names of derive(Serialize|Deserialize) items across the crate's sources. */
-function rustSerdeTypeNames(paths, readFile) {
-  const names = new Set();
+/** Shape digest of every derive(Serialize|Deserialize) item across the crate,
+ * keyed by its Rust name. A reference inside a shape resolves to the referenced
+ * shape, so the digest is independent of every Rust type name. A reference back
+ * into the current resolution path is recorded by its depth. Items that share a
+ * name in different modules resolve to all of their shapes. */
+function rustSerdeTypeShapes(paths, readFile) {
+  const byName = new Map();
   for (const path of paths) {
     const source = readFile(path);
     if (source === null) continue;
-    for (const m of withoutTestModules(stripRustComments(source)).matchAll(SERDE_ITEM)) if (isSerdeItem(m[1])) names.add(m[3]);
+    for (const item of rustSerdeItems(source)) byName.set(item.name, [...(byName.get(item.name) ?? []), item]);
   }
-  return [...names].sort();
+  const resolved = new Map();
+  const resolve = (name, path) => {
+    if (resolved.has(name)) return { shape: resolved.get(name), cyclic: false };
+    const back = path.indexOf(name);
+    if (back >= 0) return { shape: `cycle:${path.length - back}`, cyclic: true };
+    let cyclic = false;
+    const shapes = byName.get(name).map(item => serdeShape(item, reference => {
+      if (!byName.has(reference)) return null;
+      const result = resolve(reference, [...path, name]);
+      cyclic ||= result.cyclic;
+      return result.shape;
+    })).sort();
+    const shape = digest(shapes).slice("sha256:".length, "sha256:".length + 16);
+    // A shape inside a cycle depends on where resolution entered it.
+    if (!cyclic) resolved.set(name, shape);
+    return { shape, cyclic };
+  };
+  return Object.fromEntries([...byName.keys()].sort().map(name => [name, resolve(name, []).shape]));
 }
 
 /** Payload keys built or read in code: `json!({"key": ...})`, `["key"]`, `.get("key")`. */
