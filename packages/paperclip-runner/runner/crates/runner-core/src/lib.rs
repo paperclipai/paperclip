@@ -13,6 +13,7 @@ pub mod aws_agentcore_provider;
 pub mod claude_managed_provider;
 pub mod codex_provider;
 mod codex_startup_trust;
+mod codex_usage;
 mod configured_environment;
 mod credential_observer;
 mod cursor_cloud_proxy;

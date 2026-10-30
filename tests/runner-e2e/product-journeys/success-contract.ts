@@ -4,6 +4,7 @@ export const agentJourneyRuns = { "ask-question": 1, "plan-revise-accept": 3, "b
 export const journeyRequiredChecks: Record<string, readonly string[]> = {
   "task-properties": ["assignment-persisted", "no-agent-work"],
   "task-create": ["browser-created-task-persisted", "no-agent-work"],
+  "project-task-context": ["browser-created-project-persisted", "browser-created-project-task-persisted", "project-task-association-reloaded", "project-task-context-visible", "no-agent-work"],
   "task-search-filter": ["task-search-results-exact", "task-status-filter-excludes-controls", "task-search-filter-reloaded", "task-search-result-reopened", "no-agent-work"],
   "ask-question": ["question-answer-persisted", "one-bound-successful-run", "configured-model-and-environment"],
   "plan-revise-accept": ["plan-revision-and-approval", "plan-final-answer", "configured-model-and-environment"],

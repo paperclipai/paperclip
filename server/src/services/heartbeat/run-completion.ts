@@ -1,3 +1,4 @@
+import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-access-denial.js";
@@ -686,7 +687,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
               cancellationResultJson(persistedRunWrite.run, status, finalRunPatch.resultJson, runErrorCode, runErrorMessage) ?? null,
             ),
 
-            usageJson: { ...parseObject(persistedRunWrite.run.usageJson), ...parseObject(finalRunPatch.usageJson) },
+            usageJson: preserveAcceptedRunUsageProjectionSql({ ...parseObject(persistedRunWrite.run.usageJson), ...parseObject(finalRunPatch.usageJson) }),
             finishedAt:
               persistedRunWrite.run.finishedAt ?? finalRunPatch.finishedAt,
             updatedAt: new Date(),
