@@ -394,7 +394,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
           const [updated] = await writeExecutionControl(db, [DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.executionContinuation], tx => tx.update(issueRecoveryActions).set({ nextAction: input.nextAction, updatedAt: now })
             .where(and(eq(issueRecoveryActions.id, existing.id),
               inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
-              sql`${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`)).returning());
+              sql`${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`)).returning(), { companyId: input.companyId });
           if (updated) return toReadModel(updated);
         }
         return existing;
@@ -469,7 +469,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
               ),
             )
             .returning();
-        });
+        }, { companyId: input.companyId });
         if (!exhausted) {
           return retryUpsertSourceScoped(input, retryCount);
         }
@@ -541,7 +541,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
             ),
           )
           .returning();
-      });
+      }, { companyId: input.companyId });
       if (!updated) {
         return retryUpsertSourceScoped(input, retryCount);
       }
@@ -556,7 +556,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
           .insert(issueRecoveryActions)
           .values(buildInsertValues(input, ownerType, now))
           .returning();
-      });
+      }, { companyId: input.companyId });
       return toReadModel(created!);
     } catch (error) {
       if (!isUniqueRecoveryActionConflict(error)) throw error;
@@ -610,7 +610,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
         })
         .where(and(...predicates))
         .returning();
-    });
+    }, { companyId: input.companyId });
 
     return updated ? toReadModel(updated) : null;
   }
