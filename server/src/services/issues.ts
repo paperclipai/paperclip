@@ -4210,7 +4210,25 @@ async function listIssueBlockerAttentionMap(
     sampleStalledBlockerIdentifier: string | null;
     terminalBlockerIssueId?: string | null;
   };
+  // A node's classification only depends on the node and its blockers, so it
+  // is computed once per node. Without the memo every distinct path through
+  // the blocker graph is walked again, which is exponential in the depth of
+  // layered plans (milestone N's items blocked by milestone N-1's QA task,
+  // itself blocked by all of N-1's items) and pins the event loop.
+  const classifyMemo = new Map<string, PathClassification>();
   const classifyPath = (
+    nodeId: string,
+    seen: Set<string>,
+  ): PathClassification => {
+    if (!seen.has(nodeId)) {
+      const memo = classifyMemo.get(nodeId);
+      if (memo) return memo;
+    }
+    const result = classifyPathUncached(nodeId, seen);
+    if (!seen.has(nodeId)) classifyMemo.set(nodeId, result);
+    return result;
+  };
+  const classifyPathUncached = (
     nodeId: string,
     seen: Set<string>,
   ): PathClassification => {
@@ -4383,8 +4401,16 @@ async function listIssueBlockerAttentionMap(
     };
   };
 
+  const liveWorkMemo = new Map<string, boolean>();
   const pathHasLiveWork = (nodeId: string, seen: Set<string>): boolean => {
     if (seen.has(nodeId)) return false;
+    const memo = liveWorkMemo.get(nodeId);
+    if (memo !== undefined) return memo;
+    const result = pathHasLiveWorkUncached(nodeId, seen);
+    liveWorkMemo.set(nodeId, result);
+    return result;
+  };
+  const pathHasLiveWorkUncached = (nodeId: string, seen: Set<string>): boolean => {
     const node = nodesById.get(nodeId);
     if (!node || node.companyId !== companyId) return false;
     if (
