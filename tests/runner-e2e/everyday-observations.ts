@@ -359,7 +359,7 @@ export function storyAgentReplyMatches(
 /** The requested output is one exact token after this continuation's marker. */
 export function retainedControllerReplyMatcher(marker: string): (body: string) => boolean {
   const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`(?:^|\\s)${escaped}\\s+queue_r\\s*$`);
+  const pattern = new RegExp(`(?:^|\\s)${escaped}\\s+queue_r(?=\\s|$)`);
   return body => pattern.test(body);
 }
 

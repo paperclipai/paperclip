@@ -401,10 +401,17 @@ describe("reply completion boundary", () => {
     expect(storyAgentReplyMatches(comment, "lead", expected)).toBe(true);
   });
 
+  it.each(["\nI used the saved project.", " I used the saved project.", "\r\nqueue_ready"])("accepts explanation after the exact continuation token %j", suffix => {
+    const expected = retainedControllerReplyMatcher("CONTINUED_nonce.1");
+    const comment = { authorAgentId: "lead", body: `CONTINUED_nonce.1\nqueue_r${suffix}` };
+    expect(storyHasAgentReply({ id: "task", companyId: "company", title: "Continue", status: "done", comments: [comment] }, "lead", expected)).toBe(true);
+    expect(storyAgentReplyMatches(comment, "lead", expected)).toBe(true);
+  });
+
   it.each([
     "CONTINUED_nonce.1 queue_ready", "CONTINUED_nonce.1 queue_r_extra", "CONTINUED_nonce.1 wrong",
     "CONTINUED_other queue_r", "CONTINUED_nonceX1 queue_r", "queue_r", "CONTINUED_nonce.1queue_r",
-    "OTHER_CONTINUED_nonce.1 queue_r", "CONTINUED_nonce.1 queue_r\nqueue_ready",
+    "OTHER_CONTINUED_nonce.1 queue_r", "CONTINUED_nonce.1 queue_r-extra", "CONTINUED_nonce.1 queue_r.",
   ])("rejects an incorrect continuation reply %j", body => {
     const expected = retainedControllerReplyMatcher("CONTINUED_nonce.1");
     const comment = { authorAgentId: "lead", body };
