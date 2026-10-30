@@ -163,6 +163,22 @@ async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: s
   };
 }
 
+/** History keeps its original scope IDs after a resource is permanently deleted.
+ * Only display reads may use a tombstone; admission and mutations still resolve
+ * the actual resource through resolveScopeRecord. Never adopt a foreign scope. */
+async function resolveSummaryScopeRecord(db: Db, companyId: string, scopeType: BudgetScopeType, scopeId: string): Promise<ScopeRecord> {
+  let scope: ScopeRecord;
+  try {
+    scope = await resolveScopeRecord(db, scopeType, scopeId);
+  } catch (error) {
+    if (!(error instanceof HttpError) || error.status !== 404 || (scopeType !== "agent" && scopeType !== "project")) throw error;
+    return { companyId, name: scopeType === "agent" ? "Deleted agent" : "Deleted project",
+      paused: false, pauseReason: null, budgetHeld: false };
+  }
+  if (scope.companyId !== companyId) throw notFound("Budget scope not found");
+  return scope;
+}
+
 // Keep a large dashboard from filling the database pool with queued reads.
 async function mapBudgetReads<T, R>(rows: T[], read: (row: T) => Promise<R>): Promise<R[]> {
   const result: R[] = [];
@@ -395,7 +411,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
   }
 
   async function buildPolicySummary(policy: PolicyRow): Promise<BudgetPolicySummary> {
-    const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
+    const scope = await resolveSummaryScopeRecord(db, policy.companyId, policy.scopeType as BudgetScopeType, policy.scopeId);
     const observed = await computeObservedSpend(db, policy);
     const { total: observedAmount, totalExact: observedAmountExact, unpricedEventCount, pendingRunCount } = observed;
     const { windowStart: start, windowEnd: end } = observed;
@@ -560,7 +576,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     const approvalStatusById = new Map(approvalRows.map((row) => [row.id, row.status]));
 
     return mapBudgetReads(rows, async (row) => {
-      const scope = await resolveScopeRecord(db, row.scopeType as BudgetScopeType, row.scopeId);
+      const scope = await resolveSummaryScopeRecord(db, row.companyId, row.scopeType as BudgetScopeType, row.scopeId);
       return {
         id: row.id,
         companyId: row.companyId,
