@@ -1581,6 +1581,25 @@ const WORKSPACE_COMPACTION_TRASH_STALE_MS = 60 * 60 * 1000;
 const WORKSPACE_COMPACTION_TRASH_PURGE_INTERVAL_MS = 30 * 60 * 1000;
 const TERMINAL_HOLD_RESET_LIMIT = 65_536;
 
+export function workspaceIssueTreeCondition(companyId: string, sourceIssueId: string) {
+  return sql<boolean>`
+    ${issues.id} = ANY(ARRAY(
+      WITH RECURSIVE issue_tree(id) AS (
+        SELECT ${issues.id}
+        FROM ${issues}
+        WHERE ${issues.companyId} = ${companyId}
+          AND ${issues.id} = ${sourceIssueId}
+        UNION ALL
+        SELECT child.id
+        FROM ${issues} child
+        JOIN issue_tree parent ON child.parent_id = parent.id
+        WHERE child.company_id = ${companyId}
+      )
+      SELECT id FROM issue_tree
+    ))
+  `;
+}
+
 export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServiceOptions = {}) {
   const destroyRemoteLease: DestroyRemoteWorkspaceLease = input => opts.destroyRemoteWorkspaceLease
     ? opts.destroyRemoteWorkspaceLease(input)
@@ -2079,22 +2098,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       .from(issues)
       .where(and(
         eq(issues.companyId, workspace.companyId),
-        sql<boolean>`
-          ${issues.id} IN (
-            WITH RECURSIVE issue_tree(id) AS (
-              SELECT ${issues.id}
-              FROM ${issues}
-              WHERE ${issues.companyId} = ${workspace.companyId}
-                AND ${issues.id} = ${sourceIssueId}
-              UNION ALL
-              SELECT child.id
-              FROM ${issues} child
-              JOIN issue_tree parent ON child.parent_id = parent.id
-              WHERE child.company_id = ${workspace.companyId}
-            )
-            SELECT id FROM issue_tree
-          )
-        `,
+        workspaceIssueTreeCondition(workspace.companyId, sourceIssueId),
       )));
   }
 
