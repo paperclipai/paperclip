@@ -1249,18 +1249,19 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     // under lock, and the final CAS requires its own unchanged acknowledged
     // retry fence. Re-reading only retryable_failure here would strand replay.
     const pendingNativeRetry =
-      run.runtimeMode === "native" && run.status === "failed" && (
+      run.runtimeMode === "native" && run.status === "failed" && Boolean(run.nativeIssueId) && (
         caseHandoffRetryClaimed || Boolean(options.cancellationRequestId) || await db
-          .select({ runId: nativeRunFinalizations.runId })
+          .select({ phase: nativeRunFinalizations.phase, failureCode: nativeRunFinalizations.failureCode })
           .from(nativeRunFinalizations)
           .where(
             and(
               eq(nativeRunFinalizations.runId, run.id),
               eq(nativeRunFinalizations.companyId, run.companyId),
-              eq(nativeRunFinalizations.phase, "retryable_failure"),
+              eq(nativeRunFinalizations.issueId, run.nativeIssueId!),
             ),
           )
-          .then((rows) => rows.length > 0)
+          .then(([coordinator]) => nativeRetryCancellationEligible({ runId: run!.id, companyId: run!.companyId,
+            issueId: run!.nativeIssueId!, resultJson: run!.resultJson }, coordinator))
       );
     if (
       !pendingNativeRetry &&

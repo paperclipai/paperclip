@@ -1026,6 +1026,7 @@ export function heartbeatService(
   });
 
   const {
+    registerResidualRecoveryWork: registerResidualRecoveryOwner,
     sweepPendingCleanupLeases,
     markNativeOwnershipUnverified,
     prepareHotRestartShutdown,
@@ -4210,6 +4211,13 @@ export function heartbeatService(
     computeTaskDrain,
     applyTaskDrain,
 
+    registerResidualRecoveryWork: (coordinator: Parameters<typeof registerResidualRecoveryOwner>[0], canRun: () => boolean) =>
+      registerResidualRecoveryOwner(coordinator, () => canRun() && readTaskDrain(new Date()) === null,
+        async () => !(await getSchedulingSuppression(true)).suppressed),
+    registerActiveRunSilenceWork: (coordinator: Parameters<typeof recovery.registerActiveRunSilenceWork>[0], canRun: () => boolean) =>
+      recovery.registerActiveRunSilenceWork(coordinator, () => canRun() && readTaskDrain(new Date()) === null,
+        async scope => recovery.scanSilentActiveRuns({ ...scope, issueCreatedAtGte: await getWorktreeExecutionCutoff() }),
+        async () => !(await getSchedulingSuppression(true)).suppressed),
     registerDeferredReceiptWork: (coordinator: Parameters<typeof registerDeferredReceiptWork>[1], canRun: () => boolean) =>
       registerDeferredReceiptWork(db, coordinator, {
         resume: scope => heartbeatQueue.resumeDeferredExecutionReceipts(scope),
