@@ -491,6 +491,26 @@ describe("HTTP logger redaction", () => {
     expect(log.res.headers["set-cookie"]).toBe("[Redacted]");
   });
 
+  it.each([200, 401, 403, 500])("redacts Runner tool scope credentials from HTTP %i logs", async status => {
+    const capability = "runner-tool-scope-capability-canary";
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    const path = "/mcp/native-runs/00000000-0000-4000-8000-000000000762";
+    app.post(path, (_req, res) => { res.status(status).json({ status }); });
+
+    await request(app).post(path)
+      .set("X-Paperclip-Runner-Scope-Token", "Bearer " + capability)
+      .send({}).expect(status);
+
+    expect(chunks.join("")).not.toContain(capability);
+    const log = JSON.parse(chunks.join("").trim());
+    expect(log.req.headers["x-paperclip-runner-scope-token"]).toBe("[Redacted]");
+    expect(log.req.url).toBe(path);
+    expect(log.res.statusCode).toBe(status);
+  });
+
   it.each([200, 403, 500])("redacts runtime GitHub capabilities from HTTP %i logs", async (status) => {
     const capability = "runtime-github-capability-canary";
     const chunks: string[] = [];

@@ -217,7 +217,7 @@ export const heartbeatsApi = {
       `/workspace-operations/${operationId}/log?offset=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}`,
     ),
   cancel: (runId: string) =>
-    api.post<void>(`/heartbeat-runs/${runId}/cancel`, {}),
+    api.post<HeartbeatRun | null>(`/heartbeat-runs/${runId}/cancel`, {}),
   resolveRuntimeRequest: (input: {
     runId: string;
     requestId: string;

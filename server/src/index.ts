@@ -170,7 +170,7 @@ import {
   reconcileAdapterAvailability,
 } from "./services/adapter-registry-bootstrap.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
-import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
+import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl, resolveLocalRuntimeApiUrl } from "./runtime-api.js";
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -1113,6 +1113,9 @@ async function startServerWithDatabaseTeardown(
     });
   });
   startupListenerBound = true;
+  // The factory publishes the verified numeric endpoint on listening. Native
+  // recovery must never fall back to a configured/public URL if it is absent.
+  resolveLocalRuntimeApiUrl();
 
   try {
     const result = await workspaceOperationService(db as any)

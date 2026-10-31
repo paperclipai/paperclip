@@ -215,19 +215,31 @@ the task waits for the next instruction. See the
 [Cursor release report](../../doc/plans/2026-10-03-cursor-production-readiness.md).
 
 Cursor Cloud is a separate experimental native provider (`cursor_cloud`, driver
-`cursor_cloud_api`). Configure `NativeProviderConfig` with `kind: "cursor_cloud"`,
-an explicit `model`, and a `cursorCloud` object using the
-`paperclip.cursor-cloud.config.v1` schema. That object requires either a repository
-list or a named Cursor Cloud environment. The launch environment supplies
-`CURSOR_API_KEY` and the scoped tool relay configuration. Native Cloud supports
-per-turn Runner lifecycle only; Cursor executes tools in its hosted VM. Configure
-hosted shell secrets in the Cursor Cloud environment.
+`cursor_cloud_api`). In Cursor Cloud agent setup, select **Paperclip Runner** under
+Advanced, bind `CURSOR_API_KEY`, choose an explicit model, and supply a repository
+or named Cursor Cloud environment. Existing Cursor Cloud agents keep their saved
+Legacy selection. The initial controller target is local; Cursor executes tools
+in its hosted VM. Native Cloud requires per-turn Runner lifecycle.
+Agent environment bindings support `CURSOR_API_KEY` only. Configure hosted shell
+secrets in the Cursor Cloud environment. Other selected process variables are
+rejected; they are not silently omitted from the hosted run.
+
 Paperclip native tools use the injected `paperclip` MCP server with
 controller-managed authentication; they need no Paperclip REST credentials in the
-Cloud VM.
+Cloud VM. Cursor also loads account and team MCP servers. The driver directs
+Paperclip operations to the run-bound server; Cursor controls the other account
+tools. See [Cloud MCP configuration](https://cursor.com/docs/sdk/typescript).
+
+The hosted agent needs a reachable HTTPS callback origin from the server's public
+URL configuration (for example `PAPERCLIP_PUBLIC_URL`). Forward only
+`POST /mcp/native-runs/:runId` through a callback proxy; keep the local trusted
+application private. The callback requires an expiring run capability and current
+company/run authority, then passes tool calls through normal PRP/Core dispatch.
+**Test** checks configuration, callback reachability and account/model access
+without launching a paid prompt. A passing Test does not qualify task completion.
 
 Cloud v1 provides no independent acknowledgment of the effective model or exact
-instruction digest. Runner records submitted inputs and treats this support as
+instruction digest. Paperclip records submitted inputs and treats this support as
 experimental. Cursor manages its own shell permissions; native permission,
 question and plan callbacks and fixed per-run dollar limits are unavailable.
 Paperclip planning tasks retain their pinned planning context and existing tool
@@ -235,14 +247,21 @@ restrictions while using Cloud's default harness. Plan documents and
 revision-bound Paperclip confirmations use the normal semantic tools; this does
 not enable Cursor's native Plan API or native plan-decision callbacks.
 Production usage and dollar cost remain unknown; the Cloud usage API is not yet
-projected through the Runner facade. Stop cancels the exact Cloud run and requires
-a terminal provider receipt. Unknown cancellation remains unconfirmed. Recovery
-reuses the saved Agent/Run and stream cursor, keeps the original deadline, and does
-not replay an ambiguous paid mutation. Tool callbacks require the capability of
-the current turn, including fresh MCP initialization. Recovery retains that
-capability in the private checkpoint. Older active checkpoints without it permit
-cleanup, but cannot resume tool access. Read-only observation retries transient
-stream failures within the original deadline, with bounded backoff.
+projected through the Runner facade.
+Budget policies can block further work after an unpriced run. If you accept
+unknown charges, clear **Block new work when usage has no reliable price** in
+both company and agent policies under **Costs → Budgets → Advanced settings**.
+Known-cost hard stops remain active, but cannot cap charges Cursor does not report.
+Paperclip semantic tools use their existing authorization. Stop cancels the exact
+Cloud run and requires a terminal provider receipt. Unknown cancellation remains
+unconfirmed. Recovery reuses the saved Agent/Run and stream cursor, keeps the
+original deadline, and does not replay an ambiguous paid mutation.
+
+Tool callbacks require the capability of the current turn, including fresh MCP
+initialization. Recovery retains that capability in the private checkpoint.
+Older active checkpoints without it permit cleanup, but cannot resume tool
+access. Read-only observation retries transient stream failures within the
+original deadline, with bounded backoff.
 
 Checkpoint acquisition and dead-owner takeover share a private, bounded local
 acquisition guard; no network work runs while it is held. Ordinary dead main-owner
@@ -266,7 +285,9 @@ registration retains the charge and verified file for recovery. The bound surviv
 session changes and seeds existing retained usage. Exact existing-file recovery
 still verifies current provider bytes without another body/temp allocation at
 capacity. An uncertain ledger, retained pending reservation or ownership lock
-blocks new imports rather than resetting the budget.
+blocks new imports rather than resetting the budget. See the
+[local qualification record](../../doc/plans/2026-10-28-cursor-cloud-native-runner.md)
+for runnable acceptance cells and the remaining live qualification gates.
 
 Google Antigravity is an **unqualified, pending** native ACPX integration. The
 explicit `paperclipai runtime setup antigravity` command installs the verified

@@ -3237,6 +3237,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 } }) {
   const { issueId: routeIssueId, companyPrefix } = useParams<{ issueId: string; companyPrefix: string }>();
   const issueId = conversation ? conversation.issue?.id : routeIssueId;
+  const [loadingTitleIssueId, setLoadingTitleIssueId] = useState<string | null>(null);
+  useEffect(() => setLoadingTitleIssueId(null), [issueId, companyPrefix]);
   const [draftWorkMode, setDraftWorkMode] = useState<IssueWorkMode>("standard");
   const draftIssue = useMemo(() => conversation ? agentChatDraft(conversation.agent, draftWorkMode) : undefined, [conversation?.agent, draftWorkMode]);
   const pendingDraftWorkMode = useRef<IssueWorkMode | null>(null);
@@ -3411,6 +3413,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     value instanceof ApiError && [401, 403, 404].includes(value.status),
   );
   const issue = accessError ? undefined : queriedIssue ?? coreIssueQuery.data ?? conversation?.issue ?? draftIssue;
+  const loadingTitleOwner = issue?.id;
+  const handleLoadingTitleEditingChange = useCallback((editing: boolean) => {
+    if (!loadingTitleOwner) return;
+    setLoadingTitleIssueId((current) => editing ? loadingTitleOwner : current === loadingTitleOwner ? null : current);
+  }, [loadingTitleOwner]);
   const taskRetry = useTaskRetry(issue ?? undefined);
   const resolveWritableIssueId = async () => {
     if (!conversation) return issueId!;
@@ -4784,8 +4791,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
   const stopResponse = useMutation({
     mutationFn: async (runId: string) => {
-      await heartbeatsApi.cancel(runId);
-      await waitForStoppedRuns([runId]);
+      const stoppedRun = await heartbeatsApi.cancel(runId);
+      await waitForStoppedRuns([runId], { initialRuns: [stoppedRun] });
     },
     onSettled: () => Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) }),
@@ -7343,15 +7350,20 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   // branch: its input can be detached before the chosen file is returned.
   // Keep the existing metadata/header skeleton until the canonical view owns
   // the interaction; comments may then load without another route-key change.
-  if (!taskRouteReady || !taskInterfaceSettingsLoaded)
+  // Finishing presentation preferences must not detach an input the person
+  // already opened in the loading header. Complete the handoff when that edit
+  // saves or is left unchanged/cancelled; failed saves keep their editor.
+  if (!taskRouteReady || !taskInterfaceSettingsLoaded || loadingTitleIssueId === issue.id)
     return (
       <IssueDetailLoadingState
         titleEditor={taskRouteReady && !issue.conversationAgentId ? (
           // The account-bound title editor can retain input before the first
           // session lookup. Presentation-specific controls still wait below.
           <InlineEditor
+            key={issue.id}
             value={issue.title}
             onSave={(title) => updateIssue.mutateAsync({ title })}
+            onEditingChange={handleLoadingTitleEditingChange}
             draftKey={`issue:${issue.id}:title`}
             as="h2"
             className="text-xl font-semibold leading-normal"

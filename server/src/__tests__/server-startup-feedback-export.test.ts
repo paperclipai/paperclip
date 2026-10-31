@@ -15,6 +15,7 @@ import { decisionService, decisionRetentionService, toolAccessService, reconcile
 
 import { companies, runDatabaseBackup, type Db } from "@paperclipai/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
@@ -220,15 +221,35 @@ const {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
+  const lifecycleListeners = new Map<string, Map<() => void, boolean>>();
+  const addListener = (event: string, listener: () => void, once: boolean) => {
+    const listeners = lifecycleListeners.get(event) ?? new Map<() => void, boolean>();
+    listeners.set(listener, once); lifecycleListeners.set(event, listeners);
+  };
+  const emit = (event: string) => {
+    for (const [listener, once] of [...(lifecycleListeners.get(event) ?? [])]) {
+      if (once) lifecycleListeners.get(event)?.delete(listener);
+      listener();
+    }
+  };
+  let boundAddress: { address: string; family: string; port: number } | null = null;
   const fakeServer = {
-    on: vi.fn().mockReturnThis(),
-    once: vi.fn().mockReturnThis(),
-    off: vi.fn().mockReturnThis(),
-    listen: vi.fn((_port: number, _host: string, callback?: () => void) => {
+    listening: false,
+    address: vi.fn(() => boundAddress),
+    on: vi.fn((event: string, listener: () => void) => { addListener(event, listener, false); return fakeServer; }),
+    once: vi.fn((event: string, listener: () => void) => { addListener(event, listener, true); return fakeServer; }),
+    off: vi.fn((event: string, listener: () => void) => { lifecycleListeners.get(event)?.delete(listener); return fakeServer; }),
+    resetBoundState() { fakeServer.listening = false; boundAddress = null; },
+    listen: vi.fn((port: number, host: string, callback?: () => void) => {
+      boundAddress = { address: host === "::" || host === "::1" ? host : "127.0.0.1", family: host.includes(":") ? "IPv6" : "IPv4", port };
+      fakeServer.listening = true;
+      emit("listening");
       callback?.();
       return fakeServer;
     }),
-    close: vi.fn((callback?: (error?: Error) => void) => callback?.()),
+    close: vi.fn((callback?: (error?: Error) => void) => {
+      fakeServer.resetBoundState(); emit("close"); callback?.();
+    }),
   };
   const loadConfigMock = vi.fn();
 
@@ -595,6 +616,8 @@ async function settleStartupHousekeeping() {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
+
+beforeEach(() => fakeServer.resetBoundState());
 
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
@@ -1613,14 +1636,17 @@ describe("startServer feedback export wiring", () => {
       heartbeatSchedulerEnabled: true,
       heartbeatSchedulerIntervalMs: 30000,
     }));
-    heartbeatServiceMock.recoverNativeRunsAfterRestart.mockRejectedValueOnce(
-      new Error("native recovery unavailable"),
-    );
+    heartbeatServiceMock.recoverNativeRunsAfterRestart.mockImplementationOnce(async () => {
+      expect(fakeServer.listening).toBe(true);
+      expect(resolveLocalRuntimeApiUrl()).toBe("http://127.0.0.1:3210");
+      throw new Error("native recovery unavailable");
+    });
 
     await expect(startServer()).rejects.toThrow("native recovery unavailable");
 
     expect(fakeServer.listen).toHaveBeenCalledTimes(1);
     expect(fakeServer.close).toHaveBeenCalledTimes(1);
+    expect(() => resolveLocalRuntimeApiUrl()).toThrow("local_runtime_api_listener_unavailable");
   });
 
   it("refuses authenticated public startup without an external database URL", async () => {

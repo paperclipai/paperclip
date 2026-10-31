@@ -10,6 +10,7 @@ export const CREDENTIAL_NAMES = [
   "DAYTONA_API_KEY",
   "GITHUB_TOKEN",
   "CURSOR_AUTH_TOKEN",
+  "CURSOR_API_KEY",
   "COPILOT_GITHUB_TOKEN",
 ] as const;
 
@@ -50,7 +51,8 @@ export type RunnerTaskFlow =
   | "native_active_stop"
   | "copilot_protection"
   | "native_provider_loss"
-  | "cursor_native";
+  | "cursor_native"
+  | "cursor_cloud_stop";
 
 export interface SecretReference {
   type: "secret_ref";

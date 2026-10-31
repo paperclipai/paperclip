@@ -1107,6 +1107,33 @@ describe("agent routes adapter validation", () => {
     );
   });
 
+  it("saves and reopens an explicit native Cursor Cloud setup without Codex defaults", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    let existing = { ...(await mockAgentService.getById()), adapterType: "cursor_cloud", adapterConfig: {},
+      status: "paused", lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"] };
+    mockAgentService.getById.mockImplementation(async () => existing);
+    mockAgentService.update.mockImplementation(async (_id, patch) => { existing = { ...existing, ...patch }; return existing; });
+    const config = { model: "caller-model", repoUrl: "https://github.com/acme/repo", repoStartingRef: "feature",
+      env: { CURSOR_API_KEY: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" } } };
+    const app = await createApp();
+    const saved = await requestApp(app, baseUrl => request(baseUrl).patch(`/api/agents/${existing.id}`)
+      .send({ adapterType: "cursor_cloud", runner: "paperclip", adapterConfig: config }));
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: {
+      provider: "cursor_cloud", model: config.model, repoUrl: config.repoUrl, repoRef: "feature", env: config.env, lifecycleMode: "per_turn",
+    } });
+    expect(saved.body.adapterConfig).not.toHaveProperty("codexPermissionMode");
+    const reopened = await requestApp(app, baseUrl => request(baseUrl).get(`/api/agents/${existing.id}/configuration`));
+    expect(reopened.status, JSON.stringify(reopened.body)).toBe(200);
+    expect(reopened.body.adapterConfig).toEqual(saved.body.adapterConfig);
+    const resaved = await requestApp(app, baseUrl => request(baseUrl).patch(`/api/agents/${existing.id}`)
+      .send({ adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: reopened.body.adapterConfig }));
+    expect(resaved.status, JSON.stringify(resaved.body)).toBe(200);
+    const { resolvePaperclipRunnerNativeProviderInput } = await import("../services/native-runtime/provider-profile.js");
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "cursor_cloud_api", adapterConfig: resaved.body.adapterConfig }))
+      .toMatchObject({ provider: "cursor_cloud", model: config.model, cursorCloud: { repos: [{ url: config.repoUrl, startingRef: "feature" }] } });
+  });
+
   it.each(["dotAttachmentAccess", "dotWorkspaceAccess", "dotBindingId", "homeMode"])("refuses an agent granting itself the operator-owned setting %s", async key => {
     const app = await createApp({ type: "agent", agentId: "11111111-1111-4111-8111-111111111111", companyId: "company-1", source: "agent_jwt" });
     const response = await requestApp(app, baseUrl => request(baseUrl).patch("/api/agents/11111111-1111-4111-8111-111111111111").send({ adapterConfig: { [key]: key === "homeMode" ? "preconfigured" : key === "dotBindingId" ? "another-binding" : true } }));

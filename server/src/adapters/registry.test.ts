@@ -103,6 +103,51 @@ describe("built-in runtime connection tool delivery", () => {
 });
 
 
+describe("native Cursor Cloud environment checks", () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+  const context = { companyId: "company-test", adapterType: "paperclip_runner",
+    config: { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/acme/repo", env: { CURSOR_API_KEY: "bound-cloud-key" } } };
+
+  it("checks account access without a prompt and makes unavailable model attestation explicit", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://callback.example.test");
+    const fetch = vi.fn(async (url: unknown) => String(url).startsWith("https://callback.example.test/") ? new Response(null, { status: 401 }) : new Response(JSON.stringify({ items: [{ id: "caller-model", displayName: "Caller model" }] }), { headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetch);
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!(context);
+    expect(result.status).toBe("warn");
+    expect(result.checks.map(check => check.code)).toEqual(["cursor_cloud_account_ready", "cursor_cloud_model_listed", "cursor_cloud_model_identity_unverified"]);
+    expect(fetch).toHaveBeenCalledWith("https://api.cursor.com/v1/models", expect.objectContaining({ method: "GET", headers: expect.objectContaining({ Authorization: "Bearer bound-cloud-key" }) }));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(result)).not.toContain("bound-cloud-key");
+  });
+
+  it.each([undefined, "http://localhost:3100", "https://callback.example.test/path"])("rejects missing or invalid public callback origin %s before provider reads", async origin => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", origin);
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!(context);
+    expect(result.status).toBe("fail");
+    expect(result.checks[0]?.code).toBe("cursor_cloud_public_relay_unavailable");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("reports an unreachable callback before checking provider credentials", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://callback.example.test");
+    const fetch = vi.fn(async () => { throw new Error("network unavailable"); }); vi.stubGlobal("fetch", fetch);
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!(context);
+    expect(result.checks[0]?.code).toBe("cursor_cloud_public_relay_unavailable");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects remote controllers and missing credentials before provider reads", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const remote = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context, executionTarget: { kind: "remote", transport: "ssh", remoteCwd: "/workspace", ssh: {} } as never });
+    expect(remote.checks[0]?.code).toBe("cursor_cloud_local_controller_required");
+    const missing = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context, config: { ...context.config, env: {} } });
+    expect(missing.checks[0]?.code).toBe("cursor_cloud_api_key_missing");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe("native ACPX environment checks", () => {
   beforeEach(() => {
     verifyApiKey.mockReset().mockResolvedValue(undefined);

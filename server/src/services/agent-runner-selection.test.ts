@@ -33,6 +33,41 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); Object.definePropert
 describe("server-owned Codex runner selection", () => {
   beforeEach(() => { state.activeTemplate.mockReset().mockResolvedValue(null); });
   beforeEach(() => { state.disabled = []; state.overridden.clear(); state.settings = {}; state.getEnvironment.mockReset(); state.bindings.mockReset().mockResolvedValue([]); state.managedEnvironment.mockReset(); state.kubernetesEnvironment.mockReset().mockResolvedValue(null); state.ensureKubernetesEnvironment.mockReset(); state.ssh.mockReset().mockResolvedValue({ stdout: "Linux\nx86_64\n" }); state.sandboxQualification.mockReset().mockResolvedValue(null); state.resolveEnvironment.mockReset().mockResolvedValue({ driver: "ssh", config: {} }); });
+  it("uses the supplied managed adapter snapshot for Cursor availability", () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "synthetic-cloud-test-token");
+    expect(() => agentRunnerAvailability("cursor_cloud", target)).toThrow("fresh adapter settings snapshot");
+    expect(agentRunnerAvailability("cursor_cloud", target, []).supportedRunners).toContain("paperclip");
+    for (const disabled of ["cursor_cloud", "paperclip_runner"]) {
+      expect(agentRunnerAvailability("cursor_cloud", target, [disabled]).supportedRunners,
+        `the current ${disabled} disable must affect Cursor selection`).not.toContain("paperclip");
+    }
+  });
+  it("keeps Cursor Cloud legacy by default and converts only an equivalent explicitly selected profile", () => {
+    const config = { model: "caller-model", repoUrl: "https://github.com/acme/repo", repoStartingRef: "feature", runtimeEnvType: "cloud", env: { CURSOR_API_KEY: { type: "secret_ref", secretId: "saved-key", version: "latest" } }, instructionsFilePath: "/assigned/AGENTS.md", autoCreatePR: false };
+    expect(agentRunnerAvailability("cursor_cloud", target)).toEqual({ supportedRunners: ["paperclip", "legacy"], defaultRunner: "legacy" });
+    expect(resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, target })).toEqual({ adapterType: "cursor_cloud", adapterConfig: config });
+    const converted = resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner: "paperclip", target });
+    expect(converted).toEqual({ adapterType: "paperclip_runner", adapterConfig: { model: config.model, repoUrl: config.repoUrl, repoRef: "feature", cloudEnvType: "cloud", env: config.env, instructionsFilePath: config.instructionsFilePath, autoCreatePR: false, provider: "cursor_cloud", lifecycleMode: "per_turn" } });
+    expect(resolveNewAgentRunner({ ...converted, runner: "legacy", target })).toEqual({ adapterType: "cursor_cloud", adapterConfig: config });
+  });
+  it("rejects unsupported Cursor Cloud conversions and remote controllers without changing the original", () => {
+    const config = { model: "caller-model", repoUrl: "https://github.com/acme/repo" };
+    for (const patch of [{ promptTemplate: "custom instructions" }, { runtimeEnvType: "pool" }, { model: "" }]) {
+      expect(() => resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: { ...config, ...patch }, runner: "paperclip", target })).toThrow();
+    }
+    expect(config).toEqual({ model: "caller-model", repoUrl: "https://github.com/acme/repo" });
+    expect(agentRunnerAvailability("cursor_cloud", { ...target, driver: "ssh" })).toEqual({ supportedRunners: ["legacy"], defaultRunner: "legacy" });
+    expect(() => resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner: "paperclip", target: { ...target, driver: "ssh" } })).toThrow("unavailable");
+  });
+  it("keeps legacy Cursor Cloud environment bindings and rejects their unsupported native conversion", () => {
+    const config = { model: "caller-model", repoUrl: "https://github.com/acme/repo",
+      env: { CURSOR_API_KEY: { type: "secret_ref", secretId: "saved-key", version: "latest" }, GH_TOKEN: { type: "secret_ref", secretId: "hosted-key", version: "latest" } } };
+    expect(resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner: "legacy", target }))
+      .toEqual({ adapterType: "cursor_cloud", adapterConfig: config });
+    expect(() => resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner: "paperclip", target }))
+      .toThrow("Configure hosted secrets in your Cursor Cloud environment");
+    expect(config.env.GH_TOKEN).toEqual({ type: "secret_ref", secretId: "hosted-key", version: "latest" });
+  });
   it.each(["x64", "arm64"])("keeps detected musl/unknown Linux %s legacy and preserves saved execution", architecture => {
     for (const libc of ["musl", "unknown"] as const) {
       const target = { driver: "local", platform: "linux", architecture, libc };

@@ -68,6 +68,7 @@ describe("Paperclip Runner permission defaults", () => {
   });
 
   it("recognizes only exact provider identifiers", () => {
+    expect(isPaperclipRunnerProvider("cursor_cloud")).toBe(true);
     expect(isPaperclipRunnerProvider("codex")).toBe(true);
     expect(isPaperclipRunnerProvider("opencode")).toBe(true);
     expect(isPaperclipRunnerProvider("claude_managed")).toBe(true);
@@ -78,10 +79,16 @@ describe("Paperclip Runner permission defaults", () => {
   });
 
   it("keeps managed provider permissions under the qualified profile", () => {
+    expect(resolvePaperclipRunnerPermissionMode("cursor_cloud", "never")).toBe("provider-managed");
     expect(resolvePaperclipRunnerPermissionMode("claude_managed", "never"))
       .toBe("provider-managed");
     expect(resolvePaperclipRunnerPermissionMode("aws_agentcore", "approve-all"))
       .toBe("provider-managed");
+  });
+
+  it("converts Cursor Cloud without substituting an implicit model or adding command permission controls", () => {
+    expect(paperclipRunnerTransitionConfig("cursor_cloud", "custom-model")).toEqual({ provider: "cursor_cloud", model: "custom-model", lifecycleMode: "per_turn" });
+    expect(paperclipRunnerTransitionConfig("cursor_cloud", undefined)).toEqual({ provider: "cursor_cloud", model: "", lifecycleMode: "per_turn" });
   });
 
   it("uses the Codex default for missing or blank models", () => {

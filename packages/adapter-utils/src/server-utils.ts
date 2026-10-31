@@ -4284,7 +4284,7 @@ export function normalizePaperclipRunnerAdapterConfig(
 ): Record<string, unknown> {
   if (adapterType !== "paperclip_runner") return config;
   config = normalizeLegacyRunnerProvider(config);
-  if (config.provider === "openai_dot" || config.provider === "muse") {
+  if (config.provider === "openai_dot" || config.provider === "muse" || config.provider === "cursor_cloud") {
     return normalizePaperclipOperationalSkillPreference(adapterType, { lifecycleMode: "per_turn", ...config });
   }
   const next: Record<string, unknown> = {

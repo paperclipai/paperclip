@@ -1,4 +1,5 @@
 import { readRestartRequest, type RestartRequest } from "./server-restart-request.js";
+import { startCursorCloudCallbackProxy } from "./cursor-cloud-callback-proxy.js";
 import { prepareControllerDatabase } from "./controller-database.js";
 import { readUpgradeArtifacts, verifyUpgradeArtifact, assertServingArtifact, upgradeArtifactKey, type ServingArtifact } from "./upgrade-artifacts.js";
 import { createControllerRecoveryObserver } from "./controller-recovery-observer.js";
@@ -459,7 +460,9 @@ async function supervise() {
 }
 
 let exitCode = 0;
+let closeCursorCloudCallbackProxy: (() => Promise<void>) | undefined;
 try {
+  if (executionIds.some(id => id.startsWith("cursor-cloud."))) closeCursorCloudCallbackProxy = await startCursorCloudCallbackProxy({ port: Number(required("PAPERCLIP_CURSOR_CLOUD_CALLBACK_PORT")), appPort: Number(port) });
   await supervise();
 } catch (error) {
   exitCode = 1;
@@ -487,5 +490,6 @@ catch (error) {
   exitCode = 1;
   appendLog(`Qualification database cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`);
 }
+await closeCursorCloudCallbackProxy?.();
 await new Promise<void>((resolve) => log.end(resolve));
 process.exitCode = exitCode;

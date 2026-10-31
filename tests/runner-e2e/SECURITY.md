@@ -1,5 +1,15 @@
 # Runner E2E security for a public repository
 
+Native `cursor-cloud` acceptance uses a separate callback-only loopback listener.
+Its external HTTPS tunnel must never target the local_trusted operator app.
+Credential-free ingress checks require `/` and `/api/health` to return 404 and
+an unauthenticated callback POST to return 401 before fixture creation. Only
+capability authorization and MCP protocol headers reach the application; browser
+cookies are stripped. Native provider identifiers remain private. Dedicated
+observer evidence hashes them, and the public history publisher refuses this
+suite because ordinary diagnostic snapshots may retain them. Cleanup may cancel
+or delete only resources linked by exact local-run-owned persisted notices.
+
 The explicit [chat feature evals](CHAT-FEATURES.md) use synthetic project briefs
 and either a privately supplied Codex subscription login through the existing
 isolated company staging helper or the OpenCode profile's encrypted OpenRouter

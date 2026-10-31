@@ -642,6 +642,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const fieldsAdapterType = isRunnerHarness
     ? (runner === "paperclip" || (runner === "auto" && runnerAvailability?.defaultRunner === "paperclip") ? "paperclip_runner" : harnessType)
     : adapterType;
+  const isCursorCloudRunner = harnessType === "cursor_cloud" && fieldsAdapterType === "paperclip_runner";
   useEffect(() => {
     if (props.mode !== "create" || !isRunnerHarness) return;
     const resolvedRunner = runner === "auto" ? runnerAvailability?.defaultRunner : runner;
@@ -678,6 +679,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // inert while every run happens in the platform-managed environment.
   const showLegacyWorkingDirectoryField =
     isLocal
+    && !isCursorCloudRunner
     && !hideHostPaths
     && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
@@ -1464,7 +1466,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
   const showThinkingEffort = !(harnessType === "pi_local" && fieldsAdapterType === "paperclip_runner")
     && adapterType !== "gemini_local"
-    && adapterType !== "cursor_cloud"
+    && harnessType !== "cursor_cloud"
     && (adapterType !== "paperclip_runner" || isRunnerHarness);
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
@@ -1953,8 +1955,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 open={modelOpen}
                 onOpenChange={setModelOpen}
                 defaultLabel={adapterType === "claude_local" ? `Default (${DEFAULT_CLAUDE_LOCAL_MODEL})` : undefined}
-                allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner"}
-                required={adapterType === "opencode_local" || adapterType === "pi_local" || runnerAcpxAgent === "antigravity"}
+                allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner" && !isCursorCloudRunner}
+                required={adapterType === "opencode_local" || adapterType === "pi_local" || isCursorCloudRunner || runnerAcpxAgent === "antigravity"}
                 groupByProvider={!connectionModels && (adapterType === "opencode_local" || adapterType === "pi_local")}
                 preserveOrder={Boolean(connectionModels) || adapterCuratesModelOrder(adapterType)}
                 creatable

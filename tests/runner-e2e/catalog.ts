@@ -8,6 +8,7 @@ import { TASK_WORKSPACES_SUITE, taskWorkspaceTask, taskWorkspaceProfile, taskWor
 import { repositoryProofTasks, repositoryProofProfile, repositoryProofDigest } from "./repository-verification.js";
 import { automaticRepositoryTask, automaticRepositoryDigest } from "./automatic-repository.js";
 import { nativeActiveStopTasks } from "./native-active-stop-tasks.js";
+import { CURSOR_CLOUD_SUITE, cursorCloudArtifactTask, cursorCloudStopTask, CURSOR_CLOUD_QUIET_WINDOW_MS, cursorCloudDefinitionDigest } from "./cursor-cloud-cases.js";
 import { piControlTasks } from "./pi-controls-cases.js";
 import { cursorNativeTasks } from "./cursor-native-cases.js";
 import { copilotProtectionTasks } from "./copilot-protection-tasks.js";
@@ -1157,7 +1158,50 @@ const repositoryModelProfiles = [
   },
 ];
 
+export const cursorCloudProfile: RunnerProfileFixture = {
+  id: "runner-cursor-cloud", label: "Native Cursor Cloud (experimental)", generation: "native", groups: [],
+  adapterType: "paperclip_runner", provider: "cursor_cloud", model: process.env.PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_MODEL?.trim() ?? "",
+  modelQualification: { source: "candidate_runner_profile", qualificationId: "cursor-cloud-explicit-acceptance-env" },
+  credential: "CURSOR_API_KEY", supportedEnvironments: ["local"], expectedRuntimeMode: "native",
+  expectedRuntimeMetadata: { adapterType: "paperclip_runner", provider: "cursor_cloud" },
+  buildAgent(input) {
+    const agent = commonAgent(input, this.id, "paperclip_runner", {
+      provider: "cursor_cloud", model: this.model, lifecycleMode: "per_turn", cloudEnvType: "cloud",
+      repoUrl: process.env.PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REPO?.trim() ?? "",
+      ...(process.env.PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REF?.trim() ? { repoRef: process.env.PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REF.trim() } : {}),
+      autoCreatePR: false, workOnCurrentBranch: false, skipReviewerRequest: true, cursorCloudTimeoutMs: 360_000,
+      env: { CURSOR_API_KEY: requiredSecret(input, "CURSOR_API_KEY") },
+    });
+    return { ...agent, budgetMonthlyCents: 1_000 };
+  },
+};
+
+export const cursorCloudFollowupTask: RunnerTaskFixture = {
+  ...openRouterBreadthTasks.find(task => task.id === "question-resume-complete")!,
+  id: "cloud-followup", label: "Answer a question and continue the same Cloud agent", automaticRetryPolicy: "single_attempt",
+  buildTitle: nonce => `Cursor Cloud follow-up ${nonce}`,
+};
+
+const cursorCloudPlanningBase = runnerTasks.find(task => task.id === "plan-revise-accept")!;
+export const cursorCloudPlanningTask: RunnerTaskFixture = {
+  ...cursorCloudPlanningBase, automaticRetryPolicy: "single_attempt",
+  buildPrompt: nonce => cursorCloudPlanningBase.buildPrompt(nonce).replace(
+    "For a native runner, remain in the requested planning collaboration mode.",
+    "For a native runner, follow the requested Paperclip planning authority. Cursor Cloud uses its default harness for this semantic Plan workflow; do not request Cursor native Plan mode.",
+  ),
+};
+
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
+  {
+    id: CURSOR_CLOUD_SUITE, label: "Native Cursor Cloud", manualOnly: true, groups: [],
+    description: "Local Paperclip controller with hosted Cursor work: verified artifact, same-agent follow-up, real active-run Stop and semantic plan revision/approval.",
+    profiles: [cursorCloudProfile], environments: runnerEnvironments.filter(environment => environment.id === "local"),
+    tasks: [cursorCloudArtifactTask, cursorCloudFollowupTask, cursorCloudStopTask, cursorCloudPlanningTask], expectedMatrixSize: 4,
+    definitionMetadata: { version: 3, definitionDigest: cursorCloudDefinitionDigest(), scheduling: "explicit-only", maximumAttemptsPerCell: 1,
+      effectiveModelAcknowledged: false, commandPermissions: "provider-managed", costCoverage: "provider-cost-unavailable",
+      quietWindowMs: CURSOR_CLOUD_QUIET_WINDOW_MS, repository: process.env.PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REPO ?? "",
+      repositoryRef: process.env.PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REF ?? "", callbackExposure: "callback-path-only-loopback-proxy" },
+  },
   {
     id: "daytona-restart-continuity", label: "Daytona controller outage continuity", manualOnly: true,
     description: "Keep the original active native runner, task tools and saved files through more than two minutes without a controller, then commit the result without replay.",
@@ -1960,8 +2004,9 @@ function assertNoRawSecretValues(value: unknown, label: string) {
 
 export function validateRunnerCatalog(): MatrixExecution[] {
   const connectionSuite = runnerSuites.find(suite => suite.id === "provider-connections")!;
-  const allProfiles = [...connectionSuite.profiles, ...extendedHarnessProfiles, ...runnerProfiles, ...legacyAcpxProfiles, ...pendingContextIntegrityProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
+  const allProfiles = [cursorCloudProfile, ...connectionSuite.profiles, ...extendedHarnessProfiles, ...runnerProfiles, ...legacyAcpxProfiles, ...pendingContextIntegrityProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
   const allTasks = [
+    cursorCloudArtifactTask, cursorCloudFollowupTask, cursorCloudStopTask,
     repositorySkillsTask,
     ...piNativeTasks,
     ...copilotProtectionTasks,

@@ -43,6 +43,18 @@ injection in the uncertain-retry case. Task/run/document REST reads own grading.
 The fixture catalog is executable production-contract data. Keep it small,
 typed, deterministic, and free of raw credentials.
 
+The explicit local `cursor-cloud` suite reuses the ordinary
+`plan_revision_acceptance` flow with three expected runs and one attempt. It
+checks the initial Plan, the requested revision and browser approval of that
+exact revision before completion. This is Paperclip semantic planning through
+the Cloud default harness; Cursor's native Plan API is outside this cell.
+Its ownership oracle requires draft/revision continuity followed by the exact
+accepted confirmation's explicit fresh-session transition, three distinct native
+runs and owned cleanup. The same-agent follow-up oracle is unchanged.
+The definition digest includes `catalog.ts` because Cloud's Plan and follow-up
+prompts derive from shared task definitions there. Earlier three-cell results
+retain their original definition and do not qualify the added Plan cell.
+
 ## Suites and matrices
 
 A `RunnerSuiteFixture` declares one durable testing purpose: stable ID, label,

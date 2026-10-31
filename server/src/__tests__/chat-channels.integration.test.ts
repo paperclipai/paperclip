@@ -16301,6 +16301,25 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           runtimeGeneration: Number(oldWindow.generation) + 1 } as typeof endpoint.setup }).where(eq(chatEndpoints.id, endpoint.id));
       };
       const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      let pauseRearm = false;
+      let rearmEntered = false;
+      let releaseRearm!: () => void;
+      const rearmMayFinish = new Promise<void>(resolve => { releaseRearm = resolve; });
+      const register = coordinator.register.bind(coordinator);
+      const registration = vi.spyOn(coordinator, "register").mockImplementation((queue, task) => register(queue, {
+        ...task,
+        hasPending: async () => {
+          const pending = await task.hasPending();
+          if (pauseRearm) {
+            const window = (await f.checkpoint()).value as Record<string, unknown>;
+            if (window.generation === Number(oldWindow.generation) + 1 && window.outcome === "epoch_initialized") {
+              rearmEntered = true;
+              await rearmMayFinish;
+            }
+          }
+          return pending;
+        },
+      }));
       let release!: () => void;
       let pending: Promise<unknown> | undefined;
       try {
@@ -16314,16 +16333,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await held;
         expect((await f.checkpoint()).version).toBe(old.version);
         expect(f.requests).toEqual([]);
-        release(); await pending;
+        pauseRearm = true; release(); await pending;
         await expect.poll(async () => (await f.checkpoint()).value, { timeout: 5000 }).toMatchObject({
           generation: Number(oldWindow.generation) + 1, outcome: "epoch_initialized" });
+        await expect.poll(() => rearmEntered, { timeout: 5000 }).toBe(true);
         expect(f.requests).toEqual([]);
-        // The checkpoint commits before this coordinator pass rearms its deadline.
+        expect(coordinator.nextWakeAt()).toBeNull();
+        expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+        pauseRearm = false;
+        releaseRearm();
         await expect.poll(() => {
           const next = coordinator.nextWakeAt();
-          return next !== null && next < Date.now() + 90_000;
-        }, { timeout: 5000 }).toBe(true);
-      } finally { release?.(); await pending; await coordinator.stop(); }
+          return { active: idleWorkSnapshot().active, bounded: next !== null && next < Date.now() + 90_000 };
+        }, { timeout: 5000 }).toEqual({ active: 0, bounded: true });
+        expect(f.requests).toEqual([]);
+      } finally { releaseRearm(); release?.(); await pending; await coordinator.stop(); registration.mockRestore(); }
     });
 
     it("preempts a future GitHub recovery window when only credential references change", async () => {

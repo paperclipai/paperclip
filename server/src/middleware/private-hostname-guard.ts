@@ -1,8 +1,34 @@
 import type { Request, RequestHandler } from "express";
+import { isIP } from "node:net";
+
+function numericAddress(value: string | undefined): string | null {
+  const address = value?.trim().toLowerCase().replace(/^\[([^\]]+)\]$/, "$1");
+  if (!address || isIP(address) === 0) return null;
+  if (isIP(address) === 4) return address;
+  try {
+    const canonical = new URL(`http://[${address}]`).hostname.slice(1, -1);
+    const mapped = /^::ffff:([\da-f]+):([\da-f]+)$/.exec(canonical);
+    if (!mapped) return canonical;
+    const high = parseInt(mapped[1]!, 16), low = parseInt(mapped[2]!, 16);
+    return [high >> 8, high & 255, low >> 8, low & 255].join(".");
+  } catch { return null; }
+}
 
 function isLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.trim().toLowerCase();
-  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+  const address = numericAddress(normalized);
+  return normalized === "localhost" || address === "127.0.0.1" || address === "::1";
+}
+
+function isDirectLocalApiRequest(req: Request, hostname: string): boolean {
+  if (req.path !== "/api" && !req.path.startsWith("/api/")) return false;
+  if (Object.keys(req.headers ?? {}).some(key => key.toLowerCase() === "forwarded" || key.toLowerCase().startsWith("x-forwarded-"))) return false;
+  // Only a numeric Host is eligible; URL userinfo or a DNS name cannot borrow
+  // the listener's address. Socket metadata supplies the actual local authority.
+  if (!/^(?:\[[\da-f:.]+\]|[\d.]+)(?::\d+)?$/i.test(req.header("host")?.trim() ?? "")) return false;
+  const host = numericAddress(hostname), local = numericAddress(req.socket?.localAddress), remote = numericAddress(req.socket?.remoteAddress);
+  if (!host || !local || !remote || host !== local) return false;
+  return remote === local || remote === "::1" || remote.startsWith("127.");
 }
 
 function extractHostname(req: Request): string | null {
@@ -81,7 +107,7 @@ export function privateHostnameGuard(opts: {
       return;
     }
 
-    if (isLoopbackHostname(hostname) || allowSet.has(hostname)) {
+    if (isLoopbackHostname(hostname) || allowSet.has(hostname) || isDirectLocalApiRequest(req, hostname)) {
       next();
       return;
     }

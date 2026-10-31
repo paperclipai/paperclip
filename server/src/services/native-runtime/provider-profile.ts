@@ -20,6 +20,7 @@ import {
 } from "../provider-profile-qualification.js";
 import { resolveAcpxQualification, resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission, type AcpxQualificationCandidate } from "./acpx-qualification.js";
 import { compatibleCodexModel } from "./codex-model-fallback.js";
+import { parseNativeCursorCloudConfig, type NativeCursorCloudConfig } from "../../vendor/paperclip-runner/index.js";
 
 export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.34" as const;
 export const DEFAULT_OPENCODE_RUNNER_MODEL =
@@ -42,6 +43,7 @@ export type QualifiedPaperclipRunnerAcpxAgent =
 type AdmittedPaperclipRunnerAcpxAgent = QualifiedPaperclipRunnerAcpxAgent | AcpxQualificationCandidate | "antigravity";
 
 export type PaperclipRunnerProviderProfile =
+  | { provider: "cursor_cloud"; backend: "cursor_cloud_api"; model: string }
   | { provider: "muse"; backend: "muse_external"; model: null; museBindingId: string }
   | { provider: "grok_bot"; backend: "grok_bot_mcp"; model: null; externalBindingId: string }
   | { provider: "openai_dot"; backend: "openai_dot_mcp"; model: null; dotBindingId: string }
@@ -77,6 +79,7 @@ export type PaperclipRunnerProviderProfile =
     };
 
 export type PaperclipRunnerNativeProviderInput =
+  | { provider: "cursor_cloud"; model: string; cursorCloud: NativeCursorCloudConfig }
   | { provider: "muse"; model: null; museBinding: import("../../vendor/paperclip-runner/index.js").MuseBindingSnapshot }
   | { provider: "grok_bot"; model: null; dotBinding: import("../../vendor/paperclip-runner/index.js").DotBindingSnapshot }
   | { provider: "openai_dot"; model: null; dotBinding: import("../../vendor/paperclip-runner/index.js").DotBindingSnapshot }
@@ -168,6 +171,39 @@ function optionalString(value: unknown): string | null {
     : null;
 }
 
+export function resolvePaperclipRunnerCursorCloudConfig(config: Record<string, unknown>): NativeCursorCloudConfig {
+  const unsupportedEnvironment = Object.keys(asRecord(config.env)).filter(key => key !== "CURSOR_API_KEY");
+  if (unsupportedEnvironment.length) {
+    throw new PaperclipRunnerProviderProfileError("paperclip_runner_cursor_cloud_config_invalid",
+      `Cursor Cloud with Paperclip Runner only supports CURSOR_API_KEY in agent environment settings. Configure hosted secrets in your Cursor Cloud environment instead of ${unsupportedEnvironment.join(", ")}.`);
+  }
+  for (const [current, legacy] of [["cloudEnvType", "runtimeEnvType"], ["cloudEnvName", "runtimeEnvName"], ["repoRef", "repoStartingRef"], ["prUrl", "repoPullRequestUrl"]]) {
+    if (config[current] !== undefined && config[legacy] !== undefined && config[current] !== config[legacy]) {
+      throw new PaperclipRunnerProviderProfileError("paperclip_runner_cursor_cloud_config_invalid", `Choose one matching value for ${current} and ${legacy}.`);
+    }
+  }
+  const unsupported = ["codexPermissionMode", "opencodePermissionMode", "acpxPermissionMode", "acpxSessionMode", "command", "extraArgs", "promptTemplate", "bootstrapPromptTemplate", "modelReasoningEffort", "reasoningEffort", "effort", "modelParams"]
+    .filter(key => config[key] !== undefined && config[key] !== "" && !(Array.isArray(config[key]) && config[key].length === 0));
+  if (config.lifecycleMode !== undefined && config.lifecycleMode !== "per_turn") unsupported.push("lifecycleMode");
+  if (config.homeMode === "preconfigured") unsupported.push("homeMode");
+  if (unsupported.length) throw new PaperclipRunnerProviderProfileError("paperclip_runner_cursor_cloud_config_invalid", `Cursor Cloud cannot honor these settings: ${unsupported.join(", ")}.`);
+  const repoUrl = optionalString(config.repoUrl);
+  const startingRef = optionalString(config.repoRef ?? config.repoStartingRef);
+  const prUrl = optionalString(config.prUrl ?? config.repoPullRequestUrl);
+  const envName = optionalString(config.cloudEnvName ?? config.runtimeEnvName);
+  try {
+    return parseNativeCursorCloudConfig({
+      schema: "paperclip.cursor-cloud.config.v1",
+      repos: repoUrl ? [{ url: repoUrl, ...(startingRef ? { startingRef } : {}), ...(prUrl ? { prUrl } : {}) }] : [],
+      env: { type: config.cloudEnvType ?? config.runtimeEnvType ?? "cloud", ...(envName ? { name: envName } : {}) },
+      ...Object.fromEntries(["workOnCurrentBranch", "autoCreatePR", "skipReviewerRequest"].filter(key => config[key] !== undefined).map(key => [key, config[key]])),
+      ...(config.cursorCloudTimeoutMs !== undefined ? { timeoutMs: config.cursorCloudTimeoutMs } : {}),
+    });
+  } catch {
+    throw new PaperclipRunnerProviderProfileError("paperclip_runner_cursor_cloud_config_invalid", "Cursor Cloud requires an HTTPS repository or named Cursor cloud environment, cloud-hosted execution, and supported settings. Its timeout must be between 1 second and 1 hour.");
+  }
+}
+
 /** Configuration can be saved before pairing; task admission requires a binding. */
 export function validatePaperclipRunnerDotConfig(config: Record<string, unknown>, requireBinding = true): string | null {
   const bindingId = optionalString(config.dotBindingId);
@@ -201,9 +237,9 @@ export function validatePaperclipRunnerGrokConfig(config: Record<string, unknown
   return bindingId;
 }
 
-/** A task may change a local Runner model (and Codex effort), but not provider identity. */
+/** A task may change a Runner model (and supported effort), but not provider identity. */
 export function projectPaperclipRunnerTaskConfig(
-  backend: "codex_app_server" | "opencode_server" | "acpx_runtime",
+  backend: "codex_app_server" | "opencode_server" | "acpx_runtime" | "cursor_cloud_api",
   agentConfig: unknown,
   taskOverrides: unknown,
   managedModel?: string,
@@ -421,6 +457,13 @@ export function resolvePaperclipRunnerProviderProfile(
       "paperclip_runner_provider_unsupported",
       "Paperclip Runner provider must be Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX.",
     );
+  }
+
+  if (candidate === "cursor_cloud") {
+    const model = optionalString(config.model);
+    if (!model) throw new PaperclipRunnerProviderProfileError("paperclip_runner_cursor_cloud_model_required", "Cursor Cloud requires an explicit model. Select a model before testing or assigning work.");
+    resolvePaperclipRunnerCursorCloudConfig(config);
+    return { provider: "cursor_cloud", backend: "cursor_cloud_api", model };
   }
 
   if (candidate === "muse") {
@@ -665,6 +708,9 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       "paperclip_runner_provider_changed",
       "Paperclip Runner provider changed after this run selected its native backend.",
     );
+  }
+  if (profile.provider === "cursor_cloud") {
+    return { provider: "cursor_cloud", model: profile.model, cursorCloud: resolvePaperclipRunnerCursorCloudConfig(config) };
   }
   if (profile.provider === "muse") {
     if (!input.museBinding || input.museBinding.bindingId !== profile.museBindingId) throw new PaperclipRunnerProviderProfileError("paperclip_runner_muse_binding_unavailable", "Muse binding must be resolved by the server after normal admission.");

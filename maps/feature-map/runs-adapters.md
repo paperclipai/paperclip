@@ -181,6 +181,16 @@ controls, not live Cloud provider qualification.
 
 Automated: [adapter validation routes](../../server/src/__tests__/agent-adapter-validation-routes.test.ts) and [model refresh](../../server/src/__tests__/adapter-model-refresh-routes.test.ts) cover server behavior.
 
+Cursor Cloud keeps Legacy as its automatic default. Choose Paperclip Runner
+explicitly under Advanced for experimental native support on a local controller.
+Select an exact model, bind a Cursor API key, and configure the repository or
+named Cloud environment. Save/reopen and Test must retain those choices. Test
+requires a reachable HTTPS callback origin and checks account/model access without
+starting a paid prompt. Cursor owns native shell permissions and does not
+independently acknowledge the effective model. Use the
+[qualification ledger](../../doc/plans/2026-10-28-cursor-cloud-native-runner.md)
+to distinguish local controls from live task, continuation, Stop and artifact proof.
+
 Claude native setup uses the existing Anthropic API-key or subscription connection
 flow. Record the selected account separately from successful execution; unavailable
 models/authentication and unsupported Legacy-only options must fail visibly.

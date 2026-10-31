@@ -12,6 +12,7 @@ import {
 } from "../services/native-runtime/runtime-request-resolution-authority.js";
 
 import { logger } from "../middleware/logger.js";
+import { registerLocalRuntimeApiServer, resolveLocalRuntimeApiUrl, runtimeApiInternals } from "../runtime-api.js";
 
 const CONNECT_PATH_PREFIX = "/api/runner/v1/connect/";
 const UUID_PATTERN =
@@ -40,7 +41,6 @@ interface RunnerPrpUpgradeRequest extends IncomingMessage {
 
 const registrations = new Map<string, RegisteredAuthority>();
 const currentLiveAuthorities = new Map<string, CurrentLiveAuthority>();
-let loopbackOrigin: string | null = null;
 
 function liveAuthorityKey(input: {
   readonly companyId: string;
@@ -70,19 +70,11 @@ function rejectUpgrade(
 
 export function setupRunnerPrpWebSocketServer(
   server: Server,
-  options: { readonly apiUrl: string },
+  _options?: { readonly apiUrl: string },
 ): void {
-  const apiUrl = new URL(options.apiUrl);
-  if (!["http:", "https:"].includes(apiUrl.protocol)) {
-    throw new Error("runner_prp_websocket_api_url_invalid");
-  }
-  apiUrl.protocol = apiUrl.protocol === "https:" ? "wss:" : "ws:";
-  apiUrl.username = "";
-  apiUrl.password = "";
-  apiUrl.pathname = "";
-  apiUrl.search = "";
-  apiUrl.hash = "";
-  loopbackOrigin = apiUrl.toString().replace(/\/$/, "");
+  // Older launchers may still pass an advertised apiUrl. Only the actual
+  // bound listener can authorize native transport, including ephemeral ports.
+  registerLocalRuntimeApiServer(server);
   server.on(
     "upgrade",
     (request: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -121,9 +113,9 @@ export async function registerRunnerPrpAuthority(input: {
   readonly runId: string;
   readonly authority: DurablePrpControlPlane;
 }): Promise<{ readonly connectUrl: string; release(): Promise<void> }> {
-  if (loopbackOrigin === null) {
-    throw new Error("runner_prp_websocket_server_not_configured");
-  }
+  const apiUrl = new URL(resolveLocalRuntimeApiUrl());
+  apiUrl.protocol = "ws:";
+  const loopbackOrigin = apiUrl.origin;
   if (!UUID_PATTERN.test(input.runId) || input.companyId.length === 0) {
     throw new Error("runner_prp_authority_binding_invalid");
   }
@@ -320,6 +312,6 @@ export const runnerPrpWebSocketInternals = {
   resetForTests(): void {
     registrations.clear();
     currentLiveAuthorities.clear();
-    loopbackOrigin = null;
+    runtimeApiInternals.resetForTests();
   },
 };
