@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { parseNativeRuntimeContext, retargetNativeSystemInstructions } from "../contracts/runtime-context.js";
 import { resolve } from "node:path";
-import { codexExecutableReadOnlyRoots } from "../drivers/codex/codex-security-config.js";
+import { configuredEnvironmentKeys } from "../configured-environment.js";
+import { codexCommandEnvironment, codexExecutableReadOnlyRoots } from "../drivers/codex/codex-security-config.js";
 import { createIsolatedCodexAppServerArgs } from "../drivers/codex/codex-app-server-driver.js";
 import { validatePreparedLaunchWorkingDirectory } from "../drivers/codex/codex-boundaries.js";
 import { usesPreconfiguredHome } from "../drivers/preconfigured-home.js";
@@ -143,7 +144,10 @@ export function validatePreparedRunnerLaunch(
     providerNodeCommand: "", opencodeProxyPath: "", acpxSidecarPath: "", codexCommand: "",
   });
   const hostFields = new Set(["command", "args", "sidecarCommand", "sidecarArgs", "runtimeDirectory", "cwd",
-    "preconfiguredHome", "externallySandboxed", "runtimeContext", "instructions"]);
+    "preconfiguredHome", "externallySandboxed", "runtimeContext", "instructions",
+    "driver", "commandEnvironment", "instructionWorkingCopyRoot"]);
+  if (requirements.provider === "codex" && descriptor.driver !== "codex_app_server"
+    && descriptor.driver !== "codex_app_server_command_environment_v2") reject();
   for (const [key, value] of Object.entries(expected)) {
     if (!hostFields.has(key) && JSON.stringify(value) !== JSON.stringify(descriptor[key])) reject();
   }
@@ -316,7 +320,9 @@ export function createRunnerProviderLaunch(
                   driver:
                     provider === "opencode"
                       ? "opencode_server"
-                      : "codex_app_server",
+                      : input.options.codexArgs === undefined
+                        ? "codex_app_server_command_environment_v2"
+                        : "codex_app_server",
                   providerVersion:
                     provider === "opencode" ? "1.18.34" : "codex-app-server-v1",
                   command:
@@ -376,7 +382,19 @@ export function createRunnerProviderLaunch(
                   includeCollaborationModeInstructions:
                     includeCodexCollaborationInstructions,
                   ...(provider === "codex"
-                    ? { includeSkillInstructions: runtimeContext !== null }
+                    ? {
+                        includeSkillInstructions: runtimeContext !== null,
+                        ...(input.options.codexArgs === undefined
+                          ? {
+                              commandEnvironment: Object.fromEntries(Object.entries(codexCommandEnvironment(input.options.environment ?? {}))
+                                .filter(([key]) => !configuredEnvironmentKeys(input.options.environment).includes(key))),
+                              instructionWorkingCopyRoot: codexCommandEnvironment(
+                                input.options.environment ?? {},
+                                runtimeContext?.instructions.workingCopy?.rootPath,
+                              ).AGENT_HOME ?? null,
+                            }
+                          : {}),
+                      }
                     : {}),
                   runtimeContext,
                 };
@@ -433,6 +451,8 @@ export function createRunnerdCodexAppServerArgs(input: {
   instructionWorkingCopyRoot?: string;
   disableProjectInstructions?: boolean;
   disableWebSearch?: boolean;
+  commandEnvironmentTransport?: "argv" | "thread";
+  persistedCommandEnvironment?: Record<string, unknown>;
   args?: string[];
 }): string[] {
   // The filesystem policy denies HOME and CODEX_HOME to keep credentials and
@@ -449,6 +469,9 @@ export function createRunnerdCodexAppServerArgs(input: {
       [...(input.readOnlyRoots ?? []), ...codexExecutableReadOnlyRoots(input.environment ?? {}, input.codexCommand)],
       input.instructionWorkingCopyRoot,
       usesPreconfiguredHome(input.environment) && input.runtimeStateRoot ? [input.runtimeStateRoot] : [],
+      false,
+      input.commandEnvironmentTransport ?? "thread",
+      input.persistedCommandEnvironment,
     ),
   ];
   if (!input.args && usesPreconfiguredHome(input.environment) && input.workingDirectory) {

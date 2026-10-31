@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { configuredEnvironmentProjection } from "../configured-environment.js";
 import { createRunnerProviderLaunch, preparedRunnerLaunchWorkingDirectory, runnerLaunchRequirementsDigest, validatePreparedRunnerLaunch,
   runnerProviderLaunchRequirements, type RunnerProviderLaunchEnvironment, type RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
 
@@ -63,6 +64,13 @@ describe("built-in provider launch preparation", () => {
     expect(() => validatePreparedRunnerLaunch(selected, prepared)).not.toThrow();
     expect(() => validatePreparedRunnerLaunch(selected, { ...prepared, provider: { ...launch, grokDisableWebSearch: !disabled } }))
       .toThrow("runner_prepared_launch_requirements_mismatch");
+  });
+
+  it("keeps task-selected values out of the persisted command environment", () => {
+    const selected = runnerProviderLaunchRequirements({ provider: "codex" }, requirements.identity, { model: requirements.model }, null, "");
+    const launch = createRunnerProviderLaunch(selected, { ...environment, options: {
+      environment: { ...configuredEnvironmentProjection({ LANG: "de_DE.UTF-8" }), PATH: "/bin" } } });
+    expect(launch.commandEnvironment).toEqual({ PATH: "/bin" });
   });
 
   it("binds disabled hosted search to the prepared launch and overrides execution-host arguments", () => {

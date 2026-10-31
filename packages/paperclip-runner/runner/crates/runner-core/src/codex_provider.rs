@@ -427,6 +427,10 @@ pub struct CodexProviderConfig {
     // Older persisted configurations deliberately retain the provider default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_skill_instructions: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_environment: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction_working_copy_root: Option<String>,
     // Older sessions retain their standalone task envelope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_mode: Option<String>,
@@ -472,11 +476,28 @@ impl CodexSkillInput {
 }
 
 impl CodexProviderConfig {
-    fn skill_instructions_config(&self) -> Option<Value> {
-        (self.provider == "codex")
-            .then_some(self.include_skill_instructions)
-            .flatten()
-            .map(|include| json!({"skills.include_instructions": include}))
+    fn thread_config(&self) -> Option<Value> {
+        if self.provider != "codex" {
+            return None;
+        }
+        let mut config = serde_json::Map::new();
+        if let Some(include) = self.include_skill_instructions {
+            config.insert("skills.include_instructions".to_owned(), json!(include));
+        }
+        if let Some(environment) = &self.command_environment {
+            let mut environment = environment.clone();
+            if self.driver == "codex_app_server_command_environment_v2" {
+                environment.remove("AGENT_HOME");
+                if let Some(root) = &self.instruction_working_copy_root {
+                    environment.insert("AGENT_HOME".to_owned(), root.clone());
+                }
+            }
+            config.insert(
+                "shell_environment_policy.set".to_owned(),
+                json!(environment),
+            );
+        }
+        (!config.is_empty()).then_some(Value::Object(config))
     }
 
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
@@ -490,11 +511,36 @@ impl CodexProviderConfig {
         }
         if !matches!(
             (self.provider.as_str(), self.driver.as_str()),
-            ("codex", "codex_app_server") | ("opencode", "opencode_server")
+            (
+                "codex",
+                "codex_app_server"
+                    | "codex_app_server_command_environment_v1"
+                    | "codex_app_server_command_environment_v2"
+            ) | ("opencode", "opencode_server")
         ) {
             return Err(LocalRunnerError::invalid(
-                "local runner provider must be codex through codex_app_server or opencode through opencode_server",
+                "local runner provider must use a supported Codex or OpenCode launch driver",
             ));
+        }
+        if matches!(
+            self.driver.as_str(),
+            "codex_app_server_command_environment_v1" | "codex_app_server_command_environment_v2"
+        ) != self.command_environment.is_some()
+        {
+            return Err(LocalRunnerError::invalid(
+                "commandEnvironment requires a versioned command-environment launch driver and a non-null map",
+            ));
+        }
+        if let Some(root) = &self.instruction_working_copy_root {
+            if self.driver != "codex_app_server_command_environment_v2"
+                || !Path::new(root).is_absolute()
+                || root.len() > 4096
+                || root.contains('\0')
+            {
+                return Err(LocalRunnerError::invalid(
+                    "invalid Codex instruction working-copy root",
+                ));
+            }
         }
         if self.provider_version.trim().is_empty() || self.provider_version.len() > 120 {
             return Err(LocalRunnerError::invalid(
@@ -528,6 +574,45 @@ impl CodexProviderConfig {
             return Err(LocalRunnerError::invalid(
                 "Codex arguments exceed the bounded launch contract",
             ));
+        }
+        if let Some(environment) = &self.command_environment {
+            let mut bytes = 0_usize;
+            for (key, value) in environment {
+                if !matches!(
+                    key.as_str(),
+                    "PATH"
+                        | "PATHEXT"
+                        | "SystemRoot"
+                        | "WINDIR"
+                        | "LANG"
+                        | "LC_ALL"
+                        | "HOME"
+                        | "ZDOTDIR"
+                        | "BASH_ENV"
+                        | "AGENT_HOME"
+                ) || value.contains('\0')
+                {
+                    return Err(LocalRunnerError::invalid(
+                        "invalid Codex command environment",
+                    ));
+                }
+                bytes = bytes.saturating_add(key.len()).saturating_add(value.len());
+            }
+            if let Some(root) = &self.instruction_working_copy_root {
+                let prior_bytes = environment
+                    .get("AGENT_HOME")
+                    .map_or(0, |value| "AGENT_HOME".len() + value.len());
+                if bytes.saturating_sub(prior_bytes) + "AGENT_HOME".len() + root.len() > 64 * 1024 {
+                    return Err(LocalRunnerError::invalid(
+                        "Codex command environment exceeds the bounded launch contract",
+                    ));
+                }
+            }
+            if self.provider != "codex" || bytes > 64 * 1024 {
+                return Err(LocalRunnerError::invalid(
+                    "Codex command environment exceeds the bounded launch contract",
+                ));
+            }
         }
         if self
             .model
@@ -1212,8 +1297,8 @@ impl CodexProvider {
                     );
                 }
             }
-            if let Some(skill_config) = config.skill_instructions_config() {
-                params_object.insert("config".to_owned(), skill_config);
+            if let Some(thread_config) = config.thread_config() {
+                params_object.insert("config".to_owned(), thread_config);
             }
             let method = if let Some(thread_id) = resume_thread_id {
                 params_object.insert("threadId".to_owned(), json!(thread_id));
@@ -4391,6 +4476,8 @@ done
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
             read_only: false,
+            command_environment: None,
+            instruction_working_copy_root: None,
             include_skill_instructions: None,
             conversation_mode: None,
         };
@@ -4828,6 +4915,8 @@ done
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
             read_only: false,
+            command_environment: None,
+            instruction_working_copy_root: None,
             include_skill_instructions: None,
             conversation_mode: None,
         };
@@ -4949,12 +5038,14 @@ done
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
             read_only: false,
+            command_environment: None,
+            instruction_working_copy_root: None,
             include_skill_instructions: None,
             conversation_mode: None,
         };
         config.include_skill_instructions = Some(true);
         assert_eq!(
-            config.skill_instructions_config(),
+            config.thread_config(),
             None,
             "OpenCode must not receive Codex skill settings"
         );
