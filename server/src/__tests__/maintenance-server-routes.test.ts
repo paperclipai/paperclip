@@ -1,7 +1,7 @@
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createCipheriv, createHash, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, randomUUID, sign, verify } from "node:crypto";
 import { createServer } from "node:http";
-import { createDb } from "@paperclipai/db";
-import { writeFile } from "node:fs/promises";
+import { agents, agentApiKeys, agentTaskSessions, authUsers, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, toolApplications, toolConnections } from "@paperclipai/db";
+import { access, mkdir, readdir, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -20,6 +20,14 @@ async function clearDatabase() {
     const tables = await fixture.$client<{ tablename: string }[]>`select tablename from pg_tables where schemaname='public'`;
     if (tables.length) await fixture.$client.unsafe(`truncate ${tables.map(table => `"${table.tablename.replaceAll('"', '""')}"`).join(",")} cascade`);
   } finally { await fixture.$client.end(); }
+}
+async function settleClock(server: Awaited<ReturnType<typeof startMaintenanceServer>>) {
+  for (let step = 0; step < 60; step++) {
+    if (server.proxy.pending === 0 && (await server.snapshot()).idle.active === 0) return server.settled(100);
+    if (server.proxy.pending === 0) await server.advance(1_000);
+    await delay(50);
+  }
+  return server.settled();
 }
 function receipt(queries: Array<{ protocol: string; sql: string; fingerprint: string }>) {
   const groups = new Map<string, { fingerprint: string; protocol: string; calls: number; tables: string[] }>();
@@ -101,6 +109,56 @@ describe("assembled maintenance server production wiring", () => {
         postResumeClockMs: 2 * 60 * 60_000, measuredQueries: server.proxy.queries.length - resumed,
         frames: server.proxy.frames, outgoingHttpRequests: 0 }, null, 2));
     } finally { await server.stop(); }
+  }, 150_000);
+
+  it("settles an in-flight provider claim on shutdown and reconstructs its unfinished object after restart", async () => {
+    await clearDatabase();
+    let arrived!: () => void, cancelled = false;
+    const firstRequest = new Promise<void>(resolve => { arrived = resolve; });
+    const providerRequests: string[] = [];
+    const provider = createServer((req, res) => {
+      providerRequests.push(req.url!);
+      if (providerRequests.length === 1) { res.once("close", () => { cancelled = true; }); arrived(); return; }
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ id: 8, number: 8, state: "closed", merged: true, merged_at: new Date().toISOString(),
+        title: "Recovered object", html_url: "https://github.com/maintenance/example/pull/8", user: { login: "fixture" } }));
+    });
+    await new Promise<void>(resolve => provider.listen(0, "127.0.0.1", resolve));
+    const address = provider.address();
+    if (!address || typeof address === "string") throw new Error("Simulated GitHub failed to bind");
+    const options = { enabled: false, clock: true, githubOrigin: `http://127.0.0.1:${address.port}` };
+    let server: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined = await startMaintenanceServer(databaseUrl!, options);
+    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+    try {
+      await server.settled();
+      const company = await server.api<{ id: string }>("POST", "/companies", { name: "Shutdown recovery" });
+      await server.api("PATCH", "/instance/settings/experimental", { enableExternalObjects: true });
+      const issue = await server.api<{ id: string }>("POST", `/companies/${company.id}/issues`, {
+        title: "Object survives shutdown", status: "done", description: "https://github.com/maintenance/example/pull/8",
+      });
+      await server.advance(1_000);
+      await Promise.race([firstRequest, delay(10_000).then(() => { throw new Error("Provider claim did not arrive"); })]);
+      const [claimed] = await fixture.$client`select is_terminal, refresh_started_at is not null as claimed from external_objects
+        where company_id=${company.id}`;
+      expect(claimed).toMatchObject({ is_terminal: false, claimed: true });
+      await server.stop(); server = undefined;
+      expect(cancelled).toBe(true);
+      const [stopped] = await fixture.$client`select is_terminal, refresh_started_at, refresh_token from external_objects where company_id=${company.id}`;
+      expect(stopped).toMatchObject({ is_terminal: false, refresh_started_at: null, refresh_token: null });
+      server = await startMaintenanceServer(databaseUrl!, options);
+      await settleClock(server);
+      const [recovered] = await fixture.$client`select is_terminal, status_key from external_objects where company_id=${company.id}`;
+      expect(recovered).toMatchObject({ is_terminal: true, status_key: "merged" });
+      expect(providerRequests).toEqual(["/repos/maintenance/example/pulls/8", "/repos/maintenance/example/pulls/8"]);
+      await writeFile(path.join(server.directory, "shutdown-measurement.json"), JSON.stringify({ phase: "actual-shutdown-inflight-and-restart",
+        companyId: company.id, issueId: issue.id, claimed, cancelled, stopped, recovered, providerRequests,
+        boundary: "first simulated HTTP response deliberately withheld; actual shutdown abort/settlement and real restart reconstruction",
+        frames: server.proxy.frames,
+      }, null, 2));
+    } finally {
+      await server?.stop(); await fixture.$client.end(); provider.closeAllConnections();
+      await new Promise<void>(resolve => provider.close(() => resolve()));
+    }
   }, 150_000);
 
   it("processes the first ordinary external-object producer committed during idle drain and becomes quiet again", async () => {
@@ -203,6 +261,328 @@ describe("assembled maintenance server production wiring", () => {
       await fixture.$client.unsafe("drop function if exists maintenance_hold_issue()").catch(() => {});
       await fixture.$client.end(); await server.stop();
       provider.closeAllConnections(); await new Promise<void>(resolve => provider.close(() => resolve()));
+    }
+  }, 150_000);
+
+  it("discovers and acknowledges a sealed GitHub event after the first ordinary connection activation", async () => {
+    await clearDatabase();
+    const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
+    const requests: string[] = [], acknowledgements: unknown[] = [];
+    let event: Record<string, unknown> | undefined, leased = false;
+    const broker = createServer(async (req, res) => {
+      const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString());
+      const [header, payload, signature] = body.request.split(".");
+      if (!verify(null, Buffer.from(`${header}.${payload}`), signing.publicKey, Buffer.from(signature, "base64url"))) {
+        res.statusCode = 401; res.end("{}"); return;
+      }
+      requests.push(req.url!); res.setHeader("Content-Type", "application/json");
+      if (req.url === "/v1/connector/events/ack") { acknowledgements.push(JSON.parse(body.acknowledgement)); res.end("{}"); return; }
+      if (req.url !== "/v1/connector/events/lease") { res.statusCode = 500; res.end("{}"); return; }
+      if (!event || leased) { res.end(JSON.stringify({ events: [], eventWakeVersion: 1 })); return; }
+      leased = true;
+      const ephemeral = generateKeyPairSync("x25519"), algorithm = "X25519-HKDF-SHA256-A256GCM";
+      const epk = Buffer.from(ephemeral.publicKey.export({ format: "jwk" }).x!, "base64url");
+      const recipient = Buffer.from(sealing.publicKey.export({ format: "jwk" }).x!, "base64url");
+      const aad = Buffer.from([1, algorithm, "events", "maintenance-connector", "test", "github", "github.code", ""].join("\n"));
+      const key = Buffer.from(hkdfSync("sha256", diffieHellman({ privateKey: ephemeral.privateKey, publicKey: sealing.publicKey }), Buffer.concat([epk, recipient]), aad, 32));
+      const iv = randomBytes(12), cipher = createCipheriv("aes-256-gcm", key, iv); cipher.setAAD(aad);
+      const clear = { v: 1, instanceId: "maintenance-connector", environment: "test", leaseId: "maintenance-lease", events: [event] };
+      const ct = Buffer.concat([cipher.update(JSON.stringify(clear)), cipher.final(), cipher.getAuthTag()]);
+      res.end(JSON.stringify({ leaseId: "maintenance-lease", eventWakeVersion: 1, sealed: { v: 1, alg: algorithm,
+        purpose: "events", provider: "github", profile: "github.code", epk: epk.toString("base64url"), iv: iv.toString("base64url"), ct: ct.toString("base64url") } }));
+    });
+    await new Promise<void>(resolve => broker.listen(0, "127.0.0.1", resolve));
+    const address = broker.address();
+    if (!address || typeof address === "string") throw new Error("Simulated Cloud broker failed to bind");
+    const server = await startMaintenanceServer(databaseUrl!, { enabled: false, clock: true,
+      githubOrigin: `http://127.0.0.1:${address.port}`, connector: {
+      origin: `http://127.0.0.1:${address.port}`, signPrivateKey: signing.privateKey.export({ format: "jwk" }).d!,
+      sealPrivateKey: sealing.privateKey.export({ format: "jwk" }).d!,
+    } });
+    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+    try {
+      await server.settled(); expect(requests).toEqual([]);
+      const company = await server.api<{ id: string }>("POST", "/companies", { name: "GitHub event ingress" });
+      const [application] = await fixture.insert(toolApplications).values({ companyId: company.id, applicationKey: randomUUID(), name: "GitHub", type: "mcp_http", status: "active" }).returning();
+      const [connection] = await fixture.insert(toolConnections).values({ companyId: company.id, applicationId: application!.id,
+        uid: randomUUID(), name: "GitHub", status: "active", enabled: false, transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user",
+        config: { url: "https://api.github.com/mcp", sourceTemplateKey: "github", oauth: { connectorProfile: "github.code" } }, transportConfig: {} }).returning();
+      const now = (await server.snapshot()).now;
+      const [grant] = await fixture.insert(connectionGrants).values({ companyId: company.id, connectionId: connection!.id,
+        kind: "user", subjectUserId: "maintenance-owner", status: "active", providerTenant: {
+          oauth: { accessTokenExpiresAt: new Date(now + 8 * 3_600_000).toISOString(), refreshedAt: new Date(now).toISOString() },
+          github: { userId: "42", login: "fixture", installationIds: ["101"], installationCount: 1, repositoryCount: 1,
+            repositorySelection: "all", installationOwnerLogins: ["fixture"], accessRevision: randomUUID(), lastAccessRefreshAt: new Date(now).toISOString(), webhookHealth: "healthy" },
+        } }).returning();
+      event = { id: "maintenance-delivery", provider: "github", event: "pull_request", action: "closed", installationId: "101", repositoryId: "99",
+        createdAt: new Date(now).toISOString(), bindingIds: [`${grant!.id}_101`], payload: { repository: "maintenance/example", number: 7,
+          url: "https://github.com/maintenance/example/pull/7", state: "closed", merged: true, mergedAt: new Date(now).toISOString() } };
+      await server.api("PATCH", `/tool-connections/${connection!.id}`, { enabled: true });
+      await server.advance(5_000); await settleClock(server);
+      const [delivery] = await fixture.$client`select company_id, status, attempts, processed_at is not null as processed, normalized_payload
+        from connection_event_deliveries where provider_delivery_id='maintenance-delivery'`;
+      expect(delivery).toMatchObject({ company_id: company.id, status: "processed", attempts: 1, processed: true,
+        normalized_payload: expect.objectContaining({ repository: "maintenance/example", number: 7, merged: true }) });
+      expect(acknowledgements).toHaveLength(1);
+      const baseline = server.proxy.queries.length, requestCount = requests.length;
+      for (let step = 0; step < 4; step++) { await server.advance(30_000); await server.settled(10); }
+      expect(server.proxy.queries.length).toBe(baseline); expect(requests).toHaveLength(requestCount);
+      await writeFile(path.join(server.directory, "github-measurement.json"), JSON.stringify({ phase: "ordinary-connection-activation-sealed-event",
+        companyId: company.id, connectionId: connection!.id, grantId: grant!.id, delivery, requests, acknowledgements,
+        quietClockMs: 120_000, quietQueries: 0, frames: server.proxy.frames,
+        providerBoundary: "simulated Cloud HTTP validates real Ed25519 request and seals X25519/AES-GCM event; actual runtime decrypts/persists/acks",
+      }, null, 2));
+    } finally {
+      await fixture.$client.end(); await server.stop(); broker.closeAllConnections();
+      await new Promise<void>(resolve => broker.close(() => resolve()));
+    }
+  }, 150_000);
+
+  it("reacts to the first ordinary status-card source write and accepts authorized controlled summarizer output", async () => {
+    await clearDatabase();
+    const server = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true });
+    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+    try {
+      await server.settled();
+      const company = await server.api<{ id: string }>("POST", "/companies", { name: "Status-card ingress" });
+      const [agent] = await fixture.insert(agents).values({ companyId: company.id, name: "Controlled summarizer",
+        status: "idle", adapterType: "process", adapterConfig: { command: "/usr/bin/false" } }).returning();
+      const userId = randomUUID();
+      await fixture.insert(authUsers).values({ id: userId, name: "Controlled writer owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+      await fixture.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
+      const token = randomUUID();
+      await fixture.insert(agentApiKeys).values({ companyId: company.id, agentId: agent!.id, name: "Controlled writer", responsibleUserId: userId,
+        keyHash: createHash("sha256").update(token).digest("hex") });
+      await server.api("PATCH", "/instance/settings/experimental", { enableStatusCards: true });
+      const card = await server.api<{ id: string; generatingIssueId: string }>("POST", `/companies/${company.id}/status-cards`, {
+        interestPrompt: "Blocked tasks", agentId: agent!.id, refreshPolicy: { mode: "reactive", debounceSeconds: 60 },
+      });
+      async function writeback(generationIssueId: string, compile: boolean) {
+        const [run] = await fixture.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent!.id,
+          status: "running", responsibleUserId: userId, contextSnapshot: { issueId: generationIssueId } }).returning();
+        await fixture.$client`update issues set checkout_run_id=${run!.id} where id=${generationIssueId}`;
+        const headers = { authorization: `Bearer ${token}`, "x-paperclip-run-id": run!.id };
+        if (compile) await server.api("PUT", `/status-cards/${card.id}/query`, { queries: [{ scope: "issues", status: ["blocked"] }],
+          title: "Blocked tasks", changeSummary: "Controlled compilation", generationIssueId }, headers);
+        await server.api("PUT", `/status-cards/${card.id}/summary`, { markdown: "Controlled current blockers",
+          changeSummary: "Controlled summary", generationIssueId }, headers);
+        await fixture.$client`update heartbeat_runs set status='succeeded', finished_at=now() where id=${run!.id}`;
+        await server.api("PATCH", `/issues/${generationIssueId}`, { status: "done" });
+      }
+      await writeback(card.generatingIssueId, true); await server.advance(30_000); await settleClock(server);
+      const [compiled] = await fixture.$client`select state, query_version, generating_issue_id from status_cards where id=${card.id}`;
+      expect(compiled).toMatchObject({ state: "active", query_version: 1, generating_issue_id: null });
+      const changed = await server.api<{ id: string }>("POST", `/companies/${company.id}/issues`, {
+        title: "Ordinary new blocker", status: "blocked",
+      });
+      await server.advance(1_000); await settleClock(server);
+      const [pending] = await fixture.$client`select pending_change_count, next_eval_at is not null as scheduled from status_cards where id=${card.id}`;
+      expect(pending!.pending_change_count).toBeGreaterThan(0); expect(pending!.scheduled).toBe(true);
+      for (let step = 0; step < 3; step++) { await server.advance(30_000); await settleClock(server); }
+      const [generating] = await fixture.$client`select generating_issue_id from status_cards where id=${card.id}`;
+      expect(generating!.generating_issue_id).toBeTypeOf("string");
+      expect(generating!.generating_issue_id).not.toBe(card.generatingIssueId);
+      await writeback(generating!.generating_issue_id, false); await server.advance(30_000); await settleClock(server);
+      const [result] = await fixture.$client`select status, finished_at is not null as finished from status_card_updates
+        where card_id=${card.id} and generation_issue_id=${generating!.generating_issue_id}`;
+      expect(result).toMatchObject({ status: "ok", finished: true });
+      const [saved] = await fixture.$client`select pending_change_count, generating_issue_id, state from status_cards where id=${card.id}`;
+      expect(saved).toMatchObject({ pending_change_count: 0, generating_issue_id: null, state: "active" });
+      await writeFile(path.join(server.directory, "status-card-measurement.json"), JSON.stringify({
+        phase: "ordinary-reactive-card-source-and-authorized-writeback", companyId: company.id, cardId: card.id, issueId: changed.id,
+        compiled, pending, generating, result, saved, frames: server.proxy.frames,
+        executionBoundary: "controlled summarizer execution rows/key only; real authenticated query/summary routes; production execution suppressed; no model provider",
+      }, null, 2));
+    } finally { await fixture.$client.end(); await server.stop(); }
+  }, 150_000);
+
+  it("expires an ordinarily published backup after its ordinary task close without losing run history", async () => {
+    await clearDatabase();
+    const server = await startMaintenanceServer(databaseUrl!, { enabled: false, clock: true });
+    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+    try {
+      await server.settled();
+      const company = await server.api<{ id: string }>("POST", "/companies", { name: "Backup ingress" });
+      const [agent] = await fixture.insert(agents).values({ companyId: company.id, name: "Backup owner", status: "paused" }).returning();
+      const issue = await server.api<{ id: string }>("POST", `/companies/${company.id}/issues`, { title: "Close aged backup work", status: "todo" });
+      const sessionId = randomUUID(), scopeDigest = "b".repeat(64);
+      const [run] = await fixture.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent!.id,
+        status: "succeeded", issueId: issue.id, nativeIssueId: issue.id, nativeSessionId: sessionId, finishedAt: new Date() }).returning();
+      await fixture.insert(agentTaskSessions).values({ companyId: company.id, agentId: agent!.id, adapterType: "paperclip_runner",
+        taskKey: issue.id, sessionParamsJson: { sessionId }, lastRunId: run!.id });
+      const root = path.join(server.directory, "durable-sessions", scopeDigest), backupRoot = path.join(root, "failover-backups");
+      const pendingRoot = path.join(backupRoot, "pending-publication"), current = path.join(backupRoot, "current");
+      await mkdir(path.join(root, "control-plane"), { recursive: true }); await mkdir(pendingRoot, { recursive: true });
+      await writeFile(path.join(root, "control-plane", "control-plane-state.json"), JSON.stringify({ identity: { runId: run!.id, normalizedSessionId: sessionId } }));
+      await writeFile(path.join(pendingRoot, "manifest.json"), "{}"); await writeFile(path.join(pendingRoot, "session-bytes"), "retained session bytes");
+      const old = new Date((await server.snapshot()).now - 10 * 86_400_000); await utimes(pendingRoot, old, old);
+      await server.publishBackup({ companyId: company.id, scopeDigest, backupRoot, pendingRoot });
+      await settleClock(server); await access(current);
+      await fixture.$client.unsafe(`create or replace function maintenance_age_close() returns trigger language plpgsql as $$begin
+        if new.title = 'Close aged backup work' and new.status = 'done' then new.completed_at = now() - interval '10 days'; end if;
+        return new; end$$`);
+      await fixture.$client.unsafe(`create trigger maintenance_age_close before update on issues for each row execute function maintenance_age_close()`);
+      await server.api("PATCH", `/issues/${issue.id}`, { status: "done" });
+      await server.advance(30_000); await settleClock(server);
+      await expect(access(current)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readdir(backupRoot)).toEqual([]);
+      const [pointers] = await fixture.$client`select count(*)::integer as count from agent_task_sessions where agent_id=${agent!.id}`;
+      const [history] = await fixture.$client`select status from heartbeat_runs where id=${run!.id}`;
+      expect(pointers!.count).toBe(0); expect(history!.status).toBe("succeeded");
+      await writeFile(path.join(server.directory, "backup-measurement.json"), JSON.stringify({ phase: "ordinary-publication-and-task-close",
+        companyId: company.id, issueId: issue.id, runId: run!.id, scopeDigest, pointers: pointers!.count, history,
+        timestampBoundary: "fixture ages backup mtime and ordinary close timestamp10days; cleanup outcome not seeded",
+        publicationBoundary: "actual publishNativeHarnessBackup with actual runtime-owned DB; no provider execution", frames: server.proxy.frames,
+      }, null, 2));
+    } finally {
+      await fixture.$client.unsafe("drop trigger if exists maintenance_age_close on issues").catch(() => {});
+      await fixture.$client.unsafe("drop function if exists maintenance_age_close()").catch(() => {});
+      await fixture.$client.end(); await server.stop();
+    }
+  }, 150_000);
+
+  it("archives the first ordinary overdue attention source through the assembled retention worker", async () => {
+    await clearDatabase();
+    const server = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true });
+    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+    try {
+      await server.settled();
+      const company = await server.api<{ id: string }>("POST", "/companies", { name: "Attention ingress" });
+      const issue = await server.api<{ id: string }>("POST", `/companies/${company.id}/issues`, { title: "Await human decision", status: "todo" });
+      await fixture.$client.unsafe(`create or replace function maintenance_age_attention() returns trigger language plpgsql as $$begin
+        if new.title = 'Overdue ordinary human decision' then new.updated_at = now() - interval '91 days'; end if;
+        return new; end$$`);
+      await fixture.$client.unsafe(`create trigger maintenance_age_attention before insert on issue_thread_interactions for each row execute function maintenance_age_attention()`);
+      const card = await server.api<{ id: string }>("POST", `/issues/${issue.id}/interactions`, {
+        kind: "request_confirmation", title: "Overdue ordinary human decision", resolverPolicy: "human_only",
+        continuationPolicy: "none", payload: { version: 1, prompt: "Choose the preferred color?" },
+      });
+      await server.advance(30_000); await settleClock(server);
+      const [archived] = await fixture.$client`select company_id, source_kind, archived_reason, archived_by_type,
+        archived_at is not null as archived, archive_version from decision_retention where source_id=${card.id}`;
+      expect(archived).toMatchObject({ company_id: company.id, source_kind: "issue_thread_interaction", archived_reason: "idle_ttl",
+        archived_by_type: "system", archived: true, archive_version: 1 });
+      const [source] = await fixture.$client`select status, updated_at < now() - interval '90 days' as aged from issue_thread_interactions where id=${card.id}`;
+      expect(source).toMatchObject({ status: "pending", aged: true });
+      const audit = await fixture.$client`select actor_id, details from activity_log where company_id=${company.id}
+        and action='decision_retention.auto_archived'`;
+      expect(audit).toHaveLength(1);
+      await writeFile(path.join(server.directory, "attention-measurement.json"), JSON.stringify({
+        phase: "ordinary-overdue-attention-ingress", companyId: company.id, issueId: issue.id, interactionId: card.id,
+        timestampBoundary: "fixture-only INSERT trigger ages source activity91days; no retention/outcome rows seeded",
+        archived, source, audit, frames: server.proxy.frames,
+      }, null, 2));
+    } finally {
+      await fixture.$client.unsafe("drop trigger if exists maintenance_age_attention on issue_thread_interactions").catch(() => {});
+      await fixture.$client.unsafe("drop function if exists maintenance_age_attention()").catch(() => {});
+      await fixture.$client.end(); await server.stop();
+    }
+  }, 150_000);
+
+  it("accepts the first ordinary merge confirmation through the assembled provider worker", async () => {
+    await clearDatabase();
+    const providerRequests: string[] = [];
+    const provider = createServer((req, res) => {
+      providerRequests.push(req.url!); res.setHeader("Content-Type", "application/json");
+      if (req.url !== "/repos/maintenance/example/pulls/39") { res.statusCode = 500; res.end("{}"); return; }
+      res.end(JSON.stringify({ id: 39, number: 39, state: "closed", merged: true, merged_at: new Date().toISOString(),
+        title: "Controlled merged confirmation", html_url: "https://github.com/maintenance/example/pull/39", user: { login: "fixture" } }));
+    });
+    await new Promise<void>(resolve => provider.listen(0, "127.0.0.1", resolve));
+    const address = provider.address();
+    if (!address || typeof address === "string") throw new Error("Simulated GitHub failed to bind");
+    const server = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true,
+      githubOrigin: `http://127.0.0.1:${address.port}` });
+    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+    try {
+      await server.settled();
+      const company = await server.api<{ id: string }>("POST", "/companies", { name: "Merge ingress" });
+      const issue = await server.api<{ id: string }>("POST", `/companies/${company.id}/issues`, { title: "Merge task", status: "todo" });
+      const card = await server.api<{ id: string }>("POST", `/issues/${issue.id}/interactions`, {
+        kind: "request_confirmation", title: "Merge maintenance/example#39?", resolverPolicy: "human_only",
+        continuationPolicy: "none", payload: { version: 1, prompt: "Merge the PR?" },
+      });
+      await server.advance(30_000); await settleClock(server);
+      const [accepted] = await fixture.$client`select company_id, status, resolved_at is not null as resolved
+        from issue_thread_interactions where id=${card.id}`;
+      expect(accepted).toMatchObject({ company_id: company.id, status: "accepted", resolved: true });
+      const audit = await fixture.$client`select actor_id, details from activity_log where company_id=${company.id}
+        and action='issue.thread_interaction_accepted'`;
+      expect(audit).toEqual([expect.objectContaining({ actor_id: "system:pr-merged", details: expect.objectContaining({ interactionId: card.id }) })]);
+      expect(providerRequests).toEqual(["/repos/maintenance/example/pulls/39"]);
+      await writeFile(path.join(server.directory, "confirmation-measurement.json"), JSON.stringify({
+        phase: "ordinary-merge-confirmation", companyId: company.id, issueId: issue.id, interactionId: card.id,
+        accepted, audit, providerRequests, frames: server.proxy.frames,
+        providerBoundary: "simulated GitHub HTTP; actual production worker and interaction acceptance",
+      }, null, 2));
+    } finally {
+      await fixture.$client.end(); await server.stop(); provider.closeAllConnections();
+      await new Promise<void>(resolve => provider.close(() => resolve()));
+    }
+  }, 150_000);
+
+  it("projects the first ordinary routine completion in the actual suppressed Cloud runtime", async () => {
+    await clearDatabase();
+    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+    const companyId = randomUUID(), agentId = randomUUID();
+    await fixture.insert(companies).values({ id: companyId, name: "Routine ingress", issuePrefix: "MRT",
+      defaultResponsibleUserId: "maintenance-board", requireBoardApprovalForNewAgents: false });
+    await fixture.insert(agents).values({ id: agentId, companyId, name: "Suppressed routine worker", status: "active",
+      lifecycleState: "ready", adapterType: "process", adapterConfig: { command: "/usr/bin/false" } });
+    const pair = generateKeyPairSync("ed25519");
+    const publicJwk = { ...pair.publicKey.export({ format: "jwk" }), kid: "maintenance-routine-key", use: "sig", alg: "EdDSA" };
+    const storageRequests: string[] = [];
+    const storage = createServer((req, res) => { storageRequests.push(req.url!); res.statusCode = 500; res.end("Unexpected S3 request in routine fixture"); });
+    await new Promise<void>(resolve => storage.listen(0, "127.0.0.1", resolve));
+    const address = storage.address();
+    if (!address || typeof address === "string") throw new Error("Simulated S3 failed to bind");
+    const server = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true,
+      cloud: { jwks: JSON.stringify({ keys: [publicJwk] }), s3Origin: `http://127.0.0.1:${address.port}`, standby: false } });
+    try {
+      await server.settled();
+      const routine = await server.api<{ id: string }>("POST", `/companies/${companyId}/routines`, {
+        title: "Ordinary projected routine", assigneeAgentId: agentId, concurrencyPolicy: "always_enqueue",
+      });
+      const run = await server.api<{ id: string; linkedIssueId: string; status: string }>("POST", `/routines/${routine.id}/run`, {
+        source: "manual", idempotencyKey: randomUUID(),
+      });
+      expect(run.status).toBe("issue_created");
+      const [before] = await fixture.$client`select status, completed_at from routine_runs where id=${run.id}`;
+      expect(before).toMatchObject({ status: "issue_created", completed_at: null });
+      await fixture.$client.unsafe(`create or replace function maintenance_hold_completion() returns trigger language plpgsql as $$begin
+        if new.id = '${run.linkedIssueId}'::uuid and new.status = 'done' then perform pg_advisory_xact_lock(913702); end if;
+        return new; end$$`);
+      await fixture.$client.unsafe(`create trigger maintenance_hold_completion before update on issues for each row execute function maintenance_hold_completion()`);
+      const reserved = await fixture.$client.reserve();
+      await reserved`select pg_advisory_lock(913702)`;
+      const writesBefore = server.proxy.queries.length;
+      const completing = server.updateIssue({ id: run.linkedIssueId, status: "done" });
+      void completing.catch(() => {});
+      try {
+        await expect.poll(() => server.proxy.queries.slice(writesBefore).some(query => /update "issues"/.test(query.sql)), { timeout: 10_000 }).toBe(true);
+        await server.drain();
+      } finally { await reserved`select pg_advisory_unlock(913702)`; reserved.release(); }
+      await completing; await server.advance(30_000); await settleClock(server);
+      const [drained] = await fixture.$client`select status, completed_at from routine_runs where id=${run.id}`;
+      expect(drained).toMatchObject({ status: "issue_created", completed_at: null });
+      await server.resume(); await server.advance(30_000); await settleClock(server);
+      const [projected] = await fixture.$client`select rr.company_id, rr.status, rr.completed_at is not null as completed,
+        i.status as issue_status from routine_runs rr join issues i on i.id=rr.linked_issue_id where rr.id=${run.id}`;
+      expect(projected).toMatchObject({ company_id: companyId, status: "completed", completed: true, issue_status: "done" });
+      const [executions] = await fixture.$client`select count(*)::integer as count from heartbeat_runs where company_id=${companyId}`;
+      expect(executions!.count).toBe(0);
+      expect(storageRequests).toEqual([]);
+      await writeFile(path.join(server.directory, "routine-measurement.json"), JSON.stringify({
+        phase: "ordinary-routine-service-completion-during-drain", completionBoundary: "actual issueService.update with runtime-owned DB; excludes redundant route projection hook", companyId, routineId: routine.id, runId: run.id,
+        before, drained, projected, executions: executions!.count, storageRequests,
+        suppression: "PAPERCLIP_IN_WORKTREE; actual production policy", frames: server.proxy.frames,
+      }, null, 2));
+    } finally {
+      await fixture.$client.unsafe("drop trigger if exists maintenance_hold_completion on issues").catch(() => {});
+      await fixture.$client.unsafe("drop function if exists maintenance_hold_completion()").catch(() => {});
+      await server.stop(); await fixture.$client.end(); storage.closeAllConnections();
+      await new Promise<void>(resolve => storage.close(() => resolve()));
     }
   }, 150_000);
 

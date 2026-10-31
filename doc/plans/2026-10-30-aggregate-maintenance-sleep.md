@@ -66,7 +66,7 @@ backups, live operation keepalives or authorized external reconciliation disappe
 
 One positive control uses a real 31-second observation after actual startup
 settlement. Longer windows use only child-local Date/setTimeout/setInterval
-control. Boot and ordinary HTTP producer phases advance at real speed. The
+control. Boot, ordinary HTTP/service producer phases and graceful shutdown advance at real speed. The
 clock freezes after readiness and real socket settlement, then advances at most
 30 seconds per step, settling real I/O between steps. Parent deadlines,
 setImmediate and database sockets remain usable. Receipts distinguish real
@@ -97,6 +97,27 @@ Current assembled cases cover:
 - A real HTTP 503 from the controlled provider, durable retry deadline, no
   SQL/provider retry during drain, successful resume and quiet after settlement.
 - Actual Cloud warm standby, signed identity claim and durable canonical identity.
+- Ordinary interaction creation with a disclosed fixture-only activity timestamp
+  older than 90 days, followed by actual retention archive and system audit.
+- Cloud routine creation/run through HTTP, actual issue-service completion held
+  across drain, and registered projection after resume. Service ingress avoids
+  counting the HTTP route's existing redundant direct projection hook as worker
+  proof. Production worktree suppression prevents agent execution.
+- Ordinary connection activation followed by a simulated Cloud broker's actual
+  Ed25519-verified request and X25519/AES-GCM sealed event. The real runtime
+  decrypts it, persists a processed receipt, acknowledges it and stays quiet
+  across two minutes of child clock before the real credential deadline.
+- Ordinary merge-confirmation creation, actual provider HTTP observation,
+  persisted acceptance and system actor audit.
+- Status-card creation and authorized query/summary writes through real HTTP
+  authentication, then an ordinary blocked-task source write, debounce,
+  generation and persisted result. Agent key, responsible user, membership and
+  execution rows form an explicitly controlled summarizer boundary; no model
+  provider runs and no card result is seeded.
+- Actual native backup publication with the runtime-owned database, ordinary
+  task closure, physical backup deletion and resume-pointer cleanup while run
+  history remains. File modification time and closure timestamp are fixture-aged
+  ten days; cleanup results are created only by the production owner.
 
 Warm standby retains exactly one identified startup intent: the committed
 `companyTransferRunService.recoverStrandedApplyingRuns` notification to import
@@ -108,7 +129,15 @@ existing bounded 30-second retry deadline. It does not call standby sleep-eligib
 while this hold exists. Temporary diagnostic begin/end tracing used to identify
 this owner is not part of the production change.
 
-Remaining acceptance before a removal PR: final recovery integration, all owner
+An assembled admitted completion exposed a separate decision-target idle hold:
+its owner retained a reconciled write hold while drain prevented its sweep.
+The owner now reports pending dispatch only when admitted, retains service
+scopes and parks a 30-second deadline only for those scopes. The generic
+coordinator still holds unresolved transactions. PostgreSQL regressions cover
+committed and uncommitted changes, failed expiry, zero SQL/active work during
+drain, exactly-once resume and existing shutdown/restart behavior.
+
+Remaining acceptance before a removal PR: final recovery integration, final recovery
 first-producer paths through assembled wiring, enabled empty/configured/history
 quiet including the real 90-second window, scheduling suppression, startup and
 shutdown races, relevant contracts across the combined tree, current-head

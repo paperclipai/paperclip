@@ -18,7 +18,7 @@ async function withDeadline<T>(promise: Promise<T>, ms: number, message: () => s
 
 type Snapshot = { idle: { active: number; generation: number }; startup: { phase: string }; outgoingHttpRequests: number; network: { nonDatabaseConnections: number; databaseConnections: number; nonDatabaseBytesWritten: number }; now: number };
 
-export async function startMaintenanceServer(databaseUrl: string, options: { enabled?: boolean; clock?: boolean; suppressed?: boolean; githubOrigin?: string; cloud?: { jwks: string; s3Origin: string; standby: boolean } } = {}) {
+export async function startMaintenanceServer(databaseUrl: string, options: { enabled?: boolean; clock?: boolean; suppressed?: boolean; githubOrigin?: string; connector?: { origin: string; signPrivateKey: string; sealPrivateKey: string }; cloud?: { jwks: string; s3Origin: string; standby: boolean } } = {}) {
   const proxy = await startMaintenancePostgresProxy(databaseUrl);
   const directory = await mkdtemp(path.join(tmpdir(), "paperclip-maintenance-"));
   const reservation = createServer();
@@ -43,6 +43,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: { ena
     env: {
       PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, NODE_ENV: "production",
       PAPERCLIP_HOME: directory, PAPERCLIP_CONFIG: configPath, PAPERCLIP_INSTANCE_ID: "maintenance-test",
+      PAPERCLIP_RUNNER_STATE_DIR: path.join(directory, "durable-sessions"),
       DATABASE_URL: proxy.url, DATABASE_POOL_MAX: "6", DATABASE_APPLICATION_NAME: "maintenance-integration-test",
       PAPERCLIP_AGENT_JWT_SECRET: randomUUID(), PAPERCLIP_DECISION_SIGNING_SECRET: randomUUID(),
       PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: randomUUID(), BETTER_AUTH_SECRET: randomUUID(),
@@ -52,6 +53,12 @@ export async function startMaintenanceServer(databaseUrl: string, options: { ena
       PAPERCLIP_MAINTENANCE_FAKE_CLOCK: String(options.clock ?? false),
       ...(options.suppressed ? { PAPERCLIP_IN_WORKTREE: "true" } : {}),
       ...(options.githubOrigin ? { PAPERCLIP_MAINTENANCE_GITHUB_ORIGIN: options.githubOrigin } : {}),
+      ...(options.connector ? {
+        PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID: "maintenance-connector", PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT: "test",
+        PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY: options.connector.signPrivateKey,
+        PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY: options.connector.sealPrivateKey,
+        PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: options.connector.origin,
+      } : {}),
       ...(options.cloud ? {
         PAPERCLIP_MANAGED_CONFIG: JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "2026.720.0", features: {}, plugins: { autoInstall: [] } }),
         PAPERCLIP_SECRETS_MASTER_KEY: randomBytes(32).toString("hex"),
@@ -86,7 +93,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: { ena
     for (const request of requests.values()) request.reject(error);
     requests.clear();
   });
-  async function request<T>(command: string, payload: { ms?: number } = {}): Promise<T> {
+  async function request<T>(command: string, payload: { ms?: number; issueUpdate?: { id: string; status: "done" }; publication?: { companyId: string; scopeDigest: string; backupRoot: string; pendingRoot: string } } = {}): Promise<T> {
     const id = ++requestId;
     const result = new Promise<T>((resolve, reject) => requests.set(id, { resolve, reject }));
     child.send({ id, command, ...payload });
@@ -107,16 +114,22 @@ export async function startMaintenanceServer(databaseUrl: string, options: { ena
     const port = await withDeadline(ready, 90_000, () => `Maintenance boot timed out: ${output.slice(-12_000)}`);
     return {
       proxy, directory, port, stop,
-      async api<T>(method: string, route: string, body?: unknown): Promise<T> {
+      async api<T>(method: string, route: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
         if (options.clock) await request("realtime");
         try {
           const response = await fetch(`http://127.0.0.1:${port}/api${route}`, { method, signal: AbortSignal.timeout(30_000),
-            headers: { "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+            headers: { "Content-Type": "application/json", ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
           const value = await response.json();
           if (!response.ok) throw new Error(`Maintenance API ${method} ${route}: ${response.status} ${JSON.stringify(value)}`);
           return value as T;
         } finally { if (options.clock) await request("freeze"); }
       },
+      async updateIssue(issueUpdate: { id: string; status: "done" }) {
+        if (options.clock) await request("realtime");
+        try { return await request("updateIssue", { issueUpdate }); }
+        finally { if (options.clock) await request("freeze"); }
+      },
+      publishBackup: (publication: { companyId: string; scopeDigest: string; backupRoot: string; pendingRoot: string }) => request("publishBackup", { publication }),
       snapshot: () => request<Snapshot>("snapshot"),
       drain: () => request<Snapshot>("drain"), resume: () => request<Snapshot>("resume"),
       advance: (ms: number) => request<Snapshot>("advance", { ms }), freeze: () => request<Snapshot>("freeze"),
