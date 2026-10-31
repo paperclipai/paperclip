@@ -118,7 +118,7 @@ describe("runner E2E catalog", () => {
   });
 
   it("exports deployment journeys separately from the model matrix and default selection", () => {
-    expect(productJourneys.map(journey => journey.id)).toEqual(["task-create", "project-task-context", "ask-question", "question-answer-resume", "task-properties", "task-document-persistence", "task-search-filter", "plan-revise-accept", "build-revise", "protected-actions", "create-skill-studio", "stop-redirect", "followup-while-running", "cloud-onboarding"]);
+    expect(productJourneys.map(journey => journey.id)).toEqual(["task-create", "project-task-context", "ask-question", "question-answer-resume", "task-properties", "task-document-persistence", "task-search-filter", "plan-revise-accept", "build-revise", "protected-actions", "create-skill-studio", "stop-redirect", "followup-while-running", "hire-delegate-reuse", "cloud-onboarding"]);
     expect(runnerSuites.some(suite => suite.id === "product-journeys")).toBe(false);
     expect(runnerMatrix.some(execution => execution.suite.id === "product-journeys")).toBe(false);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(execution => execution.suite.id === "product-journeys")).toBe(false);
