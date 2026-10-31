@@ -67,9 +67,11 @@ describeDatabase("assembled maintenance server production wiring", () => {
       const before = await server.snapshot(), queryCount = server.proxy.queries.length, frames = server.proxy.frames, transport = server.proxy.transport;
       expect(before.startup.phase).toBe("ready"); expect(before.idle.active).toBe(0);
       await server.realtime();
-      const wallStart = Date.now();
-      await delay(90_000);
-      const wallElapsedMs = Date.now() - wallStart;
+      const wallStart = performance.now();
+      for (let remaining = 90_000; remaining > 0; remaining = 90_000 - (performance.now() - wallStart)) {
+        await delay(Math.ceil(remaining));
+      }
+      const wallElapsedMs = performance.now() - wallStart;
       await server.freeze();
       const real = await server.settled(100);
       expect(wallElapsedMs).toBeGreaterThanOrEqual(90_000);
