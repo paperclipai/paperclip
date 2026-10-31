@@ -1,4 +1,3 @@
-import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";

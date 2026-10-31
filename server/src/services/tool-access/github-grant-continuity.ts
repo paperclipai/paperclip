@@ -18,6 +18,8 @@ function asRecord(value: unknown): Record<string, unknown> {
   return {};
 }
 
+type RecordGitHubAttempt = (grant: typeof connectionGrants.$inferSelect) => void;
+
 type GitHubContinuityDependencies = {
   now: () => Date;
   currentCloudConnector: () => PaperclipCloudConnector | null;
@@ -30,6 +32,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
     connection: typeof toolConnections.$inferSelect,
     initialGrant: typeof connectionGrants.$inferSelect,
     actor?: ActorInfo,
+    recordAttempt?: RecordGitHubAttempt,
   ) {
     await actor?.managementContext?.reauthorize();
     return measureRunPhase("connectors.github.refresh", async () => {
@@ -38,6 +41,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
           connection,
           initialGrant,
           actor,
+          recordAttempt,
         );
       } catch (error) {
         if (
@@ -56,7 +60,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
             ),
           ));
         if (!current || current.status !== "active") throw error;
-        return refreshManagedGitHubGrantAccessOnce(connection, current, actor);
+        return refreshManagedGitHubGrantAccessOnce(connection, current, actor, recordAttempt);
       }
     });
   }
@@ -65,6 +69,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
     connection: typeof toolConnections.$inferSelect,
     initialGrant: typeof connectionGrants.$inferSelect,
     actor?: ActorInfo,
+    recordAttempt?: RecordGitHubAttempt,
   ) {
     await actor?.managementContext?.reauthorize();
     let grant = await measureRunPhase("connectors.github.credentials", () => refreshOAuthGrantCredentials({
@@ -73,6 +78,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
       grantId: initialGrant.id,
       actor,
     }));
+    recordAttempt?.(grant);
     const resolveAccessToken = async () => measureRunPhase("connectors.github.credentials", async () => {
       const accessRef = grant.credentialSecretRefs.find(
         (ref) => ref.configPath === "oauth.access_token",
@@ -113,6 +119,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
         forceRefresh: true,
         actor,
       }));
+      recordAttempt?.(grant);
       accessToken = await resolveAccessToken();
       try {
         metadata = await measureRunPhase("connectors.github.repositories", () => loadGitHubGrantMetadata(
@@ -204,7 +211,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
       return { updated, previousGitHub };
     });
 
-    return measureRunPhase("connectors.github.webhooks", () => syncGitHubGrantBindings(connection, updated, actor, accessToken));
+    return measureRunPhase("connectors.github.webhooks", () => syncGitHubGrantBindings(connection, updated, actor, accessToken, recordAttempt));
   }
 
   async function syncGitHubGrantBindings(
@@ -212,6 +219,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
     initialGrant: typeof connectionGrants.$inferSelect,
     actor?: ActorInfo,
     accessToken?: string,
+    recordAttempt?: RecordGitHubAttempt,
   ) {
     await actor?.managementContext?.reauthorize();
     const cloudConnector = currentCloudConnector();
@@ -243,9 +251,11 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
       const subject = current.kind === "agent" && current.subjectAgentId ? `agent:${current.subjectAgentId}`
         : current.kind === "user" ? current.subjectUserId : null;
       if (!subject) throw unprocessable("GitHub webhook subject is unavailable");
+      recordAttempt?.(grant);
       const changes = [
         ...github.installationIds.map(installationId => ({ installationId, active: true as const })),
-        ...github.bindingSync.removeInstallationIds.map(installationId => ({ installationId, active: false as const })),
+        ...github.bindingSync.removeInstallationIds.filter(id => !github.installationIds.includes(id))
+          .map(installationId => ({ installationId, active: false as const })),
       ];
       for (let offset = 0; offset < changes.length; offset += 4) {
         const outcomes = await Promise.allSettled(changes.slice(offset, offset + 4).map(change => cloudConnector.setWebhookBinding({
@@ -265,13 +275,14 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
     });
   }
 
-  async function retainRetry(connection: typeof toolConnections.$inferSelect, grantId: string, error?: unknown, minimumMs = 30_000) {
+  async function retainRetry(connection: typeof toolConnections.$inferSelect, grantId: string, attemptedRevision: string, error?: unknown, minimumMs = 30_000) {
     await db.transaction(async tx => {
       const [current] = await tx.select().from(connectionGrants).where(and(
         eq(connectionGrants.id, grantId), eq(connectionGrants.companyId, connection.companyId),
         eq(connectionGrants.connectionId, connection.id), eq(connectionGrants.status, "active"),
       )).for("update").limit(1);
-      if (!current?.providerTenant?.github) return;
+      // Backoff belongs to the attempted credential/installation revision.
+      if (!current?.providerTenant?.github || githubContinuityRevision(current) !== attemptedRevision) return;
       const attempts = Math.min(16, (current.providerTenant.github.continuityRetry?.attempts ?? 0) + 1);
       const advised = error instanceof PaperclipCloudConnectorError ? error.retryAt
         : error instanceof HttpError ? asRecord(error.details).retryAt : undefined;
@@ -280,7 +291,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
       await notifyGitHubCredentialChange(tx, connection);
       await tx.update(connectionGrants).set({
         providerTenant: sql`jsonb_set(${connectionGrants.providerTenant}, '{github,continuityRetry}', ${JSON.stringify({
-          at, attempts, revision: githubContinuityRevision(current),
+          at, attempts, revision: attemptedRevision,
         })}::jsonb)`,
         updatedAt: now(),
       }).where(and(eq(connectionGrants.id, current.id), eq(connectionGrants.companyId, connection.companyId)));
@@ -324,18 +335,20 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
     let refreshed = 0;
     let failed = 0;
     for (const row of due) {
+      let attemptedRevision = githubContinuityRevision(row.grant);
+      const recordAttempt: RecordGitHubAttempt = grant => { attemptedRevision = githubContinuityRevision(grant); };
       try {
         const actor: ActorInfo = { actorType: "system", actorId: "github-connection-continuity" };
         const updated = row.grant.providerTenant?.github?.bindingSync
-          ? await syncGitHubGrantBindings(row.connection, row.grant, actor)
-          : await refreshManagedGitHubGrantAccess(row.connection, row.grant, actor);
+          ? await syncGitHubGrantBindings(row.connection, row.grant, actor, undefined, recordAttempt)
+          : await refreshManagedGitHubGrantAccess(row.connection, row.grant, actor, recordAttempt);
         // A successful provider response can still leave an unchanged/short-lived
         // credential due. Retain that obligation with bounded durable backoff.
         const next = githubGrantContinuityDeadline(row.connection, updated);
-        if (next !== null && next <= now().getTime()) await retainRetry(row.connection, updated.id, undefined, 60 * 60_000);
+        if (next !== null && next <= now().getTime()) await retainRetry(row.connection, updated.id, githubContinuityRevision(updated), undefined, 60 * 60_000);
         refreshed += 1;
       } catch (error) {
-        await retainRetry(row.connection, row.grant.id, error);
+        await retainRetry(row.connection, row.grant.id, attemptedRevision, error);
         failed += 1;
       }
     }

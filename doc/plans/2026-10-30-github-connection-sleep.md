@@ -43,7 +43,11 @@ A grant stores a unique `bindingSync` revision and removed installation IDs befo
 Cloud registration calls. Successful delivery clears only the locked current
 revision. Failure retains the saved intent and an exponential retry deadline,
 including provider Retry-After advice. A restart loads that deadline from the
-grant. Binding-only retries use the existing credential refresh lease and current
+grant. A retry write compares the attempted credential/installation revision under
+the grant lock and cannot delay work committed by a newer revision. Restoration
+creates a new binding revision and removes active installations from the pending
+retirement list; binding commands also reject legacy conflicting retirements.
+Binding-only retries use the existing credential refresh lease and current
 secret resolver without repeating account/repository discovery. The initial OAuth
 callback uses the same saved debt and settlement path after connection activation.
 
