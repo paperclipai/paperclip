@@ -542,8 +542,10 @@ class OpenCodeHarnessSession implements HarnessSession {
   #completionSettlement: Promise<void> | null = null;
   #turnStartSourceSeq = 0;
   #turnReasoningMode: OpenCodeReasoningMode = "default";
-  #emptyResponseRecovery: { turnId: string; priorMessages: Set<string>; responseFinished: boolean } | null = null;
+  #emptyResponseRecovery: { turnId: string; priorMessages: Set<string>; responseStarted: boolean; responseFinished: boolean } | null = null;
   #emptyResponseAckTimer: ReturnType<typeof setTimeout> | undefined;
+  #pendingToolCalls = 0;
+  readonly #runningNativeToolParts = new Set<string>();
   #abort = new AbortController();
 
   constructor(input: {
@@ -693,6 +695,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#turnStartSourceSeq = this.#sourceSequence;
     this.#turnReasoningMode = reasoningMode;
     this.#emptyResponseRecovery = null;
+    this.#runningNativeToolParts.clear();
     this.#emit("turn.submitted", {
       envelopeSchema: this.#taskEnvelope.schema,
       text: input.message.text,
@@ -752,8 +755,17 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#emptyResponseAckTimer = undefined;
   }
 
+  #armEmptyResponseAckTimer(turnId: string, message: string): void {
+    if (this.#emptyResponseAckTimer) return;
+    this.#emptyResponseAckTimer = setTimeout(() => {
+      this.#emptyResponseAckTimer = undefined;
+      this.#failEmptyResponse(turnId, message);
+    }, 20_000);
+    this.#emptyResponseAckTimer.unref();
+  }
+
   #failEmptyResponse(turnId: string, message: string): void {
-    if (this.#closed || this.#activeTurnId !== turnId || this.#result !== null) return;
+    if (this.#closed || this.#activeTurnId !== turnId || this.#result !== null || this.#pendingToolCalls > 0 || this.#runningNativeToolParts.size > 0) return;
     this.#emit("turn.failed", { status: "failed", error: { code: "opencode_empty_response", message, retryable: false } }, { turnId });
     this.#terminalTurns.set(turnId, canonicalJson({ status: "failed" }));
     this.#activeTurnId = null;
@@ -761,20 +773,27 @@ class OpenCodeHarnessSession implements HarnessSession {
 
   #recoverEmptyResponse(turnId: string): boolean {
     if (this.#result !== null || this.#pendingRuntimeRequests.size > 0) return false;
+    if (this.#pendingToolCalls > 0 || this.#runningNativeToolParts.size > 0) return true;
     const recovery = this.#emptyResponseRecovery;
-    // Both idle event forms can remain queued from the empty response. Wait
-    // for the correction's own completed assistant message before settling.
-    if (recovery && !recovery.responseFinished) return true;
     const boundary = Math.max(this.#turnStartSourceSeq, this.#lastNonTerminalToolSourceSeq);
     if (this.#completedTextParts.some(part => part.observedSourceSeq > boundary)) return false;
+    // Both idle event forms can remain queued from the empty response. Wait
+    // for correction evidence. A completed answer part is sufficient even
+    // when its message header omits completion metadata. An idle response
+    // with neither answer nor finish evidence gets a bounded grace period;
+    // active provider/tool work still follows the original outer deadline.
+    if (recovery && !recovery.responseFinished) {
+      if (recovery.responseStarted)
+        this.#armEmptyResponseAckTimer(turnId, "OpenCode became idle without completing its requested final response.");
+      return true;
+    }
     if (recovery) {
       this.#failEmptyResponse(turnId, "OpenCode ended without a final answer or accepted completion report after one correction.");
       return true;
     }
-    this.#emptyResponseRecovery = { turnId, priorMessages: new Set(this.#messageRoles.keys()), responseFinished: false };
+    this.#emptyResponseRecovery = { turnId, priorMessages: new Set(this.#messageRoles.keys()), responseStarted: false, responseFinished: false };
     this.#emit("harness.diagnostic", { code: "opencode_empty_response_correction", message: "Requesting one final response after an empty OpenCode completion." }, { turnId });
-    this.#emptyResponseAckTimer = setTimeout(() => this.#failEmptyResponse(turnId, "OpenCode did not start its requested final response."), 20_000);
-    this.#emptyResponseAckTimer.unref();
+    this.#armEmptyResponseAckTimer(turnId, "OpenCode did not start its requested final response.");
     void this.#submitPrompt("Your response ended without a user-visible final answer or an accepted completion report. Continue this same request from the work already done. Give the user a concise final answer and submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.")
       .catch(() => this.#failEmptyResponse(turnId, "OpenCode could not request a final response after an empty completion."));
     return true;
@@ -1086,6 +1105,13 @@ class OpenCodeHarnessSession implements HarnessSession {
     callId: string;
     arguments: unknown;
   }): Promise<unknown> {
+    this.#pendingToolCalls += 1;
+    this.#clearEmptyResponseAckTimer();
+    try { return await this.#dispatchToolCall(call); }
+    finally { this.#pendingToolCalls -= 1; }
+  }
+
+  async #dispatchToolCall(call: { tool: string; callId: string; arguments: unknown }): Promise<unknown> {
     // The authenticated MCP bridge has resolved this against its closed
     // declared catalog. A second prefix strip changes legitimate operation IDs.
     const tool = call.tool;
@@ -1645,6 +1671,8 @@ class OpenCodeHarnessSession implements HarnessSession {
     );
     if (sessionId && sessionId !== this.#providerSessionId) return;
     const turnId = this.#activeTurnId;
+    if (this.#emptyResponseRecovery?.responseStarted && type === "session.status" && text(record(properties.status).type) === "busy")
+      this.#clearEmptyResponseAckTimer();
     if (type === "question.asked" && turnId) {
       this.#acceptQuestion(properties);
       return;
@@ -1748,6 +1776,11 @@ class OpenCodeHarnessSession implements HarnessSession {
         this.#streamingParts.set(text(part.id), part);
       }
       const role = this.#messageRoles.get(messageId);
+      const recovery = this.#emptyResponseRecovery;
+      if (role === "assistant" && recovery?.responseStarted && !recovery.priorMessages.has(messageId) && this.#emptyResponseAckTimer) {
+        this.#clearEmptyResponseAckTimer();
+        this.#armEmptyResponseAckTimer(owningTurnId, "OpenCode became idle without completing its requested final response.");
+      }
       if (role === "assistant") this.#emitAssistantPart(part, owningTurnId);
       else if (role === undefined) {
         const pending = this.#pendingMessageParts.get(messageId) ?? [];
@@ -1771,9 +1804,11 @@ class OpenCodeHarnessSession implements HarnessSession {
       const role = text(info.role);
       const recovery = this.#emptyResponseRecovery;
       if (recovery?.turnId === turnId && role === "assistant" && messageId && !recovery.priorMessages.has(messageId)) {
-        this.#clearEmptyResponseAckTimer();
-        if ((Number.isFinite(record(info.time).completed) || text(info.finish)) && !["tool-calls", "tool_calls"].includes(text(info.finish)))
-          recovery.responseFinished = true;
+        const toolCalls = ["tool-calls", "tool_calls"].includes(text(info.finish));
+        const finished = !!(Number.isFinite(record(info.time).completed) || text(info.finish)) && !toolCalls;
+        if (!recovery.responseStarted || finished) this.#clearEmptyResponseAckTimer();
+        recovery.responseStarted = true;
+        if (finished) recovery.responseFinished = true;
       }
       // Record the message's owning turn at the moment OpenCode first
       // reports it. A later turn that reuses the same native message id
@@ -1919,6 +1954,12 @@ class OpenCodeHarnessSession implements HarnessSession {
     const partId = text(part.id, `${turnId}:part`);
     const partType = text(part.type, "unknown");
     const messageId = text(part.messageID, text(part.messageId)) || null;
+    if (turnId === this.#activeTurnId && ["tool", "tool-call", "tool_call"].includes(partType)) {
+      if (text(record(part.state).status) === "running") {
+        this.#runningNativeToolParts.add(partId);
+        this.#clearEmptyResponseAckTimer();
+      } else this.#runningNativeToolParts.delete(partId);
+    }
     const canonicalToolName = canonicalOpenCodeMcpToolName(
       canonicalOpenCodeDisplayToolName(
         text(part.tool, text(part.name)),
