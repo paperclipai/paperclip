@@ -3116,9 +3116,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const { deliveryState } = await assessDelivery(workspace, git);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
-      if (!statusInspectionSucceeded) {
-        blockingReasons.push("Paperclip could not verify the workspace git status. Retry before destructive cleanup.");
-      }
       const isSharedWorkspace = executionWorkspace.mode === "shared_workspace";
       const workspacePath = readNullableString(executionWorkspace.providerRef) ?? readNullableString(executionWorkspace.cwd);
       const resolvedWorkspacePath = workspacePath ? path.resolve(workspacePath) : null;
@@ -3286,6 +3283,19 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             command: `rm -rf ${workspacePath}`,
           });
         }
+      }
+
+      // A shared session over an operator-owned local directory whose close plan
+      // only archives the record (and stops runtime services) leaves the disk
+      // untouched, so git status cannot change the outcome. Every other close
+      // still fails closed when git status is unverified.
+      const isRecordsOnlyClose =
+        isSharedWorkspace
+        && executionWorkspace.providerType === "local_fs"
+        && executionWorkspace.metadata?.createdByRuntime !== true
+        && plannedActions.every((action) => action.kind === "archive_record" || action.kind === "stop_runtime_services");
+      if (!statusInspectionSucceeded && !isRecordsOnlyClose) {
+        blockingReasons.unshift("Paperclip could not verify the workspace git status. Retry before destructive cleanup.");
       }
 
       const state =
