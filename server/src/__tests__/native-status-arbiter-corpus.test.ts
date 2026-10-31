@@ -15,7 +15,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import {
   agents,
   assets,
@@ -3011,14 +3011,16 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       const unread = ["queued", "claimed", "deferred_issue_execution"].includes(delivery);
       await reconcileNativeFinalizations(db, [seeded.runId]);
       expect((await issueService(db).getById(seeded.issueId))!.status).toBe(unread ? "in_progress" : "done");
-      const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId));
+      const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))
+        .orderBy(asc(statusDecisions.createdAt), asc(statusDecisions.id));
       expect(decisions).toHaveLength(2);
       expect(decisions.some((entry) => entry.reasonCode === (unread
         ? "native_child_completion_pending" : "completion_claim_policy_accepted"))).toBe(true);
       expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, intentId)))
         .toMatchObject([{ status: delivery.startsWith("current_") ? "claimed" : delivery }]);
       await reconcileNativeFinalizations(db, [seeded.runId]);
-      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toEqual(decisions);
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))
+        .orderBy(asc(statusDecisions.createdAt), asc(statusDecisions.id))).toEqual(decisions);
     }, 30_000,
   );
 

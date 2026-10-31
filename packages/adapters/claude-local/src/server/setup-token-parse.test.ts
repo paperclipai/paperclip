@@ -437,6 +437,33 @@ describe("parseSetupTokenPrompt", () => {
     expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
   });
 
+  it("binds the prompt when Claude Code prints the Shift copy hint before the prompt", () => {
+    const text = [
+      "Browser didn't open? Use the url below to sign in (c to copy)",
+      CLAUDE_COM_URL,
+      "Hold Shift while selecting to use your terminal's native copy",
+      "Paste code here if prompted >",
+    ].join("\n");
+    const result = parseSetupTokenPrompt(text);
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe(CLAUDE_COM_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
+  it("binds the URL and prompt from Windows ConPTY output with cursor positioning", () => {
+    const raw =
+      `Browser didn't open? Use the url below to sign in (c to copy)` +
+      `\x1b]8;;${CLAUDE_COM_URL}\x1b\\` +
+      `\x1b[22;1H${CLAUDE_COM_URL}` +
+      `\x1b]8;;\x1b\\` +
+      `\x1b[26;2HHold\x1b[1CShift\x1b[1Cwhile\x1b[1Cselecting\x1b[1Cto\x1b[1Cuse\x1b[1Cyour\x1b[1Cterminal's\x1b[1Cnative\x1b[1Ccopy\x1b[m` +
+      `\x1b[29;2HPaste\x1b[1Ccode\x1b[1Chere\x1b[1Cif\x1b[1Cprompted\x1b[1C>`;
+    const result = parseSetupTokenPrompt(raw);
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe(CLAUDE_COM_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
   it("returns null when an unrelated line sits after the URL block", () => {
     // A non-blank line that is neither the prompt nor a repeat of the URL breaks
     // the bind, so a stray value between the URL and the prompt cannot pass.
@@ -596,6 +623,30 @@ describe("parseSetupTokenCredential", () => {
     ]);
     const text = [beforeAnchor, "", TOKEN_FRAGMENT_A, TOKEN_FRAGMENT_B, "", afterAnchor].join("\n");
     expect(parseSetupTokenCredential(text)).toBe(FULL_TOKEN);
+  });
+
+  it("reads the token when ConPTY skips unchanged anchor characters with cursor-forward sequences", () => {
+    const afterAnchor = "Stor\x1b[2Cthis\x1b[1Ctok\x1b[1Cn securely. You won't be able to see it again.";
+    const text = [SETUP_TOKEN_BEFORE_ANCHOR, "", FULL_TOKEN, "", afterAnchor].join("\n");
+    expect(parseSetupTokenCredential(text)).toBe(FULL_TOKEN);
+  });
+
+  it("reads the token when ConPTY uses cursor-forward moves for anchor padding", () => {
+    const beforeAnchor = `\x1b[2C${SETUP_TOKEN_BEFORE_ANCHOR}\x1b[2C`;
+    const afterAnchor = `\x1b[2C${SETUP_TOKEN_AFTER_ANCHOR}\x1b[2C`;
+    const text = [beforeAnchor, "", FULL_TOKEN, "", afterAnchor].join("\n");
+    expect(parseSetupTokenCredential(text)).toBe(FULL_TOKEN);
+  });
+
+  it("reads token fragments with cursor-forward moves only at their outer padding", () => {
+    const paddedFragment = `\x1b[2C${TOKEN_FRAGMENT_A}\x1b[3C`;
+    const text = successScreen([paddedFragment, TOKEN_FRAGMENT_B]);
+    expect(parseSetupTokenCredential(text)).toBe(FULL_TOKEN);
+  });
+
+  it("rejects cursor-forward skips inside a token fragment", () => {
+    const fragment = `${TOKEN_FRAGMENT_A.slice(0, 8)}\x1b[2C${TOKEN_FRAGMENT_A.slice(8)}`;
+    expect(parseSetupTokenCredential(successScreen([fragment, TOKEN_FRAGMENT_B]))).toBeNull();
   });
 
   it("returns null for a token-shaped value before submit", () => {

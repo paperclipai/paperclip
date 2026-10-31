@@ -624,6 +624,7 @@ set -euo pipefail
 printf 'npm %s\\n' "$*" >> "$FAKE_CALL_LOG"
 [ "$*" = "install --omit=dev --ignore-scripts --no-audit --no-fund" ]
 node -e 'const fs = require("node:fs"); const pkg = require("./package.json"); if ("devDependencies" in pkg) process.exit(1); for (const [name, version] of Object.entries(pkg.dependencies)) { const dir = "node_modules/" + name; fs.mkdirSync(dir + "/dist", { recursive: true }); fs.writeFileSync(dir + "/package.json", JSON.stringify({ name, version })); } for (const [bridge, runtimes] of Object.entries(pkg.overrides ?? {})) { for (const [name, version] of Object.entries(runtimes)) { const dir = "node_modules/" + name; fs.mkdirSync(dir, { recursive: true }); const native = name === "@openai/codex"; const targets = ["linux-x64","linux-arm64","darwin-x64","darwin-arm64","win32-x64","win32-arm64"]; const optionalDependencies = native ? Object.fromEntries(targets.map(target => [name+"-"+target,"npm:"+name+"@"+version+"-"+target])) : name === "@anthropic-ai/claude-agent-sdk" ? Object.fromEntries([...targets,"linux-x64-musl","linux-arm64-musl"].map(target => [name+"-"+target,version])) : undefined; fs.writeFileSync(dir + "/package.json", JSON.stringify({ name, version, optionalDependencies })); } }'
+node -e 'const fs=require("node:fs");const version=require("./package.json").optionalDependencies["node-pty"];fs.mkdirSync("node_modules/node-pty",{recursive:true});fs.writeFileSync("node_modules/node-pty/package.json",JSON.stringify({name:"node-pty",version}));'
 node -e 'const fs=require("node:fs");fs.cpSync(process.env.FAKE_NATIVE_ARTIFACTS+"/@openai/codex-linux-x64","node_modules/@openai/codex-linux-x64",{recursive:true});fs.mkdirSync("node_modules/@openai/codex/vendor",{recursive:true});fs.writeFileSync("node_modules/@openai/codex/vendor/codex","producer fallback fixture");'
 mkdir -p node_modules/acpx/dist
 node -e 'const fs=require("node:fs");fs.mkdirSync("node_modules/esbuild",{recursive:true});fs.writeFileSync("node_modules/esbuild/package.json",JSON.stringify({name:"esbuild",version:"0.28.2",scripts:{postinstall:"node install.js"},optionalDependencies:Object.fromEntries(["linux-x64","darwin-arm64","darwin-x64"].map(target=>["@esbuild/"+target,"0.28.2"]))}));fs.mkdirSync("node_modules/@esbuild/linux-x64",{recursive:true});fs.writeFileSync("node_modules/@esbuild/linux-x64/package.json",JSON.stringify({name:"@esbuild/linux-x64",version:"0.28.2",os:["linux"],cpu:["x64"]}));'
@@ -703,7 +704,10 @@ printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
     readFileSync(callLog, "utf8"),
     /patch -p1 --forward -d .*node_modules\/acpx/,
   );
-  const patchedBundledDependencies = serverPackage.bundleDependencies.filter(name => rootPackage.pnpm.patchedDependencies[`${name}@${serverPackage.dependencies[name]}`]);
+  const patchedBundledDependencies = serverPackage.bundleDependencies.filter(name => {
+    const version = serverPackage.dependencies[name] ?? serverPackage.optionalDependencies?.[name];
+    return version && rootPackage.pnpm.patchedDependencies[`${name}@${version}`];
+  });
   assert.equal(
     readFileSync(callLog, "utf8")
       .split("\n")
@@ -711,7 +715,8 @@ printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
     patchedBundledDependencies.length,
   );
   for (const name of patchedBundledDependencies) {
-    const specifier = `${name}@${serverPackage.dependencies[name]}`;
+    const version = serverPackage.dependencies[name] ?? serverPackage.optionalDependencies?.[name];
+    const specifier = `${name}@${version}`;
     const patchPath = rootPackage.pnpm.patchedDependencies[specifier];
     assert.equal(
       readFileSync(
