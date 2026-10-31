@@ -14,6 +14,7 @@ import { NativeWorkspaceFinalizationBusyError } from "./native-workspace-finaliz
 import { hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
 import { logger } from "../../middleware/logger.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
+import { preserveRemoteWorkspacePreparationFailure } from "./native-workspace-finalization-state.js";
 
 
 function workspaceRecoveryReference(profile: Record<string, unknown> | null | undefined) {
@@ -102,10 +103,19 @@ export async function preserveOrphanedNativeWorkspace(db: Db, lease: Pick<typeof
   if (!lease.heartbeatRunId) return false;
   const [run] = await db.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, lease.companyId), eq(heartbeatRuns.id, lease.heartbeatRunId),
-    eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "failed"),
+    inArray(heartbeatRuns.status, ["failed", "cancelled", "timed_out", "interrupted"]),
   )).limit(1);
   if (!run || hasRequiredWorkspaceRecovery(run.resultJson)) return false;
   try {
+    if (run.runtimeMode === "legacy") {
+      const parsed = remoteWorkspaceRunReferenceSchema.safeParse(run.runnerProfileJson?.remoteWorkspace);
+      if (!parsed.success) return false;
+      const [source] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, run.companyId),
+        eq(environmentLeases.id, parsed.data.leaseId), eq(environmentLeases.heartbeatRunId, run.id))).limit(1);
+      const retained = source && await preserveRemoteWorkspacePreparationFailure(db, source);
+      return Boolean(retained && hasRequiredWorkspaceRecovery(retained.resultJson));
+    }
+    if (run.status !== "failed") return false;
     const retained = await preserveNativeFailedWorkspace(db, run);
     return Boolean(retained && hasRequiredWorkspaceRecovery(retained.resultJson));
   } catch (error) {

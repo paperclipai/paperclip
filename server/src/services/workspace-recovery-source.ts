@@ -163,7 +163,7 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
       ne(environmentLeases.id, lease.id), eq(environmentLeases.provider, lease.provider),
       eq(environmentLeases.providerLeaseId, lease.providerLeaseId)));
     const predecessors = retiredReusableLeasePredecessors(lease, history);
-    if (!predecessors || (predecessors.length && (run.runtimeMode !== "native" || !descriptor || lease.metadata?.agentId !== run.agentId)))
+    if (!predecessors || (predecessors.length && ((run.runtimeMode !== "native" && !remoteDescriptor) || !descriptor || lease.metadata?.agentId !== run.agentId)))
       throw new SystemRecoveryFailure("allocation_ownership_ambiguous", "service_required");
     const predecessorRuns = predecessors.map(item => item.heartbeatRunId!);
     const priors = predecessorRuns.length ? await db.select().from(heartbeatRuns).where(and(

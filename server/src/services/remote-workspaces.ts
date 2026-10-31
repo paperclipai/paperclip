@@ -36,6 +36,7 @@ import { notifyRemoteWorkspaceSnapshots } from "./remote-workspace-snapshot-rete
 import { provisionRemoteWorkspace } from "./remote-workspace-provisioning.js";
 import { createRemoteWorkspaceGitAuth } from "./remote-workspace-git-auth.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
+import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
 
 export { readRemoteWorkspaceAuthority, type RemoteWorkspaceAuthority, type RemoteWorkspaceSource } from "@paperclipai/shared";
 export { remoteWorkspaceRepositoryPath } from "./remote-workspace-transport.js";
@@ -332,15 +333,23 @@ export async function prepareRemoteWorkspace(input: {
   if (restoredExport?.cleanupPending) await cleanupSavedExports({ db: input.db, companyId: input.workspace.companyId,
     workspaceId: input.workspace.id, location: readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.location!, target,
     assertOwned: input.assertOwned ?? (async () => undefined) });
-  await provisionRemoteWorkspace({ db: input.db, companyId: input.workspace.companyId, workspaceId: input.workspace.id,
-    runId: input.runId, epoch: initial.epoch, remoteCwd: remoteRoot, target, assertOwned: input.assertOwned,
-    commands: [!initial.snapshotId ? input.provisionCommand : null, input.runtimeProvisionCommand] });
-  if (!initial.snapshotId) {
-    await saveRemoteWorkspace({ ...input, workspace: prepared.workspace, lease: prepared.lease, target,
-      assertOwned: input.assertOwned ?? (async () => undefined), boundary: "initial" });
-    const [workspace] = await input.db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, input.workspace.id), eq(executionWorkspaces.companyId, input.workspace.companyId)));
-    prepared.workspace = workspace!;
-    prepared.reference = reference(workspace!.id, readRemoteWorkspaceAuthority(workspace!.metadata)!, "prepared");
+  try {
+    await provisionRemoteWorkspace({ db: input.db, companyId: input.workspace.companyId, workspaceId: input.workspace.id,
+      runId: input.runId, epoch: initial.epoch, remoteCwd: remoteRoot, target, assertOwned: input.assertOwned,
+      commands: [!initial.snapshotId ? input.provisionCommand : null, input.runtimeProvisionCommand] });
+    if (!initial.snapshotId) {
+      await saveRemoteWorkspace({ ...input, workspace: prepared.workspace, lease: prepared.lease, target,
+        assertOwned: input.assertOwned ?? (async () => undefined), boundary: "initial" });
+      const [workspace] = await input.db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, input.workspace.id), eq(executionWorkspaces.companyId, input.workspace.companyId)));
+      prepared.workspace = workspace!;
+      prepared.reference = reference(workspace!.id, readRemoteWorkspaceAuthority(workspace!.metadata)!, "prepared");
+    }
+  } catch (error) {
+    // A first save can fail before runtime selection. Its already-published
+    // authority is still a file obligation, independent of native admission.
+    await preserveRemoteWorkspacePreparationFailure(input.db, prepared.lease, { assertOwned: input.assertOwned })
+      .catch(preservationError => logger.error({ err: preservationError, runId: input.runId }, "Remote workspace preparation recovery was deferred; source remains protected"));
+    throw error;
   }
   return prepared;
 }

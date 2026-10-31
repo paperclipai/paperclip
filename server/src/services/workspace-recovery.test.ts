@@ -65,7 +65,8 @@ import { hasVerifiedWorkspaceRepair, readWorkspaceRecovery } from "./workspace-r
 import { claimNativeSessionResumptions } from "./native-runtime/native-finalization-reconciler.js";
 import { executionWorkspaces } from "@paperclipai/db";
 import { executionWorkspaceSnapshots } from "@paperclipai/db";
-import { createSavedWorkspaceLoader, readRemoteWorkspaceAuthority } from "./remote-workspaces.js";
+import { createSavedWorkspaceLoader, readRemoteWorkspaceAuthority, saveRemoteWorkspace } from "./remote-workspaces.js";
+import { createReusableLeaseHandoff } from "./environment-lease-handoff.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
@@ -186,13 +187,17 @@ describe("automatic retained workspace recovery", () => {
   const action = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!;
   const run = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
 
-  it.each(["failed", "cancelled"] as const)("saves the authoritative remote workspace after %s without replaying a turn or certifying external effects", async status => {
-    const f = await seed("native", false);
+  it.each([
+    { status: "failed", runtimeMode: "native" },
+    { status: "cancelled", runtimeMode: "native" },
+    { status: "failed", runtimeMode: "legacy" },
+  ] as const)("saves the authoritative remote workspace after $runtimeMode $status without replaying a turn or certifying external effects", async ({ status, runtimeMode }) => {
+    const f = await seed(runtimeMode, false);
     const remoteCwd = await realpath(f.remote);
     targets.get(f.lease.id)!.remoteCwd = remoteCwd;
     f.runtime.resumeRunLease.mockImplementation(async () => ({ providerLeaseId: f.providerLeaseId, metadata: { remoteCwd } }));
     const workspaceId = randomUUID();
-    const authority = { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: null,
+    let authority = { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: null as string | null,
       source: { kind: "empty" }, writerRunId: f.runId, dirty: true,
       location: { environmentId: f.lease.environmentId!, leaseId: f.lease.id,
         providerLeaseId: f.providerLeaseId, remoteCwd } };
@@ -202,23 +207,74 @@ describe("automatic retained workspace recovery", () => {
     await db.update(issues).set({ executionWorkspaceId: workspaceId }).where(eq(issues.id, f.issueId));
     const [boundLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
     await db.update(environmentLeases).set({ executionWorkspaceId: workspaceId, leasePolicy: "reuse_by_execution_workspace",
-      metadata: { ...boundLease.metadata, remoteCwd } })
+      metadata: { ...boundLease.metadata, remoteCwd, agentId: (await run(f.runId)).agentId } })
       .where(eq(environmentLeases.id, f.lease.id));
     const before = await run(f.runId);
+    if (runtimeMode === "legacy") {
+      // A reused allocation can fail during preparation, before native input or
+      // its finalization coordinator exists. Keep a real saved predecessor and
+      // the ordinary exact lease handoff; neither grants a new provider turn.
+      const [priorRun] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: before.agentId,
+        issueId: f.issueId, nativeIssueId: f.issueId, runtimeMode: "native", status: "succeeded",
+        createdAt: new Date(before.createdAt.getTime() - 2_000), finishedAt: new Date(before.createdAt.getTime() - 1_000),
+        contextSnapshot: { issueId: f.issueId } }).returning();
+      await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issueId,
+        runId: priorRun.id, phase: "committed" });
+      const [currentLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+      const [priorLease] = await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId,
+        heartbeatRunId: priorRun.id, environmentId: currentLease.environmentId, executionWorkspaceId: workspaceId,
+        provider: currentLease.provider, providerLeaseId: f.providerLeaseId, leasePolicy: "reuse_by_environment", status: "active",
+        acquiredAt: new Date(currentLease.acquiredAt.getTime() - 1_000), metadata: currentLease.metadata }).returning();
+      const priorAuthority = { ...authority, writerRunId: priorRun.id,
+        location: { ...authority.location, leaseId: priorLease.id } };
+      const [priorWorkspace] = await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: priorAuthority } })
+        .where(eq(executionWorkspaces.id, workspaceId)).returning();
+      const priorSaved = await saveRemoteWorkspace({ db, workspace: priorWorkspace, runId: priorRun.id,
+        lease: priorLease as EnvironmentLease, target: { ...targets.get(f.lease.id)!, leaseId: priorLease.id },
+        assertOwned: async () => undefined });
+      const handoff = createReusableLeaseHandoff(priorLease, currentLease);
+      await db.update(environmentLeases).set({ status: "expired", cleanupStatus: "success", releasedAt: currentLease.acquiredAt,
+        metadata: { ...priorLease.metadata, reusableLeaseSuccessor: handoff } }).where(eq(environmentLeases.id, priorLease.id));
+      await db.update(environmentLeases).set({ metadata: { ...currentLease.metadata, reusableLeasePredecessor: handoff } })
+        .where(eq(environmentLeases.id, currentLease.id));
+      authority = { ...authority, epoch: 2, snapshotId: priorSaved.snapshotId };
+      await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: authority } })
+        .where(eq(executionWorkspaces.id, workspaceId));
+      await writeFile(path.join(f.remote, "pre-native-change.txt"), "current preparation wrote these files\n");
+      expect(before.runtimeMode).toBe("legacy");
+      expect(before.runnerProfileJson?.nativeExecutionInput).toBeUndefined();
+      expect(await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId))).toEqual([]);
+    }
     await db.update(heartbeatRuns).set({ status, runnerProfileJson: { ...before.runnerProfileJson,
-      ...(status === "failed" ? { nativeResourceDisposition: "destroy" } : {}),
+      ...(status === "failed" && runtimeMode === "native" ? { nativeResourceDisposition: "destroy" } : {}),
       remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1", workspaceId, leaseId: f.lease.id,
-        providerLeaseId: f.providerLeaseId, remoteCwd, epoch: 1, state: "prepared", snapshotId: null } },
+        providerLeaseId: f.providerLeaseId, remoteCwd, epoch: authority.epoch, state: "prepared", snapshotId: authority.snapshotId } },
       resultJson: { ...before.resultJson, ...(status === "cancelled" ? {
         nativeCancellation: { dispatchState: "acknowledged", requestedAt: new Date().toISOString() },
       } : {}) },
     }).where(eq(heartbeatRuns.id, f.runId));
-    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...authority, epoch: 2 } } })
+    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...authority, epoch: authority.epoch + 1 } } })
       .where(eq(executionWorkspaces.id, workspaceId));
     await expect(recoverySources.inspectWorkspaceRecoverySource(db, f.input)).rejects.toMatchObject({ code: "source_binding_invalid" });
     expect(f.runtime.resumeRunLease).not.toHaveBeenCalled();
     await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: authority } })
       .where(eq(executionWorkspaces.id, workspaceId));
+    if (runtimeMode === "legacy") {
+      // Remote file ownership exists before native runtime selection.
+      expect((await recoverySources.inspectWorkspaceRecoverySource(db, f.input)).sources).toHaveLength(1);
+      const failedUpload = vi.spyOn(getStorageService(), "putFile").mockRejectedValueOnce(new Error("Synthetic saved-copy outage"));
+      try {
+        await recoverRetainedWorkspace(f.input);
+        expect(failedUpload).toHaveBeenCalledTimes(1);
+      } finally { failedUpload.mockRestore(); }
+      expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).not.toBe("complete");
+      const [unsaved] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
+      expect(readRemoteWorkspaceAuthority(unsaved.metadata)).toMatchObject({ dirty: true, writerRunId: f.runId,
+        epoch: authority.epoch, snapshotId: authority.snapshotId });
+      expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
+      expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+      await makeRetryDue(f.actionId);
+    }
     await recoverRetainedWorkspace(f.input);
     const recoveredAction = await action(f.actionId);
     expect(readSystemRecovery(recoveredAction.evidence)?.state).toBe("complete");
@@ -227,26 +283,51 @@ describe("automatic retained workspace recovery", () => {
     expect(saved).toMatchObject({ dirty: false, writerRunId: null });
     expect(saved?.snapshotId).toBeTruthy();
     const snapshots = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.executionWorkspaceId, workspaceId));
-    expect(snapshots).toHaveLength(1);
-    expect(snapshots[0]).toMatchObject({ status: "committed", sourceRunId: f.runId });
+    expect(snapshots).toHaveLength(runtimeMode === "legacy" ? 2 : 1);
+    expect(snapshots.find(snapshot => snapshot.id === saved!.snapshotId))
+      .toMatchObject({ status: "committed", sourceRunId: f.runId, generation: runtimeMode === "legacy" ? 2 : 1 });
     const extracted = await createSavedWorkspaceLoader(db)({ companyId: f.companyId, workspaceId, snapshotId: saved!.snapshotId! });
-    try { expect(await readFile(path.join(extracted.root, "saved.txt"), "utf8")).toBe("finished work\n"); }
+    try {
+      expect(await readFile(path.join(extracted.root, "saved.txt"), "utf8")).toBe("finished work\n");
+      if (runtimeMode === "legacy") expect(await readFile(path.join(extracted.root, "pre-native-change.txt"), "utf8"))
+        .toBe("current preparation wrote these files\n");
+    }
     finally { await extracted.cleanup(); }
     expect(await readFile(path.join(f.host, "newer.txt"), "utf8")).toBe("newer local work\n");
     expect(await run(f.runId)).toMatchObject({ status, errorCode: "execution_interrupted",
       runnerProfileJson: { remoteWorkspace: { state: "saved", snapshotId: saved!.snapshotId } } });
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
     expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toHaveLength(0);
+    expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId))).toHaveLength(0);
     expect(await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, f.runId),
       eq(workspaceOperations.phase, "workspace_recovery_snapshot")))).toHaveLength(0);
-    expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(1);
-    expect(f.runtime.retryPendingSandboxTeardown).toHaveBeenCalledTimes(1);
+    expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(runtimeMode === "legacy" ? 2 : 1);
+    expect(f.runtime.retryPendingSandboxTeardown).toHaveBeenCalledTimes(runtimeMode === "legacy" ? 2 : 1);
     expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
     await scheduleRecoveredWorkspaceCleanup(db, await run(f.runId));
     const [settledLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    if (runtimeMode === "legacy") {
+      expect(settledLease).toMatchObject({ status: "released", leasePolicy: "reuse_by_execution_workspace" });
+      expect((await run(f.runId)).runtimeMode).toBe("legacy");
+      expect(await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId))).toEqual([]);
+      expect(snapshots.find(snapshot => snapshot.id === authority.snapshotId)).toMatchObject({ status: "superseded" });
+      // Explicit Retry may admit the preserved files. Saturate agent capacity
+      // so this tests admission without dispatching a new agent turn.
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: before.agentId, status: "running" });
+      const retry = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
+        actorSource: "local_implicit", observedRunId: f.runId, idempotencyKey: randomUUID() });
+      await heartbeatService(db).resumeTaskRetry(f.companyId, retry.requestId!);
+      const [successor] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+      expect(successor).toBeDefined();
+      expect(await readFreshWorkspaceReadiness(db, successor))
+        .toMatchObject({ mode: "resume_preserved_workspace", preservationReceiptId: expect.any(String) });
+      expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, successor.id))).toEqual([]);
+      expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(2);
+      return;
+    }
     if (status === "failed") {
       expect(settledLease).toMatchObject({ status: "pending_cleanup", leasePolicy: "ephemeral",
-        metadata: { workspaceRecoveryCleanup: { runId: f.runId, snapshotId: saved!.snapshotId, epoch: 1 } } });
+        metadata: { workspaceRecoveryCleanup: { runId: f.runId, snapshotId: saved!.snapshotId, epoch: authority.epoch } } });
       const source = await run(f.runId);
       await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId, status: "running" });
       const retry = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
