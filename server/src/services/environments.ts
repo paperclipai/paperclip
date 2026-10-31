@@ -68,7 +68,7 @@ export async function attachSandboxCreation(db: Db, id: string, scope: { company
     }
     if (!operation || operation.state !== "pending") throw new Error("Sandbox creation ownership has already transferred");
     const lease = await attach(tx as unknown as Db);
-    await notifyEnvironmentCleanup(tx, { companyId: scope.companyId });
+    await notifyEnvironmentCleanup(tx, { companyId: scope.companyId, runId: operation.runId });
     await tx.update(sandboxCreationOperations).set({ state: "attached", leaseId: lease.id, updatedAt: new Date() })
       .where(eq(sandboxCreationOperations.id, id));
     return lease;

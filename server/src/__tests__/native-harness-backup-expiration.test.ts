@@ -24,6 +24,8 @@ import {
   companies,
   createDb,
   environmentLeases,
+  environments,
+  sandboxCreationOperations,
   heartbeatRuns,
   issues,
   nativeRunFinalizations,
@@ -766,6 +768,43 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     } finally { reads.mockRestore(); db.$client.options.debug = previous; }
     await issueService(db).update(own.issueId, { status: "todo" }); await settled(due);
     await quiet(); expect(await exists(own.current)).toBe(true);
+  });
+
+  it.each([false, true])("sandbox attachment reconciles only its retained root using durable run authority (explicit run: %s)", async explicitRun => {
+    const own = await seedSession({ runStatus: "running" });
+    const unrelated = [];
+    for (let index = 0; index < 16; index++) unrelated.push(await seedSession({ companyId: own.companyId,
+      agentId: own.agentId, issueStatus: "todo", runStatus: index % 2 ? "running" : "succeeded" }));
+    const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "sandbox" }).returning();
+    async function attach(runId: string) {
+      const operationId = randomUUID();
+      await db.insert(sandboxCreationOperations).values({ id: operationId, companyId: own.companyId,
+        environmentId: environment!.id, originalEnvironmentId: environment!.id, runId,
+        provider: "controlled", driverKey: "controlled", config: {}, metadata: {}, nextAttemptAt: new Date() });
+      return environmentService(db).acquireLease({ creationOperationId: operationId, companyId: own.companyId,
+        environmentId: environment!.id, ...(explicitRun ? { heartbeatRunId: runId } : {}) });
+    }
+    await startBackups(); await settled();
+    const reads = vi.spyOn(fs, "readFile");
+    try {
+      const lease = await attach(own.runId); await settled();
+      expect(reads.mock.calls.map(call => String(call[0])))
+        .toEqual([path.join(own.root, "control-plane", "control-plane-state.json")]);
+      expect((await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.leaseId, lease.id)))[0])
+        .toMatchObject({ state: "attached", runId: own.runId });
+      reads.mockClear();
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: own.companyId, agentId: own.agentId, status: "running" }).returning();
+      await attach(run!.id); await settled();
+      expect(reads).not.toHaveBeenCalled();
+      expect(await exists(own.current)).toBe(true);
+      for (const other of unrelated) expect(await exists(other.current)).toBe(true);
+      await quiet();
+    } finally {
+      reads.mockRestore();
+      await db.delete(sandboxCreationOperations).where(eq(sandboxCreationOperations.companyId, own.companyId));
+      await db.delete(environmentLeases).where(eq(environmentLeases.environmentId, environment!.id));
+      await db.delete(environments).where(eq(environments.id, environment!.id));
+    }
   });
 
   it("indexes protected session relations so a new run, historical task close and exact process release reactivate only its backup", async () => {
