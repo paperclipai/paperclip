@@ -46,6 +46,25 @@ export function formatNumber(n: number, options?: Intl.NumberFormatOptions): str
   return n.toLocaleString("en-US", options);
 }
 
+export const MAX_BUDGET_CENTS = 2_147_483_647;
+
+export function parseBudgetDollarsToCents(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const dollars = Number(trimmed);
+  if (!Number.isFinite(dollars) || dollars < 0) {
+    return undefined;
+  }
+  const cents = Math.round(dollars * 100);
+  return Number.isFinite(cents) && cents >= 0 && cents <= MAX_BUDGET_CENTS ? cents : undefined;
+}
+
+export function budgetDollarsFromCents(cents: number): string {
+  return cents > 0 ? String(cents / 100) : "";
+}
+
 /**
  * Format a project's budget for the projects list view (IA Phase 4 — PAP-60).
  * Monthly budgets render a `/mo` suffix; lifetime budgets show the bare amount.
