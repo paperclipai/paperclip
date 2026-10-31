@@ -8,6 +8,7 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   issues,
+  issueWorkProducts,
   plugins,
   pluginCompanySettings,
 } from "@paperclipai/db";
@@ -19,6 +20,7 @@ import {
   type WorkspaceWorkers,
 } from "../services/plugin-workspaces.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
+import { pluginRegistryService } from "../services/plugin-registry.js";
 import { projectService } from "../services/projects.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import {
@@ -43,6 +45,127 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     const fixture = (companyId?: string) =>
       createPluginWorkspaceFixture(db, companyId);
+    it.each([true, undefined])("wakes parked cleanup when a provider upgrade enables ancestry (%s)", async (supportsMergeAncestry) => {
+      const f = await fixture();
+      await preparePluginWorkspace(db, f.workers, f.input);
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+      await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
+        workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, supportsMergeAncestry: false } } }).where(eq(plugins.id, f.pluginId));
+      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
+      const svc = executionWorkspaceService(db, { pluginWorkerManager: f.workers, workspaceReaperCooldownDays: 0 });
+      await svc.sweepTerminalWorkspaces(100);
+      expect(await svc.nextTerminalWorkspaceSweepAt()).toBeNull();
+      expect(f.calls.some(call => call.operation.kind === "inspect")).toBe(false);
+      const events: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.terminalWorkspaces, (event, hints) => {
+        events.push(event);
+        if (event === "settled") svc.terminalWorkspaceWorkSettled(hints);
+      });
+      try {
+        await pluginRegistryService(db).update(f.pluginId, { manifest: { ...plugin.manifestJson,
+          workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, supportsMergeAncestry } } });
+        expect(events).toEqual(["intent", "settled"]);
+      } finally { unsubscribe(); }
+      await svc.sweepTerminalWorkspaces(100);
+      expect(f.calls.some(call => call.operation.kind === "inspect")).toBe(true);
+      expect(f.calls.some(call => call.operation.kind === "remove")).toBe(true);
+    });
+    it("wakes cleanup only for provider contract changes and activation", async () => {
+      const f = await fixture();
+      const registry = pluginRegistryService(db);
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+      const events: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.terminalWorkspaces, event => events.push(event));
+      try {
+        await registry.update(f.pluginId, { manifest: { ...plugin.manifestJson, description: "Updated description" } });
+        await registry.updateStatus(f.pluginId, { status: "disabled" });
+        expect(events).toEqual([]);
+        await registry.updateStatus(f.pluginId, { status: "ready" });
+        expect(events.splice(0)).toEqual(["intent", "settled"]);
+        await registry.updateStatus(f.pluginId, { status: "ready" });
+        await registry.upsertCompanySettings(f.pluginId, f.companyId, { enabled: false, settingsJson: {} });
+        expect(events).toEqual([]);
+        await registry.upsertCompanySettings(f.pluginId, f.companyId, { enabled: true, settingsJson: {} });
+        expect(events.splice(0)).toEqual(["intent", "settled"]);
+        await registry.upsertCompanySettings(f.pluginId, f.companyId, { enabled: true, settingsJson: {} });
+        expect(events).toEqual([]);
+        await db.transaction(async tx => {
+          await pluginRegistryService(tx as unknown as typeof db).update(f.pluginId, {
+            manifest: { ...plugin.manifestJson, workspaceProvider: undefined },
+          });
+          expect(events).toEqual(["intent"]);
+        });
+        expect(events.splice(0)).toEqual(["intent", "settled"]);
+        await registry.updateStatus(f.pluginId, { status: "disabled" });
+        await registry.updateStatus(f.pluginId, { status: "ready" });
+        await registry.update(f.pluginId, { manifest: { ...plugin.manifestJson, workspaceProvider: undefined, description: "Other plugin" } });
+        expect(events).toEqual([]);
+      } finally { unsubscribe(); }
+    });
+    it("keeps PR-only storage idle until delivery can qualify for fresh inspection", async () => {
+      const f = await fixture();
+      const workspace = (await preparePluginWorkspace(db, f.workers, f.input))!;
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+      await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
+        workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, supportsMergeAncestry: false } } }).where(eq(plugins.id, f.pluginId));
+      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
+      const originalCall = f.workers.call.bind(f.workers);
+      f.workers.call = async (...args) => {
+        const value = await originalCall(...args);
+        return (args[2] as any).operation.kind === "inspect" ? { ...value as object, isMergedIntoBase: null } : value;
+      };
+      let clock = new Date();
+      let state: "open" | "merged" = "open";
+      let headSha = "b".repeat(40);
+      let pullRequestReads = 0;
+      const options = { pluginWorkerManager: f.workers, workspaceReaperCooldownDays: 0,
+        terminalWorkspaceInspectionBackoffMs: 300_000, now: () => clock,
+        resolvePullRequestDetails: async () => { pullRequestReads += 1; return { state, headRef: workspace.branchName, headSha }; } };
+      const svc = executionWorkspaceService(db, options);
+      const inspections = () => f.calls.filter(call => call.operation.kind === "inspect").length;
+      await svc.sweepTerminalWorkspaces(100);
+      expect(inspections()).toBe(0);
+      expect(await svc.nextTerminalWorkspaceSweepAt()).toBeNull();
+      svc.terminalWorkspaceWorkSettled(new Set([`issue:${randomUUID()}`]));
+      await svc.sweepTerminalWorkspaces(100);
+      expect(inspections()).toBe(0);
+      expect(await svc.nextTerminalWorkspaceSweepAt()).toBeNull();
+      await executionWorkspaceService(db, options).sweepTerminalWorkspaces(100);
+      expect(inspections()).toBe(0);
+
+      await db.insert(issueWorkProducts).values({ companyId: f.companyId, issueId: f.issueId,
+        type: "pull_request", provider: "github", title: "Unrelated work", status: "active",
+        url: "https://github.com/other/repository/pull/1" });
+      svc.terminalWorkspaceWorkSettled(new Set([`issue:${f.issueId}`]));
+      await svc.sweepTerminalWorkspaces(100);
+      expect(inspections()).toBe(0);
+      expect(await svc.nextTerminalWorkspaceSweepAt()).toBeNull();
+
+      await db.insert(issueWorkProducts).values({ companyId: f.companyId, issueId: f.issueId,
+        type: "pull_request", provider: "github", title: "Work", status: "active",
+        url: "https://github.com/example/repo/pull/1" });
+      svc.terminalWorkspaceWorkSettled(new Set([`issue:${f.issueId}`]));
+      await svc.sweepTerminalWorkspaces(100);
+      expect(inspections()).toBe(0);
+      expect(await svc.nextTerminalWorkspaceSweepAt()).not.toBeNull();
+      const readsBeforeUnrelatedWake = pullRequestReads;
+      svc.terminalWorkspaceWorkSettled(new Set([`issue:${randomUUID()}`]));
+      await svc.sweepTerminalWorkspaces(100);
+      expect(pullRequestReads).toBe(readsBeforeUnrelatedWake);
+      expect(inspections()).toBe(0);
+
+      state = "merged";
+      clock = new Date(clock.getTime() + 300_001);
+      await svc.sweepTerminalWorkspaces(100);
+      expect(inspections()).toBe(1);
+      expect(f.calls.some(call => call.operation.kind === "remove")).toBe(false);
+      headSha = "a".repeat(40);
+      clock = new Date(clock.getTime() + 300_001);
+      await svc.sweepTerminalWorkspaces(100);
+      expect(f.calls.some(call => call.operation.kind === "remove")).toBe(true);
+    });
     it("uses bounded finalization only for opted-in providers, preserving maintenance inspection", async () => {
       const f = await fixture();
       const workspace = (await preparePluginWorkspace(db, f.workers, f.input))!;
@@ -339,6 +462,24 @@ const support = await getEmbeddedPostgresTestSupport();
         .where(eq(executionWorkspaces.id, reservation.id));
       expect(recorded.providerRef).not.toBeNull();
     });
+    it("reconciles an unfinished reservation before applying PR-only cleanup eligibility", async () => {
+      const f = await fixture();
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+      await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
+        workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, supportsMergeAncestry: false } } }).where(eq(plugins.id, f.pluginId));
+      f.lose();
+      await expect(preparePluginWorkspace(db, f.workers, f.input)).rejects.toThrow("incomplete");
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.runId));
+      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+      f.dirty();
+      await executionWorkspaceService(db, { pluginWorkerManager: f.workers, workspaceReaperCooldownDays: 0 }).sweepTerminalWorkspaces(100);
+      expect(f.calls.filter(call => call.operation.kind === "prepare")).toHaveLength(2);
+      expect(f.calls.filter(call => call.operation.kind === "inspect")).toHaveLength(1);
+      expect(f.calls.some(call => call.operation.kind === "remove")).toBe(false);
+      const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
+      expect(workspace.providerRef).not.toBeNull();
+    });
     it("fails closed for a disabled plugin, stopped run, and cross-company source", async () => {
       const f = await fixture();
       await db.insert(pluginCompanySettings).values({
@@ -506,13 +647,14 @@ const support = await getEmbeddedPostgresTestSupport();
         binding: { workspaceRef: restored.providerRef },
       });
     });
-    it("uses provider inspection for remote workspace display and shares repeated reads", async () => {
+    it("reads workspace metadata without provider inspection", async () => {
       const f = await fixture();
       const workspace = await preparePluginWorkspace(db, f.workers, f.input);
       await db
         .update(issues)
         .set({ status: "done" })
         .where(eq(issues.id, f.issueId));
+      f.workers.call = async () => { throw new Error("Storage unavailable"); };
       const svc = executionWorkspaceService(db, {
         pluginWorkerManager: f.workers,
         inspectGitCloseReadiness: async () => {
@@ -520,14 +662,14 @@ const support = await getEmbeddedPostgresTestSupport();
         },
       });
       expect(await svc.getById(workspace!.id)).toMatchObject({
-        deliveryState: "merged_by_ancestry",
+        deliveryState: "unknown",
       });
       expect(await svc.getById(workspace!.id)).toMatchObject({
-        deliveryState: "merged_by_ancestry",
+        deliveryState: "unknown",
       });
       expect(
         f.calls.filter((call) => call.operation.kind === "inspect"),
-      ).toHaveLength(1);
+      ).toHaveLength(0);
     });
     it("replays a durable removal after a lost result without inspecting the missing checkout", async () => {
       const f = await fixture();
@@ -641,6 +783,9 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     it("retries an ambiguous deletion through the existing terminal sweep", async () => {
       const f = await fixture();
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+      await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
+        workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, supportsMergeAncestry: false } } }).where(eq(plugins.id, f.pluginId));
       const workspace = await preparePluginWorkspace(db, f.workers, f.input);
       f.loseRemoval();
       await db
