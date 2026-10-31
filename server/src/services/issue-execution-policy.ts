@@ -645,6 +645,31 @@ function clearExecutionStatePatch(input: {
   }
 }
 
+function boardPendingStatusOverride(
+  patch: Record<string, unknown>,
+  requestedStatus: string,
+  hold: { state: IssueExecutionState | null; reassignedOutsideStage: boolean },
+): TransitionResult {
+  if (requestedStatus === "blocked") {
+    if (hold.reassignedOutsideStage) {
+      throw unprocessable(
+        "A pending review can be blocked only while keeping its assignee or moving it to another participant of the current review stage.",
+        { code: "pending_review_hold_assignee" },
+      );
+    }
+    if (hold.state) patch.executionState = hold.state;
+    return { patch };
+  }
+  if (requestedStatus === "done" || requestedStatus === "cancelled") {
+    patch.executionState = null;
+    return { patch };
+  }
+  throw unprocessable(
+    `A pending review cannot move to ${requestedStatus}. Block, restore (in_review), or cancel it, or let the reviewer decide.`,
+    { code: "pending_review_status_override" },
+  );
+}
+
 function canAutoSkipPendingStage(input: {
   stage: IssueExecutionStage;
   returnAssignee: IssueExecutionStagePrincipal | null;
@@ -740,6 +765,36 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       currentParticipant.type === "user" &&
       !stageHasParticipant(activeStage, currentParticipant) &&
       (existingState?.changesRequestedCount ?? 0) >= resolveMaxReviewRounds(input.policy);
+    const replacementReviewer =
+      requestedAssigneePatchProvided &&
+      explicitAssignee &&
+      stageHasParticipant(activeStage, explicitAssignee) &&
+      !principalsEqual(explicitAssignee, currentParticipant)
+        ? explicitAssignee
+        : null;
+    const reassignedOutsideStage =
+      requestedAssigneePatchProvided &&
+      !replacementReviewer &&
+      !principalsEqual(explicitAssignee, currentParticipant) &&
+      (explicitAssignee ? !principalsEqual(explicitAssignee, currentAssignee) : currentAssignee !== null);
+    const heldState = replacementReviewer
+      ? buildPendingState({
+          previous: existingState,
+          stage: activeStage,
+          stageIndex: input.policy.stages.findIndex((candidate) => candidate.id === activeStage.id),
+          participant: replacementReviewer,
+          returnAssignee: existingState?.returnAssignee ?? null,
+          reviewRequest: effectiveReviewRequest,
+        })
+      : null;
+    const holdUntouched =
+      input.issue.status === "blocked" &&
+      (requestedStatus === undefined || requestedStatus === "blocked") &&
+      (!requestedAssigneePatchProvided ||
+        principalsEqual(explicitAssignee, escalatedHold ? currentParticipant : currentAssignee));
+    if (holdUntouched) {
+      return { patch };
+    }
     if (escalatedHold && !principalsEqual(currentParticipant, actor)) {
       // An empty patch would not override the caller's own requested fields,
       // so a status or assignee change from a non-escalated actor must be
@@ -860,8 +915,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         requestedStatus !== "in_review" &&
         requestedStatus !== "in_progress"
       ) {
-        patch.executionState = null;
-        return { patch };
+        return boardPendingStatusOverride(patch, requestedStatus, { state: heldState, reassignedOutsideStage });
       }
 
       if (requestedStatus && requestedStatus !== "in_review") {
@@ -927,8 +981,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
     if (input.allowBoardOverride && attemptedStageAdvance) {
       if (requestedStatus !== undefined && requestedStatus !== "in_review") {
-        patch.executionState = null;
-        return { patch };
+        return boardPendingStatusOverride(patch, requestedStatus, { state: heldState, reassignedOutsideStage });
       }
       // Assignee-only override: the issue stays in_review, so clearing the
       // execution state would strand it with no participant or return

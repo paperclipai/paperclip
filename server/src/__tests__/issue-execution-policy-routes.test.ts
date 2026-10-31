@@ -15,6 +15,7 @@ const mockIssueService = vi.hoisted(() => ({
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  getDependencyReadiness: vi.fn(async () => ({ unresolvedBlockerCount: 0, blockerIssueIds: [] })),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -993,6 +994,128 @@ describe("issue execution policy routes", () => {
     expect(updatePatch.assigneeAgentId).toBeUndefined();
     expect(updatePatch.assigneeUserId).toBeUndefined();
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  describe.each([1, 2])("board status holds with changesRequestedCount %i", (count) => {
+    function heldReviewIssue(status: string) {
+      const policy = normalizeIssueExecutionPolicy({
+        stages: [
+          {
+            id: "11111111-1111-4111-8111-111111111111",
+            type: "review",
+            participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+          },
+        ],
+      })!;
+      return {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        status,
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+        assigneeUserId: null,
+        createdByUserId: "local-board",
+        identifier: "PAP-1010",
+        title: "Held review",
+        executionPolicy: policy,
+        executionState: {
+          status: "pending",
+          currentStageId: "11111111-1111-4111-8111-111111111111",
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+          returnAssignee: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: "changes_requested",
+          changesRequestedCount: count,
+        },
+      };
+    }
+
+    it("keeps the pending review state when a board user blocks the review", async () => {
+      const defaultWhere = mockDbSelectWhere.getMockImplementation()!;
+      const emptyRows = { then: (onFulfilled: (rows: unknown[]) => unknown) => Promise.resolve([]).then(onFulfilled) };
+      const where = (...args: unknown[]) => ({ ...(defaultWhere as (...a: unknown[]) => object)(...args), limit: () => emptyRows });
+      mockDbSelectFrom.mockImplementation(() => ({ where, innerJoin: () => ({ where }) }) as never);
+      const issue = heldReviewIssue("in_review");
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "blocked", unblockDescriptor: { owner: "board", action: "Restore the reviewer" } });
+
+      expect(res.status).toBe(200);
+      const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(updatePatch.status).toBe("blocked");
+      expect(updatePatch).not.toHaveProperty("executionState");
+      expect(updatePatch.assigneeAgentId).toBeUndefined();
+    });
+
+    it("wakes the saved reviewer when the board restores the held review", async () => {
+      const issue = heldReviewIssue("blocked");
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "in_review" });
+
+      expect(res.status).toBe(200);
+      await vi.waitFor(() =>
+        expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+          "33333333-3333-4333-8333-333333333333",
+          expect.objectContaining({
+            reason: "execution_review_requested",
+            payload: expect.objectContaining({
+              issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              executionStage: expect.objectContaining({ wakeRole: "reviewer" }),
+            }),
+          }),
+        ),
+      );
+    });
+
+    it("does not wake the reviewer on an unrelated edit to the held review", async () => {
+      const issue = heldReviewIssue("blocked");
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ title: "Held review, renamed" });
+
+      expect(res.status).toBe(200);
+      const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(updatePatch).not.toHaveProperty("status");
+      expect(updatePatch).not.toHaveProperty("executionState");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it.each(["todo", "in_progress"])("rejects a board %s that would dissolve the held review", async (status) => {
+      const issue = heldReviewIssue("blocked");
+      mockIssueService.getById.mockResolvedValue(issue);
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status });
+
+      expect(res.status).toBe(422);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
   });
 
   it("keeps the review stage pending when a board user reassigns to an eligible participant", async () => {

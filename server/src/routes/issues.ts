@@ -2197,6 +2197,7 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   actorRunId: string | null | undefined;
   checkoutRunId: string | null | undefined;
   executionRunId: string | null | undefined;
+  issueExecutionState: unknown;
   requestAddsExplicitBlockers?: boolean;
 }) {
   // A request that wires a non-empty blockedByIssueIds list is declaring that
@@ -2205,6 +2206,12 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   // edits — flipping to todo here would contradict the caller's stated intent
   // in the same request.
   if (input.requestAddsExplicitBlockers) return false;
+  if (
+    input.issueStatus === "blocked" &&
+    parseIssueExecutionState(input.issueExecutionState)?.status === "pending"
+  ) {
+    return false;
+  }
   // Local-CLI agents post comments under user auth, so the actor.type is "user"
   // even though the comment originates from the same heartbeat run that owns
   // the issue lock. Without this guard, an agent that closes its own issue and
@@ -2772,6 +2779,7 @@ function buildExecutionStageWakeup(input: {
   interruptedRunId: string | null;
   requestedByActorType: "user" | "agent";
   requestedByActorId: string;
+  restoredFromHold?: boolean;
 }) {
   const { issueId, previousState, nextState, interruptedRunId } = input;
   if (!nextState) return null;
@@ -2788,7 +2796,7 @@ function buildExecutionStageWakeup(input: {
         previousState?.currentParticipant ?? null,
         nextState.currentParticipant ?? null,
       );
-    if (!agentId || !stageChanged) return null;
+    if (!agentId || (!stageChanged && !input.restoredFromHold)) return null;
 
     const reason =
       nextState.currentStageType === "approval"
@@ -14174,6 +14182,7 @@ export function issueRoutes(
               actorRunId: actor.runId,
               checkoutRunId: existing.checkoutRunId,
               executionRunId: existing.executionRunId,
+              issueExecutionState: existing.executionState,
               requestAddsExplicitBlockers:
                 Array.isArray(req.body.blockedByIssueIds) &&
                 req.body.blockedByIssueIds.length > 0,
@@ -15712,13 +15721,19 @@ export function issueRoutes(
         existing.executionState,
       );
       const nextExecutionState = parseIssueExecutionState(issue.executionState);
-      const executionStageWakeup = buildExecutionStageWakeup({
+      const reviewHeld =
+        issue.status === "blocked" && nextExecutionState?.status === "pending";
+      const executionStageWakeup = reviewHeld ? null : buildExecutionStageWakeup({
         issueId: issue.id,
         previousState: previousExecutionState,
         nextState: nextExecutionState,
         interruptedRunId,
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.actorId,
+        restoredFromHold:
+          req.body.status === "in_review" &&
+          existing.status === "blocked" &&
+          issue.status === "in_review",
       });
 
       // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
@@ -15804,6 +15819,7 @@ export function issueRoutes(
         if (executionStageWakeup && deferWakeForGoal !== true) {
           addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
         } else if (
+          !reviewHeld &&
           assigneeChanged &&
           issue.assigneeAgentId &&
           issue.status !== "backlog" &&
@@ -18801,6 +18817,7 @@ export function issueRoutes(
             actorRunId: actor.runId,
             checkoutRunId: issue.checkoutRunId,
             executionRunId: issue.executionRunId,
+            issueExecutionState: issue.executionState,
           }) ||
           shouldResumeInProgressScheduledRetry);
       const hasUnresolvedFirstClassBlockers =
