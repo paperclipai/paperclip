@@ -467,7 +467,21 @@ test("plan approval hands the preserved revision to an assigned project task", a
     expect(task.parentId).toBeNull();
     expect(task.projectId).toBeTruthy();
     expect(task.assigneeAgentId).toBe(f.agent.id);
-    await expect(page.getByText(`Delegated work completed: ${task.identifier}`, { exact: true })).toBeVisible();
+    const completionBody = `Delegated work completed: ${task.identifier}`;
+    const replies = await json(await request.get(`/api/issues/${chat.id}/comments`));
+    const completionReplies = replies.filter((reply: any) => reply.body === completionBody && reply.authorAgentId === f.agent.id);
+    expect(completionReplies).toHaveLength(1);
+    const reportingRun = await json(await request.get(`/api/heartbeat-runs/${completionReplies[0].createdByRunId}`));
+    expect(reportingRun).toMatchObject({ companyId: f.company.id, agentId: f.agent.id, status: "succeeded",
+      contextSnapshot: { issueId: chat.id, wakeReason: "chat_task_completed" } });
+    const completionMessage = page.getByRole("region", { name: "Conversation messages" })
+      .locator("p").filter({ hasText: /^Delegated work completed:/ });
+    await expect(completionMessage).toHaveCount(1);
+    await expect(completionMessage).toBeVisible();
+    // The inline issue's SVG status title is metadata, not visible reply text.
+    const completionLink = completionMessage.getByRole("link");
+    await expect(completionLink).toHaveText(task.identifier, { useInnerText: true });
+    await expect(completionLink).toHaveAttribute("href", `/${f.company.issuePrefix}/issues/${task.identifier}`);
     const plan = await json(
       await request.get(`/api/issues/${task.id}/documents/plan`),
     );
