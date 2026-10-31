@@ -810,6 +810,14 @@ export function agentRoutes(
   const instanceSettings = instanceSettingsService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
+  async function assertAdapterConfigPersistable(agent: { companyId: string; adapterType: string; adapterConfig: unknown }) {
+    await secretsSvc.normalizeAdapterConfigForPersistence(
+      agent.companyId,
+      asRecord(agent.adapterConfig) ?? {},
+      { strictMode: strictSecretsMode, adapterType: agent.adapterType, validateOnly: true },
+    );
+  }
+
   async function actorCanReadRun(req: Request, run: RunReadBinding) {
     return canActorReadHeartbeatRun(db, access, req.actor, run);
   }
@@ -5141,6 +5149,7 @@ export function agentRoutes(
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
     if (req.body.mode === "external") assertInstanceAdmin(req);
+    await assertAdapterConfigPersistable(existing);
 
     const actor = getActorInfo(req);
     const { bundle, adapterConfig } = await instructions.updateBundle(existing, req.body);
@@ -5258,6 +5267,7 @@ export function agentRoutes(
         bytes: Buffer.from(req.body.content, "utf8"), baseHash: req.body.baseHash }, req.actor);
       res.json(await instructions.readFile(existing, req.body.path)); return;
     }
+    await assertAdapterConfigPersistable(existing);
     const actor = getActorInfo(req);
     const result = await instructions.writeFile(existing, req.body.path, req.body.content, {
       clearLegacyPromptTemplate: req.body.clearLegacyPromptTemplate,

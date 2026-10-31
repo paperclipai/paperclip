@@ -981,6 +981,7 @@ export function secretService(db: Db | DbTransaction) {
     strictMode?: boolean;
     adapterType?: string | null;
     actor?: { userId?: string | null; agentId?: string | null };
+    validateOnly?: boolean;
   };
 
   async function getById(id: string, source: Pick<Db | DbTransaction, "select"> = db) {
@@ -1954,6 +1955,7 @@ export function secretService(db: Db | DbTransaction) {
         key,
         rawValue: adapterConfig[key],
         actor: opts?.actor,
+        validateOnly: opts?.validateOnly,
       });
       if (value === undefined) {
         delete normalized[key];
@@ -1990,6 +1992,7 @@ export function secretService(db: Db | DbTransaction) {
       key: string;
       rawValue: unknown;
       actor?: { userId?: string | null; agentId?: string | null };
+      validateOnly?: boolean;
     },
   ): Promise<EnvBinding | undefined> {
     if (input.rawValue === null || input.rawValue === undefined) return undefined;
@@ -2016,6 +2019,7 @@ export function secretService(db: Db | DbTransaction) {
     if (value === REDACTED_SENTINEL) {
       throw unprocessable(`Refusing to persist redacted placeholder for key: ${input.key}`);
     }
+    if (input.validateOnly) return binding;
     const id = randomUUID();
     const adapterPart = normalizeSecretKey(input.adapterType ?? "adapter");
     const fieldPart = normalizeSecretKey(input.key);
