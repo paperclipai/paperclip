@@ -225,6 +225,53 @@ describeEmbeddedPostgres("heartbeat timer active hours", () => {
     expect(snapshot?.lastHeartbeatAt?.getTime()).toBe(lastHeartbeatAt.getTime());
   });
 
+  function hoursFromNowUtc(hours: number) {
+    return new Date(Date.now() + hours * 60 * 60 * 1000).toISOString().slice(11, 16);
+  }
+
+  function timerWake(agentId: string) {
+    return heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "api_timer_wake",
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+  }
+
+  async function wakeupRequests(agentId: string) {
+    return db
+      .select({ reason: agentWakeupRequests.reason, status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+  }
+
+  it("skips a direct timer wake outside the window", async () => {
+    const { agentId } = await seedTimerAgent({
+      activeHours: { start: hoursFromNowUtc(2), end: hoursFromNowUtc(3), timezone: "UTC" },
+    });
+
+    expect(await timerWake(agentId)).toBeNull();
+
+    expect(await runCount(agentId)).toBe(0);
+    expect(await wakeupRequests(agentId)).toEqual([
+      { reason: "heartbeat.activeHours.outside", status: "skipped" },
+    ]);
+  });
+
+  it("skips a direct timer wake when the stored window is malformed", async () => {
+    const { agentId } = await seedTimerAgent({
+      activeHours: { start: "9am", end: "18:00", timezone: "UTC" },
+    });
+
+    expect(await timerWake(agentId)).toBeNull();
+
+    expect(await runCount(agentId)).toBe(0);
+    expect(await wakeupRequests(agentId)).toEqual([
+      { reason: "heartbeat.activeHours.invalid", status: "skipped" },
+    ]);
+  });
+
   it("skips a due timer tick when the stored window is malformed", async () => {
     const { agentId } = await seedTimerAgent({
       activeHours: { start: "9am", end: "18:00", timezone: "UTC" },

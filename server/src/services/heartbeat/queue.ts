@@ -2842,6 +2842,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       await writeSkippedRequest("heartbeat.disabled", {}, { enabled: false });
       return null;
     }
+    // The scheduler checks the window before it claims a tick, but the wakeup
+    // route also accepts source "timer" and has to honor the same window.
+    if (source === "timer" && policy.activeHours === "invalid") {
+      await writeSkippedRequest("heartbeat.activeHours.invalid");
+      return null;
+    }
+    if (
+      source === "timer" &&
+      policy.activeHours !== "invalid" &&
+      !isWithinActiveHours(policy.activeHours, opts.timerEvaluatedAt ?? new Date())
+    ) {
+      await writeSkippedRequest("heartbeat.activeHours.outside");
+      return null;
+    }
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled", {}, { wakeOnDemand: false });
       return null;

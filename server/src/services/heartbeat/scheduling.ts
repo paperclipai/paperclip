@@ -1371,7 +1371,7 @@ export function createHeartbeatScheduling(
       const timerClaim = await claimDueTimerHeartbeat(agent, now, intervalSec);
       if (!timerClaim) continue;
       const run = await enqueueWakeup(agent.id, {
-        source: "timer", triggerDetail: "system", reason: "heartbeat_timer",
+        source: "timer", triggerDetail: "system", reason: "heartbeat_timer", timerEvaluatedAt: now,
         requestedByActorType: "system", requestedByActorId: "heartbeat_scheduler",
         contextSnapshot: { source: "scheduler", reason: "interval_elapsed", now: now.toISOString(),
           timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat },
