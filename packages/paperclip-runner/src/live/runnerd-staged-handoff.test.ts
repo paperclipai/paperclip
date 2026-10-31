@@ -76,18 +76,23 @@ it("delivers a WebSocket message coalesced with the real HTTP upgrade response",
     socket.write(Buffer.concat([Buffer.from(`HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`),
       Buffer.from([0x81, payload.length]), payload]));
   });
-  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Missing coalesced-upgrade endpoint");
   let peer: Awaited<ReturnType<typeof openOwnedWire>> | undefined;
   const messages: unknown[] = [];
   try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing coalesced-upgrade endpoint");
     peer = await openOwnedWire(`ws://127.0.0.1:${address.port}/`);
     peer.wire.onJson(value => messages.push(value));
     await vi.waitFor(() => expect(messages).toEqual([message]), { timeout: 1000 });
   } finally {
     peer?.close();
-    const closing = new Promise<void>(resolve => server.close(() => resolve()));
+    const closing = server.listening
+      ? new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+      : Promise.resolve();
     for (const socket of sockets) socket.destroy();
     await closing;
   }
