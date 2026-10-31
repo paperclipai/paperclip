@@ -26,24 +26,26 @@ export async function fixtureWorker(ctx: ChatCatalogContext) {
   try {
     await pollUntil({ label: "Morgan runtime readiness", deadlineAt,
       load: async () => {
-        const row = await api.get<{ id: string; companyId: string; lifecycleState: string; status?: string; lifecycleError?: string | null;
-          lifecycleOperation?: { id: string; attempts?: number; retryRequired?: boolean; retryAt?: string } | null }>(`/api/agents/${worker.id}`,
+        const row = await api.get<{ id: string; companyId: string; lifecycleState: string; status?: string; lifecycleError?: string | null }>(`/api/agents/${worker.id}`,
           { timeout: Math.max(1, Math.min(5_000, deadlineAt - Date.now())) });
         const state = { id: row.id, companyId: row.companyId, lifecycleState: row.lifecycleState, status: row.status,
-          errorPresent: !!row.lifecycleError, operationId: row.lifecycleOperation?.id, attempts: row.lifecycleOperation?.attempts,
-          retryRequired: row.lifecycleOperation?.retryRequired, retryAt: row.lifecycleOperation?.retryAt };
+          errorPresent: !!row.lifecycleError,
+          automaticRecovery: /\b(?:Paperclip will|It will) retry automatically\./.test(row.lifecycleError ?? ""),
+          verificationPaused: row.lifecycleError?.includes("Automatic verification is paused.") ?? false };
         const current = JSON.stringify(state);
         if (current !== previous) { observations.push({ ...state, observedAt: new Date().toISOString() }); previous = current; }
         return row;
       },
       accept: row => Date.now() < deadlineAt && row.id === worker.id && row.companyId === fixtures.company.id
-        && row.lifecycleState === "ready" && !row.lifecycleError && row.lifecycleOperation?.retryRequired !== true,
+        && row.lifecycleState === "ready" && !row.lifecycleError,
       reject: row => {
         if (row.id !== worker.id || row.companyId !== fixtures.company.id) return "Morgan runtime identity changed";
-        if (row.lifecycleOperation?.retryRequired) return "Morgan runtime verification requires configuration repair";
         if (["pending_approval", "paused", "rejected", "terminated", "terminating", "cleaning_up"].includes(row.lifecycleState)) return "Morgan runtime setup stopped";
+        // Public agent rows omit lifecycleOperation. The lifecycle owner exposes its
+        // automatic-recovery promise and manual-repair boundary in fixed diagnostics.
         const recovering = originalDeadline !== undefined && row.lifecycleState === "verifying"
-          && !!row.lifecycleOperation?.id;
+          && /\b(?:Paperclip will|It will) retry automatically\./.test(row.lifecycleError ?? "")
+          && !row.lifecycleError?.includes("Automatic verification is paused.");
         return row.lifecycleError && !recovering ? "Morgan runtime setup failed" : undefined;
       } });
   } finally {

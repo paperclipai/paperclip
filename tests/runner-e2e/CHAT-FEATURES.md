@@ -50,7 +50,10 @@ deadline for the prerequisite worker's readiness. The separate 45-second cap
 cannot cut short a normal 60-second local OpenCode hello probe or its owned
 verification recovery. Manual configuration repair and stopped lifecycle states
 still fail setup. Other lanes keep their authored readiness cap. Each worker's
-scoped state transitions and retry metadata are retained without provider output;
+scoped state transitions and recovery flags are retained without provider output.
+The helper consumes the public lifecycle state and fixed automatic-recovery or
+verification-paused diagnostic; private lifecycle operation fields are not exposed.
+Tests pass actual lifecycle diagnostics through the agent response normalizer;
 the case budget and native execution limits do not increase.
 
 
