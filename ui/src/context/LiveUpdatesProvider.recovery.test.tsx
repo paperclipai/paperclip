@@ -278,10 +278,9 @@ describe("LiveUpdatesProvider connection recovery", () => {
     expect(pollRead).toHaveBeenCalledTimes(afterOpen);
   });
 
-  it("discovers matching new runs after empty polling stops on an unfocused non-task route", async () => {
+  it.each(["DEMO-1", "issue-1"])("discovers and finishes runs with cache key %s on an unfocused non-task route", async queryRef => {
     vi.stubGlobal("WebSocket", Socket);
     vi.spyOn(document, "hasFocus").mockReturnValue(false);
-    const queryRef = "DEMO-1";
     const runRead = vi.fn<() => Promise<unknown>>().mockResolvedValue([]);
     const activeRead = vi.fn<() => Promise<unknown>>().mockResolvedValue(null);
     function TaskRuns() {
@@ -300,9 +299,9 @@ describe("LiveUpdatesProvider connection recovery", () => {
     await advancePolls(5);
     expect(runRead).not.toHaveBeenCalled();
     expect(activeRead).not.toHaveBeenCalled();
-    const deliver = async (companyId: string, payload: Record<string, unknown>) => {
+    const deliver = async (companyId: string, payload: Record<string, unknown>, type = "heartbeat.run.queued") => {
       await act(async () => socket.onmessage?.({ data: JSON.stringify({ id: 1, companyId,
-        type: "heartbeat.run.queued", createdAt: "2020-01-01T00:00:00Z", payload }) }));
+        type, createdAt: "2020-01-01T00:00:00Z", payload }) }));
       await act(async () => vi.advanceTimersByTimeAsync(1));
     };
     await deliver("company-2", { issueId: "issue-1", agentId: "agent-1", runId: "foreign" });
@@ -318,6 +317,11 @@ describe("LiveUpdatesProvider connection recovery", () => {
     await deliver("company-1", { agentId: "reviewer-agent", runId: "reviewer-run-without-task-id" });
     expect(runRead).toHaveBeenCalledTimes(2);
     expect(activeRead).toHaveBeenCalledTimes(2);
+    runRead.mockResolvedValue([]);
+    activeRead.mockResolvedValue(null);
+    await deliver("company-1", { issueId: "issue-1", agentId: "agent-1", runId: "new-run", status: "succeeded" }, "heartbeat.run.status");
+    expect(client.getQueryData(queryKeys.issues.liveRuns(queryRef))).toEqual([]);
+    expect(container.textContent).not.toContain("new-run");
   });
 
   it.each(["initial", "background", "connection setup"])("refetches after an older empty %s read settles when run events arrive during it", async (phase) => {

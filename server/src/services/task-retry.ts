@@ -1,3 +1,4 @@
+import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { z } from "zod";
@@ -182,6 +183,7 @@ export async function retireSupersededTaskRetry(db: Db, input: {
       sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}`),
   )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
   if (latest?.id === input.sourceRunId) return false;
+  await notifyExternalConversationSettlement(db, input);
   const retired = await db.update(agentWakeupRequests).set({ status: "skipped", error: "task_retry_superseded",
     finishedAt: new Date(), updatedAt: new Date() }).where(and(
     eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.id, input.requestId),
@@ -332,13 +334,15 @@ export async function requestTaskRetry(input: {
       details: { requestId: active?.id ?? id, sourceRunId: latest.id, attachedToExistingWork: Boolean(active || busy) } });
     return { requestId: active?.id ?? id, accepted: true, stale: false, observedRunId: latest.id,
       chatActionId: intent.chatActionId };
-  });
+  }, { companyId: input.companyId });
 }
 
 /** Chat owns admission and authorization. The task receipt follows that
  * durable outcome; it never launches a parallel generic board execution. */
-export async function reconcileTaskChatRetryReceipts(db: Db) {
+export async function reconcileTaskChatRetryReceipts(db: Db, scope: { companyId?: string; requestId?: string; settleOnly?: boolean } = {}) {
   const pending = await db.select().from(agentWakeupRequests).where(and(
+    scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
+    scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
     eq(agentWakeupRequests.reason, "task_retry"), eq(agentWakeupRequests.status, "deferred_issue_execution"),
     sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}' is not null`,
   )).orderBy(agentWakeupRequests.updatedAt).limit(50);
@@ -354,7 +358,7 @@ export async function reconcileTaskChatRetryReceipts(db: Db) {
     // A deferred chat receipt is admitted input, not a completed dispatch.
     // Re-stage that exact action through chat's owner; it rechecks authority
     // and normal queue policy before updating the existing receipt.
-    if (chat?.status === "processed" && chat.payload.taskRetryIntentId === wake.id &&
+    if (!scope.settleOnly && chat?.status === "processed" && chat.payload.taskRetryIntentId === wake.id &&
         chat.payload.failedRunId === intent.sourceRunId && receipt?.status === "deferred_issue_execution" &&
         !receipt.runId && receipt.payload?.taskRetryRequestId === wake.id) {
       await db.transaction(async tx => {
@@ -365,10 +369,16 @@ export async function reconcileTaskChatRetryReceipts(db: Db) {
       });
     }
     const failed = chat && ["failed", "cancelled"].includes(chat.status);
-    await db.update(agentWakeupRequests).set({
+    const write = (writer: Pick<Db, "update">) => writer.update(agentWakeupRequests).set({
       ...(receipt?.runId ? { status: "coalesced", runId: receipt.runId, finishedAt: new Date() }
         : failed ? { status: "failed", finishedAt: new Date() } : {}),
       updatedAt: new Date(),
     }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    if (receipt?.runId || failed) await db.transaction(async tx => {
+      await notifyExternalConversationSettlement(tx, { companyId: wake.companyId,
+        issueId: typeof wake.payload?.issueId === "string" ? wake.payload.issueId : undefined });
+      await write(tx);
+    });
+    else await write(db);
   }
 }

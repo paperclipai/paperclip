@@ -2728,7 +2728,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
     let firstAction: typeof issueRecoveryActions.$inferSelect | undefined;
     for (let tick = 0; tick < 3; tick += 1) {
-      expect(await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId }, copyback)).toEqual({ acquired: false });
+      expect(await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId }, copyback)).toEqual({ acquired: false, reason: "owner_unverified" });
       const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
       expect(detail.body.activeRecoveryAction).toMatchObject({
         cause: "native_workspace_finalization_owner_unverified", status: "active", attemptCount: 1,

@@ -1,3 +1,5 @@
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
+import { notifySkillVersionRetention, notifySkillVersionPinChange } from "./skill-version-retention-notifications.js";
 import { agentAppearanceSchema, randomAgentAppearance } from "@paperclipai/shared";
 import { normalizePaperclipRunnerAdapterConfig } from "@paperclipai/adapter-utils/server-utils";
 import { agents, toolConnectionInstalls, principalPermissionGrants, type Db } from "@paperclipai/db";
@@ -15,6 +17,7 @@ import { initializePrimaryAgent } from "./primary-agent.js";
 import { resolveAgentRunnerTaskDriverForCompany, resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 
 export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
+  await notifyAttentionRetentionWork(db, { companyId });
   const { runner, ...data } = input;
   const selection = options?.runnerResolved
     ? { adapterType: data.adapterType ?? "process", adapterConfig: isPlainRecord(data.adapterConfig) ? data.adapterConfig : {} }
@@ -53,6 +56,7 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
     childAdapterConfig: adapterConfig, claudeLogin: options?.claudeLogin,
     decision: assertClaudeOAuthBindingInvariant({ adapterType, nextConfig: adapterConfig }),
   });
+  if (options?.setupAgentId) await notifySkillVersionRetention(db, companyId);
   return { ...data, name: uniqueName,
     appearance: data.appearance == null ? randomAgentAppearance() : agentAppearanceSchema.parse(data.appearance),
     role, adapterType, adapterConfig, permissions: normalizedPermissions, runtimeConfig };
@@ -128,6 +132,7 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
         nextConfig: patch.adapterConfig, priorConfig: existing.adapterConfig }),
     });
   }
+  if (patch.adapterConfig !== undefined) await notifySkillVersionPinChange(txDb, existing.companyId, existing.adapterConfig ?? {}, patch.adapterConfig);
   return patch;
 }
 

@@ -6,7 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Issue, IssueAttachment, IssueDocument, IssueWorkProduct } from "@paperclipai/shared";
-import { IssuePropertiesArtifactsTab } from "./IssuePropertiesArtifactsTab";
+import { IssuePropertiesArtifactsTab, TaskGeneralDocuments, type TaskDocumentEditorOptions } from "./IssuePropertiesArtifactsTab";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -16,11 +16,21 @@ const mockIssuesApi = vi.hoisted(() => ({
   ensureWorkProductReviewDocument: vi.fn(async (): Promise<unknown> => ({})),
 }));
 vi.mock("@/api/issues", () => ({ issuesApi: mockIssuesApi }));
+vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ user: { id: "user-1" } }) } }));
+let editorOptions: TaskDocumentEditorOptions | undefined;
+const documentEditor = vi.hoisted(() => vi.fn());
+vi.mock("@/components/IssueDocumentsSection", () => ({
+  IssueDocumentsSection: (props: { issue: Issue; generalDocumentsOnly?: boolean }) => {
+    documentEditor(props);
+    return <section data-testid="general-document-editor"><button>New document</button></section>;
+  },
+}));
 vi.mock("@/api/activity", () => ({ activityApi: { runsForIssue: vi.fn(async (): Promise<unknown[]> => []) } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: vi.fn(async (): Promise<unknown[]> => []) } }));
 const mockUseIssueDocuments = vi.hoisted(() => vi.fn((): { data: IssueDocument[] } => ({ data: [] })));
 vi.mock("@/hooks/useIssueDocuments", () => ({ useIssueDocuments: mockUseIssueDocuments }));
-vi.mock("@/hooks/useArtifactsV1Enabled", () => ({ useArtifactsV1Enabled: () => ({ enabled: true, loaded: true }) }));
+const artifactsV1 = vi.hoisted(() => ({ enabled: true, loaded: true }));
+vi.mock("@/hooks/useArtifactsV1Enabled", () => ({ useArtifactsV1Enabled: () => artifactsV1 }));
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children, ...props }: { to: string; children: React.ReactNode }) => <a href={to} {...props}>{children}</a>,
   useLocation: () => ({ hash: "" }),
@@ -157,6 +167,8 @@ describe("IssuePropertiesArtifactsTab with Artifacts V1 on", () => {
     mockIssuesApi.listAttachments.mockResolvedValue([heroAttachment]);
     mockIssuesApi.listWorkProducts.mockResolvedValue([pdfWorkProduct]);
     mockUseIssueDocuments.mockReturnValue({ data: [planDocument] });
+    editorOptions = undefined;
+    artifactsV1.enabled = true;
   });
 
   afterEach(() => {
@@ -165,16 +177,89 @@ describe("IssuePropertiesArtifactsTab with Artifacts V1 on", () => {
     vi.clearAllMocks();
   });
 
-  function render(props: { onOpenDocument?: (document: IssueDocument) => void } = {}) {
+  function render(props: { onOpenDocument?: (document: IssueDocument) => void; documentEditor?: TaskDocumentEditorOptions } = {}) {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     flushSync(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <IssuePropertiesArtifactsTab issue={issue} {...props} />
+          <IssuePropertiesArtifactsTab issue={issue} documentEditor={editorOptions} {...props} />
         </QueryClientProvider>,
       );
     });
   }
+
+  it("restores the shared general document editor in the default chat Artifacts pane without duplicate cards", async () => {
+    editorOptions = {};
+    const note = { ...planDocument, id: "doc-note", key: "notes", title: "Task note", body: "Saved note" };
+    mockUseIssueDocuments.mockReturnValue({ data: [planDocument, note] });
+    render();
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-testid="artifact-v1-row"]')).toHaveLength(3);
+      expect(container.querySelectorAll('[data-testid="general-document-editor"]')).toHaveLength(1);
+    });
+    expect(documentEditor).toHaveBeenCalledWith(expect.objectContaining({ issue, generalDocumentsOnly: true }));
+    expect(container.querySelector('[aria-label="Open Task note"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Open plan.md"]')).not.toBeNull();
+    expect(container.querySelector('a[aria-label="Download acmehats-interface-craft.pdf"]')).not.toBeNull();
+    expect(container.querySelector('img[src="/api/attachments/' + IMAGE_ID + '/content"]')).not.toBeNull();
+  });
+
+  it("leaves Classic authoring in the task body when this host does not own the editor", async () => {
+    render();
+    await waitFor(() => expect(container.querySelector('[aria-label="Open plan.md"]')).not.toBeNull());
+    expect(container.querySelector('[data-testid="general-document-editor"]')).toBeNull();
+    expect(documentEditor).not.toHaveBeenCalled();
+  });
+
+  it("makes document creation available on an empty default-chat task", async () => {
+    editorOptions = {};
+    mockUseIssueDocuments.mockReturnValue({ data: [] });
+    mockIssuesApi.listAttachments.mockResolvedValue([]);
+    mockIssuesApi.listWorkProducts.mockResolvedValue([]);
+    render();
+    await waitFor(() => expect(container.textContent).toContain("No artifacts yet"));
+    expect(container.querySelectorAll('[data-testid="general-document-editor"]')).toHaveLength(1);
+  });
+
+  it("forwards image upload, mentions, references and feedback from the owning task shell", async () => {
+    const options: TaskDocumentEditorOptions = {
+      imageUploadHandler: vi.fn(async () => "/api/attachments/image/content"),
+      mentions: [{ id: "agent", name: "Author", kind: "agent" }],
+      externalReferences: {}, feedbackVotes: [], feedbackDataSharingPreference: "prompt",
+      feedbackTermsUrl: "https://example.test/terms", onVote: vi.fn(async () => {}), userProfileMap: new Map(),
+    };
+    render({ documentEditor: options });
+    await waitFor(() => expect(documentEditor).toHaveBeenCalledWith(expect.objectContaining(options)));
+  });
+
+  it("uses the same conversation-scoped editor and signed-in permissions beside agent artifacts", async () => {
+    const conversation = { ...issue, conversationAgentId: "agent-1" };
+    const options: TaskDocumentEditorOptions = {
+      imageUploadHandler: vi.fn(async () => "/api/attachments/conversation-image/content"),
+      mentions: [{ id: "agent-1", name: "Agent", kind: "agent" }],
+      externalReferences: {}, onVote: vi.fn(async () => {}), userProfileMap: new Map(),
+    };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={queryClient}>
+      <TaskGeneralDocuments issue={conversation} documentEditor={options} />
+    </QueryClientProvider>));
+    await waitFor(() => expect(documentEditor).toHaveBeenCalledWith(expect.objectContaining({
+      ...options, issue: conversation, generalDocumentsOnly: true, canDeleteDocuments: true, canManageDocumentLocks: true,
+    })));
+    expect(container.querySelectorAll('[data-testid="general-document-editor"]')).toHaveLength(1);
+  });
+
+  it("keeps the same general document authoring with the legacy artifact cards", async () => {
+    editorOptions = {};
+    artifactsV1.enabled = false;
+    mockUseIssueDocuments.mockReturnValue({ data: [planDocument, { ...planDocument, id: "note", key: "notes", title: "Task note" }] });
+    render();
+    await waitFor(() => expect(container.textContent).toContain("acmehats-interface-craft.pdf"));
+    expect(container.querySelectorAll('[data-testid="general-document-editor"]')).toHaveLength(1);
+    expect(container.textContent).not.toContain("Task note");
+    expect(container.textContent).toContain("plan.md");
+    expect(container.textContent).toContain("contact-sheet.png");
+  });
 
   it("lists every artifact as one flat set of V1 rows, newest first, with no run sections", async () => {
     render();

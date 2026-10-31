@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -11,6 +11,114 @@ const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 describe("managed GitHub launchers", () => {
+
+  it("uses a private interpreter without selecting Node from PATH", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-interpreter-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const managed = path.join(root, "managed"), real = path.join(root, "real");
+    await mkdir(managed); await mkdir(real);
+    const source = githubLauncherSource({ interpreterPath: process.execPath });
+    const defaultSource = githubLauncherSource();
+    expect(defaultSource.split("\n")[0]).toBe("#!/usr/bin/env node");
+    expect(source.split("\n")[0]).toBe(`#!${process.execPath}`);
+    expect(source.slice(source.indexOf("\n"))).toBe(defaultSource.slice(defaultSource.indexOf("\n")));
+    const launcher = path.join(managed, "git");
+    await writeFile(launcher, source, { mode: 0o700 });
+    await writeFile(path.join(real, "node"), "#!/bin/sh\nexit 126\n", { mode: 0o700 });
+    await writeFile(path.join(real, "git"), "#!/bin/sh\nprintf 'private interpreter works'\n", { mode: 0o700 });
+    const env = { ...githubBrokerEnvironment({}, { url: "", token: "" }), HOME: root,
+      GH_CONFIG_DIR: path.join(root, "config"), PATH: `${managed}${path.delimiter}${real}` };
+    expect((await exec(launcher, ["--version"], { env })).stdout).toBe("private interpreter works");
+  });
+
+  it.each(["", "relative/node", "/runtime/node --flag", "/runtime/node\nexit 1", "/runtime/node\0"])(
+    "rejects an invalid interpreter path %j", interpreterPath => {
+      expect(() => githubLauncherSource({ interpreterPath })).toThrow("absolute path without whitespace");
+    },
+  );
+  it.each([false, true])("rejects a PATH shim that re-enters the same helper before it can recurse (broker file: %s)", async brokerFile => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-recursion-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const managed = path.join(root, "managed"), shim = path.join(root, "shim"), calls = path.join(root, "calls");
+    await mkdir(managed); await mkdir(shim);
+    const launcher = path.join(managed, "git");
+    await writeFile(launcher, githubLauncherSource({ brokerFile }), { mode: 0o700 });
+    // Bound the pre-fix reproduction: the fixture stops at three invocations.
+    await writeFile(path.join(shim, "git"), `#!${process.execPath}
+const fs = require("node:fs"), {spawnSync} = require("node:child_process");
+fs.appendFileSync(${JSON.stringify(calls)}, "call\\n");
+if (fs.readFileSync(${JSON.stringify(calls)}, "utf8").trim().split("\\n").length >= 3) process.exit(99);
+const result = spawnSync(${JSON.stringify(launcher)}, process.argv.slice(2), {env: process.env, stdio: "inherit"});
+process.exit(result.status ?? 98);
+`, { mode: 0o700 });
+    const env = { ...process.env, ...githubBrokerEnvironment({}, {url: "", token: ""}),
+      PATH: `${managed}${path.delimiter}${shim}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}/usr/bin${path.delimiter}/bin` };
+    await expect(exec(launcher, ["--version"], {env, timeout: 5000})).rejects.toMatchObject({
+      code: 126, stderr: expect.stringContaining("launcher_recursion_rejected"),
+    });
+    expect((await readFile(calls, "utf8")).trim().split("\n")).toEqual(["call"]);
+  });
+
+  it("snapshots a staged tree and reports unstaged files without capturing GitHub credentials", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-snapshot-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed"), repo = path.join(root, "repo");
+    await mkdir(bin); await mkdir(repo);
+    await exec("git", ["init", "-q", repo]);
+    await writeFile(path.join(repo, "tracked.txt"), "staged contents\n");
+    await exec("git", ["-C", repo, "add", "tracked.txt"]);
+    const expectedTree = (await exec("git", ["-C", repo, "write-tree"])).stdout;
+    await writeFile(path.join(repo, "tracked.txt"), "unstaged contents\n");
+    await writeFile(path.join(bin, "git"), githubLauncherSource(), { mode: 0o700 });
+    let captures = 0;
+    const server = createServer((_req, res) => {
+      captures++;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status: "unavailable", reason: "No GitHub connection" }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const { port } = server.address() as { port: number };
+    const env = { ...process.env, ...githubBrokerEnvironment({}, { url: `http://127.0.0.1:${port}`, token: "run-capability" }), PATH: `${bin}:${process.env.PATH}` };
+    const git = (...args: string[]) => exec(path.join(bin, "git"), args, { cwd: root, env });
+    const tree = await git("--git-dir", path.join(repo, ".git"), "--work-tree", repo, "write-tree");
+    const diff = await git("-C", repo, "-c", "core.quotepath=false", "diff-files", "--name-only", "-z", "--", ".");
+    expect(tree.stdout).toBe(expectedTree);
+    expect(diff.stdout).toBe("tracked.txt\0");
+    expect(captures).toBe(0);
+  });
+
+  it.each(["missing", "absent", "unavailable", "rejected"])("commits local work without an identity when GitHub access is %s", async (access) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-default-author-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed");
+    await mkdir(bin);
+    await exec("git", ["init", root]);
+    await writeFile(path.join(bin, "git"), githubLauncherSource(), { mode: 0o700 });
+    const server = createServer((_req, res) => {
+      res.writeHead(access === "rejected" ? 403 : 200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ status: access, env: {
+        GH_TOKEN: "rejected-token", GIT_AUTHOR_NAME: "Rejected", GIT_AUTHOR_EMAIL: "rejected@example.test",
+        GIT_COMMITTER_NAME: "Rejected", GIT_COMMITTER_EMAIL: "rejected@example.test",
+      } }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const { port } = server.address() as { port: number };
+    const env = { ...process.env, ...githubBrokerEnvironment({
+      GH_TOKEN: "host-token", GIT_AUTHOR_NAME: "Host", GIT_AUTHOR_EMAIL: "host@example.test",
+      GIT_COMMITTER_NAME: "Host", GIT_COMMITTER_EMAIL: "host@example.test",
+    }, { url: `http://127.0.0.1:${port}`, token: access === "missing" ? "" : "run-capability" }),
+      PATH: `${bin}:${process.env.PATH}` };
+    await writeFile(path.join(root, "work.txt"), "saved work\n");
+    await exec(path.join(bin, "git"), ["add", "work.txt"], { cwd: root, env });
+    await exec(path.join(bin, "git"), ["commit", "-m", "Save local work"], { cwd: root, env });
+    expect((await exec("git", ["-C", root, "log", "-1", "--format=%an <%ae>|%cn <%ce>"])).stdout.trim())
+      .toBe("Paperclip <noreply@paperclip.ing>|Paperclip <noreply@paperclip.ing>");
+    expect((await exec("git", ["-C", root, "show", "HEAD:work.txt"])).stdout).toBe("saved work\n");
+    await expect(exec("git", ["-C", root, "config", "--local", "--get", "user.name"])).rejects.toThrow();
+    await expect(exec("git", ["-C", root, "config", "--local", "--get", "user.email"])).rejects.toThrow();
+  });
   it.each(["repository", "command"])("uses explicit %s identity for local commits without managed credentials", async (identitySource) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-local-identity-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));
@@ -22,9 +130,8 @@ describe("managed GitHub launchers", () => {
       GH_TOKEN: "host-token", GIT_AUTHOR_NAME: "Host", GIT_COMMITTER_NAME: "Host",
     }, { url: "", token: "" }), PATH: `${bin}:${process.env.PATH}` };
     const git = async (...args: string[]) => (await exec(path.join(bin, "git"), args, { cwd: root, env })).stdout.trim();
-    // No configured identity must fail, rather than guessing the host user's.
-    await expect(git("var", "GIT_AUTHOR_IDENT")).rejects.toThrow();
-    await expect(git("var", "GIT_COMMITTER_IDENT")).rejects.toThrow();
+    expect(await git("var", "GIT_AUTHOR_IDENT")).toMatch(/^Paperclip <noreply@paperclip.ing>/);
+    expect(await git("var", "GIT_COMMITTER_IDENT")).toMatch(/^Paperclip <noreply@paperclip.ing>/);
     if (identitySource === "repository") {
       await git("config", "user.name", "Local Author");
       await git("config", "user.email", "local@example.test");
@@ -81,6 +188,44 @@ describe("managed GitHub launchers", () => {
     expect(JSON.parse(result.stdout)).toEqual({token:null});
     expect(result.stderr).toContain("More than one managed GitHub identity matches this run");
     expect(result.stderr).not.toMatch(/host-token|must-not-be-used|run-capability/);
+  });
+  it.each(["before-write", "partial-write"])("keeps Git and managed credentials available after a %s failure", async (failure) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-default-write-failure-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed"), realBin = path.join(root, "real");
+    await mkdir(bin); await mkdir(realBin);
+    await exec("git", ["init", root]);
+    for (const name of ["git", "gh"]) await writeFile(path.join(bin, name), githubLauncherSource(), { mode: 0o700 });
+    await writeFile(path.join(realBin, "gh"), '#!/usr/bin/env node\nprocess.stdout.write(process.env.GH_TOKEN || "anonymous");', { mode: 0o700 });
+    const fault = path.join(root, "write-fault.cjs");
+    await writeFile(fault, `const fs = require('node:fs'); const write = fs.writeFileSync;
+fs.writeFileSync = (file, ...args) => {
+  if (String(file).endsWith('/gitconfig')) {
+    if (${failure === "partial-write"}) write(file, '[user', { mode: 0o600 });
+    throw new Error('fixture disk full');
+  }
+  return write(file, ...args);
+};`);
+    const server = createServer((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status: "available", env: { GH_TOKEN: "managed-token" } }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const { port } = server.address() as { port: number };
+    const env = {
+      ...process.env, ...githubBrokerEnvironment({}, { url: `http://127.0.0.1:${port}`, token: "run-capability" }),
+      PATH: `${bin}:${realBin}:${process.env.PATH}`,
+    };
+    const result = await exec(process.execPath, ["--require", fault, path.join(bin, "gh")], { cwd: root, env });
+    expect(result.stdout).toBe("managed-token");
+    expect(result.stderr).toContain("configuration_directory_unavailable");
+    const git = (...args: string[]) => exec(process.execPath, ["--require", fault, path.join(bin, "git"), ...args], { cwd: root, env });
+    expect((await git("status", "--porcelain", "--untracked-files=no")).stdout).toBe("");
+    await expect(git("commit", "--allow-empty", "-m", "No default")).rejects.toMatchObject({ stderr: expect.stringContaining("Author identity unknown") });
+    await git("-c", "user.name=Explicit", "-c", "user.email=explicit@example.test", "commit", "--allow-empty", "-m", "Explicit identity");
+    expect((await exec("git", ["-C", root, "log", "-1", "--format=%an <%ae>|%cn <%ce>"])).stdout.trim())
+      .toBe("Explicit <explicit@example.test>|Explicit <explicit@example.test>");
   });
   // The first broker request fails, the second succeeds: the managed token must still reach gh.
   it.each([
@@ -177,7 +322,9 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     expect(anonymous.token).toBeNull();
     await git("config", "--unset", "user.name");
     await git("config", "--unset", "user.email");
-    await expect(git("var", "GIT_AUTHOR_IDENT")).rejects.toThrow();
+    await git("commit", "--allow-empty", "-m", "Default identity after revocation");
+    expect(await git("log", "-1", "--format=%an <%ae>|%cn <%ce>"))
+      .toBe("Paperclip <noreply@paperclip.ing>|Paperclip <noreply@paperclip.ing>");
     expect(await git("status", "--porcelain")).toBe(""); // unrelated public/local Git still works
     expect(env.GH_TOKEN).toBe("");
     expect(env.GIT_AUTHOR_NAME).toBe("");
@@ -228,4 +375,32 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     expect((await git("-C", "repo", "commit", "--allow-empty", "-m", "Managed work")).posts).toBe(1);
     expect((await git("-C", "repo", "log", "-1", "--format=%an <%ae>")).stdout).toBe("Managed <managed@example.test>");
   }, 20_000);
+});
+
+it("captures the current task broker file once per invocation and never falls back to inherited authority", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-task-github-"));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, "managed"), real = path.join(root, "real");
+  await mkdir(bin); await mkdir(real);
+  await writeFile(path.join(bin, "gh"), githubLauncherSource({ brokerFile: true }), { mode: 0o700 });
+  await writeFile(path.join(real, "gh"), '#!/usr/bin/env node\nprocess.stdout.write(process.env.GH_TOKEN || "anonymous");\n', { mode: 0o700 });
+  const captured: string[] = [];
+  const server = createServer((req, res) => {
+    captured.push(req.headers.authorization!);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ status: "available", env: { GH_TOKEN: req.headers.authorization!.slice(7) + "-credential" } }));
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const env = { ...process.env, PATH: `${bin}:${real}:${process.env.PATH}`, GH_TOKEN: "ambient-secret",
+    PAPERCLIP_GITHUB_BROKER_URL: url, PAPERCLIP_GITHUB_BROKER_TOKEN: "stale-capability", PAPERCLIP_API_KEY: "unrelated-api-key" };
+  const run = () => exec(path.join(bin, "gh"), [], { env });
+  for (const token of ["first-run", "next-run"]) {
+    await writeFile(path.join(bin, "broker.json"), JSON.stringify({ url, token }));
+    expect((await run()).stdout).toBe(token + "-credential");
+  }
+  await rm(path.join(bin, "broker.json"));
+  expect((await run()).stdout).toBe("anonymous");
+  expect(captured).toEqual(["Bearer first-run", "Bearer next-run"]);
 });

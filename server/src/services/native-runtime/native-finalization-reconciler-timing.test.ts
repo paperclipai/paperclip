@@ -32,6 +32,14 @@ describe("native finalization reconciliation timing", () => {
     timing.phase.mockClear(); timing.finish.mockClear();
   });
 
+  it("omits automatic review discovery when its worker owns that duty", async () => {
+    timing.phase.mockClear();
+    const db = { select: vi.fn(() => { throw new Error("candidate scan reached"); }) };
+    await expect(reconcileNativeFinalizations(db as never, ["run"], { skipAutomaticCompletionReviews: true })).rejects.toThrow("candidate scan reached");
+    expect(timing.phase.mock.calls.map(([phase]) => phase)).toEqual(["legacy_workspace_exports", "obsolete_policy_reviews", "candidate_scan"]);
+    timing.phase.mockClear(); timing.finish.mockClear();
+  });
+
   it("records the phases and a failed outcome when a pass fails, and rethrows", async () => {
     await expect(reconcileNativeFinalizations({} as never)).rejects.toThrow("review lookup failed");
 

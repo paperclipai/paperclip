@@ -1,10 +1,22 @@
-/** Standalone source is staged unchanged on local, SSH, and sandbox runtimes. No secrets in files. */
-export function githubLauncherSource(): string {
-  return String.raw`#!/usr/bin/env node
+import { isAbsolute } from "node:path";
+
+/** Standalone source for local, SSH, and sandbox runtimes. No secrets in files. */
+export function githubLauncherSource(options: { brokerFile?: boolean; interpreterPath?: string } = {}): string {
+  if (options.interpreterPath !== undefined && (typeof options.interpreterPath !== "string"
+    || !isAbsolute(options.interpreterPath) || /[\s\0]/u.test(options.interpreterPath))) {
+    throw new Error("GitHub launcher interpreter must be an absolute path without whitespace");
+  }
+  return String.raw`#!${options.interpreterPath ?? "/usr/bin/env node"}
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
+// A PATH shim can capture this launcher's absolute path and call it again.
+// Reject that cycle before resolving another executable or capturing authority.
+if (process.env.PAPERCLIP_GITHUB_OPERATION_ACTIVE) {
+  process.stderr.write('Paperclip: GitHub launcher_recursion_rejected.\n');
+  process.exit(126);
+}
 const directory = path.dirname(fs.realpathSync(process.argv[1]));
 const program = path.basename(process.argv[1]);
 const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => {
@@ -17,7 +29,7 @@ if (!['git', 'gh'].includes(program) || !executable) {
   process.stderr.write('Paperclip: requested GitHub command is not installed.\n');
   process.exit(127);
 }
-const localGitCommands = new Set(['init', 'status', 'add', 'config', 'rev-parse', 'log', 'diff', 'show', 'branch', 'checkout', 'switch', 'restore', 'reset', 'rm', 'mv', 'worktree', 'grep', 'blame', 'describe', 'ls-files', 'ls-tree', 'cat-file', 'rev-list', 'merge-base', 'show-ref', 'for-each-ref', 'symbolic-ref', 'check-ignore', 'version', 'help']);
+const localGitCommands = new Set(['init', 'status', 'add', 'config', 'rev-parse', 'log', 'diff', 'diff-files', 'write-tree', 'show', 'branch', 'checkout', 'switch', 'restore', 'reset', 'rm', 'mv', 'worktree', 'grep', 'blame', 'describe', 'ls-files', 'ls-tree', 'cat-file', 'rev-list', 'merge-base', 'show-ref', 'for-each-ref', 'symbolic-ref', 'check-ignore', 'version', 'help']);
 const gitValueOptions = ['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--super-prefix', '--attr-source'];
 const gitFlagOptions = ['-p', '-P', '--paginate', '--no-pager', '--bare', '--no-replace-objects', '--no-lazy-fetch', '--no-optional-locks', '--no-advice', '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs'];
 function isLocalGit(args) {
@@ -33,18 +45,35 @@ function isLocalGit(args) {
 }
 async function main() {
   let env = { ...process.env };
+${options.brokerFile ? String.raw`
+  delete env.PAPERCLIP_API_URL;
+  delete env.PAPERCLIP_API_KEY;
+  delete env.PAPERCLIP_GITHUB_BRIDGE_TOKEN;
+  env.PAPERCLIP_GITHUB_BROKER_URL = '';
+  env.PAPERCLIP_GITHUB_BROKER_TOKEN = '';
+  try {
+    const broker = JSON.parse(fs.readFileSync(path.join(directory, 'broker.json'), 'utf8'));
+    if (typeof broker.url === 'string' && typeof broker.token === 'string') {
+      env.PAPERCLIP_GITHUB_BROKER_URL = broker.url;
+      env.PAPERCLIP_GITHUB_BROKER_TOKEN = broker.token;
+    }
+  } catch {}
+` : ''}
   const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
   const configRoot = env.GH_CONFIG_DIR || os.tmpdir();
   // A missing/unwritable scratch directory must not break local Git. The
   // fallback deliberately cannot load the host's gh authentication files.
   let configDirectory = path.join(directory, 'unavailable-gh-config');
   let configReady = false;
+  let authorReady = false;
   try {
     fs.mkdirSync(configRoot, { recursive: true, mode: 0o700 });
     configDirectory = fs.mkdtempSync(path.join(configRoot, 'paperclip-github-operation-'));
     fs.chmodSync(configDirectory, 0o700);
     configReady = true;
     process.once('exit', () => { try { fs.rmSync(configDirectory, { recursive: true, force: true }); } catch {} });
+    fs.writeFileSync(path.join(configDirectory, 'gitconfig'), '[user]\n\tname = Paperclip\n\temail = noreply@paperclip.ing\n', { mode: 0o600 });
+    authorReady = true;
   } catch { diagnostic('configuration_directory_unavailable'); }
   {
     for (const key of Object.keys(env)) {
@@ -52,11 +81,8 @@ async function main() {
     }
     Object.assign(env, {
       GH_CONFIG_DIR: configDirectory, SSH_AUTH_SOCK: '',
-      GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+      GIT_CONFIG_GLOBAL: authorReady ? path.join(configDirectory, 'gitconfig') : '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
       GIT_TERMINAL_PROMPT: '0',
-      // The inherited identity was deleted above. Empty identity env values
-      // override even explicit repository/command config and break local commits.
-      // Require configured identity instead of guessing the OS user's details.
       GIT_CONFIG_COUNT: '5', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '',
       GIT_CONFIG_KEY_1: 'url.https://github.com/.insteadOf', GIT_CONFIG_VALUE_1: 'git@github.com:',
       GIT_CONFIG_KEY_2: 'url.https://github.com/.insteadOf', GIT_CONFIG_VALUE_2: 'ssh://git@github.com/',
@@ -115,6 +141,7 @@ async function main() {
     } catch { diagnostic('broker_transport_unavailable'); }
   }
   // Only this invocation and its children inherit the captured credential.
+  env.PAPERCLIP_GITHUB_OPERATION_ACTIVE = '1';
   // Its Git children use the real binary, so steering cannot split a gh operation.
   env.PATH = originalPath.join(path.delimiter);
   // Nested shell aliases must not reload the parent launcher profile and

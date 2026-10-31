@@ -20,7 +20,8 @@ import type {
 import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
 import { pendingConnectionIntentInteraction } from "@/fixtures/issueThreadInteractionFixtures";
-import { TaskChatScrollNavigation } from "./task-chat/scroll-navigation";
+import { TaskChatScrollNavigation, useTaskChatScrollNavigation } from "./task-chat/scroll-navigation";
+import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 
 const transcriptState = vi.hoisted(() => ({
@@ -166,6 +167,13 @@ function render(ui: ReactElement) {
       </QueryClientProvider>,
     ),
   );
+}
+
+async function settleThreadLayout() {
+  await vi.waitFor(async () => {
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    expect(container.querySelector('[data-testid="task-chat-thread"] > [aria-busy="false"]')).not.toBeNull();
+  });
 }
 
 describe.each(["legacy", "native"] as const)("historical %s system status", (runtimeMode) => {
@@ -353,9 +361,7 @@ it.each([true, false])("defers hidden content until history is ready and keeps i
   render(<TaskChatThread {...props} initialHistoryPending={false} />);
   const composer = container.querySelector('[data-testid="mock-editor"]');
   expect(composer).not.toBeNull();
-  await act(async () => {
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-  });
+  await settleThreadLayout();
   expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
   expect(container.querySelector('.task-chat-history-pending')).toBeNull();
   expect(container.querySelector('[data-testid="task-chat-composer-dock"]')?.hasAttribute("inert")).toBe(false);
@@ -368,14 +374,81 @@ it.each([true, false])("defers hidden content until history is ready and keeps i
   expect(container.querySelector('.task-chat-history-pending')).toBeNull();
 });
 
-it.each([true, false])("keeps cold-open messages readable while history is pending (mobile=%s)", (mobile) => {
+it.each([true, false])("coordinates compact cards before first reveal and retains content during refresh (mobile=%s)", async (mobile) => {
   sidebarState.isMobile = mobile;
-  render(<TaskChatThread issueId="cold-issue" compactHistory initialHistoryPending
-    comments={createLongThreadComments()} historyControl={<button>More messages</button>} onAdd={async () => {}} />);
+  const props = { issueId: "cold-issue", compactHistory: true, comments: createLongThreadComments(), historyControl: <button>More messages</button>, onAdd: async () => {} };
+  render(<TaskChatThread {...props} initialHistoryPending />);
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).not.toBeNull();
+  render(<TaskChatThread {...props} initialHistoryPending={false} />);
+  await settleThreadLayout();
   expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
   expect(container.textContent).toContain("Thread message 1");
   expect(container.textContent).toContain("More messages");
-  expect(container.querySelector('[data-testid="mock-editor"]')).not.toBeNull();
+  const editor = container.querySelector('[data-testid="mock-editor"]');
+  expect(editor).not.toBeNull();
+  render(<TaskChatThread {...props} initialHistoryPending />);
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+});
+
+it("keeps revealed history scrollable while metadata for another page is pending", async () => {
+  function Readiness() { return <span data-testid="history-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
+  const props = { issueId: "paged-chat", compactHistory: true, comments: createLongThreadComments(), onAdd: async () => {}, threadHeader: <Readiness /> };
+  render(<TaskChatThread {...props} />);
+  await settleThreadLayout();
+  expect(container.querySelector('[data-testid="history-scroll-ready"]')?.textContent).toBe("true");
+  render(<TaskChatThread {...props} initialHistoryPending />);
+  expect(container.querySelector('[data-testid="history-scroll-ready"]')?.textContent).toBe("true");
+});
+
+it("waits for a same-task comment target before applying its scroll position without hiding the thread", async () => {
+  function Readiness() { return <span data-testid="target-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
+  const props = { issueId: "linked-task", compactHistory: true, comments: createLongThreadComments(), onAdd: async () => {}, threadHeader: <Readiness /> };
+  const show = (hash: string, pending: boolean) => render(
+    <TaskChatScrollNavigation.Provider value={{ key: hash || "initial", hash, restore: false }}>
+      <TaskChatThread {...props} initialHistoryPending={pending} />
+    </TaskChatScrollNavigation.Provider>,
+  );
+  show("", false);
+  await settleThreadLayout();
+  const editor = container.querySelector('[data-testid="mock-editor"]');
+  show("#comment-older", true);
+  expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("false");
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+  show("#comment-older", false);
+  expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("true");
+});
+
+it("positions an available comment after the reveal deadline even if unrelated metadata is stalled", async () => {
+  vi.useFakeTimers();
+  try {
+    function Readiness() { return <span data-testid="target-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
+    render(<TaskChatScrollNavigation.Provider value={{ key: "available-target", hash: "#comment-comment-1", restore: false }}>
+      <TaskChatThread issueId="available-target" comments={createLongThreadComments()} onAdd={async () => {}} initialHistoryPending threadHeader={<Readiness />} />
+    </TaskChatScrollNavigation.Provider>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("true");
+    expect(container.querySelector('[data-testid="mock-editor"]')).not.toBeNull();
+  } finally { vi.useRealTimers(); }
+});
+
+it("bounds the scroll wait for a same-task target that never arrives", async () => {
+  const props = { issueId: "stalled-target", comments: createLongThreadComments(), onAdd: async () => {} };
+  function Readiness() { return <span data-testid="target-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
+  const show = (hash: string, pending: boolean) => render(<TaskChatScrollNavigation.Provider value={{ key: hash || "initial", hash, restore: false }}>
+    <TaskChatThread {...props} initialHistoryPending={pending} threadHeader={<Readiness />} />
+  </TaskChatScrollNavigation.Provider>);
+  show("", false);
+  await settleThreadLayout();
+  vi.useFakeTimers();
+  try {
+    show("#comment-unavailable", true);
+    expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("false");
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("true");
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  } finally { vi.useRealTimers(); }
 });
 
 it.each([0, 32_000, 100_000])("offers earlier output only when a single legacy run exceeds the compact window (%s bytes)", (logBytes) => {
@@ -413,6 +486,7 @@ it.each([true, false])("keeps an upload attached when a conversation draft becom
   const onAttachImage = vi.fn().mockReturnValue(new Promise(resolve => { resolveUpload = resolve; }));
   const props = { comments: [], onAdd, onAttachImage, conversationMode: true, draftKey: "agent-chat:company:agent" };
   render(<TaskChatThread {...props} issueId="" />);
+  await settleThreadLayout();
   const composer = container.querySelector('[data-testid="mock-editor"]');
   const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
   const file = new File(["notes"], "chat-notes.txt", { type: "text/plain" });
@@ -428,7 +502,7 @@ it.each([true, false])("keeps an upload attached when a conversation draft becom
   const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
   await act(async () => { resolveUpload({ id, contentPath: `/api/attachments/${id}/content`, originalFilename: file.name }); });
   render(<TaskChatThread {...props} issueId="persisted-chat" initialHistoryPending={false} />);
-  await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+  await settleThreadLayout();
   const chip = container.querySelector('[data-testid="task-chat-composer-attachments"] [data-slot="attachment"]');
   expect(chip?.getAttribute("data-state")).toBe("done");
   const send = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!;
@@ -561,6 +635,44 @@ it.each((["task", "legacy"] as const).flatMap(surface => [
   expect(container.textContent).not.toContain("Taking longer than usual");
 });
 
+it.each([null, "previous-agent"].flatMap(previousAgentId => ["paperclip_runner", "process"].map(adapterType => ({ previousAgentId, adapterType }))))("keeps the selected responder mounted across reassignment, acknowledgement and $adapterType startup (previous=$previousAgentId)", async ({ previousAgentId, adapterType }) => {
+  let acknowledge!: () => void;
+  const onAdd = vi.fn<ComponentProps<typeof TaskChatThread>["onAdd"]>(() => new Promise<void>(resolve => { acknowledge = resolve; }));
+  const props = {
+    issueId: "issue", issueStatus: "in_review", currentUserId: "board", comments: [], onAdd, enableReassign: true,
+    suggestedAssigneeValue: "agent:next-agent",
+    reassignOptions: [{ id: "agent:next-agent", label: "Next worker" }, { id: "agent:previous-agent", label: "Previous worker" }],
+    agentMap: new Map([
+      ["previous-agent", { id: "previous-agent", name: "Previous worker", adapterType: "paperclip_runner" } as Agent],
+      ["next-agent", { id: "next-agent", name: "Next worker", adapterType } as Agent],
+    ]),
+  };
+  render(<TaskChatThread {...props} issueAssigneeAgentId={previousAgentId} currentAssigneeValue={previousAgentId ? `agent:${previousAgentId}` : "user:board"} />);
+  if (previousAgentId) {
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]')!.click());
+    await act(async () => document.querySelector('[data-assignee-identity="agent:next-agent"]')!.closest("button")!.click());
+  }
+  await act(async () => editorCallbacks.change("Please check this."));
+  await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+  expect(onAdd.mock.calls[0]?.[2]).toEqual({ assigneeAgentId: "next-agent", assigneeUserId: null });
+  const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
+  expect(identity?.textContent).toBe("Next worker");
+  const saved = { id: "saved-message", companyId: "company", issueId: "issue", authorType: "user" as const,
+    authorAgentId: null, authorUserId: "board", body: "Please check this.", presentation: null, metadata: null,
+    clientRequestId: onAdd.mock.calls[0]?.[4], createdAt: new Date(), updatedAt: new Date() };
+  render(<TaskChatThread {...props} comments={[saved]} issueAssigneeAgentId="next-agent" currentAssigneeValue="agent:next-agent" />);
+  await act(async () => acknowledge());
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+  expect(container.textContent).toContain("Queued");
+  // Choosing a recipient for the next draft does not change the sent request.
+  await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]')!.click());
+  await act(async () => document.querySelector('[data-assignee-identity="agent:previous-agent"]')!.closest("button")!.click());
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+  const live = { ...nativeRunningRun(), runtimeMode: adapterType === "paperclip_runner" ? "native" as const : "legacy" as const, adapterType, agentId: "next-agent", agentName: "Next worker" };
+  render(<TaskChatThread {...props} comments={[saved]} issueStatus="in_progress" issueAssigneeAgentId="next-agent" currentAssigneeValue="agent:next-agent" activeRun={live} liveRuns={[live]} />);
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+});
+
 it("prepares comment-link history and its composer before reveal", async () => {
   const props = {
     issueId: "linked-issue",
@@ -579,7 +691,7 @@ it("prepares comment-link history and its composer before reveal", async () => {
   expect(row).not.toBeNull();
   expect(row?.closest('[inert]')).not.toBeNull();
   show(false);
-  await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
+  await settleThreadLayout();
   expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
   expect(container.querySelector('[data-thread-anchor="comment-1"]')).toBe(row);
@@ -642,13 +754,65 @@ describe.each(["legacy", "native"] as const)("%s task history readiness", (runti
     nativeTranscriptState.hydratedRunIds = new Set();
   });
 
-  it("reveals comments while a scheduled retry has no transcript to hydrate", () => {
+  it("opens saved compact replies without fetching their completed run and loads output on expansion", async () => {
+    const props = {
+      issueId: "saved-compact-task", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+      linkedRuns: [{ ...retryRun, runId: "saved-run", status: "succeeded", startedAt: retryRun.createdAt }],
+      comments: [{ ...createLongThreadComments()[3], id: "saved-answer", authorType: "agent" as const,
+        authorAgentId: "agent-1", body: "Saved investigation result", runId: "saved-run" }],
+    };
+    render(<TaskChatThread {...props} initialHistoryPending />);
+    expect(transcriptHookRuns.native.at(-1)).toEqual([]);
+    expect(transcriptHookRuns.legacy.at(-1)).toEqual([]);
+    render(<TaskChatThread {...props} initialHistoryPending={false} />);
+    await settleThreadLayout();
+    expect(container.textContent).toContain("Saved investigation result");
+    expect(transcriptHookRuns.native.at(-1)).toEqual([]);
+    expect(transcriptHookRuns.legacy.at(-1)).toEqual([]);
+    const editor = container.querySelector('[data-testid="mock-editor"]');
+    act(() => editorCallbacks.change("Keep this draft"));
+    const output = [...container.querySelectorAll("button")].find(button => button.textContent === "More run output");
+    expect(output).toBeDefined();
+    act(() => output!.click());
+    expect(props.onExpandHistory).toHaveBeenCalledOnce();
+    render(<TaskChatThread {...props} compactHistory={false} />);
+    expect((runtimeMode === "native" ? transcriptHookRuns.native : transcriptHookRuns.legacy).at(-1)).toMatchObject([{ id: "saved-run" }]);
+    expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+    expect(editor?.textContent).toBe("Keep this draft");
+  });
+
+  it.each(["running", "failed", "no-reply", "placeholder", "chat", "yielded", "no-presentation", "progress"])("hydrates compact output when it is required (%s)", (scenario) => {
+    const props = {
+      issueId: "required-output", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+      conversationMode: scenario === "chat",
+      linkedRuns: [{ ...retryRun, runId: "saved-run", status: ["running", "failed"].includes(scenario) ? scenario : "succeeded", startedAt: retryRun.createdAt,
+        resultJson: scenario === "yielded" ? { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded" } }
+          : scenario === "no-presentation" ? { presentationDecision: { schema: "paperclip.run_presentation_decision.v1", commentId: null } }
+          : scenario === "progress" ? { semanticToolReceipts: { progress: { operationId: "report_progress", result: { commentId: "saved-answer" } } } } : {} }],
+      comments: scenario === "no-reply" ? [] : [{ ...createLongThreadComments()[3], id: "saved-answer", authorType: "agent" as const,
+        authorAgentId: "agent-1", body: scenario === "placeholder" ? "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log)." : "Saved investigation result", runId: "saved-run" }],
+    };
+    render(<TaskChatThread {...props} />);
+    expect((runtimeMode === "native" ? transcriptHookRuns.native : transcriptHookRuns.legacy).at(-1)).toMatchObject([{ id: "saved-run" }]);
+  });
+
+  it("retains a live transcript after the saved reply arrives", () => {
+    const props = { issueId: "live-to-saved", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+      linkedRuns: [{ ...retryRun, runId: "live-run", status: "running", startedAt: retryRun.createdAt }], comments: createLongThreadComments() };
+    render(<TaskChatThread {...props} />);
+    render(<TaskChatThread {...props} linkedRuns={[{ ...props.linkedRuns[0], status: "succeeded" }]}
+      comments={[...props.comments, { ...props.comments[3], authorType: "agent", authorAgentId: "agent-1", runId: "live-run", body: "Just saved" }]} />);
+    expect((runtimeMode === "native" ? transcriptHookRuns.native : transcriptHookRuns.legacy).at(-1)).toMatchObject([{ id: "live-run" }]);
+  });
+
+  it("reveals comments while a scheduled retry has no transcript to hydrate", async () => {
     renderThread({
       issueId: "issue-1",
       comments: createLongThreadComments(),
       onAdd: async () => {},
       linkedRuns: [retryRun],
     });
+    await settleThreadLayout();
 
     expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
     expect(
@@ -720,9 +884,7 @@ describe.each(["legacy", "native"] as const)("%s task history readiness", (runti
         ts: "2026-08-25T18:00:01.000Z",
       }]);
       render(<TaskChatThread {...props} />);
-      await act(async () => {
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-      });
+      await settleThreadLayout();
 
       expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
       expect(
@@ -1389,7 +1551,8 @@ describe("TaskChatThread runtime transcript selection", () => {
   });
 
 
-  it.each(["matching", "document_only", "absent", "other_revision"] as const)("reports a restore failure with %s saved-plan evidence", (evidence) => {
+  it.each((["matching", "document_only", "absent", "other_revision"] as const).flatMap(evidence =>
+    ["restore_unsafe_archive", "restore_invalid_metadata"].map(code => [evidence, code] as const)))("reports %s saved-plan evidence for %s without offering another provider turn", (evidence, code) => {
     if (evidence !== "absent") planState.data = planDocument();
     renderThread({
       issueId: "issue-1",
@@ -1402,7 +1565,7 @@ describe("TaskChatThread runtime transcript selection", () => {
         runId: "restore-run", runtimeMode: "legacy", status: "failed", errorCode: "workspace_restore_failed",
         agentId: "agent-1", agentName: "Runner", adapterType: "grok_local",
         createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z", finishedAt: "2026-08-25T18:00:02.000Z",
-        resultJson: { workspaceRestoreFailure: "restore_unsafe_archive", workspaceRestorePath: ".claude/skills/paperclip", finalResponseRecorded: false,
+        resultJson: { workspaceRestoreFailure: code, workspaceRestorePath: ".claude/skills/paperclip", finalResponseRecorded: false,
           ...(evidence === "document_only" ? { savedPlanRevisionId: "revision-3" } : {}),
         },
       }],
@@ -1492,6 +1655,33 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.textContent).toContain("Use the connection card below to continue.");
     expect(container.textContent).not.toContain("The selected AI account is unavailable");
     expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+  });
+
+  it.each(["timestamp", "resolved-review"].flatMap(owner => [false, true].map(coordinator => ({ owner, coordinator }))))("keeps a saved Plan visible while its completed output is deferred ($owner, Coordinator=$coordinator)", async ({ owner, coordinator }) => {
+    const runId = "saved-plan-run";
+    planState.data = planDocument({ updatedAt: new Date("2026-08-25T18:00:02.000Z") });
+    nativeTranscriptState.hydratedRunIds = new Set();
+    nativeTranscriptState.terminalHydratedRunIds = new Set();
+    const props = {
+      issueId: "issue-1", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+      comments: [{ ...createLongThreadComments()[3], id: "saved-plan-reply", authorType: "agent" as const,
+        authorAgentId: "agent-1", body: "The saved Plan is ready.", runId }],
+      interactions: owner === "resolved-review" ? [planReviewInteraction("accepted", "revision-3", runId)] : [],
+      linkedRuns: [{ runId, runtimeMode: "native" as const, status: "succeeded", agentId: "agent-1", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z", finishedAt: "2026-08-25T18:00:03.000Z" }],
+    };
+    const show = (compactHistory: boolean) => render(<CoordinatorPresentation.Provider value={coordinator}>
+      <TaskChatThread {...props} compactHistory={compactHistory} />
+    </CoordinatorPresentation.Provider>);
+    show(true);
+    await settleThreadLayout();
+    expect(transcriptHookRuns.native.at(-1)).toEqual([]);
+    expect(container.querySelectorAll('[data-testid="task-chat-plan-preview"]')).toHaveLength(1);
+    expect(container.textContent).toContain("Preview the Plan");
+    const editor = container.querySelector('[data-testid="mock-editor"]');
+    show(false);
+    expect(container.querySelectorAll('[data-testid="task-chat-plan-preview"]')).toHaveLength(1);
+    expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
   });
 
   it("projects the saved Plan inline at its native write_document boundary", () => {

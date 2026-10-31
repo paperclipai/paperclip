@@ -1,3 +1,14 @@
+import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifySkillVersionRetentionReconstruction } from "./skill-version-retention-notifications.js";
+import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
+import { notifyExternalAgentSettlement } from "../modules/external-agents/index.js";
+import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
+import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notifications.js";
+import { notifyNativeRunProjection } from "./native-run-projection-notifications.js";
+import { notifyNativeResultCommit } from "./native-result-commit-notifications.js";
+import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
 import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
@@ -615,17 +626,33 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
           }
         }
       }
+      const chatBecameEnabled = !toExperimentalView(current.experimental).enableAgentChat
+        && toExperimentalView(nextExperimental).enableAgentChat;
       const now = new Date();
       const [updated] = await db.transaction(async tx => {
+        if (patch.enableStatusCards !== undefined) await notifyStatusCardEvaluation(tx);
+        if (chatBecameEnabled) await notifyDeferredExecutionEligibility(tx);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.grokDispatch);
+        if (chatBecameEnabled) await notifyDeliveryWork(tx, DELIVERY_QUEUES.strandedAssignments, "*");
         if (patch.enableWorktreeRunExecution !== undefined) await notifyScheduledRetryCancellation(tx);
         if (patch.enableWorktreeRunExecution !== undefined) {
+          await notifyRunDispatch(tx);
+          await notifyDeferredExecutionEligibility(tx);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+          await notifyExternalAgentSettlement(tx);
           await notifyInstructionCommit(tx);
           await notifyDirectoryCleanup(tx);
+          await notifySkillVersionRetentionReconstruction(tx);
           await notifyInstructionCollection(tx);
           await notifyCancelledWorkspacePreservation(tx);
+          await notifyExternalConversationSettlement(tx);
+          await notifyNativeRecoveryNotices(tx);
+          await notifyNativeRunProjection(tx);
+          await notifyNativeEnvironmentSettlement(tx);
+          await notifyNativeResultCommit(tx);
+          await notifyNativeWorkspaceFinalization(tx);
         }
         if (patch.enableChatConnectors !== undefined) await notifyVoiceChange(tx);
         await notifyToolConnectionHealth(tx, "*");

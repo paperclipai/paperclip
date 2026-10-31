@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
 import { notifyDecisionTargetIssueRemoval } from "./decision-targets.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -73,7 +74,7 @@ import { secretService } from "./secrets.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { parseCron, validateCron } from "./cron.js";
 import { heartbeatService } from "./heartbeat.js";
-import { finalizeRoutineRun, syncRoutineRunStatusForIssue } from "./routine-run-status.js";
+import { finalizeRoutineRun, routineExecutionStatusService, syncRoutineRunStatusForIssue } from "./routine-run-status.js";
 import {
   instanceSettingsService,
   isTruthyRuntimeEnvValue,
@@ -665,6 +666,22 @@ export function routineService(
   const heartbeat = deps.heartbeat ?? heartbeatService(db, {
     pluginWorkerManager: deps.pluginWorkerManager,
   });
+
+
+  const scheduledTriggerEligibility = () => and(
+    eq(routineTriggers.kind, "schedule"),
+    eq(routineTriggers.enabled, true),
+    eq(routineTriggers.archived, false),
+    eq(routines.status, "active"),
+    eq(companies.status, "active"),
+    isNotNull(routineTriggers.nextRunAt),
+    isNotNull(routineTriggers.cronExpression),
+    isNotNull(routineTriggers.timezone),
+  );
+  const scheduledRoutineJoin = () => and(
+    eq(routineTriggers.routineId, routines.id),
+    eq(routineTriggers.companyId, routines.companyId),
+  );
 
   async function getRoutineById(id: string) {
     if (!isRoutineUuidInput(id)) return null;
@@ -1772,6 +1789,11 @@ export function routineService(
         }
       }
 
+
+
+      if (input.trigger?.kind === "schedule" && input.nextRunAtOverride === undefined) {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
+      }
       const triggeredAt = new Date();
       const manualRunnerUserId = input.source === "manual" ? input.actor?.userId ?? null : null;
       const latestRevisionResponsibleUserId = input.routine.latestRevisionId
@@ -1928,6 +1950,7 @@ export function routineService(
         if (createdIssue) {
           await notifyApprovalWork(txDb, createdIssue.companyId);
           await notifyDecisionTargetIssueRemoval(txDb, createdIssue.id);
+          await notifyStatusCardIssueChange(txDb, createdIssue.companyId);
           await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
         }
         const failureReason = error instanceof Error ? error.message : String(error);
@@ -1980,7 +2003,8 @@ export function routineService(
     return run;
   }
 
-  let statusReconcileCursor: string | null = null;
+
+  let statusReconcileCursor: string | undefined;
 
   async function syncRunStatusForIssue(issueId: string, executor: Db = db) {
     return syncRoutineRunStatusForIssue(executor, issueId);
@@ -3092,7 +3116,18 @@ export function routineService(
       }));
     },
 
-    tickScheduledTriggers: async (now: Date = new Date()) => {
+    nextScheduledTriggerAt: async (): Promise<number | null> => {
+      const [row] = await db.select({ at: routineTriggers.nextRunAt })
+        .from(routineTriggers)
+        .innerJoin(routines, scheduledRoutineJoin())
+        .innerJoin(companies, eq(routines.companyId, companies.id))
+        .where(scheduledTriggerEligibility())
+        .orderBy(asc(routineTriggers.nextRunAt)).limit(1);
+
+      return row?.at?.getTime() ?? null;
+    },
+
+    tickScheduledTriggers: async (now: Date = new Date(), canContinue: () => boolean = () => true) => {
       const worktreeActivation = isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)
         ? await resolveWorktreeRunExecutionActivationState({
           getExperimental: instanceSettings.getExperimental,
@@ -3106,15 +3141,12 @@ export function routineService(
           projectPausedAt: projects.pausedAt,
         })
         .from(routineTriggers)
-        .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+        .innerJoin(routines, scheduledRoutineJoin())
+        .innerJoin(companies, eq(routines.companyId, companies.id))
         .leftJoin(projects, eq(routines.projectId, projects.id))
         .where(
           and(
-            eq(routineTriggers.kind, "schedule"),
-            eq(routineTriggers.enabled, true),
-            eq(routineTriggers.archived, false),
-            eq(routines.status, "active"),
-            isNotNull(routineTriggers.nextRunAt),
+            scheduledTriggerEligibility(),
             lte(routineTriggers.nextRunAt, now),
           ),
         )
@@ -3122,6 +3154,9 @@ export function routineService(
 
       let triggered = 0;
       for (const row of due) {
+
+
+        if (!canContinue()) break;
         if (!row.trigger.nextRunAt || !row.trigger.cronExpression || !row.trigger.timezone) continue;
 
         // Suppress scheduled firings while the routine's project is paused. The tick is still
@@ -3213,41 +3248,14 @@ export function routineService(
       return { triggered };
     },
 
-    // Repair a missed issue-status hook through the same status transition as
-    // normal issue writes. Never discard queued input or infer run completion
-    // from age. Lock both owners and re-read the issue before applying repair.
     reconcileExecutionRunStatuses: async (): Promise<{ scanned: number; settled: number; deferred: number }> => {
-      const candidates = await db.select({ id: routineRuns.id, companyId: routineRuns.companyId,
-        issueId: issues.id, routineId: routineRuns.routineId })
-        .from(routineRuns).innerJoin(routines, and(eq(routines.id, routineRuns.routineId), eq(routines.companyId, routineRuns.companyId)))
-        .innerJoin(issues, and(eq(issues.id, routineRuns.linkedIssueId),
-          eq(issues.companyId, routineRuns.companyId), eq(issues.originKind, "routine_execution"),
-          sql`${issues.originRunId} = ${routineRuns.id}::text`, sql`${issues.originId} = ${routineRuns.routineId}::text`))
-        .where(and(eq(routineRuns.status, "issue_created"), inArray(issues.status, ["done", "cancelled", "blocked"]),
-          ...(statusReconcileCursor ? [sql`${routineRuns.id}::text > ${statusReconcileCursor}`] : [])))
-        .orderBy(asc(routineRuns.id)).limit(50);
-      statusReconcileCursor = candidates.length === 50 ? candidates.at(-1)!.id : null;
-      let settled = 0;
-      let deferred = 0;
+      const service = routineExecutionStatusService(db);
+      const candidates = await service.load(undefined, statusReconcileCursor);
+      statusReconcileCursor = candidates.length === 50 ? candidates.at(-1)!.id : undefined;
+      let settled = 0, deferred = 0;
       for (const candidate of candidates) {
         try {
-          const repaired = await db.transaction(async tx => {
-            await tx.execute(sql`SET LOCAL lock_timeout = '500ms'`);
-            await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
-            const [routine] = await tx.select({ id: routines.id }).from(routines).where(and(
-              eq(routines.id, candidate.routineId), eq(routines.companyId, candidate.companyId))).for("share");
-            if (!routine) return false;
-            const [issue] = await tx.select().from(issues).where(and(eq(issues.id, candidate.issueId),
-              eq(issues.companyId, candidate.companyId), eq(issues.originKind, "routine_execution"),
-              eq(issues.originRunId, candidate.id), eq(issues.originId, candidate.routineId))).for("update");
-            if (!issue || !["done", "cancelled", "blocked"].includes(issue.status)) return false;
-            const [run] = await tx.select().from(routineRuns).where(and(eq(routineRuns.id, candidate.id),
-              eq(routineRuns.companyId, candidate.companyId), eq(routineRuns.routineId, candidate.routineId),
-              eq(routineRuns.linkedIssueId, issue.id), eq(routineRuns.status, "issue_created"))).for("update");
-            if (!run) return false;
-            return (await syncRunStatusForIssue(issue.id, tx as unknown as Db)) !== null;
-          });
-          if (repaired) settled += 1;
+          if (await service.settle(candidate)) settled++;
         } catch (error) {
           let current: unknown = error;
           let retryable = false;
@@ -3257,7 +3265,7 @@ export function routineService(
             current = cause.cause;
           }
           if (!retryable) throw error;
-          deferred += 1;
+          deferred++;
         }
       }
       return { scanned: candidates.length, settled, deferred };

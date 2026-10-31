@@ -2,6 +2,7 @@ import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
 import { collectRunFailureDiagnostics } from "../services/run-failure-diagnostics.js";
 import { createSandboxOrphanCleanupSpool } from "../services/sandbox-orphan-cleanup-spool.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
+import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -24,6 +25,7 @@ import {
   companySecrets,
   createDb,
   environmentLeases,
+  sandboxCreationOperations,
   environments,
   executionWorkspaces,
   heartbeatRuns,
@@ -40,7 +42,6 @@ import {
   SANDBOX_CAPABILITY_KEYS,
   environmentRuntimeService,
   findReusableSandboxLeaseId,
-  SandboxOrphanCleanupWriteError,
 } from "../services/environment-runtime.ts";
 import * as sandboxProviderRuntime from "../services/sandbox-provider-runtime.ts";
 import * as environmentsModule from "../services/environments.ts";
@@ -62,7 +63,10 @@ import { ROOT_CONTEXT, trace } from "@opentelemetry/api";
 import { buildNativeHarnessBackupManifest } from "../services/native-runtime/native-session-executor.ts";
 import { createNativeHarnessBackupStamp } from "../services/native-runtime/native-harness-backup-stamp.ts";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ENVIRONMENT_RUNTIME_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const sshFixtureSupport = await getSshEnvLabSupport();
 const managedCloudConfig = { v: 1, mode: "cloud", catalogVersion: "test", features: {}, plugins: { autoInstall: ["daytona"] } };
@@ -199,9 +203,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
   const previousOrphanCleanupSpoolDir = process.env.SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR;
 
   beforeAll(async () => {
-    const started = await startEmbeddedPostgresTestDatabase("environment-runtime");
-    stopDb = started.stop;
-    connectionString = started.connectionString;
+    if (externalTestDatabaseUrl) connectionString = externalTestDatabaseUrl;
+    else {
+      const started = await startEmbeddedPostgresTestDatabase("environment-runtime");
+      stopDb = started.stop;
+      connectionString = started.connectionString;
+    }
   });
 
   beforeEach(async () => {
@@ -858,7 +865,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         providerLeaseId: `lifecycle-${++acquisitions}`, metadata: { remoteCwd: "/workspace" },
       };
       if (method === "environmentResumeLease") return {
-        providerLeaseId: warmProviderLeaseId, metadata: { remoteCwd: "/workspace" },
+        providerLeaseId: warmProviderLeaseId, metadata: { remoteCwd: "/workspace", creationOperationId: randomUUID() },
       };
       if (method === "environmentDestroyLease" || method === "environmentStopLease" || method === "environmentReleaseLease") return {
         providerLeaseId: input.providerLeaseId, state: method === "environmentDestroyLease" ? "destroyed" : "stopped",
@@ -889,6 +896,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await db.insert(heartbeatRuns).values({ id: nextRunId, companyId: seeded.companyId, agentId: seeded.agentId, status: "running" });
     const next = await runtime.acquireRunLease({ ...input, environment: warmEnvironment, heartbeatRunId: nextRunId });
     expect(next.lease.providerLeaseId).toBe(warmProviderLeaseId);
+    expect(next.lease.heartbeatRunId).toBe(nextRunId);
+    expect(next.lease.id).not.toBe(warm.lease.id);
     expect(acquisitions).toBe(2);
     expect((await environmentService(db).getById(environment.id))?.config.reuseLease).toBe(false);
   });
@@ -1185,32 +1194,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect(execution).toMatchObject({ environmentAcquisitionPhase: "shell",
         environmentAcquisitionElapsedMs: 300_000, environmentAcquisitionBudgetMs: 300_000 });
     } else expect(execution).not.toHaveProperty("environmentAcquisitionPhase");
-    if (mode === "inline") {
-      await expect(acquisition).rejects.toMatchObject({
-        message: "Sandbox creation failed; allocated sandbox cleanup was confirmed.", cause: failure,
-      });
-    } else {
-      await expect(acquisition).rejects.toBe(failure);
-    }
+    await expect(acquisition).rejects.toBe(failure);
     const rows = await db.select().from(environmentLeases).where(eq(environmentLeases.providerLeaseId, providerLeaseId));
-    if (["foreign scope", "foreign environment", "foreign run", "malformed"].includes(mode)) {
-      expect(rows).toHaveLength(0);
-      expect(call.mock.calls.filter((c) => c[1] === "environmentDestroyLease")).toHaveLength(0);
-      return;
-    }
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ status: mode === "inline" ? "expired" : "pending_cleanup",
-      cleanupStatus: mode === "inline" ? "success" : "failed", companyId: seeded.companyId,
-      metadata: { pluginId: seeded.pluginId, sandboxProviderPlugin: true, failedCreateCleanup: cleanup } });
-    if (mode === "pending" || mode === "deleted environment") {
-      available = true;
-      if (mode === "deleted environment") {
-        await db.update(environmentLeases).set({ environmentId: null }).where(eq(environmentLeases.id, rows[0].id));
-      }
-      const restarted = environmentRuntimeService(db, { pluginWorkerManager: worker });
-      const persisted = await environmentService(db).getLeaseById(rows[0].id);
-      await expect(restarted.retryPendingSandboxTeardown({ environment: null, lease: persisted! })).resolves.toEqual({ providerLeaseId, state: "destroyed" });
-    }
+    expect(rows).toHaveLength(0);
+    expect(call.mock.calls.filter(value => value[1] === "environmentDestroyLease")).toHaveLength(0);
+    expect(await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.companyId, seeded.companyId)))
+      .toEqual([expect.objectContaining({ state: "pending", originalEnvironmentId: seeded.environment.id, runId: seeded.runId })]);
   });
 
   it.each(["deleted receipt lost", "observation response lost", "journal write failed", "foreign observation"])(
@@ -1263,8 +1252,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       });
       const worker = { isRunning: () => true, getWorker: () => ({ supportedMethods: ["environmentDestroyLease"] }), call } as unknown as PluginWorkerManager;
       const runtime = environmentRuntimeService(db, { pluginWorkerManager: worker });
-      await expect(runtime.acquireRunLease({ companyId: seeded.companyId, environment: seeded.environment,
-        issueId: null, heartbeatRunId: seeded.runId, persistedExecutionWorkspace: null })).rejects.toBe(failure);
+      const pending = await environmentService(db).insertPendingCleanupLease({
+        companyId: seeded.companyId, environmentId: seeded.environment.id, heartbeatRunId: seeded.runId,
+        provider: "fake-plugin", providerLeaseId: cleanup.providerLeaseId,
+        metadata: { ...seeded.environment.config, driver: "sandbox", pluginId: seeded.pluginId, sandboxProviderPlugin: true, failedCreateCleanup: cleanup },
+        failureReason: "interrupted_sandbox_creation",
+      });
+      await runtime.retryPendingSandboxTeardown({ environment: null, lease: pending }).catch(() => {});
       const rows = await db.select().from(environmentLeases).where(eq(environmentLeases.providerLeaseId, cleanup.providerLeaseId));
       expect(rows).toHaveLength(1);
       expect(rows[0].status).toBe("pending_cleanup");
@@ -1759,732 +1753,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     },
   );
 
-  it("releases the remote sandbox when the lease insert rejects a foreign-company binding", async () => {
-    const { companyId, environment, runId } = await seedEnvironment({
-      driver: "sandbox",
-      name: "Foreign-bound Fake Sandbox",
-      config: {
-        provider: "fake",
-        image: "ubuntu:24.04",
-        reuseLease: false,
-      },
-    });
-
-    // A managed reconciliation binds the environment to another company after the
-    // route guard read an empty binding list. The lease insert then rejects the
-    // foreign-company binding with the 403 `environment_company_mismatch`.
-    const otherCompanyId = randomUUID();
-    await db.insert(companies).values({
-      id: otherCompanyId,
-      name: "Other Co",
-      issuePrefix: "OTA",
-      status: "active",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    await insertForeignCompanyEnvironmentBinding(otherCompanyId, environment);
-
-    const destroySpy = vi.spyOn(sandboxProviderRuntime, "destroySandboxProviderLease");
-    try {
-      await expect(
-        runtime.acquireRunLease({
-          companyId,
-          environment,
-          issueId: null,
-          heartbeatRunId: runId,
-          persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
-        }),
-      ).rejects.toMatchObject({
-        status: 403,
-        details: { code: "environment_company_mismatch" },
-      });
-
-      // The acquire records the durable pending-cleanup row before the teardown,
-      // so the row lands while the database is proven reachable. The successful
-      // teardown then releases the row to the terminal `expired` state, so no
-      // active or pending_cleanup row remains for the orphan.
-      const leaseRows = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.environmentId, environment.id));
-      expect(leaseRows).toHaveLength(1);
-      expect(leaseRows[0]?.status).toBe("expired");
-      expect(leaseRows[0]?.cleanupStatus).toBe("success");
-
-      // The acquire already provisioned the remote sandbox, so it releases the
-      // sandbox on the rejection. Without this teardown the rejected insert leaks
-      // a live sandbox that no lease row tracks. The teardown carries the
-      // provisioned provider lease id.
-      expect(destroySpy).toHaveBeenCalledTimes(1);
-      expect(destroySpy.mock.calls[0]?.[0]?.providerLeaseId).toMatch(
-        new RegExp(`^sandbox://fake/${runId}/[0-9a-f-]{36}$`),
-      );
-    } finally {
-      destroySpy.mockRestore();
-    }
-  });
-
-  it("destroys the remote plugin sandbox when the lease insert rejects a foreign-company binding", async () => {
-    // The Claude login runs on a plugin-backed sandbox provider (Daytona), so this
-    // path is the one the login uses. It must also release the remote sandbox when
-    // the conditional lease insert rejects a foreign-company binding.
-    const pluginId = randomUUID();
-    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
-    const pluginConfig = { provider: "fake-plugin", image: "fake:test", reuseLease: false };
-    const environment = {
-      ...baseEnvironment,
-      name: "Foreign-bound Plugin Sandbox",
-      driver: "sandbox",
-      config: pluginConfig,
-    };
-    await environmentService(db).update(environment.id, {
-      driver: "sandbox",
-      name: environment.name,
-      config: pluginConfig,
-    });
-    await insertSandboxProviderPlugin(pluginId);
-
-    // A managed reconciliation binds the environment to another company after the
-    // route guard read an empty binding list. The lease insert then rejects the
-    // foreign-company binding with the 403 `environment_company_mismatch`.
-    const otherCompanyId = randomUUID();
-    await db.insert(companies).values({
-      id: otherCompanyId,
-      name: "Other Co",
-      issuePrefix: "OTB",
-      status: "active",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    await insertForeignCompanyEnvironmentBinding(otherCompanyId, environment);
-
-    const workerManager = {
-      isRunning: vi.fn((id: string) => id === pluginId),
-      getWorker: vi.fn(() => ({ supportedMethods: ["environmentDestroyLease"] })),
-      call: vi.fn(async (_pluginId: string, method: string) => {
-        if (method === "environmentAcquireLease") {
-          return {
-            providerLeaseId: "plugin-lease-1",
-            metadata: { provider: "fake-plugin", image: "fake:test", reuseLease: false },
-          };
-        }
-        if (method === "environmentDestroyLease") {
-          return { providerLeaseId: "plugin-lease-1", state: "destroyed" };
-        }
-        throw new Error(`Unexpected plugin method: ${method}`);
-      }),
-    } as unknown as PluginWorkerManager;
-    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
-
-    await expect(
-      runtimeWithPlugin.acquireRunLease({
-        companyId,
-        environment,
-        issueId: null,
-        heartbeatRunId: runId,
-        persistedExecutionWorkspace: null,
-        assertCompanyBinding: true,
-      }),
-    ).rejects.toMatchObject({
-      status: 403,
-      details: { code: "environment_company_mismatch" },
-    });
-
-    // The acquire records the durable pending-cleanup row before the teardown,
-    // so the row lands while the database is proven reachable. The successful
-    // teardown then releases the row to the terminal `expired` state, so no
-    // active or pending_cleanup row remains for the orphan.
-    const leaseRows = await db
-      .select()
-      .from(environmentLeases)
-      .where(eq(environmentLeases.environmentId, environment.id));
-    expect(leaseRows).toHaveLength(1);
-    expect(leaseRows[0]?.status).toBe("expired");
-    expect(leaseRows[0]?.cleanupStatus).toBe("success");
-    expect(leaseRows[0]?.metadata?.remoteExecutionTermination).toMatchObject({
-      companyId, runId, leaseId: leaseRows[0]!.id, providerLeaseId: "plugin-lease-1", state: "destroyed",
-    });
-
-    // The acquire provisioned the remote plugin sandbox, so it destroys the
-    // sandbox on the rejection. Without this teardown the rejected insert leaks a
-    // live sandbox that no lease row tracks.
-    const destroyCalls = (workerManager.call as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
-      (callArgs) => callArgs[1] === "environmentDestroyLease",
-    );
-    expect(destroyCalls).toHaveLength(1);
-    expect(destroyCalls[0]?.[2]).toMatchObject({ providerLeaseId: "plugin-lease-1" });
-
-    await environmentService(db).update(environment.id, { driver: "local", config: {} });
-  });
-
-  it("records a durable pending-cleanup lease when the built-in teardown fails after a foreign-company rejection", async () => {
-    const { companyId, environment, runId } = await seedEnvironment({
-      driver: "sandbox",
-      name: "Foreign-bound Fake Sandbox Teardown Fail",
-      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
-    });
-    const otherCompanyId = randomUUID();
-    await db.insert(companies).values({
-      id: otherCompanyId,
-      name: "Other Co Built-in",
-      issuePrefix: "OTC",
-      status: "active",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    await insertForeignCompanyEnvironmentBinding(otherCompanyId, environment);
-
-    // The remote teardown fails, so the acquire cannot release the sandbox
-    // directly. It must record a durable pending-cleanup row instead.
-    const destroySpy = vi
-      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
-      .mockRejectedValue(new Error("teardown failed"));
-    try {
-      await expect(
-        runtime.acquireRunLease({
-          companyId,
-          environment,
-          issueId: null,
-          heartbeatRunId: runId,
-          persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
-        }),
-      ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
-
-      expect(destroySpy).toHaveBeenCalledTimes(1);
-      // The failed teardown left a durable pending-cleanup row that carries the
-      // provider lease id for a later sweep.
-      const rows = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.environmentId, environment.id));
-      expect(rows).toHaveLength(1);
-      expect(rows[0]?.status).toBe("pending_cleanup");
-      expect(rows[0]?.cleanupStatus).toBe("failed");
-      expect(rows[0]?.providerLeaseId).toMatch(new RegExp(`^sandbox://fake/${runId}/[0-9a-f-]{36}$`));
-    } finally {
-      destroySpy.mockRestore();
-    }
-  });
-
-  it("records the durable pending-cleanup row before it runs the inline teardown", async () => {
-    const { companyId, environment, runId } = await seedEnvironment({
-      driver: "sandbox",
-      name: "Foreign-bound Fake Sandbox Write First",
-      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
-    });
-    const otherCompanyId = randomUUID();
-    await db.insert(companies).values({
-      id: otherCompanyId,
-      name: "Other Co Write First",
-      issuePrefix: "OWF",
-      status: "active",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    await insertForeignCompanyEnvironmentBinding(otherCompanyId, environment);
-
-    // The teardown reads the lease table when it runs. A durable pending_cleanup
-    // row must already exist, which proves the acquire records the row before the
-    // teardown. This ordering closes the window the finding describes: the durable
-    // write lands while the database is proven reachable, before the teardown RPC
-    // that a database outage could otherwise interrupt.
-    let pendingCleanupRowsAtTeardown = -1;
-    const destroySpy = vi
-      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
-      .mockImplementation(async () => {
-        const rows = await db
-          .select()
-          .from(environmentLeases)
-          .where(eq(environmentLeases.environmentId, environment.id));
-        pendingCleanupRowsAtTeardown = rows.filter((row) => row.status === "pending_cleanup").length;
-      });
-    try {
-      await expect(
-        runtime.acquireRunLease({
-          companyId,
-          environment,
-          issueId: null,
-          heartbeatRunId: runId,
-          persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
-        }),
-      ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
-
-      // The durable row already tracked the orphan when the teardown ran.
-      expect(pendingCleanupRowsAtTeardown).toBe(1);
-      expect(destroySpy).toHaveBeenCalledTimes(1);
-
-      // The teardown succeeded, so the acquire released the row to the terminal
-      // `expired` state and left no pending_cleanup row.
-      const rows = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.environmentId, environment.id));
-      expect(rows).toHaveLength(1);
-      expect(rows[0]?.status).toBe("expired");
-      expect(rows[0]?.cleanupStatus).toBe("success");
-    } finally {
-      destroySpy.mockRestore();
-    }
-  });
-
-  it("leaves no orphan and no error when the durable write fails but the teardown succeeds", async () => {
-    const { companyId, environment, runId } = await seedEnvironment({
-      driver: "sandbox",
-      name: "Foreign-bound Fake Sandbox Write Fail Teardown Ok",
-      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
-    });
-    const otherCompanyId = randomUUID();
-    await db.insert(companies).values({
-      id: otherCompanyId,
-      name: "Other Co Write Fail",
-      issuePrefix: "OWK",
-      status: "active",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    await insertForeignCompanyEnvironmentBinding(otherCompanyId, environment);
-
-    // Force every durable pending-cleanup write to fail, but let the teardown
-    // succeed. A successful teardown removes the orphan, so the acquire needs no
-    // durable row and raises no orphan-cleanup write error. The write-first order
-    // never turns a clean teardown into a failure.
-    const realEnvironmentService = environmentsModule.environmentService;
-    const factorySpy = vi
-      .spyOn(environmentsModule, "environmentService")
-      .mockImplementation((database: Parameters<typeof realEnvironmentService>[0]) => {
-        const real = realEnvironmentService(database);
-        return {
-          ...real,
-          insertPendingCleanupLease: () =>
-            Promise.reject(new Error("pending-cleanup write failed; database down")),
-        };
-      });
-    const destroySpy = vi
-      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
-      .mockResolvedValue(undefined as never);
-    try {
-      // Set the retry backoff to zero, so the failed write retries never slow the
-      // test.
-      const runtime = environmentRuntimeService(db, { pendingCleanupWriteBackoffMs: 0 });
-      const rejection = await runtime
-        .acquireRunLease({
-          companyId,
-          environment,
-          issueId: null,
-          heartbeatRunId: runId,
-          persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
-        })
-        .then(
-          () => {
-            throw new Error("acquireRunLease resolved but must reject");
-          },
-          (error: unknown) => error,
-        );
-
-      // The rejection is the original company mismatch, not an orphan-cleanup
-      // write error, because the teardown removed the orphan.
-      expect(rejection).not.toBeInstanceOf(SandboxOrphanCleanupWriteError);
-      expect(rejection).toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
-      expect(destroySpy).toHaveBeenCalledTimes(1);
-
-      // No orphan remains and no durable row was needed, so the lease table is
-      // empty for the environment.
-      const rows = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.environmentId, environment.id));
-      expect(rows).toHaveLength(0);
-
-      // The buffer holds no orphan, so a flush recovers nothing.
-      const flushed = await runtime.flushDeferredOrphanCleanups();
-      expect(flushed).toEqual({ recovered: 0, pending: 0 });
-    } finally {
-      destroySpy.mockRestore();
-      factorySpy.mockRestore();
-    }
-  });
-
-  it("records a durable pending-cleanup lease when the plugin teardown fails after a foreign-company rejection", async () => {
-    const pluginId = randomUUID();
-    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
-    const pluginConfig = { provider: "fake-plugin", image: "fake:test", reuseLease: false };
-    const environment = {
-      ...baseEnvironment,
-      name: "Foreign-bound Plugin Sandbox Teardown Fail",
-      driver: "sandbox",
-      config: pluginConfig,
-    };
-    await environmentService(db).update(environment.id, {
-      driver: "sandbox",
-      name: environment.name,
-      config: pluginConfig,
-    });
-    await insertSandboxProviderPlugin(pluginId);
-    const otherCompanyId = randomUUID();
-    await db.insert(companies).values({
-      id: otherCompanyId,
-      name: "Other Co Plugin",
-      issuePrefix: "OTD",
-      status: "active",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    await insertForeignCompanyEnvironmentBinding(otherCompanyId, environment);
-
-    const workerManager = {
-      isRunning: vi.fn((id: string) => id === pluginId),
-      getWorker: vi.fn(() => ({ supportedMethods: ["environmentDestroyLease"] })),
-      call: vi.fn(async (_pluginId: string, method: string) => {
-        if (method === "environmentAcquireLease") {
-          return {
-            providerLeaseId: "plugin-lease-2",
-            metadata: { provider: "fake-plugin", image: "fake:test", reuseLease: false },
-          };
-        }
-        if (method === "environmentDestroyLease") {
-          throw new Error("destroy failed");
-        }
-        throw new Error(`Unexpected plugin method: ${method}`);
-      }),
-    } as unknown as PluginWorkerManager;
-    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
-
-    await expect(
-      runtimeWithPlugin.acquireRunLease({
-        companyId,
-        environment,
-        issueId: null,
-        heartbeatRunId: runId,
-        persistedExecutionWorkspace: null,
-        assertCompanyBinding: true,
-      }),
-    ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
-
-    // The failed plugin teardown left a durable pending-cleanup row that carries
-    // the provider lease id for a later sweep.
-    const rows = await db
-      .select()
-      .from(environmentLeases)
-      .where(eq(environmentLeases.environmentId, environment.id));
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.status).toBe("pending_cleanup");
-    expect(rows[0]?.cleanupStatus).toBe("failed");
-    expect(rows[0]?.providerLeaseId).toBe("plugin-lease-2");
-
-    await environmentService(db).update(environment.id, { driver: "local", config: {} });
-  });
-
-  it("throws a SandboxOrphanCleanupWriteError when the built-in durable pending-cleanup write also fails", async () => {
-    const { companyId, environment, runId } = await seedEnvironment({
-      driver: "sandbox",
-      name: "Foreign-bound Fake Sandbox Cleanup Write Fail",
-      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
-    });
-    const otherCompanyId = randomUUID();
-    await db.insert(companies).values({
-      id: otherCompanyId,
-      name: "Other Co Cleanup Write",
-      issuePrefix: "OCW",
-      status: "active",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    await insertForeignCompanyEnvironmentBinding(otherCompanyId, environment);
-
-    // The remote teardown fails, so the acquire tries to record a durable
-    // pending-cleanup row instead.
-    const destroySpy = vi
-      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
-      .mockRejectedValue(new Error("teardown failed"));
-    // Force the durable pending-cleanup write to fail on every attempt. The
-    // write retries a few times, so reject the insert each time and let the
-    // primary company-bound acquire reject for real.
-    const failingInsert = vi
-      .fn<Parameters<ReturnType<typeof environmentService>["insertPendingCleanupLease"]>, Promise<never>>()
-      .mockRejectedValue(new Error("pending-cleanup write failed"));
-    const realEnvironmentService = environmentsModule.environmentService;
-    const factorySpy = vi
-      .spyOn(environmentsModule, "environmentService")
-      .mockImplementation((database: Parameters<typeof realEnvironmentService>[0]) => {
-        const real = realEnvironmentService(database);
-        return {
-          ...real,
-          insertPendingCleanupLease: failingInsert,
-        };
-      });
-    // The durable database write fails, so the only durable handle left is the
-    // error log. Capture it to prove the leaked sandbox stays discoverable.
-    const logSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
-    try {
-      // Set the retry backoff to zero, so the retries never slow the test.
-      const runtimeWithFailingCleanup = environmentRuntimeService(db, {
-        pendingCleanupWriteBackoffMs: 0,
-      });
-      const rejection = await runtimeWithFailingCleanup
-        .acquireRunLease({
-          companyId,
-          environment,
-          issueId: null,
-          heartbeatRunId: runId,
-          persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
-        })
-        .then(
-          () => {
-            throw new Error("acquireRunLease resolved but must reject");
-          },
-          (error: unknown) => error,
-        );
-
-      // The failed durable write is not swallowed: the acquire throws a
-      // SandboxOrphanCleanupWriteError that keeps the original 403 rejection as
-      // its cause.
-      expect(rejection).toBeInstanceOf(SandboxOrphanCleanupWriteError);
-      expect(rejection).toMatchObject({ provider: "fake" });
-      expect((rejection as SandboxOrphanCleanupWriteError).cause).toMatchObject({
-        status: 403,
-        details: { code: "environment_company_mismatch" },
-      });
-      expect(destroySpy).toHaveBeenCalledTimes(1);
-      // The write retried the durable insert before it gave up, so more than one
-      // attempt ran.
-      expect(failingInsert.mock.calls.length).toBeGreaterThan(1);
-      // The durable write failed before it created a row, so no lease row exists.
-      const rows = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.environmentId, environment.id));
-      expect(rows).toHaveLength(0);
-      // The durable log preserves the provider identifiers, so an operator keeps
-      // a handle to find and tear the leaked sandbox down by hand.
-      const cleanupLog = logSpy.mock.calls.find(
-        ([fields]) =>
-          (fields as { errorKind?: string } | undefined)?.errorKind ===
-          "sandbox_orphan_cleanup_write_failed",
-      );
-      expect(cleanupLog).toBeDefined();
-      expect(cleanupLog?.[0]).toMatchObject({
-        provider: "fake",
-        companyId,
-        environmentId: environment.id,
-      });
-      // The log never carries the caught exception, so no credential leaks.
-      expect(cleanupLog?.[0]).not.toHaveProperty("cause");
-      expect(cleanupLog?.[0]).not.toHaveProperty("cleanupWriteError");
-    } finally {
-      logSpy.mockRestore();
-      factorySpy.mockRestore();
-      destroySpy.mockRestore();
-    }
-  });
-
-  it("recovers cleanup state when a retry of the durable pending-cleanup write succeeds", async () => {
-    const { companyId, environment, runId } = await seedEnvironment({
-      driver: "sandbox",
-      name: "Foreign-bound Fake Sandbox Cleanup Write Retry",
-      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
-    });
-    const otherCompanyId = randomUUID();
-    await db.insert(companies).values({
-      id: otherCompanyId,
-      name: "Other Co Cleanup Retry",
-      issuePrefix: "OCR",
-      status: "active",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    await insertForeignCompanyEnvironmentBinding(otherCompanyId, environment);
-
-    // The remote teardown fails, so the acquire tries to record a durable
-    // pending-cleanup row instead.
-    const destroySpy = vi
-      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
-      .mockRejectedValue(new Error("teardown failed"));
-    // The first durable write attempt fails, so the acquire retries. The second
-    // attempt delegates to the real insert, so a durable pending_cleanup row
-    // lands and a later sweep can find the orphan.
-    let insertAttempts = 0;
-    const realEnvironmentService = environmentsModule.environmentService;
-    const factorySpy = vi
-      .spyOn(environmentsModule, "environmentService")
-      .mockImplementation((database: Parameters<typeof realEnvironmentService>[0]) => {
-        const real = realEnvironmentService(database);
-        return {
-          ...real,
-          insertPendingCleanupLease: (
-            input: Parameters<typeof real.insertPendingCleanupLease>[0],
-          ) => {
-            insertAttempts += 1;
-            if (insertAttempts === 1) {
-              return Promise.reject(new Error("pending-cleanup write failed once"));
-            }
-            return real.insertPendingCleanupLease(input);
-          },
-        };
-      });
-    try {
-      // Set the retry backoff to zero, so the retry never slows the test.
-      const runtimeWithRetry = environmentRuntimeService(db, {
-        pendingCleanupWriteBackoffMs: 0,
-      });
-      const rejection = await runtimeWithRetry
-        .acquireRunLease({
-          companyId,
-          environment,
-          issueId: null,
-          heartbeatRunId: runId,
-          persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
-        })
-        .then(
-          () => {
-            throw new Error("acquireRunLease resolved but must reject");
-          },
-          (error: unknown) => error,
-        );
-
-      // The retry landed the durable row, so the acquire rejects with the
-      // original company-mismatch rejection, not a SandboxOrphanCleanupWriteError.
-      expect(rejection).not.toBeInstanceOf(SandboxOrphanCleanupWriteError);
-      expect(rejection).toMatchObject({
-        status: 403,
-        details: { code: "environment_company_mismatch" },
-      });
-      expect(destroySpy).toHaveBeenCalledTimes(1);
-      // The first attempt failed and the second succeeded, so the write ran twice.
-      expect(insertAttempts).toBe(2);
-      // A durable pending_cleanup lease row now tracks the orphan, so a sweep can
-      // find and release the leaked sandbox.
-      const rows = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.environmentId, environment.id));
-      expect(rows).toHaveLength(1);
-      expect(rows[0]?.status).toBe("pending_cleanup");
-      expect(rows[0]?.cleanupStatus).toBe("failed");
-      expect(rows[0]?.failureReason).toBe("acquire_rejected_teardown_failed");
-    } finally {
-      factorySpy.mockRestore();
-      destroySpy.mockRestore();
-    }
-  });
-
-  it("buffers the orphan in-process and a later sweep flush lands the durable row after the database recovers", async () => {
-    const { companyId, environment, runId } = await seedEnvironment({
-      driver: "sandbox",
-      name: "Foreign-bound Fake Sandbox Cleanup Buffer Flush",
-      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
-    });
-    const otherCompanyId = randomUUID();
-    await db.insert(companies).values({
-      id: otherCompanyId,
-      name: "Other Co Cleanup Buffer",
-      issuePrefix: "OCB",
-      status: "active",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    await insertForeignCompanyEnvironmentBinding(otherCompanyId, environment);
-
-    // The remote teardown fails, so the acquire tries to record a durable
-    // pending-cleanup row instead.
-    const destroySpy = vi
-      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
-      .mockRejectedValue(new Error("teardown failed"));
-    // The database is down, so every synchronous pending-cleanup write rejects.
-    // The flag flips to false when the database recovers, so a later flush lands
-    // the durable row.
-    let databaseDown = true;
-    const realEnvironmentService = environmentsModule.environmentService;
-    const factorySpy = vi
-      .spyOn(environmentsModule, "environmentService")
-      .mockImplementation((database: Parameters<typeof realEnvironmentService>[0]) => {
-        const real = realEnvironmentService(database);
-        return {
-          ...real,
-          insertPendingCleanupLease: (
-            input: Parameters<typeof real.insertPendingCleanupLease>[0],
-          ) => {
-            if (databaseDown) {
-              return Promise.reject(new Error("pending-cleanup write failed; database down"));
-            }
-            return real.insertPendingCleanupLease(input);
-          },
-        };
-      });
-    const logSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
-    try {
-      // Set the retry backoff to zero, so the retries never slow the test.
-      const runtime = environmentRuntimeService(db, { pendingCleanupWriteBackoffMs: 0 });
-      const rejection = await runtime
-        .acquireRunLease({
-          companyId,
-          environment,
-          issueId: null,
-          heartbeatRunId: runId,
-          persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
-        })
-        .then(
-          () => {
-            throw new Error("acquireRunLease resolved but must reject");
-          },
-          (error: unknown) => error,
-        );
-
-      // The synchronous write failed on every attempt, so the acquire still
-      // throws the orphan-cleanup write error that keeps the original rejection.
-      expect(rejection).toBeInstanceOf(SandboxOrphanCleanupWriteError);
-      // The database was down, so no durable row exists yet.
-      let rows = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.environmentId, environment.id));
-      expect(rows).toHaveLength(0);
-      // The acquire buffered the orphan in-process, so the log records the buffer.
-      const bufferedLog = logSpy.mock.calls.find(
-        ([fields]) =>
-          (fields as { errorKind?: string } | undefined)?.errorKind ===
-          "sandbox_orphan_cleanup_write_failed",
-      );
-      expect(bufferedLog?.[0]).toMatchObject({ buffered: true });
-
-      // The database recovers, so the next cleanup-sweep flush lands the row.
-      databaseDown = false;
-      const flushed = await runtime.flushDeferredOrphanCleanups();
-      expect(flushed).toEqual({ recovered: 1, pending: 0 });
-
-      // A durable pending_cleanup row now tracks the orphan, so a sweep finds and
-      // releases the leaked sandbox.
-      rows = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.environmentId, environment.id));
-      expect(rows).toHaveLength(1);
-      expect(rows[0]?.status).toBe("pending_cleanup");
-      expect(rows[0]?.cleanupStatus).toBe("failed");
-      expect(rows[0]?.failureReason).toBe("acquire_rejected_teardown_failed");
-      expect(rows[0]?.providerLeaseId).toBeTruthy();
-
-      // The buffer is empty now, so a second flush inserts nothing.
-      const second = await runtime.flushDeferredOrphanCleanups();
-      expect(second).toEqual({ recovered: 0, pending: 0 });
-      const rowsAfter = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.environmentId, environment.id));
-      expect(rowsAfter).toHaveLength(1);
-    } finally {
-      logSpy.mockRestore();
-      factorySpy.mockRestore();
-      destroySpy.mockRestore();
-    }
-  });
-
   it("ingests a replacement orphan appended after startup without duplicate concurrent cleanup", async () => {
     const {companyId,environment,runId}=await seedEnvironment({driver:"sandbox",name:"Late plugin orphan",config:{provider:"fake",image:"ubuntu:24.04",reuseLease:false}});
     let release!:()=>void,entered!:()=>void;
@@ -2511,430 +1779,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       const rows=await db.select().from(environmentLeases).where(eq(environmentLeases.environmentId,environment.id));
       expect(rows).toEqual([expect.objectContaining({providerLeaseId:"late-task",status:"pending_cleanup"})]);
     } finally {release();factory.mockRestore();}
-  });
-
-  it("persists the orphan to the durable spool so a restart recovers and lands the durable row", async () => {
-    const { companyId, environment, runId } = await seedEnvironment({
-      driver: "sandbox",
-      name: "Foreign-bound Fake Sandbox Cleanup Spool Restart",
-      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
-    });
-    const otherCompanyId = randomUUID();
-    await db.insert(companies).values({
-      id: otherCompanyId,
-      name: "Other Co Cleanup Spool Restart",
-      issuePrefix: "OCS",
-      status: "active",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    await insertForeignCompanyEnvironmentBinding(otherCompanyId, environment);
-
-    // The remote teardown fails, so the acquire tries to record a durable
-    // pending-cleanup row instead.
-    const destroySpy = vi
-      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
-      .mockRejectedValue(new Error("teardown failed"));
-    // The database is down, so every synchronous pending-cleanup write rejects.
-    // The flag flips to false to simulate the database recovering after a
-    // restart.
-    let databaseDown = true;
-    const realEnvironmentService = environmentsModule.environmentService;
-    const factorySpy = vi
-      .spyOn(environmentsModule, "environmentService")
-      .mockImplementation((database: Parameters<typeof realEnvironmentService>[0]) => {
-        const real = realEnvironmentService(database);
-        return {
-          ...real,
-          insertPendingCleanupLease: (
-            input: Parameters<typeof real.insertPendingCleanupLease>[0],
-          ) => {
-            if (databaseDown) {
-              return Promise.reject(new Error("pending-cleanup write failed; database down"));
-            }
-            return real.insertPendingCleanupLease(input);
-          },
-        };
-      });
-    const logSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
-    const spoolDir = process.env.SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR!;
-    try {
-      // The first process acquires, fails every synchronous write, and persists
-      // the orphan to the durable spool. The retry backoff is zero, so the test
-      // never waits.
-      const firstProcessRuntime = environmentRuntimeService(db, { pendingCleanupWriteBackoffMs: 0 });
-      const rejection = await firstProcessRuntime
-        .acquireRunLease({
-          companyId,
-          environment,
-          issueId: null,
-          heartbeatRunId: runId,
-          persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
-        })
-        .then(
-          () => {
-            throw new Error("acquireRunLease resolved but must reject");
-          },
-          (error: unknown) => error,
-        );
-      expect(rejection).toBeInstanceOf(SandboxOrphanCleanupWriteError);
-
-      // The database was down, so no durable row exists yet.
-      let rows = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.environmentId, environment.id));
-      expect(rows).toHaveLength(0);
-
-      // The acquire persisted the orphan to the durable spool, so a file waits on
-      // the disk and the log records the durable persist.
-      const spoolFiles = (await readdir(spoolDir)).filter((name) => name.endsWith(".json"));
-      expect(spoolFiles).toHaveLength(1);
-      const persistedLog = logSpy.mock.calls.find(
-        ([fields]) =>
-          (fields as { errorKind?: string } | undefined)?.errorKind ===
-          "sandbox_orphan_cleanup_write_failed",
-      );
-      expect(persistedLog?.[0]).toMatchObject({ persisted: true });
-
-      // The process restarts. A fresh runtime keeps no in-process buffer, so only
-      // the durable spool carries the orphan. The database recovers, so the first
-      // cleanup-sweep flush loads the spool and lands the durable row.
-      databaseDown = false;
-      const restartedRuntime = environmentRuntimeService(db, { pendingCleanupWriteBackoffMs: 0 });
-      const flushed = await restartedRuntime.flushDeferredOrphanCleanups();
-      expect(flushed).toEqual({ recovered: 1, pending: 0 });
-
-      rows = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.environmentId, environment.id));
-      expect(rows).toHaveLength(1);
-      expect(rows[0]?.status).toBe("pending_cleanup");
-      expect(rows[0]?.failureReason).toBe("acquire_rejected_teardown_failed");
-      expect(rows[0]?.providerLeaseId).toBeTruthy();
-
-      // The flush removed the spooled copy after the row landed, so a second
-      // restart never re-inserts a duplicate.
-      const spoolFilesAfter = (await readdir(spoolDir)).filter((name) => name.endsWith(".json"));
-      expect(spoolFilesAfter).toHaveLength(0);
-      const secondRestartRuntime = environmentRuntimeService(db, { pendingCleanupWriteBackoffMs: 0 });
-      const secondFlush = await secondRestartRuntime.flushDeferredOrphanCleanups();
-      expect(secondFlush).toEqual({ recovered: 0, pending: 0 });
-      const rowsAfter = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.environmentId, environment.id));
-      expect(rowsAfter).toHaveLength(1);
-    } finally {
-      logSpy.mockRestore();
-      factorySpy.mockRestore();
-      destroySpy.mockRestore();
-    }
-  });
-
-  it("buffers the orphan in-process when the durable spool write also fails", async () => {
-    const idleBefore = idleWorkSnapshot().active;
-    let releaseFlush!: () => void;
-    let enteredFlush!: () => void;
-    const flushGate = new Promise<void>(resolve => { releaseFlush = resolve; });
-    const flushEntered = new Promise<void>(resolve => { enteredFlush = resolve; });
-    const { companyId, environment, runId } = await seedEnvironment({
-      driver: "sandbox",
-      name: "Foreign-bound Fake Sandbox Cleanup Spool Unwritable",
-      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
-    });
-    const otherCompanyId = randomUUID();
-    await db.insert(companies).values({
-      id: otherCompanyId,
-      name: "Other Co Cleanup Spool Unwritable",
-      issuePrefix: "OCU",
-      status: "active",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    await insertForeignCompanyEnvironmentBinding(otherCompanyId, environment);
-
-    const destroySpy = vi
-      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
-      .mockRejectedValue(new Error("teardown failed"));
-    let databaseDown = true;
-    const realEnvironmentService = environmentsModule.environmentService;
-    const factorySpy = vi
-      .spyOn(environmentsModule, "environmentService")
-      .mockImplementation((database: Parameters<typeof realEnvironmentService>[0]) => {
-        const real = realEnvironmentService(database);
-        return {
-          ...real,
-          insertPendingCleanupLease: (
-            input: Parameters<typeof real.insertPendingCleanupLease>[0],
-          ) => {
-            if (databaseDown) {
-              return Promise.reject(new Error("pending-cleanup write failed; database down"));
-            }
-            enteredFlush();
-            return flushGate.then(() => real.insertPendingCleanupLease(input));
-          },
-        };
-      });
-    const logSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
-    try {
-      // Point the spool at an unwritable path, so the durable spool write fails
-      // like a full or read-only disk. The acquire must fall back to the
-      // in-process buffer and never lose the orphan silently.
-      const unwritableSpool = {
-        append: () => Promise.resolve(false),
-        load: () => Promise.resolve([]),
-        remove: () => Promise.resolve(),
-      };
-      const runtime = environmentRuntimeService(db, {
-        pendingCleanupWriteBackoffMs: 0,
-        orphanCleanupSpool: unwritableSpool,
-      });
-      await runtime
-        .acquireRunLease({
-          companyId,
-          environment,
-          issueId: null,
-          heartbeatRunId: runId,
-          persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
-        })
-        .then(
-          () => {
-            throw new Error("acquireRunLease resolved but must reject");
-          },
-          () => undefined,
-        );
-
-      // The spool write failed, so the log records the in-process-only fallback.
-      const fallbackLog = logSpy.mock.calls.find(
-        ([fields]) =>
-          (fields as { errorKind?: string } | undefined)?.errorKind ===
-          "sandbox_orphan_cleanup_write_failed",
-      );
-      expect(fallbackLog?.[0]).toMatchObject({ persisted: false, buffered: true });
-      expect(idleWorkSnapshot().active).toBe(idleBefore + 1);
-
-      // The same runtime still keeps the orphan in-process, so a flush after the
-      // database recovers lands the durable row.
-      databaseDown = false;
-      const flushing = runtime.flushDeferredOrphanCleanups();
-      await flushEntered;
-      // The batch was spliced out of the queue, but the DB does not own it yet.
-      expect(idleWorkSnapshot().active).toBe(idleBefore + 1);
-      releaseFlush();
-      const flushed = await flushing;
-      expect(idleWorkSnapshot().active).toBe(idleBefore);
-      expect(flushed).toEqual({ recovered: 1, pending: 0 });
-      const rows = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.environmentId, environment.id));
-      expect(rows).toHaveLength(1);
-      expect(rows[0]?.status).toBe("pending_cleanup");
-    } finally {
-      releaseFlush();
-      logSpy.mockRestore();
-      factorySpy.mockRestore();
-      destroySpy.mockRestore();
-    }
-  });
-
-  it("keeps the buffered orphan when the flush write still fails, then recovers on a later flush", async () => {
-    const { companyId, environment, runId } = await seedEnvironment({
-      driver: "sandbox",
-      name: "Foreign-bound Fake Sandbox Cleanup Buffer Requeue",
-      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
-    });
-    const otherCompanyId = randomUUID();
-    await db.insert(companies).values({
-      id: otherCompanyId,
-      name: "Other Co Cleanup Requeue",
-      issuePrefix: "OCQ",
-      status: "active",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    await insertForeignCompanyEnvironmentBinding(otherCompanyId, environment);
-
-    const destroySpy = vi
-      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
-      .mockRejectedValue(new Error("teardown failed"));
-    let databaseDown = true;
-    const realEnvironmentService = environmentsModule.environmentService;
-    const factorySpy = vi
-      .spyOn(environmentsModule, "environmentService")
-      .mockImplementation((database: Parameters<typeof realEnvironmentService>[0]) => {
-        const real = realEnvironmentService(database);
-        return {
-          ...real,
-          insertPendingCleanupLease: (
-            input: Parameters<typeof real.insertPendingCleanupLease>[0],
-          ) => {
-            if (databaseDown) {
-              return Promise.reject(new Error("pending-cleanup write failed; database down"));
-            }
-            return real.insertPendingCleanupLease(input);
-          },
-        };
-      });
-    const errorLogSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
-    const warnLogSpy = vi.spyOn(logger, "warn").mockImplementation(() => logger);
-    try {
-      const runtime = environmentRuntimeService(db, { pendingCleanupWriteBackoffMs: 0 });
-      await runtime
-        .acquireRunLease({
-          companyId,
-          environment,
-          issueId: null,
-          heartbeatRunId: runId,
-          persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
-        })
-        .then(
-          () => {
-            throw new Error("acquireRunLease resolved but must reject");
-          },
-          () => undefined,
-        );
-
-      // The database is still down, so the flush re-queues the orphan instead of
-      // losing it. The buffer keeps the record for a later tick.
-      const firstFlush = await runtime.flushDeferredOrphanCleanups();
-      expect(firstFlush).toEqual({ recovered: 0, pending: 1 });
-      const rowsWhileDown = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.environmentId, environment.id));
-      expect(rowsWhileDown).toHaveLength(0);
-      // The flush logs the re-queue and never carries the caught write exception.
-      // The sync-retry path also warns with the same error kind, so match on the
-      // `requeued` field that only the flush warn carries.
-      const requeueLog = warnLogSpy.mock.calls.find(
-        ([fields]) => (fields as { requeued?: boolean } | undefined)?.requeued === true,
-      );
-      expect(requeueLog).toBeDefined();
-      expect(requeueLog?.[0]).toMatchObject({
-        errorKind: "sandbox_orphan_cleanup_write_failed",
-        requeued: true,
-      });
-      expect(requeueLog?.[0]).not.toHaveProperty("cause");
-      expect(requeueLog?.[0]).not.toHaveProperty("cleanupWriteError");
-
-      // The database recovers, so the next flush lands the durable row exactly
-      // once from the still-buffered record.
-      databaseDown = false;
-      const secondFlush = await runtime.flushDeferredOrphanCleanups();
-      expect(secondFlush).toEqual({ recovered: 1, pending: 0 });
-      const rowsAfter = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.environmentId, environment.id));
-      expect(rowsAfter).toHaveLength(1);
-      expect(rowsAfter[0]?.status).toBe("pending_cleanup");
-    } finally {
-      warnLogSpy.mockRestore();
-      errorLogSpy.mockRestore();
-      factorySpy.mockRestore();
-      destroySpy.mockRestore();
-    }
-  });
-
-  it("throws a SandboxOrphanCleanupWriteError when the plugin durable pending-cleanup write also fails", async () => {
-    const pluginId = randomUUID();
-    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
-    const pluginConfig = { provider: "fake-plugin", image: "fake:test", reuseLease: false };
-    const environment = {
-      ...baseEnvironment,
-      name: "Foreign-bound Plugin Sandbox Cleanup Write Fail",
-      driver: "sandbox",
-      config: pluginConfig,
-    };
-    await environmentService(db).update(environment.id, {
-      driver: "sandbox",
-      name: environment.name,
-      config: pluginConfig,
-    });
-    await insertSandboxProviderPlugin(pluginId);
-    const otherCompanyId = randomUUID();
-    await db.insert(companies).values({
-      id: otherCompanyId,
-      name: "Other Co Plugin Cleanup Write",
-      issuePrefix: "OPW",
-      status: "active",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    await insertForeignCompanyEnvironmentBinding(otherCompanyId, environment);
-
-    const workerManager = {
-      isRunning: vi.fn((id: string) => id === pluginId),
-      getWorker: vi.fn(() => ({ supportedMethods: ["environmentDestroyLease"] })),
-      call: vi.fn(async (_pluginId: string, method: string) => {
-        if (method === "environmentAcquireLease") {
-          return {
-            providerLeaseId: "plugin-lease-write-fail",
-            metadata: { provider: "fake-plugin", image: "fake:test", reuseLease: false },
-          };
-        }
-        if (method === "environmentDestroyLease") {
-          throw new Error("destroy failed");
-        }
-        throw new Error(`Unexpected plugin method: ${method}`);
-      }),
-    } as unknown as PluginWorkerManager;
-
-    const realEnvironmentService = environmentsModule.environmentService;
-    const factorySpy = vi
-      .spyOn(environmentsModule, "environmentService")
-      .mockImplementation((database: Parameters<typeof realEnvironmentService>[0]) => {
-        const real = realEnvironmentService(database);
-        return {
-          ...real,
-          insertPendingCleanupLease: () =>
-            Promise.reject(new Error("pending-cleanup write failed")),
-        };
-      });
-    try {
-      const runtimeWithPlugin = environmentRuntimeService(db, {
-        pluginWorkerManager: workerManager,
-        pendingCleanupWriteBackoffMs: 0,
-      });
-      const rejection = await runtimeWithPlugin
-        .acquireRunLease({
-          companyId,
-          environment,
-          issueId: null,
-          heartbeatRunId: runId,
-          persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
-        })
-        .then(
-          () => {
-            throw new Error("acquireRunLease resolved but must reject");
-          },
-          (error: unknown) => error,
-        );
-
-      expect(rejection).toBeInstanceOf(SandboxOrphanCleanupWriteError);
-      expect(rejection).toMatchObject({ provider: "fake-plugin", providerLeaseId: "plugin-lease-write-fail" });
-      expect((rejection as SandboxOrphanCleanupWriteError).cause).toMatchObject({
-        status: 403,
-        details: { code: "environment_company_mismatch" },
-      });
-      // The durable write failed before it created a row, so no lease row exists.
-      const rows = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.environmentId, environment.id));
-      expect(rows).toHaveLength(0);
-    } finally {
-      factorySpy.mockRestore();
-    }
-
-    await environmentService(db).update(environment.id, { driver: "local", config: {} });
   });
 
   it("records the orphan directly in the pending_cleanup state with one atomic insert", async () => {
@@ -2999,16 +1843,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       .mockRejectedValueOnce(new Error("teardown failed"))
       .mockResolvedValue(undefined);
     try {
-      await expect(
-        runtime.acquireRunLease({
-          companyId,
-          environment,
-          issueId: null,
-          heartbeatRunId: runId,
-          persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
-        }),
-      ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
+      const pending = await environmentService(db).insertPendingCleanupLease({
+        companyId, environmentId: environment.id, heartbeatRunId: runId, provider: "fake", providerLeaseId: `sandbox://fake/${runId}`,
+        metadata: { ...environment.config, driver: "sandbox" }, failureReason: "interrupted_sandbox_creation",
+      });
+      await runtime.retryPendingSandboxTeardown({ environment: null, lease: pending }).catch(() => {});
 
       const orphan = await db
         .select()
@@ -3052,16 +1891,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
       .mockRejectedValue(new Error("teardown failed"));
     try {
-      await expect(
-        runtime.acquireRunLease({
-          companyId,
-          environment,
-          issueId: null,
-          heartbeatRunId: runId,
-          persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
-        }),
-      ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
+      const pending = await environmentService(db).insertPendingCleanupLease({
+        companyId, environmentId: environment.id, heartbeatRunId: runId, provider: "fake", providerLeaseId: `sandbox://fake/${runId}`,
+        metadata: { ...environment.config, driver: "sandbox" }, failureReason: "interrupted_sandbox_creation",
+      });
+      await runtime.retryPendingSandboxTeardown({ environment: null, lease: pending }).catch(() => {});
 
       const orphan = await db
         .select()
@@ -3117,16 +1951,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       .mockRejectedValueOnce(new Error("teardown failed"))
       .mockResolvedValue(undefined);
     try {
-      await expect(
-        runtime.acquireRunLease({
-          companyId,
-          environment,
-          issueId: null,
-          heartbeatRunId: runId,
-          persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
-        }),
-      ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
+      const pending = await environmentService(db).insertPendingCleanupLease({
+        companyId, environmentId: environment.id, heartbeatRunId: runId, provider: "fake", providerLeaseId: `sandbox://fake/${runId}`,
+        metadata: { ...environment.config, driver: "sandbox" }, failureReason: "interrupted_sandbox_creation",
+      });
+      await runtime.retryPendingSandboxTeardown({ environment: null, lease: pending }).catch(() => {});
 
       const orphan = await db
         .select()
@@ -3759,16 +2588,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
-    await expect(
-      runtimeWithPlugin.acquireRunLease({
-        companyId,
-        environment,
-        issueId: null,
-        heartbeatRunId: runId,
-        persistedExecutionWorkspace: null,
-        assertCompanyBinding: true,
-      }),
-    ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
+      const pending = await environmentService(db).insertPendingCleanupLease({
+        companyId, environmentId: environment.id, heartbeatRunId: runId, provider: "fake-plugin", providerLeaseId: "plugin-lease-3",
+        metadata: { ...pluginConfig, driver: "sandbox", pluginId, sandboxProviderPlugin: true }, failureReason: "interrupted_sandbox_creation",
+      });
+      await runtimeWithPlugin.retryPendingSandboxTeardown({ environment: null, lease: pending }).catch(() => {});
 
     const orphan = await db
       .select()
@@ -4426,6 +3250,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       issueId: null,
       heartbeatRunId: runId,
       persistedExecutionWorkspace: null,
+    });
+    const operations = await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.companyId, companyId));
+    expect(JSON.stringify(operations)).not.toContain("resolved-provider-key");
+    expect(operations[0]?.metadata.creationCredentialHashes).toEqual({
+      apiKey: createHash("sha256").update("resolved-provider-key").digest("hex"),
     });
     expect(acquired.lease.metadata).toMatchObject({
       provider: "secure-plugin",
@@ -6246,12 +5075,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     ).resolves.toMatchObject({ status });
   });
 
-  it.each(["issue", "workspace", "environment"] as const)(
+  it.each(["issue", "workspace", "environment", "run"] as const)(
     "durably claims failed reusable cleanup before %s teardown and recovers a provider failure",
     async (scope) => {
       const seeded = await seedReusablePluginSandboxLease();
       await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, seeded.runId));
-      await environmentService(db).releaseLease(seeded.reusableLease.id, "failed");
+      if (scope !== "run") await environmentService(db).releaseLease(seeded.reusableLease.id, "failed");
       const issueId = randomUUID();
       if (scope === "issue") {
         await db.insert(issues).values({ id: issueId, companyId: seeded.companyId, title: "Cleanup crash window", status: "done" });
@@ -6276,7 +5105,9 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         getWorker: () => ({ supportedMethods: ["environmentDestroyLease"] }),
       } as unknown as PluginWorkerManager });
       const runtime = makeRuntime();
-      const close = (service: ReturnType<typeof makeRuntime>) => scope === "environment"
+      const close = (service: ReturnType<typeof makeRuntime>) => scope === "run"
+        ? service.releaseRunLeases(seeded.runId, "released", undefined, "destroy")
+        : scope === "environment"
         ? service.destroyReusableSandboxLeasesForEnvironment({ environmentId: seeded.environment.id })
         : service.destroyReusableSandboxLeases({ companyId: seeded.companyId,
           ...(scope === "issue" ? { issueId } : { executionWorkspaceId: seeded.executionWorkspaceId }) });
@@ -6311,6 +5142,36 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       });
     },
   );
+
+  it.each([false, true])("preserves a newer destroy receipt when an old run cleanup returns (failure=%s)", async failure => {
+    const seeded = await seedReusablePluginSandboxLease();
+    const service = environmentService(db);
+    let confirmed: Awaited<ReturnType<typeof service.getLeaseById>>;
+    const call = vi.fn(async (_id: string, method: string) => {
+      if (method !== "environmentDestroyLease") throw new Error(`Unexpected method ${method}`);
+
+
+      const current = (await service.getLeaseById(seeded.reusableLease.id))!;
+      const attemptId = randomUUID();
+      await db.update(environmentLeases).set({ status: "pending_cleanup",
+        metadata: { ...current.metadata, pendingCleanupAttemptId: attemptId },
+      }).where(eq(environmentLeases.id, current.id));
+      confirmed = await service.releaseLease(current.id, "expired", { expectedPendingCleanupAttemptId: attemptId,
+        cleanupStatus: "success", remoteExecutionTermination: remoteTerminationReceipt(current,
+          { providerLeaseId: current.providerLeaseId, state: "destroyed" }),
+      });
+      if (failure) throw new Error("Late failure from the old provider request");
+      return { providerLeaseId: current.providerLeaseId, state: "destroyed" };
+    });
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: {
+      isRunning: () => true, call, getWorker: () => ({ supportedMethods: ["environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager });
+    await expect(runtime.releaseRunLeases(seeded.runId, "released", undefined, "destroy")).resolves.toEqual([]);
+    expect(call).toHaveBeenCalledOnce();
+    expect(confirmed!).toMatchObject({ status: "expired", cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: { state: "destroyed" } } });
+    expect(await service.getLeaseById(seeded.reusableLease.id)).toEqual(confirmed!);
+  });
 
   it.each(["queued", "scheduled_retry", "running"] as const)(
     "fences scoped cleanup when its holding run becomes %s after selection", async (status) => {
@@ -7020,6 +5881,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
 
     expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", {
+      creationOperationId: expect.any(String),
       driverKey: "fake-plugin",
       companyId,
       environmentId: environment.id,

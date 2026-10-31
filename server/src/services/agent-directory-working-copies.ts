@@ -1,6 +1,7 @@
 import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { agents, environmentLeases, environments, agentInstructionWorkingCopies as copies, type Db } from "@paperclipai/db";
 import { syncDirectoryToSsh, restoreWorkspaceFromSshExecution } from "@paperclipai/adapter-utils/ssh";
@@ -20,6 +21,11 @@ import { cachedAgentFileManifest, captureAgentFileCheckpoint, checkpointBaseline
 import { logger } from "../middleware/logger.js";
 
 type Copy = typeof copies.$inferSelect;
+function adoptionAuthority(row: Copy) {
+  const { updatedAt: _updatedAt, nextAttemptAt: _nextAttemptAt, ...authority } = row;
+  return authority;
+}
+
 export class AgentDirectoryReuseInvalidatedError extends Error {}
 const completed = new Set(["saved", "unchanged", "resolved", "unavailable"]);
 const transports = new Map<string, PreparedAdapterExecutionTargetRuntime>();
@@ -291,10 +297,22 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     // adopt_remote constructs a collector on the successor target without
     // uploading the stale host mirror over the retained remote directory.
     const replacement = remote ? await transport({ ...prior, runId: input.runId }, remote, true) : undefined;
+    const expectedPrior = prior;
     let adopted: Copy | null;
     try { adopted = await store.locked(input.companyId, input.agentId, bound, false, async (tx, _agent, canonical) => {
       if (remote && !validLeases(await tx.select().from(environmentLeases).where(and(
         eq(environmentLeases.companyId, input.companyId), inArray(environmentLeases.id, leaseIds))).for("update"))) return null;
+      const [lockedPrior] = await tx.select().from(copies).where(and(eq(copies.companyId, input.companyId),
+        eq(copies.runId, expectedPrior.runId), eq(copies.agentId, input.agentId))).for("update");
+      if (!lockedPrior || !isDeepStrictEqual(adoptionAuthority(lockedPrior), adoptionAuthority(expectedPrior))) {
+        const fields = ["state", "receipt", "baseHash", "localRoot", "executionRoot", "location", "processStoppedAt", "responsibleUserId", "entryFile", "attempts", "candidateHash", "errorCode", "errorMessage", "baseRevisionId", "candidateBase64", "createdAt"] as const;
+        const diagnostic = { stage: "locked_adoption_authority", predecessorPresent: Boolean(lockedPrior), observedAfterInitialRead: true,
+          changedFields: lockedPrior ? fields.filter(field => !isDeepStrictEqual(lockedPrior[field], expectedPrior[field])) : [] };
+        logger.warn({ companyId: input.companyId, agentId: input.agentId, runId: input.runId, previousRunId: input.previousRunId,
+          adoptionConflict: diagnostic }, "Agent directory adoption conflict");
+        throw conflict("Agent directory ownership changed", diagnostic);
+      }
+      prior = lockedPrior;
       const current = await inspectAgentDirectory(canonical);
       const canonicalChanged = agentDirectoryBaselineDigest(current.snapshot) !== agentDirectoryBaselineDigest(baseline(prior));
       if (canonicalChanged && !input.allowRetirementHandoff) return null;
@@ -304,7 +322,18 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
         .where(and(eq(copies.companyId, input.companyId), eq(copies.runId, prior.runId), eq(copies.agentId, input.agentId), eq(copies.state, "unchanged_turn"),
           eq(copies.updatedAt, prior.updatedAt), eq(copies.baseHash, prior.baseHash), eq(copies.localRoot, prior.localRoot),
           isNull(copies.processStoppedAt), sql`${copies.receipt}->>'retainedByRunId' IS NULL`)).returning();
-      if (!claimed) throw conflict("Agent directory ownership changed");
+      if (!claimed) {
+        const [conditions] = await tx.select({ unchangedTurn: eq(copies.state, "unchanged_turn"),
+          timestampMatches: eq(copies.updatedAt, prior.updatedAt), baselineMatches: eq(copies.baseHash, prior.baseHash),
+          localRootMatches: eq(copies.localRoot, prior.localRoot), unstopped: isNull(copies.processStoppedAt),
+          successorAbsent: sql<boolean>`${copies.receipt}->>'retainedByRunId' IS NULL`,
+          receiptMatches: sql<boolean>`${copies.receipt} IS NOT DISTINCT FROM ${JSON.stringify(prior.receipt)}::jsonb`,
+        }).from(copies).where(and(eq(copies.companyId, input.companyId), eq(copies.runId, prior.runId), eq(copies.agentId, input.agentId)));
+        const diagnostic = { stage: "adoption_claim", observedAfterClaim: true, predecessorPresent: Boolean(conditions), conditions: conditions ?? null };
+        logger.warn({ companyId: input.companyId, agentId: input.agentId, runId: input.runId, previousRunId: input.previousRunId,
+          adoptionConflict: diagnostic }, "Agent directory adoption conflict");
+        throw conflict("Agent directory ownership changed", diagnostic);
+      }
       const { createdAt: _createdAt, updatedAt: _updatedAt, ...values } = prior;
       const [next] = await tx.insert(copies).values({ ...values, runId: input.runId, responsibleUserId: bound.onBehalfOfUserId!, state: "prepared",
         receipt: { ...prior.receipt, materializationRunId: prior.receipt?.materializationRunId ?? prior.runId,

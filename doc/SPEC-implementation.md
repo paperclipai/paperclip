@@ -2117,6 +2117,40 @@ placements may use a lazy live character. See [agent-personas.md](agent-personas
 for persistence, migration, rendering, and integration contracts.
 ### Experimental task-backed agent chat (2026-09-10)
 
+Ordinary task and routine runs in standard mode may publish with
+`send_chat_message({body,idempotencyKey})` or `POST /api/agents/me/chat/messages`.
+The authenticated company, agent and run responsible human determine the sole
+destination. Recheck execution ownership, membership, task/destination access
+and canonical source privacy at commit. Reject missing recipients, restricted
+source tasks, Ask/planning/review/watchdog runs and stopped runs. The shared
+comment-write boundary enforces the fixed conversation agent.
+Skill-test and task-bridge credentials cannot publish into standing chats.
+Persisted skill-test run boundaries remain in force after a task-mode change.
+Preserve the credential and external-user access intersection and recheck key
+revocation, scope and responsible-person identity before commit.
+Each new delivery charges the shared per-run cross-issue influence cap in the
+same transaction. Retries, conflicting content and receipt-only recovery do not
+spend another slot. Cap exhaustion returns the canonical 429 response and leaves
+no message or newly created conversation behind.
+
+The chat messaging service atomically creates a waiting conversation if needed
+and commits an attributed issue comment and audit record. Agent request IDs are
+unique per conversation and author; keys incorporate the source task for retries
+across runs, and changed content conflicts. Server-authored provenance identifies
+the source task and run. Existing events refresh discovery, messages and unread
+projections. Source execution transcripts remain outside the chat's linked-run
+history. There is no delivery worker, message outbox or extra model turn.
+
+Sending does not change task disposition, cancel/settle a chat turn or suppress
+automatic handoff completion notifications. `/new` permits future background
+messages in the current history. Ordinary chat replies retain session checks.
+Chat list/detail responses use per-user read state before human participation;
+the foreground chat marks rendered messages read through an optional comment
+cutoff, retaining unseen concurrent arrivals. Existing navigation ordering is
+preserved with accessible unread dots and an aggregate Chat indicator.
+`enableAgentChat` gates delivery; external channels, push/email and private-chat
+redesign are outside this contract.
+
 `enableAgentChat` is an instance experimental flag, default false. Conversation containers remain issues, unique by `(company_id, conversation_agent_id, conversation_user_id)`. The authenticated board actor supplies ownership; local trusted mode uses `local-board`. Ordinary company task access applies. A conversation's agent assignment and identity are immutable through ordinary updates; terminal status mutations are rejected.
 
 `GET /api/companies/:companyId/chats/:agentRef` reads an existing conversation or null. `POST` atomically resolves its issue when adding a chat or on first send/upload. `GET /api/companies/:companyId/chats` lists only the current board user’s conversations in that company, subject to ordinary issue read access. The Chat navigation opens a searchable secondary sidebar with agent avatars and a picker for starting or reopening the same per-agent conversation. Existing issue comment, attachment, document, interaction, and run APIs apply thereafter. User chat comments require an idempotent UUID `clientRequestId`. Conversation delivery preserves comment order through the existing issue execution queue; the durable comment outbox repairs the commit-to-enqueue crash window.
@@ -2368,7 +2402,22 @@ unavailable. Preserve current ownership and newer-work fences. See
   on their snapshot. Importing does not install dependencies or configure host tools.
 - Stage and audit complete packages before publishing. Scripts are allowed through
   the existing content audit and never run on import. Persist binary bytes and executable
-  flags in immutable version inventories (legacy entries default to UTF-8/non-executable).
+  flags in immutable package snapshots (legacy entries default to UTF-8/non-executable).
+  Compatible readers support inline and external inventories. PostgreSQL retains
+  receipts, file mappings and exact Git restore recipes; the storage backend retains
+  bytes. No package is persisted without a valid selected skill. Legacy conversion
+  is automatic and bounded. Unused Git caches can expire and reacquire the recorded
+  commit after current authorization and hash checks; authored/unproven legacy bytes
+  remain durable. See [skill package storage](skill-package-storage.md).
+- Paperclip ownership is `managed`, with a null source locator and an immutable
+  current version. Content mutations prepare durable bytes before a short,
+  authorization-checked compare-and-swap publication. Acknowledged changes do not
+  depend on an installed web-server directory. Repository installations use the
+  same committed-version read and execution boundary; linked-local sources are
+  explicitly outside the empty-disk guarantee. Execution selections, including
+  empty selections, persist before delivery; recovery reconstructs exact admitted
+  digests and active/recovering pins prevent deletion. See
+  [conversion and compatible upgrades](skill-ephemeral-web-servers.md).
 - Refresh is serialized per source, checks saved selection revisions, and publishes
   valid skills plus per-entry outcomes with required activity records in one transaction.
   Failed packages retain prior versions; access/scan/download failures retain all content.
@@ -2376,12 +2425,14 @@ unavailable. Preserve current ownership and newer-work fences. See
 - Match by repository identity and exact path. Preserve IDs, keys, assignments, folders,
   and history. New key collisions cannot overwrite unrelated skills. Only changed package
   bytes or executable modes create versions. Library reads, tests, and subsequent unpinned
-  runs use local installed snapshots; pinned/active runs retain their versions.
+  runs use immutable installed snapshots; pinned/active runs retain their versions.
 - Runtime version directories are disposable caches. An hourly, bounded sweep may
   evict non-current copies unused for one hour, preserving active and unresolved
   execution pins. Selection, materialization, and pin persistence serialize with
-  eviction across processes. Missing copies rebuild from immutable database bytes
-  without upstream access. See [recoverable disk cleanup](recoverable-disk-cleanup.md)
+  eviction across processes. Missing copies rebuild from immutable stored packages
+  or legacy database bytes without upstream access. Warm preparation uses manifests
+  and file identities, avoids repository-content SQL/object reads, and does not
+  reconcile unrelated library entries for known selected repository skills. See [recoverable disk cleanup](recoverable-disk-cleanup.md)
   for rollout controls, legacy grace periods, and interrupted cleanup recovery.
 - Manually selected sources retain reviewed selection, with new candidates checked by default and
   explicit folder exclusions retained. Upstream deletion keeps installed content with
@@ -2565,8 +2616,15 @@ its upstream authors; operators can pause updates to review changes manually.
 
 ### Task collection creation visibility (2026-10-13)
 
+The task Filters menu also offers **Routine tasks**. It selects tasks with
+`originKind=routine_execution`, including manually triggered routine runs, even
+when other automatic tasks are hidden. The routines list's **View all tasks**
+link opens `/issues?view=all&originKind=routine_execution` with that checkbox
+selected. The URL retains the selection across reloads and task navigation.
+Search and pagination apply the routine origin filter on the server.
+
 Tasks and project collections default to hiding agent/system-created tasks and
-provide a saved **show agent-created tasks** filter. Classify creation using
+provide a saved **Show agent-created tasks** filter. Classify creation using
 creator identity and origin; assignee/responsible users do not imply human
 authorship. Routine executions remain automated even when manually triggered.
 Creator-less ordinary tasks are system-created. All chat-channel tasks count as

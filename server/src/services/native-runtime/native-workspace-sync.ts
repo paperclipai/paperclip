@@ -643,14 +643,14 @@ async function persistLeaseStamp(input: {
 }): Promise<void> {
   await input.db.transaction(async (tx) => {
     const lease = await tx
-      .select({ metadata: environmentLeases.metadata })
+      .select({ metadata: environmentLeases.metadata, companyId: environmentLeases.companyId, heartbeatRunId: environmentLeases.heartbeatRunId })
       .from(environmentLeases)
       .where(eq(environmentLeases.id, input.leaseId))
       .for("update")
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!lease) throw new Error("native_workspace_sync_lease_missing");
-    await notifyEnvironmentCleanup(tx);
+    await notifyEnvironmentCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined });
     await tx
       .update(environmentLeases)
       .set({
@@ -813,6 +813,7 @@ async function prepareRuntime(input: {
   durableSeed?: WorkspaceDurableSeedPaths;
   seedCacheDirectory?: string;
   seedCacheCompanyDirectory?: string;
+  workspaceGitIndexRefresh?: boolean;
   onPhase?: RuntimeSpanRunner;
   onCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
@@ -829,6 +830,7 @@ async function prepareRuntime(input: {
     workspaceRemoteDir: input.target.remoteCwd,
     workspaceInboundMode: input.mode,
     workspaceSnapshotIsolation: "worker",
+    workspaceGitIndexRefresh: input.workspaceGitIndexRefresh,
     workspaceDurableSeed: input.durableSeed,
     workspaceBaseline: input.baseline,
     workspaceGitSnapshot: input.gitSnapshot,
@@ -837,6 +839,7 @@ async function prepareRuntime(input: {
     onWorkspaceCheckpoint: input.onCheckpoint,
     workspaceSeedCacheDirectory: input.seedCacheDirectory,
     workspaceSeedCacheCompanyDirectory: input.seedCacheCompanyDirectory,
+    workspaceSeedCacheScope: "company",
     runtimeSpan: input.onPhase,
   }));
 }
@@ -900,6 +903,7 @@ export async function prepareNativeWorkspaceSync(input: {
   restartRecovery?: NativeRestartRecoveryClaim;
   sameRunRecovery?: boolean;
   resourceDisposition?: NativeWorkspaceResourceDisposition;
+  workspaceGitIndexRefresh?: boolean;
   onPhase?: RuntimeSpanRunner;
   onCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
@@ -1006,7 +1010,7 @@ export async function prepareNativeWorkspaceSync(input: {
       hasPriorStamp: priorStamp !== null,
     });
     const seedCacheCompanyDirectory = path.join(resolvePaperclipInstanceRoot(), STATE_ROOT_NAME, "generations", requireSafeSegment(input.companyId, "company_id"));
-    const seedCacheDirectory = path.join(seedCacheCompanyDirectory, requireSafeSegment(input.workspaceId, "workspace_id"));
+    const seedCacheDirectory = path.join(seedCacheCompanyDirectory, "shared-v1");
     runtime = await prepareRuntime({
       runId: input.runId,
       target,
@@ -1016,6 +1020,9 @@ export async function prepareNativeWorkspaceSync(input: {
       mode,
       seedCacheCompanyDirectory,
       seedCacheDirectory,
+      workspaceGitIndexRefresh: input.workspaceGitIndexRefresh === true
+        && acquisition === "created" && mode === "host_current"
+        && !input.restartRecovery && !input.sameRunRecovery,
       durableSeed: {
         workspaceArchivePath: seedPaths.workspaceArchivePath,
         gitArchivePath: seedPaths.gitArchivePath,

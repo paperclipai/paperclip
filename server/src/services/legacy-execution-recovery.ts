@@ -1,3 +1,5 @@
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { hasRequiredWorkspaceRecovery, preserveWorkspaceRestoreRecoveryMetadata, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
@@ -131,8 +133,9 @@ export async function terminalizeLegacyExecution(input: {
       resultJson: preserveWorkspaceRestoreRecoveryMetadata(current.resultJson,
         input.recordRestoreFailureOnly ? { ...current.resultJson, ...patch.resultJson } : patch.resultJson),
     };
+    if (issueId) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: current.companyId, issueId });
     await notifyInstructionCollection(tx, { companyId: current.companyId, runId: current.id });
-    await notifyExecutionRunWork(tx);
+    await notifyExecutionRunWork(tx, { companyId: current.companyId });
     let [updated] = await tx
       .update(heartbeatRuns)
       .set({
@@ -170,6 +173,9 @@ export async function terminalizeLegacyExecution(input: {
       ? retainedLeaseIds.length > 0 || hasRequiredWorkspaceRecovery(updated.resultJson)
       : !input.reconcileIfNeeded || await legacyExecutionNeedsReconciliationWithEvidence(tx as unknown as Db, updated);
     if (!needsRecovery) return updated;
+    if (!input.recordRestoreFailureOnly && task && (task.executionRunId === run.id || task.checkoutRunId === run.id)) {
+      await notifyNativeStatusReassessment(tx, { companyId: task.companyId, issueId: task.id });
+    }
     if (!input.recordRestoreFailureOnly && task?.executionRunId === run.id)
       await tx
         .update(issues)
@@ -347,6 +353,7 @@ export async function settleInterruptedNativeBootstrap(
     const [settled] = await tx.update(heartbeatRuns).set({ resultJson: { ...run.resultJson,
       executionRecovery: { kind: "bootstrap", providerWorkStarted: false, preparationSettledAt: now.toISOString() },
     }, updatedAt: now }).where(eq(heartbeatRuns.id, run.id)).returning();
+    if (holds.length) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: task.companyId, issueId: task.id });
     const resolved = holds.length ? await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "false_positive",
       resolutionNote: "The interrupted executor finished preparation and cleanup without starting a provider.",
       resolvedAt: now, updatedAt: now,

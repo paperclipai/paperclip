@@ -25,7 +25,7 @@ describe("controller outage qualification", () => {
     expect(executions).toHaveLength(2);
     for (const execution of executions) {
       const outage = controllerOutageForExecution(execution, {});
-      expect(outage).toEqual({ signal: "SIGKILL", holdMs: 125_000 });
+      expect(outage).toEqual({ signal: "SIGKILL", holdMs: 300_000 });
       expect(controllerOutageForExecution(execution, { PAPERCLIP_RUNNER_E2E_CONTROLLER_OUTAGE_MS: "300000" }))
         .toEqual({ signal: "SIGKILL", holdMs: 300_000 });
       expect(() => controllerOutageForExecution(execution, { PAPERCLIP_RUNNER_E2E_CONTROLLER_OUTAGE_MS: "1000" }))

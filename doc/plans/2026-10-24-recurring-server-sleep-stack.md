@@ -2,6 +2,10 @@
 
 Baseline: `785d54636e1c8513ee5503d602daf6a5ee1970d6` (2026-10-24).
 
+Current integration baseline: master `507dc70be26c191e372f09e58dc0965e73bf8f57`
+(October 26). Earlier gate results below are historical; current acceptance is
+pending. See the final integration/review-repair section for the current state.
+
 The requested outcome is a reviewed PR stack for every remaining recurring server
 work item below. A PR owns one reason for background activity. Split compound
 items into separate PRs as their producer and lifecycle audits identify distinct
@@ -24,12 +28,12 @@ Do not mark an item done from a timer removal or a green check alone.
 | 10 | External-object refresh | Configuration changes, refresh deadlines, source events | Pending |
 | 11 | Status-card evaluation | Settings/card mutations and evaluation deadlines | Pending |
 | 12 | Plugin scheduled jobs | Registration/update/removal and actual job deadlines | #17518 published; see latest-head gate records below |
-| 13 | Routine, agent-timer and issue-monitor scheduling | Remove periodic wake backstops after complete producer coverage; routine execution-status reconciliation separately | Pending |
+| 13 | Routine, agent-timer and issue-monitor scheduling | Remove periodic wake backstops after complete producer coverage; routine execution-status reconciliation separately | Routine schedules implemented in slice 61; issue/agent timers still pending |
 | 14 | Skill-version retention and native-harness backup expiration | Separate retention owners and existing retention guarantees | Pending |
-| 15 | Automatic database backups | Shared scheduling, actual backup deadlines, existing checkpoint contract | Pending |
+| 15 | Automatic database backups | Shared scheduling, actual backup deadlines, existing checkpoint contract | Slice 60 implemented; remote acceptance pending; see `2026-10-26-database-backup-sleep-schedule.md` |
 | 16 | Aggregate maintenance tick | Retire enabled and disabled branches after all constituent owners migrate | Pending |
 | 17 | Grok routine dispatch | Committed reservations and feature changes; prepared-only recovery | [#17490](https://github.com/paperclipai/paperclip/pull/17490) merged after exact-head 5/5 reviews and passing CI |
-| 18 | Abandoned import transfer spools | Creation/completion events, existing retention deadline, startup recovery | Pending; explicitly retained from the remaining-blocker checklist |
+| 18 | Abandoned import transfer spools | Creation/completion events, existing retention deadline, startup recovery | [#17835](https://github.com/paperclipai/paperclip/pull/17835), implemented; remote acceptance pending |
 
 ## Stack and verification contract
 
@@ -2623,3 +2627,913 @@ Slice 43 final local acceptance: 120 owner/startup cases plus 209 affected consu
 Cancelled workspace preservation is draft [#17677](https://github.com/paperclipai/paperclip/pull/17677) at `33567f91551d60053722c013f0d9b402c1db29e6`. All 53 checks passed, Greptile reviewed that head at 5/5, and there are no unresolved review threads. It remains unmerged.
 
 The native finalization audit found separate historical unsafe-export recovery, obsolete policy-review cleanup, automatic completion-review cleanup, effect delivery, committed response repair, evidence reassessment and workspace/result finalization. Slice 44 owns obsolete policy-review cleanup only. See [its audit](2026-10-25-obsolete-policy-review-sleep-audit.md). The owner/startup selection passes 116 tests after repairing a reproduced notification serialization bug. Consumer and final workspace verification remain pending. Older stack gates and final master reconciliation remain outstanding.
+
+## Slice 44 accepted; slice 45 automatic completion reviews
+
+Obsolete policy-review cleanup is draft [#17679](https://github.com/paperclipai/paperclip/pull/17679) at `e671c66bba6e9a42aa570826e6f3420dba199399`. All 53 checks pass, Greptile reviewed that head at 5/5, and no unresolved threads remain. It is mergeable and unmerged.
+
+Slice 45 owns automatic completion-review retirement only. It preserves direct finalizer ordering and the durable withdrawal trigger for reassessment. The worker's raw lookup propagates failures so failed discovery cannot look empty. See [the audit](2026-10-25-automatic-completion-review-sleep-audit.md). All 370 local owner/startup/consumer tests pass, as do workspace types/build. Exact-head remote gates remain required. Older stack CI/review gaps, master reconciliation and the remaining original duties are still outstanding.
+
+## Slice 45 accepted; slice 46 unsafe-export audit
+
+[#17680](https://github.com/paperclipai/paperclip/pull/17680) at
+`be668fb975f119efeb4830405d4bb1ab65791f87` has 53 successful remote gates,
+Greptile 5/5 at that head, and no unresolved review threads. It remains draft
+and unmerged. The unsafe-export baseline passed all 51 tests on a fresh external
+PostgreSQL database (`/tmp/sleep46-baseline.log`). Slice 46 must distinguish
+action retirement and eligible result recovery from dormant historical failure.
+The periodic backstop remains until all reactivation producers are covered.
+
+Slice 46 now has a scoped worker and initial producer coverage, with the periodic
+backstop deliberately retained until the direct-writer audit is complete. See
+[the unsafe-export audit](2026-10-25-unsafe-workspace-export-sleep-audit.md) for
+work predicates, remaining producers, test evidence, and preserved failures.
+
+
+## Slice 46 producer wiring and verification
+
+The unsafe-export worker now registers through heartbeat/startup and the periodic
+reaper skips its historical scan. Direct task/run/action producers signal their
+existing transaction boundaries. Physical-owner contention, real admin/stale-lock
+release, queued-run cancellation, cancellation during ownership contention,
+shutdown/restart, and multiple discovery pages are tested. The owner/startup and
+consumer selections establish 626 distinct passing cases across 13 files after
+running the initially skipped lifecycle cases against an explicit database.
+
+A measured retained-history scan justified partial index migration 0398; fresh
+application, replay, and validity checks passed. The owner audit records timings,
+producer coverage, fixture failures, and the supported writer boundary. Workspace
+typechecks and build passed; remote acceptance remains outstanding. Origin/master was fetched at
+`6336c34041`; the full stack still needs final reconciliation with master. No PR
+in this stack has been merged, and the original remaining scope is unchanged.
+
+## Slice 46 published; slice 47 pending-effects audit
+
+Unsafe-export recovery is draft [#17687](https://github.com/paperclipai/paperclip/pull/17687)
+at `b9fe9e2e40ab48104cf18822b5302a740d1957a7`, stacked on #17680. Workspace types
+and build passed. Greptile reviewed that exact head at 5/5 with no actionable
+findings; full remote CI remains active. This is not acceptance or merge proof.
+The attempted full local `pnpm test:run` hit embedded PostgreSQL initialization
+failures (15 native-session failures plus database-suite skips) and was stopped
+with its log preserved at `/tmp/sleep46-full-tests.log`. It did not pass. The
+626 focused external-database cases remain the local acceptance evidence.
+
+Slice 47 begins with native pending status effects. The current writer already
+materializes targets and records delivered effects atomically; historical pending
+or failed rows still require recovery. The existing owner validates targets and
+settles the ledger without recreating effects. The audit and open producer/
+ordering questions are in [the pending-effects audit](2026-10-25-native-pending-effects-sleep-audit.md).
+Its 72-case status-arbiter baseline passed. No source migration is implemented yet.
+
+Older gates were revalidated: #17490 and #17572 still have E2E shard 3 and aggregate
+failures at their recorded heads. #17576 additionally reports an action-required
+check. #17580 has successful/neutral CI, but its recorded review findings still
+require resolution. These remain part of the full requested stack finish line.
+
+
+## Slice 46 accepted; slice 47 locally verified
+
+#17687 at `b9fe9e2e40ab48104cf18822b5302a740d1957a7` has all 53 checks passing,
+Greptile 5/5, no unresolved review threads, and a mergeable base. It remains
+unmerged. Its full-local-suite PostgreSQL failure above remains part of the record.
+
+Slice 47 implements native pending-effect recovery with exact coordinator binding,
+commit-aware producers, saved lease/retry deadlines, lock-time eligibility checks,
+and pending-only indexed discovery. Periodic finalization skips this duty and
+preserves ordering; explicit/startup recovery remains compatible. No provider turn,
+new queue table, or host-sleep exemption is introduced. See the
+[pending-effects audit](2026-10-25-native-pending-effects-sleep-audit.md).
+
+The expanded consumer run passed 680 tests across 15 files. The final producer
+audit found a lease-shortening wake gap; its new real-store regression failed
+before the fix and passed afterward. Final owner/startup tests pass 158 cases;
+the finalizer rerun passes 29 on a fresh database (683 distinct local cases across
+these runs). The initial finalizer rerun reused a fixed company prefix and failed
+setup; that failure is preserved. Index discovery was measured with 10,000 delivered
+effects and 10,000 completed coordinators. Migration replay and valid/ready checks
+pass. Final workspace and remote gates must be recorded before acceptance.
+
+The remaining original scope, older CI/review issues, full master reconciliation,
+and all final-head PR gates remain open. No PR has been merged by this stack work.
+
+Final slice 47 source passes workspace typecheck/build and 158 worker/startup
+cases, including exact near-term concurrent deadlines. Remote publication and
+acceptance are the next gates; local success does not satisfy the full stack.
+
+## Slice 47 published; slice 48 response-owner audit
+
+Slice 47 is draft [#17690](https://github.com/paperclipai/paperclip/pull/17690),
+head `56c3601ea605b333141e86e0a810ed790fb6ce48`, based on #17687. Its final local
+checks passed; remote CI and Greptile are running. No merge or remote acceptance
+is claimed yet.
+
+Slice 48 starts accepted-response presentation recovery, excluding governed-review
+presentation. Its current helper conflates dormant/settled work and transient
+failures as false; resolve that owner contract before removing its backstop.
+The exact null-lease, digest, selected-answer, and publication-authority fences
+must remain intact. The existing external-chat baseline passed 33 selected cases;
+1,551 others were not selected. See the
+[response-presentation audit](2026-10-25-native-response-presentation-sleep-audit.md).
+
+The old action-required check on #17576 is Superagent Security Scan. Its existing
+voice-review findings and the older E2E failures remain outstanding. Work on the
+rest of the original stack continues; none of these gates are waived.
+
+Slice 48's first owner-contract change now passes the same 33 real-PostgreSQL
+response cases plus server typecheck. The strict recovery entry point propagates
+operational errors; existing callers keep their logging/boolean contract. No
+response worker has been wired and no response polling is removed yet.
+
+The Superagent action-required gate on #17576 was traced to review 5643793631,
+inline finding 4371283330: repeated connection/health writes reload the full live
+voice-session inventory. This is the already-recorded bounded-discovery issue,
+not a missing credential or permission. It still needs a code/test repair and
+fresh review; the gate must not be bypassed.
+
+## Slice 47 accepted
+
+[#17690](https://github.com/paperclipai/paperclip/pull/17690) at exact head
+`56c3601ea605b333141e86e0a810ed790fb6ce48` has all 53 checks passing, Greptile 5/5
+with no actionable findings or review threads, and a mergeable parent. Its PR body
+records those gates. It remains draft and unmerged. Evidence is retained in
+`/tmp/sleep47-checks-accepted.json`, `/tmp/sleep47-final-gates.json`,
+`/tmp/sleep47-review-accepted.json`, and `/tmp/sleep47-review-threads.json`.
+
+Slice 48 remains local and incomplete: owner error separation and the 33-case
+baseline pass; candidate discovery, producer coverage, lifecycle wiring, and
+periodic removal remain. Older unresolved stack gates and every other original
+recurring-server duty still require completion. The active goal is not complete.
+
+
+## Slice 48 local worker progress
+
+Accepted-response recovery now has a local scoped worker, locked retry/effect
+fences, milestone-topic notifications, and live authority registration invalidation.
+The final selected real-PostgreSQL/lifecycle run passes 45 cases, and server types
+pass. An elapsed-deadline race was reproduced before repair. A generated concurrent
+partial index plus expression statistics avoids selected-history scans in the
+10,000-row fixture; fresh migration and replay pass. See the
+[response audit](2026-10-25-native-response-presentation-sleep-audit.md) for exact
+scope and preserved failures.
+
+The worker is not wired into startup and periodic response recovery remains.
+Producer coverage, remaining variants/failure tests, large dormant-backlog cost,
+full local/remote acceptance, and PR publication are still required. Master was
+refreshed to `7703220d38`; the complete stack has not yet been reconciled with it.
+No merge, complete migration, whole-instance sleep, or full-goal completion is
+claimed.
+
+## Slice 48 producer and lifecycle checkpoint
+
+Response recovery now shares the finalization notification boundary, receives
+run-scoped late evidence, and wakes when a paused agent resumes or retry admission
+settles. The resume gap was reproduced before fixing it at lifecycle's transaction
+boundary. The existing lifecycle suite, both response variants' supporting suites,
+and the combined acceptance selection cover 175 distinct passing cases across
+runs; server types pass. A real source-row lock verifies retry across drain.
+Earlier harness/test failures and the 10,000-unpresented-row discovery measurements
+are preserved in the response audit. No startup wiring, periodic removal, PR
+publication, remote acceptance, or whole-instance sleep is claimed yet.
+
+
+## Slice 48 startup integration, 2026-10-26
+
+The response worker now registers under enabled maintenance and releases its
+subscription during shutdown. Periodic recovery skips both its direct repair and
+already-committed finalizer replay; fresh finalization and explicit recovery stay
+active. The startup suite passes 66 cases, and two database regressions confirm
+periodic calls defer to the new worker. Workspace types pass. Full local tests
+remain in progress with embedded-database initialization failures; build and
+remote checks remain pending. The stack goal is still incomplete.
+
+
+## Slice 48 review repair, 2026-10-26
+
+Draft #17696 is open and attached. Review identified company-wide response reloads
+from routine run-status notifications; three real database regressions reproduced
+it. Status/claim/release wakes now retain task or exact-run scope while task
+lineage remains task-wide. All 34 heartbeat lifecycle and 63 response/authority/
+admission tests pass, as do server types and the workspace build. The full local
+suite was stopped after repeated embedded PostgreSQL startup failures and remains
+unproven. Remote failures at `79bf36cbf8` include an early startup-settlement test
+assertion (repaired), a workspace staging timeout, and an E2E runner shutdown.
+See the response audit for logs. Fresh-head CI/review, earlier stack findings,
+master reconciliation, and all remaining original duties stay open. Nothing merged.
+
+
+## Slice 48 full-history acceptance repair
+
+Fresh review of `c4beddad1e` is 5/5 with its scope finding resolved. Remote CI
+exposed a second early startup assertion. Full local chat verification finished
+1,595 passed / seven failed; all seven were new worker tests observing a transient
+null deadline or unfinished startup batch. Their settlement predicate now includes
+zero active work. All 18 affected cases pass against the full suite's retained
+history. Fresh remote acceptance remains pending; these are recorded test repairs,
+not a waiver of failed gates or a change to production batch behavior.
+
+## Slice 48 accepted; slice 49 approval producer checkpoint
+
+#17696 at `fad35f2d7ae6bdbb85e709f1bab4633d197fd108` has all 53 checks
+passing, Greptile 5/5 at that commit, and zero unresolved review threads. Its PR
+body now records those results and preserves the earlier local/remote failures.
+It remains draft and unmerged. Evidence is in /tmp/sleep48-final-gates.json,
+/tmp/sleep48-final-comments.json and /tmp/sleep48-final-review-threads.json.
+
+Slice 49 has a guarded recovery owner and scoped worker, plus verified approval
+producer wakes. The 171-case owner suite and 70 existing approval/budget/queue/
+retention consumer cases pass, as does server typecheck. See its audit for the
+reproduced missed-wake failures and repaired test stub. Interaction producer
+coverage, discovery cost, startup wiring, periodic removal and full acceptance
+remain outstanding. No slice 49 PR or whole-instance sleep is claimed. Earlier
+stack gates, master reconciliation and every remaining original duty stay in scope.
+
+Slice 49 lifecycle checkpoint: the real agent-resume missed wake was reproduced
+and repaired through the existing lifecycle hook. Milestone/finalization scopes
+now feed review recovery, and pending-effect settlement supplies its task identity.
+The 172-case owner suite and 162 lifecycle/milestone/finalization consumer cases
+pass, with server types passing. The owner audit lists remaining interaction, task
+authority and coordinator producer evidence. Registration, periodic removal, query
+cost, full verification and publication remain outstanding; the full stack scope
+and older unresolved gates remain unchanged.
+
+Slice 49 interaction checkpoint: five interaction misses plus task-status and
+OAuth-denial misses are reproduced and fixed. Task-scoped notifications cover
+existing resolution transactions and direct OAuth/connection cleanup writers.
+The complete owner suite passes 180 cases; interaction/telemetry/satisfied-connection/
+generic-OAuth consumers pass 249 cases, and server types pass. Skipped telemetry,
+external pool-fixture and callback-narrowing failures and repairs are preserved
+in the owner audit. Execution-state-only restoration, real coordinator release,
+query cost, registration/periodic removal and final acceptance remain. No PR yet,
+no merge, and the full original stack scope remains open.
+
+
+## Slice 49 startup and cost checkpoint
+
+Governed-review response recovery now owns both periodic repair entrances and
+registers through heartbeat maintenance. All 255 owner/startup cases, workspace
+typecheck and build pass. Pending-policy release, real coordinator retry, SQL-quiet
+drain, contention/resume and shutdown/restart are covered. A run-first concurrent
+receipt index removes the measured quadratic history lookup (about 3,000 ms to
+45 ms on 10,000 selected historical responses). The 10,000 outstanding-item
+fixture remains proportional: 101 queries, 2.25 seconds, about 2.05 MB; it stops
+between pages on drain. Fresh migration and interrupted/concurrent replay pass.
+The audit preserves the initial query, migration and test-clock failures. Full
+local tests are running; remote acceptance, older stack findings, master
+reconciliation and every remaining original duty are still open. Nothing merged.
+
+
+## Slice 49 publication; slice 50 owner audit
+
+Draft #17702 at `be6ca6151b` is open on #17696. Greptile reviewed that head
+at 5/5 with zero unresolved threads. CI remains in progress. The full local
+suite was stopped after repeated embedded PostgreSQL bootstrap failures and
+many skipped DB suites. One isolated native-session-executor failure reproduces
+in startEmbeddedPostgresTestDatabase before recovery behavior runs; logs are
+/tmp/sleep49-full-tests.log and /tmp/sleep49-full-failure-isolated.log. The
+255-case real-PostgreSQL owner/startup selection, workspace types/build and
+migration replay remain passing. This does not make full local acceptance green.
+
+Slice 50 audits native status reassessment: changed evidence, authoritative task
+state and retired automatic reviews all feed the existing append-only assessment
+and decision owner. Its producer/guard inventory is in the dated reassessment
+audit. No implementation or periodic removal is claimed for slice 50 yet. Earlier
+stack gates, master reconciliation and the full remaining scope remain open.
+
+
+Slice 49 remote acceptance: #17702 at
+`be6ca6151bb04e25f691a830734ddb5856701d27` now has all 53 checks passing,
+Greptile 5/5 at that exact head and zero unresolved review threads. It remains
+draft and unmerged. /tmp/sleep49-final-gates.json, /tmp/sleep49-comments.json
+and /tmp/sleep49-review-threads.json preserve the observations. The PR body
+records the passing remote gates and keeps the local embedded-database failure
+visible. Slice 50 and all other remaining original obligations are incomplete.
+
+
+Slice 50 extraction checkpoint: reassessment and its pure policy now have native
+runtime owners, with the original reconciler delegating to them. All 94 status
+corpus cases pass before and after extraction; all 187 governed-response cases
+and server types pass afterward. No polling duty has been removed. The audit
+records the critical transaction boundary: scheduled guards belong inside the
+status committer, which publishes after its own transaction. Producer coverage,
+worker selection, lifecycle/cost proof and a new PR remain outstanding.
+
+Slice 50 scheduled-commit checkpoint: nine competing source/lease/deadline/effect/
+ownership cases reproduce unsafe scheduled reassessment before the new guard.
+The final 103-case status corpus and server types pass. The audit preserves two
+initial invalid fixtures and the before-fix constraint rejection. The guard is
+opt-in at the existing committer transaction; no outer transaction or early
+publication is added. Worker discovery, producer/lifecycle/cost evidence and
+periodic removal remain outstanding. No new PR or merge is claimed; all original
+remaining duties and older stack gates remain open.
+
+Slice 50 scoped-worker checkpoint: discovery/check/register now use the shared
+scheduler, with distinct dormant and retryable outcomes and exact saved deadlines.
+A real retirement missed wake and a near-term deadline delay were reproduced and
+fixed. Final local verification passes 116 status/worker cases plus 187 governed
+response consumer cases; server types pass. Driver SQL capture proves quiet after
+settlement and during drain for the tested path. Initial history cost measurements
+and their synthetic-fixture limits are recorded in the owner audit. The worker is
+not registered in startup and periodic reassessment remains. Producer coverage,
+concurrent authority audit, selected-current/backlog cost and full acceptance are
+still pending; no slice 50 PR or merge, and the full original scope stays open.
+
+Slice 50 producer checkpoint: six real work-product/attachment transaction misses
+and three task mutation misses were reproduced and repaired. The real promotion
+HTTP route also wakes reassessment. All 13 owner lifecycle tests, 79 affected
+consumer cases across their documented runs, and server types pass. Initial
+embedded-PostgreSQL failures and the external-database test repairs are preserved
+in the owner audit. Approval/interaction/run evidence and workspace producers,
+concurrent authority, backlog cost, startup wiring and periodic removal remain.
+Master remains 1fbbef45a8; older stack gates and the full original scope stay open.
+
+Slice 50 authority checkpoint: two real commit-boundary regressions reproduced
+stale completion after the source run failed or another run took task execution.
+The scheduled retired-review path now rechecks both facts under existing locks.
+All 115 status-corpus cases pass. A retained-history startup assertion failed in
+the combined run; after waiting for bounded startup batches while enforcing the
+saved retry deadline, all 28 lifecycle cases and server types pass. The owner
+audit preserves failures and handoff/contract producer findings. Remaining
+business-fact races, producer coverage, cost, wiring, periodic removal and PR
+acceptance are still open. Nothing merged; the full stack goal is incomplete.
+
+Slice 50 contract checkpoint: a newer committed completion contract reproduced
+stale completion; a real uncommitted writer reproduced blocking on the task lock.
+The contract owner now exposes a nonblocking current-revision guard, acquired
+before status row locks and held through commit. All 145 corpus/lifecycle tests
+and server types pass. Failure logs and the lock-order rationale are recorded in
+the owner audit. Workspace/governance races, producer coverage, cost, startup
+integration, periodic removal, remote acceptance and the rest of the full stack
+remain open. Nothing merged.
+
+Slice 50 workspace-barrier checkpoint: three stale-completion regressions now
+pass after checking and share-locking the current barrier inside status commit.
+The check uses existing row/FK serialization and NOWAIT contention handling.
+All 148 status/lifecycle cases and server types pass. The owner audit preserves
+before-fix failures and distinguishes barrier receipts from physical workspace
+ownership, which still needs audit. Governance/dependencies, remaining producers,
+cost, wiring, periodic removal and PR acceptance remain open; nothing merged.
+
+Slice 50 physical-owner checkpoint: four unsafe-completion regressions and a
+subsequent release missed wake were reproduced and repaired. Scheduled retired-
+review reassessment respects the existing physical lock and durable owner receipt;
+normal/verified owner release wakes it through committed intent. All 217 status,
+lifecycle and workspace-owner consumer cases and server types pass. Existing
+orphan/stop-proof safeguards remain verified. Governance/dependencies, remaining
+producers, cost, integration and remote gates remain open, along with all other
+original duties and earlier stack findings. Nothing merged.
+
+Slice 50 governance checkpoint: seven stale-completion races reproduced changed
+execution policy, approvals, interactions and question history. The governance
+owner now supplies nonblocking source locks; status commit verifies the gate
+used by the selected decision. All 159 status/lifecycle cases pass, the valid
+question-history fixture passes on recheck, and server types pass. Dependency and
+remaining authority/producer audits, task-history/query costs, wiring, periodic
+removal and remote gates remain outstanding. The full stack remains incomplete;
+nothing merged.
+
+
+Slice 50 dependency checkpoint: seven stale-completion races are reproduced and
+fixed through the existing dependency-readiness owner. Scheduled status commit
+locks/rechecks prerequisite and workspace-finalization sources with nonblocking
+contention handling; ordinary readers retain their behavior. All 181 distinct
+status/lifecycle/dependency consumer cases and server types pass. The audit keeps
+the initial unordered assertion and misconfigured embedded-test invocation
+failures and their repairs. Remaining authority/producer coverage, cost, startup
+integration, periodic removal, remote gates, earlier stack findings and the full
+original scope remain open. Nothing merged.
+
+
+Slice 50 evidence checkpoint: seven races reproduced completion using revoked,
+removed or concurrently edited evidence. The assessment owner now reclassifies
+and locks referenced evidence inside scheduled status commit; changed facts and
+contention defer through existing retry handling. All 177 status/lifecycle/
+classifier consumer cases and server types pass. The audit preserves before-fix
+failures and the remaining identity/producer and cost limits. Startup wiring,
+periodic removal, remote gates, older stack findings and all remaining recurring
+work are still incomplete. Nothing merged.
+
+
+Slice 50 OAuth producer checkpoint: authorization-card creation/reopening now
+signals both native review workers from the same short transaction as its card
+and state link. Three missing-settlement-signal regressions were reproduced;
+all 472 tool-access and 30 worker lifecycle tests plus server typecheck pass.
+The audit retains before/after evidence and the remaining handoff/authority
+coverage limits. Master is freshly verified at 1fbbef45a8. Discovery/cost proof,
+startup wiring, periodic removal, remote acceptance, earlier stack findings and
+the full original recurring-work scope remain incomplete. Nothing merged.
+
+
+Slice 50 scale checkpoint: 10,000 separate selected completed task/run histories
+produce zero company candidates (~35 ms); 10,000 actual candidates reconstruct
+in 101 bounded queries (~1.56 seconds/2.05 MB), with verified drain/abort behavior.
+A retired-review task with large review/comment/approval/dependency/workspace
+history settles in ~126 ms and disappears from discovery. The audit preserves
+two invalid benchmark-fixture attempts and the corrected fresh-task evidence.
+A permanent 103-item backlog test proves real settlement and SQL quiet; all 31
+lifecycle cases and server types pass. Remaining producer/authority audit,
+startup integration, periodic removal, remote gates and the full original stack
+scope remain open. Nothing merged.
+
+
+Slice 50 startup checkpoint: enabled maintenance now registers the reassessment
+worker and periodic recovery skips its classification/decision path. The separate
+historical supersession guard is preserved before workspace recovery. Two missing
+integration regressions fail before the change; all 246 corpus/startup/lifecycle
+cases, 32 existing finalization/cleanup consumer cases, and server types pass after.
+The owner audit records the intentional separation of reassessment from independent
+workspace settlement and the retained failure evidence. Remaining producer/authority
+audit, full acceptance, publication, remote gates and all other original duties
+remain incomplete. Nothing merged; the goal remains active.
+
+
+Slice 50 is draft [#17709](https://github.com/paperclipai/paperclip/pull/17709),
+based on #17702. Initial head 91a6c14170 passed all 52 CI checks; Greptile 4/5
+found direct claim-release writers missing reassessment notifications. Six real
+regressions reproduced the gap. Task-scoped signals now cover their existing
+transactions; the repaired selection passes 978 cases and server types, with
+15 embedded-DB runtime cases excluded for the diagnosed host semaphore exhaustion.
+The owner audit preserves the wrong initial ordinary-release completion assertion
+and its authority-preserving correction. Fresh-head gates remain pending; nothing
+merged. Earlier E2E failures on #17490/#17572 and voice findings on #17576/#17580
+were revalidated and remain unresolved. All original remaining duties stay in scope.
+
+
+Slice 50 repaired-head acceptance: #17709 at
+`9a9e4262bb9beb39d67d26320c14e99651b6d6bd` now has all 53 checks passing,
+Greptile 5/5 at that exact head and zero unresolved review threads. Its PR body
+records the result and retains the local embedded-database limitation. It remains
+draft and unmerged. `/tmp/sleep50-release-latest-gates.json` records fresh CI.
+Older stack findings and master reconciliation remain outstanding.
+
+Slice 51 is now `codex/sleep-51-retained-native-session-cleanup`, based on that
+repaired head. The existing joined discovery has a cohesive native cleanup owner;
+scoped reconstruction preserves future lease deadlines. All 35 database discovery/
+finalization cases, 72 exact physical-cleanup cases and server types pass. See
+[the audit](2026-10-26-retained-native-session-cleanup-sleep-audit.md) for producer,
+physical-owner, shutdown and outcome gaps. No scheduled cleanup worker is wired
+and periodic cleanup remains enabled. The full scope remains incomplete.
+
+
+Slice 51 outcome checkpoint: pre-claim database/commit failures now propagate
+instead of being discarded as ineligible history. Typed waiting outcomes preserve
+process/session/environment/maintenance ownership and the actual coordinator lease
+expiry. Four injected failures, a real PostgreSQL row-lock regression and six
+waiting-state regressions reproduced the old behavior. The repaired source passes
+798 executor cases (15 embedded-DB cases excluded), 36 database cases and server
+types; strengthened physical reactivation tests pass all 80 selected cases again.
+The owner audit preserves the reused-fixture failure and initial fixture type error.
+Worker registration, producer/release notifications, quiet/lifecycle/cost proof,
+periodic removal and a slice 51 PR remain outstanding. No polling duty is claimed
+removed by this checkpoint; all original stack scope stays active and unmerged.
+
+
+Slice 51 worker checkpoint: retained cleanup now has scoped shared-scheduler
+reconstruction, exact lease deadlines, a concrete process-exit probe and event
+waiting for other owners. Startup/manual/scheduled attempts join duplicates and
+serialize different inspections. A real finalization-notification missed wake was
+reproduced and repaired through the existing transaction fanout. All 19 worker
+lifecycle cases, 36 existing cleanup/finalization cases, 37 reassessment consumer
+cases and server types pass. The 103-item backlog becomes SQL-quiet after settlement.
+Actual local/environment/process/maintenance producer coverage, physical callback
+drain ownership, large-history costs, startup wiring, periodic removal, publication
+and remote acceptance remain open. Periodic cleanup is still enabled; no new PR
+or merge is claimed and the full original stack scope stays active.
+
+
+Slice 51 durable release checkpoint: six real-producer missed wakes were
+reproduced and repaired: single/run-wide lease release, settled process release,
+stop-only cleanup, export-resume settlement and confirmed sandbox absence.
+Notifications remain run/company-scoped and tied to outer transaction ownership.
+All 208 selected worker/environment/workspace consumer cases and server types pass.
+The owner audit retains the asynchronous rollback-test failure and correction,
+and distinguishes controlled stop evidence from actual physical/provider proof.
+Local session and maintenance releases, remaining finalization producers, callback
+ownership, startup wiring, cost proof, periodic removal and PR gates remain open.
+Periodic cleanup remains enabled. No PR or merge; all original scope stays open.
+
+
+Slice 51 local owner checkpoint: session execution/initialization releases and
+all warm-session retirement paths now emit local scoped hints. Warm removal checks
+the expected owner; the existing close/retention decisions remain authoritative.
+Three lifecycle regressions reproduced missing release notifications. Final
+executor verification passes 798 cases (15 embedded-DB cases excluded), the real
+PostgreSQL worker suite passes 26 cases, and server types pass. Retained maintenance
+completion and physical callback ownership are next; the audit records the exact
+boundary gap. Startup registration, periodic removal, cost proof, remaining
+producers and PR acceptance remain incomplete. Nothing published or merged;
+all original recurring-server duties and older stack gates remain open.
+
+
+Slice 51 maintenance and terminal-producer checkpoint: cleanup now owns original
+Runner maintenance attempts/callbacks through settlement, using Runner's existing
+drain boundary. Finalizer projection and heartbeat terminal writes now notify
+cleanup in their transactions. Three reproduced producer regressions include the
+real separate-commit decision/projection race. All 64 worker/lifecycle cases,
+146 finalizer corpus cases, 799 selected executor cases, 19 Runner settlement
+cases and server types pass; 15 embedded-DB cases remain excluded for the recorded
+host limitation. The audit records earlier failures and fixture corrections.
+Startup wiring, query cost, periodic removal, full gates and publication remain.
+No PR or merge; the complete recurring-server scope and older stack gates stay open.
+
+
+Slice 51 startup integration: the enabled server now registers retained cleanup
+and its shutdown subscription. The periodic orphan pass skips this duty; explicit
+and startup recovery retain their bounded joined sweep. Heartbeat joins original
+scheduled physical operations through shutdown. All 100 startup/worker cases and
+server types pass. After the user's explicitly approved cleanup of 11 orphaned
+semaphore sets, the full executor suite passes all 814 cases with no exclusions,
+including strengthened initialization-release coverage. A 10,000-completed-session
+probe measures broad discovery at 28–30 ms locally and run-scoped discovery at
+0.030 ms; broad discovery remains linear in history and no deployed claim is made.
+Full workspace acceptance, PR publication/review, older gates and every remaining
+duty stay open. No merge has occurred.
+
+
+Slice 51 publication: [#17717](https://github.com/paperclipai/paperclip/pull/17717)
+is draft on #17709. Published head `8c62a6b0c0` passed workspace types/build and
+received Greptile 5/5, but three CI gates failed: two tests retained the old
+heartbeat-owned maintenance drain, and the Copilot transport identity was stale.
+The repair follows the cleanup-owned lifetime and creates a new attestation while
+preserving old profile history. Full affected recovery/process suites (34 + 408)
+and profile tests (69) pass. The local whole-suite OAuth timeout is retained in
+the audit alongside a passing complete 472-case isolated rerun. Latest-head CI
+and review acceptance are still pending; no stack PR is merged.
+
+The next native finalization audit identifies three distinct remaining duties:
+workspace copy-back/validation; accepted-result commit/projection; and resource
+settlement after finalization. Current committed-history upkeep repeatedly calls
+finalization and best-effort cleanup, including swallowed resource-release
+failures. A completed result cannot be used as proof that those residual duties
+are finished. Audit first-result publication in `paperclip-control-plane-port.ts`,
+workspace operation writes, durable workspace-owner release, retry updates and
+cleanup completion before disabling their existing recovery paths. No migration
+of these next duties is claimed by slice 51.
+
+## 2026-10-26: verified slice 51 and workspace-finalization migration
+
+[#17717](https://github.com/paperclipai/paperclip/pull/17717) is verified at
+`d0036fce3e039e91ab2bf2602e3e6a87a4476491`: all 56 remote check/status entries
+passed or intentionally skipped, Greptile 5/5 on that head, and no unresolved
+review threads. It remains draft/open and unmerged. The older local full-suite
+run was interrupted with exit 130 after current-head CI passed; do not count it
+as a local full-suite pass. The separate local resource-limit failure remains
+recorded. The explicitly approved 11 semaphore sets were removed once.
+
+Slice 52 is `codex/sleep-52-native-workspace-finalization` on that parent.
+[Its audit](2026-10-26-native-workspace-finalization-sleep-audit.md) records the
+copy-back obligation, exact owner/proof outcomes, commit/release producers,
+shared-scheduler integration, and 12 passing real-database lifecycle cases.
+The periodic orphan pass skips only this physical-copyback duty. Result projection
+and resource settlement retain existing recovery and are the next separate slices.
+Final full verification, publication and review are pending for slice 52. Inspected
+master is `a1f77821b9cd5c9c846fdf7a0fa5cc620ad2b6bb`; stack-base propagation is
+still outstanding. Older gates (#17490, #17572, #17576, #17580) and the rest of the
+requested recurring-server inventory remain active. No merge is authorized.
+
+Slice 52 publication: [#17734](https://github.com/paperclipai/paperclip/pull/17734)
+is draft on #17717. Workspace types/build passed. The initial broad command had
+582 passes and 88 board-action failures from incorrectly shared external test
+fixtures; it is not a pass. Separate databases then pass all 203 cases in four
+complete follow-up suites. A reproduced stale-success-barrier regression is
+fixed: result reconciliation prefers the existing successful scoped receipt even
+when a stale controller later writes failure, without repeating copy-back.
+The worker lifecycle now passes all 13 cases. Full-command disposition and
+repaired-head remote gates remain pending. No merge; all older gates and later
+recurring duties remain in scope.
+
+Slice 52 review repair: initial Greptile 3/5 identified the already-reproduced
+stale barrier and missing heartbeat execution-suppression checks. Restore/worktree
+regressions both failed red through public heartbeat registration. The worker now
+consults the owning suppression policy before discovery/execution, and worktree
+activation publishes a reconstruction signal. All 15 lifecycle cases pass,
+including real settings activation after quiet. Latest validation/review are still
+pending; the scope remains active with no merge.
+
+
+Slice 52 startup repair: Greptile reached 5/5 at `020ccbc66d` with both threads
+resolved, but CI server shard 4/12 found a missing startup fixture method. Added
+that method and enabled/disabled lifecycle coverage, then corrected the exact
+periodic skip expectation. All 74 startup cases pass. The old-head default local
+full run was deliberately interrupted (Vitest 130, wrapper 1) before editing;
+it is not a pass. Remote gates and review on the repaired head remain pending.
+
+Follow-up audit: eight earlier native worker registrations gate task drain but
+lack the new worker's restore/worktree suppression boundary: retained session
+cleanup, status reassessment, governed response, response presentation, pending
+effects, unsafe exports, automatic completion review and obsolete policy review.
+Verify each duty's prior suppression contract and its settings activation wake
+before declaring it safe. This is outstanding stack acceptance work, not a claim
+that every listed duty has the same defect. All remaining duties and older gates
+remain active; no merge is authorized.
+
+
+Slice 52 producer audit correction: the hidden PRP coordinator has a second
+accepted-result writer. Added its missing transaction-aware workspace hint after
+two red real-producer regressions. The complete lifecycle suite passes all 18
+cases, covering first result plus outer commit/rollback for both writer paths.
+The previous head's startup gate passed, with Greptile 5/5. A separate CI import
+hook timeout (118 agent-skills cases skipped) passed all 118 locally and received
+one justified job retry. New producer-fix acceptance remains pending. No merge;
+all prior gate, suppression-audit and remaining-duty obligations remain open.
+
+## Slice 52 accepted; slice 53 implementation checkpoint
+
+Slice 52 [#17734](https://github.com/paperclipai/paperclip/pull/17734) is verified
+at `d5c540b1c0df9aba35262ba121c651806bbca161`: all current checks/statuses pass or
+intentionally skip, Greptile 5/5, both review threads resolved. The preceding
+startup timeout received one justified retry which passed. The interrupted local
+full-suite run remains an interruption, not a local pass. The PR is draft/open.
+
+Slice 53, `codex/sleep-53-native-result-commit`, moves accepted-result commit after
+a successful workspace barrier to scoped transaction wakes and saved deadlines.
+[Its audit](2026-10-26-native-result-commit-sleep-audit.md) records both real writers,
+pending-effect/cancellation handoffs, atomic claim deferrals and 96 focused
+passing cases. Committed projection and resource settlement retain existing
+recovery. Publication and final local/remote gates remain pending.
+
+Master refreshed to `49bd7a4ba6`; subsequent finalization changes must be reconciled
+through the stack before final acceptance. All earlier gate failures, suppression
+audits and remaining inventory duties stay open. Nothing was merged.
+
+## Slice 53 accepted; slice 54 projection repair
+
+Slice 53 [#17748](https://github.com/paperclipai/paperclip/pull/17748) is verified at
+`1fc2e8c5b61173203abbd50b1b03346abc629218`: all 53 remote checks/status entries
+passed, Greptile 5/5 and zero unresolved threads. Local evidence includes 250
+passing tests, workspace typechecking and build. The embedded-cluster executor
+command was interrupted after PostgreSQL semaphore exhaustion; that run is not
+counted as passing. The full local test command was not claimed. The PR remains
+draft/open and unmerged.
+
+Slice 54, `codex/sleep-54-native-run-projection`, moves the existing committed run
+projection predicate and write into their owner and drives repair from scoped
+committed changes. [Its audit](2026-10-26-native-run-projection-sleep-audit.md)
+records the reproduced duplicate-event/stale-time/cleanup-ordering races, 400
+passing local cases, producer coverage and the retained post-commit/resource
+obligations. Workspace typechecking passes; the full local suite remains limited
+by embedded PostgreSQL startup capacity. Final local
+and remote acceptance is pending. Master refreshed to `ad861a7f94`; stack integration,
+prior failed gates, suppression audits and all remaining duties stay in scope.
+
+## Slice 54 accepted; slice 55 recovery-notice resolution
+
+Slice 54 [#17752](https://github.com/paperclipai/paperclip/pull/17752) is verified at
+`f98e6b5b57558c78ba111170ab3d8d19ff667827`: all 53 checks/status entries passed,
+Greptile 5/5, zero unresolved threads, 400 passing local cases, workspace types
+and build. The PR remains draft/open and unmerged. Intermediate failures and the
+full-local-suite limitation remain recorded in its audit and PR body.
+
+Slice 55, `codex/sleep-55-native-recovery-notices`, moves only committed native
+finalization recovery-notice resolution to scoped transaction wakes. The existing
+action rows remain truth; the owner rechecks reused action identities under
+lifecycle locks. [Its audit](2026-10-26-native-recovery-notice-sleep-audit.md)
+records producer coverage, 102 passing worker/startup cases and 340 passing
+affected cases (442 total), plus workspace typechecking. Build and remote
+acceptance remain pending. All other inventory, prior gate failures,
+suppression audits and master propagation remain active obligations.
+
+
+## Slice 56: external conversation settlement
+
+This slice moves eligible answered-conversation settlement to committed wakes and
+the shared deadline worker. See [the owner, producer, handoff and verification
+audit](2026-10-26-external-conversation-settlement-sleep.md). The existing durable
+rows remain truth; no table or migration is added. The monitor owner preserves
+its recovery handoff, including restart receipts and atomic board escalation.
+Periodic native replay delegates only settlement, and generic stranded-task
+recovery preserves ordering with a read-only eligibility guard. That generic
+scan, Muse completion and resource duties remain separate inventory items.
+
+Based on slice 55 / #17758 at `13f37eef91edce7ee424ec5424c66fc0e6154f4e`.
+Master was fetched at `a67a18c171816b097f46eae78fc58c7e55c9c565`; this slice remains
+stacked on its parent. Full-stack master propagation and fresh acceptance remain
+required. No merge or deployed host-sleep claim is made. See the PR for final
+verification and review evidence; a local test pass does not close earlier stack
+gate or suppression debts.
+
+
+## Slice 56 gates; slice 57 Muse terminal settlement
+
+Slice 56 [#17772](https://github.com/paperclipai/paperclip/pull/17772), at
+`4d1bc93840ae4bd238814d73249325246f69d76e`, has a successful authoritative Actions
+run and Greptile 5/5 with zero unresolved threads. Its external Entire Gates
+check still requires trail approval and draft assessment. The superseded run's
+cancelled checks are not a new code failure. Do not call all gates green.
+
+Slice 57, `codex/sleep-57-muse-terminal-settlement`, extends the existing Muse
+maintenance worker with original-binding terminal debt and scoped transaction
+wakes. No new table or independent timer is added. The
+[producer and lifecycle audit](2026-10-26-muse-terminal-settlement-sleep.md)
+records 433 passing affected cases and workspace typechecking, including the
+real finalization serialization regression and its fix. Periodic finalization
+delegates only this duty; default live/manual and resource callbacks remain.
+Build, publication and remote acceptance are still pending.
+
+Master was fetched again at `a67a18c171816b097f46eae78fc58c7e55c9c565`.
+Whole-stack master integration, older failed gates and suppression audits, and
+all remaining inventory reasons remain active. Nothing was merged. Existing
+active-transport replay polling remains a separate reason to inventory and
+migrate, rather than a false claim of whole-instance quiet.
+
+## Slice 57 acceptance and slice 58 environment settlement
+
+Slice 57 [#17793](https://github.com/paperclipai/paperclip/pull/17793) is published
+at `be8f3284c2c8a05903f2eca000ad86d046780fec`. Latest-head checks show 53 success
+and one neutral result, and the PR is mergeable. Greptile is 5/5 with no unresolved
+threads. One failed-job rerun recovered initial runner shutdowns and missing or
+truncated logs. The latter individual causes remain unknown. No source change
+was needed for that rerun. Nothing was merged.
+
+Slice 58, `codex/sleep-58-native-environment-settlement`, moves the environment
+release duty out of periodic native finalization replay. Existing lease records
+and the existing release owner's predicate supply debt. Existing native and lease
+transactions wake the shared coordinator. Saved cleanup deadlines, workspace
+preservation, provider stop evidence, and warm-retention policy keep their owners.
+See the [owner and lifecycle audit](2026-10-26-native-environment-settlement-sleep.md).
+The initial combined run passed 127 affected tests. Final workspace checks and
+remote acceptance remain required before this slice is accepted.
+
+The compound callback's runtime-service release and agent-status projection are
+still outstanding. Workspace descriptor cleanup remains separate. All earlier
+inventory reasons, master propagation, older failed gates, and suppression debts
+remain active; this section does not narrow the original goal.
+
+## October 26 master integration and review repairs
+
+All 60 published branches (58 numbered duties and two auxiliary slices) now
+contain master `507dc70be26c191e372f09e58dc0965e73bf8f57` through normal parent
+merges. Earlier acceptance entries in this document describe their recorded
+historical heads; they do not certify these new integrated heads. The current
+stack still requires fresh CI, fresh review, and resolution of outstanding
+findings. Nothing has been merged into master.
+
+Three review/compatibility repairs were made at their owning stack boundaries:
+
+- Slice 01 / [#17443](https://github.com/paperclipai/paperclip/pull/17443):
+  a successfully read future custom-image expiry now runs at its saved deadline.
+  A five-second deadline and an earlier committed replacement previously waited
+  for the 30-second retry floor. Failure and unfinished-overdue work retain
+  backoff. Slice 02 carries the same correction into the shared deadline helper.
+  The new unit and real-producer regressions failed first; root verification
+  passed 47 custom-image cases and 39 startup cases. Slice 02 passed 122
+  custom-image, secret-proposal and startup cases.
+- Slice 17 / [#17518](https://github.com/paperclipai/paperclip/pull/17518):
+  plugin inventory notification batching is now an explicit, optional shared
+  deadline contract. Only the plugin scheduler opts into its existing bounded
+  batching latency; consumers without the option reconcile notifications
+  immediately. Known saved deadlines preempt batching, including a ten-second
+  job deadline. This preserves bounded full-inventory reads for bursts of
+  job-status writes without making every successful expiry pass a cooldown.
+  Newly changed plugin configuration retains bounded batching latency. Idle
+  queues still disarm. The focused owner run passed 76 cases.
+- Slice 51 / [#17717](https://github.com/paperclipai/paperclip/pull/17717):
+  HTTP readiness and later worker registration no longer wait for retained
+  physical-session cleanup. The existing scheduler-work and delivery owners
+  retain the original cleanup promise through idle drain and shutdown. A held
+  cleanup regression failed before the fix; 73 startup cases and 28 real-DB
+  retained-cleanup cases passed after it.
+
+Combined source revision `6a5ff3683614d8f954986157f158d74b1f653d22` passed
+workspace typechecking, the full build, and 246 focused cases across seven
+suites. The first combined run exposed the plugin batching dependency: 244
+passed and one failed. The explicit batching repair fixed that failure. This
+ledger-only follow-up does not alter the tested code. Earlier integrated-tip
+validation also covered 470 cases; that remains evidence for its recorded
+revision, not a substitute for fresh checks. Full local `test:run` was not
+repeated because of the previously recorded embedded PostgreSQL capacity
+limitation. Full remote CI remains required.
+
+Known acceptance debt still includes approved-tool rate-limit admission and
+permanent recovery classification, native recovery-notice lock ordering,
+workspace-export scheduling and plugin completion-persistence CI failures,
+cancellation lock failures, several retention/backlog/producer review findings,
+and the native-worker scheduling-suppression audit. Passing focused tests does
+not close those investigations. The remaining original inventory also remains
+in scope; the next native duty audit is agent-status projection. An empty local
+runtime-service map is already SQL/network quiet and does not by itself justify
+another queue. No deployed host suspension, external alarm coverage, or fleet
+savings are claimed by these repairs.
+
+## October 26 approved-review and interrupted-outcome repairs
+
+Slice 05 now retains the originally admitted rate slot through human review,
+reconciles durable request/invocation history before dispatch, and settles
+permanently invalid records without recurring recovery. Formal approvals still
+awaiting human input remain quiet until a committed decision/cancellation; startup
+rediscovers them. Configuration/dependency failures retain retry debt, and saved
+or unknown provider outcomes are never replayed. The originating branch passed
+208 gateway/policy/approval/signature cases and server typechecking.
+
+Propagation preserved each existing owner boundary. Slice 06 retains its shared
+Test-tab fixture with optional rate admission. Slice 14 folds formal-review wakes
+into the existing approval write transaction; slice 16 carries that signal through
+the company-scoped approval notification owner; slice 49 also retains native task
+scopes. Eight affected suites passed 506 cases at source
+`d4ff4b9c04cbaa3739d1b62f7c29a3bff670c901`, including retention, seeding, and native
+review consumers. This is evidence for those integration changes, not separate
+certification of each intermediate branch.
+
+Slice 06 additionally preserves saved `cancelled` invocation status, completion
+time, and error while repairing a stranded executing request. Its new regression
+reproduced the unwanted overwrite; all 14 interrupted-review worker cases passed
+at that branch. Final combined source `b91de5102faf548217ea489667fe51de98c9071a`
+passes all 129 gateway tests, workspace typechecking, and the full build. This
+ledger-only follow-up leaves the tested source unchanged. Full local test:run was
+not repeated because of the previously documented embedded PostgreSQL capacity
+limitation. Fresh remote CI is still required.
+
+No stack PR was merged. Earlier CI debts, other review findings (including native
+notice lock order), the eight native facade suppression audits, the next native
+agent-status projection duty, and the rest of the original inventory remain in
+scope. These repairs do not establish deployed instance/database suspension.
+
+Slice 58 readiness follow-up: fresh review found its first physical provider
+release could block HTTP readiness, just as retained-session cleanup had done.
+The startup/shutdown regression reproduced that blockage. Registration now tracks
+the worker's ready promise through the existing heartbeat work owner without
+awaiting provider cleanup inline. All 84 startup and 20 real-database environment
+settlement cases pass, plus workspace typechecking and the full build. This
+changes only the last PR; earlier stack qualification and unresolved scope remain
+as recorded above. Fresh CI is required and nothing is merged.
+
+## Slice 59: import spool cleanup
+
+Branch `codex/sleep-59-import-spool-cleanup` follows slice 58 at
+`929c86e32e00d219b329741dd2c89c40b1a5f826`. Replace the hourly abandoned-upload
+scan with root/run-scoped filesystem hints, transaction-aware ledger changes,
+and saved 24-hour deadlines. Keep failed/applying files quiet and preserve the
+atomic cancellation claim. Database failures no longer count as missing rows
+that permit orphan deletion. No new table or external-wake exemption.
+
+The owning three complete suites pass 50 tests with real PostgreSQL and files;
+server typechecking passes. The initial outage regression reproduced deletion,
+and fixture failures during lifecycle testing are recorded in
+[the producer and lifecycle audit](2026-10-26-import-spool-cleanup-sleep.md).
+Workspace and remote checks remain separate acceptance gates. This is one
+remaining original duty, not a declaration that the inventory or stack is done.
+
+## Slice 60: automatic database backup scheduling
+
+The ordinary backup interval now registers its real deadline with the shared
+delivery coordinator. Backup execution, serialization, retention, manual calls,
+and the pre-sleep/restart-marker protocol remain with their existing owner.
+The coordinator prevents overlap, leaves passive drain/standby waits without
+SQL, and joins a scheduled backup during shutdown. Enabled backups still owe
+periodic work; this does not claim they become event-only or that Cloud persists
+this deadline. Existing host-sleep gates remain unchanged.
+
+Nine worker lifecycle cases and the complete affected six-suite set passed
+(152 cases), as did workspace typechecking and the full build. A real PostgreSQL
+backup/restore probe also passed after correcting two harness-only errors.
+Full local test:run and remote acceptance remain outstanding. See the dedicated
+[backup scheduling audit](2026-10-26-database-backup-sleep-schedule.md) for limits.
+Skill retention, native harness expiration, and the other original inventory
+duties remain open; this is not completion of the full stack request.
+
+
+## Slice 61: routine schedules
+
+Routine schedules now use their actual saved next-run timestamp and committed
+producer changes without the periodic heartbeat wake. The owner includes overdue
+catch-up debt, shares eligibility between dispatch and deadline reads, and stops
+between claimed trigger batches on drain/shutdown. Added producer coverage includes
+manual invocation of a schedule, company lifecycle and deletion, and budget-driven
+company pause/resume. Existing cron behavior and Cloud sleep proofs stay with their
+owners. Issue-monitor and legacy-agent-timer polling remain separate pending duties.
+
+Two original regressions and two budget-producer regressions failed before their
+fixes. Final acceptance passed 224 tests in eight complete suites, workspace
+typechecking, and the full build. Embedded PostgreSQL setup timed out, and the old
+external disposable cluster later lost a catalog file; a fresh isolated PostgreSQL
+cluster ran the same acceptance suites. No further IPC cleanup was performed.
+Remote checks/review and full-stack acceptance remain pending. See the
+[routine scheduling audit](2026-10-27-routine-schedule-sleep.md) for producer coverage,
+lifecycle evidence, harness corrections and the supported single-process writer model.
+
+
+## Slice 64 — skill-version cache retention (2026-10-27)
+
+The hourly cache scan now reconstructs once and wakes from cache changes,
+transaction-owned version/pin changes, and saved grace or terminal-controller
+lease deadlines. The existing prune service retains all deletion safety checks.
+One active company iterator prevents the 16-cursor cap from restarting a large
+multi-company backlog. Unknown pins and failed inspections retain scoped retries;
+permanent pins and fully settled history become quiet. This reason is separate
+from the still-pending native-harness backup retention duty. See
+[the slice audit](2026-10-27-skill-version-retention-sleep-audit.md) for the full
+writer inventory, module contracts, local acceptance, and limitations. Remote
+review and checks remain pending. The user's October 27 instruction now authorizes
+merging qualifying sleep PRs in dependency order after Greptile 5/5 and any
+present Ponytail review passes, with all required CI checks passing.
+
+## Slice 65 — archived runner evidence retention (2026-10-27)
+
+Split evidence retention from native-harness backup eligibility in their shared
+legacy service. Evidence now reconstructs once, wakes from the existing archive/
+quarantine publication signal, and uses saved retention timestamps. Busy or failed
+items retain recovery and bounded continuation. The backup timer selects only its
+own duty and remains for the next slice. See the
+[evidence audit](2026-10-27-runner-evidence-retention-sleep-audit.md) for producer,
+clock-boundary, interrupted-cursor, writer-model, and verification evidence.
+Local acceptance passes 158 cases plus server typechecking/build. Remote review
+and CI are pending; this is not a deployed sleep claim.

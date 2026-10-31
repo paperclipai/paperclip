@@ -32,6 +32,8 @@ import {
   DurablePrpControlPlane,
   decodeDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
+  inspectStagedRunAttachment,
+  inspectStagedRunAttachmentHeader,
   type DurablePrpCheckpoint,
   durableRecoveryInternals,
   SemanticToolNotDispatchedError,
@@ -52,6 +54,66 @@ const identity: DurableRecoveryIdentity = {
 };
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
+
+it("persists an undispatched source-to-target attachment before bootstrap and preserves it after cache loss", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-staged-attachment-"));
+  const target = { ...identity, runId: "00000000-0000-4000-8000-000000000002", turnId: "next-turn", itemId: "next-item" };
+  const template = { provider: { provider: "codex", command: "fixture", instructions: "assigned instructions ".repeat(1_500) }, authorizedTools: {} };
+  const core = new DurablePrpControlPlane({ stateDirectory: resolve(root, "first"), identity, expectedRunnerVersion, expectedRunnerDigest });
+  let checkpoint!: DurablePrpCheckpoint, templateWrites = 0;
+  core.setCheckpointPersistence(async value => { checkpoint = value; if (value.changedRecords.has("staged-attachment-template")) templateWrites++; });
+  let restored: DurablePrpControlPlane | undefined;
+  let client: AuthenticatedClient | null = null;
+  try {
+    core.stageRunAttachment(target, template);
+    await core.flushCheckpoint();
+    expect(checkpoint.runId).toBe(target.runId);
+    expect(checkpoint.predecessor).toEqual({ runId: identity.runId, normalizedSessionId: identity.normalizedSessionId });
+    expect(checkpoint.workCommandIds).toEqual([]);
+    const proof = inspectStagedRunAttachmentHeader(checkpoint.records.get("header")!);
+    expect(proof).toMatchObject({ attachment: { sourceIdentity: identity, targetIdentity: target, commandId: null } });
+    expect(proof?.attachment).not.toHaveProperty("runAttachTemplate");
+    expect(checkpoint.records.get("header")!.length).toBeLessThan(JSON.stringify(template).length / 2);
+    expect(JSON.parse(checkpoint.records.get("staged-attachment-template")!)).toEqual(template);
+    expect(proof?.runnerVersion).toBe(expectedRunnerVersion);
+    expect(proof?.runnerDigest).toBe(expectedRunnerDigest);
+    checkpoint.restoreSessionDirectory(resolve(root, "replacement"));
+    restored = new DurablePrpControlPlane({ stateDirectory: resolve(root, "replacement", "control-plane"), identity, expectedRunnerVersion, expectedRunnerDigest });
+    expect(inspectStagedRunAttachment(restored.store.state, target)).toMatchObject({ ...proof?.attachment, runAttachTemplate: template });
+    expect(restored.store.state.commands).toEqual([]);
+    expect(() => restored!.stageRunAttachment({ ...target, itemId: "foreign" }, template)).toThrow("conflicts");
+    expect(() => restored!.queueCommand("turn.start", {})).toThrow("maintenance only");
+    expect(() => restored!.queueCommand("run.attach", { ...template, paperclipNextAuthority: { identity: { ...target, itemId: "foreign" } } })).toThrow("conflicts");
+    const corruptedRecords = new Map(checkpoint.records);
+    corruptedRecords.set("staged-attachment-template", JSON.stringify({ provider: { command: "changed" } }));
+    expect(() => decodeDurablePrpCheckpoint(corruptedRecords)).toThrow("native_runner_checkpoint_invalid");
+    expect(inspectStagedRunAttachment(restored.store.state, { ...target, turnId: "foreign" })).toBeNull();
+    for (const field of ["runnerInstanceId", "environmentLeaseId", "normalizedSessionId"] as const) {
+      const changed = JSON.parse(checkpoint.records.get("header")!);
+      changed.state.stagedRunAttachment.targetIdentity[field] = "foreign";
+      expect(inspectStagedRunAttachmentHeader(JSON.stringify(changed))).toBeNull();
+    }
+    const downgraded = JSON.parse(checkpoint.records.get("header")!);
+    downgraded.state.schema = "paperclip.runner.durable.control-plane-state.v1";
+    expect(inspectStagedRunAttachmentHeader(JSON.stringify(downgraded))).toBeNull();
+    const beforeRetry = checkpoint;
+    core.stageRunAttachment(target, template); await core.flushCheckpoint(); expect(checkpoint).toBe(beforeRetry);
+    core.queueCommand("session.snapshot", {}); await core.flushCheckpoint();
+    expect(checkpoint.changedRecords.has("staged-attachment-template")).toBe(false);
+    await core.start(); client = await authenticate(core, core.issueBootstrapTicket());
+    expect(client).not.toBeNull();
+    core.queueCommand("run.attach", { ...template, paperclipNextAuthority: { identity: target,
+      connection: { mode: "connect", connectUrl: core.connectUrl } } }, "staged-next-attach");
+    await core.flushCheckpoint();
+    expect(templateWrites).toBe(1);
+    expect(checkpoint.records.has("staged-attachment-template")).toBe(false);
+    expect(checkpoint.removedRecords).toContain("staged-attachment-template");
+    expect(() => decodeDurablePrpCheckpoint(checkpoint.records)).not.toThrow();
+  } finally {
+    client?.socket.destroy();
+    await restored?.stop(); await core.stop(); rmSync(root, { recursive: true, force: true });
+  }
+});
 
 it("continues externally persisted commands after losing the local controller directory", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-external-store-"));
@@ -106,6 +168,7 @@ it("restores authentication and commands from opaque checkpoint records", async 
   try {
     const ticket = first.issueBootstrapTicket();
     first.queueCommand("session.snapshot", {}, "maintenance");
+    first.queueCommand("turn.stop", {}, "retirement-maintenance");
     first.queueCommand("turn.start", {}, "execution");
     first.persistPreparedLaunchConfiguration(identity, "retained-configuration");
     await first.flushCheckpoint();
@@ -2437,6 +2500,31 @@ it.each([false, true])(
     }
   },
 );
+
+it.each(["message", "close"] as const)("settles a wire that delivers buffered %s during subscription", async buffered => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-buffered-subscription-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  let closed = () => {};
+  try {
+    core.attachWireConnection({
+      onJson: listener => { if (buffered === "message") listener({ invalid: "buffered frame" }); },
+      onClose: listener => {
+        closed = () => listener({ message: "closed" });
+        if (buffered === "close") closed();
+      },
+      close: () => closed(),
+      sendJson: () => {},
+    });
+    await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+    // The invalid frame closes its wire. A completed callback must not leave a
+    // ghost connection or a settled promise that makes drain spin forever.
+    expect(() => core.retireSemanticToolCallbacks()).not.toThrow();
+    await core.drainPendingConnectionProcessing();
+  } finally {
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 it("refuses a processing-drain absence claim while local or remote ingress remains admitted", async () => {
   const root = mkdtempSync(

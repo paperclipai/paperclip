@@ -1,8 +1,24 @@
+import { agentJourneyRuns } from "./success-contract.js";
+export { agentJourneyRuns, agentJourneyRunCountValid } from "./success-contract.js";
 import type { JourneyId, TargetConfig } from "./types.js";
 export const productJourneys = [
+  { id: "task-create", label: "Create a task for yourself and reopen it", requires: ["company", "board-user", "task-write"], capabilities: ["tasks/create"], paid: false },
+  { id: "project-task-context", label: "Create a project and reopen its self-assigned task", requires: ["company", "board-user", "task-write"], capabilities: ["projects/lifecycle", "projects/task-context", "tasks/create"], paid: false },
+  { id: "ask-question", label: "Ask an agent a question and read its answer", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["questions-and-approvals/questions"], paid: true },
+  { id: "question-answer-resume", label: "Answer agent questions and verify the saved result", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["questions-and-approvals/questions"], paid: true },
   { id: "task-properties", label: "Assign a task to the signed-in user", requires: ["company", "board-user", "task-write", "backlog-task"], capabilities: ["tasks/properties"], paid: false },
+  { id: "task-document-persistence", label: "Create, edit, and reopen a task document", requires: ["company", "board-user", "task-write", "backlog-task"], capabilities: ["documents-artifacts/documents"], paid: false },
+  { id: "task-search-filter", label: "Search and filter tasks, then reopen the exact saved result", requires: ["company", "board-user", "task-write"], capabilities: ["tasks/organize"], paid: false },
+  { id: "plan-revise-accept", label: "Revise and approve a saved Plan, then complete the task", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["questions-and-approvals/plan-review"], paid: true },
+  { id: "build-revise", label: "Download and independently verify both artifact versions", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["documents-artifacts/attachments"], paid: true },
+  { id: "protected-actions", label: "Approve and decline protected service actions", requires: ["company", "board-user", "task-write", "agent", "review-service"], capabilities: ["questions-and-approvals/tool-review"], paid: true },
+  { id: "create-skill-studio", label: "Create a company skill and persist a Skill Studio edit", requires: ["company", "board-user", "task-write", "agent", "skill-write"], capabilities: ["skills/authoring"], paid: true },
+  { id: "stop-redirect", label: "Stop active work and send a new direction once", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["steering/stop-and-pause"], paid: true },
+  { id: "followup-while-running", label: "Send a follow-up during active work and verify its saved result", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["steering/queue"], paid: true },
   { id: "cloud-onboarding", label: "Create a Cloud workspace and complete a first task", requires: ["cloud-account", "fresh-workspace", "provider-key"], capabilities: ["onboarding/first-task"], paid: true },
 ] as const;
+
+export function isAgentJourney(id: JourneyId): id is keyof typeof agentJourneyRuns { return Object.hasOwn(agentJourneyRuns, id); }
 
 export function preparationPreview(config: TargetConfig) {
   return {
@@ -38,6 +54,8 @@ export function parseTargetConfig(value: unknown): TargetConfig {
   if (c.mode === "new-cloud" && c.baseline.connections.length) throw new Error("onboarding_requires_ui_connection_setup");
   if (c.mode !== "new-cloud" && c.journeys.includes("cloud-onboarding")) throw new Error("onboarding_requires_fresh_cloud_workspace");
   if (c.journeys.includes("cloud-onboarding") && (!c.limits.modelBudgetCents || !c.limits.maxRuns)) throw new Error("paid_journey_requires_limits");
+  const requiredRuns = c.journeys.reduce((total, id) => total + (isAgentJourney(id) ? agentJourneyRuns[id] : 0), 0);
+  if (requiredRuns && (!c.limits.modelBudgetCents || c.limits.maxRuns !== requiredRuns)) throw new Error(c.journeys.includes("ask-question") && requiredRuns === 1 ? "question_requires_one_bounded_run" : "agent_journeys_require_bounded_runs");
   if (c.mode !== "managed-self-hosted" && !c.adapterModule) throw new Error("cloud_target_requires_private_adapter");
   if (c.mode === "managed-self-hosted" && c.executionEnvironment !== "local") throw new Error("unsupported_self_hosted_environment");
   return { ...c, ...(c.journeys.includes("cloud-onboarding") ? { modelProfileId: c.modelProfileId ?? "runner-codex" as const } : {}), headed: c.headed ?? false, journeys: c.journeys as JourneyId[] };

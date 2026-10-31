@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { executionWorkspaces, type Db } from "@paperclipai/db";
+import { executionWorkspaces, environmentLeases, type Db } from "@paperclipai/db";
 import { environmentTaskOperationSchema, parseEnvironmentTaskResult } from "@paperclipai/plugin-sdk";
 import { executeEnvironmentTask } from "../services/environment-task-runtime.js";
 
@@ -19,14 +19,16 @@ const row = () => ({
   environment: { id: "environment", config: { pluginKey: "test.provider", driverKey: "tasks", driverConfig: {} } } as { id: string; config: Record<string, unknown> } | null,
   run: { id: "run", agentId: "agent", status: "running" } as { id: string; agentId: string; status: string } | null,
 });
-function database(value: ReturnType<typeof row> | null = row(), projectRows = [{ id: projectId }], workspaceRows: unknown[] = []) {
+function database(value: ReturnType<typeof row> | null = row(), projectRows = [{ id: projectId }], workspaceRows: unknown[] = [], ownerRows: unknown[] = []) {
   let selectedRows: unknown[] = projectRows;
   const results = [value ? [value] : [], [{ id: "issue" }], value ? [value] : []];
-  const query: any = { from: (table: unknown) => { selectedRows = table === executionWorkspaces ? workspaceRows : projectRows; return query; }, leftJoin: () => query, where: vi.fn(() => query), limit: () => Promise.resolve(results.shift()), then: (resolve: (rows: typeof projectRows) => unknown) => Promise.resolve(selectedRows).then(resolve as (rows: unknown[]) => unknown) };
+  const query: any = { from: (table: unknown) => { selectedRows = table === executionWorkspaces ? workspaceRows : table === environmentLeases ? ownerRows : projectRows; return query; }, leftJoin: () => query, where: vi.fn(() => query), limit: () => Promise.resolve(results.shift()), then: (resolve: (rows: typeof projectRows) => unknown) => Promise.resolve(selectedRows).then(resolve as (rows: unknown[]) => unknown) };
   const sets: Record<string, unknown>[] = [];
   const update: any = { set: (value: Record<string, unknown>) => { sets.push(value); return update; }, where: () => update,
     returning: async () => [{ id: leaseId }], then: (resolve: (value: unknown) => unknown) => Promise.resolve([]).then(resolve) };
-  return { db: { select: () => query, update: () => update } as unknown as Db, query, sets };
+  const db = { select: () => query, update: () => update,
+    transaction: vi.fn(async (write: (tx: Db) => Promise<unknown>) => write(db as unknown as Db)) };
+  return { db: db as unknown as Db, query, sets, transaction: db.transaction };
 }
 function worker(result: unknown = { kind: "accepted", taskId: "attempt-1" }) {
   return { getWorker: vi.fn(() => ({ supportedMethods: ["environmentTask"] })), call: vi.fn(async () => result) };
@@ -53,6 +55,19 @@ describe("plugin-provided Runner execution", () => {
       operation: { ...submit, projectIds: [] } })).rejects.toThrow("fresh workspace preparation unavailable");
     expect(denied.call).not.toHaveBeenCalled();
   });
+  it("commits prior retained task-owner retirement through the environment cleanup boundary", async () => {
+    const value = row();
+    Object.assign(value.lease, { leasePolicy: "reuse_by_environment", provider: "sandbox" });
+    Object.assign(value.lease.metadata, { runnerTaskExecutionStopped: true });
+    const owner = { id: "previous-lease", companyId: "company", heartbeatRunId: "previous-run", provider: "sandbox",
+      providerLeaseId: "attempt-1", status: "retained", leasePolicy: "retain_on_failure", cleanupStatus: "failed" };
+    const fixture = database(value, [], [], [owner]);
+    await executeEnvironmentTask(fixture.db, worker() as never, { companyId: "company", leaseId, operation: { kind: "complete" } });
+    expect(fixture.transaction).toHaveBeenCalledOnce();
+    expect(fixture.sets).toEqual(expect.arrayContaining([expect.objectContaining({ status: "released", cleanupStatus: "success",
+      releasedAt: expect.any(Date), metadata: expect.anything() })]));
+  });
+
   it("releases fresh transfer copies only after confirmed task completion", async () => {
     const value = row();
     const fresh = { attemptId: leaseId, sourceRunId: secondProjectId, previousWorkspaceId: null, recoverySnapshots: [] };
@@ -326,7 +341,50 @@ describe("plugin-provided Runner execution", () => {
     const workers = worker({ kind: "accepted", taskId: value.lease.providerLeaseId });
     await expect(executeEnvironmentTask(database(value).db, workers as never, { companyId: "company", leaseId, operation: { kind: "stop" } })).resolves.toMatchObject({ taskId: value.lease.providerLeaseId });
   });
-  it("returns a validated connection only while the lease and run are active", async () => {
+  it("reconnects a successful retained warm task without granting new execution", async () => {
+    const value = row();
+    value.lease.status = "retained";
+    value.run!.status = "succeeded";
+    Object.assign(value.lease, { leasePolicy: "reuse_by_environment" });
+    Object.assign(value.lease.metadata, { runnerTaskDispatched: true,
+      runnerTaskExecutionStopped: false, runnerTaskIdentity: { ...submit.runner },
+      runnerTaskLifecyclePolicy: { mode: "warm", idleTimeoutMs: 120_000 } });
+    const connection = { kind: "connection", taskId: "attempt-1", endpoint: {
+      kind: "authenticated_websocket", websocketUrl: "wss://runner.example.test/connect", generation: "attempt-1",
+      secretHeaders: [{ name: "Authorization", value: "Bearer fixture" }],
+    } };
+    const workers = worker(connection);
+    await expect(executeEnvironmentTask(database(value).db, workers as never, {
+      companyId: "company", leaseId, operation: { kind: "connection" },
+    })).resolves.toEqual(connection);
+    expect(workers.call).toHaveBeenCalledOnce();
+    for (const operation of [submit, { kind: "describe" as const }]) {
+      const denied = worker();
+      await expect(executeEnvironmentTask(database(value).db, denied as never, {
+        companyId: "company", leaseId, operation,
+      })).rejects.toThrow("not active");
+      expect(denied.call).not.toHaveBeenCalled();
+    }
+    for (const change of ["retiring", "stopped", "undispatched", "per_turn", "expired", "superseded", "failed", "cancelled", "missing_identity", "foreign_identity", "deleted"] as const) {
+      const changed = structuredClone(value);
+      if (change === "retiring") Object.assign(changed.lease.metadata, { runnerTaskRetiring: true });
+      if (change === "stopped") Object.assign(changed.lease.metadata, { runnerTaskExecutionStopped: true });
+      if (change === "undispatched") Object.assign(changed.lease.metadata, { runnerTaskDispatched: false });
+      if (change === "per_turn") Object.assign(changed.lease.metadata, { runnerTaskLifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } });
+      if (change === "expired") changed.lease.expiresAt = new Date(0);
+      if (change === "superseded") changed.lease.status = "expired";
+      if (change === "failed" || change === "cancelled") changed.run!.status = change;
+      if (change === "missing_identity") Object.assign(changed.lease.metadata, { runnerTaskIdentity: undefined });
+      if (change === "foreign_identity") Object.assign(changed.lease.metadata, { runnerTaskIdentity: { ...submit.runner, runId: "other" } });
+      if (change === "deleted") changed.environment = null;
+      const denied = worker(connection);
+      await expect(executeEnvironmentTask(database(changed).db, denied as never, {
+        companyId: "company", leaseId, operation: { kind: "connection" },
+      }), change).rejects.toThrow("not active");
+      expect(denied.call).not.toHaveBeenCalled();
+    }
+  });
+  it("returns a validated connection for active execution", async () => {
     const connection = { kind: "connection", taskId: "attempt-1", endpoint: {
       kind: "authenticated_websocket", websocketUrl: "wss://runner.example.test/connect", generation: "attempt-1",
       secretHeaders: [{ name: "Authorization", value: "Bearer fixture" }],

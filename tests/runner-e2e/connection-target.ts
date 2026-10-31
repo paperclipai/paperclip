@@ -34,6 +34,29 @@ export class ConnectionApi {
   async patch<T = any>(route: string, data: unknown): Promise<T> { return (await this.response(route, "PATCH", data)).json(); }
   async delete(route: string) { await this.response(route, "DELETE"); }
   async bytes(route: string) { return (await this.response(route)).body(); }
+  /** Keep fixture credentials out of Playwright request traces. */
+  async postSensitive<T = any>(route: string, data: unknown, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<T> {
+    const target = new URL(route, this.origin);
+    if (!route.startsWith("/api/") || target.origin !== this.origin || !target.pathname.startsWith("/api/")) throw new ConnectionFailure("invalid_api_route");
+    const timeout = options.timeoutMs ?? 30_000;
+    if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 120_000) throw new ConnectionFailure("invalid_api_timeout");
+    const signal = AbortSignal.any([AbortSignal.timeout(timeout), ...(options.signal ? [options.signal] : [])]);
+    const { cookies } = await this.request.storageState();
+    const cookie = cookies.filter(c => (target.hostname === c.domain || c.domain.startsWith(".") && target.hostname.endsWith(c.domain))
+      && (target.pathname === c.path || target.pathname.startsWith(c.path.endsWith("/") ? c.path : `${c.path}/`))
+      && (!c.secure || target.protocol === "https:")
+      && (c.expires === -1 || c.expires * 1000 > Date.now())).map(c => `${c.name}=${c.value}`).join("; ");
+    try {
+      signal.throwIfAborted();
+      const response = await fetch(target, { method: "POST", redirect: "error", signal,
+        headers: { "content-type": "application/json", Origin: this.origin, ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(data) });
+      if (!response.ok) { await response.body?.cancel(); throw new ConnectionFailure(`api_status_${response.status}`); }
+      return await response.json() as T;
+    } catch (error) {
+      if (error instanceof ConnectionFailure) throw error;
+      throw new ConnectionFailure("sensitive_api_request_failed");
+    }
+  }
 }
 
 async function stopOwnedServer(child: ChildProcess) {

@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { expect, it, vi } from "vitest";
 import { MobileBottomNav } from "./MobileBottomNav";
-import { coordinatorAttentionQueryKey } from "@/lib/coordinator-attention";
+import { coordinatorAttentionSummaryQueryKey } from "@/lib/coordinator-attention";
 
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true }) }));
 vi.mock("@/hooks/useAgentChatEnabled", () => ({ useAgentChatEnabled: () => ({ enabled: true }) }));
@@ -16,7 +16,7 @@ vi.mock("@/lib/router", () => ({ useLocation: () => ({ pathname: "/chats" }), Na
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 it("uses the canonical outstanding count on the phone as well as the desktop", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
-  const key = coordinatorAttentionQueryKey("company");
+  const key = coordinatorAttentionSummaryQueryKey("company");
   client.setQueryData(key, { totalCount: 3, deskBadgeCount: 0 });
   const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
   try {

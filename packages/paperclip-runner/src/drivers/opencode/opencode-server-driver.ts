@@ -24,6 +24,7 @@ import { pipeline } from "node:stream/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { parseOpenCodeReasoningMode, type OpenCodeReasoningMode } from "./reasoning-mode.js";
+import { createOpenCodeCompanyObservability } from "./company-observability.js";
 import { startOpenCodePerformanceDiagnostics } from "./performance-diagnostics.js";
 import { PROVIDER_PERFORMANCE_ENV } from "../../contracts/provider-performance.js";
 import { annotateOmittedProviderText, parseOpenCodeSseFrames } from "./sse-frames.js";
@@ -443,6 +444,8 @@ export class OpenCodeServerDriver implements HarnessDriver {
           completionFeedback: this.#options.completionFeedback,
           snapshot,
           now: this.#options.now ?? (() => new Date()),
+          observabilityEnvironment: this.#options.environment,
+          onDiagnostic: this.#options.onDiagnostic,
         });
         session.startEventPump();
         return session;
@@ -534,6 +537,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   #usage: Record<string, unknown> | null = null;
   readonly #conversationMode: "task" | "prepared";
   #sendFullContext: boolean;
+  readonly #companyObservability: ReturnType<typeof createOpenCodeCompanyObservability>;
   #closed = false;
   #completionSettlement: Promise<void> | null = null;
   #abort = new AbortController();
@@ -554,8 +558,14 @@ class OpenCodeHarnessSession implements HarnessSession {
     completionFeedback?: OpenCodeCompletionFeedback;
     snapshot: PersistedHarnessSession | null;
     now: () => Date;
+    observabilityEnvironment?: NodeJS.ProcessEnv;
+    onDiagnostic?: (message: string) => void;
   }) {
     this.#runtime = input.runtime;
+    this.#companyObservability = createOpenCodeCompanyObservability({
+      environment: input.observabilityEnvironment, model: input.model, sensitiveValues: input.runtime.sensitiveValues,
+      onDiagnostic: input.onDiagnostic ?? ((message) => console.warn(message)),
+    });
     this.#fetch = input.fetcher;
     this.#runId = input.runId;
     this.#sourceSequence = 0;
@@ -679,7 +689,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#emit("turn.submitted", {
       envelopeSchema: this.#taskEnvelope.schema,
       text: input.message.text,
-    });
+    }, { turnId });
     this.#emit("turn.accepted", { turnId }, { turnId });
     this.#emit("turn.started", { status: "inProgress" }, { turnId });
     const [providerID, ...modelParts] = this.#model.split("/");
@@ -991,7 +1001,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     for (const requestId of [...this.#pendingRuntimeRequests.keys()])
       this.#settlePendingRuntimeRequest(requestId);
     this.#events.close();
-    await this.#runtime.close();
+    await Promise.all([this.#runtime.close(), this.#companyObservability?.close()]);
   }
 
   // A request can outlive its own turn: the turn can fail or get cancelled
@@ -2162,6 +2172,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     if (this.#activeTraceFrameId !== null) {
       this.#activeTraceEmittedEventIds.push(event.sourceEventId);
     }
+    this.#companyObservability?.observe(event);
     this.#transcript.push(structuredClone(event));
     this.#events.push(event);
   }
@@ -2643,6 +2654,7 @@ export function normalizeOpenCodeQuestionSet(
             ? { description: text(option.description).slice(0, 4_000) }
             : {}),
         }));
+      const custom = question.custom ?? question.allowCustom ?? true;
       return {
         id: openCodeQuestionId(question, index),
         ...(text(question.header)
@@ -2663,7 +2675,7 @@ export function normalizeOpenCodeQuestionSet(
               ? "multi_select"
               : "single_select",
         ...(options.length > 0 ? { options } : {}),
-        ...(question.custom === true || question.allowCustom === true
+        ...(options.length > 0 && custom === true
           ? {
               customAnswer: {
                 enabled: true,
@@ -2956,6 +2968,7 @@ function sanitizedEnvironment(
   overrides: Record<string, string>,
 ): NodeJS.ProcessEnv {
   const allowed = [
+    "PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT", "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER",
     "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
     "PATH",
     "LANG",
@@ -2978,6 +2991,7 @@ function sanitizedEnvironment(
 
 function sanitizedEnvironmentKeys(): string[] {
   return [
+    "PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT", "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER",
     "PATH",
     "LANG",
     "LC_ALL",

@@ -1,3 +1,4 @@
+import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, desc, eq, inArray } from "drizzle-orm";
@@ -816,6 +817,7 @@ export async function applyRunnerGoalPrpEvent(
     }
     if (writesGoal) {
       update.goalJson = goal as unknown as Record<string, unknown> | null;
+      if (session.goalStatus !== (goal?.status ?? null)) await notifyExternalConversationSettlement(tx, binding);
       update.goalStatus = goal?.status ?? null;
       // Blocked and limited goals remain resumable, but must not be picked up
       // by the automatic active-goal recovery sweep until a user resumes.

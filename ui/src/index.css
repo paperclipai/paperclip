@@ -2549,6 +2549,12 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   text-decoration: none;
 }
 
+/* Document cards underline only their label span; the card itself must not
+   inherit the markdown link underline, or the label shows two lines. */
+.paperclip-markdown a[data-sidebar-document-link] {
+  text-decoration: none;
+}
+
 .paperclip-markdown a.paperclip-mention-chip[data-mention-kind="issue"] {
   border-color: color-mix(in oklab, var(--foreground) 14%, var(--border) 86%);
   background: color-mix(in oklab, var(--accent) 42%, transparent);
@@ -3744,6 +3750,13 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   border-block: var(--task-row-rule-width) solid var(--task-row-rule-color);
 }
 .task-row-group + .task-row-group { border-top: 0; }
+.task-row-deferred {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto var(--task-row-height-comfortable);
+}
+.task-row-deferred[data-density="compact"] {
+  contain-intrinsic-block-size: auto var(--task-row-height-compact);
+}
 
 .task-row-stable, .task-row-skeleton {
   height: var(--task-row-height-comfortable);
@@ -5005,14 +5018,12 @@ html:not(.dark) .coordinator-sidebar {
 .coordinator-workspace [data-conversation-text="human"] { background: var(--bubble-human-bg); color: var(--bubble-human-fg); }
 .coordinator-workspace [data-question-answer] { background: var(--card); }
 .dark .coordinator-workspace [data-question-answer] { background: var(--muted); }
-/* Only the composer surface obscures history; its surrounding dock is clear. */
 .coordinator-workspace [data-testid="task-chat-composer-dock"] {
   flex-shrink: 0;
-  background: transparent;
+  background: var(--background);
   backdrop-filter: none;
-  pointer-events: none;
+  pointer-events: auto;
 }
-.coordinator-workspace [data-testid="task-chat-composer-dock"] > * { pointer-events: auto; }
 @media (min-width: 768px) {
   .coordinator-workspace [data-testid="task-chat-thread"] { position: relative; }
   .coordinator-workspace [data-testid="task-chat-composer-dock"] { position: absolute; inset-inline: 0; bottom: 0; }

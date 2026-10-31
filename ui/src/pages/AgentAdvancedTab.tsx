@@ -13,6 +13,9 @@ import { queryKeys } from "../lib/queryKeys";
 import { parseAgentConfigurationYaml, serializeAgentConfigurationDocument } from "../lib/agent-configuration-yaml";
 import { loadAgentConfiguration, type AgentConfigurationSnapshot } from "../lib/agent-configuration/load";
 import { ConfigurationSaveInterrupted, planAgentConfiguration, saveAgentConfiguration, type ConfigurationReceipt } from "../lib/agent-configuration/save";
+import { compactAgentConfiguration } from "../lib/agent-configuration/compact";
+
+const editableYaml = (configuration: AgentConfigurationSnapshot) => serializeAgentConfigurationDocument(compactAgentConfiguration(configuration.document));
 
 const yamlHighlightStyle = HighlightStyle.define([
   { tag: tags.propertyName, class: "text-primary" },
@@ -53,7 +56,7 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [saved, setSaved] = useState(initial);
-  const [source, setSource] = useState(() => serializeAgentConfigurationDocument(initial.document));
+  const [source, setSource] = useState(() => editableYaml(initial));
   const [error, setError] = useState<string | null>(null);
   const [reloadRequired, setReloadRequired] = useState(false);
   const [progress, setProgress] = useState("");
@@ -61,7 +64,7 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
   const operationPending = useRef(false);
   const active = useRef(true);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
-  const original = useMemo(() => serializeAgentConfigurationDocument(saved.document), [saved]);
+  const original = useMemo(() => editableYaml(saved), [saved]);
   const dirty = source !== original;
   const validation = useMemo(() => {
     try {
@@ -88,7 +91,7 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
       queryClient.setQueryData(["agent-configuration-yaml", agent.companyId, agent.id], configuration);
       if (!active.current) return;
       setSaved(configuration);
-      setSource(serializeAgentConfigurationDocument(configuration.document));
+      setSource(editableYaml(configuration));
       setError(null);
       onDirtyChange(false);
       setReloadRequired(false);
@@ -113,7 +116,7 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(agent.companyId) });
-      if (active.current) { setSaved(updated); setSource(serializeAgentConfigurationDocument(updated.document)); setError(null); setReloadRequired(false); onSaved(updated.agent); }
+      if (active.current) { setSaved(updated); setSource(editableYaml(updated)); setError(null); setReloadRequired(false); onSaved(updated.agent); }
     },
     onSettled: () => { operationPending.current = false; },
     onError: cause => setError(cause.message),
@@ -122,6 +125,7 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
   useEffect(() => { onSavingChange?.(busy); }, [busy, onSavingChange]);
   useEffect(() => () => onSavingChange?.(false), [onSavingChange]);
   return <div className="space-y-4">
+    <p className="text-sm text-muted-foreground">Omitted settings stay unchanged. Instruction file contents, inherited access, and history are available in their settings tabs.</p>
     {receipts.length > 0 && <div className="space-y-3 rounded-md border border-border p-4" aria-label="Created credentials">
       {receipts.map((receipt, index) => <div key={`${receipt.id}-${index}`} className="space-y-2 text-sm">
         <p className="font-medium">{receipt.label}</p>

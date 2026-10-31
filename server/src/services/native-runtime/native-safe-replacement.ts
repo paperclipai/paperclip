@@ -1,3 +1,6 @@
+import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
+import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -265,7 +268,7 @@ export async function reconcileSafeNativeReplacements(
             current.failureDetail?.replacementDenied
           )
             return;
-          await notifyExecutionRunWork(tx);
+          await notifyExecutionRunWork(tx, { companyId: run.companyId });
           await tx
             .update(nativeRunFinalizations)
             .set({
@@ -407,7 +410,8 @@ export async function reconcileSafeNativeReplacements(
             idempotencyKey: `native-safe-replacement:${run.id}`,
           })
           .returning();
-        await notifyExecutionRunWork(tx);
+        await notifyExecutionRunWork(tx, { companyId: run.companyId });
+        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId });
         await tx.insert(heartbeatRuns).values({
           id: successorRunId,
           companyId: run.companyId,
@@ -466,6 +470,9 @@ export async function reconcileSafeNativeReplacements(
           eq(issueRecoveryActions.cause, current.failureCode!),
           sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
         )).for("update");
+        if (holds.some(hold => hold.status === "active" || hold.status === "escalated")) {
+          await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId: task.id });
+        }
         for (const hold of holds) {
           await tx.update(issueRecoveryActions).set({
             status: "resolved", outcome: "handed_back", resolvedAt: now, updatedAt: now,
@@ -483,6 +490,7 @@ export async function reconcileSafeNativeReplacements(
           .update(heartbeatRuns)
           .set({ executionStatusDeliveryId: randomUUID() })
           .where(eq(heartbeatRuns.id, run.id));
+        await notifyNativeStatusReassessment(tx, { companyId: run.companyId, issueId: task.id });
         // The successor gets task authority only through the existing admission gate.
         await tx
           .update(issues)

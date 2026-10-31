@@ -8,6 +8,7 @@ import { TASK_WORKSPACES_SUITE, taskWorkspaceTask, taskWorkspaceProfile, taskWor
 import { repositoryProofTasks, repositoryProofProfile, repositoryProofDigest } from "./repository-verification.js";
 import { automaticRepositoryTask, automaticRepositoryDigest } from "./automatic-repository.js";
 import { nativeActiveStopTasks } from "./native-active-stop-tasks.js";
+import { kimiLifecycleTasks } from "./kimi-lifecycle-tasks.js";
 import { piControlTasks } from "./pi-controls-cases.js";
 import { cursorNativeTasks } from "./cursor-native-cases.js";
 import { copilotProtectionTasks } from "./copilot-protection-tasks.js";
@@ -20,12 +21,13 @@ import { nativeCompletionProfile, NATIVE_COMPLETION_BUDGET_CENTS } from "./nativ
 import { chatConfirmationTasks } from "./chat-cases.js";
 import { buildConnectionSuite } from "./connection-cases.js";
 import { buildGitHubReviewJourneySuite } from "./github-review-cases.js";
+import { buildAntigravityJourneySuite } from "./antigravity-journey-cases.js";
 import { hiringTemplateTasks, hiringTemplateProfile, hiringTemplateDefinitionDigest } from "./hiring-template-cases.js";
 import { copilotProviderDeathTasks } from "./copilot-active-stop-tasks.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
 import { apiResponseReadingTask } from "./api-response-reading.js";
 import { taskTitleTasks, taskTitleDefinitionDigest, TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
-import { CHAT_FEATURE_SUITE, CHAT_FEATURE_BUDGET_CENTS, chatFeatureTasks, chatFeatureProfile, chatFeatureScenarios, chatFeatureDefinitionDigest } from "./chat-feature-cases.js";
+import { CHAT_FEATURE_SUITE, CHAT_FEATURE_BUDGET_CENTS, CHAT_FEATURE_OPENCODE_MODEL, chatFeatureTasks, chatFeatureProfile, chatFeatureScenarios, chatFeatureDefinitionDigest } from "./chat-feature-cases.js";
 import { blockerTasks, blockerProfile } from "./blocker-cases.js";
 import { accountingTasks } from "./accounting-cases.js";
 import { continuationTasks, questionResumeTask } from "./continuation-cases.js";
@@ -194,7 +196,7 @@ function nativeProfile(input: {
   provider: "codex" | "opencode" | "acpx";
   model: string;
   credential: RunnerProfileFixture["credential"];
-  acpxAgent?: "claude" | "codex" | "grok" | "cursor" | "copilot" | "pi";
+  acpxAgent?: "claude" | "codex" | "grok" | "cursor" | "copilot" | "pi" | "kimi";
   qualificationCandidate?: RunnerProfileFixture["qualificationCandidate"];
   supportedEnvironments?: readonly (typeof ENVIRONMENT_IDS)[number][];
   modelQualification?: RunnerProfileFixture["modelQualification"];
@@ -663,7 +665,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
     buildRevisionRequest: (nonce) =>
       [
         "Revise this same plan; do not implement it yet.",
-        `Remove PAPERCLIP_E2E_PLAN_DRAFT_${nonce} and include PAPERCLIP_E2E_PLAN_REVISED_${nonce}.`,
+        `Replace the first line with exactly PAPERCLIP_E2E_PLAN_REVISED_${nonce} and remove PAPERCLIP_E2E_PLAN_DRAFT_${nonce}. Use literal underscore characters with no backslashes or other text on that first line.`,
         "Change the plan from two steps to exactly three numbered steps, with verification as step 3.",
         "Publish the revised canonical Plan revision and request confirmation for that new revision.",
         "In a native runner, call write_document for key `plan`, then call request_human_input exactly once with interactionKind `confirmation`, targetRevisionId set to the returned latest Plan revision, and continuationPolicy `wake_assignee`; do not call paperclip_finish while waiting. After write_document succeeds, request_human_input must be your immediate next action using that call's returned latestRevisionId; do not emit assistant text, end the response or heartbeat, or stop after write_document alone.",
@@ -673,7 +675,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
       [
         "This is a planning-mode lifecycle acceptance task.",
         "First, create a small canonical Plan with exactly two numbered steps and request approval; do not implement it.",
-        `The initial Plan body must contain PAPERCLIP_E2E_PLAN_DRAFT_${nonce}.`,
+        `The initial Plan body must have exactly PAPERCLIP_E2E_PLAN_DRAFT_${nonce} as its first line, followed by exactly two numbered steps. Use literal underscore characters with no backslashes or other text on that first line.`,
         "If the plan is sent back, revise that same Plan document according to the revision note, publish a new revision-bound confirmation, and still do not implement.",
         `Before the revised Plan is accepted, do not spell, quote, repeat, announce, or include PAPERCLIP_E2E_PLAN_DONE_${nonce} in any visible response, comment, or tool payload; refer to it only as “the terminal marker.”`,
         "Only after the revised plan is accepted, implement it by posting one final visible task-thread response containing exactly " +
@@ -1158,13 +1160,21 @@ const repositoryModelProfiles = [
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
-    id: "daytona-restart-continuity", label: "Daytona controller outage continuity", manualOnly: true,
-    description: "Keep the original active native runner, task tools and saved files through more than two minutes without a controller, then commit the result without replay.",
+    id: "daytona-restart-continuity", label: "Daytona warm controller outage continuity", manualOnly: true,
+    description: "Keep the original active native runner, reusable warm sandbox, task tools and saved files through five minutes without a controller, then continue the completed session after another replacement.",
     groups: [], profiles: repositoryModelProfiles.map(({ native }) => productionStoryProfile(native)),
-    environments: runnerEnvironments.filter(environment => environment.id === "daytona"),
+    environments: [{
+      ...daytonaWarmEnvironment,
+      configurationKey: "warm-controller-outage-v1",
+      buildEnvironment(input: EnvironmentFixtureBuildInput) {
+        const payload = daytonaWarmEnvironment.buildEnvironment(input);
+        // Keep provider idle stop beyond the outage and replacement budget.
+        return { ...payload, config: { ...(payload.config as Record<string, unknown>), autoStopInterval: 15 } };
+      },
+    }],
     tasks: everydayTasks.filter(task => task.id === "recover-controller")
-      .map(task => ({ ...task, automaticRetryPolicy: "single_attempt" as const })), expectedMatrixSize: 2,
-    definitionMetadata: { version: 2, scheduling: "explicit-only", controllerDowntimeMs: 125_000,
+      .map(task => ({ ...task, expectedRunCount: task.expectedRunCount + 1, automaticRetryPolicy: "single_attempt" as const })), expectedMatrixSize: 2,
+    definitionMetadata: { version: 7, scheduling: "explicit-only", controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15, retainedControllerContinuation: true, retainedControllerFollowupTransport: "task_comment_api",
       maximumAttemptsPerCell: 1, budgetMonthlyCents: 1000, instructions: "production", grading: "same-active-process-lease-native-prefix-and-workspace-receipt",
       authentication: "api-key", stagingAuthentication: "subscription", stagingQualification: false },
   },
@@ -1439,6 +1449,38 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     definitionMetadata: { version: 2, binary: "1.0.13", model: "grok-4.7", scheduling: "explicit-only", repetitionsRequired: 3, artifactOracle: "independent-python-contract", stopBoundary: "provider-turn-started" },
   },
   {
+    id: "kimi-qualification", label: "Kimi Code Qualification", manualOnly: true,
+    description: "Kimi Code replies, semantic planning and questions, verified file delivery, Stop and controller continuation through local and Daytona user journeys.",
+    groups: ["native"],
+    profiles: [nativeProfile({
+      id: "runner-acpx-kimi", label: "Runner Kimi Code",
+      provider: "acpx", acpxAgent: "kimi", qualificationCandidate: "kimi",
+      credential: "KIMI_API_KEY", model: "kimi-for-coding",
+      modelQualification: { source: "qualified_runner_profile", qualificationId: "kimi:2.3.3:native-qualified-profile17" },
+    })],
+    environments: [localEnvironment, daytonaWarmEnvironment],
+    environmentOverrides: Object.fromEntries(kimiLifecycleTasks.map(task => [task.id, {
+      daytona: runnerEnvironments.find(environment => environment.id === "daytona")!,
+    }])),
+    tasks: [
+      ...runnerTasks, ...localIntegrityTasks, extendedHarnessFileTask,
+      ...chatHardeningTasks.filter(task => ["stop-new-resume", "continuity-restart"].includes(task.id)),
+      ...kimiLifecycleTasks,
+    ].map(task => ({ ...task, automaticRetryPolicy: "single_attempt" as const })),
+    expectedMatrixSize: 20,
+    definitionMetadata: { version: 7, binary: "2.3.3", model: "kimi-for-coding",
+      candidateAdmission: "ordinary-released-profile-without-candidate-grant-v1", profileVersion: QUALIFIED_ACPX_PROFILES.kimi.agentProfileVersion,
+      stopNewRunAccounting: "three-native-provider-runs-authored-reset-and-verified-predispatch-wait-v1",
+      planPromptContract: "literal-first-line-markers-v2",
+      modelDiscovery: "exact-model-authenticated-observed", qualification: "qualified",
+      scheduling: "explicit-only", maximumAttemptsPerCell: 1, repetitionsRequired: 1,
+      instructionAdmission: "native-effective-prompt-digest-on-create-load",
+      nativeQuestions: "not-claimed", nativePlans: "not-claimed", accounting: "usage-and-cost-unavailable",
+      artifactOracle: "independent-workspace-and-public-download-bytes", stopBoundary: "provider-turn-started",
+      remoteLifecycleBootstrap: "observer-bound-scoped-get-task-context-dual-turn-workspace-binding-full-semantic-command-ack-and-bounded-native-receipt",
+      nativeWriteLifecycle: "pending-permission-stop-and-exact-native-worker-loss", nativeWriteCleanup: "continuous-no-effects-through-owned-tree-retirement" },
+  },
+  {
     id: "api-response-reading", label: "Bounded API response reading", manualOnly: true,
     description: "Retrieve evidence beyond a saved API preview through authorized bounded text windows.",
     groups: [], environments: runnerEnvironments,
@@ -1609,9 +1651,14 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     description: "Natural catalog requests create backlog work or delegate an announcement and return its saved result.",
     groups: ["chat", "native"],
     profiles: [chatFeatureProfile(nativeProfile({ id: "runner-codex-subscription", label: "Native Codex subscription",
-      provider: "codex", model: DEFAULT_CODEX_LOCAL_MODEL, credential: "CODEX_AUTH_JSON", supportedEnvironments: ["local"] }))],
-    environments: [localEnvironment], tasks: chatFeatureTasks, expectedMatrixSize: 2,
-    definitionMetadata: { version: 1, definitionDigest: chatFeatureDefinitionDigest, scheduling: "explicit-only",
+      provider: "codex", model: DEFAULT_CODEX_LOCAL_MODEL, credential: "CODEX_AUTH_JSON", supportedEnvironments: ["local"] })),
+      chatFeatureProfile(runnerProfiles.find(profile => profile.id === "runner-opencode")!),
+      chatFeatureProfile(nativeProfile({ id: "runner-opencode-deepseek-1017", label: "Native OpenCode DeepSeek 1017",
+        provider: "opencode", model: CHAT_FEATURE_OPENCODE_MODEL, credential: "OPENROUTER_API_KEY", supportedEnvironments: ["local"],
+        modelQualification: { source: "candidate_runner_profile", qualificationId: "chat-feature-testops:deepseek-v4.1-flash-1017" } }))],
+    environments: [localEnvironment], tasks: chatFeatureTasks, expectedMatrixSize: 5,
+    excludedExecutionIds: ["chat-features.runner-opencode-deepseek-1017.local.delegate-announcement"],
+    definitionMetadata: { version: 2, definitionDigest: chatFeatureDefinitionDigest, scheduling: "explicit-only",
       instructions: "production-role-defaults", companyAndAgentBudgetCents: CHAT_FEATURE_BUDGET_CENTS,
       unpricedUsagePolicy: "allow-through-public-budget-policy", taskRunLimits: { ceo: 3, worker: 1 },
       maximumAttemptsPerCell: 1, setupProbeUsage: "unavailable-outside-heartbeat-accounting",
@@ -1829,6 +1876,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
   },
   buildConnectionSuite(runnerProfiles, runnerEnvironments),
   buildGitHubReviewJourneySuite(runnerProfiles, runnerEnvironments),
+  buildAntigravityJourneySuite(runnerEnvironments),
   {
     id: "repository-skills", label: "Repository skill packages", manualOnly: true,
     description: "Live private Poteto import and byte-for-byte delivery to local and Daytona agent runtimes.",
@@ -1855,6 +1903,11 @@ export function suiteDefinitionHash(suite: RunnerSuiteFixture) {
           id: environment.id,
           configurationKey: environment.configurationKey ?? "default",
         })),
+        ...(suite.environmentOverrides ? { environmentOverrides: Object.entries(suite.environmentOverrides).map(([taskId, overrides]) => ({
+          taskId, environments: Object.values(overrides).flatMap(environment => environment ? [{
+            id: environment.id, configurationKey: environment.configurationKey ?? "default",
+          }] : []),
+        })) } : {}),
         tasks: suite.tasks.map((task) => ({
           id: task.id,
           flow: task.flow,
@@ -1883,32 +1936,36 @@ export function buildRunnerMatrix(
         )
         .flatMap((environment) =>
           suite.tasks
-            .map((task) => ({
-              id: `${suite.id}.${profile.id}.${environment.id}.${task.id}`,
-              suite,
-              suiteDefinitionHash: suiteDefinitionHash(suite),
-              profile,
-              environment,
-              task: suite.id === "confirmation-replies" && profile.id === "runner-codex" && environment.id === "daytona" && task.id === "task-card-accept"
-                ? { ...task, expectedRunCount: 4, automaticRetryPolicy: "single_attempt" as const }
-                : suite.id === "extended-harnesses" && profile.qualificationCandidate === "pi" && task.id === "file-edit-validate"
-                  ? { ...task, buildPrompt: piFilePrompt }
-                  : suite.id === "extended-harnesses" && profile.qualificationCandidate === "copilot" && task.id === "file-edit-validate"
-                    ? { ...task, buildPrompt: copilotFilePrompt } : task,
-              groups: [
-                ...new Set([
-                  ...suite.groups,
-                  ...profile.groups,
-                  ...environment.groups,
-                  ...task.groups,
-                ]),
-              ],
-              requiredCredentials: [
-                ...(["provider_connection", "github_review_journey"].includes(task.flow) ? [] : [profile.credential]),
-                ...(!["provider_connection", "github_review_journey"].includes(task.flow) && environment.credential ? [environment.credential] : []),
-                ...(task.requiredCredentials ?? []),
-              ],
-            }))
+            .map((task) => {
+              const selectedEnvironment = suite.environmentOverrides?.[task.id]?.[environment.id] ?? environment;
+              if (selectedEnvironment.id !== environment.id) throw new Error(`Fixture environment override changed provider ID for ${suite.id}.${task.id}`);
+              return {
+                id: `${suite.id}.${profile.id}.${environment.id}.${task.id}`,
+                suite,
+                suiteDefinitionHash: suiteDefinitionHash(suite),
+                profile,
+                environment: selectedEnvironment,
+                task: suite.id === "confirmation-replies" && profile.id === "runner-codex" && environment.id === "daytona" && task.id === "task-card-accept"
+                  ? { ...task, expectedRunCount: 4, automaticRetryPolicy: "single_attempt" as const }
+                  : suite.id === "extended-harnesses" && profile.qualificationCandidate === "pi" && task.id === "file-edit-validate"
+                    ? { ...task, buildPrompt: piFilePrompt }
+                    : suite.id === "extended-harnesses" && profile.qualificationCandidate === "copilot" && task.id === "file-edit-validate"
+                      ? { ...task, buildPrompt: copilotFilePrompt } : task,
+                groups: [
+                  ...new Set([
+                    ...suite.groups,
+                    ...profile.groups,
+                    ...selectedEnvironment.groups,
+                    ...task.groups,
+                  ]),
+                ],
+                requiredCredentials: [
+                  ...(["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(task.flow) ? [] : [profile.credential]),
+                  ...(!["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(task.flow) && selectedEnvironment.credential ? [selectedEnvironment.credential] : []),
+                  ...(task.requiredCredentials ?? []),
+                ],
+              };
+            })
             .filter((execution) => !excludedExecutionIds.has(execution.id)),
         ),
     );

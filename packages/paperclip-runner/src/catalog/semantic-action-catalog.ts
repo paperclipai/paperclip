@@ -8,6 +8,7 @@ import { prepareRepositoryAction } from "../protocol-actions/prepare-repository.
 import { setTaskMonitorInputSchema } from "../protocol-actions/set-task-monitor.js";
 import { listProjectsDescription, listProjectsInputSchema } from "../protocol-actions/list-projects.js";
 import { setTaskTitleAction } from "../protocol-actions/set-task-title.js";
+import { sendChatMessageAction } from "../protocol-actions/send-chat-message.js";
 import { reassignTaskAction } from "../protocol-actions/reassign-task.js";
 import type {
   PaperclipJsonSchema,
@@ -190,6 +191,12 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
       ["idempotencyKey", "body"],
     ),
     outputSchema: operationReceipt,
+  }),
+  descriptor({
+    operationId: "send_chat_message", title: "Send message to your chat",
+    description: sendChatMessageAction.documentation.description, effect: "write",
+    allowedModes: ["standard"], inputSchema: sendChatMessageAction.live.descriptor.inputSchema,
+    outputSchema: openObject,
   }),
   descriptor({
     operationId: "answer_status_question",

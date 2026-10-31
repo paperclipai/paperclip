@@ -23,9 +23,17 @@ Agent access: [companion](../agent-access-map/agent-chat.md).
 
 ### `agent-conversation`
 
+Task and routine results can arrive proactively in the agent's standing chat.
+Each message has a source-task link; the agent row and Chat navigation indicate
+unread messages, including first delivery before any human chat. Foreground
+messages at the bottom of the chat are marked read with a comment cutoff.
+The existing ordering and per-human/company isolation remain in effect.
+
 Open `/chats`, choose an agent, or use `/chats/:agentRef` and its conversation sidebar.
 
 With Coordinator enabled, the composer exposes the shared model/thinking-level picker for supported agents. The agent stays fixed in this control; switching agents remains in the chat header. Choices save as conversation overrides on send, preserving the agent's configuration. A first message creates the conversation before saving settings and submitting through the ordered comments endpoint.
+
+Standing chats open with the latest 20 contiguous messages. Scroll upward to fetch earlier messages, answer receipts, and created tasks. The loading indicator stays in the thread; history failures offer an inline Retry while preserving the draft and reading position. Opening a chat does not fetch its lifetime comment, activity, or run history. Already observed messages survive live refresh and Back within the query-cache session.
 
 Coordinator answer receipts from this conversation jump to the answer bubble without leaving chat. Answer updates from an execution task link to that source task and its decision context. Compact document links read “Open [document title] in the sidebar”.
 
@@ -43,7 +51,17 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Enab
 
 ### `agent-conversation`
 
+Local browser recipe: [long-chat startup and scrolling](../../tests/perf/agent-chat/agent-chat-startup.spec.ts), with fixture and command details in the [performance README](../../tests/perf/agent-chat/README.md). It covers recent-only reveal, delayed and failed pages, Back, older comment links, and live refresh. Synthetic local data is not deployed acceptance evidence.
+
 Automated: [chat landing](../../ui/src/pages/AgentChats.test.tsx) checks recent-chat routing; [conversation service](../../server/src/__tests__/agent-conversations.test.ts) covers persisted conversation behavior.
+
+Automated: [proactive delivery](../../server/src/__tests__/agent-chat-messages.test.ts)
+exercises native/HTTP delivery, concurrency, retries, authority, privacy, active
+turns, resets and unread cutoffs. [Read visibility](../../ui/src/hooks/useAgentChatRead.test.tsx)
+checks foreground/bottom gating and unseen arrivals. The [routine digest journey](../../tests/e2e/agent-chat-messages.spec.ts)
+uses real app APIs and a deterministic process agent to verify first-chat discovery,
+unread state across reloads, source navigation and follow-up context. It does not
+qualify live PR retrieval or a model's editorial choices.
 
 Automated: [composer picker](../../ui/src/components/task-chat/ComposerRunSettingsPicker.test.tsx) covers fixed-agent model/effort selection on desktop and mobile; [composer](../../ui/src/components/task-chat/TaskChatComposer.test.tsx) covers Coordinator gating and settings submission without reassignment. [Task detail](../../ui/src/pages/IssueDetail.test.tsx) verifies canonical first/existing-chat IDs, settings-before-comment ordering, and no comment submission when settings fail to save. These tests mock the API and do not prove provider execution with the chosen model.
 

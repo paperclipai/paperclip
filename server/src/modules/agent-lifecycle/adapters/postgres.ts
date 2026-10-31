@@ -17,6 +17,7 @@ type ChangeOptions = { version?: number; owner?: string; reason?: string };
 export const pendingLifecycleWork = and(
   inArray(agents.lifecycleState, ["preparing", "verifying", "pausing", "resuming", "terminating", "cleaning_up"]),
   sql`not (${agents.lifecycleState} = 'verifying' and ${agents.lifecycleHolds} @> '["setup"]'::jsonb)`,
+  sql`not (${agents.lifecycleState} = 'verifying' and coalesce(${agents.lifecycleOperation}->>'retryRequired', 'false') = 'true')`,
 );
 
 /** The caller owns the accounting transaction and has locked this agent. */
@@ -33,7 +34,7 @@ async function changeLockedAgent(tx: Db, effects: LifecycleEffects, agent: Lifec
     if (agent.lifecycleOperation?.leaseUntil && Date.parse(agent.lifecycleOperation.leaseUntil) > Date.now()) return agent;
     await effects.notifyWork(tx);
     const [updated] = await tx.update(agents).set({ lifecycleError: null,
-      lifecycleOperation: sql`${agents.lifecycleOperation} - 'retryAt' - 'leaseOwner' - 'leaseUntil'`, updatedAt: new Date() }).where(eq(agents.id, agent.id)).returning();
+      lifecycleOperation: sql`${agents.lifecycleOperation} - 'retryAt' - 'retryRequired' - 'verificationFailures' - 'leaseOwner' - 'leaseUntil'`, updatedAt: new Date() }).where(eq(agents.id, agent.id)).returning();
     return updated;
   }
   if (command === "resume" && !["ready", "paused", "pausing", "resuming"].includes(agent.lifecycleState)) transition(agent.lifecycleState, command);
@@ -177,11 +178,17 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
         sql`${agents.lifecycleOperation}->>'leaseOwner' = ${owner}`)).returning({ id: agents.id });
       return rows.length > 0;
     },
-    async defer(agent, owner, error, now) {
+    async defer(agent, owner, error, now, options) {
+      const retry: Partial<AgentLifecycleOperation> = options?.retryRequired && agent.lifecycleState === "verifying"
+        ? { retryRequired: true }
+        : { retryAt: new Date(now.getTime() + (error ? 60_000 : 2_000)).toISOString() };
+      if (options?.verificationFailures !== undefined && agent.lifecycleState === "verifying") {
+        retry.verificationFailures = options.verificationFailures;
+      }
       const rows = await db.update(agents).set({
         lifecycleError: error,
-        lifecycleOperation: sql`(${agents.lifecycleOperation} - 'leaseOwner' - 'leaseUntil')
-          || jsonb_build_object('retryAt', ${new Date(now.getTime() + (error ? 60_000 : 2_000)).toISOString()}::text)`,
+        lifecycleOperation: sql`(${agents.lifecycleOperation} - 'leaseOwner' - 'leaseUntil' - 'retryAt' - 'retryRequired')
+          || ${JSON.stringify(retry)}::jsonb`,
         updatedAt: now,
       }).where(and(eq(agents.id, agent.id), eq(agents.lifecycleVersion, agent.lifecycleVersion),
         sql`${agents.lifecycleOperation}->>'leaseOwner' = ${owner}`)).returning({ id: agents.id });
