@@ -671,6 +671,10 @@ export async function runEverydayFlow(input: Input) {
       check("remote-workspace-feature-enabled", settings.remoteWorkspaceStorageEnabled === true,
         "The ordinary instance settings API resolves remote workspace storage as enabled by default before task creation.");
       if (settings.remoteWorkspaceStorageEnabled !== true) throw new Error("Remote workspace storage was not enabled by default");
+      const viewer = await api.patch<Row>("/api/instance/settings/experimental", { enableExperimentalFileViewer: true });
+      const viewerReady = viewer.enableExperimentalFileViewer === true && viewer.remoteWorkspaceStorageEnabled === true;
+      check("remote-workspace-file-viewer-enabled", viewerReady, "The ordinary instance API enables the existing Files viewer while remote storage uses its default setting.");
+      if (!viewerReady) throw new Error("Remote workspace Files viewer prerequisite did not retain the storage default");
     }
     if (!remoteWorkspaceStorage && !project && !caseId.startsWith("service-") && !decliningConnection && !providerChoice) {
       project = await api.post(

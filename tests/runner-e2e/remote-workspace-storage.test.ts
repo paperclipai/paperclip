@@ -109,7 +109,8 @@ describe("remote workspace Product E2E qualification", () => {
     expect(controllerOutageForExecution(cells[0]!, {})).toEqual({ signal: "SIGKILL", holdMs: 300_000 });
     expect(() => controllerOutageForExecution(cells[0]!, { PAPERCLIP_RUNNER_E2E_CONTROLLER_OUTAGE_MS: "1000" })).toThrow("shorter");
     expect(cells[0]!.task.expectedRunCount).toBe(4);
-    expect(cells[0]!.suite.definitionMetadata).toMatchObject({ version: 3, savedRunReadback: "public-runId-summary-then-bound-native-detail", retainedControllerContinuation: true,
+    expect(cells[0]!.suite.definitionMetadata).toMatchObject({ version: 4, savedRunReadback: "public-runId-summary-then-bound-native-detail",
+      fileViewerSetup: "ordinary-setting-enabled-with-storage-default-preserved", retainedControllerContinuation: true,
       retainedControllerFollowupTransport: "task_comment_api", autoStopIntervalMinutes: 15 });
     expect(retainedControllerFollowupTransport(cells[0]!)).toBe("task_comment_api");
     const environment = cells[0]!.environment.buildEnvironment({ executionId: "synthetic",

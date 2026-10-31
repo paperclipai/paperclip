@@ -55,7 +55,8 @@ two explicit continuity suites require 300 seconds and reject a shorter override
 
 The explicit-only `remote-workspace-storage` suite reuses that controller-restart
 journey for one native Codex Daytona cell. It verifies the default-enabled remote
-workspace setting through the ordinary instance API and creates a projectless task. The agent
+workspace setting through the ordinary instance API and creates a projectless task.
+It enables the existing experimental Files viewer through that API. The agent
 creates only synthetic source, an unpushed Git commit, and an untracked random
 reference in its task workspace. Independent public API reads require committed
 snapshot references and matching saved run receipts before and after replacement.
