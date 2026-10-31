@@ -74,6 +74,24 @@ describe("runner E2E catalog", () => {
       retainedControllerContinuation: true, retainedControllerFollowupTransport: "task_comment_api", maximumAttemptsPerCell: 1 });
   });
 
+  it("selects non-reused Kimi lifecycle leases without changing its warm or local cases", () => {
+    const suite = runnerSuites.find(row => row.id === "kimi-qualification")!;
+    const cells = runnerMatrix.filter(row => row.suite.id === suite.id);
+    const input = { secretRefs: { DAYTONA_API_KEY: { type: "secret_ref" as const, secretId: "fixture-secret", version: "latest" as const } },
+      daytonaImage: `registry.example.test/runtime@sha256:${"a".repeat(64)}`, executionId: "fixture" };
+    expect(cells).toHaveLength(20);
+    for (const cell of cells) {
+      if (cell.environment.id === "local") {
+        expect(cell.environment).toBe(suite.environments.find(environment => environment.id === "local"));
+        continue;
+      }
+      const lifecycle = cell.task.flow === "kimi_native_lifecycle";
+      expect(cell.environment.buildEnvironment(input).config).toMatchObject({ reuseLease: !lifecycle, runnerLifecycleMode: lifecycle ? "per_turn" : "warm" });
+      expect(cell.groups.includes("warm")).toBe(!lifecycle);
+    }
+    expect(suiteDefinitionHash(suite)).not.toBe(suiteDefinitionHash({ ...suite, environmentOverrides: undefined }));
+  });
+
   it.each([
     ["runner-codex-subscription", "CODEX_AUTH_JSON"], ["runner-codex", "OPENAI_API_KEY"],
   ])("keeps %s receipt smoke separately selectable with exactly four bounded native turns", (profile, credential) => {
@@ -260,10 +278,10 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      2, 1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 2, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 5, 28, 18, 2, 6, 6, 13, 10, 4, 48, 16, 10, 2, 1, 1, 4, 116, 2, 1, 2,
+      2, 1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 20, 2, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 5, 28, 18, 2, 6, 6, 13, 10, 4, 48, 16, 10, 2, 1, 1, 4, 116, 2, 1, 2,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(775);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(775);
+    expect(validateRunnerCatalog()).toHaveLength(795);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(795);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(48);
