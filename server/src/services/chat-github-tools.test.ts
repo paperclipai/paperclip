@@ -20,6 +20,13 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { GITHUB_BOT_TOOLS, githubGuestBotConnectionForSession } from "./chat-github-tools.js";
 
 describe("GitHub review tool contract", () => {
+  it("discovers the repository-specific finding category constraint", () => {
+    const submit = GITHUB_BOT_TOOLS.find(tool => tool.name === "submit_review")!;
+    const schema = submit.schema as { properties: { findings: { items: { properties: { category: { description: string; enum?: string[] } } } } } };
+    const category = schema.properties.findings.items.properties.category;
+    expect(category.description).toContain("begin_review.findingCategories");
+    expect(category.enum).toBeUndefined();
+  });
   it("tells new bots which review sections Paperclip renders", () => {
     const submit = GITHUB_BOT_TOOLS.find(tool => tool.name === "submit_review")!;
     const properties = submit.schema.properties!;
