@@ -35,15 +35,22 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
   const errors: unknown[] = [];
   const statements: string[] = [];
   const parameterCounts: number[] = [];
+  let captureBlockerPlan = false;
+  let blockerPlanQuery: { query: string; parameters: unknown[] } | undefined;
   beforeAll(async () => {
     if (externalUrl) await applyPendingMigrations(externalUrl);
     else temporary = await startEmbeddedPostgresTestDatabase("attention-retention-");
     db = createDb(externalUrl ?? temporary!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     db.$client.options.onnotice = () => {};
-    db.$client.options.debug = (_connection, query, parameters) => { statements.push(query); parameterCounts.push(parameters.length); };
+    db.$client.options.debug = (_connection, query, parameters) => {
+      statements.push(query); parameterCounts.push(parameters.length);
+      if (captureBlockerPlan && !blockerPlanQuery && query.includes("latest_blocker_operation") && query.includes("issue_relations"))
+        blockerPlanQuery = { query, parameters: [...parameters] };
+    };
   }, 30_000);
   beforeEach(async () => {
     companyId = randomUUID(); agentId = randomUUID(); draining = false; errors.length = 0;
+    captureBlockerPlan = false; blockerPlanQuery = undefined;
     await db.insert(companies).values({ id: companyId, name: "Retention", issuePrefix: `A${companyId.slice(0, 6)}` });
     await db.insert(authUsers).values({ id: "board", name: "Board", email: "board@retention.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board", membershipRole: "owner", status: "active" });
@@ -426,6 +433,85 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(await service.check(entry)).toBeNull();
     expect(await db.select().from(decisionRetention)).toHaveLength(0);
     expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
+  });
+
+  it.each(["running", "run", "confirmation", "completed"] as const)("filters completed blocker history before bounded %s attention and archive checks", async kind => {
+    const root = await insertIssue("blocked"), workspaceId = randomUUID();
+    await db.execute(sql`insert into execution_workspaces (id, company_id, name, mode, strategy_type)
+      values (${workspaceId}::uuid, ${companyId}::uuid, 'Finalized shared history', 'shared', 'project_primary')`);
+    await db.execute(sql`insert into workspace_operations (company_id, execution_workspace_id, phase, status, started_at)
+      values (${companyId}::uuid, ${workspaceId}::uuid, 'workspace_finalize', 'succeeded', ${old().toISOString()}::timestamptz)`);
+    await db.execute(sql`with history as (
+      insert into issues (id, company_id, title, status, updated_at, execution_workspace_id)
+      select ('00000000-0000-4000-8000-' || lpad(to_hex(n), 12, '0'))::uuid,
+        ${companyId}::uuid, 'completed-blocker-' || n, 'done', ${old().toISOString()}::timestamptz, ${workspaceId}::uuid
+      from generate_series(1, 2100) n returning id)
+      insert into issue_relations (company_id, issue_id, related_issue_id, type)
+      select ${companyId}::uuid, id, ${root.id}::uuid, 'blocks' from history`);
+    if (kind !== "completed") {
+      const live = await insertIssue(kind === "running" ? "in_progress" : "todo", { id: "ffffffff-ffff-4fff-8fff-ffffffffffff", assigneeAgentId: agentId });
+      await db.insert(issueRelations).values({ companyId, issueId: live.id, relatedIssueId: root.id, type: "blocks" });
+      if (kind === "run") {
+        const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
+        await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, live.id));
+      } else if (kind === "confirmation") await db.insert(issueThreadInteractions).values({ companyId, issueId: live.id,
+        kind: "request_confirmation", status: "pending", payload: { prompt: "Still waiting" } });
+    }
+    statements.length = 0; parameterCounts.length = 0;
+    captureBlockerPlan = kind === "completed";
+    const batch = await issueService(db).listBlockerAttentionBatch(companyId, [root]);
+    captureBlockerPlan = false;
+    if (kind === "completed") {
+      expect(blockerPlanQuery).toBeTruthy();
+      const explain = await db.$client.unsafe("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + blockerPlanQuery!.query,
+        blockerPlanQuery!.parameters as never[]);
+      type Plan = { "Relation Name"?: string; "Actual Rows": number; "Actual Loops": number; "Rows Removed by Filter"?: number; Plans?: Plan[] };
+      const rootPlan = (explain[0]!["QUERY PLAN"] as Array<{ Plan: Plan }>)[0]!.Plan;
+      const visit = (node: Plan): void => {
+        if (node["Relation Name"] === "issues" && node["Actual Loops"] > 1) {
+          expect(node["Actual Rows"]).toBeLessThanOrEqual(1);
+          expect(node["Rows Removed by Filter"] ?? 0).toBe(0);
+        }
+        node.Plans?.forEach(visit);
+      };
+      visit(rootPlan);
+      process.stdout.write(JSON.stringify({ completedBlockerHistoryPlan: explain }) + "\n");
+    }
+    expect(batch.nodeCount).toBeLessThanOrEqual(BLOCKER_ATTENTION_MAX_NODES);
+    expect(batch.edgeCount).toBeLessThanOrEqual(BLOCKER_ATTENTION_MAX_NODES * 2);
+    const service = attentionRetentionService(db), page = await service.load({ companyId, sourceKind: "blocker_attention" });
+    const entry = page.rows!.find(row => row.rootId === root.id && row.variant === "terminal");
+    if (kind !== "completed") {
+      // Exercise the authoritative fresh check even if discovery correctly omits the live root.
+      await service.check(entry ?? { id: `blocker_attention:${root.id}:terminal`, companyId, sourceKind: "blocker_attention",
+        sourceId: root.id, rootId: root.id, issueId: root.id, variant: "terminal", activityAt: old().toISOString(), deadlineAt: Date.now(), dueAt: Date.now() });
+      expect(await state("blocker_attention", root.id)).toBeNull();
+      expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
+    } else {
+      expect(entry).toBeTruthy(); await service.check(entry!);
+      expect((await state("blocker_attention", root.id))?.archivedAt).toBeInstanceOf(Date);
+      expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(1);
+    }
+    expect(batch.fetchedRows).toBeLessThanOrEqual(4);
+    expect(batch.deferredRootIds.size).toBe(0);
+    expect(Boolean(batch.attention.get(root.id)?.blockingTreeLive)).toBe(kind !== "completed");
+    expect(parameterCounts.length).toBeLessThanOrEqual(100);
+  });
+
+  it("does not archive an unknown truncated blocker tree during its fresh check", async () => {
+    const root = await insertIssue("blocked");
+    await db.execute(sql`with blockers as (
+      insert into issues (company_id, title, status, updated_at)
+      select ${companyId}::uuid, 'unresolved-' || n, 'backlog', ${old().toISOString()}::timestamptz
+      from generate_series(1, 2100) n returning id)
+      insert into issue_relations (company_id, issue_id, related_issue_id, type)
+      select ${companyId}::uuid, id, ${root.id}::uuid, 'blocks' from blockers`);
+    const service = attentionRetentionService(db), page = await service.load({ companyId, sourceKind: "blocker_attention" });
+    const entry = page.rows!.find(row => row.rootId === root.id && row.variant === "terminal")!;
+    expect(entry).toBeTruthy(); expect(await service.check(entry)).toBeNull();
+    expect(await db.select().from(decisionRetention)).toHaveLength(0);
+    expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
+    await start(); await quiet();
   });
 
   it("disarms finite deferred-root checks when large retained graphs have no archive obligation", async () => {
