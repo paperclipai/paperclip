@@ -7,7 +7,7 @@ import { touchHeartbeatRunRuntimeStatus } from "../heartbeat-run-runtime-status.
 import { publishLiveEvent } from "../live-events.js";
 import { isRunLogStoreType, type RunLogHandle, type RunLogStore } from "../run-log-store.js";
 import { appendExcerpt, compactRunLogChunk } from "./run-log.js";
-import { createNativeRunLogExporter } from "../native-runtime/native-run-log-export.js";
+import { createNativeRunLogExporter, nativeRunLogPrefixCursor } from "../native-runtime/native-run-log-export.js";
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import {
   isHeartbeatRunRuntimeStatusActive,
@@ -25,7 +25,7 @@ export interface HeartbeatRunOutputInput {
   run: Run;
   runId: string;
   issueId: string | null;
-  runLogStore: Pick<RunLogStore, "begin" | "append" | "enqueue" | "flush">;
+  runLogStore: Pick<RunLogStore, "begin" | "append" | "enqueue" | "flush"> & Partial<Pick<RunLogStore, "read">>;
   identityRedactor: Pick<ReturnType<typeof createAgentIdentityRedactor>, "chunk" | "redact">;
   secretKeys: Set<string>;
   appendRunEvent: ReturnType<typeof createHeartbeatLifecycle>["appendRunEvent"];
@@ -142,15 +142,6 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       .where(eq(heartbeatRuns.id, runId));
 
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
-    if (
-      handle.store === "s3_segments" &&
-      run.runtimeMode === "native" &&
-      input.runtimeLogSecretValues?.length
-    ) {
-      const registry = createRunSecretRedactionRegistry(db);
-      for (const value of new Set(input.runtimeLogSecretValues))
-        await registry.register(run.companyId, runId, value);
-    }
     const reportRecordingFailure = async () => {
       if (recordingFailureReported) return;
       recordingFailureReported = true;
@@ -256,27 +247,42 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       );
       return external ? recorded.catch(reportRecordingFailure) : recorded;
     };
-    const nativeExporter =
-      handle.store === "s3_segments" && run.runtimeMode === "native"
-        ? createNativeRunLogExporter({
-            db,
-            companyId: run.companyId,
-            runId,
-            afterCursor: handle.initialSourceCursor ?? 0,
-            enqueue: (cursor, chunk) =>
-              appendIdentityRedactedLog(
-                "stdout",
-                identityRedactor.chunk("stdout", chunk),
-                false,
-                cursor,
-              ),
-            flush: () => runLogStore.flush!(handle!),
-          })
-        : undefined;
-    if (nativeExporter) await nativeExporter.recover();
-    const onPersistedNativeLog = nativeExporter
+    let nativeExporter: Promise<ReturnType<typeof createNativeRunLogExporter>> | undefined;
+    const getNativeExporter = () => nativeExporter ??= (async () => {
+      if (input.runtimeLogSecretValues?.length) {
+        const registry = createRunSecretRedactionRegistry(db);
+        for (const value of new Set(input.runtimeLogSecretValues))
+          await registry.register(run.companyId, runId, value);
+      }
+      const afterCursor = await nativeRunLogPrefixCursor({
+        db, companyId: run.companyId, runId, store: runLogStore, handle: handle!,
+        redactChunk: (chunk) => compactRunLogChunk(
+          redactCurrentUserText(identityRedactor.redact(chunk), currentUserRedactionOptions),
+        ),
+      });
+      return createNativeRunLogExporter({
+        db,
+        companyId: run.companyId,
+        runId,
+        afterCursor,
+        enqueue: (cursor, chunk) =>
+          appendIdentityRedactedLog(
+            "stdout",
+            identityRedactor.chunk("stdout", chunk),
+            false,
+            cursor,
+          ),
+        flush: () => runLogStore.flush!(handle!),
+      });
+    })();
+    if (handle.store === "s3_segments" && run.runtimeMode === "native")
+      await (await getNativeExporter()).recover();
+    // Output begins before runtime selection persists native mode. Keep the
+    // source-aware callback available without querying native sources for
+    // ordinary legacy output.
+    const onPersistedNativeLog = handle.store === "s3_segments"
       ? (cursor: number, chunk: string) =>
-          nativeExporter.record(cursor, chunk).catch(reportRecordingFailure)
+          getNativeExporter().then((exporter) => exporter.record(cursor, chunk)).catch(reportRecordingFailure)
       : undefined;
     const onAdapterMeta = async (meta: AdapterInvocationMeta) => {
       meta = identityRedactor.redact(meta);

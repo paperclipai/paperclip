@@ -535,6 +535,45 @@
   },
   {
     "allowedModes": [
+      "standard"
+    ],
+    "description": "Send a Markdown message directly to your own persistent chat with this task's responsible human. The destination is automatic. Use for requested digests and proactive task updates; report_progress writes to this task and comment_on_task writes to a chosen task. This sends no message to other agents, starts no chat run, and changes no task status. Reuse idempotencyKey on retries.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "description": "The message the human should see.",
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Stable key for this message within the source task, including across run retries.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "body",
+        "idempotencyKey"
+      ],
+      "type": "object"
+    },
+    "operationId": "send_chat_message",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "always",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Send message to your chat",
+    "version": 1
+  },
+  {
+    "allowedModes": [
       "standard",
       "ask",
       "planning",

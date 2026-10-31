@@ -2913,6 +2913,20 @@
       "when": 1793371684483,
       "tag": "0417_chunky_red_hulk",
       "breakpoints": true
+    },
+    {
+      "idx": 418,
+      "version": "7",
+      "when": 1793395364937,
+      "tag": "0418_curved_lady_mastermind",
+      "breakpoints": true
+    },
+    {
+      "idx": 419,
+      "version": "7",
+      "when": 1793400383797,
+      "tag": "0419_slippery_impossible_man",
+      "breakpoints": true
     }
   ]
 }

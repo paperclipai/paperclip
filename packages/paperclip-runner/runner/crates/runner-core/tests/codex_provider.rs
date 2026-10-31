@@ -6971,7 +6971,12 @@ fn explicit_skill_input_survives_durable_turn_and_cold_restore() {
     executor.shutdown().unwrap();
     drop(executor);
     let mut restored = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-    let skill = json!({"type":"skill", "name":"first-task", "path":"/materialized/skills/first-task/SKILL.md"});
+    let skill_path = if cfg!(windows) {
+        r"C:\materialized\skills\first-task\SKILL.md"
+    } else {
+        "/materialized/skills/first-task/SKILL.md"
+    };
+    let skill = json!({"type":"skill", "name":"first-task", "path":skill_path});
     restored
         .execute(&command(
             "turn",

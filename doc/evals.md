@@ -83,6 +83,12 @@ one bound continuation, and an exact saved confirmation. Its four development
 cells use the recorded Codex and Claude models. Registration and calibration do
 not establish Slack, staging authentication, warm lifecycle, or live qualification.
 
+The explicit `followup-while-running` [Product journey](../tests/runner-e2e/PRODUCT-JOURNEYS.md#active-follow-up)
+checks a saved message during independently observed native work, one attributed
+reply with the late requirement, and persistence after reload. Its attached and
+managed targets share the same story and permit one steered run or one normal
+successor. Registration and calibration are separate from a live staging pass.
+
 [Reusable Product journeys](../tests/runner-e2e/PRODUCT-JOURNEYS.md) add explicit
 deployment targets and starting-state recipes. The shared task-properties
 journey uses no model; Cloud onboarding supplies reusable verified state. Cloud
