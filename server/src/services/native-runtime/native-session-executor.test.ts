@@ -4302,6 +4302,17 @@ describe("retained native cleanup activation", () => {
       releaseCommit = release;
     });
     const db = {
+      execute: async (query: SQL) => {
+        // Retention hints read the fixture's run/issue relationship inside the
+        // same cleanup transaction; this fixture has one issue and no ancestors.
+        const statement = new PgDialect().sqlToQuery(query);
+        expect(transactionOpen).toBe(true);
+        expect(statement.params).toContain(run.companyId);
+        if (statement.sql.includes("from heartbeat_runs")) return [{ id: run.nativeIssueId }];
+        if (statement.sql.includes("origin_kind")) return [{ id: run.nativeIssueId, originKind: null, originId: null }];
+        if (statement.sql.includes("with recursive affected")) return [{ issueId: run.nativeIssueId }];
+        throw new Error(`Unexpected cleanup fixture query: ${statement.sql}`);
+      },
       select: () => ({
         from: (table: unknown) => {
           const rows =

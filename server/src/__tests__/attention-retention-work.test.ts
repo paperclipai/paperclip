@@ -17,7 +17,7 @@ import { buildIssueGraphLivenessIncidentKey, RECOVERY_ORIGIN_KINDS } from "../se
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { BLOCKER_ATTENTION_MAX_DEPTH, BLOCKER_ATTENTION_MAX_NODES, issueService } from "../services/issues.js";
-import { notifyAttentionRetentionWork } from "../services/retention-work-notifications.js";
+import { notifyAttentionRetentionWork, notifyIssueAttentionRetentionWork } from "../services/retention-work-notifications.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -278,12 +278,16 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(expected.terminalBlockerIssueId).toBe(terminal.id);
     expect(limited.terminalBlockerIssueId).toBe(limited.directBlockerIssueId);
     for (const input of [[root, heavy], [heavy, root]]) {
-      const batch = await owner.listBlockerAttention(companyId, input);
-      expect(batch.get(root.id)).toEqual(expected); expect(batch.get(heavy.id)).toEqual(limited);
+      const batch = await owner.listBlockerAttentionBatch(companyId, input);
+      if (!batch.deferredRootIds.has(root.id)) expect(batch.attention.get(root.id)).toEqual(expected);
+      if (!batch.deferredRootIds.has(heavy.id)) expect(batch.attention.get(heavy.id)).toEqual(limited);
+      expect(batch.nodeCount).toBeLessThanOrEqual(BLOCKER_ATTENTION_MAX_NODES);
+      if (limit === "depth") expect(batch.deferredRootIds.has(root.id)).toBe(false);
     }
     const page = await attentionRetentionService(db).load({ companyId, sourceKind: "blocker_attention" });
     const entry = page.rows!.find(item => item.rootId === root.id && item.variant === "terminal")!;
-    expect(entry.sourceId).toBe(terminal.id); expect(entry.dueAt).toBeLessThan(Date.now());
+    expect(entry.dueAt).toBeLessThanOrEqual(Date.now());
+    if (limit === "depth") expect(entry.sourceId).toBe(terminal.id);
     await attentionRetentionService(db).check(entry);
     expect((await state("blocker_attention", terminal.id))?.archivedAt).toBeInstanceOf(Date);
     expect(await db.select().from(decisionArchiveNotificationOutbox).where(eq(decisionArchiveNotificationOutbox.sourceId, terminal.id))).toHaveLength(1);
@@ -317,19 +321,78 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     await db.execute(sql`insert into issues (id, company_id, title, status, updated_at)
       select gen_random_uuid(), ${companyId}::uuid, 'parameter-root-' || n, 'blocked', ${old().toISOString()}::timestamptz
       from generate_series(1, 70) n`);
-    await db.execute(sql`insert into issues (id, company_id, parent_id, title, status, assignee_agent_id, updated_at)
-      select gen_random_uuid(), ${companyId}::uuid, root.id, 'parameter-leaf-' || n, 'backlog', ${agentId}::uuid, ${old().toISOString()}::timestamptz
-      from issues root cross join generate_series(1, 999) n
+    await db.execute(sql`insert into issues (id, company_id, parent_id, title, status, updated_at)
+      select gen_random_uuid(), ${companyId}::uuid, root.id, 'parameter-branch-' || n, 'todo', ${old().toISOString()}::timestamptz
+      from issues root cross join generate_series(1, 10) n
       where root.company_id = ${companyId}::uuid and root.status = 'blocked'`);
+    await db.execute(sql`insert into issues (id, company_id, parent_id, title, status, assignee_agent_id, updated_at)
+      select gen_random_uuid(), ${companyId}::uuid, branch.id, 'parameter-leaf-' || n, 'backlog', ${agentId}::uuid, ${old().toISOString()}::timestamptz
+      from issues branch cross join generate_series(1, 99) n
+      where branch.company_id = ${companyId}::uuid and branch.title like 'parameter-branch-%'`);
+    const completed = await insertIssue("blocked");
+    const shallow = await insertIssue("blocked", { updatedAt: new Date() });
+    const middle = await insertIssue("todo", { updatedAt: new Date() });
+    const overdue = await insertIssue("backlog", { assigneeAgentId: agentId });
+    await db.insert(issueRelations).values([
+      { companyId, issueId: middle.id, relatedIssueId: shallow.id, type: "blocks" },
+      { companyId, issueId: overdue.id, relatedIssueId: middle.id, type: "blocks" },
+    ]);
     const roots = await db.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.status, "blocked")));
     parameterCounts.length = 0;
-    const result = await issueService(db).listBlockerAttention(companyId, roots).catch(error => {
+    const result = await issueService(db).listBlockerAttentionBatch(companyId, roots).catch(error => {
       throw new Error(`Large graph failed: ${String(error.cause?.message ?? error.message).slice(0, 300)}`);
     });
-    expect(result.size).toBe(70);
-    expect([...result.values()].every(item => item.state === "needs_attention" && item.terminalBlockerIssueId)).toBe(true);
+    expect(result.attention.size).toBe(72);
+    expect(result.deferredRootIds.has(completed.id)).toBe(false);
+    expect(result.attention.get(completed.id)?.terminalBlockerIssueId).toBe(completed.id);
+    expect([...result.attention.values()].every(item => item.state === "needs_attention" && item.terminalBlockerIssueId)).toBe(true);
     expect(Math.max(...parameterCounts)).toBeLessThanOrEqual(1100);
+    expect(parameterCounts.length).toBeLessThanOrEqual(100);
+    expect(result.nodeCount).toBeLessThanOrEqual(BLOCKER_ATTENTION_MAX_NODES);
+    expect(result.edgeCount).toBeLessThanOrEqual(BLOCKER_ATTENTION_MAX_NODES * 2);
+    expect(result.fetchedRows).toBeLessThanOrEqual(BLOCKER_ATTENTION_MAX_NODES * 6);
+    expect(result.deferredRootIds.has(shallow.id)).toBe(true);
+    const service = attentionRetentionService(db);
+    const page = await service.load({ companyId, sourceKind: "blocker_attention" });
+    const immediate = page.rows!.find(entry => entry.rootId === shallow.id && entry.variant === "terminal")!;
+    expect(immediate.dueAt).toBeLessThanOrEqual(Date.now());
+    await service.check(immediate);
+    expect((await state("blocker_attention", overdue.id))?.archivedAt).toBeInstanceOf(Date);
   }, 120_000);
+
+  it("preserves observed live work when a single large root exhausts shared fetch capacity", async () => {
+    const root = await insertIssue("blocked");
+    const live = await insertIssue("in_progress", { assigneeAgentId: agentId });
+    await db.insert(issueRelations).values({ companyId, issueId: live.id, relatedIssueId: root.id, type: "blocks" });
+    await db.execute(sql`insert into issues (id, company_id, parent_id, title, status, assignee_agent_id, updated_at)
+      select gen_random_uuid(), ${companyId}::uuid, ${root.id}::uuid, 'bounded-leaf-' || n, 'backlog', ${agentId}::uuid, ${old().toISOString()}::timestamptz
+      from generate_series(1, 3000) n`);
+    const batch = await issueService(db).listBlockerAttentionBatch(companyId, [root]);
+    expect(batch.deferredRootIds.has(root.id)).toBe(true);
+    expect(batch.attention.get(root.id)?.blockingTreeLive).toBe(true);
+    const service = attentionRetentionService(db), page = await service.load({ companyId, sourceKind: "blocker_attention" });
+    const entry = page.rows!.find(item => item.rootId === root.id && item.variant === "terminal")!;
+    expect(await service.check(entry)).toBeNull();
+    expect(await state("blocker_attention", root.id)).toBeNull();
+    expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
+  });
+
+  it("disarms finite deferred-root checks when large retained graphs have no archive obligation", async () => {
+    await db.execute(sql`insert into issues (id, company_id, title, status, updated_at)
+      select gen_random_uuid(), ${companyId}::uuid, 'held-root-' || n, 'blocked', ${old().toISOString()}::timestamptz
+      from generate_series(1, 4) n`);
+    await db.execute(sql`insert into issues (id, company_id, parent_id, title, status, assignee_agent_id, updated_at)
+      select gen_random_uuid(), ${companyId}::uuid, root.id, 'held-leaf-' || n, 'backlog', ${agentId}::uuid, ${old().toISOString()}::timestamptz
+      from issues root cross join generate_series(1, 600) n
+      where root.company_id = ${companyId}::uuid and root.status = 'blocked'`);
+    await db.execute(sql`insert into decision_retention (company_id, source_kind, source_id, source_activity_at, keep)
+      select company_id, 'blocker_attention', id::text, updated_at, true from issues
+      where company_id = ${companyId}::uuid and status = 'backlog'`);
+    const service = attentionRetentionService(db), check = vi.spyOn(service, "check");
+    await start(service); await quiet();
+    expect(check).toHaveBeenCalledTimes(4);
+    expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
+  });
 
   it("canonicalizes wide circular notification variables to the supported identity fields", async () => {
     const sourceId = randomUUID(), issueId = randomUUID(), hints: string[] = [];
@@ -416,6 +479,49 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     await quiet(); expect(await state("blocker_attention", terminal.id)).toBeNull();
     await issueService(db).update(incident.id, { hiddenAt: new Date() });
     await archived("blocker_attention", terminal.id); await quiet();
+  });
+
+  it("resolves opaque run issue references through trusted company issue rows", async () => {
+    const issue = await insertIssue();
+    const [valid, opaque] = await db.insert(heartbeatRuns).values([
+      { companyId, agentId, status: "succeeded", contextSnapshot: { issueId: issue.id } },
+      { companyId, agentId, status: "succeeded", contextSnapshot: { issueId: "none" } },
+    ]).returning();
+    const hints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.attentionRetention, (event, values) => {
+      if (event === "settled") hints.push(...values ?? []);
+    });
+    try {
+      await db.transaction(tx => notifyIssueAttentionRetentionWork(tx, { companyId, runId: valid.id }));
+      await db.transaction(tx => notifyIssueAttentionRetentionWork(tx, { companyId, runId: opaque.id }));
+    } finally { unsubscribe(); }
+    expect(hints).toEqual([JSON.stringify({ companyId, issueId: issue.id }), JSON.stringify({ companyId })]);
+  });
+
+  it("accepts ordinary liveness incident creation and completion with a none leaf sentinel", async () => {
+    const source = await insertIssue("blocked", { responsibleUserId: "board" });
+    const service = issueService(db);
+    const incident = await service.create(companyId, { title: "Invalid participant", status: "todo", assigneeUserId: "board",
+      createdByUserId: "board", originKind: RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+      originId: `harness_liveness:${companyId}:${source.id}:invalid_review_participant:none` });
+    await service.update(source.id, { blockedByIssueIds: [incident.id] });
+    await service.update(incident.id, { status: "done" });
+    expect((await service.getById(incident.id))?.status).toBe("done");
+    expect((await service.getRelationSummaries(source.id)).blockedBy).toEqual([]);
+  });
+
+  it.each(["hidden", "done"] as const)("reactivates an older review when moved stranded recovery is %s", async transition => {
+    const review = await insertIssue("in_review", { assigneeAgentId: agentId, responsibleUserId: "board" });
+    const parent = await insertIssue("todo", { responsibleUserId: "board" });
+    const recovery = await insertIssue("todo", { parentId: review.id, originKind: RECOVERY_ORIGIN_KINDS.strandedIssueRecovery,
+      originId: review.id, assigneeUserId: "board", responsibleUserId: "board" });
+    await issueService(db).update(recovery.id, { parentId: parent.id });
+    expect((await issueService(db).listReviewAttention(companyId, [review])).get(review.id)?.state).not.toBe("stalled");
+    await start(); await quiet();
+    await issueService(db).update(recovery.id, transition === "hidden" ? { hiddenAt: new Date() } : { status: "done" });
+    await settle();
+    expect((await state("review", review.id))?.archivedAt).toBeInstanceOf(Date);
+    expect(await db.select().from(decisionArchiveNotificationOutbox).where(eq(decisionArchiveNotificationOutbox.sourceId, review.id))).toHaveLength(1);
   });
 
   it("scopes ordinary execution-control writes to their company", async () => {
