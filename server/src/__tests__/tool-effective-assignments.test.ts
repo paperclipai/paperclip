@@ -7,6 +7,7 @@ import {
 } from "@paperclipai/db";
 import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import { toolAccessService } from "../services/tool-access.js";
+import { recordingDb } from "./helpers/tool-gateway-listing-fixture.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -47,7 +48,8 @@ describeDatabase("effective tool assignments", () => {
     const service = toolAccessService(db);
     const full = await service.getEffectiveProfilesForAgent(f.company.id, f.agent.id);
     const assignments = await service.getEffectiveToolAssignmentsForAgent(f.company.id, f.agent.id);
-    expect(assignments).toEqual({ ...full, allowedTools: full.allowedTools.map(
+    const { profiles: _profiles, ...runtime } = full;
+    expect(assignments).toEqual({ ...runtime, allowedTools: full.allowedTools.map(
       ({ id, applicationId, connectionId, toolName }) => ({ id, applicationId, connectionId, toolName }),
     ) });
     const connections = await service.getConnectionAssignmentsForAgent(f.company.id, f.agent.id, [f.connection.id]);
@@ -86,7 +88,7 @@ describeDatabase("effective tool assignments", () => {
     await db.update(toolCatalogEntries).set({ riskLevel: "write" }).where(eq(toolCatalogEntries.id, f.read.id));
     expect((await compare(f)).assignments.allowedTools).toEqual([]);
     await db.update(toolProfiles).set({ status: "archived" }).where(eq(toolProfiles.id, f.profile.id));
-    expect((await compare(f)).assignments.profiles).toEqual([]);
+    expect((await compare(f)).assignments.allowedTools).toEqual([]);
     await db.update(toolProfiles).set({ status: "active", defaultAction: "allow" }).where(eq(toolProfiles.id, f.profile.id));
     expect((await compare(f)).assignments.allowedTools.map(tool => tool.id)).toEqual([f.read.id, f.write.id]);
     await db.delete(toolProfileBindings).where(eq(toolProfileBindings.profileId, f.profile.id));
@@ -102,6 +104,22 @@ describeDatabase("effective tool assignments", () => {
     const [foreign] = await db.insert(agents).values({ companyId: other.id, name: "Foreign" }).returning();
     await expect(toolAccessService(db).getEffectiveToolAssignmentsForAgent(f.company.id, foreign.id)).rejects.toThrow("same company");
     expect((await toolAccessService(db).getEffectiveToolAssignmentsForAgent(other.id, foreign.id)).allowedTools).toEqual([]);
+  });
+
+  it("does not load company-agent inventory or administrative summaries for runtime assignments", async () => {
+    const f = await fixture();
+    await db.update(toolProfiles).set({ defaultAction: "allow" }).where(eq(toolProfiles.id, f.profile.id));
+    await db.insert(agents).values(Array.from({ length: 100 }, (_, index) => ({ companyId: f.company.id, name: `Unrelated agent ${index}` })));
+    const measured = recordingDb(db);
+    const assignments = await toolAccessService(measured.db).getEffectiveToolAssignmentsForAgent(f.company.id, f.agent.id);
+    expect(assignments.allowedTools.map(tool => tool.id)).toEqual([f.read.id, f.write.id]);
+    expect(assignments).not.toHaveProperty("profiles");
+    const agentReads = measured.statements.filter(query => query.includes('from "agents"'));
+    expect(agentReads.length).toBeGreaterThan(0);
+    expect(agentReads.every(query => query.includes('"agents"."id" ='))).toBe(true);
+    const administrative = await toolAccessService(db).getEffectiveProfilesForAgent(f.company.id, f.agent.id);
+    expect(administrative.profiles).toHaveLength(1);
+    expect(administrative.allowedTools.map(tool => tool.id)).toEqual(assignments.allowedTools.map(tool => tool.id));
   });
 
   it("reads small catalog rows from real PostgreSQL while preserving complete public definitions", async () => {

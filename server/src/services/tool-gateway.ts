@@ -51,6 +51,7 @@ import {
   asc,
   desc,
   eq,
+  gte,
   inArray,
   isNull,
   lte,
@@ -1493,7 +1494,10 @@ export function createToolGatewayService(
               eq(toolCatalogEntries.status, "active"),
               isNull(toolCatalogEntries.quarantinedAt),
               connectedMcpConnectionFilter(companyId),
-              selectedConnectionIds ? inArray(toolConnections.id, selectedConnectionIds) : undefined,
+              selectedConnectionIds ? or(...[...new Set(selectedConnectionIds.map(shortStableId))].map(prefix => and(
+                gte(toolConnections.id, `${prefix}-0000-0000-0000-000000000000`),
+                lte(toolConnections.id, `${prefix}-ffff-ffff-ffff-ffffffffffff`),
+              ))) : undefined,
             ),
           )
           .orderBy(toolConnections.name, toolCatalogEntries.name);
@@ -1563,8 +1567,10 @@ export function createToolGatewayService(
       new Map(),
     );
 
-    return eligibleRows.map(
+    const selected = selectedConnectionIds ? new Set(selectedConnectionIds) : undefined;
+    return eligibleRows.flatMap(
       ({ catalogEntry, connection, application }, index) => {
+        if (selected && !selected.has(connection.id)) return [];
         if (
           connection.transport !== "mcp_remote" &&
           connection.transport !== "local_stdio" && !isBrowserUseConnection(connection) && !nativeProviderCatalogFor(connection) && !restConnectorFor(connection)
@@ -1613,7 +1619,7 @@ export function createToolGatewayService(
           },
           onDemandTools,
         };
-        return {
+        return [{
           name: gatewayToolName,
           displayName: catalogEntry.title ?? catalogEntry.toolName,
           description:
@@ -1637,7 +1643,7 @@ export function createToolGatewayService(
           catalogEntryId: catalogEntry.id,
           upstreamToolName: catalogEntry.toolName,
           providerMetadata,
-        };
+        }];
       },
     );
   }
@@ -1646,9 +1652,7 @@ export function createToolGatewayService(
     companyId: string,
     connectionId: string,
   ): Promise<ToolGatewayDescriptor[]> {
-    return (await connectedMcpToolsForCompany(companyId)).filter(
-      (tool) => tool.connectionId === connectionId,
-    );
+    return connectedMcpToolsForCompany(companyId, [connectionId]);
   }
 
   async function assertAgentInCompany(
@@ -3199,9 +3203,9 @@ export function createToolGatewayService(
   }
 
   /** Shared connection descriptors and task restrictions; no provider calls. */
-  async function connectionToolsForContext(session: ToolGatewaySession): Promise<ToolGatewayDescriptor[]> {
+  async function connectionToolsForContext(session: ToolGatewaySession, selectedConnectionIds?: string[]): Promise<ToolGatewayDescriptor[]> {
     const guestBotConnection = await measureRunPhase("connectors.discovery.github", () => githubGuestBotConnectionForSession(db, session));
-    let connectedTools = (await measureRunPhase("connectors.discovery.connections", () => connectedMcpToolsForCompany(session.companyId)))
+    let connectedTools = (await measureRunPhase("connectors.discovery.connections", () => connectedMcpToolsForCompany(session.companyId, selectedConnectionIds)))
       .filter(tool => !guestBotConnection || !tool.connectionId || (tool.connectionId === guestBotConnection && tool.providerType === "paperclip_github_chat"));
     const connectionIds = [...new Set(connectedTools.flatMap((tool) => tool.connectionId ? [tool.connectionId] : []))];
     if (connectionIds.length) {
@@ -9462,7 +9466,7 @@ export function createToolGatewayService(
       // Prompt assembly needs authorization, not a full discovery listing. Share
       // descriptors and policy decisions, but only authorize candidate sources;
       // discovery admission pressure must not remove guidance or reset sessions.
-      const tools = (await connectionToolsForContext(session))
+      const tools = (await connectionToolsForContext(session, [...candidateIds]))
         .filter((tool) => tool.connectionId && candidateIds.has(tool.connectionId));
       const decisions = await decideToolsForListing(tools, (tool) => policyInputForTool({ session, tool }));
       const visible = new Set(decisions.flatMap(({ tool, decision }) =>
