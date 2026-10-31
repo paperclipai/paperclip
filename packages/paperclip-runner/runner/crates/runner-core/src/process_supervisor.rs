@@ -454,6 +454,7 @@ impl VerifiedProcessLaunch {
         }
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn spawn_stdio(
         &self,
         environment: &std::collections::BTreeMap<String, String>,

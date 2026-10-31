@@ -12,6 +12,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     queue: DeliveryQueue;
     batchSize?: number;
     minimumPassIntervalMs?: number;
+    concurrentChecks?: { limit: number; key(entry: Entry): string };
     reconstructionIntervalMs?: number;
     beforePass?(): Promise<void>;
     decodeScope(hint: string): Scope | undefined;
@@ -21,6 +22,9 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
   },
   canRun: () => boolean,
 ) {
+  if (options.concurrentChecks && (!Number.isInteger(options.concurrentChecks.limit) || options.concurrentChecks.limit < 1)) {
+    throw new RangeError("Concurrent check limit must be a positive integer");
+  }
   const dirty = new Set<string>(["*"]);
   const versions = new Map<string, number>();
   const scans = new Map<string, { version: number; seen: Set<string> }>();
@@ -110,14 +114,30 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
         && Math.max(entry.dueAt, failures.get(entry.id)?.retryAt ?? 0) <= Date.now())
         .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id));
       const batch = takeCompanyWorkBatch(due, options.batchSize ?? 25, lastCompany); lastCompany = batch.lastCompany;
+      const groups = new Map<string, Entry[]>();
       for (const entry of batch.entries) {
-        if (signal.aborted || !canRun()) break;
-        try {
-          const current = await options.check(entry, signal);
-          if (current) entries.set(entry.id, current); else entries.delete(entry.id);
-          failures.delete(entry.id);
-        } catch (error) { failed(failures, entry.id); errors.push(error); }
+        const key = options.concurrentChecks?.key(entry) ?? "";
+        const group = groups.get(key) ?? [];
+        group.push(entry); groups.set(key, group);
       }
+      const pending = [...groups.values()];
+      let nextGroup = 0;
+      const checkGroups = async () => {
+        while (!signal.aborted && canRun()) {
+          const group = pending[nextGroup++];
+          if (!group) return;
+          for (const entry of group) {
+            if (signal.aborted || !canRun()) return;
+            try {
+              const current = await options.check(entry, signal);
+              if (current) entries.set(entry.id, current); else entries.delete(entry.id);
+              failures.delete(entry.id);
+            } catch (error) { failed(failures, entry.id); errors.push(error); }
+          }
+        }
+      };
+      const checks = await Promise.allSettled(Array.from({ length: Math.min(options.concurrentChecks?.limit ?? 1, pending.length) }, checkGroups));
+      for (const result of checks) if (result.status === "rejected") errors.push(result.reason);
       if (errors.length) throw new AggregateError(errors, `${options.queue} could not settle`);
     },
     // Retain scopes/deadlines for resume without retaining a settled write's

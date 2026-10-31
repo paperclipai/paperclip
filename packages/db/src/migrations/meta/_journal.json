@@ -2920,6 +2920,13 @@
       "when": 1793395364937,
       "tag": "0418_curved_lady_mastermind",
       "breakpoints": true
+    },
+    {
+      "idx": 419,
+      "version": "7",
+      "when": 1793400383797,
+      "tag": "0419_slippery_impossible_man",
+      "breakpoints": true
     }
   ]
 }

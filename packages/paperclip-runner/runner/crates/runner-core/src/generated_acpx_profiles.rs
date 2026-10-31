@@ -13,6 +13,18 @@ pub(crate) struct AcpxReleaseProfile {
     pub qualification_pending: bool,
 }
 
+pub(crate) fn kimi_native_closure(platform: &str, architecture: &str) -> Option<&'static str> {
+    match (platform, architecture) {
+        ("darwin", "arm64") => {
+            Some("6038325abd0431c30097ff1f572a9b29816e1b4da372d8cb86b2ca5d18ea34e7")
+        }
+        ("linux", "x64") => {
+            Some("105d8394adbbc76a953a12cc51b5288eb940ad693291e584f6cdc6407213164d")
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
     Some(match agent {
         "antigravity" => AcpxReleaseProfile {
@@ -83,6 +95,16 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             command_digest:
                 "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc",
             requires_provider_policy: false,
+            qualification_pending: false,
+        },
+        "kimi" => AcpxReleaseProfile {
+            agent_server_package: "@moonshot-ai/kimi-code",
+            agent_server_version: "2.3.3",
+            agent_runtime_package: None,
+            agent_runtime_version: None,
+            command_digest:
+                "sha256:6ee5fb7ac18c1361ac63effe9117d08ed129add8349756a140e73e0c86ba5da7",
+            requires_provider_policy: true,
             qualification_pending: false,
         },
         _ => return None,

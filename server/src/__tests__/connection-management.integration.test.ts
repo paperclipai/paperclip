@@ -785,6 +785,10 @@ describe("connection management with production default agents", () => {
     const created = await f.request("POST", `/companies/${f.companyId}/tools/connections`, { name: "Selected Google services", transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user", status: "draft",
       config: { url: "https://1.1.1.1/mcp", sourceTemplateKey: "google-workspace", connectionMethodKey: "paperclip-workspace" } });
     expect(created, JSON.stringify(created)).toMatchObject({ status: 201 });
+    const handoff = await f.request("POST", `/tools/oauth/${created.body.id}/start`, { asCurrentUser: true });
+    expect(handoff, JSON.stringify(handoff)).toMatchObject({ status: 200, body: { expiresAt: null, requiredUserAction: { userId: f.userId } } });
+    const [unselected] = await server.db.select().from(toolConnections).where(eq(toolConnections.id, created.body.id));
+    expect(unselected.config.workspaceSetup).toBeUndefined();
     const services = { gmail: "read" as const };
     const started = await f.request("POST", `/tools/oauth/${created.body.id}/start`, { asCurrentUser: true, workspaceServices: services });
     expect(started, JSON.stringify(started)).toMatchObject({ status: 200, body: { expiresAt: null, requiredUserAction: { userId: f.userId } } });
@@ -797,6 +801,10 @@ describe("connection management with production default agents", () => {
       [f.userId]: { requestedScopes: googleWorkspaceSelectedScopes(services) },
     } } } } });
     expect(await server.db.select().from(toolOauthStates).where(eq(toolOauthStates.connectionId, saved.id))).toHaveLength(0);
+    expect(await f.request("POST", `/tools/oauth/${saved.id}/start`, { asCurrentUser: true })).toMatchObject({ status: 200, body: { authorizationUrl: started.body.authorizationUrl } });
+    const [handedOff] = await server.db.select().from(toolConnections).where(eq(toolConnections.id, saved.id));
+    expect(handedOff.config.workspaceSetup).toBeUndefined();
+    expect(handedOff.config.oauth).toEqual(saved.config.oauth);
   });
 
   it("discovers and invokes connection APIs through default production native bindings", async () => {
