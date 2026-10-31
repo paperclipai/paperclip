@@ -160,3 +160,10 @@ quiet including the real 90-second window, startup failure isolation and
 remaining final-recovery lifecycle races, relevant contracts across the combined tree, current-head
 Greptile 5/5 and required CI. No aggregate-removal acceptance or deployment claim
 is made by the preliminary harness checkpoint.
+
+The assembled routine proof also uses ordinary subtree cancel and restore APIs.
+It requires the same persisted routine run to return to `issue_created`, clears
+its terminal projection, and retains zero agent executions while suppression
+remains active. The passive PostgreSQL observer records connection opens, closes
+and byte counts separately from SQL frames so final quiet receipts can expose
+connection housekeeping without hiding it in a zero-query total.

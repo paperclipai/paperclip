@@ -69,8 +69,11 @@ export function createPostgresProtocolObserver(onQuery: (query: ObservedQuery) =
 export async function startMaintenancePostgresProxy(databaseUrl: string) {
   const upstream = new URL(databaseUrl), queries: ObservedQuery[] = [], errors: Error[] = [];
   const frames = { Query: 0, Parse: 0, Bind: 0, Execute: 0, Sync: 0 };
+  const transport = { connectionsOpened: 0, connectionsClosed: 0, frontendBytes: 0, backendBytes: 0 };
   const sockets = new Set<Socket>(), observers = new Set<ReturnType<typeof createPostgresProtocolObserver>>();
   const server = createServer(client => {
+    transport.connectionsOpened++;
+    client.once("close", () => { transport.connectionsClosed++; });
     const target = createConnection({ host: upstream.hostname, port: Number(upstream.port) || 5432 });
     const observer = createPostgresProtocolObserver(query => queries.push(query), type => {
       if (type === "Q") frames.Query++; else if (type === "P") frames.Parse++; else if (type === "B") frames.Bind++;
@@ -82,8 +85,8 @@ export async function startMaintenancePostgresProxy(databaseUrl: string) {
       socket.on("error", error => { errors.push(error); client.destroy(); target.destroy(); });
       socket.on("close", () => { sockets.delete(socket); if (client.destroyed && target.destroyed) observers.delete(observer); });
     }
-    client.on("data", chunk => { try { observer.frontend(chunk); } catch (error) { errors.push(error as Error); client.destroy(); target.destroy(); } });
-    target.on("data", chunk => { try { observer.backend(chunk); } catch (error) { errors.push(error as Error); client.destroy(); target.destroy(); } });
+    client.on("data", chunk => { transport.frontendBytes += chunk.length; try { observer.frontend(chunk); } catch (error) { errors.push(error as Error); client.destroy(); target.destroy(); } });
+    target.on("data", chunk => { transport.backendBytes += chunk.length; try { observer.backend(chunk); } catch (error) { errors.push(error as Error); client.destroy(); target.destroy(); } });
     client.pipe(target); target.pipe(client);
     client.on("end", () => target.end()); target.on("end", () => client.end());
   });
@@ -94,6 +97,7 @@ export async function startMaintenancePostgresProxy(databaseUrl: string) {
   return {
     url: url.toString(), queries, errors,
     get frames() { return { ...frames }; },
+    get transport() { return { ...transport }; },
     get pending() { return [...observers].reduce((sum, observer) => sum + observer.pending, 0); },
     async stop() {
       for (const socket of sockets) socket.destroy();

@@ -67,9 +67,13 @@ describe("maintenance observer against PostgreSQL", () => {
       expect(proxy.queries.some(query => /rollback/i.test(query.sql))).toBe(true);
       expect(proxy.pending).toBe(0);
       expect(proxy.errors).toEqual([]);
-      const before = proxy.queries.length;
+      expect(proxy.transport).toMatchObject({ connectionsOpened: 1, connectionsClosed: 0 });
+      expect(proxy.transport.frontendBytes).toBeGreaterThan(0);
+      expect(proxy.transport.backendBytes).toBeGreaterThan(0);
+      const before = proxy.queries.length, transport = proxy.transport;
       await new Promise(resolve => setTimeout(resolve, 100));
       expect(proxy.queries.length).toBe(before);
+      expect(proxy.transport).toEqual(transport);
     } finally { await db.$client.end(); await proxy.stop(); }
   });
 });
