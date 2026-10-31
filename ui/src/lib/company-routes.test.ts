@@ -12,6 +12,13 @@ describe("company routes", () => {
     expect(extractCompanyPrefixFromPath(path)).toBeNull();
     expect(applyCompanyPrefix(path, "DOT")).toBe(path);
   });
+  it("keeps chat identity confirmation outside company-prefixed routes", () => {
+    const path = "/chat-identity/confirm?token=synthetic-token";
+    expect(isBoardPathWithoutPrefix("/chat-identity/confirm")).toBe(false);
+    expect(extractCompanyPrefixFromPath("/chat-identity/confirm")).toBeNull();
+    expect(applyCompanyPrefix(path, "GRO")).toBe(path);
+    expect(toCompanyRelativePath(path)).toBe(path);
+  });
   it("treats the task-list alias as an unprefixed board route", () => {
     expect(isBoardPathWithoutPrefix("/tasks")).toBe(true);
     expect(extractCompanyPrefixFromPath("/tasks")).toBeNull();
