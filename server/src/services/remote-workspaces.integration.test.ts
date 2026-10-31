@@ -5,9 +5,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
-import { activityLog, agents, applyPendingMigrations, closeRegisteredClients, companies, createDb, environmentLeases, environments,
-  executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, projects, projectWorkspaces, workspaceOperations } from "@paperclipai/db";
+import { and, eq, sql } from "drizzle-orm";
+import { activityLog, agents, agentWakeupRequests, applyPendingMigrations, closeRegisteredClients, companies, createDb, environmentLeases, environments,
+  executionWorkspaces, executionWorkspaceSnapshots, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, projects, projectWorkspaces, workspaceOperations } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { EnvironmentLease } from "@paperclipai/shared";
@@ -16,9 +16,12 @@ import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.j
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import type { StorageService } from "../storage/types.js";
 import { createSavedWorkspaceLoader, prepareRemoteWorkspace, readRemoteWorkspaceAuthority,
-  reserveRemoteWorkspace, saveRemoteWorkspace, shouldUseRemoteWorkspaces } from "./remote-workspaces.js";
+  clearRemoteWorkspaceLocationForReleasedLease, reserveRemoteWorkspace, saveRemoteWorkspace, shouldUseRemoteWorkspaces } from "./remote-workspaces.js";
 import { createRemoteWorkspaceGitAuth } from "./remote-workspace-git-auth.js";
 import type { createGitRemoteAuthProvider } from "./git-credentials.js";
+import { reconcileSafeNativeReplacements } from "./native-runtime/native-safe-replacement.js";
+import { remoteTerminationReceipt } from "./remote-execution-termination.js";
+import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 
 const exec = promisify(execFile);
 const databaseUrl = process.env.PAPERCLIP_REMOTE_WORKSPACE_TEST_DATABASE_URL;
@@ -40,7 +43,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     ids = Object.fromEntries(["company", "agent", "issue", "run", "environment", "lease"].map(key => [key, randomUUID()])) as typeof ids;
     await db.insert(companies).values({ id: ids.company, name: "Disposable remote workspace proof", issuePrefix: "RWP" });
     await db.insert(agents).values({ id: ids.agent, companyId: ids.company, name: "Native worker", adapterType: "paperclip_runner" });
-    await db.insert(environments).values({ id: ids.environment, name: "Independent filesystem execution", driver: "sandbox", config: {} });
+    await db.insert(environments).values({ id: ids.environment, name: `Independent filesystem execution ${ids.environment}`, driver: "sandbox", config: {} });
     await db.insert(issues).values({ id: ids.issue, companyId: ids.company, title: "Use a remote workspace", status: "in_progress", assigneeAgentId: ids.agent });
     await db.insert(heartbeatRuns).values({ id: ids.run, companyId: ids.company, agentId: ids.agent, nativeIssueId: ids.issue,
       runtimeMode: "native", status: "running" });
@@ -57,7 +60,10 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     await db.delete(workspaceOperations).where(eq(workspaceOperations.companyId, ids.company));
     await db.delete(activityLog).where(eq(activityLog.companyId, ids.company));
     await db.delete(environmentLeases).where(eq(environmentLeases.companyId, ids.company));
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.companyId, ids.company));
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, ids.company));
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, ids.company));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, ids.company));
     await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.companyId, ids.company));
     await db.delete(executionWorkspaces).where(eq(executionWorkspaces.companyId, ids.company));
     await db.delete(issues).where(eq(issues.companyId, ids.company));
@@ -427,4 +433,89 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       expect(await fs.readFile(path.join(recovered.root, "code.txt"), "utf8")).toBe("unstaged edit\n");
     } finally { await recovered.cleanup(); }
   }, 60_000);
+
+  it.each(["saved", "dirty", "unsaved", "foreign_snapshot", "delete_requested", "deletion_race", "controller_claim_race", "stale_epoch", "unconfirmed_stop", "unknown_action"] as const)(
+    "checks durable remote work at the native safe-replacement decision (%s)", async scenario => {
+      const reserved = await reserve({ kind: "empty" }), first = await target("native-replacement-sandbox");
+      const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run,
+        lease: await lease(), target: first, assertOwned: async () => undefined });
+      await fs.writeFile(path.join(prepared.remoteRoot, "saved.txt"), "work survives a failed provider session\n");
+      if (scenario !== "unsaved") await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace,
+        runId: ids.run, lease: prepared.lease, target: first, assertOwned: async () => undefined });
+      const current = await workspace(reserved.id), authority = readRemoteWorkspaceAuthority(current.metadata)!;
+      if (scenario === "dirty" || scenario === "stale_epoch") await db.update(executionWorkspaces).set({ metadata: {
+        ...current.metadata, remoteWorkspace: { ...authority, ...(scenario === "dirty" ? { dirty: true, writerRunId: ids.run }
+          : { epoch: authority.epoch + 1 }) },
+      } }).where(eq(executionWorkspaces.id, reserved.id));
+      if (scenario === "foreign_snapshot") await db.update(executionWorkspaceSnapshots).set({ sourceRunId: randomUUID() })
+        .where(eq(executionWorkspaceSnapshots.id, authority.snapshotId!));
+      if (scenario === "delete_requested") await db.update(executionWorkspaceSnapshots).set({ status: "delete_requested" })
+        .where(eq(executionWorkspaceSnapshots.id, authority.snapshotId!));
+      const stopped = (await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
+        metadata: { ...prepared.lease.metadata, ...(scenario !== "unconfirmed_stop" ? {
+          remoteExecutionTermination: remoteTerminationReceipt(prepared.lease, {
+            providerLeaseId: prepared.lease.providerLeaseId, state: "destroyed",
+          }),
+        } : {}) },
+      }).where(eq(environmentLeases.id, ids.lease)).returning())[0]! as EnvironmentLease;
+      if (scenario === "saved") {
+        await db.transaction(tx => clearRemoteWorkspaceLocationForReleasedLease({ db: tx, lease: stopped }));
+        await fs.rm(prepared.remoteRoot, { recursive: true, force: true });
+        await expect(fs.stat(prepared.remoteRoot)).rejects.toThrow();
+      }
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, ids.run));
+      await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(), runnerProfileJson: {
+        ...source!.runnerProfileJson, recoveryEventInventoryVersion: 1,
+        nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: prepared.remoteRoot } },
+      } }).where(eq(heartbeatRuns.id, ids.run));
+      await db.insert(nativeRunFinalizations).values({ runId: ids.run, companyId: ids.company, issueId: ids.issue,
+        phase: "terminal_failure", attempt: 1, failureCode: "native_provider_terminal_failed",
+        failureDetail: { originalFailureCode: "fixture_checkpoint_unusable" } });
+      if (scenario === "unknown_action") await appendHeartbeatRunEvent(db, { companyId: ids.company, runId: ids.run,
+        agentId: ids.agent, eventType: "tool.execution.started", stream: "system",
+        payload: { name: "send_email", executionId: "unconfirmed-external-action", transport: "process" } });
+      let replacement;
+      if (scenario === "deletion_race" || scenario === "controller_claim_race") {
+        let release!: () => void, announce!: () => void;
+        let blockingPid = 0;
+        const released = new Promise<void>(resolve => { release = resolve; });
+        const locked = new Promise<void>(resolve => { announce = resolve; });
+        const deletion = db.transaction(async tx => {
+          await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, ids.issue)).for("update");
+          const [session] = await tx.execute(sql`select pg_backend_pid() as pid`);
+          blockingPid = Number(session?.pid);
+          announce();
+          await released;
+          if (scenario === "deletion_race") await tx.update(executionWorkspaceSnapshots).set({ status: "delete_requested" })
+            .where(eq(executionWorkspaceSnapshots.id, authority.snapshotId!));
+          else await tx.update(nativeRunFinalizations).set({ leaseOwner: "another-controller",
+            leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, ids.run));
+        });
+        await locked;
+        const pending = reconcileSafeNativeReplacements(db);
+        try {
+          const deadline = performance.now() + 5_000;
+          let blocked = false;
+          while (!blocked && performance.now() < deadline) {
+            const waiting = await db.execute(sql`select exists(select 1 from pg_stat_activity
+              where datname = current_database() and ${blockingPid} = any(pg_blocking_pids(pid))) as blocked`);
+            blocked = waiting[0]?.blocked === true;
+            if (!blocked) await new Promise(resolve => setTimeout(resolve, 10));
+          }
+          expect(blocked).toBe(true);
+        } finally { release(); await deletion; replacement = await pending; }
+      } else replacement = await reconcileSafeNativeReplacements(db);
+      expect(replacement).toMatchObject({ scheduled: scenario === "saved" ? 1 : 0 });
+      const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, ids.run));
+      expect(successors).toHaveLength(scenario === "saved" ? 1 : 0);
+      if (scenario === "saved") expect(successors[0]).toMatchObject({ status: "scheduled_retry",
+        contextSnapshot: { retryOfRunId: ids.run, forceFreshSession: true } });
+      else expect(await fs.readFile(path.join(prepared.remoteRoot, "saved.txt"), "utf8"))
+        .toBe("work survives a failed provider session\n");
+      if (scenario === "unknown_action") {
+        const [decision] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, ids.run));
+        expect(decision?.failureDetail?.replacementDenied).toBe("uncertain_provider_action");
+      }
+    }, 60_000,
+  );
 });

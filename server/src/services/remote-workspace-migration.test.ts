@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { activityLog, applyPendingMigrations, closeRegisteredClients, companies, createDb, executionWorkspaceSnapshots,
-  executionWorkspaces, issues, workspaceOperations } from "@paperclipai/db";
+  executionWorkspaceRuntimeLeases, executionWorkspaces, issues, projects, projectWorkspaces, workspaceOperations, workspaceRuntimeServices } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
@@ -37,7 +37,9 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "pc-migration-test-")); storage = createStorageService(createLocalDiskStorageProvider(path.join(root, "objects"))); });
   afterEach(async () => {
     vi.unstubAllEnvs(); await db.delete(activityLog); await db.delete(workspaceOperations); await db.delete(executionWorkspaceSnapshots);
-    await db.delete(issues); await db.delete(executionWorkspaces); await db.delete(companies); await fs.rm(root, { recursive: true, force: true });
+    await db.delete(workspaceRuntimeServices); await db.delete(executionWorkspaceRuntimeLeases);
+    await db.delete(issues); await db.delete(executionWorkspaces); await db.delete(projectWorkspaces); await db.delete(projects);
+    await db.delete(companies); await fs.rm(root, { recursive: true, force: true });
   });
   async function seed() {
     const companyId = randomUUID(), workspaceId = randomUUID(), cwd = path.join(root, "original"); await fs.mkdir(cwd);
@@ -105,6 +107,58 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId, phase: "workspace_command", status: "running" });
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_operation_unresolved");
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it.each(["running", "starting", "unknown", "failed"])("blocks a %s local service after its control lease expires", async status => {
+    const f = await seed(), serviceId = randomUUID();
+    await db.insert(executionWorkspaceRuntimeLeases).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId,
+      ownerKey: `issue:${f.issueId}`, ownerIssueId: f.issueId, lastAction: "start", expiresAt: new Date(Date.now() - 60_000) });
+    await db.insert(workspaceRuntimeServices).values({ id: serviceId, companyId: f.companyId, executionWorkspaceId: f.workspaceId,
+      scopeType: "execution_workspace", scopeId: f.workspaceId, serviceName: "Synthetic preview", status,
+      lifecycle: "shared", provider: "local_process", command: "node synthetic-preview.js", cwd: f.cwd });
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false, reasons: ["workspace_runtime_service_unsettled"] });
+    expect(await migrateRemoteWorkspace({ db, storage, ...f })).toMatchObject({ applied: false, eligible: false });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_runtime_service_unsettled");
+    expect((await workspace(f.workspaceId)).providerType).toBe("local_fs");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    expect(await db.select().from(workspaceOperations)).toHaveLength(0);
+    expect(await db.select().from(executionWorkspaceSnapshots)).toHaveLength(0);
+    expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
+    await db.$client`update workspace_runtime_services set status = 'stopped' where id = ${serviceId}::uuid`;
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true, reasons: [] });
+  });
+  it.each([{ repository: { phase: "cleanup" } }, "unrecognized-state"])("blocks an unresolved or malformed nested clone migration marker: %j", async marker => {
+    const f = await seed();
+    await db.update(executionWorkspaces).set({ metadata: { retainedNote: "keep", nestedCloneMigrationPending: marker } }).where(eq(executionWorkspaces.id, f.workspaceId));
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false, reasons: ["nested_clone_migration_unresolved"] });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("nested_clone_migration_unresolved");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
+  });
+  it("blocks a running project service inherited by a shared workspace", async () => {
+    const f = await seed(), projectId = randomUUID(), projectWorkspaceId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId: f.companyId, name: "Shared synthetic project" });
+    await db.insert(projectWorkspaces).values({ id: projectWorkspaceId, companyId: f.companyId, projectId,
+      name: "Shared synthetic source", sourceType: "local", cwd: f.cwd });
+    await db.update(executionWorkspaces).set({ mode: "shared_workspace", projectId, projectWorkspaceId }).where(eq(executionWorkspaces.id, f.workspaceId));
+    await db.insert(workspaceRuntimeServices).values({ id: randomUUID(), companyId: f.companyId, projectWorkspaceId,
+      scopeType: "project_workspace", scopeId: projectWorkspaceId, serviceName: "Inherited preview", status: "running",
+      lifecycle: "shared", provider: "local_process", cwd: f.cwd });
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false, reasons: ["workspace_runtime_service_unsettled"] });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_runtime_service_unsettled");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
+  });
+  it("rechecks a service that becomes unresolved during snapshot verification", async () => {
+    const f = await seed(), get = storage.getObject.bind(storage); let reads = 0;
+    storage.getObject = async (...args) => {
+      if (++reads === 2) await db.insert(workspaceRuntimeServices).values({ id: randomUUID(), companyId: f.companyId,
+        executionWorkspaceId: f.workspaceId, scopeType: "execution_workspace", scopeId: f.workspaceId,
+        serviceName: "Late synthetic preview", status: "running", lifecycle: "shared", provider: "local_process", cwd: f.cwd });
+      return get(...args);
+    };
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_runtime_service_unsettled");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
   });
   it("rechecks a writer that appears while the restored copy is being verified", async () => {
     const f = await seed(), get = storage.getObject.bind(storage); let reads = 0;

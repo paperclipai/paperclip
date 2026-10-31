@@ -1,18 +1,24 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { agents, applyPendingMigrations, closeRegisteredClients, companies, createDb, environmentLeases, environments,
-  executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+  executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, projects, workspaceOperations, workspaceRuntimeServices, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, type RemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentService } from "./environments.js";
 import { executionWorkspaceService, toExecutionWorkspace } from "./execution-workspaces.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
-import { cleanupExecutionWorkspaceArtifacts } from "./workspace-runtime.js";
+import { cleanupExecutionWorkspaceArtifacts, ensureRuntimeServicesForRun, restartDesiredRuntimeServicesOnStartup, startRuntimeServicesForWorkspaceControl } from "./workspace-runtime.js";
+import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
+import { workspaceOperationService } from "./workspace-operations.js";
+import { inventoryRemoteWorkspaceMigration } from "./remote-workspace-migration.js";
+import { hasPendingNestedCloneMigration, isNestedCloneMigrationCandidate, listNestedCloneMigrationNames,
+  migrateNestedRepositoryClone, pendingNestedCloneMigrationNames } from "./nested-clone-migration.js";
 
 const url = resolveExternalTestDatabaseUrl("PAPERCLIP_REMOTE_WORKSPACE_LIFECYCLE_TEST_DATABASE_URL");
 describe.skipIf(!url)("remote workspace close and allocation cleanup", () => {
@@ -24,7 +30,7 @@ describe.skipIf(!url)("remote workspace close and allocation cleanup", () => {
     await db.execute(sql`truncate table companies, execution_workspace_snapshots, environments restart identity cascade`);
   });
   afterEach(async () => { vi.restoreAllMocks(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
-  afterAll(async () => { await closeRegisteredClients(url!); });
+  afterAll(async () => { await closeRegisteredClients(url!, { scope: "database" }); });
 
   async function fixture(receiptState: "destroyed" | "stopped" | "invalid" = "destroyed") {
     const [company] = await db.insert(companies).values({ name: "Remote close", issuePrefix: "RC" }).returning();
@@ -66,6 +72,42 @@ describe.skipIf(!url)("remote workspace close and allocation cleanup", () => {
     return { company, issue, run, workspace, snapshotId, authority, service, destroyProvider, inspectLocal, cwd, environmentsSvc, leaseId };
   }
   const current = async (id: string) => (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, id)))[0]!;
+
+  it.each([true, false])("rejects automatic Core services before controller access (skip provision: %s)", async skipHostProvision => {
+    const f = await fixture();
+    const inspect = vi.spyOn(fs, "lstat");
+    const log = vi.fn();
+    await expect(ensureRuntimeServicesForRun({ db, runId: f.run.id,
+      agent: { id: f.run.agentId, companyId: f.company.id, name: "Native worker" }, issue: null,
+      workspace: { cwd: f.cwd, baseCwd: f.cwd, source: "task_session", projectId: null, workspaceId: null,
+        repoUrl: null, repoRef: null, strategy: "git_worktree", branchName: null, worktreePath: f.cwd,
+        warnings: [], created: false, branchCreatedByRuntime: false }, executionWorkspaceId: f.workspace.id,
+      config: { workspaceRuntime: { services: [{ name: "web", command: "/__paperclip_missing_remote_service__", cwd: "." }] } },
+      adapterEnv: {}, skipHostProvision, onLog: log,
+    })).rejects.toMatchObject({ code: "workspace_validation_failed", resultJson: { reason: "remote_workspace_runtime_services_unsupported" } });
+    expect(inspect).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalled();
+    expect(await readFile(join(f.cwd, "host-sentinel.txt"), "utf8")).toContain("never be cleaned");
+  });
+
+  it.each(["remote", "import"])("does not inspect or recover nested controller clones under a %s storage fence", async mode => {
+    const f = await fixture();
+    const [project] = await db.insert(projects).values({ companyId: f.company.id, name: "Remote project" }).returning();
+    await db.update(executionWorkspaces).set({ projectId: project.id,
+      ...(mode === "import" ? { providerType: "local_fs" } : {}),
+      metadata: { ...(mode === "remote" ? { remoteWorkspace: f.authority } : {
+        remoteWorkspaceMigration: { schema: "paperclip.remote-workspace-migration.v1", state: "running", operationId: randomUUID() },
+      }),
+      nestedCloneMigrationPending: { "repo-123456789abc": { phase: "cleanup" } } } }).where(eq(executionWorkspaces.id, f.workspace.id));
+    const workspace = await current(f.workspace.id);
+    const inspect = vi.spyOn(fs, "lstat");
+    expect(isNestedCloneMigrationCandidate(workspace)).toBe(false);
+    expect(hasPendingNestedCloneMigration(workspace)).toBe(false);
+    expect(pendingNestedCloneMigrationNames(workspace)).toEqual([]);
+    expect(await listNestedCloneMigrationNames(db, workspace)).toEqual([]);
+    expect(await migrateNestedRepositoryClone(db, workspace, "repo-123456789abc")).toMatchObject({ outcome: "skipped", reason: "not_candidate" });
+    expect(inspect).not.toHaveBeenCalled();
+  });
 
   it("closes remote compute under the lifecycle fence and keeps saved files and host paths intact", async () => {
     const f = await fixture();
@@ -129,5 +171,96 @@ describe.skipIf(!url)("remote workspace close and allocation cleanup", () => {
     expect(f.destroyProvider).not.toHaveBeenCalled();
     expect(f.inspectLocal).not.toHaveBeenCalled();
     expect(await readFile(join(f.cwd, "host-sentinel.txt"), "utf8")).toContain("never be cleaned");
+  });
+
+  it.each([
+    { caller: "direct", state: "remote" }, { caller: "startup", state: "remote" },
+    { caller: "direct", state: "migrating" }, { caller: "startup", state: "migrating" },
+  ] as const)("rechecks $caller control authority after waiting for $state migration publication", async ({ caller, state }) => {
+    const f = await fixture();
+    const escaped = join(f.cwd, "unexpected-start.txt");
+    const command = `node -e 'require("fs").writeFileSync(${JSON.stringify(escaped)},"unexpected")'`;
+    const config = { desiredState: "running", runtimeProvisionCommand: command,
+      workspaceRuntime: { services: [{ name: "web", command, cwd: "." }] } };
+    await db.update(executionWorkspaces).set({ providerType: "local_fs", strategyType: "project_primary", metadata: { config } })
+      .where(eq(executionWorkspaces.id, f.workspace.id));
+    let release!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let ready!: (pid: number) => void;
+    const locked = new Promise<number>(resolve => { ready = resolve; });
+    const migration = withExecutionWorkspaceLifecycleLock(db, f.workspace.id, async tx => {
+      const [row] = await tx.execute(sql`select pg_backend_pid() as pid`);
+      ready(Number(row.pid));
+      await released;
+      await db.update(executionWorkspaces).set({ providerType: state === "remote" ? "cloud_sandbox" : "local_fs",
+        metadata: state === "remote" ? { config, remoteWorkspace: f.authority } : { config,
+          remoteWorkspaceMigration: { schema: "paperclip.remote-workspace-migration.v1", state: "running" } } })
+        .where(eq(executionWorkspaces.id, f.workspace.id));
+    });
+    const blocker = await locked;
+    const starting = caller === "startup" ? restartDesiredRuntimeServicesOnStartup(db) : startRuntimeServicesForWorkspaceControl({
+      db, actor: { id: null, companyId: f.company.id, name: "Board" }, issue: null, executionWorkspaceId: f.workspace.id,
+      workspace: { cwd: f.cwd, baseCwd: f.cwd, source: "task_session", projectId: null, workspaceId: null,
+        repoUrl: null, repoRef: null, strategy: "project_primary", branchName: null, worktreePath: null,
+        warnings: [], created: false, branchCreatedByRuntime: false }, config, adapterEnv: {},
+    });
+    const settled = starting.then(value => ({ value }), error => ({ error }));
+    try {
+      // Prove the stale request is waiting on the actual PostgreSQL lifecycle
+      // fence, then switch authority before admitting it. No timing sleep.
+      await vi.waitFor(async () => {
+        const [row] = await db.execute(sql`select count(*)::int as waiting from pg_stat_activity
+          where ${blocker} = any(pg_blocking_pids(pid))`);
+        expect(Number(row.waiting)).toBeGreaterThan(0);
+      });
+    } finally { release(); }
+    await migration;
+    const result = await settled;
+    if (caller === "startup") expect(result).toMatchObject({ value: { restarted: 0, failed: 1 } });
+    else expect(result).toMatchObject({ error: { status: state === "remote" ? 422 : 409,
+      details: { code: state === "remote" ? "remote_workspace_runtime_commands_unsupported" : "workspace_runtime_migration_in_progress" } } });
+    await expect(fs.access(escaped)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await db.select().from(workspaceRuntimeServices)).toEqual([]);
+    expect(await readFile(join(f.cwd, "host-sentinel.txt"), "utf8")).toContain("never be cleaned");
+  });
+
+  it("publishes runtime admission before releasing the migration fence and keeps migration operations blocking", async () => {
+    const f = await fixture();
+    await db.update(executionWorkspaces).set({ providerType: "local_fs", strategyType: "project_primary", metadata: {} })
+      .where(eq(executionWorkspaces.id, f.workspace.id));
+    const operations = workspaceOperationService(db);
+    let finish!: () => void;
+    const finished = new Promise<void>(resolve => { finish = resolve; });
+    let admitted!: () => void;
+    const admission = new Promise<void>(resolve => { admitted = resolve; });
+    const running = operations.createRecorder({ companyId: f.company.id, executionWorkspaceId: f.workspace.id }).recordOperation({
+      phase: "workspace_provision", metadata: { action: "run" },
+      admit: publish => withExecutionWorkspaceLifecycleLock(db, f.workspace.id, async () => { await publish(); }),
+      run: async () => { admitted(); await finished; return {}; },
+    });
+    try {
+      await admission;
+      const inventory = await withExecutionWorkspaceLifecycleLock(db, f.workspace.id,
+        () => inventoryRemoteWorkspaceMigration(db, { companyId: f.company.id, workspaceId: f.workspace.id }));
+      expect(inventory.reasons).toContain("workspace_operation_unresolved");
+    } finally { finish(); }
+    await running;
+    const [migration] = await db.insert(workspaceOperations).values({ companyId: f.company.id, executionWorkspaceId: f.workspace.id,
+      phase: "remote_workspace_migration", status: "running", metadata: {}, startedAt: new Date(0), updatedAt: new Date(0) }).returning();
+    await expect(operations.assertRuntimeControlAvailable({ executionWorkspaceId: f.workspace.id, action: "start" }))
+      .rejects.toMatchObject({ status: 409, details: { activeOperationId: migration.id } });
+    expect((await operations.getById(migration.id))?.status).toBe("running");
+  });
+
+  it("does not resolve a controller folder when a remote control has no selected services", async () => {
+    const f = await fixture();
+    await expect(startRuntimeServicesForWorkspaceControl({ db,
+      actor: { id: null, companyId: f.company.id, name: "Board" }, issue: null, executionWorkspaceId: f.workspace.id,
+      workspace: { get cwd(): string { throw new Error("Empty control read a controller folder"); },
+        baseCwd: f.cwd, source: "task_session", projectId: null, workspaceId: null, repoUrl: null, repoRef: null,
+        strategy: "git_worktree", branchName: null, worktreePath: null, warnings: [], created: false, branchCreatedByRuntime: false },
+      config: { desiredState: "stopped", workspaceRuntime: { services: [{ name: "web", command: "node web.js" }] } },
+      adapterEnv: {}, respectDesiredStates: true,
+    })).resolves.toEqual([]);
   });
 });

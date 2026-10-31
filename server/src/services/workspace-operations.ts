@@ -253,6 +253,8 @@ export interface WorkspaceOperationRecorder {
      * timeout error is rethrown, so a hung provider can never leave an active operation.
      */
     timeoutMs?: number | null;
+    /** Publish the running row under a caller-owned admission fence before run starts. */
+    admit?: (publish: () => Promise<void>) => Promise<void>;
     run: (reportProgress: (input: {
       metadata?: Record<string, unknown> | null;
       system?: string | null;
@@ -312,6 +314,12 @@ export function workspaceOperationService(db: Db) {
     const live: WorkspaceOperation[] = [];
 
     for (const candidate of candidates) {
+      // Migration owns the workspace until its explicit publication/repair. It
+      // has no runtime-control action stamp and must never be swept as abandoned.
+      if (candidate.phase === "remote_workspace_migration") {
+        live.push(toWorkspaceOperation(candidate));
+        continue;
+      }
       const action = readRuntimeControlAction(candidate.metadata);
       if (!action) continue;
 
@@ -536,7 +544,8 @@ export function workspaceOperationService(db: Db) {
           if (runtimeControlAction) liveRuntimeControlOperationIds.add(id);
 
           try {
-            await writeState(database => database.insert(workspaceOperations).values({
+            let published = false;
+            const publish = async () => { await writeState(database => database.insert(workspaceOperations).values({
               id,
               companyId: input.companyId,
               executionWorkspaceId,
@@ -554,7 +563,10 @@ export function workspaceOperationService(db: Db) {
               ) as Record<string, unknown> | null,
               startedAt,
               updatedAt: startedAt,
-            }));
+            })); published = true; };
+            if (recordInput.admit) await recordInput.admit(publish);
+            else await publish();
+            if (!published) throw new Error("Workspace operation admission did not publish its running row");
           } catch (insertError) {
             liveRuntimeControlOperationIds.delete(id);
             throw insertError;

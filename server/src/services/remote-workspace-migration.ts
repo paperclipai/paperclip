@@ -2,10 +2,10 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import {
   executionWorkspaceRepositories, executionWorkspaceRuntimeLeases, executionWorkspaceSnapshots, executionWorkspaces,
-  heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, projects, workspaceOperations, type Db,
+  heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, projects, workspaceOperations, workspaceRuntimeServices, type Db,
 } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceSourceSchema, type RemoteWorkspaceAuthority, type RemoteWorkspaceSource } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
@@ -43,6 +43,9 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
   if (!["local_fs", "git_worktree"].includes(workspace.providerType)) reasons.push("workspace_provider_unsupported");
   if (!["active", "idle", "in_review"].includes(workspace.status)) reasons.push("workspace_not_active");
   if (!workspace.sourceIssueId) reasons.push("task_binding_required");
+  const nestedMigration = workspace.metadata?.nestedCloneMigrationPending;
+  if (nestedMigration != null && (typeof nestedMigration !== "object" || Array.isArray(nestedMigration)
+    || Object.keys(nestedMigration).length > 0)) reasons.push("nested_clone_migration_unresolved");
   const cwd = workspace.cwd ?? workspace.providerRef;
   if (!cwd || !path.isAbsolute(cwd)) reasons.push("local_source_missing");
   else {
@@ -84,6 +87,18 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
     sql`${executionWorkspaceRuntimeLeases.expiresAt} > clock_timestamp()`,
   )).limit(1);
   if (lease) reasons.push("workspace_runtime_owned");
+  // A control lease can expire while the service process remains alive. Require
+  // settled service state independently, including inherited shared services.
+  const runtime = object(workspace.metadata?.config).workspaceRuntime;
+  const inheritedSourceId = workspace.mode === "shared_workspace" && workspace.projectWorkspaceId
+    && (!runtime || typeof runtime !== "object" || Array.isArray(runtime)) ? workspace.projectWorkspaceId : null;
+  const [service] = await db.select({ id: workspaceRuntimeServices.id }).from(workspaceRuntimeServices).where(and(
+    eq(workspaceRuntimeServices.companyId, workspace.companyId), ne(workspaceRuntimeServices.status, "stopped"),
+    or(eq(workspaceRuntimeServices.executionWorkspaceId, workspace.id), inheritedSourceId ? and(
+      eq(workspaceRuntimeServices.projectWorkspaceId, inheritedSourceId), eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+    ) : undefined),
+  )).limit(1);
+  if (service) reasons.push("workspace_runtime_service_unsettled");
   const [recovery] = workspace.sourceIssueId ? await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, workspace.companyId), eq(issueRecoveryActions.sourceIssueId, workspace.sourceIssueId),
     inArray(issueRecoveryActions.status, ["active", "escalated"]),

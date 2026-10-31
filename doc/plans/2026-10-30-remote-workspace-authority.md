@@ -9,19 +9,20 @@ Execution record (2026-10-30): native remote preparation, encrypted saved versio
 portable restore, ordinary file access, Stop/failure recovery, guarded closure,
 retention, and explicit migration are implemented. The branch includes current
 master through `105a67b52c`. Required recursive typecheck and the full build pass.
-Complete test coverage is running in supported parallel shards. The original
+All normal CI test, build, typecheck, Rust and browser gates passed on `b24126ad67`;
+the latest follow-up fixes require a fresh full CI run. The original
 serial test invocation was deliberately interrupted after eleven minutes; its
 log is retained. Its recorded general-server workload alone exceeds ninety serial
 minutes, so an interrupted command is not recorded as a passing suite.
 
 Focused evidence uses real Postgres through migration 0419 and real child-process
-filesystem execution. Fourteen lifecycle tests cover cold restore without the original
+filesystem execution. Fourteen storage integration cases cover cold restore without the original
 allocation or Git origin, staged/unstaged/untracked Git work, separate tasks sharing
 one writer, lost provisioning replies, storage failure, stale publication, and
-current Git credential context. Nine transport regressions cover filesystem
+current Git credential context. Twelve transport regressions cover existing-branch identity and filesystem
 confinement, receipt writes, lost preparation/restore replies, saved-checkout reuse
 without a credential refresh, and trusted SSH rewrites. Archive (17), storage (7),
-migration (7), and retention (10) cases pass. The runtime controls (148), workspace
+migration (15), and retention (10) cases pass. The runtime controls (148), workspace
 service controls (85), lifecycle controls (6), file routes (21 plus 50 existing),
 recovery cases (144), manual runtime command controls (20), and Files UI
 component tests (33) pass. Map and token checks pass. An actual S3
@@ -55,8 +56,10 @@ recovery tests exposed cross-test retained-candidate history; isolated compariso
 pass, and the full 144-case repeat passes with company-scoped fixture cleanup.
 Parallel checks also exceeded the original disposable database limit of forty
 connections. The task database now allows two hundred connections. The failed
-run is retained separately; complete coverage is running again, and individual
-remaining failures are compared in isolation rather than assumed unrelated.
+run is retained separately. A later local broad attempt ended incomplete with
+10,191 passing and 58 failing tests; later groups did not run. Isolated replays do
+not change that outcome. The full normal CI suite subsequently passed on
+`b24126ad67`.
 
 The first automated review scored 3/5 and identified four valid gaps. Fixes now
 retain later managed-repository commits, reject unsupported manual commands before
@@ -67,13 +70,26 @@ hide a completed restore. Restore location and cleanup receipts now publish
 together before cleanup runs. A further real regression showed stale same-run
 preparation could replace dirty file authority with a second allocation. The
 locked publication now verifies the exact dirty location and current lease.
-Both regressions failed before their fixes and pass afterward. A fresh review
-is required for these changes.
+Both regressions failed before their fixes and pass afterward. A third review
+found existing-branch selection using the base branch and a missing remote reader
+in the signed support file API. Both have regression fixes. A cross-consumer
+audit also identified automatic Core services, migration with unsettled services,
+native replacement, and nested-clone maintenance paths that still assumed host
+files. The resulting integration suite passes 24 cases, including snapshot deletion
+and coordinator-claim races, and 59 existing native replacement controls pass.
+The isolated full workspace preparation suite passes all 103 cases. Signed support
+file access and its existing consumers pass 71 cases, with five ordinary secret
+audit/binding controls passing separately. Migration now passes 15 cases. A shared
+test database invalidated an earlier concurrent attempt (98 passes, 13 failures);
+the isolated rerun is the accepted preparation evidence. Runtime admission and
+recovery controls pass all 55 cases, including real lifecycle-lock interleavings;
+eight representative existing local runtime controls also pass. Final build and
+fresh review are recorded in the PR as they finish.
 
 V1 admission rejects read-only cross-project referenced folders because the
 qualified native sandbox cannot enforce their write boundary. It also rejects
 custom remote close cleanup/teardown commands until a qualified remote maintenance
-path exists. Manual workspace jobs, services, repairs, and runtime commands also
+path exists. Automatic Core services and manual workspace jobs, services, repairs, and runtime commands also
 fail before local filesystem access; commands can run through an agent task. Same-project mutable managed repositories are supported. Confirmed
 saved files do not certify unknown external actions or permit their replay.
 

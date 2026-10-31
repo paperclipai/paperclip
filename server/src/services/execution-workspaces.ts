@@ -3553,7 +3553,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           }
           if (isClosedExecutionWorkspaceStatus(workspace.status) && !hasPendingGitExpiration(workspace)) continue;
         }
-        if (opts.nestedCloneMigrationEnabled && workspace.providerType !== "plugin"
+        if (opts.nestedCloneMigrationEnabled && workspace.providerType !== "plugin" && !readRemoteWorkspaceAuthority(workspace.metadata)
           && (isNestedCloneMigrationCandidate(workspace) || hasPendingNestedCloneMigration(workspace))) {
           const nestedOnly = isClosedExecutionWorkspaceStatus(workspace.status) && !hasPendingGitExpiration(workspace)
             && !hasPendingIsolatedRepositoryRehomeCleanup(workspace);

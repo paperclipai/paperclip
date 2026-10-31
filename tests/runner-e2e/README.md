@@ -29,6 +29,13 @@ native admission must keep the same workspace and reference while publishing a
 new saved version. This is same-task continuation, not a separate-task sharing
 test. The ordinary original-process/lease and artifact oracles still apply.
 
+The fixture reuses the Everyday graph without its host-path project or cwd and
+leaves the existing 52-cell Everyday matrix unchanged. The evaluator seeds
+configuration and agent context through public APIs; it never writes workspace
+outcomes or snapshot rows. The agent creates the file and Git state. The
+controller replacement wrapper and independent execution-identity oracle retain
+their existing responsibilities.
+
 This cell needs an explicitly provisioned disposable S3-compatible bucket, stable
 instance encryption material, an immutable Daytona image, and the usual provider
 credentials. It defaults to one second offline; the separate continuity suite

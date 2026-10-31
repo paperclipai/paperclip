@@ -46,6 +46,10 @@ const mockListConfiguredRuntimeServiceEntries = vi.hoisted(() => vi.fn());
 const mockClaimRuntimeLease = vi.hoisted(() => vi.fn(async () => null));
 const mockReleaseRuntimeLease = vi.hoisted(() => vi.fn(async () => undefined));
 const mockSpawn = vi.hoisted(() => vi.fn());
+const mockPublishRuntimeOperation = vi.hoisted(() => vi.fn());
+const mockLifecycleLock = vi.hoisted(() => vi.fn(async (_db: unknown, _id: string, run: (tx: unknown) => Promise<unknown>) => run({})));
+
+vi.mock("../services/execution-workspace-lifecycle-lock.js", () => ({ withExecutionWorkspaceLifecycleLock: mockLifecycleLock }));
 
 vi.mock("node:child_process", async () => ({
   ...(await vi.importActual<typeof import("node:child_process")>("node:child_process")),
@@ -130,7 +134,7 @@ function buildExecutionWorkspace(overrides: Record<string, unknown> = {}) {
   };
 }
 
-async function createApp() {
+async function createApp(actorType: "agent" | "board" = "agent") {
   const [{ executionWorkspaceRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/execution-workspaces.js"),
     import("../middleware/index.js"),
@@ -138,7 +142,9 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
+    (req as any).actor = actorType === "board" ? {
+      type: "board", userId: "board-1", companyIds: ["company-1"], source: "local_implicit", isInstanceAdmin: true,
+    } : {
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
@@ -255,6 +261,7 @@ describe("execution workspace runtime control conflict and failure reconciliatio
   beforeEach(() => {
     vi.clearAllMocks();
     mockSpawn.mockReset();
+    mockLifecycleLock.mockImplementation(async (_db, _id, run) => run({}));
     registeredProjectWorkspace = null;
     mockAccessService.decide.mockResolvedValue({
       allowed: true,
@@ -287,6 +294,8 @@ describe("execution workspace runtime control conflict and failure reconciliatio
         // Mirror the real recorder: a throwing `run` becomes a terminal failed operation and
         // the error still propagates to the caller.
         try {
+          if (input.admit) await input.admit(async () => { mockPublishRuntimeOperation(); });
+          else mockPublishRuntimeOperation();
           await input.run(async () => undefined);
         } catch (error) {
           (error as any).recordedOperationStatus = "failed";
@@ -353,6 +362,29 @@ describe("execution workspace runtime control conflict and failure reconciliatio
     // The conflict is decided before any runtime mutation happens.
     expect(mockStopRuntimeServicesForExecutionWorkspace).not.toHaveBeenCalled();
     expect(mockStartRuntimeServices).not.toHaveBeenCalled();
+  });
+
+  it.each(["migrating", "remote", "path_changed"] as const)("revalidates a board command at operation publication after the workspace becomes %s", async state => {
+    mockAssertCanManageExecutionWorkspaceRuntimeServices.mockResolvedValue({ actorType: "board" });
+    const stale = buildExecutionWorkspace();
+    mockExecutionWorkspaceService.getById.mockResolvedValueOnce(stale).mockResolvedValue(buildExecutionWorkspace(state === "migrating"
+      ? { metadata: { remoteWorkspaceMigration: { schema: "paperclip.remote-workspace-migration.v1", state: "running" } } }
+      : state === "remote" ? { metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 1,
+        snapshotId: null, source: { kind: "empty" }, location: null, writerRunId: null, dirty: false } } }
+        : { cwd: "/tmp/changed-authority" }));
+    const response = await request(await createApp("board"))
+      .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-services/start`).send({});
+    expect(response.status, JSON.stringify(response.body)).toBe(state === "remote" ? 422 : 409);
+    expect(response.body.code).toBe(state === "remote" ? "remote_workspace_runtime_commands_unsupported"
+      : state === "migrating" ? "workspace_runtime_migration_in_progress" : "workspace_runtime_authority_changed");
+    expect(mockLifecycleLock).toHaveBeenCalled();
+    expect(mockPublishRuntimeOperation).not.toHaveBeenCalled();
+    expect(mockClaimRuntimeLease).not.toHaveBeenCalled();
+    expect(mockEnsurePersistedExecutionWorkspaceAvailable).not.toHaveBeenCalled();
+    expect(mockStartRuntimeServices).not.toHaveBeenCalled();
+    expect(mockStopRuntimeServicesForExecutionWorkspace).not.toHaveBeenCalled();
+    expect(mockExecutionWorkspaceService.update).not.toHaveBeenCalled();
+    expect(mockSpawn).not.toHaveBeenCalled();
   });
 
   it("checks authorization before recovering or claiming the workspace", async () => {
@@ -690,6 +722,7 @@ describe("execution workspace runtime control conflict and failure reconciliatio
       mockWorkspaceOperationService.createRecorder.mockReturnValue({
         attachExecutionWorkspaceId: vi.fn(),
         recordOperation: async (input: any) => {
+          await input.admit(async () => { mockPublishRuntimeOperation(); });
           await input.run(async (entry: Record<string, unknown>) => {
             progress.push(entry);
           });
@@ -717,7 +750,8 @@ describe("execution workspace runtime control conflict and failure reconciliatio
     // The recorder's ceiling fires outside `run`, so only the outer handler can reconcile.
     mockWorkspaceOperationService.createRecorder.mockReturnValue({
       attachExecutionWorkspaceId: vi.fn(),
-      recordOperation: async () => {
+      recordOperation: async (input: any) => {
+        await input.admit(async () => { mockPublishRuntimeOperation(); });
         throw new WorkspaceOperationTimeoutError(1_000, "start");
       },
     });
