@@ -6,7 +6,7 @@ import { forbidden, notFound } from "../errors.js";
 import { accessService, instanceSettingsService, logActivity } from "../services/index.js";
 import { builtInAgentService } from "../services/built-in-agents.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import type { BuiltInAgentState } from "../services/built-in-agents.js";
 
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -186,6 +186,7 @@ export function builtInAgentRoutes(db: Db) {
       await assertBuiltInAgentsEnabled();
       await assertCanProvisionBuiltInAgents(req, companyId);
       const actor = getActorInfo(req);
+      if (req.body.budgetMonthlyCents !== undefined) assertBoard(req);
       const result = await svc.provision(companyId, key, req.body, {
         requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,
         requestedByUserId: actor.actorType === "user" ? actor.actorId : null,

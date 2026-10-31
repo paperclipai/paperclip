@@ -2343,6 +2343,56 @@ describe("agent permission routes", () => {
     });
   });
 
+  it.each([0, 5000])("budget authority: rejects agent policy changes through the legacy field (%i)", async amount => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, budgetMonthlyCents: 500 });
+    const app = createApp({ type: "agent", agentId, companyId, source: "agent_key", runId: "run-1" });
+    const response = await requestApp(app, url => request(url).patch(`/api/agents/${agentId}`).send({ budgetMonthlyCents: amount }));
+    expect(response.status).toBe(403);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+  it("budget authority: accepts an unchanged legacy amount with an unrelated title edit", async () => {
+    const app = createApp({ type: "agent", agentId, companyId, source: "agent_key" });
+    const response = await requestApp(app, url => request(url).patch(`/api/agents/${agentId}`).send({ budgetMonthlyCents: 0, title: "New title" }));
+    expect(response.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalled();
+  });
+  it.each(["agents", "agent-hires"])("budget authority: rejects agent immediate creation budgets through %s", async route => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    const app = createApp({ type: "agent", agentId, companyId, source: "agent_key" });
+    const response = await requestApp(app, url => request(url).post(`/api/companies/${companyId}/${route}`).send({ name: "New employee", role: "engineer", adapterType: "process", budgetMonthlyCents: 5000 }));
+    expect(response.status).toBe(403);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+  it("budget authority: preserves a proposed budget without applying a policy before approval", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAgentService.create.mockResolvedValue({ ...baseAgent, status: "pending_approval", budgetMonthlyCents: 5000 });
+    mockApprovalService.create.mockResolvedValue({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", status: "pending", type: "hire_agent", companyId });
+    const app = createApp({ type: "agent", agentId, companyId, source: "agent_key" }, { requireBoardApprovalForNewAgents: true });
+    const response = await requestApp(app, url => request(url).post(`/api/companies/${companyId}/agent-hires`).send({ name: "Proposed employee", role: "engineer", adapterType: "process", budgetMonthlyCents: 5000 }));
+    expect(response.status).toBe(201);
+    expect(response.body.approval.status).toBe("pending");
+    expect(mockApprovalService.create).toHaveBeenCalledWith(companyId, expect.objectContaining({ payload: expect.objectContaining({ budgetMonthlyCents: 5000 }) }));
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
+  });
+  it("budget authority: forwards the actual board identity on legacy updates", async () => {
+    const app = createApp({ type: "board", userId: "operator-user", source: "session", companyIds: [companyId] });
+    const response = await requestApp(app, url => request(url).patch(`/api/agents/${agentId}`).send({ budgetMonthlyCents: 5000 }));
+    expect(response.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(agentId, expect.objectContaining({ budgetMonthlyCents: 5000 }), expect.objectContaining({ recordRevision: expect.objectContaining({ createdByUserId: "operator-user", createdByAgentId: null }) }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ actorType: "user", actorId: "operator-user", agentId: null }));
+  });
+  it.each(["agents", "agent-hires"])("budget authority: records the real board actor for immediate %s budgets", async route => {
+    mockAgentService.create.mockResolvedValue({ ...baseAgent, budgetMonthlyCents: 5000 });
+    const app = createApp({ type: "board", userId: "operator-user", source: "local_implicit", companyIds: [companyId] });
+    const response = await requestApp(app, url => request(url).post(`/api/companies/${companyId}/${route}`).send({ name: "New employee", role: "engineer", adapterType: "process", budgetMonthlyCents: 5000 }));
+    expect(response.status).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(companyId, expect.objectContaining({ budgetMonthlyCents: 5000 }), expect.objectContaining({ createdByUserId: "operator-user" }));
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
+  });
   it("rejects heartbeat cancellation outside the caller company scope", async () => {
     mockHeartbeatService.getRun.mockResolvedValue({
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

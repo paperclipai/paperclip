@@ -204,6 +204,14 @@ describe("built-in agent routes", () => {
     }));
   });
 
+  it.each([0, 5000])("rejects an agent budget override through built-in provision (%s)", async budgetMonthlyCents => {
+    const app = await createApp({ type: "agent", agentId: "agent-1", companyId, source: "agent_key" });
+    const response = await request(app).post(`/api/companies/${companyId}/built-in-agents/briefs/provision`).send({ budgetMonthlyCents });
+    expect(response.status).toBe(403);
+    expect(mockBuiltInAgentService.provision).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("denies provision when agents:create is not allowed", async () => {
     mockAccessService.decide.mockResolvedValue(denyDecision());
     const app = await createApp({
@@ -372,6 +380,7 @@ describe("built-in agent routes", () => {
     const app = await createApp({
       type: "agent",
       agentId: "manager-agent",
+      runId: "native-request-run",
       companyId,
       source: "agent_key",
     });
@@ -395,6 +404,7 @@ describe("built-in agent routes", () => {
       actorType: "agent",
       actorId: "manager-agent",
       action: "approval.created",
+      runId: "native-request-run",
       entityId: "approval-1",
     }));
   });

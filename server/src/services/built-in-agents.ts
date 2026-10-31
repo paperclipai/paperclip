@@ -1729,7 +1729,7 @@ export function builtInAgentService(db: Db) {
     companyId: string,
     key: string,
     input: BuiltInAgentProvisionInput = {},
-    options: { isRaceRetry?: boolean; createdByUserId?: string | null } = {},
+    options: { isRaceRetry?: boolean; createdByUserId?: string | null; createdByAgentId?: string | null } = {},
   ) {
     const definition = requireBuiltInAgentDefinition(key);
     await ensureCompany(companyId);
@@ -1797,7 +1797,7 @@ export function builtInAgentService(db: Db) {
       }
       const updated = await agentSvc.update(existing.id, patch, {
         allowBuiltInAgentMetadata: true,
-        recordRevision: { source: "built-in-agent:ensure" },
+        recordRevision: { source: "built-in-agent:ensure", createdByUserId: options.createdByUserId, createdByAgentId: options.createdByAgentId },
       });
       if (!updated) throw notFound("Built-in agent not found");
       if (existingPendingApproval) {
@@ -1832,13 +1832,14 @@ export function builtInAgentService(db: Db) {
         permissions: definition.defaultPermissions ?? {},
         spentMonthlyCents: 0,
         lastHeartbeatAt: null,
-      }, { allowBuiltInAgentMetadata: true, createdByUserId: options.createdByUserId ?? null }) as Agent;
+      }, { allowBuiltInAgentMetadata: true, createdByUserId: options.createdByUserId ?? null,
+        ...(options.createdByUserId && resolvedInput.budgetMonthlyCents ? { initialBudgetPolicyUserId: options.createdByUserId } : {}) }) as Agent;
     } catch (error) {
       // Lost the provisioning race: a concurrent writer inserted the row first
       // and the partial unique index rejected ours. Re-run once; the winning
       // row now exists, so we take the update path instead of inserting again.
       if (!options.isRaceRetry && isBuiltInAgentMarkerConflict(error)) {
-        return ensure(companyId, key, input, { isRaceRetry: true, createdByUserId: options.createdByUserId });
+        return ensure(companyId, key, input, { isRaceRetry: true, createdByUserId: options.createdByUserId, createdByAgentId: options.createdByAgentId });
       }
       throw error;
     }
@@ -1871,7 +1872,7 @@ export function builtInAgentService(db: Db) {
     const definition = requireBuiltInAgentDefinition(key);
     const company = await ensureCompany(companyId);
     if (!company.requireBoardApprovalForNewAgents) {
-      return { state: await ensure(companyId, key, input, { createdByUserId: actor.requestedByUserId ?? null }), approval: null };
+      return { state: await ensure(companyId, key, input, { createdByUserId: actor.requestedByUserId ?? null, createdByAgentId: actor.requestedByAgentId ?? null }), approval: null };
     }
     await assertKnownBuiltInAgentModel(definition, input);
 
@@ -1903,7 +1904,7 @@ export function builtInAgentService(db: Db) {
       // it does when board approval is not required, instead of dead-ending on a
       // fresh board-approval requirement the operator can never satisfy.
       if (providesAdapterSetup && (existing.metadata?.paperclipBuiltInSetupRequired === true || !hasCompleteAdapterConfig(existing.adapterType, existing.adapterConfig))) {
-        return { state: await ensure(companyId, key, input), approval: null };
+        return { state: await ensure(companyId, key, input, { createdByUserId: actor.requestedByUserId ?? null, createdByAgentId: actor.requestedByAgentId ?? null }), approval: null };
       }
 
       // Changing the adapter of an already-configured (`ready`/`paused`)
