@@ -1,4 +1,5 @@
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import { connectionActorUserId } from "../actor.js";
 import type { ActorInfo } from "../types.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
@@ -116,6 +117,7 @@ async function finalizeOAuthAccess(
         throw conflict("This connection already uses a company identity");
       }
       connection = await writeToolConnectionHealthChange(db, connection, async tx => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
         const [updated] = await tx
           .update(toolConnections)
           .set({
@@ -272,6 +274,7 @@ async function finalizeOAuthAccess(
             )
             .limit(1);
           let organizationGrantId: string;
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
           if (existingOrganizationGrant) {
             organizationGrantId = existingOrganizationGrant.id;
             await tx
@@ -423,16 +426,19 @@ async function finalizeOAuthAccess(
       },
       actor,
     );
-    await db
-      .insert(toolConnectionInstalls)
-      .values({
-        companyId,
-        connectionId: connection.id,
-        targetType: requestingAgentId ? "agent" : "company",
-        targetId: requestingAgentId ?? companyId,
-        createdByUserId: actorUserId,
-      })
-      .onConflictDoNothing();
+    await db.transaction(async tx => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+      await tx
+        .insert(toolConnectionInstalls)
+        .values({
+          companyId,
+          connectionId: connection.id,
+          targetType: requestingAgentId ? "agent" : "company",
+          targetId: requestingAgentId ?? companyId,
+          createdByUserId: actorUserId,
+        })
+        .onConflictDoNothing();
+    });
     return finished;
   }
   return finalizeOAuthAccess;
