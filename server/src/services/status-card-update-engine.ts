@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { CompanySearchIssueSummary, StatusCardRefreshPolicy } from "@paperclipai/shared";
+import { isWithinActiveHours, type CompanySearchIssueSummary, type StatusCardRefreshPolicy } from "@paperclipai/shared";
 
 export type StatusCardFingerprintEntry = {
   status: string;
@@ -110,21 +110,7 @@ export function statusCardFingerprintHash(fingerprint: StatusCardFingerprint) {
 }
 
 export function isWithinStatusCardActiveHours(policy: StatusCardRefreshPolicy, now: Date) {
-  if (!policy.activeHours) return true;
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: policy.activeHours.timezone,
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(now);
-  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
-  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
-  const current = hour * 60 + minute;
-  const [startHour, startMinute] = policy.activeHours.start.split(":").map(Number);
-  const [endHour, endMinute] = policy.activeHours.end.split(":").map(Number);
-  const start = startHour! * 60 + startMinute!;
-  const end = endHour! * 60 + endMinute!;
-  return start <= end ? current >= start && current < end : current >= start || current < end;
+  return isWithinActiveHours(policy.activeHours, now);
 }
 
 export function nextStatusCardEvaluationAt(policy: StatusCardRefreshPolicy, now: Date) {

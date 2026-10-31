@@ -20,6 +20,7 @@ import {
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   EXECUTION_RECONCILIATION_CAUSES,
   isUuidLike,
+  isWithinActiveHours,
 } from "@paperclipai/shared";
 import {
   and,
@@ -1298,7 +1299,11 @@ export function createHeartbeatScheduling(
     const agentsByCompany = groupAgentOrgRowsByCompany(
       allAgents.map(toAgentOrgRow),
     );
-    const eligible: Array<{ agent: typeof agents.$inferSelect; intervalSec: number }> = [];
+    const eligible: Array<{
+      agent: typeof agents.$inferSelect;
+      intervalSec: number;
+      activeHours: ReturnType<typeof parseHeartbeatPolicy>["activeHours"];
+    }> = [];
 
     for (const agent of allAgents) {
       const invokability = evaluateAgentInvokability(
@@ -1327,7 +1332,7 @@ export function createHeartbeatScheduling(
         if (!eligibleIssue) continue;
       }
 
-      eligible.push({ agent, intervalSec: policy.intervalSec });
+      eligible.push({ agent, intervalSec: policy.intervalSec, activeHours: policy.activeHours });
     }
     return eligible;
   }
@@ -1345,16 +1350,28 @@ export function createHeartbeatScheduling(
   async function tickAgentTimers(now = new Date(), canContinue: () => boolean = () => true) {
     if (!canContinue() || (await getSchedulingSuppression(true)).suppressed) return { checked: 0, enqueued: 0, skipped: 0 };
     let checked = 0, enqueued = 0, skipped = 0;
-    for (const { agent, intervalSec } of await eligibleTimerAgents()) {
+    for (const { agent, intervalSec, activeHours } of await eligibleTimerAgents()) {
       if (!canContinue()) break;
       checked++;
+      if (activeHours === "invalid") {
+        logger.warn(
+          { agentId: agent.id, companyId: agent.companyId },
+          "Skipping timer heartbeat: heartbeat.activeHours is malformed",
+        );
+        skipped++;
+        continue;
+      }
+      if (!isWithinActiveHours(activeHours, now)) {
+        skipped++;
+        continue;
+      }
       const deadline = await nextTimerHeartbeatAt(agent, now);
       if (deadline === null || deadline > now.getTime()) continue;
       if (!canContinue()) break;
       const timerClaim = await claimDueTimerHeartbeat(agent, now, intervalSec);
       if (!timerClaim) continue;
       const run = await enqueueWakeup(agent.id, {
-        source: "timer", triggerDetail: "system", reason: "heartbeat_timer",
+        source: "timer", triggerDetail: "system", reason: "heartbeat_timer", timerEvaluatedAt: now,
         requestedByActorType: "system", requestedByActorId: "heartbeat_scheduler",
         contextSnapshot: { source: "scheduler", reason: "interval_elapsed", now: now.toISOString(),
           timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat },

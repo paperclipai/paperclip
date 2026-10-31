@@ -1,6 +1,7 @@
 import { agentAppearanceSchema } from "../agent-appearance.js";
 import { aiRuntimeConnectionBindingSchema as aiConnectionBindingSchema } from "../ai-connection-router.js";
 import { z } from "zod";
+import { activeHoursWindowSchema } from "../active-hours.js";
 import {
   AGENT_ICON_NAMES,
   AGENT_ROLES,
@@ -73,6 +74,13 @@ export const agentRuntimeConfigSchema = z.object({
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),
+  // Only the new activeHours field is validated here. Other heartbeat keys keep
+  // the scheduler's lenient parsing so previously stored values (for example
+  // enabled: "true" or intervalSec: "300") still round-trip through PATCH and
+  // configuration-revision restores.
+  heartbeat: z.object({
+    activeHours: activeHoursWindowSchema.nullable().optional(),
+  }).catchall(z.unknown()).optional(),
 }).catchall(z.unknown()).superRefine((value, ctx) => {
   if (Object.prototype.hasOwnProperty.call(value, "modelProfiles")) {
     ctx.addIssue({

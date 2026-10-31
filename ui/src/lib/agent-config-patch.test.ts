@@ -150,6 +150,54 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
+  it("sets heartbeat.activeHours on the runtimeConfig patch", () => {
+    const window = { start: "09:00", end: "18:00", timezone: "America/New_York" };
+    const patch = buildAgentUpdatePatch(
+      makeAgent(),
+      makeOverlay({
+        heartbeat: { activeHours: window },
+      }),
+    );
+
+    expect(patch).toEqual({
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 300,
+          activeHours: window,
+        },
+      },
+    });
+  });
+
+  it("clears heartbeat.activeHours when the overlay sets it to null", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      heartbeat: {
+        enabled: true,
+        intervalSec: 300,
+        activeHours: { start: "09:00", end: "18:00", timezone: "UTC" },
+      },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        heartbeat: { activeHours: null },
+      }),
+    );
+
+    expect(patch).toEqual({
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 300,
+          activeHours: null,
+        },
+      },
+    });
+  });
+
   it("preserves paperclip skill-sync selections when changing adapter types", () => {
     // Desired skills are adapter-agnostic (company-level selections) but are
     // persisted inside the per-adapter config under `paperclipSkillSync`. A

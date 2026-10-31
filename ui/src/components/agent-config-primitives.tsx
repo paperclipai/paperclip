@@ -53,6 +53,7 @@ export const help: Record<string, string> = {
   webhookUrl: "The URL that receives POST requests when the agent is invoked.",
   heartbeatInterval: "Run this agent automatically on a timer. Useful for periodic tasks like checking for new work.",
   intervalSec: "Seconds between automatic heartbeat invocations.",
+  heartbeatActiveHours: "When set, timer heartbeats only enqueue inside this wall-clock window. Assignments, comments, approvals, and on-demand pings still wake the agent outside the window. Overnight windows wrap midnight.",
   timeoutSec: "Maximum seconds a run can take before being terminated. 0 means no timeout.",
   graceSec: "Seconds to wait after sending interrupt before force-killing the process.",
   wakeOnDemand: "Allow this agent to be woken by assignments, API calls, UI actions, or automated systems.",
