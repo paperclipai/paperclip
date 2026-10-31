@@ -100,6 +100,7 @@ import { NativeRunnerOwnershipUnverifiedError } from "./native-runner-ownership.
 import type { AdapterRuntimeEvent } from "../../adapters/index.js";
 import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import { acknowledgedNativeStopExecutionHasStopped, isAcknowledgedNativeStop } from "../acknowledged-native-stop.js";
+import { admittedNativeProviderPack } from "./native-provider-pack-admission.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -1772,7 +1773,7 @@ describe("remote provider pack manifest", () => {
         expect(state.createBackend).not.toHaveBeenCalled();
         return;
       }
-      await prepare;
+      const managedBackend = await prepare;
       state.createTransport.mockClear();
       state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
       const transport = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & {
@@ -1798,6 +1799,24 @@ describe("remote provider pack manifest", () => {
       expect(transport).toMatchObject({ providerPackAuthorityDigest: installed.digest,
         providerNodeCommand: "/opt/paperclip-runner/provider-pack/node_modules/node/bin/node",
         providerNodeCommandSha256: installed.payload.artifacts.nodeCommand.sha256 });
+      if (provider === "opencode") {
+        const identity = { ...remoteExecution.binding, sessionId: remoteExecution.session.normalizedSessionId! };
+        const session = { identity: () => identity } as never;
+        const backend = state.createBackend.mock.results.at(-1)!.value;
+        const openSession = vi.fn().mockRejectedValueOnce(new Error("provider open failed")).mockResolvedValue(session);
+        Object.assign(backend, { openSession });
+        expect(admittedNativeProviderPack(session, identity)).toBeNull();
+        await expect(managedBackend.openSession({ identity })).rejects.toThrow("provider open failed");
+        expect(admittedNativeProviderPack(session, identity)).toBeNull();
+        const opened = await managedBackend.openSession({ identity });
+        expect(admittedNativeProviderPack(opened, identity)).toMatchObject({
+          schema: "paperclip.native-provider-pack-admission.v1", stage: "session_admitted", authority: "core_verified_selection",
+          companyId: identity.companyId, agentId: identity.agentId, runId: identity.runId, sessionId: identity.sessionId,
+          runnerInstanceId: transport.prpIdentity!.runnerInstanceId, environmentLeaseId: transport.prpIdentity!.environmentLeaseId,
+          providerPackDigest: installed.digest, opencodeProxySha256: installed.payload.artifacts.opencodeProxy.sha256,
+          sourceRevision: installed.payload.runnerSourceRevision,
+        });
+      }
       expect(execute.mock.calls.filter(([call]) => call.args?.[0] === "--build-metadata")).toHaveLength(1);
       expect(execute.mock.calls.some(([call]) => call.args?.[0] === "-e" || call.args?.[0] === "--version")).toBe(false);
       expect(syncIn.mock.calls.every(([operations]) => operations.every(operation => operation.files.every(file => file.kind === "file")))).toBe(true);
@@ -1831,7 +1850,7 @@ describe("remote provider pack manifest", () => {
             : script.includes("cat --") ? `nonce\n123\n2026-09-19T10:00:00.000Z\n${identity.runnerInstanceId}\nlinux:abcd-1234:100\n` : "";
           return { stdout, stderr: "", exitCode: 0, timedOut: false };
         });
-        await createRunnerdBackend({ db: leaseDb(remoteExecution), execution: remoteExecution,
+        const recoveryInput: Parameters<typeof createRunnerdBackend>[0] = { db: leaseDb(remoteExecution), execution: remoteExecution,
           runnerInstanceId: identity.runnerInstanceId, runnerIngressAuthorized: true,
           ...(opencode ? { runnerEnvironment: configuredEnvironmentProjection({ PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS: "1" }) } : {}),
           runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace",
@@ -1840,10 +1859,33 @@ describe("remote provider pack manifest", () => {
           restartRecovery: { kind: "reattach_remote_runner", runId: remoteExecution.binding.runId,
             leaseOwner: "controller", controllerGeneration: 2, providerAttempt: 1, restartKind: "graceful", recoveryRequestId: null,
             remote: { providerLeaseId: "sandbox", remoteCwd: "/workspace" } },
-        });
+        };
+        const recoveredBackend = await createRunnerdBackend(recoveryInput);
         state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
         const recovered = state.createTransport.mock.calls.at(-1)![0];
         expect(recovered).toMatchObject({ providerPackAuthorityDigest: admitted.digest, runnerArtifact: artifact, adoptExistingRunner: { pid: 123 } });
+        if (provider === "opencode") {
+          const nativeIdentity = { ...remoteExecution.binding, sessionId: remoteExecution.session.normalizedSessionId! };
+          const restored = { identity: () => nativeIdentity } as never;
+          const checkpoint = { backendKind: "runner", identity: nativeIdentity, sessionId: nativeIdentity.sessionId } as never;
+          Object.assign(state.createBackend.mock.results.at(-1)!.value, {
+            recoverSession: async () => ({ recovered: true, session: restored }),
+          });
+          const result = await recoveredBackend.recoverSession!(checkpoint, { signal: new AbortController().signal });
+          expect(result.recovered).toBe(true);
+          expect(admittedNativeProviderPack(result.session!, nativeIdentity)).toMatchObject({
+            providerPackDigest: admitted.digest, sourceRevision: admitted.payload.runnerSourceRevision,
+          });
+          const legacyBackend = await createRunnerdBackend({ ...recoveryInput,
+            controllerPersistence: { bootId: "replacement-controller", runnerArtifact: artifact } });
+          const legacy = { identity: () => nativeIdentity } as never;
+          Object.assign(state.createBackend.mock.results.at(-1)!.value, {
+            recoverSession: async () => ({ recovered: true, session: legacy }),
+          });
+          const legacyResult = await legacyBackend.recoverSession!(checkpoint, { signal: new AbortController().signal });
+          expect(legacyResult.recovered).toBe(true);
+          expect(admittedNativeProviderPack(legacyResult.session!, nativeIdentity)).toBeNull();
+        }
       }
     } finally {
       state.bundledPackManifestPath = null; state.bundledRunnerBinary = null;

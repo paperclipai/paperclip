@@ -16,6 +16,7 @@ import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
+import { NativeProviderPackAdmissionConflictError, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission } from "./native-provider-pack-admission.js";
 import { type ProviderPackInstallation, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
@@ -9639,6 +9640,20 @@ async function executePaperclipNativeSessionWithinScope(
               );
             },
             onSession: async (session) => {
+              if (session) {
+                try {
+                  await recordNativeProviderPackAdmission(input.db, {
+                    session,
+                    identity: { runId: input.execution.binding.runId, companyId: input.execution.binding.companyId,
+                      agentId: input.execution.binding.agentId, issueId: input.execution.binding.issueId,
+                      sessionId: nativeSessionKey(input.execution) },
+                    claim: { leaseOwner, attempt, controllerGeneration, controllerBootId: controller.bootId },
+                  });
+                } catch (error) {
+                  if (error instanceof NativeProviderPackAdmissionConflictError) throw error;
+                  try { await input.onLog?.("stderr", "[paperclip-runner] native provider-pack admission receipt could not be saved\n"); } catch {}
+                }
+              }
               if (session && usesPluginTask) {
                 rmSync(resolve(scopedRunnerdStateRoot(input.execution), "plugin-runner-state.json"), { force: true });
               }
@@ -14382,9 +14397,22 @@ async function createRunnerdBackendWithinSessionClaim(
     priorAuthorityEpoch.revoke();
   }
   sessionToolAuthorityEpochs.set(sessionScopeId, authorityEpoch);
-  const recordAdmittedProviderPack = async () => {
-    if (providerPackVerified && providerPackAuthority) {
+  const recordAdmittedProviderPack = async (session: NativeSession, identity: Parameters<NativeSessionBackend["openSession"]>[0]["identity"]) => {
+    if (providerPackVerified && providerPackAuthority && expectedProviderPackManifest
+      && rememberAdmittedNativeProviderPack(session, { identity, manifest: expectedProviderPackManifest,
+        runnerInstanceId: effectiveRunnerInstanceId, environmentLeaseId: effectiveEnvironmentLeaseId })) {
       await recordAdmittedRemoteProviderPack(providerPackAuthority, message => input.onLog?.("stderr", message));
+    } else if (adoptedProcess && remoteTarget && requiresRemoteProviderPack) {
+      const sourceRunId = input.remoteWarmRecovery?.identity.runId ?? durableIdentity?.runId;
+      if (typeof sourceRunId === "string" && sourceRunId) {
+        try {
+          await rememberRecoveredNativeProviderPack(input.db, session, { identity, sourceRunId,
+            runnerInstanceId: effectiveRunnerInstanceId, environmentLeaseId: effectiveEnvironmentLeaseId });
+        } catch (error) {
+          if (error instanceof NativeProviderPackAdmissionConflictError) throw error;
+          try { await input.onLog?.("stderr", "[paperclip-runner] prior provider-pack admission receipt is unavailable\n"); } catch {}
+        }
+      }
     }
   };
   return {
@@ -14401,13 +14429,15 @@ async function createRunnerdBackendWithinSessionClaim(
     descriptor: () => backend.descriptor(),
     openSession: async (sessionInput) => {
       const session = await backend.openSession(sessionInput);
-      await recordAdmittedProviderPack();
-      return wrapManagedSession(session);
+      const managed = wrapManagedSession(session);
+      await recordAdmittedProviderPack(managed, sessionInput.identity);
+      return managed;
     },
     recoverSession: async (snapshot, options) => {
       const result = backend.recoverSession ? await backend.recoverSession(snapshot, options) : { recovered: false, reason: "driver does not support recovery" };
-      if (result.session) await recordAdmittedProviderPack();
-      return result.session ? { ...result, session: wrapManagedSession(result.session) } : result;
+      const session = result.session ? wrapManagedSession(result.session) : undefined;
+      if (result.recovered && session) await recordAdmittedProviderPack(session, snapshot.identity);
+      return session ? { ...result, session } : result;
     },
     openReplacementSession: async (sessionInput) => {
       await measureNativeRunnerSpan(
@@ -14417,8 +14447,9 @@ async function createRunnerdBackendWithinSessionClaim(
         { parentName: "native.session.execute" },
       );
       const session = await backend.openSession(sessionInput);
-      await recordAdmittedProviderPack();
-      return wrapManagedSession(session);
+      const managed = wrapManagedSession(session);
+      await recordAdmittedProviderPack(managed, sessionInput.identity);
+      return managed;
     },
   } satisfies ManagedRunnerdBackend;
 }

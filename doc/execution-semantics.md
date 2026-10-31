@@ -2240,6 +2240,15 @@ replacement launches use current release authority. A missing historical receipt
 retains the current release gate; guest files cannot establish old authority. A missing, changed, or incompatible package
 must be replaced and verified before launch.
 
+The server records the closed `runnerProfileJson.nativeProviderPackAdmission`
+receipt after actual session admission and attachment. Its `session_admitted`
+stage and `core_verified_selection` authority describe Core's verified selection,
+not an independent provider statement. It includes only the bound run, session,
+runner, lease and pack identities. Retained attachments keep the original pack
+and identify `inheritedFromRunId`. A missing legacy receipt remains unknown;
+the current release cannot supply that missing history. Recording the receipt
+does not grant execution or change the existing recovery gates.
+
 Warm attachment requires two consecutive authenticated readiness snapshots.
 Blocked readiness probes back off within the reconnect deadline so they do not
 fill the durable command journal while waiting. The fast ready path keeps its
