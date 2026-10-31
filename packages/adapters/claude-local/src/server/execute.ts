@@ -1146,6 +1146,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // is intentionally independent of `failed` — otherwise a refusal looks like a
     // successful run to Paperclip and the heartbeat stalls silently. See RY-604.
     const claudeRefusal = isClaudeRefusalResult(parsed);
+    const promptBlockedReason = parsedStream.promptBlockedReason;
     const parsedIsError = asBoolean(parsed.is_error, false);
     const parsedSubtype = asString(parsed.subtype, "").trim().toLowerCase();
     const parsedSucceeded = parsedSubtype === "success" && !parsedIsError;
@@ -1175,7 +1176,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
       } as Record<string, unknown>)
       : null;
-    const errorMessage = failed
+    const errorMessage = promptBlockedReason
+      ? `Claude prompt was blocked by a UserPromptSubmit hook: ${promptBlockedReason}`
+      : failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
     const providerQuota =
@@ -1238,6 +1241,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? "provider_quota"
       : transientUpstream
       ? "claude_transient_upstream"
+      : promptBlockedReason
+      ? "claude_prompt_blocked_by_hook"
       : claudeRefusal
       ? "claude_refusal"
       : null;
@@ -1253,6 +1258,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
       ...(failed && poisonedPreviousMessageId ? { stopReason: "claude_poisoned_previous_message_id" } : {}),
       ...(claudeRefusal ? { stopReason: "refusal", errorFamily: "model_refusal" } : {}),
+      ...(promptBlockedReason ? { result: null, stopReason: "prompt_blocked_by_hook" } : {}),
       ...(errorFamily ? { errorFamily } : {}),
       ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
@@ -1282,7 +1288,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       billingType,
       costUsd: parsedStream.costUsd,
       resultJson: mergedResultJson,
-      summary: parsedStream.summary || asString(parsed.result, ""),
+      summary: promptBlockedReason ? "" : parsedStream.summary || asString(parsed.result, ""),
       clearSession:
         clearSessionForMaxTurns ||
         // Clear-on-error: a poisoned previous_message_id is a deterministic
