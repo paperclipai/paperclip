@@ -570,7 +570,9 @@ export function buildSessionFingerprint(identity: SessionFingerprintIdentity): s
  * form is `paperclip:companyId:agentId:taskKey:fingerprint`.
  */
 export function buildSessionKey(identity: SessionKeyIdentity, fingerprint: string): string {
-  return `paperclip:${identity.companyId}:${identity.agentId}:${identity.taskKey}:${fingerprint}`;
+  const base = `paperclip:${identity.companyId}:${identity.agentId}:${identity.taskKey}`;
+  const generation = identity.conversationGeneration ?? 0;
+  return generation > 0 ? `${base}:g${generation}:${fingerprint}` : `${base}:${fingerprint}`;
 }
 
 // ACPX runs inside the long-lived Paperclip server process. A local child needs
@@ -2335,6 +2337,7 @@ async function buildRuntime(input: {
     companyId: agent.companyId,
     agentId: agent.id,
     taskKey,
+    conversationGeneration: asNumber(input.ctx.context.conversationSessionGeneration, 0),
   };
   const sessionKey = buildSessionKey(keyIdentity, fingerprint);
 
