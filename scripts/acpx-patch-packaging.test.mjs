@@ -435,7 +435,7 @@ test("published packages preserve the patched embedded-postgres runtime", () => 
     rootPackage.pnpm.patchedDependencies["embedded-postgres@18.1.0-beta.16"],
     "patches/embedded-postgres@18.1.0-beta.16.patch",
   );
-  assert.deepEqual(dbPackage.bundleDependencies, ["embedded-postgres"]);
+  assert.deepEqual(dbPackage.bundleDependencies, ["embedded-postgres", "postgres"]);
   assert.equal(bundledCliNpmDependencies.has("embedded-postgres"), true);
   assert.equal(cliEsbuildConfig.external.includes("embedded-postgres"), false);
 });

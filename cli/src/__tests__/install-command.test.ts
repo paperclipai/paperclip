@@ -178,6 +178,29 @@ describe("managed install commands", () => {
     expect(installCall?.[1].filter((arg) => arg.endsWith(".tgz"))).toHaveLength(4);
   });
 
+  it("stages a CLI that bundles npm dependencies before packing it", async () => {
+    const sha = "e".repeat(40);
+    const baseRunCommand = createGitCheckoutRunCommand(sha);
+    const runCommand = vi.fn(async (file: string, args: string[], options?: Parameters<CommandRunner>[2]) => {
+      const result = await baseRunCommand(file, args, options);
+      if (file === "tar") {
+        const checkout = args[args.indexOf("-C") + 1];
+        fs.writeFileSync(path.join(checkout, "cli", "package.json"), JSON.stringify({ version: "0.3.1", dependencies: { postgres: "^3.4.9" }, bundleDependencies: ["postgres"] }));
+      }
+      return result;
+    });
+    await expect(installGitPayload("paperclipai/paperclip", sha, runCommand, resolveInstallStorePaths())).resolves.toMatchObject({ version: "0.3.1", reused: false });
+    const prepareCalls = runCommand.mock.calls.filter(([command, args]) => command === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs"));
+    expect(prepareCalls.map(([, args]) => path.basename(args[1]!))).toEqual(["db", "cli"]);
+    const stagedCli = prepareCalls[1]![1][2]!;
+    expect(path.basename(stagedCli)).toBe("cli-package");
+    const cliPack = runCommand.mock.calls.find(([command, args]) => command === "npm" && args[0] === "pack" && args[1] === stagedCli);
+    expect(cliPack?.[2]?.env).not.toHaveProperty("NODE_ENV");
+    expect(runCommand.mock.calls.filter(([command, args]) => command === "npm" && args[0] === "pack" && !args[1]?.startsWith(path.dirname(stagedCli)))).toHaveLength(0);
+    const installCall = runCommand.mock.calls.find(([command, args]) => command === "npm" && args[0] === "install");
+    expect(installCall?.[1].filter((arg) => arg.endsWith(".tgz"))).toHaveLength(4);
+  });
+
   it("builds git checkouts with NODE_ENV cleared so ambient production mode keeps devDependencies", async () => {
     process.env.NODE_ENV = "production";
     const sha = "d".repeat(40);
