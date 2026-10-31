@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { effectiveProjectWorkspacePolicy, isWorkspaceProvider } from "./project-workspace-provider.js";
 import { releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
 import { randomUUID, createHash } from "node:crypto";
@@ -418,6 +419,7 @@ export async function preparePluginWorkspace(
           },
         })
         .returning();
+      await notifyStatusCardIssueChange(tx, task.companyId);
       await tx
         .update(issues)
         .set({
