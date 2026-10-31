@@ -877,7 +877,16 @@ Use the cheap local default unless you are specifically working on browser flows
 pnpm test
 ```
 
-`pnpm test` runs the Vitest suite only. For interactive Vitest watch mode use:
+`pnpm test` runs the Vitest suite only. Its default chat integration coverage runs
+first in six sequential, exact-cover child processes, each with its own home,
+config and embedded PostgreSQL. The remaining server invocation excludes that
+chat file once and retains the native Runner suites. This bounds shared fixture
+and process lifetime without increasing concurrency or changing case assertions
+or timeouts. An explicit `PAPERCLIP_TEST_DATABASE_URL` retains the original
+single, serial database path. Explicit `--group` invocations and CI shard routing
+are unchanged.
+
+For interactive Vitest watch mode use:
 
 ```sh
 pnpm test:watch

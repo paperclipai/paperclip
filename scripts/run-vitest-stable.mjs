@@ -449,9 +449,13 @@ async function runVitest(args, label, testShard = null) {
   });
 }
 
-async function runGeneralSuites(routeTests) {
+async function runGeneralSuites(routeTests, chatShards) {
+  for (const shard of chatShards ?? []) {
+    await runVitest(["--project", "@paperclipai/server", ...serializedServerVitestArgs, chatSuite],
+      "chat integration test shard", shard);
+  }
   for (const groupName of generalGroupNames) {
-    await runGeneralGroup(routeTests, groupName);
+    await runGeneralGroup(routeTests, groupName, null, null, chatShards ? [chatSuite] : []);
   }
 }
 
@@ -476,7 +480,7 @@ function chatShardWorkers(index, count) {
   }));
 }
 
-async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = null) {
+async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = null, additionalExcludedSuites = []) {
   if (groupName === generalChatGroupName) {
     // Each invocation gets its own temporary home and embedded PostgreSQL.
     // Wait for both children even on failure so no sibling is abandoned.
@@ -496,7 +500,7 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
     return;
   }
   if (generalServerGroups.includes(groupName)) {
-    const excludedSuites = excludedServerSuites(groupName);
+    const excludedSuites = [...excludedServerSuites(groupName), ...additionalExcludedSuites];
     const files = generalServerTestFiles.filter((file) => !excludedSuites.includes(file));
     if (shardCount !== null && shardCount > 1) {
       const shardFiles = selectGeneralServerShard(
@@ -615,6 +619,9 @@ const generalServerTestFiles = [
   .sort((a, b) => a.localeCompare(b));
 
 const options = parseCliOptions(process.argv.slice(2));
+const defaultChatShards = options.group === null && options.mode !== serializedModeName && !process.env.PAPERCLIP_TEST_DATABASE_URL
+  ? Array.from({ length: 6 }, (_, index) => ({ index, count: 6 }))
+  : null;
 if (options.dryRun) {
   const serializedSuites =
     options.mode === serializedModeName
@@ -633,7 +640,9 @@ if (options.dryRun) {
         selectedSerializedSuites: serializedSuites.map((routeTest) => routeTest.repoPath),
         generalServerSuiteCount: generalServerTestFiles.length,
         selectedGeneralServerSuites:
-          options.mode === generalModeName && options.group === generalServerNativeRunnerGroupName
+          defaultChatShards
+            ? generalServerTestFiles.filter(file => file !== chatSuite)
+            : options.mode === generalModeName && options.group === generalServerNativeRunnerGroupName
             ? nativeRunnerSuites
             : options.mode === generalModeName &&
                 generalServerGroups.includes(options.group) &&
@@ -646,7 +655,7 @@ if (options.dryRun) {
                 )
               : null,
         chatVitestShards: options.group === generalChatGroupName
-          ? chatShardWorkers(options.shardIndex, options.shardCount) : null,
+          ? chatShardWorkers(options.shardIndex, options.shardCount) : defaultChatShards,
         workspaceProjects:
           options.group === generalWorkspacesAGroupName
             ? generalWorkspacesAProjects
@@ -674,7 +683,7 @@ try {
     if (options.group) {
       await runGeneralGroup(routeTests, options.group, options.shardIndex, options.shardCount);
     } else {
-      await runGeneralSuites(routeTests);
+      await runGeneralSuites(routeTests, defaultChatShards);
     }
   }
 
