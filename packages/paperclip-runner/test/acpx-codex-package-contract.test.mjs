@@ -51,7 +51,7 @@ const nativeSessionExecutor = await readFile(
 );
 
 test("the runner pins every qualified ACPX production dependency", () => {
-  assert.equal(runnerPackage.dependencies["@openai/codex"], "0.160.0");
+  assert.equal(runnerPackage.dependencies["@openai/codex"], "0.166.0");
   assert.equal(runnerPackage.dependencies["@anthropic-ai/claude-agent-sdk"], undefined);
   assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/codex-acp@1.6.2>@openai/codex"], runnerPackage.dependencies["@openai/codex"]);
   assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk"], "0.3.286");
