@@ -1,7 +1,8 @@
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { activityLog, authUsers, connectionIntentDeliveries, createDb, issueThreadInteractions, toolApplications, toolConnections, toolPolicies } from "@paperclipai/db";
+import { activityLog, authUsers, connectionIntentDeliveries, createDb, databaseWorkPending, issueThreadInteractions, toolApplications, toolConnections, toolPolicies } from "@paperclipai/db";
 import { toolAccessService } from "../services/tool-access.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { seedPendingAccessRequest, startConnectionDelivery } from "./helpers/connection-delivery-harness.js";
 
@@ -35,8 +36,7 @@ describePostgres("connectGalleryApp writes notify the connection delivery worker
     return { ...f, intent: intent! };
   }
   type Seed = Awaited<ReturnType<typeof seedLinkConnection>>;
-  // Setup and the health check pass; setup then fails when catalog refresh re-checks the caller's authority, before any refresh write.
-  function reconnect(client: typeof db, f: Seed, onRefresh: () => Promise<void>) {
+  function reconnectFailingAtCatalogRefresh(client: typeof db, f: Seed, onRefresh: () => Promise<void>) {
     let checks = 0;
     const reauthorize = async () => { if (++checks > 2) { await onRefresh(); throw new Error("authority revoked"); } };
     return toolAccessService(client, { deploymentMode: "local_trusted", deploymentExposure: "private",
@@ -56,21 +56,20 @@ describePostgres("connectGalleryApp writes notify the connection delivery worker
     await db.delete(issueThreadInteractions);
     delivery = await startConnectionDelivery(db);
     const baseline = delivery.sweeps;
-    await expect(reconnect(db, f, async () => {
-      // The revive write left the connection in draft and notified; a card raised now is not yet satisfiable.
+    await expect(reconnectFailingAtCatalogRefresh(db, f, async () => {
       await delivery!.settle(baseline + 1);
       expect((await db.select().from(toolConnections).where(eq(toolConnections.id, f.connection.id)))[0]!.status).toBe("draft");
       await db.insert(issueThreadInteractions).values(f.intent);
-      await new Promise(resolve => setTimeout(resolve, 100));
+      delivery!.wake();
+      await delivery!.settle(baseline + 2);
       expect((await card()).status).toBe("pending");
     })).rejects.toThrow("authority revoked");
-    // At least one more sweep: the restore transaction's own notification.
-    await delivery.settle(baseline + 2);
+    await delivery.settle(baseline + 3);
     expect(await card()).toMatchObject({ status: "expired", result: expect.objectContaining({ connectionId: f.connection.id }) });
     expect(await db.select().from(connectionIntentDeliveries)).toHaveLength(1);
     expect(delivery.wakeup).toHaveBeenCalledOnce();
     const beforeRepeat = delivery.sweeps;
-    await expect(reconnect(db, f, async () => undefined)).rejects.toThrow("authority revoked");
+    await expect(reconnectFailingAtCatalogRefresh(db, f, async () => undefined)).rejects.toThrow("authority revoked");
     await delivery.settle(beforeRepeat + 1);
     expect(await db.select().from(connectionIntentDeliveries)).toHaveLength(1);
     expect(delivery.wakeup).toHaveBeenCalledOnce();
@@ -83,8 +82,9 @@ describePostgres("connectGalleryApp writes notify the connection delivery worker
     const baseline = delivery.sweeps;
     const result = db.transaction(async (tx) => {
       await tx.update(toolConnections).set({ status: "active", enabled: true }).where(eq(toolConnections.id, f.connection.id));
-      await expect(reconnect(tx as unknown as typeof db, f, async () => undefined)).rejects.toThrow("authority revoked");
+      await expect(reconnectFailingAtCatalogRefresh(tx as unknown as typeof db, f, async () => undefined)).rejects.toThrow("authority revoked");
       expect((await tx.select().from(toolConnections).where(eq(toolConnections.id, f.connection.id)))[0]!.status).toBe("active");
+      expect(databaseWorkPending(db, DELIVERY_QUEUES.connection)).toBe(true);
       await new Promise(resolve => setTimeout(resolve, 200));
       expect(delivery!.sweeps).toBe(baseline);
       if (outcome === "rollback") throw new Error("rollback");
@@ -103,5 +103,39 @@ describePostgres("connectGalleryApp writes notify the connection delivery worker
     expect(await db.select().from(connectionIntentDeliveries)).toHaveLength(0);
     expect(await db.select().from(activityLog).where(eq(activityLog.action, "issue.thread_interaction_resolved"))).toHaveLength(0);
     expect(delivery.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("leaves a raw connection restore without a notification to the worker until something wakes it", async () => {
+    const f = await seedLinkConnection("draft");
+    delivery = await startConnectionDelivery(db);
+    const baseline = delivery.sweeps;
+    await db.update(toolConnections).set({ status: "active", enabled: true }).where(eq(toolConnections.id, f.connection.id));
+    await new Promise(resolve => setTimeout(resolve, 200));
+    expect(delivery.sweeps).toBe(baseline);
+    expect((await card()).status).toBe("pending");
+    delivery.wake();
+    await delivery.settle(baseline + 1);
+    expect((await card()).status).toBe("expired");
+  });
+
+  it("does not retire during admission drain and retires after reopening", async () => {
+    const f = await seedLinkConnection("active");
+    let open = true;
+    await db.delete(issueThreadInteractions);
+    delivery = await startConnectionDelivery(db, { canRun: () => open });
+    const baseline = delivery.sweeps;
+    await expect(reconnectFailingAtCatalogRefresh(db, f, async () => {
+      await delivery!.settle(baseline + 1);
+      open = false;
+      await db.insert(issueThreadInteractions).values(f.intent);
+    })).rejects.toThrow("authority revoked");
+    await new Promise(resolve => setTimeout(resolve, 200));
+    expect(delivery.sweeps).toBe(baseline + 1);
+    expect((await card()).status).toBe("pending");
+    open = true;
+    delivery.wake();
+    await delivery.settle(baseline + 2);
+    expect((await card()).status).toBe("expired");
+    expect(delivery.wakeup).toHaveBeenCalledOnce();
   });
 });
