@@ -1201,7 +1201,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // for stable embedding, so their Plans remain chronological thread entries.
   // Prefer a native review request's explicit run binding; while that request
   // is still being created, infer the native owner from the document timestamp.
-  const planDocumentSourceRunId = useMemo(() => {
+  const planDocumentOwnerRunId = useMemo(() => {
     // Coordinator keeps saved plans in document chronology. A run may write
     // several documents (or use shell tools with no semantic write boundary);
     // attaching the plan to its last write can put it after the resulting work.
@@ -1263,6 +1263,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     );
     return matchingRuns[0]?.id ?? null;
   }, [activeRun, coordinatorEnabled, interactions, linkedRuns, liveRuns, planDocument]);
+
+  const planDocumentSourceRunId = planDocumentOwnerRunId &&
+    !deferredTranscriptRunIds.has(planDocumentOwnerRunId) &&
+    ((transcriptByRun.get(planDocumentOwnerRunId)?.length ?? 0) > 0 ||
+      !runs.some(run => run.id === planDocumentOwnerRunId && isTerminalRunStatus(run.status)))
+    ? planDocumentOwnerRunId : null;
 
   const planTurnItem = useMemo<TaskChatPlanDocumentItem | null>(() => {
     if (!planDocument || !planDocumentSourceRunId) return null;

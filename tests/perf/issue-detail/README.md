@@ -88,7 +88,8 @@ Ordinary task opens defer the concealed history and composer until their initial
 data is ready. The skeleton and scroll/composer containers retain their geometry.
 Compact tasks reuse saved replies from completed runs. Their transcript reads
 start when the reader opens older history through **More messages** or **More run
-output**. Live runs, failures, yielded runs, explicit anchors, and runs without a
+output**. Saved Plans from completed runs stay visible while their output is deferred or pending.
+Live runs, failures, yielded runs, explicit anchors, and runs without a
 saved reply still load their output. A transcript already shown during this visit
 stays mounted when the run completes.
 Comment-link navigation prepares content eagerly so the target can be positioned
@@ -111,8 +112,8 @@ configured native Paperclip runner and Codex authentication; deterministic
 browser fixtures do not substitute for watching an actual provider run.
 
 `saved-reply-startup.spec.ts` adds a PostgreSQL fixture with 200 long saved agent
-replies and 200 completed native runs. It holds transcript requests, checks that
-desktop and mobile reveal the recent replies without those reads, and measures
+replies, 200 completed native runs, and a Plan linked to the latest run. It holds
+transcript requests, checks both task presentations on desktop and mobile, and measures
 reply positions on each frame. Opening older history must start the transcript
 reads and preserve the editor and draft. This case is skipped unless
 `PAPERCLIP_ISSUE_PERF_DATABASE_URL` points to a disposable loopback PostgreSQL

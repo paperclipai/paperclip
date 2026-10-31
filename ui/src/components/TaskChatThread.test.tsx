@@ -21,6 +21,7 @@ import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
 import { pendingConnectionIntentInteraction } from "@/fixtures/issueThreadInteractionFixtures";
 import { TaskChatScrollNavigation, useTaskChatScrollNavigation } from "./task-chat/scroll-navigation";
+import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 
 const transcriptState = vi.hoisted(() => ({
@@ -1654,6 +1655,33 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.textContent).toContain("Use the connection card below to continue.");
     expect(container.textContent).not.toContain("The selected AI account is unavailable");
     expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+  });
+
+  it.each(["timestamp", "resolved-review"].flatMap(owner => [false, true].map(coordinator => ({ owner, coordinator }))))("keeps a saved Plan visible while its completed output is deferred ($owner, Coordinator=$coordinator)", async ({ owner, coordinator }) => {
+    const runId = "saved-plan-run";
+    planState.data = planDocument({ updatedAt: new Date("2026-08-25T18:00:02.000Z") });
+    nativeTranscriptState.hydratedRunIds = new Set();
+    nativeTranscriptState.terminalHydratedRunIds = new Set();
+    const props = {
+      issueId: "issue-1", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+      comments: [{ ...createLongThreadComments()[3], id: "saved-plan-reply", authorType: "agent" as const,
+        authorAgentId: "agent-1", body: "The saved Plan is ready.", runId }],
+      interactions: owner === "resolved-review" ? [planReviewInteraction("accepted", "revision-3", runId)] : [],
+      linkedRuns: [{ runId, runtimeMode: "native" as const, status: "succeeded", agentId: "agent-1", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z", finishedAt: "2026-08-25T18:00:03.000Z" }],
+    };
+    const show = (compactHistory: boolean) => render(<CoordinatorPresentation.Provider value={coordinator}>
+      <TaskChatThread {...props} compactHistory={compactHistory} />
+    </CoordinatorPresentation.Provider>);
+    show(true);
+    await settleThreadLayout();
+    expect(transcriptHookRuns.native.at(-1)).toEqual([]);
+    expect(container.querySelectorAll('[data-testid="task-chat-plan-preview"]')).toHaveLength(1);
+    expect(container.textContent).toContain("Preview the Plan");
+    const editor = container.querySelector('[data-testid="mock-editor"]');
+    show(false);
+    expect(container.querySelectorAll('[data-testid="task-chat-plan-preview"]')).toHaveLength(1);
+    expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
   });
 
   it("projects the saved Plan inline at its native write_document boundary", () => {

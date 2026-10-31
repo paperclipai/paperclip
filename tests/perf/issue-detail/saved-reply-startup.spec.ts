@@ -29,15 +29,23 @@ test.beforeAll(async ({ request }) => {
   } });
   expect(issueResponse.ok(), await issueResponse.text()).toBeTruthy();
   const issue = await issueResponse.json();
+  const planResponse = await request.put(`/api/issues/${issue.id}/documents/plan`, { data: {
+    title: "Saved investigation plan", format: "markdown", body: "# Saved investigation plan\n\nKeep the saved evidence available before loading its completed run output.",
+  } });
+  expect(planResponse.ok(), await planResponse.text()).toBeTruthy();
+  const plan = await planResponse.json();
   const db = createDb(databaseUrl);
   const comments: (typeof issueComments.$inferInsert)[] = [];
   const runs: (typeof heartbeatRuns.$inferInsert)[] = [];
   const activity: (typeof activityLog.$inferInsert)[] = [];
   const base = Date.now() - 30 * 24 * 3600_000;
   for (let index = 0; index < 200; index++) {
-    const runId = randomUUID(), id = randomUUID(), createdAt = new Date(base + index * 60_000);
+    const runId = randomUUID(), id = randomUUID(), createdAt = index === 199
+      ? new Date(new Date(plan.updatedAt).getTime() + 50)
+      : new Date(base + index * 60_000);
+    const startedAt = index === 199 ? new Date(new Date(plan.updatedAt).getTime() - 1000) : new Date(+createdAt - 900);
     runs.push({ id: runId, companyId: company.id, agentId: agent.id, issueId: issue.id, runtimeMode: "native", status: "succeeded",
-      createdAt: new Date(+createdAt - 1000), startedAt: new Date(+createdAt - 900), finishedAt: createdAt, contextSnapshot: { issueId: issue.id } });
+      createdAt: new Date(+startedAt - 100), startedAt, finishedAt: createdAt, contextSnapshot: { issueId: issue.id } });
     comments.push({ id, companyId: company.id, issueId: issue.id, authorType: "agent", authorAgentId: agent.id,
       createdByRunId: runId, body: `## Saved investigation ${index}\n\n${"Verified the saved evidence and checked the result. ".repeat(60)}`, createdAt, updatedAt: createdAt });
     activity.push({ companyId: company.id, actorType: "agent", actorId: agent.id, agentId: agent.id, runId,
@@ -55,8 +63,12 @@ test.beforeAll(async ({ request }) => {
   fixture = { prefix: company.issuePrefix, identifier: issue.identifier, runId, lastCommentId: last.id! };
 });
 
-for (const mobile of [false, true]) test(`saved task replies reveal before historical output and keep their geometry (mobile=${mobile})`, async ({ page }, info) => {
+for (const coordinator of [false, true]) for (const mobile of [false, true]) test(`saved task replies reveal before historical output and keep their geometry (Coordinator=${coordinator}, mobile=${mobile})`, async ({ page }, info) => {
   await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 });
+  await page.route("**/api/workspace-preferences/me", async route => {
+    const response = await route.fetch();
+    await route.fulfill({ json: { ...await response.json(), coordinatorWorkspaceEnabled: coordinator } });
+  });
   await page.addInitScript(() => {
     const frames: { height: number; latest: number }[] = [];
     Object.assign(window, { savedReplyFrames: frames });
@@ -83,6 +95,8 @@ for (const mobile of [false, true]) test(`saved task replies reveal before histo
     const readyMs = performance.now() - started;
     const reply = page.locator(`[id="comment-${fixture.lastCommentId}"]`);
     await expect(reply).toContainText("Saved investigation 199");
+    await expect(page.getByTestId("task-chat-plan-preview")).toHaveCount(1);
+    await expect(page.getByTestId("task-chat-plan-preview")).toContainText("Saved investigation plan");
     expect(reads).toEqual([]);
     await page.waitForTimeout(600);
     const frames = await page.evaluate(() => (window as unknown as { savedReplyFrames: { height: number; latest: number }[] }).savedReplyFrames);
