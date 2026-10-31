@@ -3195,6 +3195,63 @@ describe("resolveNextSessionState", () => {
     });
   });
 
+  it("keeps Hermes gateway local session ids reported by the adapter", () => {
+    const gatewaySessionId = `local-${"b429aed4".repeat(8)}`;
+    const result = resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: hermesSessionCodec,
+      adapterResult: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: {
+          sessionId: gatewaySessionId,
+        },
+        sessionId: gatewaySessionId,
+        sessionDisplayId: gatewaySessionId,
+      },
+      outcome: "succeeded",
+      previousParams: null,
+      previousDisplayId: null,
+      previousLegacySessionId: null,
+    });
+
+    expect(result).toEqual({
+      params: {
+        sessionId: gatewaySessionId,
+      },
+      displayId: gatewaySessionId,
+      legacySessionId: gatewaySessionId,
+    });
+  });
+
+  it("rejects Hermes local session ids that are not 64 hex characters", () => {
+    const result = resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: hermesSessionCodec,
+      adapterResult: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: {
+          sessionId: "local-b429aed4",
+        },
+        sessionId: "local-b429aed4",
+        sessionDisplayId: "local-b429aed4",
+      },
+      outcome: "succeeded",
+      previousParams: null,
+      previousDisplayId: null,
+      previousLegacySessionId: null,
+    });
+
+    expect(result).toEqual({
+      params: null,
+      displayId: null,
+      legacySessionId: null,
+    });
+  });
+
   it("keeps non-Hermes arbitrary session ids unchanged", () => {
     const result = resolveNextSessionState({
       adapterType: "codex_local",
