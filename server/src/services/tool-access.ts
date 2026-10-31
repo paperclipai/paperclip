@@ -3,9 +3,11 @@ import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./t
 import { connectionHealthSchedule } from "./tool-access/catalog/health-schedule.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { connectionActorUserId } from "./tool-access/actor.js";
+import { getGitHubAppGrant, isGitHubAppConnection, parseGitHubAppConfig, refreshGitHubAppAccess } from "./github-app-credentials.js";
+import { createGitHubAppClient, GITHUB_APP_KEY_PATH } from "./github-app-client.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
 import { createConnectionCredentialValidation } from "./tool-access/connections/credential-validation.js";
-import { createConnectionGrants } from "./tool-access/connections/grants.js";
+import { assertManagedGrantReactivationAccess, createConnectionGrants } from "./tool-access/connections/grants.js";
 import { createConnectionInstalls } from "./tool-access/connections/installs.js";
 import { createConnectionRemoval } from "./tool-access/connections/removal.js";
 import { createToolRemoteHttp } from "./tool-access/remote-http.js";
@@ -1821,7 +1823,7 @@ export function toolAccessService(
             .orderBy(desc(toolConnections.updatedAt))
             .limit(1)
         : [undefined];
-    let retainedConnection = requestedResumeConnection ?? recoveredConnection;
+    let retainedConnection = requestedResumeConnection ?? (recoveredConnection && isGitHubAppConnection(recoveredConnection) ? undefined : recoveredConnection);
     const transport = method?.transport ?? "mcp_remote";
     const applicationType = transport === "rest_api" ? "rest_api"
       : transport === "mcp_remote" ? "mcp_http"
@@ -1840,7 +1842,8 @@ export function toolAccessService(
       existingApplication = null;
     }
     let applicationName = existingApplication?.name ?? requestedName;
-    let name = retainedConnection?.name ?? requestedName;
+    let name = (retainedConnection && isGitHubAppConnection(retainedConnection) ? input.name : undefined)
+      ?? retainedConnection?.name ?? requestedName;
     if (!existingApplication) {
       const applicationNames = await db
         .select({ name: toolApplications.name })
@@ -2090,6 +2093,13 @@ export function toolAccessService(
       isGoogleSheetsRobotMethod || !method
         ? null
         : normalizeConnectionMethodConfig(method, input.configValues ?? asRecord(asRecord(retainedConnection?.config).methodConfig));
+    if (galleryEntry?.slug === "github" && method?.key === "app-installation") {
+      const parsed = parseGitHubAppConfig(normalizedMethodConfig?.values);
+      if (retainedConnection && isGitHubAppConnection(retainedConnection)
+        && JSON.stringify(parsed) !== JSON.stringify(parseGitHubAppConfig(asRecord(retainedConnection.config).methodConfig))) {
+        throw badRequest("Reconnect preserves the App, installation and access policy. Create a new connection to change them.");
+      }
+    }
     const remoteUrlCredential =
       transport === "mcp_remote" && input.link
         ? splitRemoteUrlCredential(input.link)
@@ -2118,7 +2128,7 @@ export function toolAccessService(
           // Grant-backed setup keeps the full discovered catalog selectable;
           // the wizard projects the app's action defaults into policies at
           // finish time instead of using catalog quarantine as access state.
-          quarantineNewEntries: connectorToolPolicy(galleryEntry.slug).quarantineNewEntries,
+          quarantineNewEntries: method?.credentialExchange === "github_app_installation" || connectorToolPolicy(galleryEntry.slug).quarantineNewEntries,
           ...(remoteMcpConnector ? {
             mcpSessionRequired: true,
             mcpAuthMode: input.authMode ?? "auto",
@@ -2200,6 +2210,10 @@ export function toolAccessService(
     assertLocalStdioCanBeEnabled(transport, false);
 
     const credentialValues = input.credentialValues ?? {};
+    if (galleryEntry?.slug === "github" && method?.key === "app-installation"
+      && (credentialValues["credentials.privateKey"]?.length ?? 0) > 64 * 1024) {
+      throw badRequest("The GitHub App private key is too large.");
+    }
     // A curated method declares its auth kind. A pasted URL declares one only
     // under Advanced authentication; on the simple path it starts from what the
     // operator supplied and is upgraded to `oauth` when discovery proves the
@@ -2253,8 +2267,21 @@ export function toolAccessService(
       retainedMethodKey === method?.key &&
       (!remoteMcpConnector || (baseConfig.url === retainedConfig.url && genericAuthKind === retainedConnection.authKind)),
     );
+    const retainedAppGrant = canRetainCredentialMaterial && retainedConnection && isGitHubAppConnection(retainedConnection)
+      ? await getGitHubAppGrant(db, retainedConnection, { forReconnect: true })
+      : undefined;
+    if (retainedConnection && isGitHubAppConnection(retainedConnection) && (!retainedAppGrant || method?.key !== "app-installation"
+      || (retainedAppGrant.kind === "agent" && retainedAppGrant.subjectAgentId !== dedicatedAgentId))) {
+      throw badRequest("Reconnect must preserve the GitHub App ownership and method.");
+    }
+    if (retainedAppGrant && retainedConnection) {
+      await assertManagedGrantReactivationAccess(db, retainedConnection, retainedAppGrant, actor);
+    }
+    if (retainedAppGrant && retainedAppGrant.status !== "active" && !credentialValues[GITHUB_APP_KEY_PATH]?.trim()) {
+      throw badRequest("Enter a GitHub App private key to reconnect this inactive identity.");
+    }
     const retainedCredentialSecretRefs = canRetainCredentialMaterial
-      ? (retainedPersonalIdentity?.grant?.credentialSecretRefs ??
+      ? (retainedAppGrant?.credentialSecretRefs ?? retainedPersonalIdentity?.grant?.credentialSecretRefs ??
         retainedConnection?.credentialSecretRefs ??
         [])
       : [];
@@ -2661,18 +2688,65 @@ export function toolAccessService(
           });
         }
       } else if (dedicatedAgentId) {
-        // Managed OAuth creates the credential-bearing grant in the callback.
-        // Keep the connection free of organization secrets from the outset.
+        if (isGitHubAppConnection(connectionRow)) {
+          const appConnection = connectionRow;
+          const { previous, current } = await db.transaction(async (tx) => {
+            const [snapshot] = await tx.select({ grant: connectionGrants,
+              version: sql<string>`${connectionGrants.updatedAt}::text`,
+            }).from(connectionGrants).where(and(
+              eq(connectionGrants.companyId, companyId), eq(connectionGrants.connectionId, appConnection.id),
+              eq(connectionGrants.kind, "agent"), eq(connectionGrants.subjectAgentId, dedicatedAgentId),
+            )).for("update");
+            if (retainedAppGrant && snapshot?.version !== retainedAppGrant.updatedAtVersion) {
+              throw conflict("The GitHub App identity changed during reconnect. Please try again.");
+            }
+            const previous = snapshot?.grant;
+            if (previous) await assertManagedGrantReactivationAccess(tx, appConnection, previous, actor);
+            const values = { credentialSecretRefs, status: "active" as const, revokedAt: null,
+              revokedByUserId: null, revokedByAgentId: null, updatedAt: now() };
+            const [current] = previous
+              ? await tx.update(connectionGrants).set(values).where(eq(connectionGrants.id, previous.id)).returning()
+              : await tx.insert(connectionGrants).values({ ...values, companyId, connectionId: appConnection.id,
+                  kind: "agent", subjectAgentId: dedicatedAgentId, isDefault: false,
+                  createdByUserId: actor?.actorType === "user" ? actor.actorId : null }).returning();
+            return { previous, current: current! };
+          });
+          if (revivedConnectionPrevious) revivedGrantMutation = { previous: previous ?? null, current: current! };
+          await audit({ companyId, connectionId: connectionRow.id, action: previous ? "connection_grant.updated" : "connection_grant.created",
+            outcome: "success", actor, details: { kind: "agent", subjectAgentId: dedicatedAgentId } });
+        }
       } else {
-        const organizationGrant = await ensureDefaultOrganizationGrant(
-          connectionRow,
-          db,
-          revivedConnectionPrevious
-            ? (mutation) => {
-                revivedGrantMutation = mutation;
-              }
-            : undefined,
-        );
+        let organizationGrant: typeof connectionGrants.$inferSelect;
+        if (retainedAppGrant?.kind === "organization") {
+          const appConnection = connectionRow;
+          const [updated] = await db.transaction(async (tx) => {
+            const [currentGrant] = await tx.select().from(connectionGrants).where(and(
+              eq(connectionGrants.companyId, companyId), eq(connectionGrants.id, retainedAppGrant.id),
+            )).for("update");
+            if (!currentGrant) throw conflict("The GitHub App identity changed during reconnect. Please try again.");
+            await assertManagedGrantReactivationAccess(tx, appConnection, currentGrant, actor);
+            return tx.update(connectionGrants).set({
+              credentialSecretRefs, status: "active", isDefault: true, revokedAt: null,
+              revokedByUserId: null, revokedByAgentId: null, updatedAt: now(),
+            }).where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.id, retainedAppGrant.id),
+              sql`${connectionGrants.updatedAt} = ${retainedAppGrant.updatedAtVersion}::timestamptz`)).returning();
+          });
+          if (!updated) throw conflict("The GitHub App identity changed during reconnect. Please try again.");
+          organizationGrant = updated;
+          revivedGrantMutation = { previous: retainedAppGrant, current: updated };
+          await audit({ companyId, connectionId: connectionRow.id, action: "connection_grant.updated",
+            outcome: "success", actor, details: { kind: "organization" } });
+        } else {
+          organizationGrant = await ensureDefaultOrganizationGrant(
+            connectionRow,
+            db,
+            revivedConnectionPrevious
+              ? (mutation) => {
+                  revivedGrantMutation = mutation;
+                }
+              : undefined,
+          );
+        }
         if (credentialSource === "vercel_connect") {
           const derived = deriveVercelConnectSubject({
             credential: externalCredential!,
@@ -2895,7 +2969,9 @@ export function toolAccessService(
         connection: refresh.connection,
         catalog: refresh.catalog,
         actions: groupedActions(refresh.catalog),
-        suggestedDefaults: galleryEntry
+        suggestedDefaults: dedicatedAgentId
+          ? { ...recommendedDefaultsForApp(galleryEntry!, method?.key), access: { agentIds: [dedicatedAgentId] } }
+          : galleryEntry
           ? recommendedDefaultsForApp(galleryEntry, method?.key)
           : {
               access: "all_agents",
@@ -3001,6 +3077,9 @@ export function toolAccessService(
                   .delete(connectionGrants)
                   .where(eq(connectionGrants.id, current.id));
               }
+            }
+            if (connectionMutationIsStillCurrent) {
+              await syncConnectionCredentialBindings(tx, revivedConnectionPrevious);
             }
           });
         } catch (rollbackError) {
@@ -3141,6 +3220,16 @@ export function toolAccessService(
     await assertConnectorConnectionSetupEnabled(connection);
     if (connection.status === "archived")
       throw conflict("Archived app connections cannot be finished");
+    if (isGitHubAppConnection(connection)) {
+      const grant = await getGitHubAppGrant(db, connection);
+      if ((grant.kind === "agent" && (input.access === "all_agents" || input.access.agentIds.length !== 1
+          || input.access.agentIds[0] !== grant.subjectAgentId))
+        ) {
+        throw badRequest("Dedicated GitHub App identities require their assigned agent.");
+      }
+      await refreshGitHubAppAccess(db, connection);
+    }
+
     if (connection.config.mcpPreserveAccess === true && isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
       const [profile] = await db.select().from(toolProfiles).where(and(
         eq(toolProfiles.companyId, companyId), eq(toolProfiles.profileKey, `app:${connection.id}`),
@@ -3416,7 +3505,8 @@ export function toolAccessService(
       const profileBindings: ToolProfileBinding[] = [];
       // These connectors expose one agent-access choice. Commit installation
       // reach and permission bindings together, including an empty selection.
-      if (isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
+      if (isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)
+        || isGitHubAppConnection(connection)) {
         const desired = new Map(bindingInputs.flatMap((binding) => binding.targetType === "company" || binding.targetType === "agent"
           ? [[`${binding.targetType}:${binding.targetId}`, { targetType: binding.targetType, targetId: binding.targetId }] as const] : []));
         const removed = existingInstalls.filter((install) => !desired.has(`${install.targetType}:${install.targetId}`));
@@ -3625,13 +3715,26 @@ export function toolAccessService(
     if (providedFields.length === 0)
       throw badRequest("Enter a replacement credential to reconnect this app");
 
+    let appGrant: typeof connectionGrants.$inferSelect | undefined;
+    let appProviderTenant: (typeof connectionGrants.$inferSelect)["providerTenant"] = null;
+    if (isGitHubAppConnection(connection)) {
+      appGrant = await getGitHubAppGrant(db, connection, { forReconnect: true });
+      await assertManagedGrantReactivationAccess(db, connection, appGrant, actor);
+      const key = input.credentialValues[GITHUB_APP_KEY_PATH]?.trim();
+      if (!key) throw badRequest("Enter a replacement GitHub App private key");
+      const verified = await createGitHubAppClient().acquire(
+        `${companyId}:${connection.id}:${appGrant.id}:replacement`,
+        parseGitHubAppConfig(connection.config.methodConfig), key, true,
+      );
+      appProviderTenant = { github: verified.github };
+    }
     const personalIdentity = await fixedPersonalIdentityForReconnect(
       connection,
       undefined,
       actor,
     );
     const credentialSecretRefs = [
-      ...(personalIdentity?.grant?.credentialSecretRefs ??
+      ...(appGrant?.credentialSecretRefs ?? personalIdentity?.grant?.credentialSecretRefs ??
         connection.credentialSecretRefs),
     ];
     const credentialRefs: McpConnectionCredentialRef[] = [
@@ -3648,6 +3751,21 @@ export function toolAccessService(
       await tx.select({ id: toolConnections.id }).from(toolConnections)
         .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId)))
         .for("update");
+      if (appGrant) {
+        const [currentConnection] = await tx.select().from(toolConnections).where(and(
+          eq(toolConnections.companyId, companyId), eq(toolConnections.id, connection.id),
+        ));
+        const [currentGrant] = await tx.select().from(connectionGrants).where(and(
+          eq(connectionGrants.companyId, companyId), eq(connectionGrants.id, appGrant.id),
+        ));
+        if (!currentConnection || !currentGrant
+          || currentConnection.updatedAt.getTime() !== connection.updatedAt.getTime()
+          || currentGrant.updatedAt.getTime() !== appGrant.updatedAt.getTime()
+          || currentGrant.status !== appGrant.status) {
+          throw conflict("The GitHub App identity changed during key verification. Please try again.");
+        }
+        await assertManagedGrantReactivationAccess(tx, currentConnection, currentGrant, actor);
+      }
       for (const field of providedFields) {
         const value = input.credentialValues[field.configPath]!.trim();
         if (field.placement === "url" && !remoteUrlCredentialMatchesPublicUrl(String(connection.config.url ?? ""), value)) {
@@ -3687,6 +3805,20 @@ export function toolAccessService(
       }
 
       const updatedAt = new Date();
+      if (appGrant) {
+        await tx.update(connectionGrants).set({
+          credentialSecretRefs, providerTenant: appProviderTenant, updatedAt,
+          status: "active", revokedAt: null, revokedByUserId: null, revokedByAgentId: null,
+        }).where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.id, appGrant.id)));
+        const binding = actorBinding(actor);
+        await tx.insert(toolAccessAuditEvents).values({
+          companyId, connectionId: connection.id,
+          actorType: binding.actorType ?? "system", actorId: binding.actorId,
+          action: "connection_grant.updated", outcome: "success",
+          reasonCode: "github_app_identity_reconnected",
+          details: { kind: appGrant.kind, subjectAgentId: appGrant.subjectAgentId, subjectUserId: appGrant.subjectUserId },
+        });
+      }
       if (personalIdentity) {
         const grantValues = {
           credentialSecretRefs,
@@ -3716,10 +3848,10 @@ export function toolAccessService(
       const [nextConnection] = await tx
         .update(toolConnections)
         .set({
-          credentialRefs,
+          credentialRefs: appGrant ? [] : credentialRefs,
           // Personal reconnect rotates the existing user's grant. The
           // connection-level organization slot stays exactly as it was.
-          credentialSecretRefs: personalIdentity
+          credentialSecretRefs: appGrant && appGrant.kind !== "organization" ? [] : personalIdentity
             ? connection.credentialSecretRefs
             : credentialSecretRefs,
           lastError: null,
@@ -3728,7 +3860,7 @@ export function toolAccessService(
         .where(eq(toolConnections.id, connection.id))
         .returning();
       await syncConnectionCredentialBindings(tx, nextConnection,
-        personalIdentity ? credentialSecretRefs : []);
+        personalIdentity || appGrant ? credentialSecretRefs : []);
       return nextConnection;
     });
     const health = await checkConnectionHealth(updated.id, actor);
@@ -4243,10 +4375,8 @@ export function toolAccessService(
       return toApplication(row);
     },
 
-    // Repository discovery uses credential audiences, not connection-management
-    // visibility. An administrator cannot browse another user's private repos.
     listProjectRepositories: async (companyId: string, userId: string | null, localTrusted = false) =>
-      toolAccessService(db).listGitHubRepositories(companyId, userId, localTrusted),
+      toolAccessService(db).listGitHubRepositories(companyId, userId, localTrusted, { includeGitHubApps: true }),
 
     // Return identifiers, never credentials, so each attempted read can recheck its grant.
     githubReadConnectionIds: async (companyId: string, userId: string | null, localTrusted = false): Promise<string[]> => {
@@ -4290,6 +4420,7 @@ export function toolAccessService(
       companyId: string,
       userId: string | null,
       localTrusted = false,
+      options: { includeGitHubApps?: boolean } = {},
     ) => measureRunPhase("connectors.github.catalog", async () => {
       const [connections, grants, members, memberships] = await Promise.all([
         measureRunPhase("connectors.github.connections", () => db
@@ -4336,6 +4467,25 @@ export function toolAccessService(
           asRecord(connection.config).sourceTemplateKey !== "github"
         )
           continue;
+        if (isGitHubAppConnection(connection)) {
+          if (!options.includeGitHubApps || !(localTrusted || memberships.length > 0)) continue;
+          if (connection.credentialPolicy !== "per_agent" && !grants.some(grant =>
+            grant.connectionId === connection.id && canBrowseProjectRepositoryGrant({
+              grant, userId, activeMember: localTrusted || memberships.length > 0,
+              audience: members.filter(member => member.grantId === grant.id).map(member => member.subjectId),
+            }))) continue;
+          connectionCount += 1;
+          usableConnections.push({ id: connection.id, name: connection.name });
+          try {
+            const result = await refreshGitHubAppAccess(db, connection);
+            for (const repo of result.github.repositories ?? []) {
+              mergeProjectRepository(repositories, repo, connection.name, connection.id);
+            }
+          } catch {
+            failedConnectionCount += 1;
+          }
+          continue;
+        }
         const connectionGrants = grants.filter(
           (grant) => grant.connectionId === connection.id,
         );
@@ -4620,6 +4770,9 @@ export function toolAccessService(
         });
       }
       if (existing.connectionPurpose === "ai" && (input.config || input.transportConfig || input.credentialRefs || input.credentialSecretRefs || (input.credentialPolicy && input.credentialPolicy !== existing.credentialPolicy))) throw badRequest("Use AI account reconnect to change credentials. Provider, sign-in method, and ownership cannot be changed.");
+      if ((isGitHubAppConnection(existing) || isGitHubAppConnection({ config: input.config ?? input.transportConfig ?? {} })) && (input.config || input.transportConfig || input.credentialRefs || input.credentialSecretRefs || input.credentialPolicy)) {
+        throw badRequest("Use reconnect to replace a GitHub App key. Create a new connection to change its identity or access policy.");
+      }
       const config = normalizeGoogleSheetsConnectionConfig(
         input.config ?? input.transportConfig ?? existing.config,
       );

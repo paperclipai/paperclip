@@ -3,7 +3,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition } from "@paperclipai/shared";
+import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, defaultConnectionAgentInstructions, getAppStoreDefinition } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { aiConnectionsApi } from "@/api/ai-connections";
@@ -24,6 +24,7 @@ vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: {
 } }));
 const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
+const listConnectionGrantsMock = vi.hoisted(() => vi.fn());
 const getConnectionMock = vi.hoisted(() => vi.fn());
 const getConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
@@ -82,6 +83,7 @@ vi.mock("@/api/tools", () => ({
     listGallery: (companyId: string) => listGalleryMock(companyId),
     listApplications: (companyId: string) => listApplicationsMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
+    listConnectionGrants: (id: string) => listConnectionGrantsMock(id),
     getConnection: (id: string) => getConnectionMock(id),
     getConnectionInstalls: (id: string) => getConnectionInstallsMock(id),
     connectApp: (companyId: string, input: unknown) => connectAppMock(companyId, input),
@@ -375,6 +377,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     listApplicationsMock.mockResolvedValue({ applications: [] });
     listConnectionsMock.mockResolvedValue({ connections: [] });
+    listConnectionGrantsMock.mockResolvedValue({ grants: [] });
     getConnectionInstallsMock.mockResolvedValue({ installs: [{ targetType: "company", targetId: "company-1" }] });
     startOAuthMock.mockResolvedValue(oauthStartResponse("conn-notion", "notion", "https://mcp.notion.com/authorize?state=resumed"));
     finishAppMock.mockResolvedValue({});
@@ -465,6 +468,157 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await render();
     expect(container.querySelector('[role="alert"]')?.textContent).toBe("Sign-in attempt not found");
     expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
+  it("requires an owner after switching to a customer-owned GitHub App", async () => {
+    mockSearch.value = "source=github&method=mcp-key";
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    await render();
+    await openAccessAdvanced();
+    await act(async () => radioContaining("Custom GitHub App")!.click());
+    await flushReact();
+
+    await openAccessAdvanced();
+    await act(async () => radioContaining("A dedicated account for an agent")!.click());
+    expect(buttonContaining("Select agents")).toBeDefined();
+    await act(async () => {
+      setInputValue(container.querySelector<HTMLInputElement>('#connection-name')!, "Author bot");
+      setInputValue(container.querySelector<HTMLInputElement>('input[placeholder="123456"]')!, "123456");
+      setInputValue(container.querySelector<HTMLInputElement>('input[placeholder="12345678"]')!, "12345678");
+      setTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Repositories"]')!, "example/repository");
+      setTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[autocomplete="off"]')!, "fixture-pem");
+    });
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+    expect(connectAppMock).not.toHaveBeenCalled();
+    await act(async () => buttonContaining("Select agents")!.click());
+    await act(async () => document.body.querySelector<HTMLButtonElement>('[aria-label="Allow Ada"]')!.click());
+    await act(async () => buttonByText("Connect")!.click());
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      connectionMethodKey: "app-installation",
+      name: "Author bot",
+      grantKind: "agent",
+      subjectAgentId: "agent-1",
+    }));
+  });
+
+  it.each([
+    ["page", "user", "specific"], ["dialog", "user", "all"],
+    ["page", "organization", "all"], ["dialog", "organization", "specific"],
+  ] as const)("connects an App on %s with %s ownership and %s agent access", async (host, kind, reach) => {
+    mockSearch.value = "source=github&method=app-installation";
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    await render(undefined, false, <ConnectionSetupFlow host={host} serviceSlug="github" />);
+    await openAccessAdvanced();
+    await act(async () => radioContaining(kind === "user" ? "My GitHub account" : "Shared organization GitHub account")!.click());
+    if (reach === "specific") {
+      await act(async () => radioContaining("Only agents I choose")!.click());
+      await act(async () => buttonContaining("Select agents")!.click());
+      await act(async () => document.body.querySelector<HTMLButtonElement>('[aria-label="Allow Ada"]')!.click());
+      await act(async () => document.body.querySelector<HTMLButtonElement>('[aria-label="Allow Grace"]')!.click());
+    } else {
+      await act(async () => radioContaining("Any agent")!.click());
+    }
+    await act(async () => {
+      setInputValue(container.querySelector<HTMLInputElement>('input[placeholder="123456"]')!, "123456");
+      setInputValue(container.querySelector<HTMLInputElement>('input[placeholder="12345678"]')!, "12345678");
+      setTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Repositories"]')!, "example/repository");
+      setTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[autocomplete="off"]')!, "fixture-pem");
+    });
+    await act(async () => buttonByText("Connect")!.click());
+    await flushReact();
+    const submitted = connectAppMock.mock.calls[0]![1];
+    expect(submitted.connectionMethodKey).toBe("app-installation");
+    expect(submitted.grantKind ?? "organization").toBe(kind);
+    expect(submitted.subjectAgentId).toBeUndefined();
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", "conn-1", expect.objectContaining({
+      access: reach === "all" ? "all_agents" : { agentIds: ["agent-1", "agent-2"] },
+    }));
+  });
+
+  it.each(["page", "dialog"] as const)("connects custom GitHub permissions on %s and preserves template selection", async host => {
+    mockSearch.value = "source=github&method=app-installation";
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    await render(undefined, false, <ConnectionSetupFlow host={host} serviceSlug="github" />);
+    await act(async () => {
+      setInputValue(container.querySelector<HTMLInputElement>('input[placeholder="123456"]')!, "123456");
+      setInputValue(container.querySelector<HTMLInputElement>('input[placeholder="12345678"]')!, "12345678");
+      setTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Repositories"]')!, "example/repository");
+      setTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[autocomplete="off"]')!, "fixture-pem");
+    });
+    expect(buttonByText("Connect")?.disabled).toBe(false);
+    expect(container.querySelector('[aria-label="Custom permissions (JSON)"]')).toBeNull();
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="GitHub permissions"]')!;
+    const choose = async (value: string) => act(async () => {
+      select.value = value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await choose("custom");
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+    const customPermissions = '{"contents":"read","checks":"write"}';
+    await act(async () => setTextareaValue(container.querySelector<HTMLTextAreaElement>('[aria-label="Custom permissions (JSON)"]')!, customPermissions));
+    expect(buttonByText("Connect")?.disabled).toBe(false);
+    await choose("reviewer");
+    expect(container.querySelector('[aria-label="Custom permissions (JSON)"]')).toBeNull();
+    expect(buttonByText("Connect")?.disabled).toBe(false);
+    await choose("custom");
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Custom permissions (JSON)"]')?.value).toBe(customPermissions);
+    await act(async () => buttonByText("Connect")!.click());
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      connectionMethodKey: "app-installation", configValues: expect.objectContaining({ permissionProfile: "custom", customPermissions }),
+    }));
+  });
+
+  it.each([["page", "agent", "read", "active"], ["dialog", "agent", "read", "active"], ["page", "user", "read", "active"], ["dialog", "user", "read", "active"], ["page", "organization", "read", "active"], ["dialog", "organization", "read", "active"], ["page", "user", "custom", "active"], ["dialog", "organization", "custom", "active"], ["page", "agent", "read", "revoked"], ["dialog", "user", "read", "revoked"], ["page", "organization", "custom", "revoked"]] as const)("restores and renames a GitHub App on %s reconnect with %s ownership and %s permissions (%s)", async (host, kind, permissionProfile, status = "active") => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=github&reconnect=${connectionId}`;
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-github", metadata: { sourceTemplateKey: "github" } }] });
+    const configValues = { version: "1", appId: "123456", installationId: "12345678", repositories: "example/repository", permissionProfile, ...(permissionProfile === "custom" ? { customPermissions: '{"contents":"read","checks":"write"}' } : {}) };
+    listConnectionsMock.mockResolvedValue({ connections: [{
+      id: connectionId, applicationId: "app-github", name: "Old bot", status: "active", credentialPolicy: kind === "agent" ? "per_agent" : kind === "user" ? "per_user" : "shared", authKind: "api_key",
+      config: { sourceTemplateKey: "github", connectionMethodKey: "app-installation", methodConfig: configValues }, transportConfig: {},
+    }] });
+    listConnectionGrantsMock.mockResolvedValue({ grants: [
+      ...(status === "active" ? [{ kind: "agent", status: "revoked", subjectAgentId: "former-agent", credentialSecretRefs: [] }] : []),
+      { kind, status, subjectAgentId: kind === "agent" ? "agent-1" : null, subjectUserId: kind === "user" ? "board" : null, credentialSecretRefs: [{ configPath: "credentials.privateKey" }] },
+    ] });
+    getConnectionInstallsMock.mockResolvedValue({ installs: kind === "organization"
+      ? [{ targetType: "company", targetId: "company-1" }]
+      : [{ targetType: "agent", targetId: "agent-1" }, ...(kind === "user" ? [{ targetType: "agent", targetId: "agent-2" }] : [])] });
+    if (host === "page") listConnectionGrantsMock.mockRejectedValueOnce(new Error("temporary failure"));
+    await render(undefined, false, <ConnectionSetupFlow host={host} serviceSlug="github" />);
+    await flushReact();
+    if (host === "page") {
+      expect(buttonByText("Connect")?.disabled).toBe(true);
+      expect(container.textContent).toContain("Couldn’t load the saved connection ownership");
+      await act(async () => buttonByText("Try again")!.click());
+      await flushReact();
+    }
+    expect(container.querySelector<HTMLInputElement>('#connection-name')?.value).toBe("Old bot");
+    expect(container.querySelector<HTMLInputElement>('input[placeholder="123456"]')?.matches(":disabled")).toBe(true);
+    expect(buttonByText("Connect")?.disabled).toBe(status !== "active");
+    if (status !== "active") {
+      await act(async () => setTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[data-private="true"]')!, "replacement-key"));
+      expect(buttonByText("Connect")?.disabled).toBe(false);
+    }
+    if (permissionProfile === "custom") {
+      const custom = container.querySelector<HTMLTextAreaElement>('[aria-label="Custom permissions (JSON)"]')!;
+      expect(custom.value).toBe(configValues.customPermissions);
+      expect(custom.matches(":disabled")).toBe(true);
+    }
+    await act(async () => setInputValue(container.querySelector<HTMLInputElement>('#connection-name')!, "Review bot"));
+    await act(async () => buttonByText("Connect")!.click());
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      name: "Review bot", reconnectConnectionId: connectionId, ...(kind === "agent" ? { subjectAgentId: "agent-1" } : {}), configValues, credentialValues: status === "active" ? {} : { "credentials.privateKey": "replacement-key" },
+    }));
+    const submitted = connectAppMock.mock.calls[0]![1];
+    expect(submitted.grantKind ?? "organization").toBe(kind);
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", "conn-1", expect.objectContaining({
+      access: kind === "organization" ? "all_agents" : { agentIds: kind === "agent" ? ["agent-1"] : ["agent-1", "agent-2"] },
+    }));
   });
 
   it("keeps Honcho setup blocked until the provider workspace is supplied", async () => {
@@ -1752,6 +1906,37 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).not.toHaveBeenCalled();
   });
 
+  it.each(["page", "dialog"] as const)("reconnects a dedicated managed GitHub account on %s without changing agent access", async (host) => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=github&reconnect=${connectionId}`;
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-github", status: "active", metadata: { sourceTemplateKey: "github" } }] });
+    const connection = {
+      id: connectionId, applicationId: "app-github", authKind: "oauth", credentialPolicy: "per_agent", status: "active",
+      agentInstructions: { ...defaultConnectionAgentInstructions(GITHUB.agentInstructions)!, enabled: false },
+      config: { sourceTemplateKey: "github", connectionMethodKey: "managed", oauth: { connectorSubjectAgentId: "agent-1" } }, transportConfig: {},
+    };
+    listConnectionsMock.mockResolvedValue({ connections: [connection] });
+    connectAppMock.mockResolvedValue({ connectionId, connection, auth: { kind: "oauth" } });
+    startOAuthMock.mockResolvedValue(oauthStartResponse(connectionId, "github", "https://github.com/login/oauth/authorize?state=reconnect"));
+
+    await render(undefined, false, <ConnectionSetupFlow host={host} serviceSlug="github" />);
+    await flushReact();
+    expect(container.textContent).toContain("agent access stays as it is");
+    const handoff = buttonByText("Continue to GitHub");
+    expect(handoff).toBeDefined();
+    expect(handoff?.disabled).toBe(false);
+    expect(buttonContaining("Select agents")).toBeUndefined();
+    await act(async () => handoff!.click());
+    await flushReact();
+
+    expect(startOAuthMock).toHaveBeenCalledWith(connectionId, { asCurrentUser: false, asAgentId: "agent-1" });
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "github", connectionMethodKey: "managed", reconnectConnectionId: connectionId, grantKind: "agent",
+    }));
+    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
+  });
+
   it("keeps provider-specific wording and the handoff cue for direct OAuth", async () => {
     mockSearch.value = "source=notion";
     listGalleryMock.mockResolvedValue({ apps: [NOTION] });
@@ -1785,6 +1970,53 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(container.textContent).toContain("Connect with Paperclip");
     expect(container.textContent).not.toContain("GitHub token");
+  });
+
+  it.each([
+    [false, "page"], [true, "page"], [false, "dialog"], [true, "dialog"],
+  ] as const)("connects a named GitHub App without managed OAuth (enrolled: %s, host: %s)", async (configured, host) => {
+    mockSearch.value = "source=github";
+    listGalleryMock.mockResolvedValue({
+      apps: [{
+        ...GITHUB,
+        methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
+        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+      }],
+    });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({
+      configured,
+      status: configured ? "active" : "not_configured",
+    });
+    await render(undefined, false, host === "dialog"
+      ? <ConnectionSetupFlow host="dialog" serviceSlug="github" forceNewConnection /> : undefined);
+    await act(async () => buttonByText("Connect a custom GitHub App")!.click());
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Connect with Paperclip");
+    expect(container.textContent).not.toContain("GitHub sign-in is unavailable");
+    expect(buttonByText("Continue to GitHub")).toBeUndefined();
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+    await openAccessAdvanced();
+    await act(async () => radioContaining("A dedicated account for an agent")!.click());
+    await act(async () => buttonContaining("Select agents")!.click());
+    await act(async () => document.body.querySelector<HTMLButtonElement>('[aria-label="Allow Ada"]')!.click());
+    await act(async () => {
+      setInputValue(container.querySelector<HTMLInputElement>('#connection-name')!, "Author bot");
+      setInputValue(container.querySelector<HTMLInputElement>('input[placeholder="123456"]')!, "123456");
+      setInputValue(container.querySelector<HTMLInputElement>('input[placeholder="12345678"]')!, "12345678");
+      setTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Repositories"]')!, "example/repository");
+      setTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[autocomplete="off"]')!, "fixture-pem");
+    });
+    await act(async () => buttonByText("Connect")!.click());
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      connectionMethodKey: "app-installation",
+      name: "Author bot",
+      grantKind: "agent",
+      subjectAgentId: "agent-1",
+    }));
+    expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
   });
 
   it("restores the setup step after the one-time enrollment callback", async () => {
@@ -4140,6 +4372,7 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     listGalleryMock.mockResolvedValue({ apps: [ZAPIER] });
     listApplicationsMock.mockResolvedValue({ applications: [] });
     listConnectionsMock.mockResolvedValue({ connections: [] });
+    listConnectionGrantsMock.mockResolvedValue({ grants: [] });
     listAgentsMock.mockResolvedValue([]);
     finishAppMock.mockResolvedValue({});
     putConnectionInstallsMock.mockResolvedValue({ connectionId: "conn-1", installs: [] });

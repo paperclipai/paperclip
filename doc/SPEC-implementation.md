@@ -394,9 +394,20 @@ Project source repositories use the existing `project_workspaces` collection.
 Each selected GitHub repository has a canonical `repo_url` and stable provider ID
 in `metadata.githubRepositoryId`; the first workspace remains the execution default.
 The board can select multiple repositories from its usable personal and shared
-GitHub grants. Selection does not grant runtime credential access. Legacy workspace
-URLs remain valid. Project creation and repository replacement are transactional.
+GitHub grants, plus verified company-owned GitHub App repositories for active
+company members or the local trusted board. Selection does not grant runtime
+credential access. Legacy workspace URLs remain valid. Project creation and
+repository replacement are transactional.
 See `doc/project-repositories.md` for the API and UI contract.
+
+Customer-owned GitHub App credentials accept Read, Author, and Reviewer permission
+templates or an explicit custom JSON permission map. Custom permissions replace
+the template and must be granted by the installation. Token requests restrict
+repositories and permissions explicitly. Reconnect preserves the saved scope.
+The same installation identity supplies hosted GitHub MCP discovery and calls
+through the existing action catalog, profiles, approvals, quarantine, and audit
+path. Private keys never reach MCP. Legacy REST App connections remain usable;
+new actions require review. Run discovery and invocation select the same identity.
 
 ## 7.6 `issues` (core task entity)
 

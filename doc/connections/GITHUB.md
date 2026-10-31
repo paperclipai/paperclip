@@ -5,6 +5,10 @@ compatibility method. Cloud owns the fixed public OAuth callback and signed
 webhook inbox; provider tokens are sealed to the enrolled instance and stored
 only in its existing encrypted secret system.
 
+Customer-owned Apps can also provide MCP tools, Git and `gh` credentials
+without Paperclip Cloud enrollment. See [Customer-owned GitHub Apps](GITHUB-APP.md)
+for setup, permission profiles, token lifecycle, and current verification limits.
+
 ## Catalog entries
 
 **GitHub** connects an account for repository tools, Git, and `gh`, and opens
@@ -157,7 +161,7 @@ to a personal access token. A successful retry preserves the chosen audience.
 
 ## GitHub Actions tools
 
-Managed and PAT connections request `X-MCP-Toolsets: default,actions` for MCP
+Managed, PAT, and customer-owned App connections request `X-MCP-Toolsets: default,actions` for MCP
 discovery and invocation. GitHub's default catalog excludes Actions; granting
 Actions permissions alone does not expose workflow tools. Existing connections
 can use **Refresh actions** after upgrading to discover the added tools.

@@ -1,4 +1,6 @@
 import { connectionActorUserId } from "./actor.js";
+import { GITHUB_APP_MCP_URL } from "../github-app-client.js";
+import { isGitHubAppConnection, refreshGitHubAppAccess } from "../github-app-credentials.js";
 import type { ActorInfo } from "./types.js";
 import { oauthConfig } from "./oauth/metadata.js";
 import { remoteEndpoint } from "./connection-methods.js";
@@ -115,6 +117,10 @@ export function createConnectionCredentialAccess(db: Db, { secrets, audit, verce
     actor?: ActorInfo,
     options: { forceRefresh?: boolean } = {},
   ): Promise<Record<string, string>> {
+    if (isGitHubAppConnection(connection)) {
+      const credential = await refreshGitHubAppAccess(db, connection, options.forceRefresh);
+      return { Authorization: `Bearer ${credential.token}` };
+    }
     if (connection.credentialSource === "vercel_connect") {
       const grant = await vercelGrantForConnection(connection, actor);
       return resolveVercelCredentialHeaders(connection, grant, options);
@@ -258,6 +264,7 @@ export function createConnectionCredentialAccess(db: Db, { secrets, audit, verce
     connection: typeof toolConnections.$inferSelect,
     actor?: ActorInfo,
   ): Promise<string> {
+    if (isGitHubAppConnection(connection)) return GITHUB_APP_MCP_URL;
     const publicEndpoint = remoteEndpoint(connection.config);
     const ref = connection.credentialRefs.find(
       (candidate) => candidate.placement === "url",

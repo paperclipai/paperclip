@@ -1,6 +1,8 @@
 import { notifyChatConnectionObservation } from "../../chat-channels/configuration-work-notifications.js";
 import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import { connectionActorUserId } from "../actor.js";
+import { projectedConnectionHeaders } from "../connection-methods.js";
+import { isGitHubAppConnection, refreshGitHubAppAccess } from "../../github-app-credentials.js";
 import { assertSupportedConnection } from "../connections/setup-policy.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
 import { createGitHubGrantContinuity } from "../github-grant-continuity.js";
@@ -90,7 +92,13 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
       assertSupportedConnection(connection);
       const config = asRecord(connection.config);
       const oauth = asRecord(config.oauth);
-      if (
+      if (isGitHubAppConnection(connection)) {
+        const credential = await refreshGitHubAppAccess(db, connection, true);
+        await remoteTools(connection, {
+          ...projectedConnectionHeaders(connection),
+          Authorization: `Bearer ${credential.token}`,
+        }, actor);
+      } else if (
         config.sourceTemplateKey === "github" &&
         oauth.connectorProfile === "github.code"
       ) {
@@ -160,7 +168,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
         "ok",
         unavailableServices.length > 0
           ? `Connected. Google services unavailable: ${unavailableServices.join(", ")}. Other services remain available; retry refreshing actions.`
-          : config.sourceTemplateKey === "github" &&
+          : isGitHubAppConnection(connection) ? "GitHub App MCP, Git and gh access is available." : config.sourceTemplateKey === "github" &&
           oauth.connectorProfile === "github.code"
           ? "GitHub account, installation, and repository access are available."
           : restConnectorFor(connection)
@@ -208,7 +216,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
         outcome: "failure",
         reasonCode: failure.code,
         actor,
-        details: { status: failure.status, transport: connection.transport },
+        details: { status: failure.status, transport: connection.transport, ...(failure.reason ? { reason: failure.reason } : {}) },
       });
       // Keep GitHub's recovery links so Refresh access can point at the exact
       // installation page, such as the one with the Unsuspend button.
@@ -221,6 +229,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
           : {};
       throw retainMcpConnectionFailure(error, new HttpError(healthFailureHttpStatus(failure), failure.message, {
         code: failure.code,
+        ...(failure.reason ? { reason: failure.reason } : {}),
         connection: toConnection(updated),
         runtimeSlot,
         setupUrl: connectionSetupUrl(connection),

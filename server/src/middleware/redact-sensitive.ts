@@ -27,6 +27,7 @@ const SENSITIVE_KEYS = new Set<string>([
   "configuration_token",
   "credential",
   "credentials",
+  "credentialvalues",
   "password",
   "currentpassword",
   "newpassword",

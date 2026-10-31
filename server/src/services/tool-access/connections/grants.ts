@@ -1,9 +1,10 @@
 import type { ConnectionManagementContext } from "../../connection-management.js";
+import { authorizationService, type AuthorizationActor } from "../../authorization.js";
 import { connectionActorUserId } from "../actor.js";
 import { toConnectionGrant } from "./projection.js";
 import { actorBinding } from "../actor.js";
 import { vercelConnectResourcesFor } from "../vercel-credentials.js";
-import type { ActorInfo } from "../types.js";
+import type { ActorInfo, DbTransaction } from "../types.js";
 import { oauthConfig } from "../oauth/metadata.js";
 import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -18,6 +19,36 @@ type GrantDependencies = {
   assertSecretRefs: ReturnType<typeof createConnectionCredentialValidation>;
   vercelConnect: VercelConnectClient | null;
 };
+
+export async function assertManagedGrantReactivationAccess(
+  db: Db | DbTransaction,
+  connection: typeof toolConnections.$inferSelect,
+  grant: typeof connectionGrants.$inferSelect,
+  actor?: ActorInfo,
+) {
+  if (grant.kind === "user" || (grant.status === "active"
+    && !grant.revokedAt && !grant.revokedByUserId && !grant.revokedByAgentId)) return;
+  const principal: AuthorizationActor = actor?.managementContext?.actor ?? {
+    type: actor?.actorType === "user" ? "board" : actor?.actorType === "agent" ? "agent" : "none",
+    userId: connectionActorUserId(actor),
+    agentId: actor?.actorType === "agent" ? actor.actorId : undefined,
+    companyId: connection.companyId,
+    source: actor?.actorSource,
+  };
+  const resource = {
+    type: "connection_management" as const, companyId: connection.companyId,
+    connectionId: connection.id, operation: "reactivate_connection_grant",
+    purpose: "tool" as const,
+    provider: typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null,
+    targetAgentId: grant.kind === "agent" ? grant.subjectAgentId : null,
+  };
+  const decision = await authorizationService(db).decide({
+    actor: principal, action: "connections:configure", resource, scope: resource,
+  });
+  if (!decision.allowed) throw forbidden("Current connection-manager authority is required to reactivate this grant", {
+    reason: decision.reason, code: decision.code,
+  });
+}
 
 export function createConnectionGrants(db: Db, { getConnectionRow, assertSecretRefs, vercelConnect }: GrantDependencies) {
   return {

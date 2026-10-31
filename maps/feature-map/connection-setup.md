@@ -305,3 +305,27 @@ admission at those boundaries. Verify a served deployment and provider settings,
 not only the catalog action count. Vercel preview requires an existing deployment;
 its provider makes the first deployment production, so an empty-project preview
 must fail before submission and explain the explicit production prerequisite.
+
+### Custom GitHub App setup and recovery (2026-10-25)
+
+`connection-setup/credentials`, `connection-setup/identity-and-access`, and
+`connection-setup/draft-recovery` include **GitHub → Custom GitHub App** in the
+page and inline setup hosts. This method works without Paperclip Cloud enrollment.
+Enter the App or Client ID, installation ID, explicit repositories, permission
+preset or custom map, and multiline PEM. Personal, shared, and dedicated ownership
+use existing vault grants; dedicated ownership selects exactly one agent.
+
+Reconnect preserves the App, installation, scope, ownership, and selected agents.
+An active grant may reuse its saved key; an inactive grant requires a submitted
+key. Verification failure preserves the old grant and credential. Successful
+recovery reuses its identity and clears revocation fields. Permissions shows the
+saved public App configuration and a private-key replacement control.
+
+Verification: provider-fixture database scenarios in
+[tool-access-service.test.ts](../../server/src/__tests__/tool-access-service.test.ts)
+cover the three ownership modes with preset/custom permissions, key rejection,
+revoked-grant recovery, and catalog review preservation. Component scenarios in
+[AppsConnect.test.tsx](../../ui/src/pages/apps/AppsConnect.test.tsx) cover both setup
+hosts and required replacement input for inactive identities. These are fixture
+checks; live GitHub read/write, bot attribution, renewal, rotation, and revocation
+remain unqualified. Follow the [App acceptance guide](../../doc/connections/GITHUB-APP.md).

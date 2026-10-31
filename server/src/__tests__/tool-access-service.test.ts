@@ -1,7 +1,7 @@
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import * as fs from "node:fs/promises";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID, verify } from "node:crypto";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,6 +81,7 @@ import {
   projectConnectionMethodToolArguments,
   toolAccessService,
 } from "../services/tool-access.js";
+import { refreshGitHubAppAccess, resolveGitHubAppCredential } from "../services/github-app-credentials.js";
 import { accessService } from "../services/access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
@@ -99,6 +100,16 @@ import * as sentry from "../sentry.js";
 import { HttpError } from "../errors.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import { invalidatePaperclipCloudConnectorCapabilities, PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
+
+vi.mock("../services/github-app-client.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../services/github-app-client.js")>();
+  return {
+    ...original,
+    createGitHubAppClient: (...args: Parameters<typeof original.createGitHubAppClient>) =>
+      original.createGitHubAppClient(args[0] ?? ((...request: Parameters<typeof fetch>) => globalThis.fetch(...request)), args[1]),
+  };
+});
+
 
 const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL");
 const embeddedPostgresSupport = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -17796,6 +17807,592 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it.each(["private_key", "permissions", "installation", "network"] as const)(
+    "preserves GitHub App %s diagnostics through health/catalog endpoints and audit",
+    async (reason) => {
+      const company = await createCompany(db);
+      const agent = await createAgent(db, company.id);
+      const service = createTestToolAccessService(db);
+      const application = await service.createApplication(company.id, { name: "GitHub", type: "rest_api" });
+      const connection = await service.createConnection(company.id, {
+        applicationId: application.id, name: "GitHub App diagnostics", transport: "rest_api", status: "draft", credentialPolicy: "per_agent",
+        config: { sourceTemplateKey: "github", connectionMethodKey: "app-installation", methodConfig: {
+          version: "1", appId: "123", installationId: "456", repositories: "owner/repo", permissionProfile: "read",
+        } },
+      });
+      const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey
+        .export({ type: "pkcs8", format: "pem" }).toString();
+      const secret = await secretService(db).create(company.id, {
+        provider: "local_encrypted", name: "App PEM", key: `github.app.${randomUUID()}`,
+        value: reason === "private_key" ? "sensitive invalid crypto input" : privateKey,
+      });
+      await db.delete(connectionGrants).where(eq(connectionGrants.connectionId, connection.id));
+      await db.insert(connectionGrants).values({
+        companyId: company.id, connectionId: connection.id, kind: "agent", subjectAgentId: agent.id, status: "active",
+        credentialSecretRefs: [{ configPath: "credentials.privateKey", secretId: secret.id, versionSelector: "latest" }],
+      });
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+        if (reason === "network") throw new Error("sensitive network details");
+        const path = String(url).replace("https://api.github.com", "");
+        if (path === "/app") return Response.json({ id: 123, slug: "test-app" });
+        if (reason === "installation") return Response.json({ message: "sensitive provider body" }, { status: 403 });
+        return Response.json({ id: 456, app_id: 123, account: { login: "owner" }, permissions: {} });
+      });
+      const app = createRouteApp(db);
+      const guidance = {
+        private_key: "The private key could not be read as an RSA PEM.",
+        permissions: "The installation lacks the selected permissions.",
+        installation: "GitHub could not verify this installation for the App.",
+        network: "The GitHub request failed.",
+      }[reason];
+      for (const endpoint of ["health-check", "catalog/refresh"]) {
+        const response = await request(app).post(`/api/tool-connections/${connection.id}/${endpoint}`);
+        expect(response.status).toBe(reason === "network" ? 502 : 422);
+        expect(response.body).toMatchObject({
+          error: expect.stringContaining(guidance),
+          details: { code: "github_app_access_unavailable", reason },
+        });
+        expect(JSON.stringify(response.body)).not.toMatch(/sensitive|BEGIN PRIVATE KEY|DECODER/);
+      }
+      const audits = await db.select().from(toolAccessAuditEvents)
+        .where(eq(toolAccessAuditEvents.connectionId, connection.id));
+      for (const action of ["tool_connection.health_check", "tool_connection.catalog_refresh"]) {
+        expect(audits).toEqual(expect.arrayContaining([expect.objectContaining({
+          action, outcome: "failure", reasonCode: "github_app_access_unavailable", details: expect.objectContaining({ reason }),
+        })]));
+      }
+    },
+  );
+
+  it.each(["managed", "mcp-key", "app-installation", "app-installation-explicit-app", "app-installation-draft"])("creates a GitHub App after recovering a retained %s connection", async (scenario) => {
+    const previousMethod = scenario.startsWith("app-installation") ? "app-installation" : scenario;
+    const previousStatus = scenario === "app-installation-draft" ? "draft" as const : "archived" as const;
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const service = createTestToolAccessService(db, {
+      deploymentMode: "authenticated",
+      paperclipCloudConnector: fakeGitHubConnector(company.id, "board"),
+    });
+    const actor = { actorType: "user" as const, actorId: "board" };
+    await db.insert(companyMemberships).values({
+      companyId: company.id, principalType: "user", principalId: "board", membershipRole: "owner", status: "active",
+    });
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id, name: "GitHub", type: "mcp_http", status: previousStatus,
+      metadata: { sourceTemplateKey: "github" },
+    }).returning();
+    const [previous] = await db.insert(toolConnections).values({
+      companyId: company.id, applicationId: application!.id, name: "GitHub", uid: `github-${randomUUID()}`, transport: "mcp_remote",
+      status: previousStatus, credentialPolicy: "shared",
+      config: { sourceTemplateKey: "github", connectionMethodKey: previousMethod, methodConfig: previousMethod === "app-installation"
+        ? { version: "1", appId: "999", installationId: "888", repositories: "old/repo", permissionProfile: "author" } : {} },
+    }).returning();
+    const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey
+      .export({ type: "pkcs8", format: "pem" }).toString();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url) === "https://api.githubcopilot.com/mcp/") {
+        const rpc = JSON.parse(String(init?.body));
+        return Response.json({ jsonrpc: "2.0", id: rpc.id, result: { tools: [] } });
+      }
+      const path = String(url).replace("https://api.github.com", "");
+      const bodies: Record<string, unknown> = {
+        "/app": { id: 123, client_id: "Iv23testclient", slug: "test-app" },
+        "/app/installations/456": { id: 456, app_id: 123, account: { login: "owner" },
+          permissions: { contents: "read", pull_requests: "read", issues: "read" } },
+        "/app/installations/456/access_tokens": { token: "app-token", expires_at: new Date(Date.now() + 3_600_000).toISOString() },
+        "/users/test-app%5Bbot%5D": { id: 789, login: "test-app[bot]", type: "Bot" },
+        "/installation/repositories?per_page=100&page=1": { repositories: [{ id: 321, full_name: "owner/repo", private: true }] },
+      };
+      if (!bodies[path]) throw new Error(`Unexpected GitHub request: ${path}`);
+      return Response.json(bodies[path]);
+    });
+    const input = {
+      galleryKey: "github", connectionMethodKey: "app-installation", grantKind: "agent" as const, subjectAgentId: agent.id,
+      configValues: { version: "1", appId: "Iv23testclient", installationId: "456", repositories: "owner/repo", permissionProfile: "read" },
+      credentialValues: { "credentials.privateKey": privateKey },
+    };
+    const connected = await service.connectGalleryApp(company.id, {
+      ...input, ...(scenario === "app-installation-explicit-app" ? { applicationId: application!.id } : {}),
+    }, actor);
+    if (previousMethod === "app-installation") {
+      expect(connected.connectionId).not.toBe(previous!.id);
+      expect(await service.getConnection(previous!.id, company.id)).toMatchObject({ status: previousStatus });
+    } else {
+      expect(connected.connectionId).toBe(previous!.id);
+    }
+    expect(await service.getConnection(connected.connectionId, company.id)).toMatchObject({
+      transport: "mcp_remote", config: { connectionMethodKey: "app-installation", methodConfig: input.configValues },
+    });
+    const renamed = await service.connectGalleryApp(company.id, {
+      ...input, credentialValues: {}, name: "Review bot", resumeConnectionId: connected.connectionId,
+    }, actor);
+    expect(renamed.connectionId).toBe(connected.connectionId);
+    expect(await service.getConnection(renamed.connectionId, company.id)).toMatchObject({ name: "Review bot" });
+    await expect(service.connectGalleryApp(company.id, {
+      ...input, configValues: { ...input.configValues, repositories: "owner/other" },
+      resumeConnectionId: connected.connectionId,
+    }, actor)).rejects.toMatchObject({ status: 400, message: expect.stringContaining("Reconnect preserves the App") });
+    if (scenario === "app-installation") {
+      await service.finishGalleryAppConnection(company.id, connected.connectionId, {
+        enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: { agentIds: [agent.id] },
+      }, actor);
+      await service.archiveConnection(connected.connectionId, company.id, actor);
+      const newOwner = await createAgent(db, company.id);
+      const addedAgain = await service.connectGalleryApp(company.id, {
+        ...input, subjectAgentId: newOwner.id, configValues: { ...input.configValues, appId: "123" },
+      }, actor);
+      expect(addedAgain.connectionId).not.toBe(connected.connectionId);
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, addedAgain.connectionId));
+      expect(grant).toMatchObject({ subjectAgentId: newOwner.id, status: "active" });
+      await service.archiveConnection(addedAgain.connectionId, company.id, actor);
+      mockToolsList([]);
+      const pat = await withGalleryServerUrl("github", PUBLIC_MCP_FIXTURE_URL, () => service.connectGalleryApp(company.id, {
+        galleryKey: "github", connectionMethodKey: "mcp-key", credentialValues: { "credentials.authorization": "new-pat" },
+      }, actor));
+      expect(pat.connectionId).not.toBe(addedAgain.connectionId);
+      expect(pat.connection.config.connectionMethodKey).toBe("mcp-key");
+    }
+  });
+
+  it.each((["agent", "user", "organization"] as const).flatMap(kind =>
+    (["read", "custom"] as const).map(permissionProfile => ({ kind, permissionProfile })),
+  ))("persists GitHub App $kind ownership with $permissionProfile permissions and replaces its key only after verification", async ({ kind, permissionProfile }) => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const service = createTestToolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "board" };
+    await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: "board", membershipRole: "owner", status: "active" });
+    const secondAgent = await createAgent(db, company.id);
+    const access = kind === "agent" ? { agentIds: [agent.id] } : { agentIds: [agent.id, secondAgent.id] };
+    const keyA = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const keyB = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = (key: typeof keyA) => key.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    let revokeA = false;
+    let rejectB = false;
+    let rejectMcp = false;
+    let revokeManagerOnToken = false;
+    const readTool = (name: string, description = "Original action") => ({
+      name, description, inputSchema: { type: "object" }, annotations: { readOnlyHint: true },
+    });
+    let discoveredTools = [readTool("get_file_contents"), readTool("list_issues")];
+    const authenticatedKeys: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url) === "https://api.githubcopilot.com/mcp/") {
+        if (rejectMcp) return Response.json({ error: "unavailable" }, { status: 503 });
+        const rpc = JSON.parse(String(init?.body));
+        return Response.json({ jsonrpc: "2.0", id: rpc.id, result: { tools: discoveredTools } });
+      }
+      const path = String(url).replace("https://api.github.com", "");
+      if (path === "/app/installations/456/access_tokens" && revokeManagerOnToken) {
+        await db.delete(principalPermissionGrants).where(and(
+          eq(principalPermissionGrants.companyId, company.id), eq(principalPermissionGrants.principalId, "board"),
+          eq(principalPermissionGrants.permissionKey, "tools:manage_connections"),
+        ));
+      }
+      if (path === "/app") {
+        const jwt = String((init?.headers as Record<string, string>).Authorization).replace("Bearer ", "");
+        const [header, payload, signature] = jwt.split(".");
+        const signed = Buffer.from(`${header}.${payload}`);
+        const key = verify("RSA-SHA256", signed, keyA.publicKey, Buffer.from(signature!, "base64url")) ? "A"
+          : verify("RSA-SHA256", signed, keyB.publicKey, Buffer.from(signature!, "base64url")) ? "B" : "unknown";
+        authenticatedKeys.push(key);
+        if ((key === "A" && revokeA) || (key === "B" && rejectB) || key === "unknown") {
+          return Response.json({ message: "sensitive provider failure" }, { status: 401 });
+        }
+      }
+      const bodies: Record<string, unknown> = {
+        "/app": { id: 123, slug: "test-app" },
+        "/app/installations/456": { id: 456, app_id: 123, account: { login: "owner" },
+          permissions: { contents: "read", pull_requests: "read", issues: "read" } },
+        "/app/installations/456/access_tokens": { token: "app-token", expires_at: new Date(Date.now() + 3_600_000).toISOString() },
+        "/users/test-app%5Bbot%5D": { id: 789, login: "test-app[bot]", type: "Bot" },
+        "/installation/repositories?per_page=100&page=1": { repositories: [{ id: 321, full_name: "owner/repo", private: true }] },
+      };
+      if (!bodies[path]) throw new Error(`Unexpected GitHub request: ${path}`);
+      return Response.json(bodies[path]);
+    });
+    const configValues = { version: "1", appId: "123", installationId: "456", repositories: "owner/repo", permissionProfile,
+      ...(permissionProfile === "custom" ? { customPermissions: '{"pull_requests":"read","contents":"read"}' } : {}),
+    };
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "github", connectionMethodKey: "app-installation", grantKind: kind, ...(kind === "agent" ? { subjectAgentId: agent.id } : {}),
+      configValues,
+      credentialValues: { "credentials.privateKey": pem(keyA) },
+    }, actor);
+    const stored = await service.getConnection(connected.connectionId, company.id);
+    expect(stored.config.methodConfig).toEqual(configValues);
+    if (permissionProfile === "custom") {
+      await expect(service.connectGalleryApp(company.id, {
+        galleryKey: "github", connectionMethodKey: "app-installation", grantKind: kind, ...(kind === "agent" ? { subjectAgentId: agent.id } : {}), resumeConnectionId: connected.connectionId,
+        configValues: { ...configValues, customPermissions: '{ "contents": "read", "pull_requests": "read" }' }, credentialValues: {},
+      }, actor)).resolves.toHaveProperty("connectionId", connected.connectionId);
+      await expect(service.connectGalleryApp(company.id, {
+        galleryKey: "github", connectionMethodKey: "app-installation", grantKind: kind, ...(kind === "agent" ? { subjectAgentId: agent.id } : {}), resumeConnectionId: connected.connectionId,
+        configValues: { ...configValues, customPermissions: '{"contents":"write"}' }, credentialValues: {},
+      }, actor)).rejects.toMatchObject({ status: 400, message: expect.stringContaining("Reconnect preserves the App") });
+    }
+    await db.update(connectionGrants).set({
+      providerTenant: null, updatedAt: sql`'2026-10-25 01:02:03.123456+00'::timestamptz`,
+    }).where(eq(connectionGrants.connectionId, connected.connectionId));
+    const [draft] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    await refreshGitHubAppAccess(db, draft!);
+    const [verifiedGrant] = await db.select({
+      providerTenant: connectionGrants.providerTenant,
+      revision: sql<string>`${connectionGrants.updatedAt}::text`,
+    }).from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId));
+    expect(verifiedGrant).toMatchObject({
+      providerTenant: { github: { userId: "789", login: "test-app[bot]" } },
+      revision: expect.stringContaining(".123456"),
+    });
+    await service.finishGalleryAppConnection(company.id, connected.connectionId, {
+      enabledCatalogEntryIds: connected.catalog.map(entry => entry.id), askFirstCatalogEntryIds: [], access,
+    }, actor);
+    await service.putConnectionInstalls(connected.connectionId, {
+      installs: access.agentIds.map(targetId => ({ targetType: "agent" as const, targetId })),
+    }, actor);
+    const readGrant = async () => (await db.select().from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connected.connectionId)))[0]!;
+    const originalGrant = await readGrant();
+    const versions = () => db.select().from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, originalGrant.credentialSecretRefs[0]!.secretId));
+    const originalVersions = await versions();
+    const reconnect = (value: string) => service.reconnectGalleryApp(connected.connectionId, company.id,
+      { credentialValues: { "credentials.privateKey": value } }, actor);
+
+    await expect(reconnect("invalid PEM")).rejects.toMatchObject({ status: 422 });
+    rejectB = true;
+    await expect(reconnect(pem(keyB))).rejects.toMatchObject({ status: 422 });
+    expect(await readGrant()).toEqual(originalGrant);
+    expect(await versions()).toEqual(originalVersions);
+    const acquire = async () => {
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+      return resolveGitHubAppCredential(db, connection!, await readGrant(), false, true);
+    };
+    await expect(acquire()).resolves.toMatchObject({ token: "app-token" });
+    expect(authenticatedKeys.at(-1)).toBe("A");
+
+    rejectB = false;
+    rejectMcp = true;
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "github", connectionMethodKey: "app-installation", reconnectConnectionId: connected.connectionId,
+      grantKind: kind, ...(kind === "agent" ? { subjectAgentId: agent.id } : {}), configValues,
+      credentialValues: { "credentials.privateKey": pem(keyB) },
+    }, actor)).rejects.toThrow();
+    rejectMcp = false;
+    expect((await readGrant()).credentialSecretRefs).toEqual(originalGrant.credentialSecretRefs);
+    expect(await versions()).toEqual(originalVersions);
+    await expect(acquire()).resolves.toMatchObject({ token: "app-token" });
+    expect(authenticatedKeys.at(-1)).toBe("A");
+
+    discoveredTools.push(readTool("list_branches"));
+    const pending = await service.refreshCatalog(connected.connectionId, actor);
+    expect(pending.catalog.find(entry => entry.toolName === "list_branches")?.status).toBe("quarantined");
+    const [profile] = await db.select().from(toolProfiles).where(eq(toolProfiles.profileKey, `app:${connected.connectionId}`));
+    const readProfileEntries = async () => (await db.select().from(toolProfileEntries)
+      .where(eq(toolProfileEntries.profileId, profile!.id))).map(entry => entry.catalogEntryId).sort();
+    const reviewedEntries = await readProfileEntries();
+    discoveredTools = [readTool("get_file_contents"), readTool("list_issues", "Changed action"),
+      readTool("list_branches"), readTool("list_tags")];
+
+    revokeA = true;
+    rejectB = false;
+    authenticatedKeys.length = 0;
+    await service.revokeConnectionGrant(connected.connectionId, originalGrant.id, actor);
+    await expect(acquire()).rejects.toThrow();
+    await expect(reconnect("invalid PEM")).rejects.toMatchObject({ status: 422 });
+    expect(await readGrant()).toMatchObject({ status: "revoked" });
+    if (kind !== "user") {
+      await db.update(companyMemberships).set({ membershipRole: "member" }).where(and(
+        eq(companyMemberships.companyId, company.id), eq(companyMemberships.principalId, "board"),
+      ));
+      const revokedGrant = await readGrant();
+      const revokedVersions = await versions();
+      const providerCalls = authenticatedKeys.length;
+      const creatorApp = createRouteApp(db, boardSessionActor(company.id, "member", "board"));
+      const creatorReconnect = () => request(creatorApp)
+        .post(`/api/tool-connections/${connected.connectionId}/reconnect`)
+        .send({ credentialValues: { "credentials.privateKey": pem(keyB) } });
+      await creatorReconnect().expect(403);
+      await expect(service.connectGalleryApp(company.id, {
+        galleryKey: "github", connectionMethodKey: "app-installation", reconnectConnectionId: connected.connectionId,
+        grantKind: kind, ...(kind === "agent" ? { subjectAgentId: agent.id } : {}), configValues,
+        credentialValues: { "credentials.privateKey": pem(keyB) },
+      }, actor)).rejects.toMatchObject({ status: 403 });
+      expect(await readGrant()).toEqual(revokedGrant);
+      expect(await versions()).toEqual(revokedVersions);
+      expect(authenticatedKeys).toHaveLength(providerCalls);
+      const [managerPermission] = await db.insert(principalPermissionGrants).values({
+        companyId: company.id, principalType: "user", principalId: "board",
+        permissionKey: "tools:manage_connections", grantedByUserId: "admin",
+        scope: kind === "agent" ? { targetAgentIds: [secondAgent.id] } : null,
+      }).returning();
+      if (kind === "agent") {
+        await creatorReconnect().expect(403);
+        expect(await readGrant()).toEqual(revokedGrant);
+        expect(await versions()).toEqual(revokedVersions);
+        expect(authenticatedKeys).toHaveLength(providerCalls);
+        await db.update(principalPermissionGrants).set({ scope: { targetAgentIds: [agent.id] } })
+          .where(eq(principalPermissionGrants.id, managerPermission!.id));
+      }
+      revokeManagerOnToken = true;
+      await expect(reconnect(pem(keyB))).rejects.toMatchObject({ status: 403 });
+      expect(await readGrant()).toEqual(revokedGrant);
+      expect(await versions()).toEqual(revokedVersions);
+      revokeManagerOnToken = false;
+      await db.insert(principalPermissionGrants).values({
+        companyId: company.id, principalType: "user", principalId: "board",
+        permissionKey: "tools:manage_connections", grantedByUserId: "admin",
+        scope: kind === "agent" ? { targetAgentIds: [agent.id] } : null,
+      });
+    }
+    await reconnect(pem(keyB));
+    expect(authenticatedKeys.length).toBeGreaterThan(0);
+    expect(authenticatedKeys.every(key => key === "B")).toBe(true);
+    const refreshedCatalog = await db.select().from(toolCatalogEntries)
+      .where(eq(toolCatalogEntries.connectionId, connected.connectionId));
+    expect(Object.fromEntries(refreshedCatalog.map(entry => [entry.toolName, entry.status]))).toEqual({
+      get_file_contents: "active", list_issues: "quarantined", list_branches: "quarantined", list_tags: "quarantined",
+    });
+    expect(await readProfileEntries()).toEqual(reviewedEntries);
+    const grant = await readGrant();
+    expect(grant.id).toBe(originalGrant.id);
+    expect(grant).toMatchObject({ status: "active", revokedAt: null, revokedByUserId: null, revokedByAgentId: null });
+    expect(grant.kind).toBe(kind);
+    expect(grant.subjectAgentId).toBe(kind === "agent" ? agent.id : null);
+    expect(grant.subjectUserId).toBe(kind === "user" ? "board" : null);
+    const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, grant.credentialSecretRefs[0]!.secretId));
+    expect(secret).toMatchObject({ scope: kind === "user" ? "user" : "company", ownerUserId: kind === "user" ? "board" : null });
+    expect(await versions()).toHaveLength(originalVersions.length + 1);
+    const connection = await service.getConnection(connected.connectionId, company.id);
+    expect(connection.credentialSecretRefs).toEqual(kind === "organization" ? grant.credentialSecretRefs : []);
+    expect(connection.credentialRefs).toEqual([]);
+    const bindings = await db.select().from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, connected.connectionId));
+    if (kind === "user") {
+      expect(bindings).toEqual([]);
+      const declarations = await db.select().from(userSecretDeclarations).where(eq(userSecretDeclarations.targetId, connected.connectionId));
+      expect(declarations).toEqual([expect.objectContaining({ userSecretDefinitionId: secret!.userSecretDefinitionId, configPath: "credentials.privateKey" })]);
+    } else {
+      expect(bindings).toEqual([expect.objectContaining({ secretId: grant.credentialSecretRefs[0]!.secretId, configPath: "credentials.privateKey" })]);
+    }
+    await expect(reconnect("invalid PEM")).rejects.toMatchObject({ status: 422 });
+    await expect(acquire()).resolves.toMatchObject({ token: "app-token" });
+    expect(authenticatedKeys.at(-1)).toBe("B");
+    await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: "other-member", membershipRole: "member", status: "active" });
+    const ownerRepositories = await service.listGitHubRepositories(company.id, "board", false, { includeGitHubApps: true });
+    expect(ownerRepositories.repositories.map(repository => repository.fullName)).toEqual(["owner/repo"]);
+    const otherRepositories = await service.listGitHubRepositories(company.id, "other-member", false, { includeGitHubApps: true });
+    expect(otherRepositories.repositories.map(repository => repository.fullName)).toEqual(kind === "user" ? [] : ["owner/repo"]);
+    const { resolveManagedGitHubIdentitySelection, resolveManagedGitHubCredential } = await import("../services/git-credentials.js");
+    for (const agentId of access.agentIds) {
+      const resolved = await resolveManagedGitHubCredential(db, secretService(db), company.id, { agentId, responsibleUserId: "board" });
+      expect(resolved.credential).toMatchObject({ token: "app-token", connectionId: connected.connectionId });
+    }
+    if (kind === "user") {
+      expect((await resolveManagedGitHubIdentitySelection(db, company.id, { agentId: agent.id, responsibleUserId: "someone-else" })).grant).toBeUndefined();
+    }
+    if (kind === "organization") {
+      expect((await resolveManagedGitHubIdentitySelection(db, company.id, { agentId: agent.id, responsibleUserId: "non-member" })).grant).toBeUndefined();
+      await db.insert(connectionGrantMembers).values({ companyId: company.id, grantId: grant.id, subjectType: "user", subjectId: "board" });
+      expect((await resolveManagedGitHubIdentitySelection(db, company.id, { agentId: agent.id, responsibleUserId: "other-member" })).grant).toBeUndefined();
+      expect((await resolveManagedGitHubIdentitySelection(db, company.id, { agentId: agent.id, responsibleUserId: "board" })).grant?.id).toBe(grant.id);
+      expect((await service.listGitHubRepositories(company.id, "other-member", false, { includeGitHubApps: true })).repositories).toEqual([]);
+    }
+    if (kind !== "agent") {
+      await service.finishGalleryAppConnection(company.id, connected.connectionId, {
+        enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: "all_agents",
+      }, actor);
+      await service.putConnectionInstalls(connected.connectionId, {
+        installs: [{ targetType: "company", targetId: company.id }],
+      }, actor);
+      const installs = await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connected.connectionId));
+      expect(installs).toEqual([expect.objectContaining({ targetType: "company", targetId: company.id })]);
+      const resumed = await service.connectGalleryApp(company.id, {
+        galleryKey: "github", connectionMethodKey: "app-installation", reconnectConnectionId: connected.connectionId,
+        grantKind: kind, credentialValues: {}, configValues: connection.config.methodConfig as Record<string, string>,
+      }, actor);
+      expect(resumed.connectionId).toBe(connected.connectionId);
+      expect(resumed.connection.credentialPolicy).toBe(kind === "user" ? "per_user" : "shared");
+    }
+    await service.revokeConnectionGrant(connected.connectionId, grant.id, actor);
+    const recovery = {
+      galleryKey: "github", connectionMethodKey: "app-installation", reconnectConnectionId: connected.connectionId,
+      grantKind: kind, ...(kind === "agent" ? { subjectAgentId: agent.id } : {}), configValues,
+    };
+    await expect(service.connectGalleryApp(company.id, { ...recovery, credentialValues: {} }, actor))
+      .rejects.toMatchObject({ status: 400 });
+    expect(await readGrant()).toMatchObject({ status: "revoked" });
+    const revokedGrant = await readGrant();
+    await expect(service.connectGalleryApp(company.id, {
+      ...recovery, credentialValues: { "credentials.privateKey": "invalid PEM" },
+    }, actor)).rejects.toMatchObject({ status: 422 });
+    expect(await readGrant()).toEqual(revokedGrant);
+    const recovered = await service.connectGalleryApp(company.id, {
+      ...recovery, credentialValues: { "credentials.privateKey": pem(keyB) },
+    }, actor);
+    expect(recovered.connectionId).toBe(connected.connectionId);
+    expect(await readGrant()).toMatchObject({
+      id: originalGrant.id, kind, status: "active", revokedAt: null, revokedByUserId: null, revokedByAgentId: null,
+      subjectAgentId: grant.subjectAgentId, subjectUserId: grant.subjectUserId,
+    });
+    const savedGrants = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId));
+    expect(savedGrants).toHaveLength(1);
+  });
+
+
+  it.each((["agent", "user", "organization"] as const).flatMap(kind =>
+    [false, true].map(legacy => ({ kind, legacy })),
+  ))("serves governed GitHub App MCP tools for $kind ownership (legacy REST: $legacy)", async ({ kind, legacy }) => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const actor = { actorType: "user" as const, actorId: "board" };
+    await db.insert(companyMemberships).values({
+      companyId: company.id, principalType: "user", principalId: "board", membershipRole: "owner", status: "active",
+    });
+    const service = createTestToolAccessService(db);
+    const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey
+      .export({ type: "pkcs8", format: "pem" }).toString();
+    let tokenRevision = 0;
+    let rejectMcp = false;
+    let catalogEnabled = !legacy;
+    const calls: string[] = [];
+    const tools = [
+      { name: "get_me", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } },
+      { name: "get_file_contents", inputSchema: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" } } }, annotations: { readOnlyHint: true } },
+      { name: "create_pull_request", inputSchema: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" } } }, annotations: { readOnlyHint: false, destructiveHint: false } },
+    ];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url) === "https://api.githubcopilot.com/mcp/") {
+        const headers = new Headers(init?.headers);
+        expect(headers.get("Authorization")).toBe("Bearer app-token-" + tokenRevision);
+        expect(headers.get("X-MCP-Toolsets")).toBe("default,actions");
+        expect(headers.get("X-MCP-Exclude-Tools")).toBe("get_me");
+        expect(JSON.stringify(init)).not.toContain("PRIVATE KEY");
+        if (rejectMcp) return Response.json({ message: "sensitive MCP failure" }, {
+          status: 401, headers: { "www-authenticate": 'Bearer resource_metadata="https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/"' },
+        });
+        const rpc = JSON.parse(String(init?.body));
+        if (rpc.method === "tools/call") calls.push(rpc.params.name);
+        return Response.json({ jsonrpc: "2.0", id: rpc.id, result: rpc.method === "tools/list"
+          ? { tools: catalogEnabled ? tools : [] } : { content: [{ type: "text", text: "fixture result" }] } });
+      }
+      const endpoint = String(url).replace("https://api.github.com", "");
+      if (endpoint === "/app/installations/456/access_tokens") {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          repositories: ["repo"], permissions: { contents: "write", pull_requests: "write", issues: "read" },
+        });
+        tokenRevision++;
+        return Response.json({ token: "app-token-" + tokenRevision, expires_at: new Date(Date.now() + 3_600_000).toISOString() });
+      }
+      const bodies: Record<string, unknown> = {
+        "/app": { id: 123, slug: "test-app" },
+        "/app/installations/456": { id: 456, app_id: 123, account: { login: "owner" }, permissions: { contents: "write", pull_requests: "write", issues: "read" } },
+        "/users/test-app%5Bbot%5D": { id: 789, login: "test-app[bot]", type: "Bot" },
+        "/installation/repositories?per_page=100&page=1": { repositories: [{ id: 321, full_name: "owner/repo", private: true }] },
+      };
+      if (!bodies[endpoint]) throw new Error("Unexpected provider request: " + endpoint);
+      return Response.json(bodies[endpoint]);
+    });
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "github", connectionMethodKey: "app-installation", grantKind: kind,
+      ...(kind === "agent" ? { subjectAgentId: agent.id } : {}),
+      configValues: { version: "1", appId: "123", installationId: "456", repositories: "owner/repo", permissionProfile: "author" },
+      credentialValues: { "credentials.privateKey": privateKey },
+    }, actor);
+    expect(connected.catalog.map(tool => tool.toolName).sort()).toEqual(legacy ? [] : ["create_pull_request", "get_file_contents"]);
+    let enabledCatalogEntryIds = connected.catalog.map(tool => tool.id);
+    await service.finishGalleryAppConnection(company.id, connected.connectionId, {
+      enabledCatalogEntryIds, askFirstCatalogEntryIds: [], access: { agentIds: [agent.id] },
+    }, actor);
+    expect(await db.select().from(toolConnectionInstalls)
+      .where(eq(toolConnectionInstalls.connectionId, connected.connectionId))).toEqual([
+      expect.objectContaining({ targetType: "agent", targetId: agent.id }),
+    ]);
+    if (legacy) {
+      const stored = await service.getConnection(connected.connectionId, company.id);
+      const config = { ...stored.config, url: "https://api.github.com" };
+      await db.update(toolConnections).set({ transport: "rest_api", config, transportConfig: config })
+        .where(eq(toolConnections.id, connected.connectionId));
+      await db.update(toolApplications).set({ type: "rest_api" }).where(eq(toolApplications.id, stored.applicationId));
+      catalogEnabled = true;
+      const refreshed = await service.refreshCatalog(connected.connectionId, actor);
+      expect(refreshed.catalog).toHaveLength(2);
+      expect(refreshed.catalog.every(tool => tool.status === "quarantined")).toBe(true);
+      enabledCatalogEntryIds = refreshed.catalog.map(tool => tool.id);
+      await service.finishGalleryAppConnection(company.id, connected.connectionId, {
+        enabledCatalogEntryIds, reviewedCatalogEntryIds: enabledCatalogEntryIds,
+        askFirstCatalogEntryIds: [], access: { agentIds: [agent.id] },
+      }, actor);
+    }
+
+    const pat = await createRemoteToolFixture(db, company.id, { riskLevel: "read" });
+    await db.update(toolConnections).set({
+      config: { ...pat.connection.config, sourceTemplateKey: "github", connectionMethodKey: "mcp-key" },
+    }).where(eq(toolConnections.id, pat.connection.id));
+    await allowConnectionForAgent(db, company.id, agent.id, pat.connection.id);
+    const unrelated = await createRemoteToolFixture(db, company.id, { riskLevel: "read" });
+    await allowConnectionForAgent(db, company.id, agent.id, unrelated.connection.id);
+
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const { initializeRunIdentity } = await import("../services/run-identity.js");
+    await initializeRunIdentity(db, { companyId: company.id, runId: run.id, issueId: issue.id,
+      responsibleUserId: "board", messageIds: [], cause: "instruction" });
+    const gateway = createToolGatewayService(db, { toolActionSigningSecret: "test-secret" });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const listed = await gateway.listToolsForSession(session.token);
+    expect(listed.some(tool => tool.connectionId === pat.connection.id)).toBe(false);
+    expect(listed.some(tool => tool.connectionId === unrelated.connection.id)).toBe(true);
+    const appTools = listed.filter(tool => tool.connectionId === connected.connectionId);
+    expect(appTools).toHaveLength(2);
+    expect(appTools.every(tool => tool.providerType === "mcp_remote_http")).toBe(true);
+    const read = appTools.find(tool => tool.upstreamToolName === "get_file_contents")!;
+    const write = appTools.find(tool => tool.upstreamToolName === "create_pull_request")!;
+    const parameters = { owner: "owner", repo: "repo" };
+    await gateway.executeTool({
+      sessionToken: session.token, tool: read.name, parameters,
+      callerHeaders: { Authorization: "Bearer caller-override", "X-MCP-Toolsets": "all", "X-MCP-Exclude-Tools": "" },
+    });
+    await gateway.executeTool({ sessionToken: session.token, tool: write.name, parameters });
+    expect(calls).toEqual(["get_file_contents", "create_pull_request"]);
+
+    const beforeHealth = tokenRevision;
+    await service.checkHealth(connected.connectionId, actor);
+    expect(tokenRevision).toBeGreaterThan(beforeHealth);
+    await gateway.executeTool({ sessionToken: session.token, tool: read.name, parameters });
+    expect(calls.at(-1)).toBe("get_file_contents");
+
+    await service.finishGalleryAppConnection(company.id, connected.connectionId, {
+      enabledCatalogEntryIds, askFirstCatalogEntryIds: [write.catalogEntryId!], access: { agentIds: [agent.id] },
+    }, actor);
+    const callsBeforeApproval = calls.length;
+    await expect(gateway.executeTool({
+      sessionToken: session.token, tool: write.name, parameters,
+      idempotencyKey: `github-app-approval:${connected.connectionId}`,
+    }))
+      .rejects.toMatchObject({ reasonCode: "approval_required" });
+    expect(calls).toHaveLength(callsBeforeApproval);
+
+    rejectMcp = true;
+    await expect(service.refreshCatalog(connected.connectionId, actor))
+      .rejects.toMatchObject({ status: 502, details: { code: "github_app_mcp_unavailable" } });
+    expect((await service.getConnection(connected.connectionId, company.id)).authKind).toBe("api_key");
+    rejectMcp = false;
+    await service.checkHealth(connected.connectionId, actor);
+
+    await db.update(connectionGrants).set({ status: "revoked" })
+      .where(eq(connectionGrants.connectionId, connected.connectionId));
+    const requestsBeforeRevocationCheck = fetchMock.mock.calls.length;
+    expect((await gateway.listToolsForSession(session.token)).some(tool =>
+      tool.connectionId === connected.connectionId || tool.connectionId === pat.connection.id,
+    )).toBe(false);
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: read.name, parameters })).rejects.toThrow();
+    expect(fetchMock.mock.calls).toHaveLength(requestsBeforeRevocationCheck);
+    const audits = await db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.companyId, company.id));
+    expect(JSON.stringify(audits)).not.toContain("PRIVATE KEY");
+    expect(JSON.stringify(audits)).not.toContain("app-token-");
+    expect(JSON.stringify(audits)).not.toContain("sensitive MCP failure");
+  });
+
   it("reconnects a gallery app by rotating the existing credential in place (PAP-10859)", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
@@ -20544,6 +21141,20 @@ describe("projectedConnectionHeaders", () => {
 });
 
 describe("normalizeConnectionMethodConfig", () => {
+  const githubAppMethod = getConnectableAppDefinition("github")!.methods.find(method => method.key === "app-installation")!;
+  const appConfig = { appId: "123", installationId: "456", repositories: "owner/repo", permissionProfile: "read" };
+  it("persists custom GitHub permission settings alongside the templates", () => {
+    const values = { ...appConfig, permissionProfile: "custom", customPermissions: '{"contents":"read","checks":"write"}' };
+    expect(normalizeConnectionMethodConfig(githubAppMethod, values).values).toEqual({ ...values, version: "1" });
+  });
+  it.each([undefined, "1", 1])("normalizes GitHub App version %s for persistence", version => {
+    expect(normalizeConnectionMethodConfig(githubAppMethod, { ...appConfig, ...(version === undefined ? {} : { version }) }).values)
+      .toEqual({ ...appConfig, version: "1" });
+  });
+  it.each(["2", 2, 0, true])("rejects unsupported GitHub App version %s before persistence", version => {
+    expect(() => normalizeConnectionMethodConfig(githubAppMethod, { ...appConfig, version })).toThrow();
+  });
+
   const posthog = getConnectableAppDefinition("posthog")!;
   const apiKeyMethod = posthog.methods.find(
     (method) => method.key === "mcp-api-key",

@@ -55,6 +55,7 @@ import {
 import { appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs";
 import { ConnectionProvenanceChip } from "./ConnectionProvenanceChip";
 import { IdentitiesSection } from "./app-detail/IdentitiesSection";
+import { GitHubAppConfiguration } from "./app-detail/GitHubAppSettings";
 import { PermissionsPanel } from "./app-detail/PermissionsPanel";
 import { AgentConnectionAccess } from "./app-detail/AgentConnectionAccess";
 import { ConnectedAggregatorApps } from "./app-detail/ConnectedAggregatorApps";
@@ -654,6 +655,11 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
                 ? <ConnectedAggregatorApps key={connection.id} connection={connection} /> : null}
               {connection.config?.sourceTemplateKey === "honcho" && <HonchoWorkspaceSettings key={connection.id} connection={connection} canConfigure={grantsQuery.data?.capabilities?.canConfigure ?? false} />}
               {renderConnectionSettings?.(connection)}
+              {connection.config?.sourceTemplateKey === "github" && connection.config?.connectionMethodKey === "app-installation" && (
+                <GitHubAppConfiguration key={connection.id} connection={connection} galleryEntry={logoEntry}
+                  canReplace={canReconnect} unavailableMessage={reconnectUnavailableMessage}
+                  onReplaced={() => { void queryClient.invalidateQueries({ queryKey: ["tools"] }); }} />
+              )}
               {connection.config?.sourceTemplateKey === "browser-use-cloud" && <BrowserUseSettingsPanel connection={connection} grants={grantsQuery.data} />}
               {connection.config?.sourceTemplateKey === "railway" && <RailwayAccessPanel connection={connection} grants={grantsQuery.data} />}
               {connection.config?.provider === "agentmail" && <EmailConnectionInboxes companyId={connection.companyId} connectionId={connection.id} canConfigure={grantsQuery.data?.capabilities?.canConfigure ?? false} />}

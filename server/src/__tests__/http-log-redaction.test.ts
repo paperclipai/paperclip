@@ -848,4 +848,27 @@ describe("HTTP logger redaction", () => {
       });
     },
   );
+  it.each([422, 500].flatMap((status) => [
+    "/api/companies/company/tools/apps/connect",
+    "/api/tool-connections/connection/reconnect",
+  ].map((path) => ({ status, path }))))("keeps GitHub App PEMs out of HTTP $status logs and echoed errors for $path", async ({ status, path }) => {
+    const key = "-----BEGIN PRIVATE KEY-----\nprivate-key-log-canary\n-----END PRIVATE KEY-----";
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(express.json());
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    app.post(path, (_req, _res, next) => {
+      next(new HttpError(status, `Rejected ${key}`));
+    });
+    app.use(errorHandler);
+    const response = await request(app).post(path).send({
+      galleryKey: "github", credentialValues: { "credentials.privateKey": key },
+    });
+    expect(response.status).toBe(status);
+    expect(chunks.join("")).not.toContain("private-key-log-canary");
+    expect(JSON.parse(chunks.join("").trim()).reqBody.credentialValues).toBe("[Redacted]");
+    expect(JSON.stringify(response.body)).not.toContain("private-key-log-canary");
+  });
+
 });

@@ -94,6 +94,15 @@ remaining operations before qualifying the whole capability.
 Gaps: Authorized initial selection works. Replacement of repositories on an existing
 project hard-requires board and needs a delegation decision.
 
+Custom GitHub Apps (2026-10-25): active company members and the local trusted
+board may discover dedicated/company-owned App repository metadata. Personal
+metadata requires its owner; shared metadata requires its saved human audience.
+This expands metadata selection only. Agents still need their own authorized
+installation and selected identity for content access or Git operations.
+The [repository fixture](../../server/src/__tests__/project-repositories-persistence.test.ts)
+covers selection without granting personal file reads. It is not live GitHub
+authorization proof.
+
 ## `defaults`
 
 Capability ID: `projects/defaults`.

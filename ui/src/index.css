@@ -4952,6 +4952,11 @@ html:has(.design-proposal-theme) [data-canonical-toolbar] .collection-toolbar-ta
   .artifact-tile:hover [data-artifact-spread="right"] {
     transform: rotate(calc(var(--artifact-base, 0deg) - 5deg));
   }
+
+}
+
+.secret-textarea {
+  -webkit-text-security: disc;
 }
 
 /* Coordinator workspace: the approved Precision palette with Editorial
