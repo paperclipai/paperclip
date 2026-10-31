@@ -1,3 +1,4 @@
+import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
@@ -79,6 +80,7 @@ export async function deleteCompany(db: Db, id: string) {
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillPackages);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+          await notifyStatusCardEvaluation(tx, id);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.secretProposalExpiry, id);
         await notifyToolReviewChange(tx, id);
         await agentObservabilityService(tx as unknown as Db).removeForCompanyDeletion(id);

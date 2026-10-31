@@ -4185,6 +4185,7 @@ describe("company portability", () => {
       }),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any;
+    db.transaction = async (write: (tx: typeof db) => Promise<unknown>) => write(db);
     return { db, insertedRelationValues, monitorUpdates };
   }
 

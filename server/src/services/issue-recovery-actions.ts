@@ -1,3 +1,4 @@
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
@@ -323,6 +324,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
   ): Promise<IssueRecoveryAction> {
     try {
       const created = await db.transaction(async (tx) => {
+        await notifyAttentionRetentionWork(tx, { companyId: input.companyId });
         await notifyIssueRecovery(tx, { companyId: input.companyId });
         await notifyNativeRecoveryNotices(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionDisposition);

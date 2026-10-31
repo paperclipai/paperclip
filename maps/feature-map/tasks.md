@@ -59,7 +59,7 @@ Filters → **Routine tasks** selects tasks created by routine runs. The
 
 ### `task-detail`
 
-Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction, recent exchange and saved cards together. No URL fragment expands history; older-comment anchors fetch only their target, and document anchors open the pane. **More messages** appears only when earlier comments or runs are omitted and loads that history. Fresh tasks with no omitted history have no disclosure. A single legacy run with a truncated log offers **More run output** instead. **More task actions → Show task activity** loads full activity even for a single native run; incoming messages remain visible while the task stays open.
+Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction, recent exchange and saved cards together. Completed runs with saved replies defer their transcripts until the reader opens history. Live runs, failures, yielded runs and runs without a saved reply still hydrate; an already shown transcript stays available after completion. No URL fragment expands history; older-comment anchors fetch only their target, and document anchors open the pane. **More messages** appears only when earlier comments or runs are omitted and loads that history. Fresh tasks with no omitted history have no disclosure. A single run with deferred output or a truncated legacy log offers **More run output** instead. **More task actions → Show task activity** loads full activity even for a single native run; incoming messages remain visible while the task stays open.
 
 ### `task-sharing`
 
@@ -112,6 +112,8 @@ Manual: Filter by status and assignee, change grouping/sort, open a task, and re
 Manual: Open a long task with slow historical requests. Read the instruction and recent reply before those requests finish. Edit the title/status while enrichment is pending and verify saves and rollbacks. Expand **More messages**, verify scroll position and no duplicate replies, return to the task, and follow an older comment link. Leave a task open across new messages and runs and confirm none disappear. Reconnect after several turns and verify watched runs settle. Reopen after steering with more than 50 newer activity rows; the delivered message must not reappear in the queue.
 
 Automated: [cold-open reads](../../server/src/__tests__/task-cold-open.test.ts) cover bounded reads, event filtering and company denial. [Task detail](../../ui/src/pages/IssueDetail.test.tsx) covers component behavior, while [issue service](../../server/src/__tests__/issues-service.test.ts) covers server contracts.
+
+The opt-in [saved-reply browser case](../../tests/perf/issue-detail/saved-reply-startup.spec.ts) uses 200 completed native runs and long saved replies in a disposable PostgreSQL instance. It holds transcript reads, checks desktop/mobile first-reveal geometry, then opens history while retaining the editor and draft. See its [setup](../../tests/perf/issue-detail/README.md).
 
 Failure markers have no dashed divider rules. An adjacent run error and
 no-live-execution-path notice show only the last error, with its details and

@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "../services/status-card-notifications.js";
 import { removePluginWorkspace } from "../services/plugin-workspaces.js";
 import { canActorReadWorkspaceOperation } from "../services/heartbeat-run-privacy.js";
 import { canActorReadExecutionWorkspace, executionWorkspaceReadSqlCondition } from "../services/authorization.js";
@@ -1259,7 +1260,9 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       await runtimeLeases.release({ executionWorkspaceId: existing.id, force: true });
 
       if (existing.mode === "shared_workspace") {
-        await db
+        await db.transaction(async tx => {
+          await notifyStatusCardIssueChange(tx, existing.companyId);
+          await tx
           .update(issues)
           .set({
             executionWorkspaceId: null,
@@ -1271,6 +1274,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               eq(issues.executionWorkspaceId, existing.id),
             ),
           );
+        });
       }
 
       try {

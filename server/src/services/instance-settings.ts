@@ -1,3 +1,4 @@
+import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifySkillVersionRetentionReconstruction } from "./skill-version-retention-notifications.js";
@@ -635,6 +636,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         && toExperimentalView(nextExperimental).enableAgentChat;
       const now = new Date();
       const [updated] = await db.transaction(async tx => {
+        if (patch.enableStatusCards !== undefined) await notifyStatusCardEvaluation(tx);
         if (chatBecameEnabled) await notifyDeferredExecutionEligibility(tx);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, "*");

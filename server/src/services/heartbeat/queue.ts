@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
 import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
@@ -1271,6 +1272,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
     async function bindClaimedIssueExecution(tx: Db, ownsIssue: boolean, claimedRun: typeof heartbeatRuns.$inferSelect | null | undefined) {
       if (!claimedRun || !issueId || !ownsIssue) return;
+      await notifyStatusCardIssueChange(tx, run.companyId);
       await tx.update(issues).set({
         executionRunId: claimedRun.id,
         executionAgentNameKey: normalizeAgentNameKey(agent.name),
@@ -3770,6 +3772,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   .from(agents)
                   .where(eq(agents.id, legacyRun.agentId))
                   .then((rows) => rows[0] ?? null);
+                await notifyStatusCardIssueChange(tx, issue.companyId);
                 await tx
                   .update(issues)
                   .set({

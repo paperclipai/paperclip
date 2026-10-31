@@ -1,4 +1,4 @@
-import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
+import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db/work-signals";
 
 /** Topics for existing durable queues; register intent before their writes. */
 export const DELIVERY_QUEUES = {
@@ -13,6 +13,7 @@ export const DELIVERY_QUEUES = {
   staleIssueLocks: "stale-issue-locks",
   scheduledRetryDispatch: "scheduled-retry-dispatch",
   queuedRunDispatch: "queued-run-dispatch",
+  statusCardEvaluation: "status-card-evaluation",
   runEvidenceMigration: "run-evidence-migration",
   providerTraceRetention: "provider-trace-retention",
   nativeRunnerEvidenceRetention: "native-runner-evidence-retention",
@@ -46,6 +47,7 @@ export const DELIVERY_QUEUES = {
   executionDisposition: "execution-disposition",
   environmentCleanup: "environment-cleanup",
   approvalQueueSeeding: "approval-queue-seeding",
+  attentionRetention: "attention-retention",
   approvalRetention: "approval-retention",
   joinRequestRetention: "join-request-retention",
   decisionTargets: "decision-targets",

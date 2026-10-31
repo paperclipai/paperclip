@@ -1,3 +1,4 @@
+import { attentionRetentionService, registerAttentionRetentionWork } from "./services/attention-retention.js";
 import { registerProviderTraceRetentionWork } from "./services/provider-trace-retention-work.js";
 import { registerRunEvidenceMigrationWork } from "./services/run-evidence-migration-work.js";
 import { registerSkillVersionRetentionWork } from "./services/skill-version-retention-work.js";
@@ -127,7 +128,6 @@ import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./mi
 import {
   feedbackService,
   applyManagedEnvironments,
-  attentionService,
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
@@ -145,13 +145,12 @@ import {
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
-  statusCardService,
   toolAccessService,
   workspaceOperationService,
 } from "./services/index.js";
 import { questionResponseDeliveryService } from "./services/question-response-delivery.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
-import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
+import { registerStatusCardEvaluationWork, statusCardEvaluationService } from "./services/status-card-evaluation.js";
 import { createSecretProposalsService } from "./services/secret-proposals.js";
 import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { historicalCleanupVerificationService } from "./services/historical-cleanup-verification.js";
@@ -1571,7 +1570,7 @@ async function startServerWithDatabaseTeardown(
         if (result.settled > 0) logger.info(result, "reconciled routine execution issue status");
       }).catch(() => logger.warn("routine execution status reconciliation deferred")));
     };
-    const statusCards = statusCardService(db as any);
+    const statusCardEvaluation = statusCardEvaluationService(db as any, heartbeat);
     const issues = issueService(db as any);
     const mergedPullRequestConfirmations = issueThreadInteractionService(db as any, {
       wakeup: heartbeat.wakeup,
@@ -1894,23 +1893,6 @@ async function startServerWithDatabaseTeardown(
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerStoppedInstructionCollectionWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
 
-    const runRetentionSweep = async () => {
-      const activeCompanies = await db.select({ id: companies.id }).from(companies).where(eq(companies.status, "active"));
-      let archived = 0;
-      for (const company of activeCompanies) {
-        // Cursor pagination rebuilds the whole feed for every page; one
-        // unscoped all-items build keeps this sweep at a single feed build
-        // per company per tick.
-        const page = await attentionService(db as any).list(company.id, {
-          includeDismissed: true,
-          excludeSources: ["approval", "join_request"],
-          all: true,
-          allowUnscopedAll: true,
-        });
-        archived += await retentionExecutor.autoArchive({ companyId: company.id, items: page.items });
-      }
-      return { archived };
-    };
     // Startup housekeeping: provider and connection sweeps that every timer tick
     // repeats and that neither serving requests nor run recovery depends on.
     // Readiness does not wait for it. It is tracked as scheduler work, so idle
@@ -1953,7 +1935,10 @@ async function startServerWithDatabaseTeardown(
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
       await step("join_request_retention", () => registerJoinRequestRetentionWork(deliveryWork, joinRequestRetentionService(db as any),
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
-      await step("retention_sweep", runRetentionSweep);
+      await step("status_card_evaluation", () => registerStatusCardEvaluationWork(deliveryWork, statusCardEvaluation,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      await step("attention_retention", () => registerAttentionRetentionWork(deliveryWork, attentionRetentionService(db as any),
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
     };
 
     const createHeartbeatSchedulerTick = (scheduled: ReturnType<typeof registerScheduledWork>) => () => {
@@ -1963,9 +1948,6 @@ async function startServerWithDatabaseTeardown(
       trackHeartbeatSchedulerWork((async () => {
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
         scheduleRoutineStatusReconcile();
-        trackHeartbeatSchedulerWork(runRetentionSweep().catch((err: unknown) => {
-          logger.error({ err }, "decision retention sweep failed");
-        }));
         const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
         if (sweptRuntimeStatuses > 0) {
           logger.info(
@@ -1983,33 +1965,7 @@ async function startServerWithDatabaseTeardown(
         scheduleGitHubConnectionContinuitySweep();
 
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-        trackHeartbeatSchedulerWork((async () => {
-          const experimental = await instanceSettingsService(db).getExperimental();
-          if (experimental.enableStatusCards !== true) return;
-          const result = await statusCards.tickDueStatusCards(new Date());
-          await Promise.all(result.enqueued.map(async ({ cardId, generatingIssue }) => {
-            try {
-              await queueIssueAssignmentWakeup({
-                heartbeat,
-                issue: generatingIssue,
-                reason: "status_card_update_assigned",
-                mutation: "status_card.scheduler_update_requested",
-                contextSource: "status_card_scheduler",
-                requestedByActorType: "system",
-                taskKey: `status-card:${cardId}`,
-                rethrowOnError: true,
-              });
-            } catch (err) {
-              await issues.update(generatingIssue.id, { status: "cancelled" });
-              throw err;
-            }
-          }));
-          if (result.evaluated > 0 || result.enqueued.length > 0) {
-            logger.info({ evaluated: result.evaluated, enqueued: result.enqueued.length }, "status-card scheduler tick complete");
-          }
-        })().catch((err) => {
-          logger.error({ err }, "status-card scheduler tick failed");
-        }));
+
 
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {

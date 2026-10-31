@@ -948,7 +948,7 @@ provider-attempt counter.
 
 ## Experimental remote workspace snapshots
 
-Migration [0420_mean_veda.sql](../packages/db/src/migrations/0420_mean_veda.sql)
+Migration [0421_bright_skaar.sql](../packages/db/src/migrations/0421_bright_skaar.sql)
 adds the company-scoped `execution_workspace_snapshots` ledger. It records the
 workspace, source operation/run, parent, generation, writer epoch, encrypted
 object receipt, hashes, manifest digest, and retention state. Integrity and key
