@@ -18,7 +18,7 @@ export function registerDeferredReceiptWork(
   owner: {
     resume(scope: DeferredReceiptRecoveryOptions): Promise<unknown>;
     settleTaskChat(scope: DeferredExecutionScope): Promise<unknown>;
-    dispatchNative(scope: NativeIntentOptions): Promise<unknown>;
+    createNativeBatch(): (scope: NativeIntentOptions) => Promise<unknown>;
     schedulingSuppressed(): Promise<boolean>;
   },
   canRun: () => boolean,
@@ -26,12 +26,17 @@ export function registerDeferredReceiptWork(
   function register(kind: "deferred" | "task_chat" | "native") {
     const cursors = new Map<string, string>();
     let enabled = false;
+    let dispatchNative: ReturnType<typeof owner.createNativeBatch>;
     const queue = kind === "deferred" ? DELIVERY_QUEUES.deferredExecutionReceipts
       : kind === "task_chat" ? DELIVERY_QUEUES.taskRetryReceiptSettlement : DELIVERY_QUEUES.nativeStatusWakeIntents;
     return registerScopedDeadlineWork<Entry, DeferredExecutionScope>(coordinator, {
       queue,
+      batchSize: kind === "native" ? 100 : undefined,
       reconstructionIntervalMs: 30_000,
-      beforePass: async () => { enabled = !(await owner.schedulingSuppressed()); },
+      beforePass: async () => {
+        enabled = !(await owner.schedulingSuppressed());
+        if (kind === "native") dispatchNative = owner.createNativeBatch();
+      },
       decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint),
       matches: (entry, scope) => !scope || entry.companyId === scope.companyId && (!scope.requestId || entry.id === scope.requestId),
       load: async scope => {
@@ -101,7 +106,7 @@ export function registerDeferredReceiptWork(
         const errors: unknown[] = [];
         let next: number | null = null;
         const scope = { companyId: entry.companyId, requestId: entry.id };
-        if (kind === "native") await owner.dispatchNative({ ...scope,
+        if (kind === "native") await dispatchNative({ ...scope,
           onDeferredDeadline: at => { next = next === null ? at : Math.min(next, at); },
           onError: error => { errors.push(error); },
         });

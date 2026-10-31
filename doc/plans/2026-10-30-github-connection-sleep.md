@@ -51,7 +51,11 @@ Binding-only retries use the existing credential refresh lease and current
 secret resolver without repeating account/repository discovery. The initial OAuth
 callback uses the same saved debt and settlement path after connection activation.
 
-Cloud binding calls retain the grant, its connection, and a company share lock.
+Cloud binding calls acquire the company share lock before locking the grant and
+its connection, matching company deletion's parent-before-child order. A deletion
+that wins admission leaves no registration to apply; a handoff already admitted
+keeps its fence through completion. The grant, connection, company status and
+binding revision are re-read under those locks before calling Cloud.
 That admission fence prevents a concurrent disable, revoke, or archive from
 finishing before an already-admitted registration call. The API has no remote
 revision fence that could safely replace those locks with two short transactions.
