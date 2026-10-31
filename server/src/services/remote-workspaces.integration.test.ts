@@ -483,8 +483,11 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       lease: prepared.lease, target: first, assertOwned: async () => undefined }))
       .rejects.toThrow("remote_workspace_snapshot_operation_binding_changed");
     expect(upload).not.toHaveBeenCalled();
-    expect((await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, poisoned!.id)))[0]?.metadata)
-      .toEqual(poisoned!.metadata);
+    const [held] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, poisoned!.id));
+    const { saveWork, ...originalMetadata } = held!.metadata!;
+    expect(originalMetadata).toEqual(poisoned!.metadata);
+    expect(saveWork).toMatchObject({ activeIds: [], unknown: true, quiescedAt: expect.any(String) });
+    expect(Number.isFinite(Date.parse((saveWork as { quiescedAt: string }).quiescedAt))).toBe(true);
     expect(await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.sourceOperationId, poisoned!.id)))
       .toHaveLength(0);
     expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)).toMatchObject({
