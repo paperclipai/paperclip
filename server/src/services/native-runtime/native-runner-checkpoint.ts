@@ -180,6 +180,16 @@ export async function registerNativeRunnerCheckpoint(input: {
   await input.authority.flushCheckpoint();
 }
 
+/** Exact-run bounded metadata read; never loads command/event payload records. */
+export async function loadNativeRunnerCheckpointHeader(db: Pick<Db, "select">, binding: Binding): Promise<string | null> {
+  const [row] = await db.select({ material: nativeRunnerCheckpoints.material }).from(nativeRunnerCheckpoints).where(and(
+    eq(nativeRunnerCheckpoints.companyId, binding.companyId), eq(nativeRunnerCheckpoints.issueId, binding.issueId),
+    eq(nativeRunnerCheckpoints.runId, binding.runId), eq(nativeRunnerCheckpoints.part, "header"))).limit(1);
+  if (!row) return null;
+  try { return decryptPart(createLocalEncryptedCipher("read"), binding, "header", row.material); }
+  catch { return null; }
+}
+
 export async function loadNativeRunnerCheckpoint(db: Pick<Db, "select">, binding: Binding): Promise<DurablePrpCheckpoint | null> {
   const rows = await db.select().from(nativeRunnerCheckpoints).where(and(
     eq(nativeRunnerCheckpoints.companyId, binding.companyId), eq(nativeRunnerCheckpoints.issueId, binding.issueId),

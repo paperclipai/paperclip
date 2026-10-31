@@ -41,6 +41,22 @@ retains the 32-candidate and newer-progress barrier checks. Snapshot transaction
 counts and stale-generation rejection are exercised by the control-plane port
 tests; incomplete-publication retention is exercised by the expiration tests.
 
+The cold Codex transport regressions additionally retain a real provider event
+after completion, hold its persistence callback and require the original source
+tuple and Runner outbox to survive until acceptance. A separate case deletes the
+controller cache after its staged target is durably recorded and resumes through
+the same source before target attachment. Unknown semantic tails must stay held
+without target tool dispatch or a fabricated response. The staged restart helper
+and classifier tests cover target discovery before its first session snapshot,
+exact encrypted source/header/artifact bindings and the existing compatibility
+rebinder. Source accounting tests use real PostgreSQL to distinguish immutable
+receipt replay, equal finalized usage and late usage requiring reconciliation.
+Handoff crash tests must restore the exact queued command or authenticated
+receipt, reuse the verified physical Runner and preserve endpoint binding. Test
+both direct callbacks and the same guest listener when that ingress is enabled;
+changing an endpoint or losing physical proof must hold recovery.
+These component cases do not replace the normal three-controller Daytona gate.
+
 Per-turn plugin continuation uses a stopped checkpoint on a replacement lease.
 The executor tests cover Claude and Codex, including reopening blocked work.
 The lease-authority integration test uses PostgreSQL to check that checkpoint

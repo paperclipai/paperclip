@@ -7,7 +7,8 @@ import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-pre
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
-import { hasNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { hasNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader } from "./native-runner-checkpoint.js";
+import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 import { activeNativeExecutionRunIds, NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
 import {
@@ -69,6 +70,8 @@ export type NativeRestartRecoveryClaim =
       recoveryRequestId: string | null;
       remote: { kind?: "sandbox"; providerLeaseId: string; remoteCwd: string }
         | { kind: "plugin_task"; leaseId: string };
+      /** Discovery evidence only; executor revalidates the encrypted header. */
+      stagedAttachment?: Pick<NativeStagedAttachmentRecovery, "sourceIdentity" | "targetIdentity" | "templateDigest">;
     }
   | {
       kind: "resume_dead_runner";
@@ -322,6 +325,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   checkpointIdentityMatches?: boolean;
   hasProviderEvidence: boolean;
   checkpointFailed?: boolean;
+  stagedAttachmentVerified?: boolean;
   providerAttempt?: number;
 }): {
   claimKind: NativeRestartRecoveryClaim["kind"] | null;
@@ -336,6 +340,9 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   // inspection; the executor must prove the original lease and authenticate
   // the surviving runner before it can resume delivery.
   if (input.remoteSandbox) {
+    if (input.stagedAttachmentVerified === true) {
+      return { claimKind: "reattach_remote_runner", reason: "staged_remote_attachment_requires_sandbox_verification" };
+    }
     if (input.unclaimedBootstrap === true && !input.hasCheckpoint && !input.hasProviderEvidence) {
       return { claimKind: "bootstrap_incomplete", reason: "remote_execution_never_claimed" };
     }
@@ -677,6 +684,17 @@ export async function claimNativeRestartRecoveries(input: {
         } as const;
       }
 
+      // Only the classic remote path stages attachments. After the owner is
+      // eligible for takeover, inspect its bounded header even if activation
+      // already published a runtime snapshot. Never scan command/event payloads.
+      const stagedHeader = remoteWorkspace && !pluginTask && durableAuthority
+        ? await loadNativeRunnerCheckpointHeader(tx, {
+            companyId: row.run.companyId, issueId: row.coordinator.issueId, runId: row.run.id,
+          }) : null;
+      const stagedAttachment = stagedHeader ? await resolveNativeStagedAttachmentRecovery({
+        db: tx, currentRun: row.run, header: stagedHeader,
+      }) : null;
+
       const runnerPidAlive =
         !remoteProcess && processIsAlive(row.run.processPid);
       const runnerGroupAlive =
@@ -865,6 +883,7 @@ export async function claimNativeRestartRecoveries(input: {
         knownProviderProcessIdentityAmbiguous:
           providerProcesses.ambiguousLivePids.length > 0,
         hasCheckpoint,
+        stagedAttachmentVerified: stagedAttachment !== null,
         checkpointIdentityMatches:
           checkpointIdentityMatches &&
           (!remoteSandbox || remoteWorkspace !== null),
@@ -1115,6 +1134,10 @@ export async function claimNativeRestartRecoveries(input: {
         return {
           kind: claimKind,
           ...common,
+          ...(stagedAttachment ? { stagedAttachment: {
+            sourceIdentity: stagedAttachment.sourceIdentity, targetIdentity: stagedAttachment.targetIdentity,
+            templateDigest: stagedAttachment.templateDigest,
+          } } : {}),
           remote: pluginTask ? { kind: "plugin_task", leaseId: pluginTask.id } : {
             providerLeaseId: remoteWorkspace!.providerLeaseId,
             remoteCwd: remoteWorkspace!.remoteCwd,

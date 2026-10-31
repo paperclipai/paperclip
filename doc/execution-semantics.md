@@ -2724,6 +2724,47 @@ attachment IDs. A healthy warm handoff can create new attachment IDs within the
 retained Runner. Replacing that run's controller must preserve those IDs; deriving
 them again from the business run ID would request an invalid authority rotation.
 
+Cold Codex continuation can restore a completed provider with a retained event
+suffix. Native remote controllers first persist a private staged attachment under
+the target run's existing checkpoint owner, then restore and drain the exact
+source authority before attaching the target. The source's run, turn and item
+identity stays on every old event. Receipt persistence precedes acknowledgement;
+unknown semantic work holds the handoff and never reaches the target's tool
+authority. The provider's settled-session attachment guard remains mandatory.
+
+The staged controller format is
+`paperclip.runner.durable.control-plane-state.staged-attachment.v1`. It contains
+the source and target attachment tuples and one bound target attachment template
+inside the existing encrypted PRP authority, subject to its existing size limits.
+The header stores a bounded descriptor and digest. Before command delivery, the
+template is a separate changed-record part; after queueing, recovery uses the
+existing command or receipt. Control checkpoints do not rewrite another copy of
+instructions or tool context in the header.
+It is separate from the 4 KiB run-profile recovery envelope. Startup discovers
+this target obligation through bounded encrypted-header reads before a target
+session snapshot exists. It verifies both frozen runs, the accepted and released
+source, its original Runner artifact and the exact source header. Remote process
+verification then chooses authenticated source adoption or verified suspended
+source restoration. An in-memory rebound snapshot supplies normal admission;
+an existing target snapshot always takes precedence over that source baseline.
+The intent remains through command delivery and authenticated handoff, including
+an uncertain commit response. Source and target receipt phases require their
+exact physical authority; receipt replay cannot start a second Runner or attach
+again under a different endpoint. After the ordinary target snapshot commits,
+an in-memory notification permits intent retirement in the next existing command
+write. There is no separate metadata/snapshot transaction for that retirement.
+
+Source accounting uses the source's immutable producer receipts and billing
+classification. Opening this receiver does not reset accounting ownership or
+reopen a finalized run. Equal finalized usage retains the existing audit policy;
+changed, incomplete or conflicting usage remains unacknowledged for
+reconciliation. The target's usage receiver never receives source events. Staging
+adds recovery control work only: text streaming and settled idle operation add no
+queries, snapshot transactions, pools or recurring scans. The first rollback
+release supporting this continuation must also read the staged controller format;
+older readers fail closed. Prepared-launch and other provider paths retain their
+existing admission and recovery contracts.
+
 Accepted-result retirement still stops the old provider turn before draining and
 suspending its Runner. The checkpoint codec classifies `turn.stop` as lifecycle
 maintenance. Existing exact ownership, generation and accepted-result fences
