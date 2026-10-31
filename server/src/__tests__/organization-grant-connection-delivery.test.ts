@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { activityLog, authUsers, connectionGrants, connectionIntentDeliveries, createDb, databaseWorkPending, issueThreadInteractions,
-  toolConnections, toolPolicies } from "@paperclipai/db";
+  toolCatalogEntries, toolConnections, toolPolicies } from "@paperclipai/db";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { createOrganizationGrantStore } from "../services/tool-access/connections/organization-grant.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -90,18 +90,56 @@ describePostgres("default organization grant writes notify the connection delive
     },
   );
 
-  it("notifies before the write even when the write fails inside the savepoint", async () => {
-    const f = await seed();
+  it.each([["insert", false], ["update", true]] as const)(
+    "notifies before the %s write even when that write fails inside the savepoint",
+    async (branch, revokedGrant) => {
+      const f = await seed(revokedGrant);
+      delivery = await startConnectionDelivery(db);
+      const baseline = delivery.sweeps;
+      const before = await orgGrants(f.connection.id);
+      await db.transaction(async (tx) => {
+        if (branch === "update") {
+          await tx.execute(sql`create function reject_grant_update() returns trigger language plpgsql as $$ begin raise exception 'update rejected'; end $$`);
+          await tx.execute(sql`create trigger reject_grant_update before update on connection_grants for each row execute function reject_grant_update()`);
+        }
+        expect(databaseWorkPending(db, DELIVERY_QUEUES.connection)).toBe(false);
+        const connection = branch === "insert" ? { ...f.connection, id: randomUUID() } : f.connection;
+        await expect(createOrganizationGrantStore(db)(connection, tx)).rejects.toThrow();
+        expect(databaseWorkPending(db, DELIVERY_QUEUES.connection)).toBe(true);
+        if (branch === "update") {
+          await tx.execute(sql`drop trigger reject_grant_update on connection_grants`);
+          await tx.execute(sql`drop function reject_grant_update()`);
+        }
+      });
+      await delivery.settle(baseline + 1);
+      expect((await card()).status).toBe("pending");
+      expect(await orgGrants(f.connection.id)).toEqual(before);
+    },
+  );
+
+  it("notifies on a Google Workspace scope narrowing through the update branch without retiring the card", async () => {
+    const f = await seed(true);
+    await db.update(toolConnections).set({ config: { sourceTemplateKey: "google-workspace" }, credentialPolicy: "shared" }).where(eq(toolConnections.id, f.connection.id));
+    await db.update(toolCatalogEntries).set({ toolName: "gmail__get_message", name: "gmail__get_message" }).where(eq(toolCatalogEntries.id, f.tool.id));
+    const payload = f.intent.payload as { serviceSlug: string; accessRequest: { tools: Array<{ toolName: string }> } };
+    payload.serviceSlug = "google-workspace";
+    payload.accessRequest.tools[0]!.toolName = "gmail__get_message";
+    await db.update(issueThreadInteractions).set({ payload: f.intent.payload }).where(eq(issueThreadInteractions.id, f.intent.id));
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, f.connection.id));
+    const scopes = (scope: string) => ({ scopes: [`https://www.googleapis.com/auth/${scope}`], scopeSource: "provider" as const, unrequestedScopes: [], requestedScopes: [] });
+    await db.update(connectionGrants).set({ providerTenant: { oauth: scopes("gmail.readonly") } }).where(eq(connectionGrants.connectionId, f.connection.id));
+    const ensure = createOrganizationGrantStore(db);
     delivery = await startConnectionDelivery(db);
-    const baseline = delivery.sweeps;
-    await db.transaction(async (tx) => {
-      expect(databaseWorkPending(db, DELIVERY_QUEUES.connection)).toBe(false);
-      await expect(createOrganizationGrantStore(db)({ ...f.connection, id: randomUUID() }, tx)).rejects.toThrow();
-      expect(databaseWorkPending(db, DELIVERY_QUEUES.connection)).toBe(true);
-    });
+    let baseline = delivery.sweeps;
+    await ensure(connection!, db, undefined, scopes("drive.readonly"));
     await delivery.settle(baseline + 1);
     expect((await card()).status).toBe("pending");
-    expect(await db.select().from(connectionGrants).where(eq(connectionGrants.kind, "organization"))).toHaveLength(0);
+    expect(await db.select().from(connectionIntentDeliveries)).toHaveLength(0);
+    expect(delivery.wakeup).not.toHaveBeenCalled();
+    baseline = delivery.sweeps;
+    await ensure(connection!, db, undefined, scopes("gmail.readonly"));
+    await delivery.settle(baseline + 1);
+    await expectRetired(f.connection.id);
   });
 
   it.each([["insert", false], ["update", true]] as const)(
