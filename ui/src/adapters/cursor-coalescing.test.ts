@@ -75,4 +75,28 @@ describe("cursor transcript coalescing (render-time projection)", () => {
     assertCanonicalShape(entries);
     expect(entries.some((e) => e.kind === "result")).toBe(true);
   });
+
+  it("cursor cloud: coalesces streamed SDK text and thinking fragments, preserving whitespace", () => {
+    const text = (value: string) => ({
+      type: "cursor_cloud.message",
+      message: { type: "assistant", message: { content: [{ type: "text", text: value }] } },
+    });
+    const thinking = (value: string) => ({ type: "cursor_cloud.message", message: { type: "thinking", text: value } });
+    const chunks = lines(
+      thinking("I need to recover a "),
+      thinking("task."),
+      thinking("\n\nThen reply."),
+      text("I'll"),
+      text(" pick"),
+      text(" up"),
+    );
+
+    const entries = buildTranscript(chunks, parseCursorCloudStdoutLine);
+    expect(entries.filter((e) => e.kind === "thinking").map((e) => (e as { text: string }).text)).toEqual([
+      "I need to recover a task.\n\nThen reply.",
+    ]);
+    expect(entries.filter((e) => e.kind === "assistant").map((e) => (e as { text: string }).text)).toEqual([
+      "I'll pick up",
+    ]);
+  });
 });
