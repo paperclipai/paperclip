@@ -1,3 +1,4 @@
+import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
 import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
@@ -870,6 +871,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         await notifyInstructionCollection(tx, { companyId: current.companyId, runId: current.id });
         await notifyExternalAgentSettlement(tx, { companyId: current.companyId, runId: current.id });
         await notifyCancelledWorkspacePreservation(tx, { companyId: current.companyId, runId: current.id });
+        await notifyExecutionRunWork(tx, { companyId: current.companyId, agentId: current.agentId, runId: current.id });
         await notifyUnsafeWorkspaceExportRunChange(tx, current);
         [terminal] = await tx
           .update(heartbeatRuns)
@@ -996,6 +998,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
           await notifyExternalAgentSettlement(tx, { companyId: run.companyId, runId: run.id });
           await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
+          await notifyExecutionRunWork(tx, { companyId: run.companyId, agentId: run.agentId, runId: run.id });
           await notifyUnsafeWorkspaceExportRunChange(tx, run);
           const [row] = await tx.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(),
             errorCode: "case_handoff_superseded", error: "This case handoff was cancelled or superseded.", updatedAt: new Date() })
@@ -1360,7 +1363,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
                   await notifyExternalAgentSettlement(tx, { companyId: run.companyId, runId: run.id });
                   await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
-          await notifyUnsafeWorkspaceExportRunChange(tx, run);
+                  await notifyExecutionRunWork(tx, { companyId: run.companyId, agentId: run.agentId, runId: run.id });
+                  await notifyUnsafeWorkspaceExportRunChange(tx, run);
                   const [cancelled] = await tx
                     .update(heartbeatRuns)
                     .set({
@@ -1485,7 +1489,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
                 await notifyExternalAgentSettlement(tx, { companyId: run.companyId, runId: run.id });
                 await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
-          await notifyUnsafeWorkspaceExportRunChange(tx, run);
+                await notifyExecutionRunWork(tx, { companyId: run.companyId, agentId: run.agentId, runId: run.id });
+                await notifyUnsafeWorkspaceExportRunChange(tx, run);
                 const [cancelled] = await tx
                   .update(heartbeatRuns)
                   .set({

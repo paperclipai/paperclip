@@ -871,7 +871,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       expect(candidate?.id).toBe(wakeId);
       const agent = await ports.transaction.findInvokableAgent({ companyId, agentId: foreignAgentId });
       expect(agent).toBeNull();
-      const failed = await ports.transaction.failDeferredWake({ companyId, wakeId: candidate!.id, now: new Date() });
+      const failed = await ports.transaction.failDeferredWake({ companyId, wakeId: candidate!.id, agentId: candidate!.agentId, now: new Date() });
       expect(failed).toBe(true);
       return { outcome: { kind: "released" as const }, postCommitEffects: [] };
     });
@@ -903,6 +903,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       async (_locked, ports) => {
         const cancelledUnderWrongCompany = await ports.transaction.cancelDeferredWake({
           companyId: otherCompanyId,
+          agentId,
           wakeId,
           reason: "cross-company cancel attempt",
           now: new Date(),
@@ -911,6 +912,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
 
         const failedUnderWrongCompany = await ports.transaction.failDeferredWake({
           companyId: otherCompanyId,
+          agentId,
           wakeId,
           now: new Date(),
         });

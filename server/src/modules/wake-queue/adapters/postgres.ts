@@ -1,3 +1,4 @@
+import { notifyStrandedAgentStatus } from "../../../services/live-run-recovery-notifications.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
 import { notifyRunDispatch } from "../../../services/run-dispatch-notifications.js";
 import { notifyExternalConversationSettlement } from "../../../services/external-conversation-settlement-notifications.js";
@@ -274,6 +275,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
             throw error;
           }
           const now = new Date();
+          await notifyStrandedAgentStatus(tx, { companyId, agentId: row.agentId });
           await notifyChatInboundWakeNotices(tx, { companyId, issueId });
           await tx
             .update(agentWakeupRequests)
@@ -319,7 +321,8 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       return { liveNonSelfCommentIds, containedSelfAuthoredComment };
     },
 
-    async cancelDeferredWake({ companyId, wakeId, reason, now }) {
+    async cancelDeferredWake({ companyId, wakeId, agentId, reason, now }) {
+      await notifyStrandedAgentStatus(tx, { companyId, agentId });
       await notifyChatInboundWakeNotices(tx, { companyId });
       const rows = await tx
         .update(agentWakeupRequests)
@@ -327,6 +330,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .where(
           and(
             eq(agentWakeupRequests.id, wakeId),
+            eq(agentWakeupRequests.agentId, agentId),
             eq(agentWakeupRequests.companyId, companyId),
             eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
           ),
@@ -351,7 +355,8 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       return row ? toDeferredWakeCandidate(row) : null;
     },
 
-    async failDeferredWake({ companyId, wakeId, now }) {
+    async failDeferredWake({ companyId, wakeId, agentId, now }) {
+      await notifyStrandedAgentStatus(tx, { companyId, agentId });
       await notifyChatInboundWakeNotices(tx, { companyId });
       const rows = await tx
         .update(agentWakeupRequests)
@@ -364,6 +369,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .where(
           and(
             eq(agentWakeupRequests.id, wakeId),
+            eq(agentWakeupRequests.agentId, agentId),
             eq(agentWakeupRequests.companyId, companyId),
             eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
           ),

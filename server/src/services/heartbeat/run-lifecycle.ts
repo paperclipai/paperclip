@@ -1,3 +1,4 @@
+import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
 import { notifyRunDispatch } from "../run-dispatch-notifications.js";
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
@@ -1418,12 +1419,13 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
   ) {
     if (!wakeupRequestId) return;
     await db.transaction(async tx => {
-      const [current] = await tx.select({ companyId: agentWakeupRequests.companyId, status: agentWakeupRequests.status })
+      const [current] = await tx.select({ companyId: agentWakeupRequests.companyId, agentId: agentWakeupRequests.agentId, status: agentWakeupRequests.status })
         .from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId)).for("update");
       if (!current || current.status === "cancelled") return;
       if (current.status !== (patch?.status ?? status) || patch?.payload !== undefined || patch?.runId !== undefined) {
         await notifyExternalConversationSettlement(tx, { companyId: current.companyId });
       }
+      await notifyStrandedAgentStatus(tx, { companyId: current.companyId, agentId: current.agentId });
       await tx.update(agentWakeupRequests)
         .set({ status, ...patch, updatedAt: new Date() })
 

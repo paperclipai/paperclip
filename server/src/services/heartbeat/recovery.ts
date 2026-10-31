@@ -2081,6 +2081,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
               runtimeEnv.PAPERCLIP_INSTANCE_ID?.trim() || "paperclip-heartbeat",
             now,
             runIds: [...claimableNativeRunIds],
+            deferIneligible: !scope.runId,
+            onError: scope.onError,
             dispatch: (claim) => {
               const execution = executeRun(claim.runId, {
                 nativeLeaseOwner: claim.leaseOwner,
