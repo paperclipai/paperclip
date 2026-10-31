@@ -4,9 +4,9 @@ import { createHash } from "node:crypto";
 import type { StoryCheck, StoryRun } from "./everyday-observations.js";
 import { validControllerOutageReceipt, type ControllerOutageReceipt } from "./controller-outage.js";
 
-/** Only this explicit definition changes the post-replacement user entry point. */
+/** Only these explicit recovery definitions change the post-replacement user entry point. */
 export function retainedControllerFollowupTransport(execution: Pick<MatrixExecution, "suite" | "task">): "browser" | "task_comment_api" {
-  return execution.suite.id === "daytona-restart-continuity" && execution.task.id === "recover-controller"
+  return ["daytona-restart-continuity", "remote-workspace-storage"].includes(execution.suite.id) && execution.task.id === "recover-controller"
     && execution.suite.definitionMetadata?.retainedControllerContinuation === true
     && execution.suite.definitionMetadata.retainedControllerFollowupTransport === "task_comment_api"
     ? "task_comment_api" : "browser";

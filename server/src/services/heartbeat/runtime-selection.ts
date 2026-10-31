@@ -1,4 +1,5 @@
 import { museRunnerBroker } from "../muse-runner-broker.js";
+import { readRemoteWorkspaceAuthority } from "../remote-workspaces.js";
 import { measureRunTransaction } from "../execution-transaction-timing.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import {
@@ -118,7 +119,7 @@ export interface HeartbeatRuntimeSelectionInput {
     getFreshSessionHandoff: (() => Promise<string | null>) | undefined;
   };
   workspace: {
-    persistedExecutionWorkspace: { id: string } | null;
+    persistedExecutionWorkspace: { id: string; metadata?: Record<string, unknown> | null } | null;
     executionWorkspace: Omit<Parameters<typeof buildNativeExecutionInput>[0]["workspace"], "id">;
     executionTarget: Parameters<typeof prepareNativeWorkspaceSync>[0]["target"];
     activeEnvironmentLease: Pick<Parameters<typeof prepareNativeWorkspaceSync>[0], "lease">;
@@ -1047,7 +1048,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     });
     if (!nativeSelected) return { selected: false };
     stopControllerLease();
-    nativeWorkspaceSync = await measureRunPhase("runtime_selection.workspace_sync", () => prepareNativeWorkspaceSync({
+    nativeWorkspaceSync = readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata) ? null
+      : await measureRunPhase("runtime_selection.workspace_sync", () => prepareNativeWorkspaceSync({
       db,
       runId: run.id,
       companyId: agent.companyId,

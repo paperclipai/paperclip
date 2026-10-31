@@ -133,6 +133,7 @@ export const DELIVERY_QUEUES = {
   connectionEvents: "connection-events",
   connectionContinuity: "connection-continuity",
   gitRestorePoints: "git-restore-points",
+  remoteWorkspaceSnapshots: "remote-workspace-snapshots",
   nativeWorkspaceSyncRetention: "native-workspace-sync-retention",
   question: "question-responses",
   pluginSchedules: "plugin-schedules",
