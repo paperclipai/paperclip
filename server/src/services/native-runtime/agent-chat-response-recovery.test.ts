@@ -13,6 +13,7 @@ import { idleWorkSnapshot } from "../task-admission.js";
 import { chatCompletionDeliveryService, existingChatCompletionReply } from "../chat-completion-delivery.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueService } from "../issues.js";
+import * as nativeResponseNotifications from "../native-response-presentation-notifications.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_CHAT_RESPONSE_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -456,6 +457,35 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
       expect(await reader).toMatchObject({ id: saved.id, body: f.reply, createdByRunId: f.runId });
       expect(await comments(f.runId)).toHaveLength(1);
     } finally { release?.(); await Promise.allSettled([blocker, reader].filter((value): value is Promise<unknown> => Boolean(value))); }
+  });
+
+  it("does not let an old hold shorten a newer claim's lease", async () => {
+    const started = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(started);
+    const f = await fixture(), outbox = await completion(f);
+    const notify = nativeResponseNotifications.notifyNativeResponsePresentation;
+    let release!: () => void, notified!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { notified = resolve; });
+    const spy = vi.spyOn(nativeResponseNotifications, "notifyNativeResponsePresentation").mockImplementationOnce(async (tx, scope) => {
+      await notify(tx, scope); notified(); await hold;
+    });
+    let old: Promise<unknown> | undefined;
+    try {
+      // The actual candidate query and transaction intent complete first. Pause
+      // only the old producer before its CAS; the competing producer uses PG.
+      old = outbox.service.deliver(outbox.deliveryId); void old.catch(() => undefined);
+      await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1), { timeout: 5000 }); await ready;
+      vi.setSystemTime(started + 60_000);
+      await outbox.service.deliver(outbox.deliveryId);
+      expect(await outbox.delivery()).toMatchObject({ status: "queued", targetRunId: f.runId, attempts: 0,
+        nextAttemptAt: new Date(started + 120_000) });
+      release(); await old;
+      expect(await outbox.delivery()).toMatchObject({ status: "queued", targetRunId: f.runId, attempts: 0,
+        nextAttemptAt: new Date(started + 120_000) });
+      expect(outbox.wakeup).not.toHaveBeenCalled();
+      expect(await comments(f.runId)).toEqual([]);
+    } finally { release?.(); await Promise.allSettled(old ? [old] : []); spy.mockRestore(); vi.useRealTimers(); }
   });
 
   it("saves a legitimate delayed reply before the fixed limit without another model run", async () => {

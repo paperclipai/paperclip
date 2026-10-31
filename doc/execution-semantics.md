@@ -1358,7 +1358,8 @@ daily-limit checks resume. Retry takes the same child-task-first lock held by
 reply insertion and acknowledgment. Reply authority reloads the delivery after
 acquiring that lock. Retry checks that the locked task is still Done. It then
 matches the delivery's recorded completion-event version, pending state, target,
-attempt and exact lease.
+attempt and exact lease. Deferral uses that same exact claim fence, so a stalled
+old hold cannot shorten or replace a newer claim's lease.
 Reassigning a Done task can change its current task version without invalidating
 that completion event; a real status change keeps its existing supersession. A delivered reply,
 newer target or newer claim prevents that retry. Wake admission runs only after

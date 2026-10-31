@@ -252,7 +252,8 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
               claimed.nextAttemptAt.getTime(), response.nextAttemptAt?.getTime() ?? 0,
             ))) }).where(and(eq(deliveries.id, id), eq(deliveries.companyId, claimed.companyId),
               eq(deliveries.status, "queued"), eq(deliveries.targetRunId, run.id),
-              eq(deliveries.statusVersion, claimed.statusVersion))).returning({ id: deliveries.id });
+              eq(deliveries.statusVersion, claimed.statusVersion), eq(deliveries.attempts, claimed.attempts),
+              eq(deliveries.nextAttemptAt, claimed.nextAttemptAt))).returning({ id: deliveries.id });
             return updated.length > 0;
           });
           if (deferred) return;
