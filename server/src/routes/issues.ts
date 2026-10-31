@@ -11425,9 +11425,22 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
-    if (req.actor.type !== "board") {
+    // The agent that owns a board conversation may tidy that conversation's
+    // documents; every other non-board actor still needs board authentication.
+    const isConversationAgent =
+      req.actor.type === "agent" &&
+      Boolean(req.actor.agentId) &&
+      Boolean(issue.conversationAgentId) &&
+      issue.conversationAgentId === req.actor.agentId;
+    if (req.actor.type !== "board" && !isConversationAgent) {
       res.status(403).json({ error: "Board authentication required" });
       return;
+    }
+    // The agent path gets the same guards as a document write: issue access and
+    // checkout ownership, and no deliverable changes from status-only runs.
+    if (isConversationAgent) {
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
     }
     const keyParsed = issueDocumentKeySchema.safeParse(
       String(req.params.key ?? "")
