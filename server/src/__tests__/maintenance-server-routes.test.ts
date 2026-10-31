@@ -76,6 +76,8 @@ describe("assembled maintenance server production wiring", () => {
       expect(real.network.nonDatabaseConnections).toBe(before.network.nonDatabaseConnections);
       expect(real.network.nonDatabaseBytesWritten).toBe(before.network.nonDatabaseBytesWritten);
       const realFrames = server.proxy.frames, realTransport = server.proxy.transport;
+      expect(realTransport.connectionsOpened).toBeGreaterThan(0);
+      expect(realTransport.connectionsClosed).toBe(realTransport.connectionsOpened);
       for (let step = 0; step < 240; step++) { await server.advance(30_000); await server.settled(10); }
       const after = await server.snapshot();
       expect(after.now - real.now).toBe(2 * 60 * 60_000);
@@ -85,6 +87,7 @@ describe("assembled maintenance server production wiring", () => {
       expect(after.network.nonDatabaseConnections).toBe(before.network.nonDatabaseConnections);
       expect(after.network.nonDatabaseBytesWritten).toBe(before.network.nonDatabaseBytesWritten);
       expect(server.proxy.errors).toEqual([]);
+      expect(server.proxy.transport).toEqual(realTransport);
       await writeFile(path.join(server.directory, "enabled-quiet-measurement.json"), JSON.stringify({ phase: "enabled-quiet", state,
         wallElapsedMs, realClockElapsedMs: real.now - before.now, qualifiedClockMs: after.now - real.now, stepMs: 30_000, ioSettledBetweenSteps: true,
         measuredQueries: 0, startupQueries: queryCount, startup: receipt(server.proxy.queries), before, real, after,

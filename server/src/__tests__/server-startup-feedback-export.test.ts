@@ -186,7 +186,6 @@ const {
     scanSilentActiveRuns: vi.fn(async () => ({ created: 0, escalated: 0 })),
     sweepStaleIssueLocks: vi.fn(async () => ({ cleared: 0 })),
     sweepPendingCleanupLeases: vi.fn(async () => ({ swept: 0, destroyed: 0, capped: 0 })),
-    sweepExpiredRuntimeStatuses: vi.fn(() => 0),
     tickAgentTimers: vi.fn(async () => ({ checked: 0, enqueued: 0, skipped: 0 })),
     nextAgentTimerAt: vi.fn(async () => null),
     tickIssueMonitors: vi.fn(async () => ({ checked: 0, triggered: 0, skipped: 0 })),
@@ -836,7 +835,7 @@ describe("startServer feedback export wiring", () => {
     expect(deliveryWorkErrors.filter(error => error.queue === DELIVERY_QUEUES.skillVersionRetention)).toEqual([]);
   });
 
-  it.each([false, true])("registers status-card evaluation only with maintenance and never ticks it from the heartbeat loop (%s)", async enabled => {
+  it.each([false, true])("registers status-card evaluation only with maintenance and creates no aggregate interval (%s)", async enabled => {
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled, heartbeatSchedulerIntervalMs: 1000 }));
     let tick: (() => void) | undefined;
     const timer = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void, interval: number) => {
@@ -850,8 +849,8 @@ describe("startServer feedback export wiring", () => {
       if (enabled) {
         const service = vi.mocked(statusCardEvaluationService).mock.results.at(-1)!.value;
         expect(service.run).toHaveBeenCalledOnce();
-        expect(tick).toBeDefined();
-        for (let i = 0; i < 3; i++) { tick!(); await settleStartupHousekeeping(); }
+        expect(tick).toBeUndefined();
+        await settleStartupHousekeeping();
         expect(service.run).toHaveBeenCalledOnce();
       }
       expect(deliveryWorkErrors.filter(error => error.queue === DELIVERY_QUEUES.statusCardEvaluation)).toEqual([]);
@@ -1073,7 +1072,7 @@ describe("startServer feedback export wiring", () => {
         expect(registration).toBeUndefined();
         expect(attentionRetentionService).not.toHaveBeenCalled();
         expect(decisionRetentionService).not.toHaveBeenCalled();
-        expect(tick).toBeDefined(); tick!(); await settleStartupHousekeeping();
+        expect(tick).toBeUndefined(); await settleStartupHousekeeping();
         expect(decisionRetentionService).not.toHaveBeenCalled();
         return;
       }
@@ -1089,8 +1088,8 @@ describe("startServer feedback export wiring", () => {
       const companyReads = () => vi.mocked(db.select).mock.results.filter(({ value }) =>
         vi.mocked(value.from).mock.calls.some(([table]) => table === companies)).length;
       const before = companyReads();
-      expect(before).toBe(0); expect(tick).toBeDefined();
-      tick!(); await settleStartupHousekeeping();
+      expect(before).toBe(0); expect(tick).toBeUndefined();
+      await settleStartupHousekeeping();
       expect(companyReads()).toBe(before);
       expect(source.load).toHaveBeenCalledOnce();
       expect(retention.deliverNotifications).toHaveBeenCalledOnce();
@@ -1397,7 +1396,7 @@ describe("startServer feedback export wiring", () => {
     } finally { intervals.mockRestore(); }
   });
 
-  it("does not rescan idle tool health from the aggregate maintenance tick", async () => {
+  it("registers idle tool health without an aggregate maintenance interval", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true, heartbeatSchedulerIntervalMs: 30_000 }));
     let tick: (() => void) | undefined;
     const intervals = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void, ms: number) => {
@@ -1414,9 +1413,8 @@ describe("startServer feedback export wiring", () => {
       const loads = vi.mocked(toolAccessService).mock.results.map(result => result.value.scheduledHealth.load);
       const loadCount = () => loads.reduce((total, load) => total + load.mock.calls.length, 0);
       expect(loadCount()).toBe(1);
-      expect(tick).toEqual(expect.any(Function));
-      tick!(); await new Promise<void>(resolve => setImmediate(resolve));
-      tick!(); await new Promise<void>(resolve => setImmediate(resolve));
+      expect(tick).toBeUndefined();
+      await new Promise<void>(resolve => setImmediate(resolve));
       expect(count()).toBe(0);
       expect(loadCount()).toBe(1);
     } finally { intervals.mockRestore(); }
@@ -1439,8 +1437,7 @@ describe("startServer feedback export wiring", () => {
       await settleStartupHousekeeping();
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
       expect(heartbeatServiceMock.sweepStaleIssueLocks).not.toHaveBeenCalled();
-      expect(intervalCallback).not.toBeNull();
-      intervalCallback?.();
+      expect(intervalCallback).toBeNull();
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(heartbeatServiceMock.sweepStaleIssueLocks).not.toHaveBeenCalled();
       expect(heartbeatServiceMock.reapOrphanedRuns).not.toHaveBeenCalled();
@@ -1533,8 +1530,7 @@ describe("startServer feedback export wiring", () => {
       expect(heartbeatServiceMock.tickAgentTimers).toHaveBeenCalledTimes(1);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(1);
 
-      expect(intervalCallback).not.toBeNull();
-      intervalCallback?.();
+      expect(intervalCallback).toBeNull();
       await Promise.resolve();
       await Promise.resolve();
 
@@ -1591,14 +1587,11 @@ describe("startServer feedback export wiring", () => {
     try {
       await startServer();
 
-      // The disabled path still creates one heartbeat runtime. This runtime owns
-      // the orphan-sandbox cleanup sweep, so a leaked provider sandbox is still
-      // reaped at startup and on the interval.
+      // The disabled path retains startup recovery and cleanup deadlines.
       expect(heartbeatServiceFactoryMock).toHaveBeenCalledTimes(1);
       expect(heartbeatServiceMock.sweepPendingCleanupLeases).toHaveBeenCalled();
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
-      expect(intervalCallback).not.toBeNull();
-      intervalCallback?.();
+      expect(intervalCallback).toBeNull();
       await Promise.resolve();
       await Promise.resolve();
 
@@ -1629,8 +1622,7 @@ describe("startServer feedback export wiring", () => {
       expect((await startServer()).server).toBe(fakeServer);
       await settleStartupHousekeeping();
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
-      expect(tick).toBeDefined();
-      tick?.();
+      expect(tick).toBeUndefined();
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
       const registration = deliveryWorkRegisterMock.mock.calls.find(([queue]) => queue === DELIVERY_QUEUES.accounting);
@@ -1724,10 +1716,12 @@ describe("startServer feedback export wiring", () => {
       expect(getStartupRecoveryState().phase).toBe("ready");
       await settleStartupHousekeeping();
       expect(heartbeatIntervals).toHaveLength(0);
+      expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.routineSchedules)).toBe(false);
 
       releaseCleanup?.();
       await settleStartupHousekeeping();
-      expect(heartbeatIntervals).toHaveLength(1);
+      expect(heartbeatIntervals).toHaveLength(0);
+      expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.routineSchedules)).toBe(true);
     } finally {
       setIntervalSpy.mockRestore();
     }
@@ -1755,7 +1749,8 @@ describe("startServer feedback export wiring", () => {
       expect(await registration![1].hasPending!()).toBe(true);
       expect(environmentCustomImagesServiceMock.nextSetupCleanupAt).not.toHaveBeenCalled();
       // The scheduler starts only after every housekeeping step settled.
-      expect(heartbeatIntervals).toHaveLength(1);
+      expect(heartbeatIntervals).toHaveLength(0);
+      expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.routineSchedules)).toBe(true);
     } finally {
       setIntervalSpy.mockRestore();
     }
