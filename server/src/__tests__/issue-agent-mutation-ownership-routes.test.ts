@@ -3028,20 +3028,37 @@ describe("agent issue mutation checkout ownership", () => {
 
       const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
 
-      expect(res.body.details?.code, JSON.stringify(res.body)).not.toBe("native_run_status_reported_by_finish");
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: "in_review" });
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review" });
     });
 
     it("does not intercept a native run handing its task to a human", async () => {
-      const res = await request(createApp(runActor(), createRunContextDb({}, ownerAgentId, ownerRunId, [], true)))
-        .patch(`/api/issues/${issueId}`).send({ assigneeAgentId: null, assigneeUserId: "board-user", status: "in_review" });
+      // A native handoff still stops the outgoing run first; confirm that stop
+      // so the request reaches the update instead of the stop-unconfirmed 409.
+      mockHeartbeatService.cancelRun.mockResolvedValue({ ...nativeRun, status: "cancelled" });
+      const handoff = { assigneeAgentId: null, assigneeUserId: "board-user", status: "in_review" };
 
-      expect(res.body.details?.code, JSON.stringify(res.body)).not.toBe("native_run_status_reported_by_finish");
+      const res = await request(createApp(runActor(), createRunContextDb({}, ownerAgentId, ownerRunId, [], true)))
+        .patch(`/api/issues/${issueId}`).send(handoff);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject(handoff);
+      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(ownerRunId, expect.anything(), expect.anything());
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockHeartbeatService.cancelRun.mock.invocationCallOrder[0])
+        .toBeLessThan(mockIssueService.update.mock.invocationCallOrder[0]!);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(handoff);
     });
 
     it("does not intercept a board user changing the status", async () => {
       const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
 
-      expect(res.body.details?.code, JSON.stringify(res.body)).not.toBe("native_run_status_reported_by_finish");
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: "in_review" });
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review" });
     });
   });
 
