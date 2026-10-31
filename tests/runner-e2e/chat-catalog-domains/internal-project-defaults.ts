@@ -88,7 +88,7 @@ export function gradeProjectDefaults(value: unknown) {
     && !o.activity.some(row => row.agentId === worker.id && row.entityId === p?.id && row.action === "project.updated")
     && !o.activity.some(row => row.agentId === o.leadId && changesGatedConfiguration(row)), "The existing checkout/task and separately governed environment/budget are not rewritten by future defaults; the probe cannot create its own defaults.");
   const first = String(o.state.defaultsReply ?? "");
-  c.add("future-defaults-distinguished-from-active-work", /\b(?:future|new|subsequent)\b/i.test(first) && /\b(?:existing|active|current|running)\b/i.test(first)
+  c.add("future-defaults-distinguished-from-active-work", /\b(?:future|new(?:ly)?|subsequent)\b/i.test(first) && /\b(?:existing|active|current|running)\b/i.test(first)
     && /\b(?:unchanged|not|does not|doesn't|won't|will not|only)\b/i.test(first), "The canonical reply distinguishes future task defaults from changes to already active work.");
   return c.result();
 }
@@ -118,7 +118,7 @@ function defaults(): ChatCatalogCase {
       throw error;
     }
   }, gradeProjectDefaults);
-  return { ...base, oracleVersion: "paperclip.chat-catalog.project-defaults.v3", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 660000, runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
+  return { ...base, oracleVersion: "paperclip.chat-catalog.project-defaults.v4", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 660000, runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
     setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "future-worker-ready", "existing-work-actively-owned"] },
     async verifySetup(ctx, state) { const [lead, future, held, t, runs] = await Promise.all([
       ctx.input.api.get<PreparedAgent>(`/api/agents/${ctx.input.fixtures.agent.id}`), ctx.input.api.get<PreparedAgent>(`/api/agents/${entity(state, "futureWorker").id}`), ctx.input.api.get<PreparedAgent>(`/api/agents/${entity(state, "worker").id}`),
