@@ -170,7 +170,7 @@ const test = await fetch("https://api.buywhere.ai/mcp", {
   })
 });
 const result = await test.json();
-if (!test.ok || result.error || !result.result) {
+if (!test.ok || result.error || !result.result || result.result.isError) {
   throw new Error(`BuyWhere connection failed: ${JSON.stringify(result.error ?? result)}`);
 }
 console.log("BuyWhere connected:", result.result.content?.[0]?.text ?? JSON.stringify(result.result));
