@@ -459,12 +459,15 @@ test("plan approval hands the preserved revision to an assigned project task", a
         { timeout: 60_000 },
       )
       .toBe(1);
+    // Task completion is delivered back to the chat as another real turn.
+    await idle(request, f.chatPath, 3);
     const task = (
       await json(await request.get(`/api/companies/${f.company.id}/issues`))
     )[0];
     expect(task.parentId).toBeNull();
     expect(task.projectId).toBeTruthy();
     expect(task.assigneeAgentId).toBe(f.agent.id);
+    await expect(page.getByText(`Delegated work completed: ${task.identifier}`, { exact: true })).toBeVisible();
     const plan = await json(
       await request.get(`/api/issues/${task.id}/documents/plan`),
     );
