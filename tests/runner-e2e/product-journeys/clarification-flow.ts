@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { expect } from "@playwright/test";
+import { expect, type Locator } from "@playwright/test";
 import { continuationScenario } from "../continuation-cases.js";
 import { continuationAnswerCommitted, continuationCheckpointReady } from "../continuation-readiness.js";
 import type { ContinuationCheckpoint } from "../continuation-scoring.js";
@@ -12,6 +12,19 @@ import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSes
 
 type Row = Record<string, any>;
 interface Options { deadlineAt: number; directory: string; capture(id: string, label: string, file: string): Promise<void> }
+
+export async function waitForClarificationDocument(visible: Locator, answer: string, deadlineAt: number) {
+  const remaining = () => {
+    const timeout = deadlineAt - Date.now();
+    if (!Number.isFinite(timeout) || timeout <= 0) throw new JourneyError("failed", "clarification_document_not_ready");
+    return timeout;
+  };
+  await expect(visible).toHaveCount(1, { timeout: remaining() });
+  await expect(visible).toBeVisible({ timeout: remaining() });
+  await expect(visible).toContainText(answer, { timeout: remaining() });
+  await expect(visible).toContainText(/afternoon/i, { timeout: remaining() });
+  remaining();
+}
 
 export async function readClarificationState(context: JourneyContext, issueId: string) {
   const route = `/api/issues/${issueId}`;
@@ -96,8 +109,7 @@ export async function runClarificationJourney(context: JourneyContext, session: 
     await context.page.goto(new URL(href, context.api.origin).href, { waitUntil: "domcontentloaded" });
     await context.page.reload({ waitUntil: "domcontentloaded" });
     const visible = context.page.locator(`[id=${JSON.stringify(`document-${document.key}`)}]:visible, [id=${JSON.stringify(`side-panel-content-document:${document.key}`)}]:visible`);
-    await expect(visible).toHaveCount(1); await expect(visible).toBeVisible();
-    await expect(visible).toContainText(scenario.answer); await expect(visible).toContainText(/afternoon/i);
+    await waitForClarificationDocument(visible, scenario.answer, options.deadlineAt);
     const persisted = await context.api.get<Row>(`/api/issues/${issue.id}/documents/${encodeURIComponent(document.key)}`);
     readback = { issueId: persisted.issueId, key: persisted.key, revisionId: persisted.latestRevisionId, body: persisted.body, visibleBody: await visible.innerText() };
     await options.capture("reloaded", "Saved answers after reload", "clarification-reloaded.png");

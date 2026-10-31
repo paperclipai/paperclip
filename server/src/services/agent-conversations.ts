@@ -1,4 +1,5 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody } from "@paperclipai/shared";
@@ -547,6 +548,7 @@ export async function resumeConversationForReset(db: Db, comment: typeof issueCo
       eq(issues.id, comment.issueId), eq(issues.companyId, comment.companyId),
     )).for("update");
     if (!isConversation(issue) || comment.conversationSessionGeneration != null) return;
+    await notifyIssueRecovery(tx, { companyId: issue.companyId });
     const released = await tx.update(issueTreeHolds).set({
       status: "released", releasedAt: new Date(), updatedAt: new Date(),
       releasedByActorType: "user", releasedByUserId: comment.authorUserId,

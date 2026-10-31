@@ -61,6 +61,15 @@ served by the admitted application before it finishes. Repeat with a disconnect
 before headers arrive. Confirm that neither leaves a permanent request hold. An
 unfinished application write must still prevent sleep after its client leaves.
 
+Automated: [historical cleanup](../../server/src/__tests__/historical-cleanup-verification.test.ts)
+exercises the runtime inspection path for failed Cloud sandbox leases, including
+verification leases without a run. A signed cleanup-only absence observation
+can remove this blocker without changing failed outcomes or granting run
+continuation. An unresolved provider resource still prevents idle sleep.
+Manual: on an owned Cloud staging workspace, confirm the exact published build,
+reconcile failed test allocations, then verify actual provider suspension and
+normal hosted entry after wake. Local tests do not prove that hosted journey.
+
 ### `settings-backup`
 
 Cloud startup reads nonsecret application choices from a private, versioned
