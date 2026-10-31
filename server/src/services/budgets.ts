@@ -1,3 +1,4 @@
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
@@ -301,7 +302,13 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     }
 
     if (policy.scopeType === "project") {
+      // Admission rechecks the same hard stop. Lock current eligibility before
+      // publishing intent so a no-op pause cannot reactivate its own receipts.
+      const [project] = await db.select({ pausedAt: projects.pausedAt }).from(projects)
+        .where(and(eq(projects.id, policy.scopeId), eq(projects.companyId, policy.companyId))).for("update");
+      if (!project || project.pausedAt !== null) return;
       await notifyRunDispatch(db, { companyId: policy.companyId });
+      await notifyDeferredExecutionEligibility(db, { companyId: policy.companyId });
       await db
         .update(projects)
         .set({
@@ -309,13 +316,14 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
           pausedAt: now,
           updatedAt: now,
         })
-        .where(and(eq(projects.id, policy.scopeId), isNull(projects.pausedAt)));
+        .where(and(eq(projects.id, policy.scopeId), eq(projects.companyId, policy.companyId), isNull(projects.pausedAt)));
       return;
     }
 
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.paused) return;
     await notifyRunDispatch(db, { companyId: policy.companyId });
+    await notifyDeferredExecutionEligibility(db, { companyId: policy.companyId });
     await notifyCompanyRetentionWork(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
@@ -363,6 +371,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
 
     if (policy.scopeType === "project") {
       await notifyRunDispatch(db, { companyId: policy.companyId });
+      await notifyDeferredExecutionEligibility(db, { companyId: policy.companyId });
       await db
         .update(projects)
         .set({
@@ -378,6 +387,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.pauseReason !== "budget") return;
     await notifyRunDispatch(db, { companyId: policy.companyId });
+    await notifyDeferredExecutionEligibility(db, { companyId: policy.companyId });
     await notifyCompanyRetentionWork(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
