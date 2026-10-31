@@ -26,6 +26,7 @@ import { createReadStream } from "node:fs";
 import { publicChatTaskUrl } from "../chat-task-url.js";
 import { agentCommentaryToolInputSchema } from "@paperclipai/shared";
 import { submitAgentCommentary } from "../agent-commentary.js";
+import { sendAgentChatMessage } from "../agent-chat-messages.js";
 import type { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import { captureRunnerToolResult, fitRunnerToolResultPage, READ_TOOL_RESULT, READ_TOOL_RESULT_DEFINITION, readToolResultSchema, RUNNER_TOOL_RESULT_MAX_BYTES } from "./runner-tool-results.js";
 import { assertAssignableAgent } from "../agent-assignability.js";
@@ -124,6 +125,7 @@ import {
 
 const EXTERNAL_WORKSPACE_OPERATIONS = new Set(["get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "register_deliverable"]);
 const IMPLEMENTED_OPERATIONS = new Set([
+  "send_chat_message",
   "submit_complaint", "submit_suggestion",
   "read_agent_instructions", "update_agent_instructions", "get_agent_instruction_history", "restore_agent_instructions",
   "search_api", "call_api", "hire_agent",
@@ -432,6 +434,7 @@ export class PaperclipRunnerToolAuthority {
     // retry, without ever falling through to an uncertain mutation.
     let recovered: unknown;
     if (call.tool === "set_task_title") recovered = await this.#setTaskTitle(input, true);
+    else if (call.tool === "send_chat_message") recovered = await this.#sendChatMessage(input, this.#privacyActor(run), true);
     else if (call.tool === "submit_complaint" || call.tool === "submit_suggestion") recovered = await this.#submitCommentary(call.tool, input, true);
     else if (call.tool === "create_task") recovered = await this.#createTask(input, null, true);
     else if (call.tool === "request_human_input") recovered = await this.#requestHumanInput(input, null, true);
@@ -957,6 +960,7 @@ export class PaperclipRunnerToolAuthority {
         return { approval, tasks: tasks.filter(row => !readable || readable.has(row.issue.id)).map(row => row.issue) };
       }
       case "report_progress": return this.#reportProgress(input);
+      case "send_chat_message": return this.#sendChatMessage(input, this.#privacyActor(context.run));
       case "request_human_input": return this.#requestHumanInput(input,
         (await captureRunIdentity(this.db, this.binding, { readScope: "identity" })).context?.id ?? null);
       case "create_task": return this.#createTask(input,
@@ -1482,6 +1486,14 @@ export class PaperclipRunnerToolAuthority {
     });
     if (!response.ok) throw new Error(`Review decision was not accepted (${response.status}): ${(await response.text()).slice(0, 2_000)}`);
     return { interactionId: review.interaction.id, status: expectedStatus };
+  }
+
+  async #sendChatMessage(input: Record<string, unknown>, actor: AuthorizationActor, receiptOnly = false) {
+    const result = await sendAgentChatMessage(this.db, { ...this.binding, keyScope: actor.keyScope,
+      onBehalfOfUserId: actor.onBehalfOfUserId, authorizingUserId: actor.authorizingUserId, source: actor.source }, input, {
+      authorizeNative: tx => this.#lockAuthorizedMutationContext(tx), receiptOnly,
+    });
+    return result ?? undefined;
   }
 
   async #reportProgress(input: Record<string, unknown>): Promise<unknown> {
