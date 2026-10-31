@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  hasOAuthRedirectOverride,
   parseOAuthRedirectOverrides,
   resolveOAuthRedirectUri,
 } from "../services/tool-access/oauth/redirect-overrides.js";
@@ -40,5 +41,13 @@ describe("oauth redirect overrides", () => {
     expect(resolveOAuthRedirectUri("https://mcp.other.example/mcp", fallback, env)).toBe(fallback);
     expect(resolveOAuthRedirectUri(undefined, fallback, env)).toBe(fallback);
     expect(resolveOAuthRedirectUri("https://mcp.norman.finance/mcp", fallback, {})).toBe(fallback);
+  });
+
+  it("reports whether a connection's server has an override", () => {
+    const env = { PAPERCLIP_OAUTH_REDIRECT_OVERRIDES: JSON.stringify({ "https://mcp.norman.finance": local }) };
+    expect(hasOAuthRedirectOverride("https://mcp.norman.finance/mcp", env)).toBe(true);
+    expect(hasOAuthRedirectOverride("https://mcp.other.example/mcp", env)).toBe(false);
+    expect(hasOAuthRedirectOverride(undefined, env)).toBe(false);
+    expect(hasOAuthRedirectOverride("https://mcp.norman.finance/mcp", {})).toBe(false);
   });
 });

@@ -58,6 +58,14 @@ export function parseOAuthRedirectOverrides(raw: string | undefined): Map<string
   return overrides;
 }
 
+function overrideFor(connectionUrl: unknown, env: NodeJS.ProcessEnv): string | null {
+  const raw = env[ENV_NAME];
+  if (!raw?.trim() || typeof connectionUrl !== "string") return null;
+  const origin = httpOrigin(connectionUrl);
+  if (!origin) return null;
+  return parseOAuthRedirectOverrides(raw).get(origin) ?? null;
+}
+
 /**
  * The redirect URI for one OAuth flow: the configured override for the
  * connection's MCP server origin, otherwise the deployment's default callback.
@@ -67,9 +75,17 @@ export function resolveOAuthRedirectUri(
   defaultRedirectUri: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const raw = env[ENV_NAME];
-  if (!raw?.trim() || typeof connectionUrl !== "string") return defaultRedirectUri;
-  const origin = httpOrigin(connectionUrl);
-  if (!origin) return defaultRedirectUri;
-  return parseOAuthRedirectOverrides(raw).get(origin) ?? defaultRedirectUri;
+  return overrideFor(connectionUrl, env) ?? defaultRedirectUri;
+}
+
+/**
+ * True when the connection's MCP server has a redirect override. The client ID
+ * metadata document lists only the default callback, so such a connection must
+ * not present a metadata document URL as its client id.
+ */
+export function hasOAuthRedirectOverride(
+  connectionUrl: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return overrideFor(connectionUrl, env) !== null;
 }
