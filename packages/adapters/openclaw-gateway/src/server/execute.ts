@@ -1081,6 +1081,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutSec = Math.max(0, Math.floor(asNumber(ctx.config.timeoutSec, 120)));
   const timeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : 0;
   const connectTimeoutMs = timeoutMs > 0 ? Math.min(timeoutMs, 15_000) : 10_000;
+  const dispatchTimeoutMs = parseOptionalPositiveInteger(ctx.config.dispatchTimeoutMs) ?? 60_000;
   const waitTimeoutMs = parseOptionalPositiveInteger(ctx.config.waitTimeoutMs) ?? (timeoutMs > 0 ? timeoutMs : 30_000);
 
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
@@ -1332,7 +1333,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // accepted work even if the response is lost.
       reportDispatch();
       const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {
-        timeoutMs: connectTimeoutMs,
+        timeoutMs: dispatchTimeoutMs,
       });
 
       latestResultPayload = acceptedPayload;
