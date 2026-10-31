@@ -59,10 +59,14 @@ export function legacyExecutionNeedsReconciliation(
   if (normalizeMaxTurnStopReason(run.resultJson?.stopReason) ?? normalizeMaxTurnStopReason(run.errorCode)) return false;
   const evidence = run.resultJson?.executionRecovery as
     Record<string, unknown> | undefined;
+  // A legacy direct-adapter run that reported a clean interruption (provider
+  // stopped, session preserved, action outcomes settled) needs no manual
+  // reconciliation. The host's separate "acknowledged" cancellation flag is not
+  // written on the signal-based cancellation path, so requiring it here would
+  // deadlock every retry behind a terminal recovery action.
   if (run.status === "cancelled" && evidence?.kind === "interrupted"
       && evidence.providerStopped === true && evidence.sessionPreserved === true
-      && evidence.actionOutcomes === "settled"
-      && (run.resultJson?.executionCancellation as Record<string, unknown> | undefined)?.state === "acknowledged") return false;
+      && evidence.actionOutcomes === "settled") return false;
   // Waiting for a subscription or workspace precedes provider execution. It is
   // a resource wait, not a failed provider attempt or permission to replay work.
   if (run.status === "cancelled" && (run.errorCode === "ai_connection_busy" || run.errorCode === "ai_connection_pool_exhausted") &&
