@@ -1090,8 +1090,12 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
   it("retries a busy evidence obligation and disarms after the session releases it", async () => {
     const session = await seedSession({ issueStatus: "in_progress" });
     const archive = await seedArchive(session.root); let busy = true;
-    await startEvidence({ isSessionBusy: () => busy });
-    const retryAt = coordinator!.nextWakeAt()!; expect(retryAt - Date.now()).toBeGreaterThanOrEqual(60 * 60_000);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }); vi.setSystemTime(now);
+    let inspectedAt: number | undefined;
+    await startEvidence({ isSessionBusy: () => { inspectedAt = Date.now(); return busy; } });
+    await vi.advanceTimersByTimeAsync(50);
+    const retryAt = coordinator!.nextWakeAt()!; expect(inspectedAt).toBeDefined();
+    expect(retryAt - inspectedAt!).toBeGreaterThanOrEqual(60 * 60_000);
     await quiet(5000); busy = false;
     await vi.advanceTimersByTimeAsync(retryAt - Date.now()); await settled();
     expect(await exists(archive)).toBe(false); await quiet();
@@ -1119,11 +1123,18 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
   it("backs off a failed state-base inspection and lets publication reactivate it", async () => {
     const session = await seedSession({ issueStatus: "in_progress" });
     const archive = await seedArchive(session.root), read = fs.readdir;
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }); vi.setSystemTime(now);
+    let inspectedAt: number | undefined;
     const denied = vi.spyOn(fs, "readdir").mockImplementation(async (...args) => {
-      if (args[0] === stateBase) throw Object.assign(new Error("state base unavailable"), { code: "EACCES" });
+      if (args[0] === stateBase) {
+        inspectedAt = Date.now();
+        throw Object.assign(new Error("state base unavailable"), { code: "EACCES" });
+      }
       return read(...args);
     });
-    await startEvidence(); expect(coordinator!.nextWakeAt()! - Date.now()).toBeGreaterThanOrEqual(60 * 60_000);
+    await startEvidence(); await vi.advanceTimersByTimeAsync(50);
+    expect(inspectedAt).toBeDefined();
+    expect(coordinator!.nextWakeAt()! - inspectedAt!).toBeGreaterThanOrEqual(60 * 60_000);
     denied.mockRestore(); await quiet(5 * 60_000); expect(await exists(archive)).toBe(true);
     noteNativeRunnerEvidence(now.getTime() - 10 * DAY_MS);
     await settled(); expect(await exists(archive)).toBe(false); await quiet();
