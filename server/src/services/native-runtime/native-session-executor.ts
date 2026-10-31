@@ -1,3 +1,4 @@
+import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
 import { rehydratePinnedSkillAssets } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeTurnAccounting, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent } from "./native-usage-accounting.js";
@@ -8091,7 +8092,8 @@ export async function executePaperclipNativeSession(input: {
     }
     releaseRetainedNativeSessionCleanup(input.db, {
       companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
-    });
+    }, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId,
+      issueId: input.execution.binding.issueId });
   }
 }
 
@@ -9473,7 +9475,8 @@ async function executePaperclipNativeSessionWithinScope(
                   warmNativeSessions.set(warmSessionId, {
                     onReleased: () => releaseRetainedNativeSessionCleanup(input.db, {
                       companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
-                    }),
+                    }, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId,
+                      issueId: input.execution.binding.issueId }),
                     pluginTaskId: usesPluginTask && input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "sandbox"
                       ? input.runnerExecutionTarget.sandboxLeaseAcquisition?.providerLeaseId : undefined,
                     runId: input.execution.binding.runId,
@@ -9691,7 +9694,7 @@ async function executePaperclipNativeSessionWithinScope(
             eq(nativeRunFinalizations.runId, input.execution.binding.runId),
             eq(nativeRunFinalizations.leaseOwner, leaseOwner),
           ),
-        ));
+        ), { companyId: input.execution.binding.companyId });
 
       const failedAtMs = Date.now();
       const executionFailureMessage = redactIdentityText(
@@ -9743,7 +9746,7 @@ async function executePaperclipNativeSessionWithinScope(
             eq(nativeRunFinalizations.leaseOwner, leaseOwner),
             eq(nativeRunFinalizations.attempt, attempt),
             isNull(nativeRunFinalizations.resultId),
-          )).returning({ runId: nativeRunFinalizations.runId }));
+          )).returning({ runId: nativeRunFinalizations.runId }), { companyId: input.execution.binding.companyId });
           if (settled) {
             await stoppedLeaseRenewal;
             if (warmSessionId !== null && lifecyclePolicy.mode === "warm") {
@@ -9830,7 +9833,7 @@ async function executePaperclipNativeSessionWithinScope(
             ),
           )
           .for("update");
-        await notifyExecutionRunWork(tx);
+        await notifyExecutionRunWork(tx, { companyId: input.execution.binding.companyId });
         await notifyNativeFinalizationWork(tx, input.execution.binding);
         const updated = await tx
           .update(nativeRunFinalizations)
@@ -11814,7 +11817,8 @@ export async function createRunnerdBackend(input: {
     initializingSessionToolAuthorities.delete(sessionScopeId);
     releaseRetainedNativeSessionCleanup(input.db, {
       companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
-    });
+    }, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId,
+      issueId: input.execution.binding.issueId });
   }
 }
 
@@ -12859,7 +12863,7 @@ async function createRunnerdBackendWithinSessionClaim(
       })
       .where(eq(environmentLeases.id, leaseId))
       .returning({ id: environmentLeases.id })
-      .then((rows) => rows[0] ?? null), { companyId: leaseRow.companyId, runId: leaseRow.heartbeatRunId ?? undefined });
+      .then((rows) => rows[0] ?? null), { companyId: leaseRow.companyId, runId: leaseRow.heartbeatRunId ?? undefined, leaseId });
     if (!updated) throw new Error("runner_harness_backup_lease_missing");
   };
 
@@ -13278,40 +13282,15 @@ async function createRunnerdBackendWithinSessionClaim(
                 });
                 renameSync(temporaryManifest, manifestPath);
 
-                const currentRoot = resolve(backupRoot, "current");
-                const previousRoot = resolve(backupRoot, "previous");
-                removeNativeHarnessBackup(previousRoot);
-                let movedCurrent = false;
-                if (existsSync(currentRoot)) {
-                  renameSync(currentRoot, previousRoot);
-                  movedCurrent = true;
-                }
-                try {
-                  renameSync(pendingRoot, currentRoot);
-                  if (
-                    remoteTarget?.transport === "sandbox" &&
-                    remoteTarget.leaseId
-                  ) {
+                await publishNativeHarnessBackup({
+                  db: input.db, companyId: input.execution.binding.companyId,
+                  scopeDigest: createHash("sha256").update(sessionScopeId).digest("hex"), backupRoot, pendingRoot,
+                  stamp: remoteTarget?.transport === "sandbox" && remoteTarget.leaseId ? async currentRoot => {
                     await recordHarnessBackupStampForCurrentLease({
-                      root: currentRoot,
-                      manifest,
-                      bytes: backupSpanAttributes.bytesTransferred,
+                      root: currentRoot, manifest, bytes: backupSpanAttributes.bytesTransferred,
                     });
-                  }
-                } catch (error) {
-                  if (existsSync(currentRoot)) {
-                    removeNativeHarnessBackup(currentRoot);
-                  }
-                  if (
-                    movedCurrent &&
-                    existsSync(previousRoot) &&
-                    !existsSync(currentRoot)
-                  ) {
-                    renameSync(previousRoot, currentRoot);
-                  }
-                  throw error;
-                }
-                removeNativeHarnessBackup(previousRoot);
+                  } : undefined,
+                });
               } finally {
                 removeNativeHarnessBackup(pendingRoot);
               }

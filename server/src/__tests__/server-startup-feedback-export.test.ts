@@ -1,3 +1,6 @@
+import { routineExecutionStatusService } from "../services/routine-run-status.js";
+import { attentionRetentionService } from "../services/attention-retention.js";
+import { statusCardEvaluationService, registerStatusCardEvaluationWork } from "../services/status-card-evaluation.js";
 import { nativeHarnessBackupExpirationService } from "../services/native-runtime/native-harness-backup-expiration.js";
 import { skillVersionRetentionService } from "../services/skill-version-retention.js";
 import { approvalQueueSeedingService } from "../services/approval-queue-seeding-work.js";
@@ -141,6 +144,9 @@ const {
     })),
     reconcileHotRestartAdoption: vi.fn(async () => ({ mode: "none" })),
     reapOrphanedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
+    registerIssueStateRecoveryWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerDeferredReceiptWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerRunDispatchWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     registerScheduledRetryCancellationWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     registerStoppedInstructionCollectionWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     registerRetainedNativeSessionCleanupWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve(), stop: vi.fn() })),
@@ -187,6 +193,8 @@ const {
   const heartbeatServiceFactoryMock = vi.fn(() => heartbeatServiceMock);
   const issueThreadInteractionServiceMock = {
     sweepSupersededPendingRequestConfirmations: vi.fn(async () => ({ expired: 0 })),
+    mergedPullRequestConfirmationPage: vi.fn(async () => ({ rows: [], complete: true })),
+    mergedPullRequestConfirmationCandidates: vi.fn(async () => []),
     sweepMergedPullRequestConfirmations: vi.fn(async () => ({
       checked: 0,
       candidates: 0,
@@ -214,7 +222,8 @@ const {
   };
   const executionWorkspaceServiceFactoryMock = vi.fn(() => executionWorkspaceServiceMock);
   const externalObjectsServiceMock = {
-    refreshDueObjectsForActiveCompanies: vi.fn(async () => ({ companies: 0, checked: 0, refreshed: 0 })),
+    registerRefreshWork: vi.fn((coordinator: { register: typeof deliveryWorkRegisterMock }, _canRun: () => boolean) =>
+      coordinator.register("external-object-refresh", { run: async () => undefined, hasPending: async () => false })),
   };
   const externalObjectsServiceFactoryMock = vi.fn(() => externalObjectsServiceMock);
   const routineServiceMock = {
@@ -384,6 +393,11 @@ vi.mock("../realtime/live-events-ws.js", () => ({
   setupLiveEventsWebSocketServer: vi.fn(),
 }));
 
+vi.mock("../services/attention-retention.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/attention-retention.js")>(),
+  attentionRetentionService: vi.fn(() => ({ load: vi.fn(async () => ({ rows: [], complete: true })), check: vi.fn() })),
+}));
+
 vi.mock("../services/join-request-retention.js", async importOriginal => ({
   ...await importOriginal<typeof import("../services/join-request-retention.js")>(),
   joinRequestRetentionService: vi.fn(() => ({ sweep: vi.fn(async () => ({ archived: 0 })), next: vi.fn(async () => null) })),
@@ -397,6 +411,11 @@ vi.mock("../services/approval-queue-seeding-work.js", async importOriginal => ({
 vi.mock("../services/approval-retention.js", async importOriginal => ({
   ...await importOriginal<typeof import("../services/approval-retention.js")>(),
   approvalRetentionService: vi.fn(() => ({ sweep: vi.fn(async () => ({ archived: 0 })), next: vi.fn(async () => null) })),
+}));
+
+vi.mock("../services/routine-run-status.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/routine-run-status.js")>(),
+  routineExecutionStatusService: vi.fn(() => ({ load: vi.fn(async () => []), settle: vi.fn(async () => false) })),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -537,6 +556,13 @@ vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
   validateNativeQuestionResponseInput: vi.fn(),
 }));
 
+vi.mock("../services/status-card-evaluation.js", () => ({
+  statusCardEvaluationService: vi.fn(() => ({ run: vi.fn(async () => {}), next: vi.fn(async () => null), changed: vi.fn() })),
+  registerStatusCardEvaluationWork: vi.fn((_coordinator, service, canRun) => ({
+    ready: canRun() ? service.run(new AbortController().signal) : Promise.resolve(), wake: vi.fn(), stop: vi.fn(async () => {}),
+  })),
+}));
+
 vi.mock("../services/secret-proposals.js", () => ({
   createSecretProposalsService: vi.fn(() => ({
     expiryDeadlines: vi.fn(async () => []),
@@ -576,6 +602,8 @@ vi.mock("../services/native-runtime/native-harness-backup-expiration.js", () => 
     tick: vi.fn(async () => ({ checked: 0, candidates: 0, evidenceCandidates: 0, failed: 0, truncated: false })),
     noteEvidence: vi.fn(), nextEvidenceAt: vi.fn(() => null),
     tickCheckpoints: vi.fn(), registerCheckpointExpiration: vi.fn(),
+    backupScopes: vi.fn(async () => ({ names: [], complete: true })),
+    reconcileBackup: vi.fn(async () => null), expireBackup: vi.fn(),
   })),
 }));
 
@@ -751,9 +779,12 @@ describe("startServer feedback export wiring", () => {
     loadConfigMock.mockReturnValue(buildTestConfig({ nativeHarnessBackupExpirationEnabled: enabled }));
     await startServer(); await settleStartupHousekeeping();
     expect(deliveryWorkRegisterMock.mock.calls.filter(([queue]) => queue === DELIVERY_QUEUES.nativeRunnerEvidenceRetention)).toHaveLength(enabled ? 1 : 0);
-    expect(vi.mocked(nativeHarnessBackupExpirationService).mock.calls.map(([, options]) => options?.duty)).toEqual(enabled ? ["backups", "evidence"] : ["backups"]);
+    expect(vi.mocked(nativeHarnessBackupExpirationService).mock.calls.map(([, options]) => options?.duty)).toEqual(enabled ? ["backups", "backups", "evidence"] : ["backups"]);
     const backups = vi.mocked(nativeHarnessBackupExpirationService).mock.results[0]!.value;
     expect(backups.registerCheckpointExpiration).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(deliveryWorkRegisterMock.mock.calls.filter(([queue]) => queue === DELIVERY_QUEUES.nativeHarnessBackupExpiration)).toHaveLength(enabled ? 1 : 0);
+    expect(backups.tick).not.toHaveBeenCalled();
+    expect(deliveryWorkErrors.filter(error => error.queue === DELIVERY_QUEUES.nativeHarnessBackupExpiration)).toEqual([]);
   });
 
   it("tracks held evidence reconstruction after HTTP readiness", async () => {
@@ -761,6 +792,9 @@ describe("startServer feedback export wiring", () => {
     const pending = Promise.withResolvers<{ truncated: boolean }>();
     vi.mocked(nativeHarnessBackupExpirationService).mockReturnValueOnce({ tick: vi.fn(), noteEvidence: vi.fn(), nextEvidenceAt: () => null,
       tickCheckpoints: vi.fn(), registerCheckpointExpiration: vi.fn() } as never);
+    vi.mocked(nativeHarnessBackupExpirationService).mockReturnValueOnce({
+      backupScopes: vi.fn(async () => ({ names: [], complete: true })), reconcileBackup: vi.fn(), expireBackup: vi.fn(),
+    } as never);
     vi.mocked(nativeHarnessBackupExpirationService).mockReturnValueOnce({ tick: vi.fn(() => pending.promise), noteEvidence: vi.fn(), nextEvidenceAt: () => null,
       tickCheckpoints: vi.fn(), registerCheckpointExpiration: vi.fn() } as never);
     try {
@@ -798,6 +832,28 @@ describe("startServer feedback export wiring", () => {
     } finally { pending.resolve([]); await settleStartupHousekeeping(); }
     expect(idleWorkSnapshot().active).toBe(0);
     expect(deliveryWorkErrors.filter(error => error.queue === DELIVERY_QUEUES.skillVersionRetention)).toEqual([]);
+  });
+
+  it.each([false, true])("registers status-card evaluation only with maintenance and never ticks it from the heartbeat loop (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled, heartbeatSchedulerIntervalMs: 1000 }));
+    let tick: (() => void) | undefined;
+    const timer = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void, interval: number) => {
+      if (interval === 1000) tick = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      await startServer(); await settleStartupHousekeeping();
+      expect(registerStatusCardEvaluationWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+      expect(statusCardEvaluationService).toHaveBeenCalledTimes(enabled ? 1 : 0);
+      if (enabled) {
+        const service = vi.mocked(statusCardEvaluationService).mock.results.at(-1)!.value;
+        expect(service.run).toHaveBeenCalledOnce();
+        expect(tick).toBeDefined();
+        for (let i = 0; i < 3; i++) { tick!(); await settleStartupHousekeeping(); }
+        expect(service.run).toHaveBeenCalledOnce();
+      }
+      expect(deliveryWorkErrors.filter(error => error.queue === DELIVERY_QUEUES.statusCardEvaluation)).toEqual([]);
+    } finally { timer.mockRestore(); }
   });
 
   it.each([false, true])("registers response recovery and its shutdown subscription only when maintenance is enabled (%s)", async enabled => {
@@ -933,6 +989,21 @@ describe("startServer feedback export wiring", () => {
     if (enabled) expect(heartbeatServiceMock.registerCapturedInstructionCommitWork.mock.calls[0][1]()).toBe(true);
   });
 
+  it.each([false, true])("registers retry and queued dispatch only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerIssueStateRecoveryWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(heartbeatServiceMock.registerRunDispatchWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(heartbeatServiceMock.registerDeferredReceiptWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(heartbeatServiceMock.resumeQueuedRuns).not.toHaveBeenCalled();
+    if (enabled) {
+      const [coordinator, admitted] = heartbeatServiceMock.registerRunDispatchWork.mock.calls[0];
+      const app = await createAppMock.mock.results.at(-1)!.value;
+      expect(coordinator).toBe(app.locals.deliveryWork);
+      expect(admitted()).toBe(true);
+    }
+  });
+
   it.each([false, true])("registers retry cancellation recovery only when maintenance is enabled (%s)", async enabled => {
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
     await startServer(); await settleStartupHousekeeping();
@@ -984,7 +1055,7 @@ describe("startServer feedback export wiring", () => {
     }
   });
 
-  it.each([false, true])("registers archive delivery separately from retention sweeps (scheduler %s)", async enabled => {
+  it.each([false, true])("registers source retention separately from archive delivery without tick scans (scheduler %s)", async enabled => {
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled, heartbeatSchedulerIntervalMs: 30000 }));
     let tick: (() => void) | undefined;
     const timer = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void, interval: number) => {
@@ -996,12 +1067,17 @@ describe("startServer feedback export wiring", () => {
       const registration = deliveryWorkRegisterMock.mock.calls.find(([queue]) => queue === DELIVERY_QUEUES.decisionArchiveDelivery);
       if (!enabled) {
         expect(registration).toBeUndefined();
+        expect(attentionRetentionService).not.toHaveBeenCalled();
         expect(decisionRetentionService).not.toHaveBeenCalled();
         expect(tick).toBeDefined(); tick!(); await settleStartupHousekeeping();
         expect(decisionRetentionService).not.toHaveBeenCalled();
         return;
       }
       expect(registration).toBeDefined();
+      expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.attentionRetention)).toBe(true);
+      expect(attentionRetentionService).toHaveBeenCalledOnce();
+      const source = vi.mocked(attentionRetentionService).mock.results[0]!.value;
+      expect(source.load).toHaveBeenCalledOnce();
       const retention = vi.mocked(decisionRetentionService).mock.results[0]!.value;
       expect(retention.deliverNotifications).toHaveBeenCalledOnce();
       expect(retention.nextArchiveNotificationAt).toHaveBeenCalledOnce();
@@ -1009,9 +1085,10 @@ describe("startServer feedback export wiring", () => {
       const companyReads = () => vi.mocked(db.select).mock.results.filter(({ value }) =>
         vi.mocked(value.from).mock.calls.some(([table]) => table === companies)).length;
       const before = companyReads();
-      expect(before).toBeGreaterThan(0); expect(tick).toBeDefined();
+      expect(before).toBe(0); expect(tick).toBeDefined();
       tick!(); await settleStartupHousekeeping();
-      expect(companyReads()).toBeGreaterThan(before);
+      expect(companyReads()).toBe(before);
+      expect(source.load).toHaveBeenCalledOnce();
       expect(retention.deliverNotifications).toHaveBeenCalledOnce();
       await registration![1].run(new AbortController().signal);
       expect(retention.deliverNotifications).toHaveBeenCalledTimes(2);
@@ -1357,13 +1434,14 @@ describe("startServer feedback export wiring", () => {
       await startServer();
       await settleStartupHousekeeping();
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
-      expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(1);
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).not.toHaveBeenCalled();
       expect(intervalCallback).not.toBeNull();
       intervalCallback?.();
       await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(2);
-      expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenLastCalledWith({ staleThresholdMs: 300_000, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true, skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true, skipObsoletePolicyReviews: true, skipAutomaticCompletionReviews: true, skipUnsafeWorkspaceExports: true, skipNativePendingEffects: true, skipNativeResponsePresentation: true, skipNativeReviewResponse: true, skipNativeStatusReassessment: true, skipRetainedNativeSessionCleanup: true, skipNativeWorkspaceFinalization: true, skipNativeResultCommit: true, skipNativeRunProjection: true, skipNativeRecoveryNotices: true, skipExternalConversationSettlement: true, skipExternalAgentSettlement: true, skipNativeEnvironmentSettlement: true });
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenLastCalledWith({ staleThresholdMs: 300_000, skipNativeStatusWakeIntents: true, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true, skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true, skipObsoletePolicyReviews: true, skipAutomaticCompletionReviews: true, skipUnsafeWorkspaceExports: true, skipNativePendingEffects: true, skipNativeResponsePresentation: true, skipNativeReviewResponse: true, skipNativeStatusReassessment: true, skipRetainedNativeSessionCleanup: true, skipNativeWorkspaceFinalization: true, skipNativeResultCommit: true, skipNativeRunProjection: true, skipNativeRecoveryNotices: true, skipExternalConversationSettlement: true, skipExternalAgentSettlement: true, skipNativeEnvironmentSettlement: true });
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
+      expect(heartbeatServiceMock.promoteDueScheduledRetries).not.toHaveBeenCalled();
       expect(retiredDetector).not.toHaveBeenCalled();
     } finally {
       delete (runtime as Partial<typeof runtime>).reconcileProductivityReviews;
@@ -1402,6 +1480,27 @@ describe("startServer feedback export wiring", () => {
     }
   });
 
+  it.each([{ cloud: false, enabled: true }, { cloud: true, enabled: false }, { cloud: true, enabled: true }])(
+    "registers routine status only for enabled Cloud scheduling ($cloud/$enabled)", async ({ cloud, enabled }) => {
+      if (cloud) vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "startup-test-token");
+      else vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", undefined);
+      loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+      const intervalCallbacks: Array<() => void> = [];
+      const intervals = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void) => {
+        intervalCallbacks.push(callback); return 1 as unknown as ReturnType<typeof setInterval>;
+      }) as typeof setInterval);
+      try {
+        await startServer(); await settleStartupHousekeeping();
+        expect(deliveryWorkRegisterMock.mock.calls.filter(([queue]) => queue === DELIVERY_QUEUES.routineExecutionStatus)).toHaveLength(cloud && enabled ? 1 : 0);
+        const service = vi.mocked(routineExecutionStatusService).mock.results.at(-1)?.value;
+        if (cloud && enabled) expect(service?.load).toHaveBeenCalledExactlyOnceWith(undefined, undefined);
+        for (let index = 0; index < 4; index++) for (const callback of intervalCallbacks) callback();
+        await settleStartupHousekeeping();
+        if (cloud && enabled) expect(service?.load).toHaveBeenCalledOnce();
+      } finally { intervals.mockRestore(); vi.unstubAllEnvs(); }
+    },
+  );
+
   it("keeps routine ticks and setup cleanup active when heartbeat scheduling is suppressed", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       heartbeatSchedulerEnabled: true,
@@ -1435,8 +1534,12 @@ describe("startServer feedback export wiring", () => {
       await Promise.resolve();
 
       expect(heartbeatServiceMock.tickAgentTimers).toHaveBeenCalledTimes(1);
-      expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).toHaveBeenCalledTimes(1);
-      expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).toHaveBeenCalledTimes(1);
+      expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledTimes(1);
+      expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledWith(expect.any(Object), expect.any(Function));
+      expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.externalObjectRefresh)).toBe(true);
+      expect(issueThreadInteractionServiceMock.mergedPullRequestConfirmationPage).toHaveBeenCalledTimes(1);
+      expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).not.toHaveBeenCalled();
+      expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.mergedPullRequestConfirmations)).toBe(true);
       expect(executionWorkspaceServiceMock.sweepTerminalWorkspaces).toHaveBeenCalledTimes(1);
       expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
       const routineWorkerIndex = deliveryWorkRegisterMock.mock.calls.findIndex(([queue]) => queue === DELIVERY_QUEUES.routineSchedules);
@@ -1456,6 +1559,15 @@ describe("startServer feedback export wiring", () => {
     } finally {
       setIntervalSpy.mockRestore();
     }
+  });
+
+  it.each([true, false])("does not wait for external-object provider work before readiness (scheduler=%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    externalObjectsServiceMock.registerRefreshWork.mockReturnValueOnce({
+      ready: new Promise<void>(() => {}), wake: vi.fn(), stop: vi.fn(async () => {}),
+    });
+    await startServer();
+    expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledOnce();
   });
 
   it("keeps external object refresh active when heartbeat scheduling is disabled", async () => {
@@ -1485,7 +1597,9 @@ describe("startServer feedback export wiring", () => {
       await Promise.resolve();
       await Promise.resolve();
 
-      expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).toHaveBeenCalledTimes(1);
+      expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledTimes(1);
+      expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledWith(expect.any(Object), expect.any(Function));
+      expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.externalObjectRefresh)).toBe(true);
       expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
@@ -1521,6 +1635,20 @@ describe("startServer feedback export wiring", () => {
     } finally {
       timer.mockRestore();
     }
+  });
+
+  it("becomes ready without waiting for the merge-confirmation observation", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    let release!: () => void;
+    const blocked = new Promise<{ rows: never[]; complete: boolean }>(resolve => { release = () => resolve({ rows: [], complete: true }); });
+    issueThreadInteractionServiceMock.mergedPullRequestConfirmationPage.mockReturnValueOnce(blocked);
+    const timer = vi.spyOn(globalThis, "setInterval").mockImplementation(() => 1 as unknown as ReturnType<typeof setInterval>);
+    let started = false;
+    const starting = startServer().then(server => { started = true; return server; });
+    try {
+      await vi.waitFor(() => expect(issueThreadInteractionServiceMock.mergedPullRequestConfirmationPage).toHaveBeenCalled());
+      await settleStartupHousekeeping(); expect(started).toBe(true); expect(getStartupRecoveryState().phase).toBe("ready");
+    } finally { release(); await starting; timer.mockRestore(); }
   });
 
   it.each(["retained cleanup", "workspace finalization", "environment settlement", "native run projection", "native result commit", "native recovery notices", "external conversation settlement"] as const)("becomes ready while %s is held but joins it at shutdown", async owner => {

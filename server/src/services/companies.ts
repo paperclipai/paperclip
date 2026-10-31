@@ -1,6 +1,10 @@
 import { notifyGitHubCompanyChange } from "./github-connection-notifications.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { isRunnerApiResponseAsset } from "./asset-content-access.js";
 import { deleteCompany } from "./company-deletion.js";
@@ -334,10 +338,14 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
 
         if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
           await notifyGitHubCompanyChange(tx, id);
+          await notifyRunDispatch(tx, { companyId: id });
+          await notifyDeferredExecutionEligibility(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+          await notifyExternalObjectRefresh(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+          await notifyStatusCardIssueChange(tx, id);
           await notifyCompanyRetentionWork(tx, id);
           await notifyChatInboundWakeNotices(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);
@@ -491,10 +499,14 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
 
         if (!wasAlreadyArchived) {
           await notifyGitHubCompanyChange(tx, id);
+          await notifyRunDispatch(tx, { companyId: id });
+          await notifyDeferredExecutionEligibility(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+          await notifyExternalObjectRefresh(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+          await notifyStatusCardIssueChange(tx, id);
           await notifyCompanyRetentionWork(tx, id);
           await notifyChatInboundWakeNotices(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);

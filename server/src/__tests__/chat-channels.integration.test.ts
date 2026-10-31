@@ -16341,9 +16341,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           await tx.update(toolConnections).set({ credentialSecretRefs: connection.credentialSecretRefs.map(ref => ({ ...ref,
             versionSelector: ref.versionSelector === "1" ? "latest" : "1" })) }).where(eq(toolConnections.id, connection.id));
         });
-        await expect.poll(async () => ((await f.checkpoint()).value as Record<string, unknown>).credentialFingerprint,
-          { timeout: 5000 }).not.toBe(oldWindow.credentialFingerprint);
-        expect((await f.checkpoint()).value).toMatchObject({ generation: oldWindow.generation, outcome: "epoch_initialized" });
+        // Credential synchronization and epoch initialization commit separately.
+        // Require the final epoch receipt, not just the intermediate fingerprint.
+        await expect.poll(async () => {
+          const value = (await f.checkpoint()).value as Record<string, unknown>;
+          return { ...value, fingerprintChanged: typeof value.credentialFingerprint === "string"
+            && value.credentialFingerprint !== oldWindow.credentialFingerprint };
+        }, { timeout: 5000 }).toMatchObject({
+          fingerprintChanged: true, generation: oldWindow.generation, outcome: "epoch_initialized",
+        });
         expect(f.requests).toEqual([]);
       } finally { await coordinator.stop(); }
     });

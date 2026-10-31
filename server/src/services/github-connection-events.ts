@@ -1,4 +1,5 @@
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { dispatchGitHubBotCloudEvent } from "./chat-github-cloud-ingress.js";
 import { chatEndpoints } from "@paperclipai/db";
@@ -251,6 +252,8 @@ export function githubConnectionEventService(
     const snapshot = githubSnapshotUpdate(event.payload);
     if (!snapshot) return;
     const appliedAt = now();
+    await notifyExternalObjectRefresh(database, companyId, { providerKey: "github", objectType: "pull_request",
+      externalId: snapshot.externalId, ignoreExternalIdCase: true });
     await database.update(externalObjects).set({
       statusKey: snapshot.statusKey,
       statusLabel: snapshot.statusLabel,
@@ -263,6 +266,8 @@ export function githubConnectionEventService(
       lastResolvedAt: appliedAt,
       lastChangedAt: appliedAt,
       nextRefreshAt: appliedAt,
+      refreshStartedAt: null,
+      refreshToken: null,
       updatedAt: appliedAt,
     }).where(and(
       eq(externalObjects.companyId, companyId),

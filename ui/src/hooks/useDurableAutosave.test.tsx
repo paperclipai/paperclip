@@ -173,6 +173,51 @@ describe("useDurableAutosave", () => {
     client.clear();
   });
 
+  it.each([false, true])("keeps an unowned startup edit when identity and unmount race (identityFirst=%s)", async identityFirst => {
+    store.setBrowserOnline(false);
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, enabled: false } } });
+    const save = vi.fn().mockResolvedValue(undefined);
+    act(() => root.render(<QueryClientProvider client={client}><ConnectivityProvider store={store}>
+      <Harness sourceId="startup-remount" targetKey="task-a:title" save={save} />
+    </ConnectivityProvider></QueryClientProvider>));
+    await act(async () => { await current.run("Retained startup title"); });
+    expect(current.status).toBe("waiting");
+    act(() => {
+      if (identityFirst) client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+      root.unmount(); root = createRoot(container);
+      if (!identityFirst) client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    });
+    await act(async () => { store.setBrowserOnline(true); store.reportSuccess(); });
+    await advance(2_000);
+    expect(save).toHaveBeenCalledExactlyOnceWith("Retained startup title");
+    expect(store.getSnapshot().pendingWrites).toBe(0);
+    client.clear();
+  });
+
+  it.each(["different-account", "round-trip", "removed-session", "signed-out"])(
+    "does not adopt a later identity for a detached startup edit (%s)", async transition => {
+      store.setBrowserOnline(false);
+      const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, enabled: false } } });
+      const save = vi.fn().mockResolvedValue(undefined);
+      act(() => root.render(<QueryClientProvider client={client}><ConnectivityProvider store={store}>
+        <Harness sourceId="private-startup" targetKey="private-title" save={save} />
+      </ConnectivityProvider></QueryClientProvider>));
+      await act(async () => { await current.run("Private startup title"); });
+      act(() => { root.unmount(); root = createRoot(container); });
+      act(() => {
+        if (transition === "removed-session") client.removeQueries({ queryKey: queryKeys.auth.session });
+        else client.setQueryData(queryKeys.auth.session, transition === "signed-out" ? null : { user: { id: "user-1" } });
+        if (transition === "round-trip") client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+        client.setQueryData(queryKeys.auth.session, { user: { id: transition === "different-account" ? "user-2" : "user-1" } });
+      });
+      await act(async () => { store.setBrowserOnline(true); store.reportSuccess(); });
+      await advance(2_000);
+      expect(save).not.toHaveBeenCalled();
+      expect(store.getSnapshot().pendingWrites).toBe(0);
+      client.clear();
+    },
+  );
+
   it("bounds retries after an editor unmounts", async () => {
     const save = vi.fn().mockRejectedValue(outage());
     render({ save });
