@@ -38,8 +38,11 @@ never start a server or depend on a tenant filesystem.
 | `followup-while-running` | Native agent; a maximum of two work runs | Save a follow-up while an independently observed native shell command is still active, then require one attributed final reply with the late requirement after reload; in-turn steering and one normal successor are accepted |
 | `cloud-onboarding` | Signed-in admitted Cloud account; fresh workspace; qualified bounded provider route | Create workspace in the portal, connect API key and native Codex agent in the wizard, complete a task, download and independently check its artifact |
 
-The deployment-targeted Stop journey asks the revision to run `sleep 90` once
-before changing files. Startup alone cannot trigger Stop. An independent observer
+The deployment-targeted Stop journey asks the revision to finish one harmless
+`printf` readiness command, then run `sleep 90` once in a separate shell call
+before changing files. The readiness call lets a provider report its first
+current-turn usage before the long hold starts. Running the hold first can leave
+no complete usage until that command has already ended. Startup alone cannot trigger Stop. An independent observer
 requires both a still-running bound native command and a complete, nonzero usage
 report for its current turn. After Stop, native cancellation and exact lease
 cleanup remain required. Before the redirect, the original run must have a

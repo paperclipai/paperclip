@@ -41,7 +41,7 @@ try {
       '<button data-testid="task-chat-composer-stop" onclick="window.stopped()">Stop</button>' }));
   await page.exposeFunction("stopped", () => {
     stops++;
-    state = { ...state, phase: "pending", events: [...state.events, event(4, "turn.cancelled")],
+    state = { ...state, phase: "pending", events: [...state.events, event(7, "turn.cancelled")],
       run: { ...base, status: "cancelled", costAccountingPending: true,
       finishedAt: "2026-01-01T00:00:01Z", usageJson: { ...base.usageJson, accountingReceiptSequence: 6, accountingReceiptReady: false, accountingReceiptId: "receipt" } } };
   });
@@ -71,26 +71,37 @@ try {
   const partial = { kind: "usage", usage: { ...usage.usage, runDeltaComplete: false } };
   state = { ...state, phase: "partial-usage", events: [event(1, "turn.started"), event(2, "item.completed", partial), event(3, "tool.execution.started", command)] };
   await until(() => observed.has("partial-usage")); assert.equal(stops, 0);
-  state = { ...state, phase: "ready", events: [event(1, "turn.started"), event(2, "item.completed", usage), event(3, "tool.execution.started", command)] };
+  state = { ...state, phase: "hold-ended-before-usage", events: [event(1, "turn.started"), event(2, "tool.execution.started", command),
+    event(3, "tool.execution.completed", { ...command, status: "completed" }), event(4, "item.completed", usage)] };
+  await until(() => observed.has("hold-ended-before-usage")); assert.equal(stops, 0);
+  const readiness = { ...command, executionId: "readiness" };
+  state = { ...state, phase: "readiness-active", events: [event(1, "turn.started"), event(2, "tool.execution.started", readiness)] };
+  await until(() => observed.has("readiness-active")); assert.equal(stops, 0);
+  const readyUsage = [event(1, "turn.started"), event(2, "tool.execution.started", readiness),
+    event(3, "tool.execution.completed", { ...readiness, status: "completed" }), event(4, "item.completed", { kind: "usage" }),
+    event(5, "item.completed", usage)];
+  state = { ...state, phase: "readiness-complete", events: readyUsage };
+  await until(() => observed.has("readiness-complete")); assert.equal(stops, 0);
+  state = { ...state, phase: "ready", events: [...readyUsage, event(6, "tool.execution.started", command)] };
   await until(() => beforeRedirect && observed.has("pending"));
   assert.equal(stops, 1); assert.equal(replies, 0, "Stop/lease proof cannot substitute for settled accounting");
   const raw = { kind: "usage", item: { type: "usage" }, text: "", channel: "usage" };
-  const reconciled = event(5, "item.completed", raw);
+  const reconciled = event(8, "item.completed", raw);
   reconciled.sourceInstanceId = reconciled.payload.prpEvent.sourceInstanceId = "reconciler";
   state = { ...state, phase: "ready-but-pending", events: [...state.events, reconciled,
-    event(6, "item.completed", partial), event(7, "item.completed", usage)],
+    event(9, "item.completed", partial), event(10, "item.completed", usage)],
     run: { ...state.run, usageJson: { ...state.run.usageJson, accountingReceiptReady: true } } };
   await until(() => observed.has("ready-but-pending")); assert.equal(replies, 0);
   const current = await page.evaluate(async () => (await fetch("/api/owned-observation")).json());
   for (const mutate of [row => { row.companyId = "foreign"; }, row => { row.agentId = "foreign"; },
     row => { row.payload.prpEvent.runId = "foreign"; }, row => { row.sourceEventId = "foreign"; },
     row => { row.sourceInstanceId = "foreign"; }, row => { row.sourceSeq++; }]) {
-    const foreign = event(8, "item.completed", raw); mutate(foreign);
+    const foreign = event(11, "item.completed", raw); mutate(foreign);
     assert.equal(nativeCancellationHasNoLaterWork([...current.events, foreign], boundary), false);
     assert.notDeepEqual(nativeWorkEvents([...current.events, foreign], boundary), beforeEvents);
   }
   for (const type of ["tool.execution.started", "message.delta", "item.delta"]) {
-    const productive = event(8, type, { kind: "message" });
+    const productive = event(11, type, { kind: "message" });
     productive.sourceInstanceId = productive.payload.prpEvent.sourceInstanceId = "reconciler";
     assert.equal(nativeCancellationHasNoLaterWork([...current.events, productive], boundary), false);
   }
@@ -100,7 +111,7 @@ try {
   state = { ...state, phase: "settled", run: { ...state.run, costAccountedAt: "2026-01-01T00:00:02Z" } };
   assert.equal((await journey).reply.id, "owned-comment");
   assert.equal(stops, 1); assert.equal(replies, 1);
-  console.log("PASS: Chromium/controlled API rejects startup, command-only, usage-only, partial pre-Stop usage, incomplete accounting and missing timestamp; bound raw/partial/complete usage preserves the work snapshot; wrong bindings and productive output remain work; one Stop and redirect after genuine bound proof.");
+  console.log("PASS: Chromium/controlled API rejects startup, command-only, usage-only, partial pre-Stop usage and a hold completed before its first usage; completed readiness usage plus a separate active hold permits one Stop; settled accounting permits one redirect; bound usage preserves work history and wrong bindings/productive output fail.");
 } finally {
   cancelled = true;
   await journey?.catch(() => undefined);
