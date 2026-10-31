@@ -393,6 +393,14 @@ export interface AcpxEngineExecutorOptions {
     now: Date,
   ) => AcpxTerminalFailureClassification | null;
   /**
+   * Inspect an untyped turn error message in memory, used only when the agent
+   * sent no typed session failure; return only recovery labels and a timestamp.
+   */
+  classifyTurnErrorText?: (
+    message: string,
+    now: Date,
+  ) => AcpxTerminalFailureClassification | null;
+  /**
    * The bound on how long the fail-fast seam waits for a cooperative
    * `turn.cancel()` after a latched terminal sandbox duplex-channel loss,
    * before it ends the turn without the agent's help. Defaults to
@@ -5383,6 +5391,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
         const classifiedFailure = !timedOut && !channelLost && !toolStalled && terminal.status === "failed"
           ? terminalFailureClassification
+            ?? (terminalSessionFailure || !errorMessage ? null : deps.classifyTurnErrorText?.(errorMessage, new Date(now())) ?? null)
           : null;
         await emitAcpxLog(ctx, {
           type: turnSucceeded ? "acpx.result" : "acpx.error",
@@ -5564,12 +5573,23 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           emitted = null;
         }
         const message = emitted?.message ?? preEmitMessage;
+        // An agent without the typed session-failure channel throws the provider
+        // text instead. Let the adapter recognize it the same way.
+        const causeMessage = emitted?.classified.errorMeta?.causeMessage;
+        const classifiedFailure = !timedOut && phase === "turn" && emitted?.classified.errorCode === "acpx_turn_failed"
+          ? deps.classifyTurnErrorText?.(
+              [message, typeof causeMessage === "string" ? causeMessage : null].filter(Boolean).join("\n"),
+              new Date(now()),
+            ) ?? null
+          : null;
         capturedResult = {
           exitCode: 1,
           signal: timedOut ? "SIGTERM" : null,
           timedOut,
           errorMessage: message,
-          errorCode: timedOut ? "acpx_timeout" : (emitted?.classified.errorCode ?? null),
+          errorCode: timedOut ? "acpx_timeout" : (classifiedFailure?.errorCode ?? emitted?.classified.errorCode ?? null),
+          ...(classifiedFailure?.errorFamily ? { errorFamily: classifiedFailure.errorFamily } : {}),
+          ...(classifiedFailure?.retryNotBefore ? { retryNotBefore: classifiedFailure.retryNotBefore } : {}),
           errorMeta: emitted?.classified.errorMeta,
           ...observedUsage,
           ...(!turnDispatchAttempted ? { executionRecovery: { kind: "bootstrap" as const, providerWorkStarted: false as const } } : {}),
@@ -5577,7 +5597,19 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ...referencedProjectStagingFailuresField,
           model: accountingModel,
           clearSession: clearSession || timedOut,
-          resultJson: { phase, ...activityDiagnostics },
+          resultJson: {
+            phase,
+            ...activityDiagnostics,
+            ...(classifiedFailure?.errorFamily ? { errorFamily: classifiedFailure.errorFamily } : {}),
+            ...(classifiedFailure?.retryNotBefore
+              ? {
+                  retryNotBefore: classifiedFailure.retryNotBefore,
+                  ...(classifiedFailure.errorFamily === "provider_quota"
+                    ? { providerQuotaRetryNotBefore: classifiedFailure.retryNotBefore }
+                    : {}),
+                }
+              : {}),
+          },
           summary: message,
         };
         // Return a typed failed completion so the coordinator settles for a cause
