@@ -52,7 +52,11 @@ export function activeStopWorkBoundary(run: Row, events: Row[]): StopWorkBoundar
     accountingSourceId: accounting.accountingReceiptSourceId, accountingSequence: accounting.accountingReceiptSequence };
 }
 
-/** Physical Stop and known partial usage cannot certify that billing settled. */
+/**
+ * Require this stopped run's actual settled accounting state, not a new receipt.
+ * A receipt can already be ready before Stop, and reconciliation can change its
+ * source without advancing its sequence. Neither proves or disproves settlement.
+ */
 export function stoppedRunAccountingFinalized(run: Row, before: StopWorkBoundary): boolean {
   const usage = run.usageJson;
   return run.id === before.runId && run.companyId === before.companyId && run.agentId === before.agentId

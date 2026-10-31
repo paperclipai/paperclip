@@ -46,7 +46,11 @@ report for its current turn. After Stop, native cancellation and exact lease
 cleanup remain required. Before the redirect, the original run must have a
 complete accounting receipt, no pending accounting and a saved accounting
 timestamp. Receipt sources and sequences remain recorded, but controller changes
-and clock order cannot substitute for the run's actual settlement state.
+and clock order cannot substitute for the run's actual settlement state. A receipt
+that was already ready before Stop is accepted only when the exact cancelled run
+is actually accounted and no longer pending. Canonical terminal usage receipts
+do not count as continued work; tools, messages and other item events still do,
+including work that arrives between cancellation and accounting settlement.
 These waits share the original journey deadline.
 The three-run limit, budget and original download checks remain unchanged.
 Missing or partial accounting never counts as free work. Local evidence controls
