@@ -248,7 +248,15 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
       return { kind: "saved" };
     };
     try {
-      if (!mounted.current && job.account && !job.account.isCurrentAccount()) await job.account.whenAccountReady();
+      if (!mounted.current && job.account && !job.account.isCurrentAccount()) {
+        try { await job.account.whenAccountReady(); }
+        catch {
+          // Session discovery has not attempted the write. Keep its draft within
+          // the existing retry budget unless an account transition invalidated it.
+          if (!stillOwned()) remove();
+          return { kind: "waiting" };
+        }
+      }
       if (!stillOwned()) { remove(); return { kind: "waiting" }; }
       await job.save(job.draft);
       return done();
