@@ -2,9 +2,10 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { parseAgentMentionHref, parseProjectMentionHref } from "../../../packages/shared/src/project-mentions.js";
 import { ConnectionFailure } from "../connection-config.js";
 import { sendChatMessage, readChatOutputDocument } from "../chat-flow.js";
-import { hireDelegateReuse, openSavedHireResult } from "./hire-delegate-flow.js";
+import { hireDelegateReuse, hireHandoffMentions, openSavedHireResult } from "./hire-delegate-flow.js";
 import { hireDelegateNames } from "./hire-delegate-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
@@ -71,6 +72,36 @@ async function fixture(options: { readError?: Error; mutate?(agents: Row[], task
   return { owned, evidence, stop, directory, runReads: () => runReads,
     run: () => hireDelegateReuse(context, session, campaignId, evidence, { deadlineAt: Date.now() + 10_000, directory, capture: async () => {} }) };
 }
+
+function handoffTargets(text: string) {
+  const hrefs = [...text.matchAll(/\]\(([^)]+)\)/g)].map(match => match[1]!);
+  return { agents: hrefs.map(parseAgentMentionHref).filter(value => value !== null).map(value => value.agentId),
+    projects: hrefs.map(parseProjectMentionHref).filter(value => value !== null).map(value => value.projectId) };
+}
+
+it("carries the independently verified teammate and project into the actual delegation message", async () => {
+  const f = await fixture();
+  await expect(f.run()).rejects.toBe(f.stop);
+  expect(handoffTargets(vi.mocked(sendChatMessage).mock.calls[1]![1])).toEqual({ agents: ["hired"], projects: ["project"] });
+  expect(sendChatMessage).toHaveBeenCalledTimes(2);
+});
+
+it.each(["missing-agent", "missing-project", "foreign-agent", "foreign-project", "wrong-agent", "wrong-project", "missing-scope", "malformed-id"])(
+  "rejects %s handoff context instead of emitting an unbound mention", mismatch => {
+    const scope = { companyId: "company", leadId: "lead", projectId: "project", campaignId: "journey-1-deadbeef" };
+    const names = hireDelegateNames(scope.campaignId), hired = { id: "hired", companyId: "company", reportsTo: "lead", name: names.hire };
+    const project = { id: "project", companyId: "company", name: names.project };
+    if (mismatch === "foreign-agent") hired.companyId = "foreign";
+    if (mismatch === "foreign-project") project.companyId = "foreign";
+    if (mismatch === "wrong-agent") hired.id = "other";
+    if (mismatch === "wrong-project") project.id = "other";
+    if (mismatch === "missing-scope") scope.companyId = "";
+    if (mismatch === "malformed-id") hired.id = "hired?i=code";
+    expect(() => hireHandoffMentions(scope, mismatch === "malformed-id" ? hired.id : "hired",
+      mismatch === "missing-agent" ? undefined! : hired, mismatch === "missing-project" ? undefined! : project))
+      .toThrow("hire_handoff_context_unverified");
+  },
+);
 
 it.each(["api_status_503", "api_request_failed"])("recovers a transient %s read without replaying the first user turn", async code => {
   const f = await fixture({ readError: new ConnectionFailure(code) });
@@ -283,6 +314,9 @@ it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activit
     return;
   }
   await execution;
+  if (snapshot === "stale") for (const [, text] of vi.mocked(sendChatMessage).mock.calls.slice(1)) {
+    expect(handoffTargets(text)).toEqual({ agents: ["hired"], projects: ["project"] });
+  }
   expect(stages).toEqual([0, 1, 4]); expect(runs).toHaveLength(7); expect(sendChatMessage).toHaveBeenCalledTimes(3);
   expect(evidence.checks).toContainEqual({ id: "delegated-result-visible-after-reload", passed: true });
   expect(owned.find(row => row.id === "chat")?.freshChat).toEqual({ companyId: "company", userId: "user", leadAgentId: "lead", absent: true });

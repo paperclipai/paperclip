@@ -93,6 +93,10 @@ It gives each disposable project, agent, and task a campaign name. The first
 turn only hires. The target provider can then verify the native creation audit
 and prepare that exact teammate's budget before the next turn delegates work.
 Both handoffs ask for the task to be created already assigned to that teammate.
+They use the normal composer agent and project mention formats, with the exact
+IDs from the independently verified hire and owned project. Missing, foreign or
+mismatched context fails before constructing the handoff. The mentions provide
+the intended resources without prescribing a tool call or bypassing normal delegation.
 Creating work for the lead and later reassigning it starts additional native work
 and fails the existing assignee and run checks.
 When the lead uses a delegated personal connection, normal hiring selects the
