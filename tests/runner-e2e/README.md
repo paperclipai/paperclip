@@ -34,8 +34,11 @@ configuration key. Only the post-completion replacement follow-up uses the norma
 board-authenticated task-comment API, with one persisted user comment and the
 unchanged follow-up request. Initial creation, active outage and queued continuation
 retain their browser journey. Post-C settlement, task status and useful reply are
-read through production APIs; no post-C browser navigation, rendered status or
-final screenshot is claimed. The same strict native/provider identity, new tool,
+read through production APIs, without post-C browser navigation or rendered-status
+assertions. The required final screenshot captures the actual retained Chromium
+page, which may be stale or show an error; it is labeled as unqualified browser
+evidence and does not establish fresh product state. The same strict native/provider
+identity, new tool,
 saved-project output and finalization checks remain required. Definition 6's
 observed post-C browser navigation timeout remains failed; its cause is unknown.
 This definition does not claim that browser reconnection was fixed.

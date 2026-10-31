@@ -1631,7 +1631,10 @@ export async function runEverydayFlow(input: Input) {
         "Finished everyday workflow",
         "final-state.png",
       );
-    } else note("final-state-api-readback", { browserNavigationVerified: false, renderedStatusVerified: false });
+    } else {
+      note("final-state-api-readback", { browserNavigationVerified: false, renderedStatusVerified: false });
+      await input.capture("final-state", "Browser state retained after API-verified native continuation; browser reconnection unqualified", "final-state.png");
+    }
     const failed = ev.checks.filter((c) => !c.passed);
     if (failed.length)
       throw new Error(
