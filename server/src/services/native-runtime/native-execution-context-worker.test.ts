@@ -58,6 +58,34 @@ async function startWorker(hostHandlers: Record<string, unknown> = {}) {
 }
 
 describe("Core startup responsibility across real worker IPC", () => {
+  it("refuses new calls while the same startup group retires and joins concurrent retirement", async () => {
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+    const write = vi.fn(async () => { entered(); await gate; return {}; });
+    const handlers = createHostClientHandlers({ pluginId: manifest.id, capabilities: ["companies.read"], services: { companies: { get: write } } as never });
+    const manager = await startWorker(handlers), firstSettled = vi.fn(), secondSettled = vi.fn();
+    try {
+      const request = manager.call(manifest.id, "environmentTask", { ...params, config: { hostWrite: true } }, 5_000, undefined, firstSettled, "retiring-context");
+      void request.catch(() => undefined);
+      await started;
+      let retired = false;
+      const retiring = manager.retireStartup!("retiring-context").then(() => { retired = true; });
+      const joined = manager.retireStartup!("retiring-context");
+      await expect(manager.call(manifest.id, "environmentTask", { ...params, config: { hostWrite: true } }, 100, undefined, secondSettled, "retiring-context"))
+        .rejects.toThrow("retiring");
+      expect(write).toHaveBeenCalledOnce();
+      expect(firstSettled).not.toHaveBeenCalled();
+      expect(secondSettled).toHaveBeenCalledOnce();
+      expect(retired).toBe(false);
+      expect(await manager.call(manifest.id, "health", {})).toMatchObject({ status: "ok" });
+      release(); await Promise.all([retiring, joined]);
+      expect(firstSettled).toHaveBeenCalledOnce();
+      await manager.call(manifest.id, "configChanged", { companyId: "company", config: { release: true } });
+      await request;
+      expect(firstSettled).toHaveBeenCalledOnce();
+    } finally { release(); await manager.stopAll(); }
+  });
+
   it("revokes a cleanup invocation created after the initial drain and waits for its accepted host handler", async () => {
     let release!: () => void, entered!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
@@ -92,14 +120,23 @@ describe("Core startup responsibility across real worker IPC", () => {
       const rejected = expect(request).rejects.toThrow("timed out");
       await started; await rejected;
       vi.useFakeTimers();
-      const waiting = manager.drainStartup!("bounded-context");
+      const waiting = manager.retireStartup!("bounded-context");
       const pending = expect(waiting).rejects.toThrow("cleanup is still pending");
       await vi.advanceTimersByTimeAsync(15_000); await pending;
       expect(settled).not.toHaveBeenCalled();
-      vi.useRealTimers(); release();
+      vi.useRealTimers();
+      const retried = vi.fn();
+      const retry = manager.call(manifest.id, "environmentTask", params, 5_000, undefined, retried, "bounded-context");
+      void retry.catch(() => undefined);
+      expect(await manager.call(manifest.id, "health", {})).toMatchObject({ details: { pending: 2 } });
+      expect(retried).not.toHaveBeenCalled();
+      release();
       await manager.drainStartup!("bounded-context");
       await manager.retireStartup!("bounded-context");
       expect(settled).toHaveBeenCalledOnce();
+      expect(retried).toHaveBeenCalledOnce();
+      await manager.call(manifest.id, "configChanged", { companyId: "company", config: { release: true } });
+      await retry;
     } finally { vi.useRealTimers(); release(); await manager.stopAll(); }
   });
   it.each(["startup", "cleanup"])("drains accepted %s host writes before retiring only verified bookkeeping", async mode => {

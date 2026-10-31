@@ -24,6 +24,38 @@ describe("Core execution startup context", () => {
     } finally { context.finish(); }
   });
 
+  it("reuses an identical transport target regardless of property insertion order", async () => {
+    const context = new NativeExecutionContext(execution, 1_000);
+    const resolve = vi.fn(async () => ({ instanceSecrets: {}, configuration: {} }));
+    try {
+      const first = await context.projection(target, resolve);
+      const reordered = { environmentId: target.environmentId, taskId: target.taskId,
+        leaseId: target.leaseId, pluginId: target.pluginId };
+      expect(await context.projection(reordered, resolve)).toEqual(first);
+      expect(resolve).toHaveBeenCalledOnce();
+    } finally { context.finish(); }
+  });
+
+  it("finishes a pending lookup without aborting a successful backend or completing worker responsibility", async () => {
+    vi.useFakeTimers();
+    const context = new NativeExecutionContext(execution, 1_000), settled = context.trackWorker();
+    const remove = vi.spyOn(context.signal, "removeEventListener");
+    let outcome = "pending";
+    const waiting = context.projection(target, () => new Promise<never>(() => {}))
+      .then(() => { outcome = "resolved"; }, error => { outcome = error.message; });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      context.finish();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outcome).toBe("native_execution_startup_completed");
+      expect(context.signal.aborted).toBe(false);
+      expect(context.pending).toBe(true);
+      expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+      settled();
+      expect(await context.drain()).toBe(true);
+    } finally { settled(); context.abort(new Error("test cleanup")); context.finish(); await waiting; }
+  });
+
   it("keeps pending worker responsibility after cancellation until actual settlement", async () => {
     vi.useFakeTimers();
     const context = new NativeExecutionContext(execution, 1_000), settled = context.trackWorker();

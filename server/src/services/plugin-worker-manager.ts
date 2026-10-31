@@ -913,6 +913,7 @@ export function createPluginWorkerHandle(
   // completion receipt. A worker crash cannot manufacture one.
   const unsettledCalls = new Map<string | number, () => void>();
   const startupCalls = new Map<string, Set<() => void>>();
+  const startupRetirements = new Map<string, Promise<void>>();
   const startupHostHandlers = new Map<string, Set<Promise<void>>>();
   const revokeStartupInvocations = (contextId: string) => {
     for (const [id, invocation] of activeInvocations) {
@@ -3436,6 +3437,11 @@ export function createPluginWorkerHandle(
     startupContextId?: string,
   ): Promise<HostToWorkerMethods[M][1]> {
     const rpcPromise = new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
+      if (startupContextId && startupRetirements.has(startupContextId)) {
+        onWorkerSettled?.();
+        reject(new Error("Plugin startup group is retiring"));
+        return;
+      }
       const idleControl = method === "prepareIdleSleep" || method === "releaseIdleSleep";
       if (!idleControl && method !== "shutdown" && idleSleepHeld()) {
         onWorkerSettled?.();
@@ -3629,9 +3635,16 @@ export function createPluginWorkerHandle(
       await waitForStartupHandlers(contextId);
     },
     async retireStartup(contextId: string) {
-      revokeStartupInvocations(contextId);
-      await waitForStartupHandlers(contextId);
-      for (const finish of [...startupCalls.get(contextId) ?? []]) finish();
+      const current = startupRetirements.get(contextId);
+      if (current) return current;
+      const retiring = (async () => {
+        revokeStartupInvocations(contextId);
+        await waitForStartupHandlers(contextId);
+        for (const finish of [...startupCalls.get(contextId) ?? []]) finish();
+      })();
+      startupRetirements.set(contextId, retiring);
+      try { await retiring; }
+      finally { if (startupRetirements.get(contextId) === retiring) startupRetirements.delete(contextId); }
     },
 
     call<M extends HostToWorkerMethodName>(

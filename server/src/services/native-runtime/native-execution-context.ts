@@ -11,6 +11,7 @@ export class NativeExecutionContext {
   #timer: ReturnType<typeof setTimeout>;
   #calls = new Set<object>();
   #waiters = new Set<() => void>();
+  #finishWaiters = new Set<() => void>();
   #transport?: Promise<PluginEnvironmentTaskExecutionContext["transport"]>;
   #target?: string;
   #finished = false;
@@ -49,8 +50,13 @@ export class NativeExecutionContext {
         Promise.resolve().then(() => { this.assertOpen(); return operation(); }),
         new Promise<never>((_resolve, reject) => {
           const abort = () => reject(this.signal.reason);
+          const finish = () => reject(new Error("native_execution_startup_completed"));
+          this.#finishWaiters.add(finish);
           this.signal.addEventListener("abort", abort, { once: true });
-          remove = () => this.signal.removeEventListener("abort", abort);
+          remove = () => {
+            this.signal.removeEventListener("abort", abort);
+            this.#finishWaiters.delete(finish);
+          };
         }),
       ]);
       this.assertOpen();
@@ -61,7 +67,7 @@ export class NativeExecutionContext {
   async projection(target: { pluginId: string; leaseId: string; taskId: string; environmentId: string },
     resolve: () => Promise<PluginEnvironmentTaskExecutionContext["transport"]>): Promise<PluginEnvironmentTaskExecutionContext> {
     this.assertOpen();
-    const key = JSON.stringify(target);
+    const key = JSON.stringify([target.pluginId, target.leaseId, target.taskId, target.environmentId]);
     if (this.#target !== undefined && this.#target !== key) throw new Error("native_execution_context_target_changed");
     this.#target = key;
     this.#transport ??= resolve();
@@ -98,5 +104,7 @@ export class NativeExecutionContext {
     clearTimeout(this.#timer);
     this.#finished = true;
     this.#transport = undefined;
+    for (const finish of this.#finishWaiters) finish();
+    this.#finishWaiters.clear();
   }
 }
