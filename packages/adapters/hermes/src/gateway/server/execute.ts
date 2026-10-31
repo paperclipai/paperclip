@@ -725,7 +725,7 @@ function extractSessionId(value: unknown): string | null {
 
 function extractModel(value: unknown): string | null {
   const record = asRecord(value);
-  return nonEmpty(record?.model) ?? nonEmpty(asRecord(record?.usage)?.model);
+  return nonEmpty(record?.model) ?? nonEmpty(asRecord(record?.usage)?.model) ?? nonEmpty(asRecord(record?.runtime)?.model);
 }
 
 function extractErrorMessage(value: unknown): string | null {
