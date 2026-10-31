@@ -100,7 +100,9 @@ import { NativeRunnerOwnershipUnverifiedError } from "./native-runner-ownership.
 import type { AdapterRuntimeEvent } from "../../adapters/index.js";
 import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import { acknowledgedNativeStopExecutionHasStopped, isAcknowledgedNativeStop } from "../acknowledged-native-stop.js";
-import { admittedNativeProviderPack, nativeProviderPackAdmissionPending } from "./native-provider-pack-admission.js";
+import { admittedNativeProviderPack, nativeProviderPackAdmissionPending, rememberAdmittedNativeProviderPack } from "./native-provider-pack-admission.js";
+import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
+import * as providerPackAdmission from "./native-provider-pack-admission.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -8132,6 +8134,63 @@ describe("native session cancellation", () => {
 });
 
 describe("native session execution lease fencing", () => {
+  it("persists current admission from the executor callback and never writes for null publication", async () => {
+    const identity = { runId: execution.binding.runId, companyId: execution.binding.companyId, agentId: execution.binding.agentId,
+      issueId: execution.binding.issueId, sessionId: execution.session.normalizedSessionId! };
+    const session = { identity: () => identity } as never;
+    const artifact = { path: "/fixture/provider", sha256: "sha256:" + "a".repeat(64) };
+    const payload = { runnerSourceRevision: "b".repeat(40), target: { platform: "linux", architecture: "x64" },
+      pins: { opencode: "1.18.34" }, artifacts: { nodeCommand: artifact, opencodeCommand: artifact, opencodeProxy: artifact } };
+    expect(rememberAdmittedNativeProviderPack(session, { identity, runnerInstanceId: "actual-runner", environmentLeaseId: "runner-scope",
+      manifest: { schema: "paperclip-runner/remote-provider-pack/v1", payload,
+        digest: "sha256:" + createHash("sha256").update(canonicalProviderPackJson(payload)).digest("hex") } })).toBe(true);
+    const profile: Record<string, unknown> = { preserved: { value: "unchanged" } };
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const recordAdmission = vi.spyOn(providerPackAdmission, "recordNativeProviderPackAdmission");
+    let profileWrites = 0;
+    const wrap = (source: Db): Db => new Proxy(source, { get(target, key, receiver) {
+      if (key === "transaction") return (operation: (tx: Db) => Promise<unknown>) => target.transaction(tx => operation(wrap(tx as unknown as Db)) as never);
+      if (key === "select") return (fields?: Record<string, unknown>) => {
+        if (!fields || !("profile" in fields)) return target.select(fields as never);
+        const query = { where: () => query, for: () => query, limit: async () => [{ profile }] };
+        return { from: () => query };
+      };
+      if (key === "update") return (table: unknown) => ({ set: (values: Record<string, unknown>) => {
+        const update = target.update(table as never).set(values);
+        return { where: (condition: unknown) => {
+          if (table === heartbeatRuns && values.runnerProfileJson) {
+            const query = new PgDialect().sqlToQuery(values.runnerProfileJson as SQL);
+            const patch = query.params.map(value => typeof value === "string" ? (() => { try { return JSON.parse(value); } catch { return null; } })() : null)
+              .find(value => value?.nativeProviderPackAdmissionState);
+            if (patch) { Object.assign(profile, patch); profileWrites++; }
+          }
+          return update.where(condition as never);
+        } };
+      } });
+      return Reflect.get(target, key, receiver);
+    } });
+    const db = wrap(leaseDb(execution, {}, {}, updates, profile));
+    let nullWrites = -1;
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      await options.onSession(session);
+      const before = profileWrites;
+      await options.onSession(null);
+      nullWrites = profileWrites - before;
+      return { result: { summary: "cancelled" }, terminal: { runTerminalState: "cancelled" }, turnId: "turn",
+        normalizedSessionId: identity.sessionId, providerSessionId: null, driverKind: "test", driverVersion: "1",
+        nativeEventCount: 0, highestContiguousSourceSeq: 0, usage: null };
+    });
+    await executePaperclipNativeSession({ db, execution, runnerInstanceId: "actual-runner" });
+    expect(profile.preserved).toEqual({ value: "unchanged" });
+    expect(profile.nativeProviderPackAdmission).toEqual(admittedNativeProviderPack(session, identity));
+    expect(profile.nativeProviderPackAdmissionState).toMatchObject({ state: "verified", admissionEpoch: expect.any(String) });
+    expect(profileWrites).toBe(2);
+    expect(nullWrites).toBe(0);
+    const claim = updates.find(update => update.table === nativeRunFinalizations && update.values.phase === "observed" && update.values.leaseOwner)!.values;
+    expect(recordAdmission).toHaveBeenCalledExactlyOnceWith(db, { session, identity,
+      admissionEpoch: (profile.nativeProviderPackAdmissionState as Record<string, unknown>).admissionEpoch,
+      claim: { leaseOwner: claim.leaseOwner, attempt: claim.attempt, controllerGeneration: claim.controllerGeneration, controllerBootId: claim.controllerBootId } });
+  });
   it("atomically invalidates previous admission proof before provider admission", async () => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     let observed: Record<string, unknown> | null = null;
