@@ -90,6 +90,11 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
         }
         res.writeHead(failBindings ? 503 : 200, { "content-type": "application/json" }).end("{}"); return;
       }
+      if (req.url === "/oauth/token") {
+        expect(new URLSearchParams(raw).get("grant_type")).toBe("refresh_token");
+        expect(new URLSearchParams(raw).get("refresh_token")).toBe("saved-refresh");
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ access_token: "renewed-access", refresh_token: "renewed-refresh", token_type: "Bearer", expires_in: 3600 })); return;
+      }
       githubRequests++;
       if (req.url === "/user" && discoveryFailureGate) {
         discoveryArrived?.(); await discoveryFailureGate;
@@ -370,6 +375,74 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
       expect((await latest(f.grant.id)).providerTenant!.github!.bindingSync).toBeUndefined();
     } finally { heldBindingCompany = undefined; release(); await outcome; bindingGate = undefined; bindingArrived = undefined; bindingClosed = undefined; }
   });
+
+  it("renews an installation created without metadata using the saved connection expiry", async () => {
+    const f = await fixture();
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "01234567890123456789012345678901");
+    try {
+      const refs = [];
+      for (const path of ["oauth.access_token", "oauth.refresh_token"]) {
+        const saved = await writeConnectionCredential(db, { companyId: f.company.id, connectionName: "OAuth", configPath: path, label: path,
+          value: path === "oauth.refresh_token" ? "saved-refresh" : "expired-access" });
+        refs.push({ configPath: path, secretId: saved.secret.id, versionSelector: "latest" as const });
+      }
+      await db.update(toolConnections).set({ credentialSource: "paperclip_vault", credentialPolicy: "shared", config: { oauth: {
+        provider: "fixture", tokenUrl: `${origin}/oauth/token`, clientId: "fixture-client", clientRegistrationSource: "dcr", clientTokenEndpointAuthMethod: "none",
+        expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      } } }).where(eq(toolConnections.id, f.connection.id));
+      const api = toolAccessService(db);
+      const installation = await api.addConnectionInstallation(f.connection.id, { credentialSecretRefs: refs });
+      const [before] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, installation.id));
+      expect(before!.providerTenant).toBeNull();
+      expect((await db.execute(sql`select provider_tenant is null as absent from connection_grants where id = ${installation.id}`))[0]!.absent).toBe(true);
+      const renewed = await api.refreshOAuthGrantCredentials({ companyId: f.company.id, connectionId: f.connection.id, grantId: installation.id });
+      expect(renewed.providerTenant!.oauth).toMatchObject({ tokenType: "Bearer", accessTokenExpiresAt: expect.any(String) });
+      expect(Date.parse(renewed.providerTenant!.oauth!.accessTokenExpiresAt!)).toBeGreaterThan(Date.now() + 3500_000);
+      expect(renewed.providerTenant!.oauth!.refreshLease).toBeUndefined();
+      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, installation.id)))[0]!.providerTenant).toEqual(renewed.providerTenant);
+    } finally { vi.unstubAllEnvs(); }
+  }, 40_000);
+
+  it.each(["sql-null", "json-null", "object"] as const)("claims current %s metadata, fences stale snapshots and rolls back lease writes", async mode => {
+    const f = await fixture();
+    const api = toolAccessService(db);
+    const installation = await api.addConnectionInstallation(f.connection.id, {});
+    const metadata = mode === "sql-null" ? sql`null` : mode === "json-null" ? sql`'null'::jsonb` : sql`'{"name":"current"}'::jsonb`;
+    await db.update(connectionGrants).set({ providerTenant: metadata }).where(eq(connectionGrants.id, installation.id));
+    const getGrant = async () => (await db.select().from(connectionGrants).where(eq(connectionGrants.id, installation.id)))[0]!;
+    const initial = await getGrant();
+    const leases = createOAuthRefreshLeases(db, () => new Date(), async () => f.connection, getGrant);
+    const claimed = await leases.acquireOAuthGrantRefreshLease(f.connection, initial, true);
+    expect(claimed.leaseId).toBeTruthy();
+    expect(claimed.grant.providerTenant!.oauth!.refreshLease!.id).toBe(claimed.leaseId);
+    if (mode === "object") expect(claimed.grant.providerTenant!.name).toBe("current");
+    await leases.clearOAuthGrantRefreshLease(claimed.grant, claimed.leaseId!);
+    await db.update(connectionGrants).set({ providerTenant: metadata }).where(eq(connectionGrants.id, installation.id));
+    const newer = { name: "concurrent", github: { ...f.grant.providerTenant!.github!, bindingSync: { id: randomUUID(), removeInstallationIds: ["202"] } } };
+    let raced = false;
+    const staleRead = async () => {
+      const snapshot = await getGrant();
+      if (!raced) { raced = true; await db.update(connectionGrants).set({ providerTenant: newer }).where(eq(connectionGrants.id, installation.id)); }
+      return snapshot;
+    };
+    const racingLeases = createOAuthRefreshLeases(db, () => new Date(), async () => f.connection, staleRead);
+    const retained = await racingLeases.acquireOAuthGrantRefreshLease(f.connection, initial, true);
+    expect(retained.grant.providerTenant).toMatchObject(newer);
+    expect(retained.leaseId).toBeTruthy();
+    await racingLeases.clearOAuthGrantRefreshLease(retained.grant, retained.leaseId!);
+    await db.update(connectionGrants).set({ providerTenant: metadata }).where(eq(connectionGrants.id, installation.id));
+    await expect(db.transaction(async tx => {
+      const read = async () => (await tx.select().from(connectionGrants).where(eq(connectionGrants.id, installation.id)))[0]!;
+      const transactional = createOAuthRefreshLeases(tx as typeof db, () => new Date(), async () => f.connection, read);
+      const lease = await transactional.acquireOAuthGrantRefreshLease(f.connection, await read(), true);
+      expect(lease.leaseId).toBeTruthy();
+      throw new Error("rollback lease");
+    })).rejects.toThrow("rollback lease");
+    expect((await getGrant()).providerTenant).toEqual(initial.providerTenant);
+    const retried = await leases.acquireOAuthGrantRefreshLease(f.connection, initial, true);
+    expect(retried.leaseId).toBeTruthy();
+    await leases.clearOAuthGrantRefreshLease(retried.grant, retried.leaseId!);
+  }, 40_000);
 
   it("lease acquire and cleanup cannot replace a concurrent webhook metadata revision", async () => {
     const f = await fixture(["101"]);
