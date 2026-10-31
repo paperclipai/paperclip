@@ -342,6 +342,7 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
         actor: req.actor,
         action: "agent_config:read",
         resource: { type: "agent", companyId, agentId },
+        scope: { targetAgentId: agentId },
       });
       return configDecision.allowed;
     }));

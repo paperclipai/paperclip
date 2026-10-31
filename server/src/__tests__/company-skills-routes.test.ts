@@ -1794,6 +1794,11 @@ describe("company skill mutation permissions", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockCompanySkillService.coverage).toHaveBeenCalledWith("company-1", { missingOnly: true });
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "agent_config:read",
+      resource: { type: "agent", companyId: "company-1", agentId: selfId },
+      scope: { targetAgentId: selfId },
+    }));
     expect(JSON.stringify(res.body)).not.toContain(peerId);
     expect(res.body.desiredCellCountByAgentId).toBeUndefined();
     expect(res.body.cells.every((cell: { desired: boolean }) => cell.desired === false)).toBe(true);

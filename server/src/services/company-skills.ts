@@ -3676,7 +3676,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         slug: companySkills.slug,
       })
       .from(companySkills)
-      .where(eq(companySkills.companyId, companyId))
+      .where(and(eq(companySkills.companyId, companyId), await visibility().condition(companyId)))
       .orderBy(asc(companySkills.name), asc(companySkills.key));
     const agentRows = await agents.list(companyId);
 

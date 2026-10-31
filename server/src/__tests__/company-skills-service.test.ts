@@ -10,6 +10,7 @@ import {
   companies,
   costEvents,
   companySkillVersions,
+  companySkillSources,
   companySkills,
   createDb,
   folders,
@@ -24,6 +25,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { companySkillService } from "../services/company-skills.ts";
 import { findActiveServerAdapter } from "../adapters/index.ts";
+import { withSkillActor } from "../services/skill-access.js";
 import { removeRuntimeSkillCache } from "../services/runtime-skill-cache.js";
 import { folderService } from "../services/folders.js";
 
@@ -3687,6 +3689,52 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     } finally {
       if ("mockRestore" in listSkills) listSkills.mockRestore();
     }
+  });
+
+  it("leaves project-scoped skills the caller cannot read out of coverage", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Ada",
+      role: "engineer",
+      adapterType: "cursor",
+      adapterConfig: {},
+    });
+    const [source] = await db.insert(companySkillSources).values({
+      companyId,
+      repositoryUrl: "https://github.com/fixture/private-skills",
+      fullName: "fixture/private-skills",
+      trackingRef: "main",
+      accessScope: "projects",
+    }).returning();
+    const privateKey = `company/${companyId}/private`;
+    await db.insert(companySkills).values({
+      id: randomUUID(),
+      companyId,
+      key: privateKey,
+      slug: "private",
+      name: "Private",
+      description: null,
+      markdown: "# Private\n",
+      sourceType: "catalog",
+      sourceLocator: null,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      accessSourceId: source!.id,
+    });
+
+    const hidden = await withSkillActor(
+      { type: "agent", agentId, companyId, source: "agent_jwt" },
+      () => svc.coverage(companyId),
+    );
+
+    expect(hidden.skills.map((skill) => skill.key)).not.toContain(privateKey);
+    expect(hidden.cells.map((cell) => cell.skillKey)).not.toContain(privateKey);
+    expect((await svc.coverage(companyId)).skills.map((skill) => skill.key)).toContain(privateKey);
   });
 
   it("refreshes the skill inventory before building coverage", async () => {

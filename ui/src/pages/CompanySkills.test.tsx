@@ -56,8 +56,10 @@ vi.mock("../context/ToastContext", () => ({
   useOptionalToastActions: () => ({ pushToast: vi.fn() }),
 }));
 
+const mockStreamlinedUi = vi.hoisted(() => ({ enabled: false }));
+
 vi.mock("../hooks/useStreamlinedUiEnabled", () => ({
-  useStreamlinedUiEnabled: () => ({ enabled: false, loaded: true }),
+  useStreamlinedUiEnabled: () => ({ enabled: mockStreamlinedUi.enabled, loaded: true }),
 }));
 
 vi.mock("../adapters/use-adapter-capabilities", () => ({
@@ -187,6 +189,7 @@ afterEach(() => {
   container?.remove();
   container = null;
   mockRouterSearch.params = new URLSearchParams();
+  mockStreamlinedUi.enabled = false;
 });
 
 function makeVersion(revisionNumber: number, content: string): CompanySkillVersion {
@@ -1224,6 +1227,30 @@ describe("install-time agent enablement", () => {
 });
 
 describe("CompanySkills coverage tab", () => {
+  it("keeps the shared tabs on the coverage page in streamlined mode", async () => {
+    mockRouterSearch.params = new URLSearchParams("tab=coverage");
+    mockStreamlinedUi.enabled = true;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySkills />
+        </QueryClientProvider>,
+      );
+    });
+
+    const tab = container.querySelector('nav[aria-label="Skills views"] a[aria-current="page"]');
+    expect(tab?.textContent).toBe("Coverage");
+    expect(tab?.getAttribute("href")).toBe("/skills?tab=coverage");
+    expect(container.querySelector('[data-testid="skill-coverage-matrix"]')).not.toBeNull();
+  });
+
   it("is reachable and mounts the coverage matrix", async () => {
     mockRouterSearch.params = new URLSearchParams("tab=coverage");
     container = document.createElement("div");

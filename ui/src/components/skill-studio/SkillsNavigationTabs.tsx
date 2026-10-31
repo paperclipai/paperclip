@@ -7,6 +7,7 @@ const views = [
   { value: "installed", label: "Installed" },
   { value: "discover", label: "Discover" },
   { value: "authored", label: "My Skills" },
+  { value: "coverage", label: "Coverage" },
 ] as const;
 
 /** Route navigation with the canonical tab appearance. Sources stays in the actions menu. */

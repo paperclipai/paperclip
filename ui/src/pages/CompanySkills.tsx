@@ -5429,7 +5429,12 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
           </div>
         ) : null}
         {isCoverage ? (
-          <SkillCoverageMatrix companyId={selectedCompanyId ?? ""} />
+          <>
+            {streamlinedUiEnabled ? (
+              <div className="px-4 pt-4"><SkillsNavigationTabs activeView="coverage" /></div>
+            ) : null}
+            <SkillCoverageMatrix companyId={selectedCompanyId ?? ""} />
+          </>
         ) : (
         <DiscoveryGrid
           collectionView={collectionView}
