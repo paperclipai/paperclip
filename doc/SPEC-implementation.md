@@ -2634,7 +2634,7 @@ must fail admission rather than fall back to a controller checkout.
 This feature does not remove the instance volume or qualify HTTP traffic drain,
 active provider handoff, or other instance data paths. See
 [setup/import](DEVELOPING.md#experimental-native-remote-workspace-storage) and the
-[bounded implementation plan](plans/2026-10-30-remote-workspace-authority.md).
+[snapshot storage contract](DATABASE.md#experimental-remote-workspace-snapshots).
 
 ## Company fast-response service
 

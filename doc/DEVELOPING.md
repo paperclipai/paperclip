@@ -1618,6 +1618,10 @@ precedence over the stored choice. Enrolled workspaces retain remote authority
 when enrollment is disabled; losing a storage prerequisite fails their admission
 instead of falling back to a controller checkout.
 
+After enrollment, roll back only to binaries that understand the same remote
+workspace authority and saved-version format. Older local-only binaries are
+unsupported rollback targets.
+
 This mode requires an external PostgreSQL `DATABASE_URL`, configured S3 storage,
 and the same encryption master key on every replacement server. The managed
 profile requires `PAPERCLIP_SECRETS_MASTER_KEY` as described above. Self-hosted
@@ -1671,8 +1675,8 @@ for storage, import, retention, and lifecycle regression checks. These checks do
 not qualify a deployed Runner/provider or a zero-outage webserver deploy. Keep
 the existing persistent volume until the other instance data paths and deploy
 handoff are separately qualified. See the
-[implementation plan](plans/2026-10-30-remote-workspace-authority.md) for scope
-and acceptance evidence.
+[implementation contract](SPEC-implementation.md#experimental-native-remote-workspace-authority-2026-10-30)
+and [snapshot storage contract](DATABASE.md#experimental-remote-workspace-snapshots).
 
 ## Agent Artifact Uploads
 
