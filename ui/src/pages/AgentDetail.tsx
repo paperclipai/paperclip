@@ -5,13 +5,13 @@ import { liveRunEvent, mergeRunEvents } from "../lib/live-run-event";
 import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
 import { grokBotApi } from "@/api/grokBot";
 import { GrokBotWorkSummary } from "@/components/GrokBotWorkSummary";
-import { PrimaryAgentIndicator, SetPrimaryAgentButton } from "@/components/primary-agent/PrimaryAgentPresentation";
+import { PrimaryAgentCrownButton } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { AiConnectionPoolRunDetails } from "@/components/ai-connections/AiConnectionPoolRunDetails";
 import { AgentConnectionInstructions } from "@/features/connections/ConnectionInstructions";
 import type { AgentInstructionCandidate, AgentInstructionsBundle } from "@paperclipai/shared";
 import { InstructionHistory } from "../components/InstructionHistory";
 import { AgentCharacter } from "../components/AgentCharacter";
-import { characterStateForAgent } from "@paperclipai/shared";
+import { characterStateForAgent, HEARTBEAT_RUN_LIST_DEFAULT_LIMIT } from "@paperclipai/shared";
 import { mergeRunLogChunks, readChunkSeq } from "../lib/run-log-chunks";
 import { usePageVisibility } from "../lib/page-visibility";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useRef } from "react";
@@ -74,7 +74,7 @@ import { ScrollToBottom } from "../components/ScrollToBottom";
 import { SourceResolvedFoldCallout } from "../components/SourceResolvedFoldCallout";
 import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
-import { formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal, hasUnavailableProviderAccounting, supportsRawProviderTrace } from "../lib/utils";
+import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal, hasUnavailableProviderAccounting, supportsRawProviderTrace } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { RunRetryDetails } from "../components/RunRetryDetails";
 import { Button } from "@/components/ui/button";
@@ -102,6 +102,13 @@ import {
   HelpCircle,
   FolderOpen,
   AlertTriangle,
+  History as HistoryIcon,
+  Activity as ActivityIcon,
+  PlayCircle,
+  ReceiptText,
+  Gauge,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -138,6 +145,26 @@ import {
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
+import { syncAgentRouteAfterRename } from "./agent-detail/agent-route";
+import { InstructionsBundleSettings } from "./agent-detail/InstructionsBundleSettings";
+import { AgentAllowedConnectors } from "./agent-detail/AgentAllowedConnectors";
+import { AgentAuditTab } from "./AgentAuditTab";
+import { AgentDirectReports } from "./agent-detail/AgentDirectReports";
+import { AgentChip, AgentMetricTile, AgentPanel, AgentSectionHeading } from "../components/agent-detail/AgentPanels";
+import { AgentHistoryDialog } from "./agent-detail/AgentHistoryDialog";
+import { countSince, formatWindowCount } from "./agent-detail/overview-counts";
+import { InlineEditor } from "../components/InlineEditor";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+export { syncAgentRouteAfterRename };
 import { humanAgentCreatorUserId, resolveAgentCreatorLabel } from "../lib/agent-creator";
 import {
   isStarred,
@@ -149,8 +176,11 @@ import { Badge } from "@/components/ui/badge";
 import {
   AGENT_DETAIL_NAVIGATION,
   agentDetailHref,
+  agentDetailSegment,
+  agentDetailViewLabel,
   agentLegacyAuditSection,
   agentScopedAuditHref,
+  isAgentAuditView,
   parseAgentDetailView,
   type AgentDetailView,
 } from "./agent-detail-navigation";
@@ -773,6 +803,28 @@ function WorkspaceOperationsSection({
   );
 }
 
+const UNTITLED_AGENT_VIEWS: ReadonlySet<AgentDetailView> = new Set(["overview", "instructions", "budgets"]);
+const OVERVIEW_ACTIVITY_LIMIT = 200;
+
+function agentViewDescription(view: AgentDetailView, name: string): string | null {
+  switch (view) {
+    case "runtime":
+      return `How ${name} runs: harness, model and environment.`;
+    case "secrets":
+      return "Secrets this agent can reach. Values are never shown here.";
+    case "permissions":
+      return `What ${name} may do without asking, and where.`;
+    case "activity":
+      return `Everything ${name} did and everything done to ${name}.`;
+    case "runs":
+      return `Every execution of ${name}, newest first.`;
+    case "costs":
+      return `What ${name} spent, by model.`;
+    default:
+      return null;
+  }
+}
+
 export function AgentDetail() {
   const { companyPrefix, agentId, tab: urlTab, runId: urlRunId } = useParams<{
     companyPrefix?: string;
@@ -809,6 +861,20 @@ export function AgentDetail() {
   const shouldLoadHeartbeats = needsOverviewData || needsRunData;
   const [configDirty, setConfigDirty] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
+  const [configJustSaved, setConfigJustSaved] = useState(false);
+  const [pendingLeave, setPendingLeave] = useState<HTMLAnchorElement | null>(null);
+  const leaveBypassRef = useRef(false);
+  const configWasSavingRef = useRef(false);
+  useEffect(() => {
+    if (configWasSavingRef.current && !configSaving && !configDirty) setConfigJustSaved(true);
+    configWasSavingRef.current = configSaving;
+  }, [configSaving, configDirty]);
+  useEffect(() => {
+    if (configDirty) setConfigJustSaved(false);
+  }, [configDirty]);
+  useEffect(() => {
+    setConfigJustSaved(false);
+  }, [activeView]);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
   const cancelConfigActionRef = useRef<(() => void) | null>(null);
   const { isMobile } = useSidebar();
@@ -950,7 +1016,7 @@ export function AgentDetail() {
   const { data: allAgents } = useQuery({
     queryKey: queryKeys.agents.list(resolvedCompanyId!),
     queryFn: () => agentsApi.list(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId && needsOverviewData,
+    enabled: !!resolvedCompanyId,
   });
 
   const { data: skillSnapshot } = useQuery({
@@ -970,6 +1036,32 @@ export function AgentDetail() {
     [allIssues],
   );
   const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const headerUpdate = useMutation({
+    mutationFn: ({ target, patch }: { target: AgentDetailRecord; patch: Record<string, unknown> }) =>
+      agentsApi.update(target.id, patch, resolvedCompanyId ?? undefined),
+    onSuccess: (updated, { target }) => {
+      if (resolvedCompanyId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(target.id) });
+      if (!syncAgentRouteAfterRename(queryClient, navigate, target, updated, urlTab ?? "overview")) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(target.id) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentRouteRef(target)) });
+      }
+    },
+  });
+  const saveHeaderField = async (patch: { name?: string; title?: string | null }) => {
+    if (!agent) return;
+    if (configDirty || configSaving) {
+      setActionError(`Save or discard your unsaved changes before you change the ${patch.name === undefined ? "title" : "name"}.`);
+      return;
+    }
+    setActionError(null);
+    try {
+      await headerUpdate.mutateAsync({ target: agent, patch });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Could not save that change");
+    }
+  };
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
   const overviewSkillNames = useMemo(() => {
     const namesByKey = new Map((overviewCompanySkills ?? []).map((skill) => [skill.key, skill.name]));
@@ -989,13 +1081,12 @@ export function AgentDetail() {
       }
       return;
     }
-    if (legacyAuditSection) return;
     const canonicalTab = activeView === "run-detail" ? "overview" : activeView;
-    if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
+    if (routeAgentRef !== canonicalAgentRef || urlTab !== agentDetailSegment(canonicalTab)) {
       navigate(`${agentDetailHref(canonicalAgentRef, canonicalTab)}${location.search}`, { replace: true });
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, configSaving, configDirty, legacyAuditSection, navigate, location.search]);
+  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, configSaving, configDirty, navigate, location.search]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
@@ -1071,13 +1162,10 @@ export function AgentDetail() {
     } else {
       crumbs.push({ label: agentName, href: agentDetailHref(canonicalAgentRef) });
       if (urlRunId) {
-        crumbs.push({ label: "Runs", href: agent?.id ? agentScopedAuditHref(agent.id, "runs") : undefined });
+        crumbs.push({ label: "Runs", href: agentDetailHref(canonicalAgentRef, "runs") });
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
       } else {
-        const item = AGENT_DETAIL_NAVIGATION
-          .flatMap((section) => section.items)
-          .find((candidate) => candidate.value === activeView);
-        crumbs.push({ label: item?.label ?? "Overview" });
+        crumbs.push({ label: agentDetailViewLabel(activeView === "run-detail" ? "overview" : activeView) });
       }
     }
     setBreadcrumbs(crumbs);
@@ -1136,14 +1224,16 @@ export function AgentDetail() {
       ) {
         return;
       }
-      if (prepareAgentNavigation()) return;
+      if (leaveBypassRef.current) return;
       event.preventDefault();
       event.stopPropagation();
+      if (activeView === "advanced" && configSaving) return;
+      setPendingLeave(anchor);
     }
 
     document.addEventListener("click", handleDocumentClick, true);
     return () => document.removeEventListener("click", handleDocumentClick, true);
-  }, [configDirty, prepareAgentNavigation]);
+  }, [activeView, configDirty, configSaving]);
 
   useEffect(() => {
     if (!configDirty) return;
@@ -1179,9 +1269,6 @@ export function AgentDetail() {
     return <QueryErrorState size="page" error={error} action="load this agent" onRetry={agentView.retry} retrying={agentView.isFetching} />;
   }
   if (!agent) return null;
-  if (!urlRunId && legacyAuditSection) {
-    return <Navigate to={agentScopedAuditHref(agent.id, legacyAuditSection)} replace />;
-  }
   if (!urlRunId && !urlTab) {
     return <Navigate to={agentDetailHref(canonicalAgentRef)} replace />;
   }
@@ -1269,80 +1356,124 @@ export function AgentDetail() {
         </div>
       ) : null}
       {/* Header */}
-      <header className="flex flex-wrap items-center justify-between gap-5 border-b border-border pb-6">
-        <div className="flex min-w-0 items-center gap-4">
-          <div role="img" aria-label={`${agent.name} avatar`} className="shrink-0">
-            <AgentCharacter agent={agent} state={characterStateForAgent(currentAgent.status)} size={96} trackingScope="page" />
-          </div>
-          <div className="min-w-0 space-y-1">
-            <div className="flex items-center gap-2"><h1 className="truncate text-2xl font-semibold tracking-tight">{agent.name}</h1><PrimaryAgentIndicator agentId={agent.id} companyId={agent.companyId} /></div>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
-                ? <img src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`} className="size-4" alt="" />
-                : null}
-              <span>{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span><span>·</span>
-              <span>{agent.title || roleLabels[agent.role] || agent.role}</span>
-            </div>
-            <AgentLifecycleStatus agent={currentAgent} refreshError={lifecycle.isError} onRetry={() => agentAction.mutate("retryLifecycle")} retryPending={agentAction.isPending} />
-            <SetPrimaryAgentButton agent={agent} />
-          </div>
+      <header className="flex items-center gap-4">
+        <div role="img" aria-label={`${agent.name} avatar`} className="shrink-0" style={{ zoom: "var(--agent-detail-portrait-zoom)" }}>
+          <AgentCharacter agent={agent} state={characterStateForAgent(currentAgent.status)} size={96} trackingScope="page" />
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <StarToggle
-            size="button"
-            starred={agentStarred}
-            pending={agentStarPending}
-            resourceName={agent.name}
-            onToggle={(next) => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: agent.id,
-              resourceName: agent.name,
-              starred: next,
-            })}
-          />
-          <AgentActionButtons
-            agent={currentAgent}
-            companyId={resolvedCompanyId}
-            assignLabel="Assign Task"
-            showStatus={false}
-            actionsDisabled={agentAction.isPending || (activeView === "advanced" && configSaving)}
-            workActionsDisabled={hasInvalidOrgChain}
-            workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
-            hasPendingNavigationChanges={configDirty}
-            onBeforeNavigate={prepareAgentNavigation}
-            onActionError={setActionError}
-            onTerminateSuccess={() => navigate("/agents/all", { replace: true })}
-            hideTerminate={Boolean(builtInState)}
-            pauseConfirm={
-              builtInState
-                ? {
-                    title: `Pause the ${builtInState.definition.displayName}?`,
-                    description: (
-                      <>
-                        {builtInFeatureLabel} depends on this agent. While paused,{" "}
-                        {builtInFeatureLabel.toLowerCase()} generation is skipped and the{" "}
-                        {builtInFeatureLabel} page shows a warning.
-                      </>
-                    ),
-                  }
-                : undefined
-            }
-          >
-            {mobileLiveRun && (
-              <Link
-                to={`/agents/${canonicalAgentRef}/runs/${mobileLiveRun.id}`}
-                className="sm:hidden flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
-              >
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-                </span>
-                <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">Live</span>
-              </Link>
-            )}
-          </AgentActionButtons>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <InlineEditor
+              as="h1"
+              value={agent.name}
+              placeholder="Agent name"
+              className="min-w-0 truncate text-3xl font-semibold leading-9 text-foreground"
+              onSave={(name) => saveHeaderField({ name })}
+            />
+            <PrimaryAgentCrownButton agent={agent} />
+          </div>
+          <div className="mt-1 flex items-center gap-1.5 text-xs leading-4 text-muted-foreground">
+            {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
+              ? <img src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`} className="-ml-0.5 size-3.5" alt="" />
+              : null}
+            <span>{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-4 text-muted-foreground">
+            <InlineEditor
+              value={agent.title ?? ""}
+              nullable
+              placeholder={roleLabels[agent.role] ?? agent.role}
+              className="text-xs leading-4 text-muted-foreground"
+              onSave={(title) => saveHeaderField({ title: title || null })}
+            />
+            <span aria-hidden>·</span>
+            <span>
+              Reports to{" "}
+              {reportsToAgent ? (
+                <Link className="text-muted-foreground hover:text-foreground" to={agentDetailHref(agentRouteRef(reportsToAgent))}>
+                  {reportsToAgent.name}
+                </Link>
+              ) : (
+                "Board"
+              )}
+            </span>
+          </div>
+          <AgentLifecycleStatus agent={currentAgent} refreshError={lifecycle.isError} onRetry={() => agentAction.mutate("retryLifecycle")} retryPending={agentAction.isPending} />
         </div>
+        <AgentActionButtons
+          agent={currentAgent}
+          companyId={resolvedCompanyId}
+          assignLabel="Assign task"
+          showStatus={false}
+          workActionsInMenu
+          menuItems={[{ label: "Agent history", icon: HistoryIcon, onSelect: () => setHistoryOpen(true) }]}
+          actionsDisabled={agentAction.isPending || (activeView === "advanced" && configSaving)}
+          workActionsDisabled={hasInvalidOrgChain}
+          workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
+          hasPendingNavigationChanges={configDirty}
+          onBeforeNavigate={prepareAgentNavigation}
+          onActionError={setActionError}
+          onTerminateSuccess={() => navigate("/agents/all", { replace: true })}
+          hideTerminate={Boolean(builtInState)}
+          pauseConfirm={
+            builtInState
+              ? {
+                  title: `Pause the ${builtInState.definition.displayName}?`,
+                  description: (
+                    <>
+                      {builtInFeatureLabel} depends on this agent. While paused,{" "}
+                      {builtInFeatureLabel.toLowerCase()} generation is skipped and the{" "}
+                      {builtInFeatureLabel} page shows a warning.
+                    </>
+                  ),
+                }
+              : undefined
+          }
+        >
+          {mobileLiveRun && (
+            <Link
+              to={`/agents/${canonicalAgentRef}/runs/${mobileLiveRun.id}`}
+              className="sm:hidden flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
+            >
+              <span className="relative flex h-2 w-2">
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+              </span>
+              <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">Live</span>
+            </Link>
+          )}
+        </AgentActionButtons>
       </header>
+      <AgentHistoryDialog agent={agent} companyId={resolvedCompanyId ?? undefined} open={historyOpen} onOpenChange={setHistoryOpen} />
+      <AlertDialog open={pendingLeave !== null} onOpenChange={(open) => (open ? undefined : setPendingLeave(null))}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
+            <AlertDialogDescription>
+              You have unsaved changes to {agent.name}&rsquo;s {activeView === "runtime" ? "harness settings" : activeView === "secrets" ? "secrets and variables" : activeView === "advanced" ? "configuration" : "instructions"}. If you continue, they&rsquo;ll be lost.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="sm:justify-between">
+            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() => {
+                const anchor = pendingLeave;
+                setPendingLeave(null);
+                cancelConfigActionRef.current?.();
+                if (!anchor) return;
+                leaveBypassRef.current = true;
+                try {
+                  anchor.click();
+                } finally {
+                  leaveBypassRef.current = false;
+                }
+              }}
+            >
+              Discard changes
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {builtInState && (
         <InlineBanner
@@ -1409,9 +1540,20 @@ export function AgentDetail() {
         </div>
       )}
 
-      {activeView !== "run-detail" && activeView !== "channels" && <h2 className="text-xl font-semibold">{activeView === "secrets" ? "Secrets & variables" : AGENT_DETAIL_NAVIGATION.flatMap(section => section.items).find(item => item.value === activeView)?.label}</h2>}
+      {activeView !== "run-detail" && activeView !== "channels" && !UNTITLED_AGENT_VIEWS.has(activeView) ? (
+        <div className="mb-4 space-y-1">
+          <h2 className="text-lg font-semibold text-foreground">{agentDetailViewLabel(activeView)}</h2>
+          {agentViewDescription(activeView, agent.name) ? (
+            <p className="text-sm text-muted-foreground">{agentViewDescription(activeView, agent.name)}</p>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* View content */}
+      {isAgentAuditView(activeView) && resolvedCompanyId ? (
+        <AgentAuditTab agent={agent} companyId={resolvedCompanyId} section={activeView} />
+      ) : null}
+
       {activeView === "overview" && (
         <AgentOverview
           agent={agent}
@@ -1420,6 +1562,7 @@ export function AgentDetail() {
           runtimeState={runtimeState}
           reportsToAgent={reportsToAgent}
           directReportCount={directReports.length}
+          directReports={directReports}
           skillNames={overviewSkillNames}
           agentRouteId={canonicalAgentRef}
         />
@@ -1539,7 +1682,14 @@ export function AgentDetail() {
       )}
 
       {showConfigActionBar && <footer className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background py-4">
-        <p role="status" className="text-xs text-muted-foreground">{configSaving ? "Saving changes…" : configDirty ? "You have unsaved changes." : ""}</p>
+        <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
+          {configSaving ? null : configDirty ? (
+            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--agent-detail-dot-unsaved)" />
+          ) : configJustSaved ? (
+            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--agent-detail-dot-saved)" />
+          ) : null}
+          {configSaving ? "Saving changes…" : configDirty ? "Unsaved changes" : configJustSaved ? "Changes saved" : "No unsaved changes"}
+        </p>
         <div className="flex gap-2">
           <Button variant="ghost" disabled={!configDirty || configSaving} onClick={() => cancelConfigActionRef.current?.()}>Discard</Button>
           <Button disabled={!configDirty || configSaving} onClick={() => {Promise.resolve(saveConfigActionRef.current?.()).catch(() => {});}}>{configSaving ? "Saving…" : "Save changes"}</Button>
@@ -1746,11 +1896,8 @@ export function AgentOverview({
   agent,
   runs,
   assignedIssues,
-  runtimeState,
-  reportsToAgent,
-  directReportCount,
+  directReports = [],
   skillNames,
-  agentRouteId,
 }: {
   agent: AgentDetailRecord;
   runs: HeartbeatRun[];
@@ -1758,26 +1905,11 @@ export function AgentOverview({
   runtimeState?: AgentRuntimeState;
   reportsToAgent?: Agent;
   directReportCount: number;
+  directReports?: Agent[];
   skillNames: string[];
   agentRouteId: string;
 }) {
-  const designSandbox = useDesignSandbox();
-  const issuesById = useMemo(() => {
-    const map = new Map<string, (typeof assignedIssues)[number]>();
-    for (const issue of assignedIssues) map.set(issue.id, issue);
-    return map;
-  }, [assignedIssues]);
-  const configuredModel = agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "muse"
-    ? "Managed by Muse"
-    : asNonEmptyString(agent.adapterConfig?.model)
-    ?? asNonEmptyString(agent.adapterConfig?.modelName)
-    ?? asNonEmptyString(agent.runtimeConfig?.model)
-    ?? "Adapter default";
-  const lastRun = runs[0] ?? null;
-  const identity = useQuery({
-    queryKey: [...queryKeys.agents.identity(agent.id), lastRun?.id, lastRun?.status],
-    queryFn: () => agentsApi.getIdentity(agent.id, agent.companyId),
-  });
+  const agentRef = agentRouteRef(agent);
   const hasHumanCreator = Boolean(humanAgentCreatorUserId(agent.createdByUserId));
   const userDirectory = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(agent.companyId),
@@ -1785,118 +1917,105 @@ export function AgentOverview({
     enabled: hasHumanCreator,
   });
   const creatorLabel = resolveAgentCreatorLabel(agent.createdByUserId, userDirectory.data?.users);
+  const creatorFailed = hasHumanCreator && queryViewKind(userDirectory) === "error";
+  const activity = useQuery({
+    queryKey: [...queryKeys.activity(agent.companyId), "agent-overview", agent.id],
+    queryFn: () => activityApi.list(agent.companyId, { agentId: agent.id, limit: OVERVIEW_ACTIVITY_LIMIT }),
+  });
+  const now = Date.now();
+  const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const twoDaysAgo = now - 2 * 24 * 60 * 60 * 1000;
+  const activityThisWeek = countSince(activity.data ?? [], weekAgo, OVERVIEW_ACTIVITY_LIMIT);
+  const runsThisWeek = countSince(runs, weekAgo, HEARTBEAT_RUN_LIST_DEFAULT_LIMIT);
+  const recentFailures = countSince(runs, twoDaysAgo, HEARTBEAT_RUN_LIST_DEFAULT_LIMIT, (run) => run.status === "failed");
+  const budget = agent.budgetMonthlyCents ?? 0;
+  const spent = agent.spentMonthlyCents ?? 0;
+  const budgetPercent = budget > 0 ? Math.round((spent / budget) * 100) : null;
   return (
-    <div className="space-y-6">
-      <LatestRunCard runs={runs} agentId={agentRouteId} issuesById={issuesById} />
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-identity-heading">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <h3 id="agent-identity-heading" className="text-sm font-medium">Identity</h3>
-            <StatusBadge status={agent.status} />
+    <div className="flex flex-col gap-(--agent-detail-band-gap)">
+      <div className="grid grid-cols-1 gap-(--agent-detail-module-gap) sm:grid-cols-2 lg:grid-cols-4">
+        <AgentMetricTile
+          icon={ActivityIcon}
+          value={activity.isLoading ? "–" : formatWindowCount(activityThisWeek)}
+          label="Activity"
+          description="Events this week"
+          to={agentDetailHref(agentRef, "activity")}
+        />
+        <AgentMetricTile
+          icon={PlayCircle}
+          value={formatWindowCount(runsThisWeek)}
+          label="Runs"
+          description={`${formatWindowCount(recentFailures)} failed in the last 2 days`}
+          to={agentDetailHref(agentRef, "runs")}
+        />
+        <AgentMetricTile
+          icon={ReceiptText}
+          value={formatCents(spent)}
+          label="Costs"
+          description="Month to date"
+          to={agentDetailHref(agentRef, "costs")}
+        />
+        <AgentMetricTile
+          icon={Gauge}
+          value={budgetPercent === null ? "–" : `${budgetPercent}%`}
+          label="Budget used"
+          description={budgetPercent === null ? "No monthly budget set" : `of ${formatCents(budget)} this month`}
+          to={agentDetailHref(agentRef, "budgets")}
+        />
+        <AgentPanel title="Profile" className="min-h-(--agent-detail-tile-min-h) sm:col-span-2" aria-label="Profile">
+          <div className="flex flex-col pb-3">
+            <div className="flex items-center gap-2 px-(--agent-detail-module-inset) py-1.5 text-sm">
+              <span className="text-muted-foreground">{creatorLabel || creatorFailed ? "Created by" : "Created"}</span>
+              {creatorFailed ? (
+                <span className="text-destructive">Could not load creator</span>
+              ) : (
+                <span className="min-w-0 truncate text-foreground">
+                  {creatorLabel ? `${creatorLabel} · ${formatDate(agent.createdAt)}` : formatDate(agent.createdAt)}
+                </span>
+              )}
+            </div>
+            <div className="flex flex-col gap-1.5 px-(--agent-detail-module-inset) py-1.5 text-sm">
+              <span className="text-muted-foreground">Direct reports</span>
+              {directReports.length === 0 ? (
+                <span className="text-foreground">None</span>
+              ) : (
+                <AgentDirectReports reports={directReports} />
+              )}
+            </div>
           </div>
-          <div className="space-y-3">
-            <SummaryRow label="Role"><span className="text-sm">{roleLabels[agent.role] ?? agent.role}</span></SummaryRow>
-            <SummaryRow label="Title"><span className="text-sm">{agent.title ?? "Not set"}</span></SummaryRow>
-            <SummaryRow label="Reports to">
-              {reportsToAgent ? (
-                <Link className="text-sm hover:underline" to={agentDetailHref(agentRouteRef(reportsToAgent))}>
-                  {reportsToAgent.name}
-                </Link>
-              ) : <span className="text-sm">Board</span>}
-            </SummaryRow>
-            <SummaryRow label="Direct reports"><span className="text-sm tabular-nums">{directReportCount}</span></SummaryRow>
-            {hasHumanCreator && queryViewKind(userDirectory) === "error" ? (
-              <SummaryRow label="Created by"><span className="text-sm text-destructive">Could not load creator</span></SummaryRow>
-            ) : creatorLabel ? (
-              <SummaryRow label="Created by"><span className="text-sm">{creatorLabel}</span></SummaryRow>
-            ) : null}
-            <SummaryRow label="Public key">
-              {identity.isPending || queryViewKind(identity) === "reconnecting" ? <span className="text-sm text-muted-foreground">Loading…</span>
-                : queryViewKind(identity) === "error" ? <span className="text-sm text-muted-foreground">Could not load public key</span>
-                : identity.data ? (
-                  <CopyText text={identity.data.publicKeyPem} ariaLabel="Copy public key" title="Copy public key">
-                    <span className="font-mono text-sm">{identity.data.keyId.slice(0, 19)}…</span>
-                  </CopyText>
-                ) : (
-                  <div className="text-sm">
-                    <div>Not created yet</div>
-                    <div className="text-xs text-muted-foreground">Created automatically on the next managed run</div>
-                  </div>
-                )}
-            </SummaryRow>
-          </div>
-        </section>
-
-        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-runtime-heading">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <h3 id="agent-runtime-heading" className="text-sm font-medium">Harness / Runtime</h3>
-            <Link className="text-xs text-muted-foreground hover:text-foreground" to={agentDetailHref(agentRouteId, "runtime")}>Configure</Link>
-          </div>
-          <div className="space-y-3">
-            <SummaryRow label="Adapter"><span className="text-sm">{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span></SummaryRow>
-            {agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "grok_bot" ? <><SummaryRow label="Execution"><span className="text-sm">Runs in Grok Bot</span></SummaryRow><SummaryRow label="Usage"><span className="text-sm">Not reported</span></SummaryRow></> : <SummaryRow label="Model"><span className="max-w-64 truncate text-sm font-mono">{configuredModel}</span></SummaryRow>}
-            <SummaryRow label="Session"><span className="max-w-64 truncate text-sm font-mono">{runtimeState?.sessionDisplayId ?? runtimeState?.sessionId ?? "No session"}</span></SummaryRow>
-            <SummaryRow label="Last run">
-              <span className="text-sm">{lastRun ? `${lastRun.status} · ${relativeTime(lastRun.createdAt)}` : "No runs"}</span>
-            </SummaryRow>
-            {agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "grok_bot" && <GrokBotWorkSummary companyId={agent.companyId} agentId={agent.id} />}
-          </div>
-        </section>
-
-        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-capabilities-heading">
-          <h3 id="agent-capabilities-heading" className="mb-3 text-sm font-medium">Capabilities</h3>
-          {agent.capabilities?.trim() ? (
-            <MarkdownBody className="text-sm [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">{agent.capabilities}</MarkdownBody>
-          ) : (
-            <p className="text-sm text-muted-foreground">No capability summary has been added.</p>
-          )}
-        </section>
-
-        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-skills-heading">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <h3 id="agent-skills-heading" className="text-sm font-medium">Skills</h3>
-            <Link className="text-xs text-muted-foreground hover:text-foreground" to={agentDetailHref(agentRouteId, "skills")}>Manage</Link>
-          </div>
+        </AgentPanel>
+        <AgentPanel
+          title="Skills"
+          meta={<span>{skillNames.length} enabled</span>}
+          className="min-h-(--agent-detail-tile-min-h) sm:col-span-2"
+          aria-label="Skills"
+        >
           {skillNames.length > 0 ? (
-            <div className="flex flex-wrap gap-2">
-              {skillNames.slice(0, 8).map((skill) => <Badge key={skill} variant="secondary">{skill}</Badge>)}
-              {skillNames.length > 8 ? <Badge variant="outline">+{skillNames.length - 8} more</Badge> : null}
+            <div className="flex flex-wrap gap-1.5 px-(--agent-detail-module-inset) pt-1 pb-(--agent-detail-module-inset)">
+              {skillNames.map((name) => (
+                <AgentChip key={name}>{name}</AgentChip>
+              ))}
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">No skills enabled.</p>
+            <p className="px-(--agent-detail-module-inset) pt-1 pb-(--agent-detail-module-inset) text-sm text-muted-foreground">No skills enabled.</p>
           )}
-        </section>
+        </AgentPanel>
       </div>
 
-      <section className="space-y-3" aria-labelledby="agent-recent-tasks-heading">
-        <div className="flex items-center justify-between">
-          <h3 id="agent-recent-tasks-heading" className="text-sm font-medium">Recent Tasks</h3>
-          <Link
-            to={`/issues?participantAgentId=${agent.id}`}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
-            See All &rarr;
-          </Link>
-        </div>
+      <section className="flex flex-col gap-3" aria-label="Recent tasks">
+        <AgentSectionHeading
+          title="Recent tasks"
+          action={
+            <Link to={`/issues?participantAgentId=${agent.id}`} className="text-xs text-muted-foreground no-underline transition-colors hover:text-foreground">
+              See all tasks
+            </Link>
+          }
+        />
         {assignedIssues.length === 0 ? (
           <p className="text-sm text-muted-foreground">No recent tasks.</p>
         ) : (
           <div className="overflow-hidden rounded-lg border border-border">
-            {designSandbox ? <TaskSummaryList issues={assignedIssues.slice(0, 6)} /> : assignedIssues.slice(0, 6).map((issue) => (
-              <IssueRow
-                key={issue.id}
-                issue={issue}
-                presentation="task"
-                metadata={<span className="text-xs text-muted-foreground">{relativeTime(issue.updatedAt)}</span>}
-                showDivider
-              />
-            ))}
-            {assignedIssues.length > 6 && (
-              <div className="border-t border-border px-3 py-2 text-center text-xs text-muted-foreground">
-                +{assignedIssues.length - 6} more tasks
-              </div>
-            )}
+            <TaskSummaryList issues={assignedIssues.slice(0, 5)} />
           </div>
         )}
       </section>
@@ -1905,29 +2024,6 @@ export function AgentOverview({
 }
 
 /* ---- Agent Configure Page ---- */
-
-/**
- * Agent detail URLs use a name-derived key, so updates that change the agent's
- * name (a rename or a config-revision rollback) can invalidate the reference
- * currently in the URL. When that happens, refetching the old reference would
- * 404 with "Agent not found". Instead, drop the stale cached queries and
- * replace the URL with the new canonical reference. Returns true when a
- * redirect happened.
- */
-export function syncAgentRouteAfterRename(
-  queryClient: QueryClient,
-  navigate: NavigateFunction,
-  previous: { id: string; urlKey?: string | null; name?: string | null },
-  updated: { id: string; urlKey?: string | null; name?: string | null },
-  tab: string,
-): boolean {
-  const previousRef = agentRouteRef(previous);
-  const nextRef = agentRouteRef(updated);
-  if (nextRef === previousRef) return false;
-  queryClient.removeQueries({ queryKey: queryKeys.agents.detail(previousRef) });
-  navigate(`/agents/${nextRef}/${tab}`, { replace: true });
-  return true;
-}
 
 export function AgentRevisionsTab({
   agent,
@@ -2120,7 +2216,7 @@ export function ConfigurationTab({
             : "Disabled unless explicitly granted.";
 
   return (
-    <div className="agent-settings-form space-y-6">
+    <div className={cn("agent-settings-form", content === "permissions" ? "flex flex-col gap-(--agent-detail-module-gap)" : "space-y-6")}>
       {content !== "permissions" ? <AgentConfigForm
         mode="edit"
         agent={agent}
@@ -2134,16 +2230,19 @@ export function ConfigurationTab({
         hidePromptTemplate={hidePromptTemplate}
         hideInstructionsFile={hideInstructionsFile}
         content={content === "runtime" ? "configuration" : "secrets"}
-        sectionLayout="cards"
+        sectionLayout="panels"
         environmentVariablesPlacement={content === "secrets" ? "secrets" : "configuration"}
         compactTestFeedback
-        sectionOrder={["identity", "adapter", "configuration", "environment", "environment-variables", "run-policy"]}
-        sectionTitles={{ adapter: "Adapter", configuration: "Configuration", identity: "Agent identity" }}
+        sectionOrder={["adapter", "configuration", "environment", "environment-variables"]}
+        hiddenSections={["identity", "run-policy"]}
+        sectionTitles={{ adapter: "", configuration: "", environment: "" }}
         canConfigureProviderTrace={canConfigureProviderTrace}
       /> : null}
 
 
       {content === "permissions" ? <TrustPresetSection
+        layout="cards"
+        aside={companyId ? <AgentAllowedConnectors agentId={agent.id} companyId={companyId} /> : null}
         projectAccessEditor={<AgentProjectAccessSettings agent={agent} />}
         permissions={agent.permissions}
         disabled={updatePermissions.isPending}
@@ -2167,10 +2266,9 @@ export function ConfigurationTab({
         }
       /> : null}
 
-      {content === "permissions" ? <div>
-        <h3 className="text-sm font-medium mb-3">Permissions</h3>
-        <div className="border border-border rounded-lg p-4 space-y-4">
-          <div className="flex items-center justify-between gap-4 text-sm">
+      {content === "permissions" ? <AgentPanel title="Capabilities" aria-label="Capabilities">
+        <div className="flex flex-col pb-3">
+          <div className="flex min-h-11 items-center justify-between gap-4 px-(--agent-detail-module-inset) py-2 text-sm">
             <div className="space-y-1">
               <div>Can create new agents</div>
               <p className="text-xs text-muted-foreground">
@@ -2189,7 +2287,7 @@ export function ConfigurationTab({
               disabled={updatePermissions.isPending}
             />
           </div>
-          <div className="flex items-center justify-between gap-4 text-sm">
+          <div className="flex min-h-11 items-center justify-between gap-4 px-(--agent-detail-module-inset) py-2 text-sm">
             <div className="space-y-1">
               <div>Can create/import skills</div>
               <p className="text-xs text-muted-foreground">
@@ -2208,7 +2306,7 @@ export function ConfigurationTab({
               disabled={updatePermissions.isPending}
             />
           </div>
-          <div className="flex items-center justify-between gap-4 text-sm">
+          <div className="flex min-h-11 items-center justify-between gap-4 px-(--agent-detail-module-inset) py-2 text-sm">
             <div className="space-y-1">
               <div>Can assign tasks</div>
               <p className="text-xs text-muted-foreground">
@@ -2228,7 +2326,7 @@ export function ConfigurationTab({
             />
           </div>
         </div>
-      </div> : null}
+      </AgentPanel> : null}
     </div>
   );
 }
@@ -2256,7 +2354,7 @@ export function PromptsTab({
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
   const [selectedFile, setSelectedFileState] = useState<string>("AGENTS.md");
-  const [instructionMode, setInstructionMode] = useState<"read" | "edit" | "raw">("read");
+  const [instructionMode, setInstructionMode] = useState<"edit" | "raw">("raw");
   const [showFilePanel, setShowFilePanel] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const draftBaseRevisionRef = useRef<string | null | undefined>(undefined);
@@ -2302,7 +2400,7 @@ export function PromptsTab({
   useEffect(() => {
     editorInteractedRef.current = false;
     setSelectedFile("AGENTS.md");
-    setInstructionMode("read");
+    setInstructionMode("raw");
     setShowFilePanel(false);
     setDraft(null);
     setReadOnlyCandidateRunId(null);
@@ -2723,158 +2821,15 @@ export function PromptsTab({
         Saved instructions affect the next run. Active runs keep the instructions they started with, and instruction changes may start a fresh adapter session.
       </p>}
 
-      <Collapsible defaultOpen={currentMode === "external"}>
-        <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
-          <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
-          Advanced
-        </CollapsibleTrigger>
-        <CollapsibleContent className="pt-4 pb-6">
-          <TooltipProvider>
-            <div className="grid gap-x-6 gap-y-4 md:grid-cols-(--gtc-18)">
-              <label className="space-y-1.5 min-w-0">
-                <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                  Mode
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="right" sideOffset={4}>
-                      Managed: Paperclip stores and serves the instructions bundle. External: you provide a path on disk where the instructions live.
-                    </TooltipContent>
-                  </Tooltip>
-                </span>
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={currentMode === "managed" ? "default" : "outline"}
-                    onClick={() => {
-                      if (currentMode === "external") {
-                        externalBundleRef.current = {
-                          rootPath: currentRootPath,
-                          entryFile: currentEntryFile,
-                          selectedFile: selectedOrEntryFile,
-                        };
-                      }
-                      const nextEntryFile = currentEntryFile || "AGENTS.md";
-                      setBundleDraft({
-                        mode: "managed",
-                        rootPath: bundle?.managedRootPath ?? currentRootPath,
-                        entryFile: nextEntryFile,
-                      });
-                      setSelectedFile(nextEntryFile);
-                    }}
-                  >
-                    Managed
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={currentMode === "external" ? "default" : "outline"}
-                    onClick={() => {
-                      const externalBundle = externalBundleRef.current;
-                      const nextEntryFile = externalBundle?.entryFile ?? currentEntryFile ?? "AGENTS.md";
-                      setBundleDraft({
-                        mode: "external",
-                        rootPath: externalBundle?.rootPath ?? (bundle?.mode === "external" ? (bundle.rootPath ?? "") : ""),
-                        entryFile: nextEntryFile,
-                      });
-                      setSelectedFile(externalBundle?.selectedFile ?? nextEntryFile);
-                    }}
-                  >
-                    External
-                  </Button>
-                </div>
-              </label>
-              <label className="space-y-1.5 min-w-0">
-                <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                  Root path
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="right" sideOffset={4}>
-                      The absolute directory on disk where the instructions bundle lives. In managed mode this is set by Paperclip automatically.
-                    </TooltipContent>
-                  </Tooltip>
-                </span>
-                {currentMode === "managed" ? (
-                  <div className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground pt-1.5">
-                    <span className="min-w-0 truncate" title={currentRootPath || undefined}>{currentRootPath || "(managed)"}</span>
-                    {currentRootPath && (
-                      <CopyText text={currentRootPath} className="shrink-0">
-                        <Copy className="h-3.5 w-3.5" />
-                      </CopyText>
-                    )}
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1.5">
-                    <Input
-                      value={currentRootPath}
-                      onChange={(event) => {
-                        const nextRootPath = event.target.value;
-                        externalBundleRef.current = {
-                          rootPath: nextRootPath,
-                          entryFile: currentEntryFile,
-                          selectedFile: selectedOrEntryFile,
-                        };
-                        setBundleDraft({
-                          mode: "external",
-                          rootPath: nextRootPath,
-                          entryFile: currentEntryFile,
-                        });
-                      }}
-                      className="font-mono text-sm"
-                      placeholder="/absolute/path/to/agent/prompts"
-                    />
-                    {currentRootPath && (
-                      <CopyText text={currentRootPath} className="shrink-0">
-                        <Copy className="h-3.5 w-3.5" />
-                      </CopyText>
-                    )}
-                  </div>
-                )}
-              </label>
-              <label className="space-y-1.5">
-                <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                  Entry file
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <HelpCircle className="h-3 w-3 text-muted-foreground cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="right" sideOffset={4}>
-                      The main file the agent reads first when loading instructions. Defaults to AGENTS.md.
-                    </TooltipContent>
-                  </Tooltip>
-                </span>
-                <Input
-                  value={currentEntryFile}
-                  onChange={(event) => {
-                    const nextEntryFile = event.target.value || "AGENTS.md";
-                    const nextSelectedFile = selectedOrEntryFile === currentEntryFile
-                      ? nextEntryFile
-                      : selectedOrEntryFile;
-                    if (currentMode === "external") {
-                      externalBundleRef.current = {
-                        rootPath: currentRootPath,
-                        entryFile: nextEntryFile,
-                        selectedFile: nextSelectedFile,
-                      };
-                    }
-                    if (selectedOrEntryFile === currentEntryFile) setSelectedFile(nextEntryFile);
-                    setBundleDraft({
-                      mode: currentMode,
-                      rootPath: currentRootPath,
-                      entryFile: nextEntryFile,
-                    });
-                  }}
-                  className="font-mono text-sm"
-                />
-              </label>
-            </div>
-          </TooltipProvider>
-        </CollapsibleContent>
-      </Collapsible>
+      <InstructionsBundleSettings
+        agentId={agent.id}
+        agentUrlKey={agent.urlKey}
+        companyId={companyId}
+        mode={persistedMode}
+        rootPath={persistedRootPath}
+        entryFile={bundle?.entryFile ?? "AGENTS.md"}
+        blocked={isDirty}
+      />
 
       <div
         ref={containerRef}
@@ -2885,24 +2840,23 @@ export function PromptsTab({
             : undefined
         }
       >
-        <div className={cn(
-          "min-w-0 w-full border border-border rounded-lg p-3 space-y-3",
+        <div data-agent-tile="" className={cn(
+          "min-w-0 w-full space-y-3 self-start rounded-lg bg-(--agent-detail-tile) px-3 pt-(--agent-detail-module-inset) pb-3",
           isMobile && showFilePanel && "block",
           isMobile && !showFilePanel && "hidden",
         )}>
-          <div className="flex items-center justify-between">
-            <h4 className="text-sm font-medium">Files</h4>
+          <div className="flex items-center justify-between px-2">
+            <h4 className="text-sm font-semibold text-foreground">Files</h4>
             <div className="flex items-center gap-1">
               {!showNewFileInput && (
                 <Button
                   type="button"
-                  size="icon"
-                  variant="outline"
-                  className="h-7 w-7"
+                  size="icon-xs"
+                  variant="ghost"
                   aria-label="Add agent file"
                   onClick={() => setShowNewFileInput(true)}
                 >
-                  +
+                  <Plus className="size-4" />
                 </Button>
               )}
               {isMobile && (
@@ -2980,7 +2934,7 @@ export function PromptsTab({
             })}
             onSelectFile={(filePath) => {
               setSelectedFile(filePath);
-              setInstructionMode("read");
+              setInstructionMode("raw");
               if (!fileOptions.includes(filePath)) setDraft("");
               if (isMobile) setShowFilePanel(false);
             }}
@@ -3021,8 +2975,8 @@ export function PromptsTab({
           />
         )}
 
-        <div className={cn("min-w-0 w-full overflow-hidden border border-border rounded-lg p-4 space-y-3", isMobile && showFilePanel && "hidden")}>
-          <div className="flex items-center justify-between gap-3">
+        <div data-agent-tile="" className={cn("min-w-0 w-full overflow-hidden rounded-lg bg-(--agent-detail-tile)", isMobile && showFilePanel && "hidden")}>
+          <div className="flex items-center justify-between gap-3 px-(--agent-detail-module-inset) pt-(--agent-detail-module-inset) pb-5">
             <div className="flex items-center gap-2 min-w-0">
               {isMobile && (
                 <Button
@@ -3035,8 +2989,11 @@ export function PromptsTab({
                   <FolderOpen className="h-3.5 w-3.5" />
                 </Button>
               )}
-              <div className="min-w-0">
-                <h4 className="text-sm font-medium font-mono truncate">{selectedOrEntryFile}</h4>
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <div className="flex min-w-0 items-center gap-2">
+                  <h4 className="truncate font-mono text-sm font-normal text-foreground">{selectedOrEntryFile}</h4>
+                  <AgentChip>{currentMode === "external" ? "Managed externally" : "Managed by you"}</AgentChip>
+                </div>
                 <p className="text-xs text-muted-foreground">
                   {selectedFileExists
                     ? selectedFileSummary?.deprecated
@@ -3047,37 +3004,38 @@ export function PromptsTab({
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <div className="flex items-center rounded-md border border-border p-0.5" role="group" aria-label="Instruction file view">
-                {(["read", "edit", "raw"] as const).map((mode) => (
-                  <Button
-                    key={mode}
-                    type="button"
-                    size="sm"
-                    variant={instructionMode === mode ? "secondary" : "ghost"}
-                    className="capitalize"
-                    aria-pressed={instructionMode === mode}
-                    onClick={() => setInstructionMode(mode)}
-                  >
-                    {mode}
-                  </Button>
-                ))}
-              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                className={cn("size-8", instructionMode === "edit" && "bg-(--agent-detail-tile-chip) text-foreground")}
+                aria-pressed={instructionMode === "edit"}
+                aria-label={instructionMode === "edit" ? `Stop editing ${selectedOrEntryFile}` : `Edit ${selectedOrEntryFile}`}
+                title={instructionMode === "edit" ? "Stop editing" : "Edit"}
+                disabled={Boolean(selectedFileDetail?.binary)}
+                onClick={() => setInstructionMode(instructionMode === "edit" ? "raw" : "edit")}
+              >
+                <Pencil className="size-4" />
+              </Button>
               {!fileLoading && (
                 <CopyText
                   text={displayValue}
                   ariaLabel="Copy instructions file as markdown"
                   title="Copy as markdown"
                   copiedLabel="Copied"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+                  className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
                 >
-                  <Copy className="h-3.5 w-3.5" />
+                  <Copy className="size-4" />
                 </CopyText>
               )}
               {selectedFileExists && !selectedFileSummary?.deprecated && selectedOrEntryFile !== currentEntryFile && (
                 <Button
                   type="button"
-                  size="sm"
-                  variant="outline"
+                  size="icon-xs"
+                  variant="ghost"
+                  className="size-8"
+                  aria-label={`Delete ${selectedOrEntryFile}`}
+                  title="Delete file"
                   onClick={() => {
                     if (confirm(`Delete ${selectedOrEntryFile}?`)) {
                       deleteFile.mutate(selectedOrEntryFile, {
@@ -3090,12 +3048,14 @@ export function PromptsTab({
                   }}
                   disabled={deleteFile.isPending}
                 >
-                  Delete
+                  <Trash2 className="size-4" />
                 </Button>
               )}
             </div>
           </div>
 
+          <div aria-hidden className="mx-(--agent-detail-module-inset) h-px bg-border" />
+          <div className="space-y-3 px-(--agent-detail-module-inset) pt-4 empty:hidden">
           {currentMode === "managed" && preservedCandidates.length > 0 && (
             <div className="space-y-3">
               <p className="text-sm font-medium">Preserved instruction edits</p>
@@ -3152,74 +3112,38 @@ export function PromptsTab({
               queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
             }}
           />}
+          </div>
           {selectedFileDetail?.binary ? (
-            <div className="space-y-3 rounded-md border border-border p-4">
+            <div className="space-y-3 px-(--agent-detail-module-inset) py-5">
               <p className="text-sm text-muted-foreground">This file is preserved with the agent directory. Download it to view its contents.</p>
               <a className="text-sm text-primary underline" href={agentsApi.downloadInstructionsFile(agent.id, selectedOrEntryFile, companyId)} download>Download {selectedOrEntryFile}</a>
             </div>
           ) : selectedFileExists && fileLoading && !selectedFileDetail ? (
-            <PromptEditorSkeleton />
-          ) : instructionMode === "read" ? (
-            <div className="min-h-(--sz-420px) rounded-md border border-border bg-background p-4">
-              {displayValue.trim() ? (
-                useMarkdownEditor ? (
-                  <MarkdownBody className="max-w-none text-sm leading-7 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-                    {displayValue}
-                  </MarkdownBody>
-                ) : (
-                  <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7">{displayValue}</pre>
-                )
-              ) : (
-                <p className="text-sm text-muted-foreground">This instruction file is empty.</p>
-              )}
+            <div className="px-(--agent-detail-module-inset) py-5">
+              <PromptEditorSkeleton />
             </div>
-          ) : instructionMode === "raw" ? (
-            <pre
-              data-testid="instructions-raw-source"
-              className="min-h-(--sz-420px) overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted p-4 font-mono text-sm leading-7"
-            >
-              {displayValue}
-            </pre>
-          ) : useMarkdownEditor ? (
-            <div
-              onBeforeInputCapture={markEditorInteracted}
-              onDropCapture={markEditorInteracted}
-              onInput={markEditorInteracted}
-              onKeyDownCapture={markEditorInteracted}
-              onPasteCapture={markEditorInteracted}
-              onPointerDownCapture={markEditorInteracted}
-            >
-              <MarkdownEditor
-                key={selectedOrEntryFile}
-                value={displayValue}
-                onChange={(value) => {
-                  if (!editorInteractedRef.current) return;
-                  if (draftBaseRevisionRef.current === undefined) draftBaseRevisionRef.current = selectedFileDetail?.revision?.id ?? null;
-                  if (draftBaseHashRef.current === undefined) draftBaseHashRef.current = selectedFileDetail?.contentHash ?? null;
-                  setDraft(value ?? "");
-                }}
-                placeholder="# Agent instructions"
-                className="min-w-0 overflow-hidden"
-                contentClassName="min-h-(--sz-420px) max-w-full break-words text-sm leading-7"
-                imageUploadHandler={async (file) => {
-                  const namespace = `agents/${agent.id}/instructions/${selectedOrEntryFile.replaceAll("/", "-")}`;
-                  const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
-                  return asset.contentPath;
-                }}
-              />
-            </div>
-          ) : (
+          ) : instructionMode === "edit" ? (
             <textarea
               aria-label="Instruction file editor"
               value={displayValue}
+              spellCheck={false}
               onChange={(event) => {
                 if (draftBaseRevisionRef.current === undefined) draftBaseRevisionRef.current = selectedFileDetail?.revision?.id ?? null;
-                  if (draftBaseHashRef.current === undefined) draftBaseHashRef.current = selectedFileDetail?.contentHash ?? null;
+                if (draftBaseHashRef.current === undefined) draftBaseHashRef.current = selectedFileDetail?.contentHash ?? null;
                 setDraft(event.target.value);
               }}
-              className="min-h-(--sz-420px) w-full min-w-0 rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
+              className="block min-h-(--sz-420px) w-full field-sizing-content resize-none bg-transparent px-6 py-5 font-mono text-xs leading-5 whitespace-pre-wrap text-foreground outline-none"
               placeholder="File contents"
             />
+          ) : displayValue.trim() ? (
+            <pre
+              data-testid="instructions-raw-source"
+              className="block min-h-(--sz-420px) w-full overflow-x-auto px-6 py-5 font-mono text-xs leading-5 whitespace-pre-wrap break-words text-muted-foreground"
+            >
+              {displayValue}
+            </pre>
+          ) : (
+            <p className="min-h-(--sz-420px) px-6 py-5 text-sm text-muted-foreground">This instruction file is empty.</p>
           )}
         </div>
       </div>

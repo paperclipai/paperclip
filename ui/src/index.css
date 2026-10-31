@@ -591,6 +591,33 @@
   --tc-composer-visible-nav-offset: calc(4rem + var(--spacing) * 1.5 + var(--sz-safe-bottom));
   /* With the dock's pb-1, leave 12px below the card when the nav hides. */
   --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
+
+  /* Agent detail page (Refine-v2). Surfaces mix the theme's own foreground
+     into its background, so the same tokens read in light and dark. */
+  --agent-detail-module-gap: 12px;
+  --agent-detail-band-gap: 48px;
+  --agent-detail-module-inset: 20px;
+  --agent-detail-portrait-zoom: 1.21875;
+  --agent-detail-tile-min-h: 122px;
+  --agent-detail-control-h: 40px;
+  --agent-detail-logo-rows-h: 60px;
+  --agent-detail-dialog-max-h: 85vh;
+  --agent-detail-history-cols: minmax(0, 1.5fr) minmax(0, 1fr) 140px 104px;
+  --agent-detail-tile: color-mix(in oklab, var(--foreground) 4%, var(--background));
+  --agent-detail-tile-hover: color-mix(in oklab, var(--foreground) 7%, var(--background));
+  --agent-detail-tile-chip: color-mix(in oklab, var(--foreground) 8%, transparent);
+  --agent-detail-tile-input: color-mix(in oklab, var(--foreground) 5%, var(--agent-detail-tile));
+  --agent-detail-table-head: color-mix(in oklab, var(--foreground) 3%, transparent);
+  --agent-detail-control-border: color-mix(in oklab, var(--foreground) 20%, transparent);
+  --agent-detail-control-bg: color-mix(in oklab, var(--foreground) 5%, var(--background));
+  --agent-detail-switch-off: color-mix(in oklab, var(--foreground) 15%, transparent);
+  --agent-detail-dot-unsaved: var(--status-task-icon-todo);
+  --agent-detail-dot-saved: var(--status-task-icon-done);
+  --motion-primary-crown-pop: 598ms; /* --motion-duration-deliberate slowed by 15% */
+  --motion-primary-crown-pop-delay: var(--motion-duration-fast);
+  --primary-crown-bubble-size: 7px;
+  --primary-crown-bubble-travel: 30px;
+  --motion-ease-primary-crown-burst: cubic-bezier(0.2, 0.8, 0.3, 1);
 }
 
 .dark {
@@ -3303,18 +3330,18 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 .agent-yaml-editor .cm-editor {
   height: var(--sz-480px);
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  background: var(--background);
+  font-size: var(--text-xs);
+  background: var(--agent-detail-tile);
   color: var(--foreground);
 }
 .agent-yaml-editor .cm-scroller { overflow: auto; }
 .agent-yaml-editor .cm-gutters {
-  background: var(--muted);
+  background: transparent;
   color: var(--muted-foreground);
   border-color: var(--border);
 }
 .agent-yaml-editor .cm-activeLine,
-.agent-yaml-editor .cm-activeLineGutter { background: var(--accent); }
+.agent-yaml-editor .cm-activeLineGutter { background: var(--agent-detail-tile-chip); }
 .agent-yaml-editor .cm-cursor { border-left-color: var(--foreground); }
 .agent-yaml-editor .cm-selectionBackground,
 .agent-yaml-editor .cm-focused .cm-selectionBackground { background: var(--accent); }
@@ -3326,7 +3353,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 .agent-settings-form [data-config-section] {
   @apply my-0;
 }
-.agent-settings-form [data-config-section] > .rounded-lg {
+.agent-settings-form [data-config-section] > .rounded-lg:not([data-agent-tile]) {
   @apply bg-card p-5;
 }
 .agent-settings-form [data-config-section] h3 {
@@ -3344,8 +3371,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   > :nth-child(n + 3) {
   @apply sm:col-span-2;
 }
-.agent-settings-overview section,
-.agent-settings-permissions .rounded-lg,
+.agent-settings-overview section:not([data-agent-tile]),
+.agent-settings-permissions .rounded-lg:not([data-agent-tile]),
 .agent-settings-api-keys .rounded-lg,
 .agent-settings-revisions .rounded-md {
   @apply bg-card;
@@ -5088,4 +5115,111 @@ html:not(.dark) .coordinator-sidebar {
   .coordinator-task-commitment[data-motion] { animation: none; }
   .coordinator-task-commitment > .coordinator-task-light { display: none; }
   .coordinator-created-task, .coordinator-decision-receipt { transition: none; }
+}
+
+/* Agent detail page (Refine-v2): inside a filled panel, controls step up from
+   the panel fill and an off switch keeps a visible track. */
+[data-agent-tile] {
+  --agent-detail-control-bg: var(--agent-detail-tile-input);
+}
+[data-agent-tile] [data-slot="toggle"][aria-checked="false"] {
+  background: var(--agent-detail-switch-off);
+}
+
+/* Agent detail header: the primary-agent crown fills with a short pop while three
+   bubbles burst out of its centre. After the replace-primary dialog it waits for
+   the dialog to close first. Each bubble gets its own angle, size and travel. */
+.primary-crown[data-pop] svg {
+  transform-origin: center;
+  animation: primary-crown-pop var(--motion-primary-crown-pop) var(--motion-ease-standard) both;
+}
+.primary-crown-bubble {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: calc(var(--primary-crown-bubble-size) * var(--bubble-size));
+  aspect-ratio: 1;
+  pointer-events: none;
+  translate: -50% -50%;
+  rotate: calc(var(--bubble-angle) * 1deg);
+  animation: primary-crown-bubble-travel var(--motion-primary-crown-pop) var(--motion-ease-primary-crown-burst) both;
+}
+.primary-crown-bubble::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: currentColor;
+  animation: primary-crown-bubble-scale var(--motion-primary-crown-pop) both;
+}
+.primary-crown[data-pop="after-dialog"] svg,
+.primary-crown[data-pop="after-dialog"] .primary-crown-bubble,
+.primary-crown[data-pop="after-dialog"] .primary-crown-bubble::before {
+  animation-delay: var(--motion-primary-crown-pop-delay);
+}
+@keyframes primary-crown-pop {
+  0% { transform: scale(1); fill-opacity: 0; }
+  40% { transform: scale(1.3); fill-opacity: 1; }
+  70% { transform: scale(0.92); }
+  100% { transform: scale(1); fill-opacity: 1; }
+}
+@keyframes primary-crown-bubble-travel {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(var(--primary-crown-bubble-travel) * var(--bubble-travel))); }
+}
+@keyframes primary-crown-bubble-scale {
+  0% { transform: scale(0); animation-timing-function: var(--motion-ease-out-expo); }
+  25% { transform: scale(1); animation-timing-function: var(--motion-ease-standard); }
+  100% { transform: scale(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .primary-crown[data-pop] svg { animation: none; }
+  .primary-crown-bubble { display: none; }
+}
+
+/* Agent detail Harness / Secrets: AgentConfigForm's "panels" layout. */
+.agent-config-panels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--agent-detail-module-gap);
+}
+.agent-config-panels > [data-config-section] {
+  display: flex;
+  flex-direction: column;
+}
+.agent-config-panels > [data-config-section] > [data-agent-tile] {
+  flex: 1;
+}
+.agent-config-panels > section[aria-label="Runtime test"] {
+  order: 1;
+}
+.agent-config-panels > [data-config-section="environment-variables"] {
+  order: 2;
+  margin-top: calc(var(--agent-detail-band-gap) - var(--agent-detail-module-gap));
+}
+.agent-config-panels > :not([data-config-section]):not(section[aria-label="Runtime test"]) {
+  order: 3;
+}
+@media (min-width: 768px) {
+  .agent-config-panels {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .agent-config-panels > * {
+    grid-column: 1 / -1;
+  }
+  .agent-config-panels > [data-config-section="adapter"] {
+    grid-column: 1;
+  }
+  .agent-config-panels:has(> [data-config-section="environment"]) > [data-config-section="adapter"] {
+    grid-row: span 2;
+  }
+  .agent-config-panels > [data-config-section="configuration"],
+  .agent-config-panels > [data-config-section="environment"] {
+    grid-column: 2;
+  }
+}
+.agent-config-panels h3,
+.agent-config-panels + h3 {
+  font-weight: 600;
 }

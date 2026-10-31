@@ -122,6 +122,17 @@ function normalizeRelativeFilePath(candidatePath: string): string {
   return instructionPath(candidatePath);
 }
 
+async function assertExistingExternalEntry(rootPath: string, entryFile: string) {
+  const root = await statIfExists(rootPath);
+  if (!root?.isDirectory()) {
+    throw unprocessable(`No directory exists at ${rootPath}`);
+  }
+  const entry = await statIfExists(path.join(rootPath, entryFile));
+  if (!entry?.isFile()) {
+    throw unprocessable(`${entryFile} was not found in ${rootPath}`);
+  }
+}
+
 function resolvePathWithinRoot(rootPath: string, relativePath: string): string {
   const normalizedRelativePath = normalizeRelativeFilePath(relativePath);
   const absoluteRoot = path.resolve(rootPath);
@@ -593,6 +604,7 @@ export function agentInstructionsService(db?: Db) {
       rootPath?: string | null;
       entryFile?: string;
       clearLegacyPromptTemplate?: boolean;
+      requireExistingEntry?: boolean;
     },
   ): Promise<{ bundle: AgentInstructionsBundle; adapterConfig: Record<string, unknown> }> {
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
@@ -615,6 +627,9 @@ export function agentInstructionsService(db?: Db) {
     }
 
     await assertInstructionPathSafe(nextRootPath, nextEntryFile);
+    if (nextMode === "external" && input.requireExistingEntry) {
+      await assertExistingExternalEntry(nextRootPath, nextEntryFile);
+    }
     await fs.mkdir(nextRootPath, { recursive: true });
 
     const existingFiles = await listFilesRecursive(nextRootPath);
