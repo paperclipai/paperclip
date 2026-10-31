@@ -63,6 +63,60 @@ const event = (seq: number) => ({
 });
 
 describe("S3 run log store", () => {
+  it("awaits a successor flush started by another drain waiter before finalizing", async () => {
+    const m = memory(), store = createObjectRunLogStore({ provider: m.provider, keyPrefix: "logs", flushMs: 1000,
+      segmentBytes: 1024, assertWriterAuthority: async () => undefined });
+    const handle = await store.begin(input), put = m.provider.putObjectConditional!.bind(m.provider);
+    let firstEntered!: () => void, secondEntered!: () => void, releaseFirst!: () => void, releaseSecond!: () => void;
+    const firstStarted = new Promise<void>(resolve => { firstEntered = resolve; });
+    const secondStarted = new Promise<void>(resolve => { secondEntered = resolve; });
+    const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const secondGate = new Promise<void>(resolve => { releaseSecond = resolve; });
+    let publications = 0;
+    m.provider.putObjectConditional = async value => {
+      if (value.objectKey.endsWith("/head.json") && Buffer.isBuffer(value.body)) {
+        const head = JSON.parse(value.body.toString());
+        if (!head.closed && head.end > 0) {
+          publications++;
+          if (publications === 1) { firstEntered(); await firstGate; }
+          else if (publications === 2) { secondEntered(); await secondGate; }
+        }
+      }
+      return put(value);
+    };
+    const first = await store.enqueue!(handle, { ...event(1), chunk: "first ".repeat(200) });
+    const firstCommitted = first.committed.catch(error => error);
+    await firstStarted;
+    const second = await store.enqueue!(handle, { ...event(2), chunk: "second" });
+    const secondCommitted = second.committed.catch(error => error);
+    let finalized = false;
+    const finalizing = store.finalize(handle).then(result => { finalized = true; return result; });
+    releaseFirst();
+    await secondStarted;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const finalizedBeforeSecondCommit = finalized;
+    releaseSecond();
+    const summary = await finalizing;
+    const committed = await Promise.all([firstCommitted, secondCommitted]);
+    const content = (await store.read(handle)).content;
+    expect(finalizedBeforeSecondCommit).toBe(false);
+    expect(committed.every(value => typeof value === "number")).toBe(true);
+    expect(summary.bytes).toBe(Buffer.byteLength(content));
+    expect(content.trim().split("\n").map(line => JSON.parse(line).seq)).toEqual([1, 2]);
+  });
+
+  it("rejects outer records exceeding 8MiB without losing later bounded appends", async () => {
+    const m = memory(), store = createObjectRunLogStore({ provider: m.provider, keyPrefix: "logs", flushMs: 1,
+      assertWriterAuthority: async () => undefined });
+    const handle = await store.begin(input);
+    await expect(store.append(handle, { ...event(1), chunk: "x".repeat(8 * 1024 * 1024) }))
+      .rejects.toThrow("Object run log record exceeds pending-byte limit");
+    await store.append(handle, event(1));
+    const content = (await store.read(handle)).content;
+    expect(content.trim().split("\n")).toHaveLength(1);
+    expect((await store.finalize(handle)).bytes).toBe(Buffer.byteLength(content));
+  });
+
   it("keeps live byte appends deliverable after a proof-only outage and requires cold prefix verification", async () => {
     const m = memory(), options = { provider: m.provider, keyPrefix: "logs", flushMs: 1,
       assertWriterAuthority: async () => undefined };

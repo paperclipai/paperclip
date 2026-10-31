@@ -5,6 +5,7 @@ import { validatePrpEvent, type PrpEvent } from "../../vendor/paperclip-runner/i
 import { nativeSha256 } from "./canonical.js";
 import type { RunLogHandle, RunLogStore } from "../run-log-store.js";
 import { compactRunLogChunk } from "../heartbeat/run-log.js";
+import { MAX_RUN_LOG_RECORD_BYTES } from "../run-log-record-limits.js";
 
 export function formatNativeRunLogEvent(event: PrpEvent) {
   return `${JSON.stringify({ type: "paperclip.prp.event", event })}\n`;
@@ -157,7 +158,7 @@ export function createNativeRunLogCoverageVerifier(
   runId: string,
   options?: {
     allowSourceSuffix?: boolean;
-    redactChunks?: (chunk: string) => string[];
+    redactChunks?: (chunk: string) => Iterable<string>;
     signal?: AbortSignal;
   },
 ) {
@@ -170,9 +171,9 @@ export function createNativeRunLogCoverageVerifier(
     if (!page.length) page = await sourcePage(db, companyId, runId, cursor, undefined, options?.signal);
     return page[0];
   }
-  async function line(value: string) {
+  async function line(value: string, newlineBytes = 1) {
     if (!value.trim()) return;
-    if (Buffer.byteLength(value) > 1024 * 1024) throw unproven();
+    if (Buffer.byteLength(value) + newlineBytes > MAX_RUN_LOG_RECORD_BYTES) throw unproven();
     let chunk: unknown;
     try {
       chunk = JSON.parse(value).chunk;
@@ -181,19 +182,29 @@ export function createNativeRunLogCoverageVerifier(
     }
     if (typeof chunk !== "string") throw unproven();
     let expected: Awaited<ReturnType<typeof next>>;
-    let forms: unknown[] | undefined;
-    async function sourceForms() {
+    async function* sourceForms() {
       expected ??= await next();
       if (!expected) throw unproven();
-      return forms ??= options?.redactChunks?.(formatNativeRunLogEvent(expected.event))
-        .map(form => JSON.parse(form).event) ?? [expected.event];
+      if (!options?.redactChunks) { yield expected.event; return; }
+      for (const form of options.redactChunks(formatNativeRunLogEvent(expected.event))) {
+        let candidate;
+        try { candidate = JSON.parse(form); }
+        catch { continue; } // A malformed historical privacy projection proves nothing.
+        if (candidate?.type === "paperclip.prp.event" && candidate.event &&
+          typeof candidate.event === "object" && !Array.isArray(candidate.event))
+          yield candidate.event;
+      }
     }
     let envelope: { type?: unknown; event?: unknown };
     try {
       envelope = JSON.parse(chunk);
     } catch {
       if (!chunk.includes('"paperclip.prp.event"')) return;
-      const restored = (await sourceForms()).map(form => restoreCompactedEvent(chunk, form)).find(Boolean);
+      let restored;
+      for await (const form of sourceForms()) {
+        restored = restoreCompactedEvent(chunk, form);
+        if (restored) break;
+      }
       if (!restored) throw unproven();
       envelope = restored;
     }
@@ -222,8 +233,11 @@ export function createNativeRunLogCoverageVerifier(
       // JSONB reorders object keys. Compare the complete redacted event
       // semantically while retaining the original published bytes.
       try {
-        if (!(await sourceForms()).some(form => matchesPublishedEvent(form, event)))
-          throw unproven();
+        let matched = false;
+        for await (const form of sourceForms()) {
+          if (matchesPublishedEvent(form, event)) { matched = true; break; }
+        }
+        if (!matched) throw unproven();
       } catch {
         throw unproven();
       }
@@ -239,11 +253,11 @@ export function createNativeRunLogCoverageVerifier(
         await line(text.slice(0, boundary));
         text = text.slice(boundary + 1);
       }
-      if (Buffer.byteLength(text) > 1024 * 1024) throw unproven();
+      if (Buffer.byteLength(text) > MAX_RUN_LOG_RECORD_BYTES) throw unproven();
     },
     async finish() {
       text += decoder.end();
-      if (text) await line(text);
+      if (text) await line(text, 0);
       if (!options?.allowSourceSuffix && await next()) throw unproven();
       return cursor;
     },
@@ -257,7 +271,7 @@ export async function nativeRunLogPrefixCursor(input: {
   runId: string;
   store: Partial<Pick<RunLogStore, "read" | "recordVerifiedSourcePrefix">>;
   handle: RunLogHandle;
-  redactChunks: (chunk: string) => string[];
+  redactChunks: (chunk: string) => Iterable<string>;
   signal?: AbortSignal;
 }) {
   const bytes = input.handle.initialBytes ?? 0;
@@ -357,7 +371,7 @@ export function createNativeRunLogExporter(input: {
       if (!Number.isSafeInteger(sourceCursor) || sourceCursor < 1)
         throw new Error("invalid_native_run_log_cursor");
       const bytes = Buffer.byteLength(chunk);
-      if (queuedRecords >= 32 || queuedBytes + bytes > 8 * 1024 * 1024)
+      if (queuedRecords >= 32 || queuedBytes + bytes > MAX_RUN_LOG_RECORD_BYTES)
         throw new Error("native_run_log_admission_capacity_exceeded");
       queuedRecords++;
       queuedBytes += bytes;

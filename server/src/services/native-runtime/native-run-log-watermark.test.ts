@@ -6,6 +6,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { createNativeRunLogTestTables } from "../../__tests__/helpers/native-run-log-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { canonicalProviderEventsFromCodex } from "@paperclipai/paperclip-runner";
+import type { RunLogHandle, RunLogStore } from "../run-log-store.js";
 import type { StorageProvider } from "../../storage/types.js";
 import { validatePrpEvent, type PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { instanceSettingsService } from "../instance-settings.js";
@@ -14,7 +16,7 @@ import { createHeartbeatRunOutput } from "../heartbeat/run-output.js";
 import { compactRunLogChunk } from "../heartbeat/run-log.js";
 import { createObjectRunLogStore } from "../object-run-log-store.js";
 import { nativeSha256 } from "./canonical.js";
-import { formatNativeRunLogEvent } from "./native-run-log-export.js";
+import { createNativeRunLogCoverageVerifier, formatNativeRunLogEvent } from "./native-run-log-export.js";
 import { readRecoverableRunLog, recoverSettledNativeRunLog } from "./native-run-log-recovery.js";
 
 // Use an explicit guarded test database or a new owned embedded fixture.
@@ -107,7 +109,7 @@ describe.skipIf(!support.supported)("native run log source watermarks", () => {
       await db.update(heartbeatRuns).set({ runtimeMode: "native", status: "cancelled",
         logStore: "s3_segments", logRef, logBytes: null }).where(eq(heartbeatRuns.id, binding.runId));
     };
-    return { binding, store, event, persist, settle };
+    return { binding, store, event, persist, settle, provider };
   }
 
   function toolEvent(f: Awaited<ReturnType<typeof fixture>>, output: string): PrpEvent {
@@ -118,9 +120,44 @@ describe.skipIf(!support.supported)("native run log source watermarks", () => {
     } };
   }
 
+  async function readAll(store: Pick<RunLogStore, "read">, handle: RunLogHandle) {
+    let offset = 0, content = "";
+    for (let page = 0; page < 16; page++) {
+      const result = await store.read(handle, { offset, limitBytes: 4 * 1024 * 1024 });
+      content += result.content;
+      if (result.nextOffset === undefined) return content;
+      expect(result.nextOffset).toBeGreaterThan(offset);
+      offset = result.nextOffset;
+    }
+    throw new Error("fixture log exceeded bounded read pages");
+  }
+
+  function planEvent(f: Awaited<ReturnType<typeof fixture>>, count: number, text: string, seq = 1): PrpEvent {
+    const [mapped] = canonicalProviderEventsFromCodex("turn/plan/updated", { turnId: "fixture-plan-turn",
+      revision: seq, plan: Array.from({ length: count }, () => ({ step: text, status: "pending" })) });
+    expect(mapped?.eventType).toBe("plan.updated");
+    return { ...f.event(seq), ...mapped! };
+  }
+
+  function failPublishedPrefixProof(f: Awaited<ReturnType<typeof fixture>>) {
+    const put = f.provider.putObjectConditional!.bind(f.provider);
+    let initialProof: string | undefined, enabled = true, failures = 0;
+    f.provider.putObjectConditional = async input => {
+      if (input.objectKey.includes("/objects/source-prefix-proof-v1-")) {
+        initialProof ??= input.objectKey;
+        if (enabled && input.objectKey !== initialProof) {
+          failures++;
+          throw Object.assign(new Error("proof storage unavailable"), { $metadata: { httpStatusCode: 503 } });
+        }
+      }
+      return put(input);
+    };
+    return { failures: () => failures, restore: () => { enabled = false; } };
+  }
+
   async function publishProductionPrefix(
     f: Awaited<ReturnType<typeof fixture>>, event: PrpEvent,
-    options: { watermark?: boolean; redaction?: () => Promise<CurrentUserRedactionOptions> } = {},
+    options: { watermark?: boolean; redaction?: () => Promise<CurrentUserRedactionOptions>; diagnostic?: string } = {},
   ) {
     const [saved] = await db.select({ runtimeMode: heartbeatRuns.runtimeMode }).from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, f.binding.runId));
@@ -140,14 +177,20 @@ describe.skipIf(!support.supported)("native run log source watermarks", () => {
     // Historical queued-run writers used onLog before source cursors were retained.
     if (options.watermark === false) await handlers.onLog("stdout", formatNativeRunLogEvent(event));
     else await handlers.onPersistedNativeLog!(2, formatNativeRunLogEvent(event));
+    if (options.diagnostic) await handlers.onLog("stderr", options.diagnostic);
     await store.finalize(output.handle!);
-    return { store, handle: output.handle!, prefix: (await store.read(output.handle!)).content };
+    return { store, handle: output.handle!, prefix: await readAll(store, output.handle!) };
   }
 
-  it.each([true, false])("cold-recovers a production-compacted 64KiB tool event with committed cursor: %s", async (watermark) => {
-    const f = await fixture();
+  it.each([true, false])("cold-recovers an explicit legacy-compacted 64KiB tool event with committed cursor: %s", async (watermark) => {
+    const f = await fixture(), store = f.store(), handle = await store.begin(f.binding);
     const event = toolEvent(f, "retained output 再開 ".repeat(4000).slice(0, 65_536));
-    const { handle, prefix } = await publishProductionPrefix(f, event, { watermark });
+    await f.persist(event, 2);
+    // Immutable old producer format, even when the current canonical writer becomes lossless.
+    await store.append(handle, { stream: "stdout", ts: "legacy", seq: 1,
+      ...(watermark ? { sourceCursor: 2 } : {}), chunk: compactRunLogChunk(formatNativeRunLogEvent(event)) });
+    await store.finalize(handle);
+    const prefix = await readAll(store, handle);
     const chunk = JSON.parse(prefix).chunk as string;
     expect(chunk).toContain("[paperclip truncated run log chunk: omitted ");
     expect(() => JSON.parse(chunk)).toThrow();
@@ -167,6 +210,117 @@ describe.skipIf(!support.supported)("native run log source watermarks", () => {
     const [run] = await db.select({ bytes: heartbeatRuns.logBytes }).from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, f.binding.runId));
     expect(run!.bytes).toBe(Buffer.byteLength(content));
+  });
+
+  it.each([[20, "A"], [256, "界"]] as const)("retains a current %i-step %s plan through proof outage and cold recovery", async (count, character) => {
+    const f = await fixture(), event = planEvent(f, count, character.repeat(4000));
+    const outage = failPublishedPrefixProof(f);
+    const { store, handle, prefix } = await publishProductionPrefix(f, event, { diagnostic: "diagnostic ".repeat(10_000) });
+    expect(outage.failures()).toBeGreaterThan(0);
+    outage.restore();
+    const snapshot = await store.begin(f.binding);
+    expect(snapshot.initialSourceCursor).toBe(2);
+    expect(snapshot.initialSourcePrefixVerified).toBe(false);
+    await store.finalize(snapshot);
+    const suffix = planEvent(f, count, character.repeat(4000), 2);
+    await f.persist(suffix, 5);
+    await f.settle(handle.logRef);
+    const cold = f.store();
+    await recoverSettledNativeRunLog(db, cold, handle.logRef, async () => ({ enabled: false }));
+    const content = await readAll(cold, handle);
+    expect(content.startsWith(prefix)).toBe(true);
+    const entries = content.trim().split("\n").map(line => JSON.parse(line));
+    expect(entries).toHaveLength(3);
+    expect(nativeSha256(JSON.parse(entries[0].chunk).event)).toBe(nativeSha256(event));
+    expect(nativeSha256(JSON.parse(entries[2].chunk).event)).toBe(nativeSha256(suffix));
+    expect(entries[0].chunk).not.toContain("[paperclip truncated");
+    expect(entries[2].chunk).not.toContain("[paperclip truncated");
+    expect(entries[1].chunk).toContain("[paperclip truncated run log chunk:");
+    expect(entries[1].chunk.length).toBeLessThan(64 * 1024);
+    if (count === 256) expect(Buffer.byteLength(entries[0].chunk)).toBeGreaterThan(1024 * 1024);
+    expect(entries.map(entry => entry.seq)).toEqual([1, 2, 3]);
+    const resumed = await cold.begin(f.binding);
+    expect(resumed.initialSourceCursor).toBe(5);
+    expect(resumed.initialSourcePrefixVerified).toBe(true);
+    await cold.finalize(resumed);
+  });
+
+  it("scrubs private canaries and image data before lossless canonical publication and recovery", async () => {
+    const f = await fixture(), canary = "fixture-private-bearer-canary";
+    const event = { ...f.event(1), payload: { header: `Authorization: Bearer ${canary}`, api_key: canary,
+      image: { type: "image", source: { type: "base64", data: "A".repeat(70000) } },
+      parts: Array.from({ length: 20 }, () => "preserved ".repeat(400)),
+    } };
+    const outage = failPublishedPrefixProof(f);
+    const { handle, prefix } = await publishProductionPrefix(f, event);
+    expect(outage.failures()).toBeGreaterThan(0);
+    outage.restore();
+    expect(prefix).not.toContain(canary);
+    expect(prefix).toContain("[omitted base64 image data: 70000 chars]");
+    const suffix: PrpEvent = { ...f.event(2), eventType: "item.delta", payload: event.payload };
+    await f.persist(suffix, 5);
+    await f.settle(handle.logRef);
+    const cold = f.store();
+    await recoverSettledNativeRunLog(db, cold, handle.logRef, async () => ({ enabled: false }));
+    const content = await readAll(cold, handle);
+    expect(content.startsWith(prefix)).toBe(true);
+    expect(content).not.toContain(canary);
+    const entries = content.trim().split("\n").map(line => JSON.parse(JSON.parse(line).chunk).event);
+    expect(entries.map(event => event.sourceEventId)).toEqual(["source:1", "source:2"]);
+    for (const entry of entries) {
+      expect(entry.payload.parts).toEqual(event.payload.parts);
+      expect(entry.payload.image.source.data).toBe("[omitted base64 image data: 70000 chars]");
+      expect(entry.payload.api_key).toBe("***REDACTED***");
+      expect(entry.payload.header).toBe("Authorization: ***REDACTED***");
+    }
+  });
+
+  it("leaves old unprovable multi-string compaction failed and byte-identical", async () => {
+    const f = await fixture(), event = planEvent(f, 20, "A".repeat(4000));
+    await f.persist(event, 2);
+    await f.persist(f.event(2), 5);
+    const store = f.store(), handle = await store.begin(f.binding);
+    const chunk = compactRunLogChunk(formatNativeRunLogEvent(event));
+    expect(chunk).toContain("[paperclip truncated run log chunk:");
+    expect(() => JSON.parse(chunk)).toThrow();
+    await store.append(handle, { stream: "stdout", ts: "immutable-old-format", seq: 1, sourceCursor: 2, chunk });
+    await store.finalize(handle);
+    const prefix = await readAll(store, handle);
+    await f.settle(handle.logRef);
+    const cold = f.store();
+    await expect(recoverSettledNativeRunLog(db, cold, handle.logRef,
+      async () => ({ enabled: false }))).rejects.toThrow("native_log_source_coverage_unproven");
+    expect(await readAll(cold, handle)).toBe(prefix);
+    const [run] = await db.select({ bytes: heartbeatRuns.logBytes }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, f.binding.runId));
+    expect(run!.bytes).toBeNull();
+  });
+
+  it("leaves an old privacy-mangled canonical prefix failed and byte-identical", async () => {
+    const f = await fixture();
+    const event = { ...f.event(1), payload: { header: "Authorization: Bearer fixture-old-bearer-canary" } };
+    await f.persist(event, 2);
+    const store = f.store(), handle = await store.begin(f.binding);
+    const chunk = compactRunLogChunk(formatNativeRunLogEvent(event));
+    expect(() => JSON.parse(chunk)).toThrow();
+    await store.append(handle, { stream: "stdout", ts: "immutable-old-privacy-format", seq: 1, sourceCursor: 2, chunk });
+    await store.finalize(handle);
+    const prefix = await readAll(store, handle);
+    await f.settle(handle.logRef);
+    const cold = f.store();
+    await expect(recoverSettledNativeRunLog(db, cold, handle.logRef,
+      async () => ({ enabled: false }))).rejects.toThrow("native_log_source_coverage_unproven");
+    expect(await readAll(cold, handle)).toBe(prefix);
+    const [run] = await db.select({ bytes: heartbeatRuns.logBytes }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, f.binding.runId));
+    expect(run!.bytes).toBeNull();
+  });
+
+  it("rejects a verifier record exceeding the accepted 8MiB writer bound", async () => {
+    const f = await fixture();
+    const verifier = createNativeRunLogCoverageVerifier(db, f.binding.companyId, f.binding.runId);
+    const bytes = Buffer.from(`${JSON.stringify({ chunk: "x".repeat(8 * 1024 * 1024) })}\n`);
+    await expect(verifier.write(bytes)).rejects.toThrow("native_log_source_coverage_unproven");
   });
 
   it.each([true, false])("retains a zero-watermark production prefix when username masking changes from %s", async (enabled) => {
