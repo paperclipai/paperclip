@@ -21,6 +21,17 @@ it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated"])("does no
   expect(legacyExecutionNeedsReconciliation({ ...run, errorCode: "setup_failed" })).toBe(true);
 });
 
+it("does not hold a run whose only queued message was discarded before dispatch", () => {
+  const discarded = {
+    runtimeMode: "legacy", status: "cancelled", errorCode: "queued_comment_discarded",
+    resultJson: null,
+  };
+  expect(legacyExecutionNeedsReconciliation(discarded)).toBe(false);
+  // The exemption is keyed to the discard code on a cancelled run only.
+  expect(legacyExecutionNeedsReconciliation({ ...discarded, status: "failed" })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...discarded, errorCode: "cancelled" })).toBe(true);
+});
+
 it("permits subscription waits only with explicit evidence that provider work never started", () => {
   const waiting = {
     runtimeMode: "legacy", status: "cancelled", errorCode: "ai_connection_busy", scheduledRetryAttempt: 12,

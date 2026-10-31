@@ -50,6 +50,10 @@ export function legacyExecutionNeedsReconciliation(
     !["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
   )
     return false;
+  // Discarding the last queued message cancels its run only while the run is
+  // still queued (cancelQueueRun matches status = 'queued'), so no provider
+  // work ever started and there is no action outcome to reconcile.
+  if (run.status === "cancelled" && run.errorCode === "queued_comment_discarded") return false;
   // A fresh model turn cannot repair or verify unrestored files.
   if (run.resultJson?.workspaceRestoreFailure === "restore_unsafe_archive" || hasRequiredWorkspaceRecovery(run.resultJson)) return true;
   // A fresh conversation turn lets the agent decide what remains. The retry
