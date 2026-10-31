@@ -1814,6 +1814,10 @@ The same quarantine stops copied project/execution-workspace runtime desired sta
 
 After `worktree init`, both the server and the CLI auto-load the repo-local `.paperclip/.env` when run inside that worktree, so normal commands like `pnpm dev`, `paperclipai doctor`, and `paperclipai db:backup` stay scoped to the worktree instance.
 
+Managed env updates preserve unrelated quoted multiline values. Assignment-like
+text inside those values does not count as a managed setting. The editor adds or
+updates managed keys outside those values and preserves the file's line endings.
+
 `pnpm dev` now fails fast in a linked git worktree when `.paperclip/.env` is missing, instead of silently booting against the default instance/port. If that happens, run `paperclipai worktree init` in the worktree first.
 
 ### Lean worktrees and deferred seeding
