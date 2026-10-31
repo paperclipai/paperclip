@@ -42,10 +42,10 @@ export async function startConnectionDelivery(db: Db, options: { canRun?: () => 
     && (coordinator.nextWakeAt() ?? Infinity) > Date.now() + RETRY_MS / 2;
   async function settle(minSweeps = 0) {
     const limit = Date.now() + 5_000;
-    while (!quiet() || sweeps < minSweeps) {
+    do {
       if (Date.now() > limit) throw new Error("Connection delivery did not settle");
       await new Promise(resolve => setTimeout(resolve, 10));
-    }
+    } while (!quiet() || sweeps < minSweeps);
   }
   await worker.ready;
   await settle(1);
