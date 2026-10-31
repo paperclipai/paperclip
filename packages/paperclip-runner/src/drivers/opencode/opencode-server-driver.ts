@@ -2654,6 +2654,7 @@ export function normalizeOpenCodeQuestionSet(
             ? { description: text(option.description).slice(0, 4_000) }
             : {}),
         }));
+      const custom = question.custom ?? question.allowCustom ?? true;
       return {
         id: openCodeQuestionId(question, index),
         ...(text(question.header)
@@ -2674,7 +2675,7 @@ export function normalizeOpenCodeQuestionSet(
               ? "multi_select"
               : "single_select",
         ...(options.length > 0 ? { options } : {}),
-        ...(question.custom === true || question.allowCustom === true
+        ...(options.length > 0 && custom === true
           ? {
               customAnswer: {
                 enabled: true,
