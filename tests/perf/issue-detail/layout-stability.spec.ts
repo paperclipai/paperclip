@@ -172,6 +172,27 @@ test("a loaded comment target positions after the reveal deadline when live-run 
   } finally { release(); }
 });
 
+test("a late linked comment positions after the reveal deadline without losing the draft", async ({ page }) => {
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route(`**/api/issues/*/comments/${oldestCommentId}`, async route => { await held; await route.continue().catch(() => {}); });
+  try {
+    await page.goto(`/${prefix}/issues/${issue.identifier}#comment-${oldestCommentId}`);
+    await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible({ timeout: 20_000 });
+    const target = page.locator(`[id="comment-${oldestCommentId}"]`);
+    await expect(target).toHaveCount(0);
+    const editor = page.getByTestId("task-chat-composer-stack").locator('[contenteditable="true"]');
+    await editor.fill("Keep this draft while the linked comment loads.");
+    const originalEditor = await editor.elementHandle();
+    release();
+    await expect(target).toBeVisible();
+    await expect.poll(() => target.evaluate(el => Math.abs(el.getBoundingClientRect().top - document.querySelector('[data-testid="task-chat-scroller"]')!.getBoundingClientRect().top)))
+      .toBeLessThanOrEqual(2);
+    await expect(editor).toHaveText("Keep this draft while the linked comment loads.");
+    expect(await originalEditor!.evaluate(element => element.isConnected)).toBe(true);
+  } finally { release(); }
+});
+
 test("a draft survives background task refresh, reload, and one persisted reply", async ({ page, request }) => {
   await page.goto(`/${prefix}/issues/${draftIssue.identifier}`);
   await ready(page);

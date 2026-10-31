@@ -332,6 +332,31 @@ describe("TaskMessageScroller", () => {
     expect(viewport.scrollTop).toBe(500);
   });
 
+  it.each([[false, "none"], [false, "wheel"], [false, "pointer"], [true, "none"], [true, "wheel"], [true, "pointer"]] as const)("positions a late hash target unless the reader moved on (restore=%s, readerMoved=%s)", async (restore, readerMoved) => {
+    let initialized = false;
+    const show = (targetReady: boolean) => flushSync(() => root.render(
+      <TaskChatScrollNavigation.Provider value={{ key: `late-target-${restore}-${readerMoved}`, hash: "#late-target", restore }}>
+        <TaskMessageScroller contentKey={targetReady}>
+          <div ref={node => {
+            if (node && !initialized) { fakeGeometry(node.parentElement!, { clamp: true }); initialized = true; }
+          }}>
+            Saved conversation
+            {targetReady ? <div id="late-target" data-thread-anchor="late-target" ref={node => {
+              if (node) node.getBoundingClientRect = () => ({ top: 100 - scroller().scrollTop, bottom: 200 - scroller().scrollTop, height: 100 } as DOMRect);
+            }}>Linked comment</div> : null}
+          </div>
+        </TaskMessageScroller>
+      </TaskChatScrollNavigation.Provider>,
+    ));
+    show(false);
+    if (readerMoved !== "none") {
+      await scrollTo(scroller(), 300);
+      await dispatch(scroller(), readerMoved === "wheel" ? new WheelEvent("wheel", { bubbles: true, deltaY: -100 }) : new Event("pointerdown", { bubbles: true }));
+    }
+    show(true);
+    expect(scroller().scrollTop).toBe(readerMoved === "none" ? 100 : 300);
+  });
+
   it("does not replace a saved reading position with a hidden route's geometry", async () => {
     function mount(restore: boolean) {
       flushSync(() => root.render(
