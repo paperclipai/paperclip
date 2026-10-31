@@ -15,8 +15,12 @@ export function appendExcerpt(prev: string, chunk: string) {
 
 function truncateRunEventString(value: string) {
   if (value.length <= MAX_RUN_EVENT_PAYLOAD_STRING_CHARS) return value;
-  const omittedChars = value.length - MAX_RUN_EVENT_PAYLOAD_STRING_CHARS;
-  return `${value.slice(0, MAX_RUN_EVENT_PAYLOAD_STRING_CHARS)}\n[truncated ${omittedChars} chars]`;
+  const lastKeptCode = value.charCodeAt(MAX_RUN_EVENT_PAYLOAD_STRING_CHARS - 1);
+  const keptChars = lastKeptCode >= 0xd800 && lastKeptCode <= 0xdbff
+    ? MAX_RUN_EVENT_PAYLOAD_STRING_CHARS - 1
+    : MAX_RUN_EVENT_PAYLOAD_STRING_CHARS;
+  const omittedChars = value.length - keptChars;
+  return `${value.slice(0, keptChars)}\n[truncated ${omittedChars} chars]`;
 }
 
 function boundRunEventValue(

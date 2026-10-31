@@ -58,6 +58,13 @@ describe("heartbeat run-log payload formatting", () => {
     });
   });
 
+  it("does not split a surrogate pair at the string limit", () => {
+    const head = "x".repeat(16 * 1024 - 1);
+    expect(boundHeartbeatRunEventPayloadForStorage({ oversized: `${head}🚀end` })).toEqual({
+      oversized: `${head}\n[truncated 5 chars]`,
+    });
+  });
+
   it("keeps the first 50 array entries and reports omitted items", () => {
     const exact = Array.from({ length: 50 }, (_, index) => index);
     expect(boundHeartbeatRunEventPayloadForStorage({ exact, oversized: [...exact, 50, 51] }))
