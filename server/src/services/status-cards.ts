@@ -27,7 +27,8 @@ import { logger } from "../middleware/logger.js";
 import { readBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
 import { builtInAgentService } from "./built-in-agents.js";
 import { companySearchService } from "./company-search.js";
-import { issueService } from "./issues.js";
+import { executeIssuePostCommitActions, issueService, type IssuePostCommitAction } from "./issues.js";
+import { publishActivity, type ActivityPublication } from "./activity-log.js";
 import { SUMMARIZER_BUILT_IN_KEY } from "./summary-slots.js";
 import {
   buildStatusCardFingerprint,
@@ -643,6 +644,33 @@ export function statusCardService(
       ? membershipAt : interval;
   }
 
+  async function cancelUnclaimedRefreshTask(card: StatusCardRow, issueId: string) {
+    const postCommitActions: IssuePostCommitAction[] = [];
+    const publications: ActivityPublication[] = [];
+    const admitted = await db.transaction(async tx => {
+      // Match the canonical mutation's issue-first lock order. A terminal
+      // transition cannot race this recheck and have its receipt rewritten.
+      const [current] = await tx.select({ status: issues.status }).from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, card.companyId))).for("update");
+      if (!current) return false;
+      const [generation] = await tx.select({ id: statusCardUpdates.id }).from(statusCardUpdates)
+        .where(and(eq(statusCardUpdates.cardId, card.id), eq(statusCardUpdates.generationIssueId, issueId))).limit(1);
+      // A failed revision CAS excludes any later claim of this revision's task.
+      // A summary clears the claim and records its ledger atomically, so even
+      // an active task whose winner already finished remains admitted work.
+      if (generation) return true;
+      if (TERMINAL_ISSUE_STATUSES.has(current.status)) return false;
+      // Bind preflight readers to this transaction too: a root-pool reader
+      // would wait forever when this transaction owns its only connection.
+      await issueService(tx as unknown as Db).update(issueId,
+        { status: "cancelled", companyGuard: card.companyId }, tx, publications, postCommitActions);
+      return false;
+    });
+    for (const publication of publications) publishActivity(publication);
+    await executeIssuePostCommitActions(db, postCommitActions);
+    return admitted;
+  }
+
   async function refreshCurrentCard(cardId: string, input: {
     full?: boolean;
     trigger?: "manual" | "interval" | "reactive" | "restore";
@@ -782,14 +810,15 @@ export function statusCardService(
     if (!next) {
       const winner = await getById(card.id);
       if (!winner?.generatingIssueId) {
-        if (!TERMINAL_ISSUE_STATUSES.has(generationIssue!.status)) {
-          await issuesSvc().update(generationIssue!.id, { status: "cancelled" });
+        const admitted = await cancelUnclaimedRefreshTask(card, generationIssue!.id);
+        if (winner && !winner.archivedAt) {
+          if (admitted) return { card: winner, generatingIssue: null, alreadyGenerating: false, enqueued: false, kind, changes };
+          return undefined;
         }
-        if (winner && !winner.archivedAt) return undefined;
         throw conflict("Status-card refresh claim was lost");
       }
-      if (generationIssue!.id !== winner.generatingIssueId && !TERMINAL_ISSUE_STATUSES.has(generationIssue!.status)) {
-        await issuesSvc().update(generationIssue!.id, { status: "cancelled" });
+      if (generationIssue!.id !== winner.generatingIssueId) {
+        await cancelUnclaimedRefreshTask(card, generationIssue!.id);
       }
       const winnerIssue = await db.select().from(issues).where(eq(issues.id, winner.generatingIssueId)).then((rows) => rows[0] ?? null);
       return { card: winner, generatingIssue: winnerIssue, alreadyGenerating: true, enqueued: false, kind, changes };
