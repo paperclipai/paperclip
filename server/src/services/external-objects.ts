@@ -1158,6 +1158,9 @@ export function externalObjectService(
       queue: DELIVERY_QUEUES.externalObjectRefresh,
       batchSize: 50,
       minimumPassIntervalMs: 0,
+      // Eligibility changes affect every object in the company. Coalesce repeated
+      // rebuilds while object/identity hints and saved deadlines remain immediate.
+      reconstructionIntervalMs: scope => scope && !scope.objectId && !scope.identity ? 30_000 : 0,
       decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint) as RefreshScope,
       matches: (entry, scope) => !scope || (entry.companyId === scope.companyId
         && (!scope.objectId || entry.id === scope.objectId)

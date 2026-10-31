@@ -7,7 +7,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, createDb, closeLivenessDb, closeCheckpointDb,
   heartbeatRuns, heartbeatRunEvents, nativeRunFinalizations, environmentLeases, issueThreadInteractions, applyPendingMigrations,
-  issueRecoveryActions, issues, activityLog, agentWakeupRequests } from "@paperclipai/db";
+  issueRecoveryActions, issues, activityLog, agentWakeupRequests, reconcileDatabaseWork } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -16,6 +16,7 @@ import { notifyLiveRunRecovery, notifyLiveResourceRecovery, notifyStrandedAgentS
 import { notifyExecutionRunWork } from "../services/execution-control-notifications.js";
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { writeEnvironmentCleanup } from "../services/environment-cleanup-notifications.js";
+import { prepareSandboxStopAndRetain, settleStopOnlyCleanup, hasConfirmedSandboxStopAndRetain } from "../services/sandbox-stop-and-retain.js";
 import { beginLegacyShutdownWorkspaceSettlement } from "../services/legacy-shutdown-workspace-settlement.js";
 import { renewLegacyControllerLease, legacyControllerBootId } from "../services/legacy-controller-lease.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -386,6 +387,79 @@ describe("residual recovery production matrix", () => {
     await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({ status: "released", releasedAt: new Date() })
       .where(eq(environmentLeases.id, owner.id)), { companyId: other.companyId, runId: run.id, leaseId: owner.id });
     await vi.waitFor(async () => expect((await getLease(orphan.id)).status).toBe("pending_cleanup"), { timeout: 40_000 });
+    await quiet();
+  });
+  async function shutdownSource(released: boolean, cleanupExpiry?: number) {
+    const f = await fixture(), old = new Date(Date.now() - 6 * 60_000);
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, issueId: f.issue.id,
+      status: "failed", runtimeMode: "legacy", contextSnapshot: { issueId: f.issue.id }, finishedAt: old }).returning();
+    let [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: run.id,
+      issueId: f.issue.id, status: "active", provider: "fixture", providerLeaseId: randomUUID(), acquiredAt: old, updatedAt: old,
+      metadata: { driver: "sandbox", sandboxProviderPlugin: true, pluginId: "shutdown-fixture" } }).returning();
+    await beginLegacyShutdownWorkspaceSettlement(db, run, new Date(Date.now() - 1000));
+    if (released) {
+      const prepared = await prepareSandboxStopAndRetain(db, await getLease(lease.id));
+      expect(prepared).toBeTruthy();
+      const settled = await settleStopOnlyCleanup(db, prepared!, { attemptId: String(prepared!.metadata?.pendingCleanupAttemptId),
+        receipt: { providerLeaseId: lease.providerLeaseId, state: "stopped" } });
+      expect(settled).toBeTruthy(); lease = settled!;
+      expect(hasConfirmedSandboxStopAndRetain(lease)).toBe(true);
+    } else {
+      [lease] = await db.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed",
+        metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ pendingCleanupInFlight: true,
+          ...(cleanupExpiry === undefined ? {} : { pendingCleanupLeaseExpiresAtMs: cleanupExpiry }) })}::jsonb`,
+      }).where(eq(environmentLeases.id, lease.id)).returning();
+    }
+    return { ...f, run, lease };
+  }
+  it.each(["competing allocation", "cleanup in flight"] as const)("parks unchanged shutdown refusal for %s until its owning commit", async gate => {
+    const f = await shutdownSource(gate === "competing allocation");
+    const [competing] = gate === "competing allocation" ? await db.insert(environmentLeases).values({ companyId: f.companyId,
+      status: "pending_cleanup", provider: f.lease.provider, providerLeaseId: f.lease.providerLeaseId,
+      acquiredAt: new Date(f.lease.acquiredAt.getTime() - 1000) }).returning() : [];
+    await start();
+    expect((await getLease(f.lease.id)).metadata?.legacyShutdownWorkspaceSettlement).toMatchObject({ state: "pending" });
+    await quiet();
+    const releaseGate = async (database: typeof db) => writeEnvironmentCleanup(database, tx => tx.update(environmentLeases).set(
+      competing ? { status: "released", releasedAt: new Date() }
+        : { metadata: sql`${environmentLeases.metadata} || '{"pendingCleanupInFlight":false}'::jsonb` },
+    ).where(eq(environmentLeases.id, competing?.id ?? f.lease.id)), { companyId: f.companyId });
+    await expect(db.transaction(async tx => {
+      await releaseGate(tx as unknown as typeof db);
+      throw new Error("roll back shutdown gate release");
+    })).rejects.toThrow("roll back shutdown gate release");
+    await reconcileDatabaseWork(db, "legacy-shutdown-settlement"); await Promise.allSettled([...passes]); await immediate();
+    expect((await getLease(f.lease.id)).metadata?.legacyShutdownWorkspaceSettlement).toMatchObject({ state: "pending" });
+    await quiet();
+    await releaseGate(db);
+    await vi.waitFor(async () => {
+      await Promise.allSettled([...passes]);
+      const current = await getLease(f.lease.id);
+      expect(current.metadata?.legacyShutdownWorkspaceSettlement).toMatchObject({ state: "expired" });
+      expect(current.leasePolicy).toBe("retain_on_failure");
+      expect(current.metadata?.workspaceRestoreRecovery).toMatchObject({ runId: f.run.id });
+      expect(current.providerLeaseId).toBe(f.lease.providerLeaseId);
+    }, { timeout: 15_000 });
+    await reconcileDatabaseWork(db, "legacy-shutdown-settlement"); await Promise.allSettled([...passes]); await immediate();
+    await quiet();
+  });
+  it("retains the actual cleanup claim deadline after shutdown expiry and honors a moved expiry", async () => {
+    const initial = Date.now() + 1500, f = await shutdownSource(false, initial);
+    await start();
+    expect(deadlines.get("legacy-shutdown-settlement")!()).toBe(initial);
+    const moved = Date.now() + 4000;
+    await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({
+      metadata: sql`jsonb_set(${environmentLeases.metadata}, '{pendingCleanupLeaseExpiresAtMs}', ${JSON.stringify(moved)}::jsonb)`,
+    }).where(eq(environmentLeases.id, f.lease.id)), { companyId: f.companyId, leaseId: f.lease.id });
+    await advance(initial - Date.now());
+    expect((await getLease(f.lease.id)).metadata?.legacyShutdownWorkspaceSettlement).toMatchObject({ state: "pending" });
+    expect(deadlines.get("legacy-shutdown-settlement")!()).toBe(moved);
+    await advance(moved - Date.now() - 1);
+    expect((await getLease(f.lease.id)).metadata?.legacyShutdownWorkspaceSettlement).toMatchObject({ state: "pending" });
+    await advance(1);
+    await vi.waitFor(async () => expect((await getLease(f.lease.id)).metadata?.legacyShutdownWorkspaceSettlement)
+      .toMatchObject({ state: "expired" }));
+    expect((await getLease(f.lease.id)).metadata?.workspaceRestoreRecovery).toMatchObject({ runId: f.run.id });
     await quiet();
   });
   it("expires the exact shutdown settlement marker into preserved recovery instead of inferring file export", async () => {
