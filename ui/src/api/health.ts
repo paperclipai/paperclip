@@ -37,6 +37,7 @@ export type HealthStatus = {
   localAiLoginSupported?: boolean;
   hostedGoogleAiLoginSupported?: boolean;
   authReady?: boolean;
+  oidc?: { providerId: string; displayName: string };
   bootstrapStatus?: "ready" | "bootstrap_pending";
   bootstrapInviteActive?: boolean;
   /** The unclaimed Cloud app is ready; this response did not probe SQL. */

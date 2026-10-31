@@ -253,6 +253,18 @@ unavailable qualification. The JSON result records the manifests, daemon hash
 and provider scope. Qualify the candidate before publishing or deploying it;
 a refusal should leave the current deployment serving.
 
+### OpenID Connect sign-in
+
+Set all four variables to show a provider button on the sign-in page. Set `PAPERCLIP_AUTH_OIDC_CLIENT_SECRET` as well. The provider uses PKCE and never creates accounts. A user can sign in only when an account with the same email exists and the provider reports that email as verified. The same fields are available as `auth.oidc` in the config file, except for the secret.
+
+| Variable | Description |
+| --- | --- |
+| `PAPERCLIP_AUTH_OIDC_PROVIDER_ID` | Lowercase provider id, for example `kanidm` |
+| `PAPERCLIP_AUTH_OIDC_DISPLAY_NAME` | Label of the sign-in button |
+| `PAPERCLIP_AUTH_OIDC_DISCOVERY_URL` | The provider's `.well-known/openid-configuration` URL |
+| `PAPERCLIP_AUTH_OIDC_CLIENT_ID` | OAuth client id |
+| `PAPERCLIP_AUTH_OIDC_CLIENT_SECRET` | OAuth client secret. Startup fails when OIDC is configured without it |
+
 ## Secrets
 
 | Variable | Default | Description |
