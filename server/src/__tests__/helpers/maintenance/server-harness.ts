@@ -93,7 +93,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: { ena
     for (const request of requests.values()) request.reject(error);
     requests.clear();
   });
-  async function request<T>(command: string, payload: { ms?: number; issueUpdate?: { id: string; status: "done" }; publication?: { companyId: string; scopeDigest: string; backupRoot: string; pendingRoot: string } } = {}): Promise<T> {
+  async function request<T>(command: string, payload: { ms?: number; issueUpdate?: { id: string; status: "done" }; orphanLease?: { companyId: string }; publication?: { companyId: string; scopeDigest: string; backupRoot: string; pendingRoot: string } } = {}): Promise<T> {
     const id = ++requestId;
     const result = new Promise<T>((resolve, reject) => requests.set(id, { resolve, reject }));
     child.send({ id, command, ...payload });
@@ -123,6 +123,11 @@ export async function startMaintenanceServer(databaseUrl: string, options: { ena
           if (!response.ok) throw new Error(`Maintenance API ${method} ${route}: ${response.status} ${JSON.stringify(value)}`);
           return value as T;
         } finally { if (options.clock) await request("freeze"); }
+      },
+      async createOrphanLease(companyId: string) {
+        if (options.clock) await request("realtime");
+        try { return await request<{ leaseId: string }>("createOrphanLease", { orphanLease: { companyId } }); }
+        finally { if (options.clock) await request("freeze"); }
       },
       async updateIssue(issueUpdate: { id: string; status: "done" }) {
         if (options.clock) await request("realtime");

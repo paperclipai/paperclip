@@ -1,6 +1,6 @@
 import { createCipheriv, createHash, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, randomUUID, sign, verify } from "node:crypto";
 import { createServer } from "node:http";
-import { agents, agentApiKeys, agentTaskSessions, authUsers, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, issues, issueThreadInteractions, toolApplications, toolConnections } from "@paperclipai/db";
+import { agents, agentApiKeys, agentSessionGoalActions, agentTaskSessions, authUsers, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, issues, issueThreadInteractions, toolApplications, toolConnections } from "@paperclipai/db";
 import { access, mkdir, readdir, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -65,6 +65,60 @@ describe("assembled maintenance server production wiring", () => {
         repeatedQueries: repeated.length, repeated: receipt(repeated), initialFrames, finalFrames: server.proxy.frames, outgoingHttpRequests: 0 }, null, 2));
     } finally { await server.stop(); }
   }, 150_000);
+  it("isolates a real goal-startup write failure and still registers residual and attention owners", async () => {
+    await clearDatabase();
+    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+    const companyId = randomUUID(), agentId = randomUUID(), userId = randomUUID(), issueId = randomUUID(), requestId = randomUUID();
+    await fixture.insert(authUsers).values({ id: userId, name: "Goal control owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await fixture.insert(companies).values({ id: companyId, name: "Startup failure isolation", issuePrefix: "MFI", defaultResponsibleUserId: userId });
+    await fixture.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
+    await fixture.insert(agents).values({ id: agentId, companyId, name: "Goal owner", adapterType: "codex_local", status: "idle", lifecycleState: "ready" });
+    await fixture.insert(issues).values({ id: issueId, companyId, title: "Retained terminal goal task", status: "done", assigneeAgentId: agentId, responsibleUserId: userId });
+    const [session] = await fixture.insert(agentTaskSessions).values({ companyId, agentId, taskKey: issueId, adapterType: "codex_local" }).returning();
+    const [action] = await fixture.insert(agentSessionGoalActions).values({ companyId, sessionId: session!.id, requestId,
+      action: "clear", payloadJson: { requestId, action: "clear" }, status: "pending" }).returning();
+    await fixture.$client.unsafe(`create or replace function maintenance_fail_goal_startup() returns trigger language plpgsql as $$begin
+      if new.reason = 'goal_control' then raise exception 'maintenance_goal_startup_injected'; end if; return new; end$$`);
+    await fixture.$client.unsafe(`create trigger maintenance_fail_goal_startup before insert on agent_wakeup_requests for each row execute function maintenance_fail_goal_startup()`);
+    let server: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
+    try {
+      server = await startMaintenanceServer(databaseUrl!, { clock: true });
+      await settleClock(server);
+      expect((await server.snapshot()).startup.phase).toBe("ready");
+      expect(server.output).toContain("maintenance_goal_startup_injected");
+      const [retained] = await fixture.$client`select status from agent_session_goal_actions where id=${action!.id}`;
+      expect(retained!.status).toBe("pending");
+      const [failedWake] = await fixture.$client`select count(*)::integer as count from agent_wakeup_requests where reason='goal_control'`;
+      expect(failedWake!.count).toBe(0);
+      const start = (await server.snapshot()).now;
+      const { leaseId } = await server.createOrphanLease(companyId);
+      await server.advance(1_000); await settleClock(server);
+      const [lease] = await fixture.$client`select status, cleanup_status, provider, provider_lease_id from environment_leases where id=${leaseId}`;
+      expect(lease).toMatchObject({ status: "expired", cleanup_status: "success", provider: "local", provider_lease_id: null });
+      const elapsedClockMs = (await server.snapshot()).now - start;
+      expect(elapsedClockMs).toBeLessThan(30_000);
+      await fixture.$client.unsafe(`create or replace function maintenance_age_isolation_attention() returns trigger language plpgsql as $$begin
+        if new.title = 'Attention after goal failure' then new.updated_at = now() - interval '91 days'; end if; return new; end$$`);
+      await fixture.$client.unsafe(`create trigger maintenance_age_isolation_attention before insert on issue_thread_interactions for each row execute function maintenance_age_isolation_attention()`);
+      const issue = await server.api<{ id: string }>("POST", `/companies/${companyId}/issues`, { title: "Independent attention owner", status: "todo" });
+      const card = await server.api<{ id: string }>("POST", `/issues/${issue.id}/interactions`, { kind: "request_confirmation", title: "Attention after goal failure",
+        resolverPolicy: "human_only", continuationPolicy: "none", payload: { version: 1, prompt: "Choose a color?" } });
+      await server.advance(1_000); await settleClock(server);
+      const [archived] = await fixture.$client`select archived_reason, archived_at is not null as archived from decision_retention where source_id=${card.id}`;
+      expect(archived).toMatchObject({ archived_reason: "idle_ttl", archived: true });
+      await writeFile(path.join(server.directory, "startup-failure-measurement.json"), JSON.stringify({ phase: "actual-goal-startup-failure-isolation",
+        companyId, actionId: action!.id, retained, failedWake, leaseId, lease, elapsedClockMs, archived, frames: server.proxy.frames,
+        boundary: "fixture-only conditional goal_control INSERT failure; actual native classification untouched; actual environment cleanup ingress and ordinary attention HTTP producer",
+      }, null, 2));
+    } finally {
+      await fixture.$client.unsafe("drop trigger if exists maintenance_fail_goal_startup on agent_wakeup_requests").catch(() => {});
+      await fixture.$client.unsafe("drop function if exists maintenance_fail_goal_startup()").catch(() => {});
+      await fixture.$client.unsafe("drop trigger if exists maintenance_age_isolation_attention on issue_thread_interactions").catch(() => {});
+      await fixture.$client.unsafe("drop function if exists maintenance_age_isolation_attention()").catch(() => {});
+      await server?.stop(); await fixture.$client.end();
+    }
+  }, 150_000);
+
   it("exposes readiness while real deferred housekeeping is held and settles its work after release", async () => {
     await clearDatabase();
     const fixture = createDb(databaseUrl!, { maxConnections: 1 });
