@@ -47,6 +47,9 @@ async function openOwnedWire(url: string): Promise<{ wire: PrpWireConnection; cl
           const size = initial === 126 ? buffer.readUInt16BE(2) : initial === 127 ? Number(buffer.readBigUInt64BE(2)) : initial;
           const offset = initial === 126 ? 4 : initial === 127 ? 10 : 2;
           if (buffer.length < offset + size) return;
+          // Upgrade head bytes can precede the caller's message subscription.
+          // Retain complete data frames until the control-plane listener exists.
+          if ((opcode === 1 || opcode === 2) && listeners.length === 0) return;
           const payload = buffer.subarray(offset, offset + size); buffer = buffer.subarray(offset + size);
           if (opcode === 8) { socket.destroy(); finish(); return; }
           if (opcode === 9) send(payload, 10);
@@ -56,11 +59,44 @@ async function openOwnedWire(url: string): Promise<{ wire: PrpWireConnection; cl
       socket.on("data", bytes => { buffer = Buffer.concat([buffer, bytes]); parse(); }); socket.on("close", finish); socket.on("error", finish);
       const close = () => { socket.destroy(); finish(); };
       resolvePeer({ wire: { sendJson: value => send(Buffer.from(JSON.stringify(value)), 1), close,
-        onJson: listener => { listeners.push(listener); }, onClose: listener => { closes.push(() => listener({})); } }, closed, close });
+        onJson: listener => { listeners.push(listener); parse(); }, onClose: listener => { closes.push(() => listener({})); } }, closed, close });
       queueMicrotask(parse);
     }); req.end();
   });
 }
+
+it("delivers a WebSocket message coalesced with the real HTTP upgrade response", async () => {
+  const message = { type: "hello", sentinel: "coalesced-upgrade" };
+  const server = createServer();
+  const sockets = new Set<import("node:net").Socket>();
+  server.on("connection", socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
+  server.on("upgrade", (req, socket) => {
+    const accept = createHash("sha1").update(String(req.headers["sec-websocket-key"]) + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+    const payload = Buffer.from(JSON.stringify(message));
+    socket.write(Buffer.concat([Buffer.from(`HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`),
+      Buffer.from([0x81, payload.length]), payload]));
+  });
+  let peer: Awaited<ReturnType<typeof openOwnedWire>> | undefined;
+  const messages: unknown[] = [];
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing coalesced-upgrade endpoint");
+    peer = await openOwnedWire(`ws://127.0.0.1:${address.port}/`);
+    peer.wire.onJson(value => messages.push(value));
+    await vi.waitFor(() => expect(messages).toEqual([message]), { timeout: 1000 });
+  } finally {
+    peer?.close();
+    const closing = server.listening
+      ? new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+      : Promise.resolve();
+    for (const socket of sockets) socket.destroy();
+    await closing;
+  }
+});
 
 // Real encrypted PRP and real Runner/provider processes; no model or server imports.
 it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every durable boundary without another process", async mode => {
@@ -226,6 +262,7 @@ it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every d
           coreWarm: currentCore?.store.state.warmTransition?.phase, header: checkpoint && inspectStagedRunAttachmentHeader(checkpoint.records.get("header")!)?.phase,
           runnerRun: physical.runId, runnerWarm: physical.warmTransition?.phase, lifecycle: physical.lifecycle,
           failureCode: physical.recoverableFailure?.code, failureKeys: Object.keys(physical.recoverableFailure ?? {}),
+          physicalFailure: physical.recoverableFailure,
         })}`, { cause: error });
       } finally {
         release();
