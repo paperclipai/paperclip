@@ -2518,24 +2518,55 @@ export async function listUnfinalizedExecutionWorkspaceIds(
   return unfinalized;
 }
 
-/** The blocker keeps its own attributed operation barrier; legacy unattributed
- * work is a fallback, and a later successful workspace export clears either. */
+/** Workspace-wide facts are shared by blockers, rather than rereading retained
+ * operation history for every issue pointing at the same workspace. The ordered
+ * OFFSET boundary keeps the rare finalize filter from turning into a company
+ * history scan; the existing workspace/started-at index can stream candidates. */
+function blockerWorkspaceFacts(companyId: string, workspaceScope: SQL) {
+  return sql`(
+    with candidate_workspaces as materialized (
+      select distinct workspace_id from (${workspaceScope}) scoped_workspaces(workspace_id)
+    ), workspace_facts as materialized (
+      select candidate.workspace_id, finalized.started_at as finalized_at,
+        legacy.phase, legacy.status, legacy.started_at
+      from candidate_workspaces candidate
+      left join lateral (
+        select started_at from (
+          select phase, status, started_at from workspace_operations
+          where company_id = ${companyId}::uuid
+            and execution_workspace_id = candidate.workspace_id
+          order by started_at desc offset 0
+        ) workspace_history
+        where phase = 'workspace_finalize' and status = 'succeeded'
+        order by started_at desc limit 1
+      ) finalized on true
+      left join lateral (
+        select phase, status, started_at from workspace_operations
+        where company_id = ${companyId}::uuid
+          and execution_workspace_id = candidate.workspace_id and issue_id is null
+        order by started_at desc limit 1
+      ) legacy on true
+    ) select * from workspace_facts
+  ) as blocker_workspace_facts`;
+}
+
+/** An issue's own operation takes precedence over the legacy NULL fallback.
+ * Only a strictly later successful finalize clears either barrier. */
 function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, workspaceId: SQL) {
   return sql`${workspaceId} is not null and exists (
-    select 1 from lateral (
+    select 1 from (values (1)) seed(value)
+    left join lateral (
       select phase, status, started_at from workspace_operations blocker_operation
       where blocker_operation.company_id = ${companyId}::uuid
         and blocker_operation.execution_workspace_id = ${workspaceId}
-        and (blocker_operation.issue_id = ${issueId} or blocker_operation.issue_id is null)
-      order by (blocker_operation.issue_id is not null) desc, blocker_operation.started_at desc
-      limit 1
-    ) latest_blocker_operation
-    where not (latest_blocker_operation.phase = 'workspace_finalize' and latest_blocker_operation.status = 'succeeded')
-      and not exists (select 1 from workspace_operations later_finalize
-        where later_finalize.company_id = ${companyId}::uuid
-          and later_finalize.execution_workspace_id = ${workspaceId}
-          and later_finalize.phase = 'workspace_finalize' and later_finalize.status = 'succeeded'
-          and later_finalize.started_at > latest_blocker_operation.started_at)
+        and blocker_operation.issue_id = ${issueId}
+      order by blocker_operation.started_at desc limit 1
+    ) latest_blocker_operation on true
+    where coalesce(latest_blocker_operation.started_at, blocker_workspace_facts.started_at) is not null
+      and not (coalesce(latest_blocker_operation.phase, blocker_workspace_facts.phase) = 'workspace_finalize'
+        and coalesce(latest_blocker_operation.status, blocker_workspace_facts.status) = 'succeeded')
+      and (blocker_workspace_facts.finalized_at is null
+        or blocker_workspace_facts.finalized_at <= coalesce(latest_blocker_operation.started_at, blocker_workspace_facts.started_at))
   )`;
 }
 
@@ -2558,10 +2589,13 @@ async function listPendingFinalizeBlockerIssueIds(
         .for("share", { noWait: true });
     }
   }
-  for (const chunk of chunkList(pairs, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+  // Each pair occurs in both the source and the workspace scope.
+  for (const chunk of chunkList(pairs, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE / 2)) {
     const values = sql.join(chunk.map(pair => sql`(${pair.blockerIssueId}::uuid, ${pair.executionWorkspaceId}::uuid)`), sql`, `);
     const rows = await dbOrTx.select({ id: sql<string>`blocker_source.issue_id` })
       .from(sql`(values ${values}) as blocker_source(issue_id, workspace_id)`)
+      .leftJoin(blockerWorkspaceFacts(companyId, sql`select workspace_id from (values ${values}) workspace_scope(issue_id, workspace_id)`),
+        sql`blocker_workspace_facts.workspace_id = blocker_source.workspace_id`)
       .where(pendingFinalizeBlockerCondition(companyId, sql`blocker_source.issue_id`, sql`blocker_source.workspace_id`));
     for (const row of rows) pending.add(row.id);
   }
@@ -3829,6 +3863,17 @@ async function readIssueBlockerAttentionBatch(
         // below remains authoritative, without a repeated company-index scan.
         .from(issues).where(eq(issues.id, issueRelations.issueId))
         .limit(1).as("explicit_blocker");
+      const workspaceScope = sql`select distinct candidate.execution_workspace_id
+        from issue_relations workspace_relation
+        inner join lateral (
+          select company_id, status, execution_workspace_id from issues
+          where id = workspace_relation.issue_id limit 1
+        ) candidate on true
+        where workspace_relation.company_id = ${companyId}::uuid
+          and workspace_relation.type = 'blocks'
+          and workspace_relation.related_issue_id in (${sql.join(chunk.map(id => sql`${id}::uuid`), sql`, `)})
+          and candidate.company_id = ${companyId}::uuid
+          and candidate.status = 'done' and candidate.execution_workspace_id is not null`;
       const explicitBlockerRowsPromise: Promise<
         IssueBlockerAttentionQueryRow[]
       > = dbOrTx
@@ -3848,6 +3893,8 @@ async function readIssueBlockerAttentionBatch(
         })
         .from(issueRelations)
         .innerJoinLateral(explicitBlocker, sql`true`)
+        .leftJoin(blockerWorkspaceFacts(companyId, workspaceScope),
+          sql`blocker_workspace_facts.workspace_id = ${explicitBlocker.executionWorkspaceId}`)
         .where(
           and(
             eq(issueRelations.companyId, companyId),
