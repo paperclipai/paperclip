@@ -32,6 +32,7 @@ import {
   hydrateFreshSessionHandoff,
   runningProcesses,
   runChildProcess,
+  DEFAULT_OUTPUT_READ_AHEAD_BYTES,
   sanitizeSshRemoteEnv,
   sanitizeInheritedPaperclipEnv,
   isForbiddenConfigEnvKey,
@@ -985,6 +986,171 @@ describe("runChildProcess", () => {
       }
     },
   );
+});
+
+describe("runChildProcess output read-ahead", () => {
+  const abruptExitChild = (bytes: number) =>
+    [
+      "const line = 'x'.repeat(1023) + '\\n';",
+      `for (let i = 0; i < ${Math.ceil(bytes / 1024)}; i += 1) process.stdout.write(line);`,
+      "process.stdout.write('RESULT\\n');",
+      "setTimeout(() => process.exit(0), 200);",
+    ].join("");
+
+  const patientChild = (stdoutBytes: number, stderrBytes: number) =>
+    [
+      `for (let i = 0; i < ${Math.ceil(stdoutBytes / 1024)}; i += 1) process.stdout.write('out-' + String(i).padStart(8, '0') + 'o'.repeat(1010) + '\\n');`,
+      `for (let i = 0; i < ${Math.ceil(stderrBytes / 1024)}; i += 1) process.stderr.write('err-' + String(i).padStart(8, '0') + 'e'.repeat(1010) + '\\n');`,
+      "process.stdout.write('RESULT\\n');",
+    ].join("");
+
+  function slowSink(delayMs: number, fail = false) {
+    const sink = { stdout: "", stderr: "", inflight: 0, maxInflight: 0, errors: 0 };
+    const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
+      sink.inflight += 1;
+      sink.maxInflight = Math.max(sink.maxInflight, sink.inflight);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (fail) throw new Error("log sink down");
+        sink[stream] += chunk;
+      } finally {
+        sink.inflight -= 1;
+      }
+    };
+    const onLogError = () => {
+      sink.errors += 1;
+    };
+    return { sink, onLog, onLogError };
+  }
+
+  const ordered = (text: string, prefix: string) => {
+    const keys = [...text.matchAll(new RegExp(`${prefix}-(\\d{8})`, "g"))].map((m) => Number(m[1]));
+    return keys.length > 0 && keys.every((value, index) => value === index);
+  };
+
+  const stripNote = (text: string) =>
+    text.replace(/\[paperclip\] output read-ahead: [^\n]*\n/g, "");
+
+  it("keeps the output tail of a child that exits soon after writing while onLog lags", async () => {
+    const { sink, onLog, onLogError } = slowSink(50);
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", abruptExitChild(1024 * 1024)],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 20,
+        graceSec: 1,
+        onLog,
+        onLogError,
+        outputReadAheadBytes: DEFAULT_OUTPUT_READ_AHEAD_BYTES,
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.endsWith("RESULT\n")).toBe(true);
+    expect(sink.stdout).toBe(result.stdout);
+    expect(sink.maxInflight).toBe(1);
+    expect(result.outputCapture?.readAheadPauses).toBe(0);
+    expect(result.outputCapture?.peakPendingLogBytes).toBeGreaterThan(64 * 1024);
+    expect(sink.stderr).toMatch(/^\[paperclip\] output read-ahead: \d+ bytes awaiting log at child exit/);
+  }, 30_000);
+
+  it("keeps the per-chunk pause when read-ahead is not requested", async () => {
+    const { sink, onLog } = slowSink(50);
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", abruptExitChild(1024 * 1024)],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 20,
+        graceSec: 1,
+        onLog,
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.outputCapture?.readAheadBytes).toBe(0);
+    expect(result.outputCapture?.peakPendingLogBytes).toBeLessThanOrEqual(2 * 64 * 1024);
+    expect(sink.stderr).toBe("");
+  }, 30_000);
+
+  it("keeps stdout and stderr appends serialized and in order", async () => {
+    const { sink, onLog, onLogError } = slowSink(5);
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", patientChild(512 * 1024, 512 * 1024)],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 20,
+        graceSec: 1,
+        onLog,
+        onLogError,
+        outputReadAheadBytes: DEFAULT_OUTPUT_READ_AHEAD_BYTES,
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(sink.stdout).toBe(result.stdout);
+    expect(stripNote(sink.stderr)).toBe(result.stderr);
+    expect(ordered(sink.stdout, "out")).toBe(true);
+    expect(ordered(stripNote(sink.stderr), "err")).toBe(true);
+    expect(sink.maxInflight).toBe(1);
+    expect(sink.errors).toBe(0);
+  }, 30_000);
+
+  it("pauses at the read-ahead bound and loses no output", async () => {
+    const bound = 256 * 1024;
+    const { sink, onLog, onLogError } = slowSink(10);
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", patientChild(2 * 1024 * 1024, 0)],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 30,
+        graceSec: 1,
+        onLog,
+        onLogError,
+        outputReadAheadBytes: bound,
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(sink.stdout).toBe(result.stdout);
+    expect(result.stdout.endsWith("RESULT\n")).toBe(true);
+    expect(result.outputCapture?.readAheadPauses).toBeGreaterThan(0);
+    expect(result.outputCapture?.peakPendingLogBytes).toBeLessThanOrEqual(bound + 4 * 64 * 1024);
+    expect(sink.stderr).toMatch(/bound 262144, paused at bound [1-9]\d*x\n$/);
+  }, 60_000);
+
+  it("resolves with the full output when every onLog append fails", async () => {
+    const { sink, onLog, onLogError } = slowSink(0, true);
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", patientChild(256 * 1024, 0)],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 20,
+        graceSec: 1,
+        onLog,
+        onLogError,
+        outputReadAheadBytes: DEFAULT_OUTPUT_READ_AHEAD_BYTES,
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.endsWith("RESULT\n")).toBe(true);
+    expect(sink.errors).toBeGreaterThan(0);
+  }, 30_000);
 });
 
 describe("renderPaperclipWakePrompt", () => {
