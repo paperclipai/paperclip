@@ -222,9 +222,9 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     const originalEvents = () => collectRunEvents<Row>((afterSeq, limit) =>
       context.api.get(`/api/heartbeat-runs/${original.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
     cancelled.push(original.id);
-    const runActivity = async () => nativeWorkEvents(await originalEvents());
     let beforeEvents: Row[];
     let boundary: StopWorkBoundary;
+    const runActivity = async () => nativeWorkEvents(await originalEvents(), boundary);
     const redirected = await stopAndRedirectThroughUi({ page: context.page, nonce,
       beforeStop: async () => {
         const observed = await waitFor(options.deadlineAt, async () => {
@@ -251,7 +251,7 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
           return events;
         }, events => events.some(row => row.payload?.prpEvent?.eventType === "turn.cancelled"), "stop_native_terminal_not_retained");
         check("stop-native-terminal-retained", beforeEvents.some(row => row.payload?.prpEvent?.eventType === "turn.cancelled"));
-        if (!nativeCancellationHasNoLaterWork(beforeEvents)) check("stopped-run-no-later-events", false);
+        if (!nativeCancellationHasNoLaterWork(beforeEvents, boundary)) check("stopped-run-no-later-events", false);
       },
       beforeRedirect: async () => {
         const leases = await waitFor(options.deadlineAt, () => context.api.get<Row[]>(`/api/environments/${context.environmentId}/leases`), rows => {
@@ -277,7 +277,7 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     check("new-direction-completed", completion.runId !== original.id);
     check("stopped-run-remained-terminal", final.taskRuns.find(run => run.id === original.id)?.status === "cancelled");
     const afterEvents = await runActivity();
-    check("stopped-run-no-later-events", nativeCancellationHasNoLaterWork(afterEvents)
+    check("stopped-run-no-later-events", nativeCancellationHasNoLaterWork(afterEvents, boundary!)
       && JSON.stringify(beforeEvents!) === JSON.stringify(afterEvents));
     check("stop-preserved-download", createHash("sha256").update(await context.api.bytes(`/api/attachments/${initial.attachmentId}/content`)).digest("hex") === initial.sha256);
     const queue = await context.api.get<Row>(`/api/issues/${issue.id}/queued-comments`);

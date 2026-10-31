@@ -1,23 +1,21 @@
 import type { Page } from "@playwright/test";
-import { isValidNativePrpEnvelope } from "./native-event-envelope.js";
+import { isBoundNativePrpEventRow, type NativePrpRunBinding } from "./native-event-envelope.js";
 type Row = Record<string, any>;
 
 /** Work emitted by a retired turn, excluding accounting and control-plane bookkeeping. */
-export function nativeWorkEvents<T extends Row>(events: T[]): T[] {
+export function nativeWorkEvents<T extends Row>(events: T[], binding?: NativePrpRunBinding): T[] {
   return events.filter(row => {
     const event = row.payload?.prpEvent;
     const kind = event?.eventType;
-    // The harness deliberately forwards billing receipts after cancellation.
-    // They carry no continuation authority; malformed or productive items still count.
     if (kind === "item.completed" && row.eventType === kind
-      && isValidNativePrpEnvelope(event, row.protocolSchemaVersion) && event.payload?.kind === "usage") return false;
+      && isBoundNativePrpEventRow(row, binding) && event.payload?.kind === "usage") return false;
     return typeof kind === "string" && /^(tool\.execution\.|turn\.|message\.|item\.)/.test(kind);
   });
 }
 
 /** Detect post-cancellation output even if it arrived before the first snapshot. */
-export function nativeCancellationHasNoLaterWork(events: Row[]): boolean {
-  const work = nativeWorkEvents(events);
+export function nativeCancellationHasNoLaterWork(events: Row[], binding?: NativePrpRunBinding): boolean {
+  const work = nativeWorkEvents(events, binding);
   const cancellation = work.findIndex(row => row.payload.prpEvent.eventType === "turn.cancelled");
   return cancellation >= 0 && cancellation === work.length - 1;
 }
