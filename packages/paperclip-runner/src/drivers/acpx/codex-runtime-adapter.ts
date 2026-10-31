@@ -1,3 +1,6 @@
+import { admitAcpxSessionContext } from "./session-context-admission.js";
+import { createKimiInstructionAdmission } from "./kimi-instructions.js";
+import { kimiReadOnlyPermissionAllowed } from "./kimi-config.js";
 import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
 import { resolveGrokEffort, createGrokEffortAdmission } from "./grok-effort.js";
 import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
@@ -37,7 +40,6 @@ import { AcpxApprovalRequiredError, decideAcpxPermission } from "./permission-po
 import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
 import { createCursorInstructionAdmission } from "./cursor-instructions.js";
 import { createAntigravityAdmission } from "./antigravity-admission.js";
-import { admitAcpxSessionContext } from "./session-context-admission.js";
 import { createAcpxModeBinding } from "./provider-mode.js";
 import { assertCopilotPromptPolicy, createCopilotProtocolGuard } from "./copilot-policy.js";
 
@@ -326,17 +328,19 @@ export async function openQualifiedAcpxRuntime(
   const grokDisableWebSearch = resolveGrokDisableWebSearch(options.profile.agent, options.grokDisableWebSearch);
   const effortAdmission = selectedClaudeEffort ? createClaudeEffortAdmission(selectedClaudeEffort)
     : selectedGrokEffort ? createGrokEffortAdmission(selectedGrokEffort, options.profile.reportedModelId) : undefined;
-  const cursorInstructions = options.profile.agent === "cursor"
+  const instructionAdmission = options.profile.agent === "kimi"
+    ? createKimiInstructionAdmission(options.systemInstructions)
+    : options.profile.agent === "cursor"
     ? createCursorInstructionAdmission(options.systemInstructions)
     : null;
   const antigravityAdmission = options.profile.agent === "antigravity"
     ? createAntigravityAdmission(options.systemInstructions, options.profile.reportedModelId)
     : null;
-  const contextAdmission = cursorInstructions ?? antigravityAdmission;
+  const contextAdmission = instructionAdmission ?? antigravityAdmission;
   const runtimeOptions: GoalAwareAcpRuntimeOptions = {
     cwd: options.cwd,
-    ...(cursorInstructions || modeBinding ? { protocolGuardFactory: () => {
-      const instructions = cursorInstructions?.createGuard();
+    ...(instructionAdmission || modeBinding ? { protocolGuardFactory: () => {
+      const instructions = instructionAdmission?.createGuard();
       const mode = modeBinding?.createGuard();
       return (direction: "inbound" | "outbound", message: unknown) => { instructions?.(direction, message); mode?.(direction, message); };
     } } : {}),
@@ -412,6 +416,8 @@ export async function openQualifiedAcpxRuntime(
       }
       if ((permissionBoundary.hasAdmittedTurn && !extensionBoundary.active)
         || extensionBoundary.active?.signal.aborted || context.signal.aborted) return { outcome: "cancel" };
+      if (options.profile.agent === "kimi" && options.readOnly === true
+        && !kimiReadOnlyPermissionAllowed(request, runnerOwnedMcpServerNames)) return { outcome: "reject_once" };
       const disposition = decideAcpxPermission(
         options.profile.agent,
         options.permissionMode,
@@ -532,7 +538,7 @@ export async function openQualifiedAcpxRuntime(
             // Its supported exact-model control forces session/load and the
             // current instruction acknowledgement before host admission.
             if (!runtime.setConfigOption) {
-              throw new Error("ACP context admission requires exact model configuration");
+              throw new Error("Cold instruction admission requires exact model configuration");
             }
             await runtime.setConfigOption({
               handle: ensuredHandle, key: "model", value: options.profile.reportedModelId,

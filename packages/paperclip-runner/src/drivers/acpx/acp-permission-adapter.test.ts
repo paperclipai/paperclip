@@ -13,7 +13,7 @@ function request(kinds = ["allow_once", "allow_always", "reject_once"]): AcpPerm
   } } as AcpPermissionRequest;
 }
 describe("ACP permission normalization", () => {
-  it.each([undefined, "codex", "claude", "pi", "copilot"])("preserves existing %s native identity behavior", provider => {
+  it.each([undefined, "codex", "claude", "pi", "copilot", "kimi"])("preserves existing %s native identity behavior", provider => {
     const native = request(); native.raw.toolCall.toolCallId = "native\u0000tool";
     expect(normalizeAcpxPermission(native, { provider }).toolCallId).toBe("native\u0000tool");
   });
@@ -90,6 +90,42 @@ describe("ACP permission normalization", () => {
       const conflict = request(); conflict.raw.toolCall = { toolCallId: "patch-call", kind: "edit", rawInput: { fileName: join(alias, "one.txt") }, locations: [{ path: join(alias, "two.txt") }] };
       expect(normalizeAcpxPermission(conflict, { provider: "copilot", workingDirectory: realpathSync(workspace) }).title).toContain("target unavailable");
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("Kimi canonical file permission context", () => {
+  const context = { provider: "kimi", workingDirectory: "/fixture/workspace", allowAlwaysScope: "session" as const };
+  function write(call: Record<string, unknown> = {}) {
+    const value = request();
+    Object.assign(value.raw.toolCall, { toolCallId: "kimi-write-native-id", kind: "edit", title: "Write", rawInput: { path: "/fixture/workspace/nested/result.txt", content: "PRIVATE_KIMI_CONTENT" }, locations: [{ path: "nested/result.txt" }], ...call });
+    return value;
+  }
+  it("shows the native Write target and preserves its exact operation and decision identity", () => {
+    const normalized = normalizeAcpxPermission(write(), context);
+    expect(normalized.title).toBe("Change file: nested/result.txt");
+    expect(normalized.toolCallId).toBe("kimi-write-native-id");
+    expect(JSON.stringify(normalized)).not.toContain("PRIVATE_KIMI_CONTENT");
+    expect(normalized.resolve({ action: "accept" })).toEqual({ outcome: "allow_once" });
+    expect(normalized.resolve({ action: "accept_for_session" })).toEqual({ outcome: "allow_always" });
+    expect(normalized.resolve({ action: "decline" })).toEqual({ outcome: "reject_once" });
+  });
+  it.each([
+    { name: "unknown", rawInput: {}, locations: [] },
+    { name: "conflicting", rawInput: { path: "one.txt" }, locations: [{ path: "two.txt" }] },
+    { name: "outside", rawInput: { path: "/outside/result.txt" }, locations: [] },
+  ])("offers only denial or cancellation for a $name Write target", ({ rawInput, locations }) => {
+    const normalized = normalizeAcpxPermission(write({ rawInput, locations }), context);
+    expect(normalized.title).toContain("target unavailable");
+    expect(normalized.toolCallId).toBe("kimi-write-native-id");
+    expect(normalized.choices.map(choice => choice.key)).toEqual(["decline", "cancel"]);
+    expect(normalized.resolve({ action: "decline" })).toEqual({ outcome: "reject_once" });
+    expect(normalized.resolve({ action: "cancel" })).toEqual({ outcome: "cancel" });
+    for (const action of ["accept", "accept_for_session"] as const) expect(() => normalized.resolve({ action })).toThrow("not an offered choice");
+  });
+  it("requires a bound workspace before allowing a native Write", () => {
+    const normalized = normalizeAcpxPermission(write(), { provider: "kimi" });
+    expect(normalized.choices.map(choice => choice.key)).toEqual(["decline", "cancel"]);
+    expect(() => normalized.resolve({ action: "accept" })).toThrow("not an offered choice");
   });
 });
 

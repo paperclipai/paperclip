@@ -24,6 +24,8 @@ WORKDIR /context
 COPY . .
 # Verify ACPX release declarations against the exact Docker context.
 RUN node packages/paperclip-runner/scripts/generate-acpx-profiles.mjs --check
+# The provider-pack builder imports this offline smoke helper during image builds.
+RUN node -e 'import("./packages/paperclip-runner/scripts/kimi-provider-pack-smoke.mjs")'
 # Committed artifacts the image build reads whose drift checks cannot run
 # here (they need the locked dependency tree or compiled dist/). Existence
 # in the context is the property this probe guards; content correctness is

@@ -19,13 +19,15 @@ vi.mock("node:fs/promises", async original => {
   };
 });
 import { copySharedEvidence } from "./shared-evidence.js";
-import { packageEvidence, isStandardEvidencePath } from "./evidence.js";
-import { readManualPrivateHandoff, sealStandardOriginalEvidence, sealManualResultEvidence, type ManualPrivateHandoff } from "./manual-private-handoff.js";
+import { packageEvidence, publishRunnerE2EAttemptEvidence, isStandardEvidencePath } from "./evidence.js";
+import { readManualPrivateHandoff, sealStandardOriginalEvidence, sealManualResultEvidence, preserveOriginalFrameworkResult, type ManualPrivateHandoff } from "./manual-private-handoff.js";
 import { canonicalGeneratedReportAsset, cellTraceAsset, inspectCellReportProducer, privateCellEvidenceOwner, readPrivateCellTraceAsset, type CellReportProducerIdentity } from "./manual-private-report-assets.js";
 import { validateSealedInventory, validateSealedOriginals } from "./manual-private-transfer.js";
 import { MANUAL_PRIVATE_EXECUTIONS, MANUAL_PRIVATE_PROTOCOL, manualCellKind } from "./manual-private-retention.js";
 import { archivePrivateEvidence, retainPrivateTransfer } from "./private-history.js";
 import { BoundedHistoryPublisher } from "./history-budget.js";
+import { sanitizeJson } from "./redaction.js";
+import type { RunnerE2EResult } from "./types.js";
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const roots: string[] = [];
 const temporaryRoot = await realpath(os.tmpdir());
@@ -269,6 +271,41 @@ it.each([0, 1])("actual launcher packaging call %s retains the verified private 
  const f = await fixture();
  const packaged = await actualCall(f.context, { id: f.id }, f.cell, f.upload, [], { status: "failed" });
  for (const name of ["playwright-logo.svg", "manifest.webmanifest", "index.html"]) expect(packaged.files).toContain(`html-report/trace/${name}`);
- const publicPackage = await actualCall(undefined, { id: f.id }, f.cell, path.join(f.root, "nonprivate-packaged"), [], { status: "failed" });
- expect(publicPackage.files).not.toContain("html-report/trace/playwright-logo.svg");
+});
+
+async function actualLauncherEvidenceBranch(packageCall = packageEvidence) {
+  const source = await readFile(new URL("./launch.ts", import.meta.url), "utf8");
+  const start = source.indexOf("      if (manualPrivateHandoff) {\n        await preserveOriginalFrameworkResult(casePrivateDir);");
+  const end = source.indexOf("      console.log(", start);
+  expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+  const code = stripTypeScriptTypes(`async function actualBranch(manualPrivateHandoff, candidate, casePrivateDir, resultsRoot, uploadDir, credentials, result, resultPath) { ${source.slice(start, end)} return result; }`, { mode: "strip" });
+  const publisher = vi.fn(publishRunnerE2EAttemptEvidence);
+  const branch = Function("preserveOriginalFrameworkResult", "writeFile", "sanitizeJson", "packageEvidence", "privateCellEvidenceOwner", "sealStandardOriginalEvidence", "publishRunnerE2EAttemptEvidence", `${code}; return actualBranch;`)(
+    preserveOriginalFrameworkResult, writeFile, sanitizeJson, packageCall, privateCellEvidenceOwner, sealStandardOriginalEvidence, publisher,
+  ) as (context: ManualPrivateHandoff | undefined, candidate: { id: string }, source: string, root: string, target: string, secrets: string[], result: RunnerE2EResult, resultPath: string) => Promise<RunnerE2EResult>;
+  return { branch, publisher };
+}
+function failedLauncherResult(executionId: string): RunnerE2EResult {
+  return { schema: "paperclip.runner-e2e.result/v2", executionId, suiteId: "chat-features", profileId: "runner-opencode", environmentId: "local", caseId: "activity.agent-feedback",
+    attempt: 1, provider: "fixture", model: "fixture", runtimeMode: "native", status: "failed", cleanup: "not_started", failureClass: "candidate_failure",
+    startedAt: "2026-10-29T00:00:00Z", finishedAt: "2026-10-29T00:00:01Z", durationMs: 1000 };
+}
+it("actual launcher public branch uses its normal publisher without retaining private-only trace assets", async () => {
+  const f = await fixture(), resultsRoot = path.join(f.root, "ordinary-results"), uploadDir = path.join(resultsRoot, "campaign/attempt-1");
+  const privatePackage = vi.fn(packageEvidence), { branch, publisher } = await actualLauncherEvidenceBranch(privatePackage);
+  const result = await branch(undefined, { id: f.id }, f.cell, resultsRoot, uploadDir, [], failedLauncherResult(f.id), path.join(f.cell, "result.json"));
+  expect(result.status).toBe("failed"); expect(publisher).toHaveBeenCalledTimes(1); expect(privatePackage).not.toHaveBeenCalled();
+  const evidence = JSON.parse(await readFile(path.join(uploadDir, "evidence-manifest.json"), "utf8"));
+  expect(evidence.files).not.toContain("html-report/trace/playwright-logo.svg");
+  await expect(readFile(path.join(uploadDir, "html-report/trace/playwright-logo.svg"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(readFile(path.join(f.cell, "snapshots/manual-original-framework-result.json"))).rejects.toMatchObject({ code: "ENOENT" });
+});
+it("actual launcher private package failure preserves original bytes and never falls back to ordinary publication", async () => {
+  const f = await fixture(), original = await readFile(path.join(f.cell, "result.json"));
+  const fail = vi.fn<typeof packageEvidence>().mockRejectedValue(new Error("synthetic private packaging failure"));
+  const { branch, publisher } = await actualLauncherEvidenceBranch(fail);
+  await expect(branch(f.context, { id: f.id }, f.cell, path.join(f.root, "results"), f.upload, [], failedLauncherResult(f.id), path.join(f.cell, "result.json"))).rejects.toThrow("synthetic private packaging failure");
+  expect(fail).toHaveBeenCalledTimes(1); expect(publisher).not.toHaveBeenCalled();
+  expect(await readFile(path.join(f.cell, "snapshots/manual-original-framework-result.json"))).toEqual(original);
+  await expect(readFile(path.join(f.upload, "result.json"))).rejects.toMatchObject({ code: "ENOENT" });
 });
