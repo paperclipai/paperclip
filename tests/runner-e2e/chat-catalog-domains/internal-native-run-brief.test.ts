@@ -4,6 +4,16 @@ import { expect, it } from "vitest";
 import { startNativeRunBriefGate } from "./internal-native-run-brief.js";
 
 const worker = "10000000-0000-4000-8000-000000000001";
+it("rejects a read without the per-worker gate capability before recording a receipt", async () => {
+  const gate = await startNativeRunBriefGate(worker, Date.now() + 120_000);
+  try {
+    for (const command of [gate.command.replace(/Bearer [a-f0-9]{64}/, ""), gate.command.replace(/Bearer [a-f0-9]{64}/, "Bearer incorrect")]) {
+      const child = spawn("sh", ["-c", command], { stdio: "ignore" });
+      expect((await once(child, "exit"))[0]).not.toBe(0);
+      expect(gate.calls).toEqual([]);
+    }
+  } finally { await gate.close(); }
+});
 it("holds an actual native command until the owned brief becomes available", async () => {
   const gate = await startNativeRunBriefGate(worker, Date.now() + 120_000);
   const child = spawn("sh", ["-c", gate.command], { stdio: ["ignore", "pipe", "pipe"] });

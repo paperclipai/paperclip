@@ -1,4 +1,5 @@
 import { createServer, type ServerResponse } from "node:http";
+import { randomBytes } from "node:crypto";
 import { listenOnFetchAllowedPort } from "../../e2e/fetch-allowed-port.js";
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -8,6 +9,7 @@ export async function startNativeRunBriefGate(workerId: string, deadlineAt: numb
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(workerId)) throw new Error("Invalid prerequisite worker identity");
   if (!Number.isFinite(deadlineAt) || deadlineAt <= Date.now()) throw new Error("Original prerequisite observation deadline is exhausted or missing");
   const route = `/website-brief/${workerId}`;
+  const authorization = `Bearer ${randomBytes(32).toString("hex")}`;
   const calls: Array<{ workerId: string; workerBound: boolean; receivedAt: string }> = [];
   const pending = new Set<ServerResponse>();
   let released = false;
@@ -18,12 +20,13 @@ export async function startNativeRunBriefGate(workerId: string, deadlineAt: numb
   };
   const server = createServer((request, response) => {
     if (request.method !== "GET" || request.url !== route) { response.writeHead(404); response.end(); return; }
+    if (request.headers.authorization !== authorization) { response.writeHead(401); response.end(); return; }
     calls.push({ workerId, workerBound: true, receivedAt: new Date().toISOString() });
     if (released) reply(response);
     else { pending.add(response); response.once("close", () => pending.delete(response)); }
   });
   const port = await listenOnFetchAllowedPort(server);
-  const script = `const response = await fetch(${JSON.stringify(`http://127.0.0.1:${port}${route}`)}, {signal: AbortSignal.timeout(Math.max(1, ${deadlineAt} - Date.now()))}); if (!response.ok) throw new Error("Website brief read failed"); process.stdout.write(await response.text());`;
+  const script = `const response = await fetch(${JSON.stringify(`http://127.0.0.1:${port}${route}`)}, {headers: {authorization: ${JSON.stringify(authorization)}}, signal: AbortSignal.timeout(Math.max(1, ${deadlineAt} - Date.now()))}); if (!response.ok) throw new Error("Website brief read failed"); process.stdout.write(await response.text());`;
   return {
     calls,
     command: `exec ${quote(process.execPath)} --input-type=module --eval ${quote(script)}`,
