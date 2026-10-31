@@ -592,3 +592,246 @@ describe("in-flight mirror", () => {
     }
   });
 });
+
+describe("in-flight mirror growth gate", () => {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const bigLine = { stream: "stdout" as const, chunk: "x".repeat(400), ts: "t0" };
+  const smallLine = { stream: "stdout" as const, chunk: "y", ts: "t1" };
+
+  it("past the every-interval size, re-uploads only once the log has grown by a quarter", async () => {
+    const { provider, objects, calls } = createMemoryProvider();
+    const store = createDurableRunLogStore({
+      basePath: baseDir,
+      s3: { provider, keyPrefix: "run-logs", inflightMirrorMs: 10, inflightMirrorEveryIntervalBytes: 100 },
+    });
+    const handle = await store.begin(begin);
+    const key = `run-logs/${handle.logRef}`;
+    const absPath = path.join(baseDir, handle.logRef);
+    await store.append(handle, bigLine);
+    const first = (await fs.stat(absPath)).size;
+    await vi.waitFor(() => expect(objects.get(key)?.length).toBe(first), { timeout: 2000 });
+    expect(calls.put).toBe(1);
+
+    let size = first;
+    for (;;) {
+      await store.append(handle, smallLine);
+      size = (await fs.stat(absPath)).size;
+      if (size - first >= Math.ceil(first / 4)) break;
+      await sleep(40);
+      expect(calls.put).toBe(1);
+    }
+    expect(size - first).toBeGreaterThan(smallLine.chunk.length);
+    await vi.waitFor(() => expect(objects.get(key)?.length).toBe(size), { timeout: 2000 });
+    expect(calls.put).toBe(2);
+    expect(objects.get(key)!.equals(await fs.readFile(absPath))).toBe(true);
+    await store.finalize(handle);
+  });
+
+  it("a log under the every-interval size re-uploads on every interval, however small the growth", async () => {
+    const { provider, objects, calls } = createMemoryProvider();
+    const store = createDurableRunLogStore({
+      basePath: baseDir,
+      s3: { provider, keyPrefix: "run-logs", inflightMirrorMs: 10 },
+    });
+    const handle = await store.begin(begin);
+    const key = `run-logs/${handle.logRef}`;
+    const absPath = path.join(baseDir, handle.logRef);
+    await store.append(handle, { stream: "stdout", chunk: "z".repeat(10_000), ts: "t0" });
+    const first = (await fs.stat(absPath)).size;
+    await vi.waitFor(() => expect(objects.get(key)?.length).toBe(first), { timeout: 2000 });
+    await store.append(handle, smallLine);
+    const size = (await fs.stat(absPath)).size;
+    expect(size - first).toBeLessThan(first / 4);
+    await vi.waitFor(() => expect(objects.get(key)?.length).toBe(size), { timeout: 2000 });
+    expect(calls.put).toBe(2);
+    await store.finalize(handle);
+  });
+
+  it("keeps the bytes the gated mirror re-reads over a run within five times the final size", async () => {
+    const { provider, objects } = createMemoryProvider();
+    const uploadedBytes: number[] = [];
+    const realPut = provider.putObject.bind(provider);
+    provider.putObject = async (input) => {
+      uploadedBytes.push(input.contentLength);
+      return realPut(input);
+    };
+    const store = createDurableRunLogStore({
+      basePath: baseDir,
+      s3: { provider, keyPrefix: "run-logs", inflightMirrorMs: 5, inflightMirrorEveryIntervalBytes: 100 },
+    });
+    const handle = await store.begin(begin);
+    const key = `run-logs/${handle.logRef}`;
+    const absPath = path.join(baseDir, handle.logRef);
+    for (let i = 0; i < 40; i++) {
+      await store.append(handle, { stream: "stdout", chunk: `line-${i}-${"w".repeat(150)}`, ts: `t${i}` });
+      await sleep(15);
+    }
+    await store.flushInflightMirrors?.();
+    const finalSize = (await fs.stat(absPath)).size;
+    expect(objects.get(key)?.length).toBe(finalSize);
+    const gated = uploadedBytes.slice(0, -1);
+    expect(uploadedBytes.at(-1)).toBe(finalSize);
+    for (let i = 1; i < gated.length; i++) expect(gated[i]! * 4).toBeGreaterThanOrEqual(gated[i - 1]! * 5);
+    expect(uploadedBytes.length).toBeLessThan(20);
+    expect(gated.reduce((sum, bytes) => sum + bytes, 0)).toBeLessThanOrEqual(5 * finalSize);
+    await store.finalize(handle);
+  });
+
+  it("the shutdown flush uploads a tail the growth gate held back, then nothing more", async () => {
+    const { provider, objects, calls } = createMemoryProvider();
+    const store = createDurableRunLogStore({
+      basePath: baseDir,
+      s3: { provider, keyPrefix: "run-logs", inflightMirrorMs: 10, inflightMirrorEveryIntervalBytes: 100 },
+    });
+    const handle = await store.begin(begin);
+    const key = `run-logs/${handle.logRef}`;
+    const absPath = path.join(baseDir, handle.logRef);
+    await store.append(handle, bigLine);
+    const first = (await fs.stat(absPath)).size;
+    await vi.waitFor(() => expect(objects.get(key)?.length).toBe(first), { timeout: 2000 });
+    await store.append(handle, { stream: "stdout", chunk: "held-tail", ts: "t1" });
+    await sleep(60);
+    expect(calls.put).toBe(1);
+    expect(objects.get(key)!.toString("utf8")).not.toContain("held-tail");
+    await store.flushInflightMirrors?.();
+    expect(calls.put).toBe(2);
+    expect(objects.get(key)!.equals(await fs.readFile(absPath))).toBe(true);
+    await store.flushInflightMirrors?.();
+    expect(calls.put).toBe(2);
+  });
+
+  it("a held-back partial stays readable as a live tail, and finalize overwrites it with the complete log", async () => {
+    const { provider, objects } = createMemoryProvider();
+    const store = createDurableRunLogStore({
+      basePath: baseDir,
+      s3: { provider, keyPrefix: "run-logs", inflightMirrorMs: 10, inflightMirrorEveryIntervalBytes: 100 },
+    });
+    const handle = await store.begin(begin);
+    const key = `run-logs/${handle.logRef}`;
+    const absPath = path.join(baseDir, handle.logRef);
+    await store.append(handle, bigLine);
+    const first = (await fs.stat(absPath)).size;
+    await vi.waitFor(() => expect(objects.get(key)?.length).toBe(first), { timeout: 2000 });
+    await store.append(handle, { stream: "stdout", chunk: "final-line", ts: "t1" });
+    await sleep(60);
+    const complete = await fs.readFile(absPath);
+
+    const reader = createDurableRunLogStore({
+      basePath: path.join(baseDir, "elsewhere"),
+      s3: { provider, keyPrefix: "run-logs" },
+    });
+    const partial = await reader.read(handle);
+    expect(partial.content).toContain("x".repeat(400));
+    expect(partial.content).not.toContain("final-line");
+
+    await store.finalize(handle);
+    expect(objects.get(key)!.equals(complete)).toBe(true);
+    expect((await reader.read(handle)).content).toContain("final-line");
+  });
+});
+
+describe("finalize then a retry's first mirror in one locate window", () => {
+  const finalizedBytes = 160;
+
+  async function finalizeOneLine(
+    store: ReturnType<typeof createDurableRunLogStore>,
+    putSizes: number[],
+  ) {
+    const handle = await store.begin(begin);
+    const envelope = Buffer.byteLength(
+      `${JSON.stringify({ ts: "t0", attemptId: handle.attemptId, stream: "stdout", chunk: "" })}\n`,
+    );
+    await store.append(handle, { stream: "stdout", chunk: "a".repeat(finalizedBytes - envelope), ts: "t0" });
+    await store.finalize(handle);
+    const finalized = await fs.readFile(path.join(baseDir, handle.logRef));
+    expect(finalized.length).toBe(finalizedBytes);
+    expect(putSizes).toEqual([finalizedBytes]);
+    return { handle, finalized };
+  }
+
+  function recordPuts(provider: StorageProvider, objects: Map<string, Buffer>) {
+    const putSizes: number[] = [];
+    const realPut = provider.putObject.bind(provider);
+    provider.putObject = async (input) => {
+      await realPut(input);
+      putSizes.push(objects.get(input.objectKey)!.length);
+    };
+    return putSizes;
+  }
+
+  it.each([0, 100])(
+    "a remote reader at offset %i gets the full finalized bytes while the retry's first mirror lands between its HEAD and GET",
+    async (offset) => {
+      const { provider, objects } = createMemoryProvider();
+      const putSizes = recordPuts(provider, objects);
+      const store = createDurableRunLogStore({
+        basePath: baseDir,
+        s3: { provider, keyPrefix: "run-logs", inflightMirrorMs: 10, inflightMirrorEveryIntervalBytes: 64 },
+      });
+      const { handle, finalized } = await finalizeOneLine(store, putSizes);
+      const key = `run-logs/${handle.logRef}`;
+
+      let retryMirrored = false;
+      const realGet = provider.getObject.bind(provider);
+      provider.getObject = async (input) => {
+        if (!retryMirrored && input.objectKey === key) {
+          retryMirrored = true;
+          const retry = await store.begin(begin);
+          await store.append(retry, { stream: "stdout", chunk: "retry-line", ts: "t50" });
+          await vi.waitFor(() => expect(putSizes.length).toBe(2), { timeout: 2000 });
+          await store.finalize(retry);
+        }
+        return realGet(input);
+      };
+      const readerDir = path.join(baseDir, "reader");
+      const reader = createDurableRunLogStore({ basePath: readerDir, s3: { provider, keyPrefix: "run-logs" } });
+      const page = await reader.read(handle, { offset, limitBytes: 100_000 });
+
+      expect(retryMirrored).toBe(true);
+      expect(page).toEqual({ content: finalized.subarray(offset).toString("utf8"), nextOffset: undefined });
+      expect(putSizes.length).toBe(3);
+      for (const size of putSizes) expect(size).toBeGreaterThanOrEqual(finalizedBytes);
+      expect(objects.get(key)!.subarray(0, finalizedBytes).equals(finalized)).toBe(true);
+      const restorer = createDurableRunLogStore({
+        basePath: path.join(baseDir, "restorer"),
+        s3: { provider, keyPrefix: "run-logs" },
+      });
+      const restored = await restorer.begin(begin);
+      const restoredBytes = await fs.readFile(path.join(baseDir, "restorer", restored.logRef));
+      expect(restoredBytes.equals(objects.get(key)!)).toBe(true);
+      expect(restoredBytes.subarray(0, finalizedBytes).equals(finalized)).toBe(true);
+    },
+  );
+
+  it("a new pod restoring inside the window never publishes a truncated prefix", async () => {
+    const { provider, objects } = createMemoryProvider();
+    const putSizes = recordPuts(provider, objects);
+    const store = createDurableRunLogStore({
+      basePath: baseDir,
+      s3: { provider, keyPrefix: "run-logs", inflightMirrorMs: 10, inflightMirrorEveryIntervalBytes: 64 },
+    });
+    const { handle } = await finalizeOneLine(store, putSizes);
+    const key = `run-logs/${handle.logRef}`;
+
+    let retryMirrored = false;
+    const realGet = provider.getObject.bind(provider);
+    provider.getObject = async (input) => {
+      if (!retryMirrored && input.objectKey === key) {
+        retryMirrored = true;
+        const retry = await store.begin(begin);
+        await store.append(retry, { stream: "stdout", chunk: "retry-line", ts: "t50" });
+        await vi.waitFor(() => expect(putSizes.length).toBe(2), { timeout: 2000 });
+      }
+      return realGet(input);
+    };
+    const restorerDir = path.join(baseDir, "restorer");
+    const restorer = createDurableRunLogStore({ basePath: restorerDir, s3: { provider, keyPrefix: "run-logs" } });
+    await expect(restorer.begin(begin)).rejects.toThrow("incomplete prefix");
+
+    expect(retryMirrored).toBe(true);
+    for (const size of putSizes) expect(size).toBeGreaterThanOrEqual(finalizedBytes);
+    await expect(fs.stat(path.join(restorerDir, handle.logRef))).rejects.toMatchObject({ code: "ENOENT" });
+    const restored = await restorer.begin(begin);
+    expect((await fs.readFile(path.join(restorerDir, restored.logRef))).equals(objects.get(key)!)).toBe(true);
+  });
+});
