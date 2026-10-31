@@ -5660,8 +5660,15 @@ function readRunnerdDurableIdentity(
 function readStagedRunnerdAttachment(root: string) {
   const path = resolve(root, "control-plane", "control-plane-state.json");
   if (!existsSync(path)) return null;
-  const state = record(JSON.parse(readBoundedNativeFile(path, NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
-    "runner_durable_identity_too_large").toString("utf8")));
+  let state: Record<string, unknown>;
+  try {
+    state = record(JSON.parse(readBoundedNativeFile(path, NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
+      "runner_durable_identity_too_large").toString("utf8")));
+  } catch {
+    // Detection must not preempt the existing forward-evidence fence or
+    // unreadable legacy identity quarantine. Neither path admits this state.
+    return null;
+  }
   if (state.stagedRunAttachment === undefined &&
       state.schema !== "paperclip.runner.durable.control-plane-state.staged-attachment.v1") return null;
   const staged = inspectStagedRunAttachment(state);
