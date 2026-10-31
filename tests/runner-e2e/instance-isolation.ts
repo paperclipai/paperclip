@@ -18,7 +18,9 @@ export function isOwnedLoopbackDatabase(connectionString: string, temporaryRoot:
 
 /** Written only after the supervisor has started this fixture's Postgres. */
 export async function recordControllerDatabaseOwnership(input: {
-  configPath: string; temporaryRoot: string; dataDirectory: string; connectionString: string; loopbackDatabase?: boolean;
+  configPath: string; temporaryRoot: string; dataDirectory: string; connectionString: string;
+  loopbackDatabase?: boolean;
+  externalDatabaseName?: string;
 }) {
   const temporaryRoot = await realpath(input.temporaryRoot);
   const dataDirectory = await realpath(input.dataDirectory);
@@ -26,7 +28,8 @@ export async function recordControllerDatabaseOwnership(input: {
     throw new Error("Controller database path escaped its fixture-owned root");
   }
   await writeFile(path.join(dataDirectory, CONTROLLER_DATABASE_OWNER_FILE), JSON.stringify({
-    version: input.loopbackDatabase ? 2 : 1, configPath: await realpath(input.configPath), temporaryRoot,
+    version: input.externalDatabaseName || input.loopbackDatabase ? 2 : 1, externalDatabaseName: input.externalDatabaseName,
+    configPath: await realpath(input.configPath), temporaryRoot,
     dataDirectory, connectionString: input.connectionString,
   }), { mode: 0o600 });
 }
@@ -95,15 +98,18 @@ export async function assertEmbeddedDatabaseIsolation(
       if (!directory.startsWith(`${root}${path.sep}`)) throw new Error("Database escaped fixture");
       const owner = JSON.parse(await readFile(path.join(directory, CONTROLLER_DATABASE_OWNER_FILE), "utf8"));
       const port = config.database.embeddedPostgresPort;
-      const external = owner.version === 2;
-      const expectedConnection = external ? config.database.connectionString!
-        : `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
-      if ((!external && (!Number.isInteger(port) || Number(port) < 1 || Number(port) > 65535))
-        || (external && !isOwnedLoopbackDatabase(expectedConnection, root))
-        || config.database.connectionString !== expectedConnection
-        || ![1, 2].includes(owner.version) || owner.temporaryRoot !== root || owner.dataDirectory !== directory
-        || owner.configPath !== await realpath(configPath) || owner.connectionString !== expectedConnection
-        || (!external && !(await stat(path.join(directory, "PG_VERSION"))).isFile())) {
+      const connection = new URL(config.database.connectionString!);
+      const external = owner.version === 2 && connection.search === ""
+        && ["postgres:", "postgresql:"].includes(connection.protocol)
+        && ["127.0.0.1", "localhost", "[::1]"].includes(connection.hostname)
+        && (owner.externalDatabaseName === undefined
+          ? isOwnedLoopbackDatabase(config.database.connectionString!, root)
+          : /^runner_e2e_[a-f0-9]{32}$/.test(owner.externalDatabaseName) && connection.pathname === `/${owner.externalDatabaseName}`);
+      const embedded = owner.version === 1 && Number.isInteger(port) && Number(port) > 0 && Number(port) <= 65535
+        && config.database.connectionString === `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`
+        && (await stat(path.join(directory, "PG_VERSION"))).isFile();
+      if ((!external && !embedded) || owner.temporaryRoot !== root || owner.dataDirectory !== directory
+        || owner.configPath !== await realpath(configPath) || owner.connectionString !== config.database.connectionString) {
         throw new Error("Supervisor database ownership mismatch");
       }
     } catch (cause) {

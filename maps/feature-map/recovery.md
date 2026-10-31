@@ -272,6 +272,15 @@ provider restart. For that journey, interrupt a disposable deployment after
 workspace preparation and before its first executor claim, then confirm one
 provider turn starts on the original run through the normal admission gates.
 
+The same suite's `diskless` and `diskless-per-turn` cases exercise three native
+controller processes with both native projections removed between completed
+turns. They check history and invocation counts through the real executor and
+admission snapshot rebinder. The workspace and sandbox remain available, and
+the processes use the same source revision. Separate Postgres tests cover
+metadata import, bounded discovery, ownership holds and incomplete-publication
+retention. These cases do not qualify full webserver disk loss, distinct releases,
+HTTP traffic continuity, or the live Daytona provider path.
+
 The [Runner transport regressions](../../packages/paperclip-runner/runner/crates/runner-core/src/durable/transport.rs)
 exercise a real WebSocket welcome delayed beyond two seconds. Authentication
 uses the ten-second connection setup budget, clipped by the current lifecycle

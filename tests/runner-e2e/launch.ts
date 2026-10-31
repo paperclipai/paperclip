@@ -5,11 +5,12 @@ import { readRecoveredFeedback } from "./feedback-recovery.js";
 import { readInterruptedAttemptTrace } from "./trace-recovery.js";
 import { EVAL_OBSERVABILITY_SECRET_NAMES, evalBraintrustConfig, finalizeEvalAttemptTrace } from "./braintrust.js";
 import { finalizeEvalAttemptThroughRelay } from "./eval-finalization-relay.js";
-import { runnerE2EPlaywrightInvocation, runnerE2EPlaywrightShutdownSignal } from "./web-server-command.js";
+import { runnerE2EPlaywrightCaseTimeoutMs, runnerE2EPlaywrightInvocation, runnerE2EPlaywrightShutdownSignal, runnerE2EPlaywrightWatchdogMs } from "./web-server-command.js";
 import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import { assertInstalledCliSelection, assertInstalledStartupOnly, verifyInstalledCli } from "./installed-cli.js";
 import { createProcessTreeOwner, stopOwnedProcessTree } from "./process-tree-owner.js";
 import { createRunnerE2ETemporaryRoot } from "./server-config.js";
+import { createExternalControllerDatabase } from "./external-controller-database.js";
 import { createHash, randomBytes } from "node:crypto";
 import { prepareCodexCiSandbox, requiresCodexCiSandbox } from "./codex-ci-sandbox.js";
 import { spawn } from "node:child_process";
@@ -32,7 +33,8 @@ import {
 } from "node:fs/promises";
 import { isImmutableDaytonaImage, runnerMatrix } from "./catalog.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
-import { packageEvidence } from "./evidence.js";
+import { packageEvidence, publishRunnerE2EAttemptEvidence } from "./evidence.js";
+import { prepareRunnerE2ECampaignDirectory, resolveRunnerE2EResultsRoot } from "./results-root.js";
 import { privateCellEvidenceOwner } from "./manual-private-report-assets.js";
 import { readManualPrivateHandoff, sealManualResultEvidence, preserveOriginalFrameworkResult, sealStandardOriginalEvidence, type ManualPrivateHandoff } from "./manual-private-handoff.js";
 import { requiresPrivateManualEvidence } from "./manual-private-retention.js";
@@ -484,6 +486,7 @@ async function runAttempt(input: {
     );
   }
   if (process.env.GITHUB_ACTIONS === "true" && !input.operations && executions.some(candidate => requiresPrivateManualEvidence(candidate.id)) && !manualPrivateHandoff) throw new Error("Sensitive manual evidence requires verified restricted retention before setup");
+  await prepareRunnerE2ECampaignDirectory(resultsRoot, campaignId);
   const upgrades = await readUpgradeArtifacts(process.env[upgradeArtifactKey]);
   if (upgrades) {
     // All attempts and the browser use A's installed fixture admission. The
@@ -506,6 +509,7 @@ async function runAttempt(input: {
   let attemptSecrets: string[] = [];
   let processCleanupFailed = false;
   let startupReceiptPath: string | undefined;
+  let externalDatabase: Awaited<ReturnType<typeof createExternalControllerDatabase>> | undefined;
   let gateway: Awaited<ReturnType<EvalOperations["start"]>> | undefined;
   const rawCleanupResults: Array<{ cleanup: string; synthetic: boolean; status: string }> = [];
   try {
@@ -519,6 +523,11 @@ async function runAttempt(input: {
       "config.json",
     );
     const port = await reserveRunnerE2EServerPort();
+    if (process.env.PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL) {
+      externalDatabase = await createExternalControllerDatabase({
+        adminUrl: process.env.PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL, temporaryRoot, configPath, serverPort: port,
+      });
+    }
     await Promise.all([
       mkdir(paperclipHome, { recursive: true }),
       mkdir(workspace, { recursive: true }),
@@ -581,9 +590,9 @@ async function runAttempt(input: {
         Math.max(
           ...executions.map(
             (candidate) =>
-              candidate.task.attemptTimeoutMs[candidate.environment.id],
+              runnerE2EPlaywrightCaseTimeoutMs(candidate.task.flow, candidate.task.attemptTimeoutMs[candidate.environment.id]),
           ),
-        ) + 90_000,
+        ),
       ),
       PAPERCLIP_HOME: paperclipHome,
       PAPERCLIP_INSTANCE_ID: instanceId,
@@ -615,14 +624,7 @@ async function runAttempt(input: {
     const watchdog =
       options.ui || options.debug
         ? null
-        : executions.reduce(
-            (total, candidate) =>
-              total +
-              candidate.task.attemptTimeoutMs[candidate.environment.id] +
-              90_000,
-            0,
-          ) +
-          5 * 60_000;
+        : runnerE2EPlaywrightWatchdogMs(executions);
     const processResult = await runProcess(
       runnerE2EPlaywrightInvocation(repositoryRoot, playwrightArgs),
       childEnv,
@@ -747,7 +749,7 @@ async function runAttempt(input: {
       }
     }
     for (const [index, candidate] of executions.entries()) {
-      let result = {
+      let result: RunnerE2EResult = {
         ...results[index],
         accountingIdentity: { campaignId: accountingCampaignId, attemptId: accountingAttemptId },
       };
@@ -805,7 +807,6 @@ async function runAttempt(input: {
         }
       }
       const casePrivateDir = path.join(privateDir, "cases", candidate.task.id);
-      const resultPath = path.join(casePrivateDir, "result.json");
       const uploadDir = path.join(
         resultsRoot,
         campaignId,
@@ -827,48 +828,59 @@ async function runAttempt(input: {
           originalResult: { status: original.status, failureClass: original.failureClass, error: original.error },
         }, credentials), null, 2)}\n`, { mode: 0o600 });
       }
-      if (manualPrivateHandoff) await preserveOriginalFrameworkResult(casePrivateDir);
-      await writeFile(
-        resultPath,
-        `${JSON.stringify(sanitizeJson(result, credentials), null, 2)}\n`,
-        "utf8",
-      );
-      let evidence = await packageEvidence({
-        privateDir: casePrivateDir,
-        uploadDir,
-        secrets: credentials,
-        expectPassScreenshot: result.status === "passed",
-        ...(manualPrivateHandoff ? { privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const } } : {}),
-      });
-      const originalEvidence = evidence, originalFeaturePassed = result.status === "passed";
-      if (evidence.leaks.length > 0 || evidence.missing.length > 0) {
-        result = {
-          ...result,
-          status: "failed",
-          failureClass:
-            evidence.leaks.length > 0
-              ? "secret_leak"
-              : "permanent_infrastructure",
-          error:
-            evidence.leaks.length > 0
-              ? `Secret leak rejected from evidence: ${evidence.leaks.map((leak) => leak.file).join(", ")}`
-              : `Required evidence missing: ${evidence.missing.join(", ")}`,
-        };
+      const resultPath = path.join(casePrivateDir, "result.json");
+      if (manualPrivateHandoff) {
+        await preserveOriginalFrameworkResult(casePrivateDir);
         await writeFile(
           resultPath,
           `${JSON.stringify(sanitizeJson(result, credentials), null, 2)}\n`,
           "utf8",
         );
-        evidence = await packageEvidence({
+        let evidence = await packageEvidence({
           privateDir: casePrivateDir,
           uploadDir,
           secrets: credentials,
-          expectPassScreenshot: false,
-          ...(manualPrivateHandoff ? { privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const } } : {}),
+          expectPassScreenshot: result.status === "passed",
+          privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const },
+        });
+        const originalEvidence = evidence, originalFeaturePassed = result.status === "passed";
+        if (evidence.leaks.length > 0 || evidence.missing.length > 0) {
+          result = {
+            ...result,
+            status: "failed",
+            failureClass:
+              evidence.leaks.length > 0
+                ? "secret_leak"
+                : "permanent_infrastructure",
+            error:
+              evidence.leaks.length > 0
+                ? `Secret leak rejected from evidence: ${evidence.leaks.map((leak) => leak.file).join(", ")}`
+                : `Required evidence missing: ${evidence.missing.join(", ")}`,
+          };
+          await writeFile(
+            resultPath,
+            `${JSON.stringify(sanitizeJson(result, credentials), null, 2)}\n`,
+            "utf8",
+          );
+          evidence = await packageEvidence({
+            privateDir: casePrivateDir,
+            uploadDir,
+            secrets: credentials,
+            expectPassScreenshot: false,
+            privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const },
+          });
+        }
+        await sealStandardOriginalEvidence({ context: manualPrivateHandoff,
+          executionId: candidate.id, source: casePrivateDir, evidence: originalEvidence, secrets: credentials, expectPassScreenshot: originalFeaturePassed });
+      } else {
+        result = await publishRunnerE2EAttemptEvidence({
+          result,
+          resultsRoot,
+          privateDir: casePrivateDir,
+          uploadDir,
+          secrets: credentials,
         });
       }
-      if (manualPrivateHandoff) await sealStandardOriginalEvidence({ context: manualPrivateHandoff,
-        executionId: candidate.id, source: casePrivateDir, evidence: originalEvidence, secrets: credentials, expectPassScreenshot: originalFeaturePassed });
       console.log(
         `${result.status === "passed" ? "PASS" : "FAIL"} ${candidate.id} attempt ${attempt} -> ${uploadDir}`,
       );
@@ -886,7 +898,11 @@ async function runAttempt(input: {
     let cleanupError: unknown;
     const resourceAdmissionStarted = await access(path.join(privateDir, "resource-admission-started"))
       .then(() => true).catch((error: NodeJS.ErrnoException) => error.code !== "ENOENT");
-    if (mustPreserveRecoveryState({ processCleanupFailed, resourceAdmissionStarted, results: rawCleanupResults })) {
+    const preserveRecovery = mustPreserveRecoveryState({ processCleanupFailed, resourceAdmissionStarted, results: rawCleanupResults });
+    if (!preserveRecovery) {
+      try { await externalDatabase?.cleanup(); } catch (error) { cleanupError = error; }
+    }
+    if (preserveRecovery || cleanupError) {
       // Remote allocation cleanup is journaled in this instance's database.
       // Deleting it after the controller exits would strand uncertain creates.
       await chmod(temporaryRoot, 0o700);
@@ -1060,7 +1076,7 @@ async function main() {
   }
   const executions = selectRunnerExecutions(options, runnerMatrix);
   manualPrivateHandoff = await readManualPrivateHandoff(process.env, executions.map(execution => execution.id));
-  if (manualPrivateHandoff) resultsRoot = path.join(manualPrivateHandoff.root, "results");
+  resultsRoot = manualPrivateHandoff ? path.join(manualPrivateHandoff.root, "results") : resolveRunnerE2EResultsRoot(repositoryRoot);
   if (options.installedStartupOnly) {
     assertInstalledStartupOnly(process.env, executions, options);
     assertRunnerE2EPrerequisites(executions);
@@ -1117,8 +1133,9 @@ async function main() {
     process.env.PAPERCLIP_E2E_CAMPAIGN_ID ??
       `local-${new Date().toISOString().replace(/[:.]/g, "-")}`,
   );
-  const summaryDir = path.join(resultsRoot, campaignId);
-  await mkdir(summaryDir, { recursive: true });
+  await loadLocalEnvironment(process.env);
+  resultsRoot = manualPrivateHandoff ? path.join(manualPrivateHandoff.root, "results") : resolveRunnerE2EResultsRoot(repositoryRoot);
+  const summaryDir = await prepareRunnerE2ECampaignDirectory(resultsRoot, campaignId);
   if (executions.some(execution => execution.suite.id === "native-completion")) {
     process.env[NATIVE_COMPLETION_PREFLIGHT_ENV] = prepareNativeCompletionPreflight(summaryDir);
   }
@@ -1129,7 +1146,6 @@ async function main() {
     process.env[STOCK_PREFLIGHT_ENV] = prepareStockHarnessPreflight(summaryDir);
   }
 
-  await loadLocalEnvironment(process.env);
   assertRemoteNativeEvidencePrerequisites(executions, process.env);
   const missingCredentials = process.env.PAPERCLIP_E2E_OPERATIONS_MANIFEST ? [] : [
     ...new Set(

@@ -169,6 +169,15 @@ rejects mutable tag or branch references.
 
 ## Secrets and protected environments
 
+Kimi's explicit-only `kimi-qualification` cells use `KIMI_API_KEY`, delivered
+through the launcher's normal encrypted company-secret fixture path. All ambient
+`KIMI_*` values, including legacy model keys and login-home aliases, are removed
+from the product server environment. Neither the catalog nor evidence stores
+the key. The maintained Code profile does not borrow an ambient OAuth cache or
+fall back to `KIMI_MODEL_API_KEY`. This registration does not add a hosted paid
+workflow credential grant; hosted authorization and secret delivery remain a
+separate change.
+
 Explicit Grok subscription campaigns may select `GROK_AUTH_JSON` from the same
 protected paid environment. Deliver it only to that subscription profile's paid
 test step. Prefer a dedicated test-account login and refresh it before a campaign.

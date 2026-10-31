@@ -210,10 +210,12 @@ describe("Codex ACPX harness driver", () => {
     await session.close({ reason: "native attribution verified" });
   });
 
-  it.runIf(QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending")("rejects pending Kimi before opening a direct runtime host", () => {
+  it("enforces the current Kimi release gate before opening a direct runtime host", () => {
     const openHost = vi.fn();
-    expect(() => driverFixture({ agent: "kimi", model: "kimi-for-coding", providerPolicy: { readOnly: true } }, { openHost }))
-      .toThrow(expect.objectContaining({ code: "ACPX_PROFILE_QUALIFICATION_PENDING", retryable: false }));
+    const construct = () => driverFixture({ agent: "kimi", model: "kimi-for-coding", providerPolicy: { readOnly: true } }, { openHost });
+    if (QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending") {
+      expect(construct).toThrow(expect.objectContaining({ code: "ACPX_PROFILE_QUALIFICATION_PENDING", retryable: false }));
+    } else expect(construct).not.toThrow();
     expect(openHost).not.toHaveBeenCalled();
   });
 

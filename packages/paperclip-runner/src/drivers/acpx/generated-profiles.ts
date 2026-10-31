@@ -101,13 +101,12 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "protocolVersion": 1,
     "acpxVersion": "0.13.1",
     "agent": "kimi",
-    "agentProfileVersion": 16,
+    "agentProfileVersion": 17,
     "agentServerPackage": "@moonshot-ai/kimi-code",
     "agentServerVersion": "2.3.3",
     "agentRuntimePackage": null,
     "agentRuntimeVersion": null,
-    "commandDigest": "sha256:0c1e6ce460407ec973a37a2d192d665fcde744e2b9875c791c90308afbf4c52b",
-    "qualificationStatus": "pending",
+    "commandDigest": "sha256:6ee5fb7ac18c1361ac63effe9117d08ed129add8349756a140e73e0c86ba5da7",
     "permissionPolicy": "interactive"
   }
 } as const;

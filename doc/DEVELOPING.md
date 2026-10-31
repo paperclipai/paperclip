@@ -991,7 +991,16 @@ Use the cheap local default unless you are specifically working on browser flows
 pnpm test
 ```
 
-`pnpm test` runs the Vitest suite only. For interactive Vitest watch mode use:
+`pnpm test` runs the Vitest suite only. Its default chat integration coverage runs
+first in six sequential, exact-cover child processes, each with its own home,
+config and embedded PostgreSQL. The remaining server invocation excludes that
+chat file once and retains the native Runner suites. This bounds shared fixture
+and process lifetime without increasing concurrency or changing case assertions
+or timeouts. An explicit `PAPERCLIP_TEST_DATABASE_URL` retains the original
+single, serial database path. Explicit `--group` invocations and CI shard routing
+are unchanged.
+
+For interactive Vitest watch mode use:
 
 ```sh
 pnpm test:watch
@@ -2703,6 +2712,26 @@ and `packages/adapter-utils/src/sandbox-callback-bridge.test.ts` for these contr
 
 ### Native runner restart recovery
 
+For remote controller disk-loss work, use the existing control-plane snapshot
+transaction and `native-controller-recovery.ts`; do not add a second snapshot
+writer. The private versioned metadata is limited to 4 KiB. Its importer handles
+one verified retained source while the source disk is available. Workspace and
+provider-backup migrations remain with their storage owners. See
+[the continuity verification guide](testing-native-remote-continuity.md) for
+the direct/prepared transport and three-controller continuation fixtures.
+An upgrade readiness report contains preliminary native evidence, not permission
+to remove a deployment volume. Keep the checkpoint pool bounded and measure all
+pools when qualifying database cost; the current size of two is a default.
+
+For retained Codex event tails, keep source drain/accounting and target admission
+separate. `native-staged-attachment-recovery.ts` validates private source/target
+header evidence; `native-recovery-usage-delivery.ts` binds the source's accounting
+receiver. The transport persists its staged target before source bootstrap, then
+uses the existing authenticated attachment protocol after durable drain. Do not
+rotate the identity first, acknowledge before receipt persistence, or weaken the
+Runner's settled-provider check. A staged target does not yet certify a resumable
+session. Its eventual snapshot still uses the existing checkpoint transaction.
+
 Custom source-mode HTTP launchers should create their listener with
 `createPaperclipHttpServer` from `server/src/http/server.ts`, passing the selected
 API origin as `apiUrl`. This registers the native Runner WebSocket transport
@@ -2844,6 +2873,35 @@ The suite uses isolated PostgreSQL state, isolated `PAPERCLIP_HOME` roots, real
 and hard restarts with live and dead runners, the result-finalization race,
 incomplete bootstrap, repeated crashes with steering, and fail-closed process
 identity mismatches.
+
+Native task-session publication is part of the terminal checkpoint transaction,
+not resource cleanup. `native-task-session-publication.ts` owns its accepted-result,
+owner, task-epoch and reset checks; heartbeat supplies prepared session metadata.
+The goal-less regression in `native-session-resumption.test.ts` holds provider
+cleanup open and then exercises a normal follow-up and an explicit session reset.
+Control-port tests also cover terminal snapshots before accepted results and
+result-replay contention with the status writer's coordinator-first lock order.
+Remote adoption tests must invoke actual external-state preparation. Inspecting
+transport options alone does not exercise the resumed-lease harness checks.
+Include a healthy warm handoff before the crash so recovery exercises the
+handoff's turn and item attachment IDs as well as first-run identities.
+Retirement tests must exercise the preceding `turn.stop` as well as drain and
+suspend after result acceptance. Use the actual native-observed, unclaimed
+admission phase and the production claim before retiring the predecessor;
+a synthetic legacy preparation does not cover that boundary. Verify failed
+claims and Stop leave the predecessor and shared attachment staging untouched.
+Configuration tests compare fresh and recovered
+home-mode fingerprints while preserving rejection of real mode changes.
+Include multiple skill versions read back from Postgres JSONB: version-map key
+order must not change the generated preference or session fingerprint. Exercise
+the real environment-selection and configuration services with a retained shared
+workspace, and keep actual model or skill-version changes incompatible.
+Run it against an isolated database with `PAPERCLIP_TEST_DATABASE_URL` when the
+host cannot start embedded Postgres:
+
+```sh
+pnpm exec vitest run server/src/__tests__/native-session-resumption.test.ts -t 'publishes the completed task session before provider cleanup'
+```
 
 ## Version-based skill authoring and delivery
 

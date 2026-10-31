@@ -65,7 +65,7 @@ test("Kimi metadata CLI is self-contained and rejects incomplete assets without 
     runId: "metadata-operation", normalizedSessionId: "metadata-session" };
   const child = spawnSync(node, ["--require", preload, entry], {
     env: { KIMI_API_KEY: "selected-secret-canary", PAPERCLIP_KIMI_PROBE_MODEL: "selected-model",
-      PAPERCLIP_ACPX_CANDIDATE_ADMISSION: JSON.stringify(admission),
+      ...(profile.qualificationStatus === "pending" ? { PAPERCLIP_ACPX_CANDIDATE_ADMISSION: JSON.stringify(admission) } : {}),
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: root, PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST: manifest,
       KIMI_MODEL_DEFAULT: "unselected-model", HOME: "/private/unselected-home", HTTPS_PROXY: "http://127.0.0.1:9",
       ANTHROPIC_API_KEY: "unselected-secret-canary", NODE_OPTIONS: "", NODE_PATH: "/unselected-module-path" },
@@ -80,16 +80,31 @@ test("Kimi metadata CLI is self-contained and rejects incomplete assets without 
       ? "Install the current verified Kimi Code runtime in this execution environment."
       : "Kimi metadata verification requires the pinned Node runtime.", promptSent: false });
 
-  const unqualified = spawnSync(node, ["--require", preload, entry], {
+  const withoutAdmission = spawnSync(node, ["--require", preload, entry], {
     env: { KIMI_API_KEY: "selected-secret-canary", PAPERCLIP_KIMI_PROBE_MODEL: "selected-model",
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: root, PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST: manifest },
     encoding: "utf8", timeout: 10_000,
   });
-  assert.ifError(unqualified.error); assert.equal(unqualified.status, 1);
+  assert.ifError(withoutAdmission.error); assert.equal(withoutAdmission.status, 1);
   if (process.versions.node === "24.21.0" || node === pinnedNode) {
-    assert.equal(JSON.parse(unqualified.stdout).code, "KIMI_QUALIFICATION_REQUIRED");
+    assert.equal(JSON.parse(withoutAdmission.stdout).code,
+      profile.qualificationStatus === "pending" ? "KIMI_QUALIFICATION_REQUIRED" : "KIMI_INSTALLATION_INVALID");
   }
-  assert.doesNotMatch(unqualified.stdout + unqualified.stderr, /UNEXPECTED_NETWORK_OR_CHILD|selected-secret-canary/);
+  assert.doesNotMatch(withoutAdmission.stdout + withoutAdmission.stderr, /UNEXPECTED_NETWORK_OR_CHILD|selected-secret-canary/);
+
+  if (profile.qualificationStatus !== "pending") {
+    const formerAdmission = spawnSync(node, ["--require", preload, entry], {
+      env: { KIMI_API_KEY: "selected-secret-canary", PAPERCLIP_KIMI_PROBE_MODEL: "selected-model",
+        PAPERCLIP_ACPX_CANDIDATE_ADMISSION: JSON.stringify(admission),
+        PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: root, PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST: manifest,
+        HOME: "/private/unselected-home", HTTPS_PROXY: "http://127.0.0.1:9", ANTHROPIC_API_KEY: "unselected-secret-canary" },
+      encoding: "utf8", timeout: 10_000,
+    });
+    assert.ifError(formerAdmission.error); assert.equal(formerAdmission.status, 1); assert.equal(formerAdmission.signal, null);
+    assert.deepEqual(JSON.parse(formerAdmission.stdout), { schema: "paperclip.kimi.metadata.v1", status: "failed",
+      code: "KIMI_REQUEST_FAILED", message: "Kimi Code metadata verification failed.", promptSent: false });
+    assert.doesNotMatch(formerAdmission.stdout + formerAdmission.stderr, /UNEXPECTED_NETWORK_OR_CHILD|selected-secret-canary|unselected-secret-canary/);
+  }
 
   for (const layout of ["runner", "server"]) {
     const packageDirectory = join(root, layout);

@@ -142,6 +142,16 @@
       "version": 15,
       "commandDigest": "sha256:658e6d41ce6fc7080aa6655d7a97121b3cae6214f2d4c074284d958b95bbe769",
       "launchAuthority": false
+    },
+    {
+      "path": "packages/paperclip-runner/test/fixtures/kimi-profile-v17-identity.json",
+      "originRevision": "2935b71c5d47152b7d2a9c593913390a14aea1e5",
+      "originPath": "packages/paperclip-runner/test/fixtures/kimi-profile-v17-identity.json",
+      "sha256": "c3b6a1bf95e7de1abf7a07f042b5dbe9c10d1a3ae2007a886b6387d779a7a205",
+      "agent": "kimi",
+      "version": 17,
+      "commandDigest": "sha256:e3da3859ef3fe4904d2b917c2cbdde6181f4dbeb6480eba43d37614fb29ddd70",
+      "launchAuthority": false
     }
   ]
 }

@@ -127,10 +127,11 @@ An administrator-owned read-only Runner can therefore use a user-writable cache,
 but this provides weaker protection against that same user than hashing every
 executable on each admission. Removing the cache restores full hashing.
 
-Kimi keeps revision 16 from its pending candidate history. Its release
-attestation replaces the earlier source-bound digest without advancing that
-revision. Historical candidate records stay readable, while exact current
-digest admission refuses their old launch identities. Kimi remains pending.
+Kimi retains released revision 17, which separates ordinary admission from
+pending revision 16. Its upstream-only release attestation replaces the earlier
+source-bound digest without another revision bump. Historical candidate and
+released records remain unchanged and readable; exact current digest admission
+refuses their old launch identities.
 
 ## External controller checkpoints
 

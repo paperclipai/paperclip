@@ -5,6 +5,24 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+export function assertKimiProviderPackInventory(manifest, profile, closures, platform = process.platform, architecture = process.arch) {
+  assert.equal(manifest.schema, "paperclip-runner/remote-provider-pack/v1");
+  assert.deepEqual(manifest.payload.target, { platform, architecture });
+  const target = `${platform}-${architecture}`;
+  assert.ok(["darwin-arm64", "linux-x64"].includes(target));
+  const pending = profile.qualificationStatus === "pending";
+  const identity = pending ? manifest.payload.candidateProviders?.kimi : manifest.payload.providers?.kimi;
+  assert.equal(pending ? manifest.payload.providers?.kimi : manifest.payload.candidateProviders?.kimi, undefined);
+  assert.equal(identity?.qualification, pending ? "pending" : "qualified");
+  assert.equal(identity.version, profile.agentServerVersion);
+  assert.equal(identity.path, `provider-assets/kimi/${target}`);
+  assert.equal(identity.profileDigest, profile.commandDigest);
+  assert.match(closures[target] ?? "", /^[a-f0-9]{64}$/);
+  assert.equal(identity.closureDigest, `sha256:${closures[target]}`);
+  assert.match(identity.sha256, /^sha256:[a-f0-9]{64}$/);
+  return identity;
+}
+
 export async function smokeKimiProviderPack(directory) {
   const pack = await realpath(resolve(directory));
   const manifest = JSON.parse(await readFile(join(pack, "provider-pack.json"), "utf8"));
@@ -12,17 +30,11 @@ export async function smokeKimiProviderPack(directory) {
   assert.equal(manifest.payload.target.platform, process.platform);
   assert.equal(manifest.payload.target.architecture, process.arch);
   if (process.env.PAPERCLIP_EXPECTED_SOURCE_REVISION) assert.equal(manifest.payload.runnerSourceRevision, process.env.PAPERCLIP_EXPECTED_SOURCE_REVISION);
-  const candidate = manifest.payload.candidateProviders?.kimi;
-  assert.equal(candidate?.qualification, "pending");
-  assert.equal(candidate.version, "2.3.3");
-  assert.equal(candidate.path, `provider-assets/kimi/${process.platform}-${process.arch}`);
-  assert.equal(manifest.payload.providers?.kimi, undefined);
   const load = path => import(pathToFileURL(join(pack, "dist/drivers/acpx", path)));
   const [{ verifyKimiInstallation }, { QUALIFIED_ACPX_PROFILES }, { kimiManagedConfiguration }, { kimiInstructionBinding }, { KIMI_DISTRIBUTION_CLOSURE_SHA256 }] = await Promise.all([
     load("kimi-installation.js"), load("qualified-profiles.js"), load("kimi-config.js"), load("kimi-instructions.js"), load("kimi-closure-pins.js"),
   ]);
-  assert.equal(candidate.profileDigest, QUALIFIED_ACPX_PROFILES.kimi.commandDigest);
-  assert.equal(candidate.closureDigest, `sha256:${KIMI_DISTRIBUTION_CLOSURE_SHA256[`${process.platform}-${process.arch}`]}`);
+  const provider = assertKimiProviderPackInventory(manifest, QUALIFIED_ACPX_PROFILES.kimi, KIMI_DISTRIBUTION_CLOSURE_SHA256);
   const keys = ["PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST"];
   const previous = keys.map(key => process.env[key]);
   process.env[keys[0]] = pack; process.env[keys[1]] = join(pack, "package.json");
@@ -104,7 +116,7 @@ export async function smokeKimiProviderPack(directory) {
     assert.equal(loaded.configOptions.find(option => option.id === "model").currentValue, model);
     const loadExitMs = await second.close();
     return { schema: "paperclip.kimi-provider-pack-smoke.v1", sourceRevision: manifest.payload.runnerSourceRevision, providerPackDigest: manifest.digest,
-      platform: process.platform, architecture: process.arch, runtimeVersion: "2.3.3", profileDigest: candidate.profileDigest, closureDigest: candidate.closureDigest,
+      platform: process.platform, architecture: process.arch, runtimeVersion: "2.3.3", profileDigest: provider.profileDigest, closureDigest: provider.closureDigest,
       createAcknowledged: true, loadAcknowledged: true, model, createExitMs, loadExitMs, providerPrompts: 0, providerCredentials: false,
       qualification: "installed runtime only; no model entitlement or task completion" };
   } finally {

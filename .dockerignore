@@ -29,6 +29,8 @@ packages/paperclip-runner/**/*.test.ts
 packages/paperclip-runner/**/*.test.tsx
 packages/paperclip-runner/runner/crates/*/tests
 packages/paperclip-runner/scripts/*-smoke.mjs
+# The provider-pack builder imports this helper during image builds.
+!packages/paperclip-runner/scripts/kimi-provider-pack-smoke.mjs
 # Exceptions (last match wins): the image build re-runs the runner's
 # generated-file drift checks, so their committed outputs and inputs must
 # survive the slimming above. 2026-09-04: the *.md rule stripped the

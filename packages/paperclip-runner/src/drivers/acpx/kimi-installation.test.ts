@@ -87,13 +87,29 @@ describe("Kimi installed runtime admission", () => {
     expect(() => assertKimiInstallationProfile(QUALIFIED_ACPX_PROFILES.kimi)).not.toThrow();
   });
 
-  it("decodes the old pending revision while refusing its source-bound launch digest", () => {
-    const historical = JSON.parse(readFileSync(new URL("../../../test/fixtures/kimi-profile-v16-identity.json", import.meta.url), "utf8"));
-    expect(isSupportedAcpxProfileVersion("kimi", historical.declaration.agentProfileVersion)).toBe(true);
-    expect(QUALIFIED_ACPX_PROFILES.kimi.agentProfileVersion).toBe(historical.declaration.agentProfileVersion);
+  it("decodes pending16 history without installing it as ordinary released17", () => {
+    const bytes = readFileSync(new URL("../../../test/fixtures/kimi-profile-v16-identity.json", import.meta.url));
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe("69e5fb7e7c445be7eee37bf7e6a8fa135cf2f88e0a997a95065ca79526e91470");
+    const prior = JSON.parse(bytes.toString("utf8"));
+    expect(prior.declaration.qualificationStatus).toBe("pending");
+    expect(isSupportedAcpxProfileVersion("kimi", 16)).toBe(true);
+    expect(QUALIFIED_ACPX_PROFILES.kimi.agentProfileVersion).toBe(17);
+    expect(QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus).toBeUndefined();
+    expect(() => assertKimiInstallationProfile({ ...QUALIFIED_ACPX_PROFILES.kimi,
+      agentProfileVersion: 16, commandDigest: prior.commandDigest })).toThrow(/trusted declaration/);
+    expect(() => assertKimiInstallationProfile(QUALIFIED_ACPX_PROFILES.kimi)).not.toThrow();
+  });
+
+  it("preserves the source-bound released17 identity without accepting its old digest", () => {
+    const bytes = readFileSync(new URL("../../../test/fixtures/kimi-profile-v17-identity.json", import.meta.url));
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe("c3b6a1bf95e7de1abf7a07f042b5dbe9c10d1a3ae2007a886b6387d779a7a205");
+    const historical = JSON.parse(bytes.toString("utf8"));
+    expect(historical.declaration.agentProfileVersion).toBe(17);
+    expect(QUALIFIED_ACPX_PROFILES.kimi.agentProfileVersion).toBe(17);
     expect(QUALIFIED_ACPX_PROFILES.kimi.commandDigest).not.toBe(historical.commandDigest);
     expect(() => assertKimiInstallationProfile({ ...QUALIFIED_ACPX_PROFILES.kimi,
       commandDigest: historical.commandDigest })).toThrow(/trusted declaration/);
+    expect(() => assertKimiInstallationProfile(QUALIFIED_ACPX_PROFILES.kimi)).not.toThrow();
   });
 
   it("gives the normal setup command and never falls back to ambient kimi when assets are missing", async () => {
