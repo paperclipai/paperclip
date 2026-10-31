@@ -6,6 +6,7 @@ import { completionContracts } from "@paperclipai/db";
 import type { NativeCompletionSource, StrictCompletionContractInput } from "../../vendor/paperclip-runner/index.js";
 
 import { nativeSha256 } from "./canonical.js";
+import { isConversation, type ConversationIdentity } from "../agent-conversations.js";
 
 export const NATIVE_COMPLETION_CONTRACT_SCHEMA = "paperclip.completion-contract.v1";
 export const NATIVE_COMPLETION_POLICY_VERSION = "phase6-v4";
@@ -87,7 +88,7 @@ export function resolveNativeCompletionPolicy(issue: {
 }
 
 export function buildNativeCompletionContract(
-  issue: { title: string; description: string | null; conversationAgentId?: string | null },
+  issue: { title: string; description: string | null } & ConversationIdentity,
   options: {
     readonly revision?: number;
     readonly immediateRequest?: string | null;
@@ -104,7 +105,7 @@ export function buildNativeCompletionContract(
     .filter((request) => request.length > 0);
   const humanResponseId = options.humanResponseId?.trim();
   const hasFollowUp = immediateRequests.length > 0 || Boolean(humanResponseId);
-  const conversation = Boolean(issue.conversationAgentId);
+  const conversation = isConversation(issue);
   const requirement = (request: string) => conversation
     ? `Address this request in the current authorized conversation response: ${request}`
     : request;
@@ -165,6 +166,7 @@ export async function ensureNativeCompletionContract(input: {
     description: string | null;
     reviewPolicy?: string | null;
     conversationAgentId?: string | null;
+    conversationUserId?: string | null;
   };
   actorId: string;
   immediateRequest?: string | null;

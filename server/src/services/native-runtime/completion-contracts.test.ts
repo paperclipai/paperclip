@@ -12,7 +12,7 @@ import {
 
 describe("buildNativeCompletionContract", () => {
   it("scopes standing-chat criteria to the response while preserving every current request and source", () => {
-    const issue = { id: "chat", title: "Chat with CEO", description: null, conversationAgentId: "ceo" };
+    const issue = { id: "chat", title: "Chat with CEO", description: null, conversationAgentId: "ceo", conversationUserId: "operator" };
     const comments = [
       { id: "operator-request", body: "Restart this instance." },
       { id: "handoff-request", body: "Have Morgan draft the update and send it here when finished." },
@@ -41,6 +41,22 @@ describe("buildNativeCompletionContract", () => {
     const request = "Restart this instance.";
     expect(buildNativeCompletionContract(issue, { immediateRequest: request }).criteria)
       .toEqual([{ id: "objective", requirement: request }]);
+  });
+
+  it.each([undefined, null])("keeps an agent-only issue in task and plan scope when its conversation user is %s", conversationUserId => {
+    const request = "Write the launch plan and wait for approval.";
+    const contract = buildNativeCompletionContract({ title: "Chat with CEO", description: null,
+      conversationAgentId: "ceo", conversationUserId }, { immediateRequest: request });
+    expect(contract.criteria).toEqual([{ id: "objective", requirement: request }]);
+    expect(contract.objective).toContain("propose or save the requested plan and wait before executing");
+  });
+
+  it.each(["  Help plan the launch.  ", null])("scopes a conversation's first turn without a follow-up (%s)", description => {
+    const contract = buildNativeCompletionContract({ title: "Chat with CEO", description,
+      conversationAgentId: "ceo", conversationUserId: "operator" });
+    expect(contract.objective).toMatch(/current conversation response/i);
+    expect(contract.criteria).toEqual([{ id: "objective", requirement:
+      `Address this request in the current authorized conversation response: ${description?.trim() || "Respond to the current conversation context."}` }]);
   });
 
   it("uses the task description as the single initial criterion", () => {
