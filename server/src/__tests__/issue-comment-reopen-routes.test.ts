@@ -3077,12 +3077,12 @@ describe("issue comment reopen routes", () => {
       for (const activity of f.read().activities) expect(activity.details).not.toHaveProperty("decision");
     });
 
-    it("rejects a POST decision if the locked transition inputs changed", async () => {
+    it.each(["patch", "post"] as const)("rejects a %s decision if the locked transition inputs changed", async method => {
       const f = await fixture();
       mockIssueService.getByIdForUpdate.mockResolvedValue({ ...f.initial, executionState: {
         ...f.initial.executionState, lastDecisionId: "99999999-9999-4999-8999-999999999999",
       } });
-      expect((await f.send("post")).status).toBe(409);
+      expect((await f.send(method)).status).toBe(409);
       expect(f.read()).toEqual({ issue: f.initial, comments: [], decisions: [], activities: [] });
     });
 

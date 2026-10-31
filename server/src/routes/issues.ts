@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
@@ -459,6 +460,15 @@ type NormalizedExecutionPolicy = NonNullable<
   ReturnType<typeof normalizeIssueExecutionPolicy>
 >;
 type IssueRouteSnapshot = typeof issueRows.$inferSelect;
+function executionDecisionInputsMatch(previous: IssueRouteSnapshot, current: IssueRouteSnapshot) {
+  const keys = [
+    "status", "assigneeAgentId", "assigneeUserId", "responsibleUserId", "createdByUserId",
+    "executionPolicy", "executionState", "monitorNextCheckAt", "monitorWakeRequestedAt",
+    "monitorLastTriggeredAt", "monitorAttemptCount", "monitorNotes", "monitorScheduledBy",
+  ] as const;
+  return keys.every(key => isDeepStrictEqual(previous[key], current[key]));
+}
+
 function buildDecisionActivityDetails(input: {
   id: string;
   issueId: string;
@@ -14976,6 +14986,9 @@ export function issueRoutes(
             if (decision) {
               decisionExisting = await svc.getByIdForUpdate(id, tx);
               if (!decisionExisting) return null;
+              if (!executionDecisionInputsMatch(existing, decisionExisting)) {
+                throw conflict("The task changed while this update was prepared. Refresh and retry.", { code: "execution_policy_transition_stale" });
+              }
             }
             if (
               reviewPolicySensitiveMutationRequested &&
@@ -19159,7 +19172,7 @@ export function issueRoutes(
           txResult = await db.transaction(async (tx) => {
             const lockedIssue = await svc.getByIdForUpdate(id, tx);
             if (!lockedIssue) throw new AutoApprovalIssueMissingError();
-            if (executionPolicyTransitionInputFingerprint(lockedIssue) !== executionPolicyTransitionInputFingerprint(currentIssue)) {
+            if (!executionDecisionInputsMatch(currentIssue, lockedIssue)) {
               throw conflict("The task changed while this update was prepared. Refresh and retry.", { code: "execution_policy_transition_stale" });
             }
             const insertedComment = await svc.addComment(
