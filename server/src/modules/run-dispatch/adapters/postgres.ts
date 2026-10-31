@@ -1,3 +1,4 @@
+import { notifyExecutionRunWork } from "../../../services/execution-control-notifications.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
 import { hasRequiredWorkspaceRecovery } from "../../../services/workspace-restore-recovery-state.js";
 import { readNativeWorkspaceSyncReference } from "../../../services/native-runtime/native-workspace-sync.js";
@@ -687,6 +688,7 @@ export function createPostgresRunDispatchAdapter(
     | { applied: true; run: HeartbeatRun; postCommitEffects: PostCommitEffect[] }
     | { applied: false }
   > {
+    await notifyExecutionRunWork(tx, { companyId: input.companyId, runId: input.runId });
     await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
     await notifyCancelledWorkspacePreservation(tx, { companyId: input.companyId, runId: input.runId });
     await notifyScheduledRetryCancellation(tx, { companyId: input.companyId, runId: input.runId });
@@ -732,6 +734,7 @@ export function createPostgresRunDispatchAdapter(
     tx: Db,
     input: CancelSuppressedRetryInput,
   ): Promise<CancelSuppressedRetryResult> {
+    await notifyExecutionRunWork(tx, { companyId: input.companyId, runId: input.runId });
     await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
     await notifyExternalAgentSettlement(tx, { companyId: input.companyId, runId: input.runId });
     await notifyCancelledWorkspacePreservation(tx, { companyId: input.companyId, runId: input.runId });
@@ -1026,6 +1029,7 @@ export function createPostgresRunDispatchAdapter(
     now: Date,
     providerDispatchNotStarted = false,
   ): Promise<CancelStaleQueuedRunOutcome> {
+      await notifyExecutionRunWork(tx, { companyId: run.companyId, agentId: run.agentId, runId: run.id });
       await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
       await notifyExternalAgentSettlement(tx, { companyId: run.companyId, runId: run.id });
       await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });

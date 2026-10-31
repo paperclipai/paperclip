@@ -34,13 +34,45 @@ never start a server or depend on a tenant filesystem.
 | `build-revise` | Native agent; two work runs; qualified Docker artifact oracle | Browser-download both ZIP versions, independently exercise source/CLI behavior, verify different hashes and preserve the original download |
 | `protected-actions` | Native agent; four work runs; authenticated reachable review-service fixture | Approve one action and decline another on separate owned tasks; verify zero calls before either decision, one after approval, zero after decline and a truthful saved explanation |
 | `create-skill-studio` | Native agent with skill-write permission; one work run | Create a uniquely named company skill, open its activity card, edit in Studio, reload and verify task-card readback |
-| `stop-redirect` | Native agent; three work runs; qualified Docker oracle | Download a verified checkpoint, Stop an active revision, require native cancellation acknowledgement, submit a new direction once and verify completion without original-run activity |
+| `stop-redirect` | Native agent; three work runs; qualified Docker oracle | Download a verified checkpoint, observe an active native command with current-turn usage, Stop it, verify cancellation and settled accounting, then send one new direction and complete without original-run activity |
 | `followup-while-running` | Native agent; a maximum of two work runs | Save a follow-up while an independently observed native shell command is still active, then require one attributed final reply with the late requirement after reload; in-turn steering and one normal successor are accepted |
 | `cloud-onboarding` | Signed-in admitted Cloud account; fresh workspace; qualified bounded provider route | Create workspace in the portal, connect API key and native Codex agent in the wizard, complete a task, download and independently check its artifact |
 
+The deployment-targeted Stop journey asks the revision to finish one harmless
+`printf` readiness command, then run `sleep 90` once in a separate shell call
+before changing files. The readiness call lets a provider report its first
+current-turn usage before the long hold starts. Running the hold first can leave
+no complete usage until that command has already ended. Startup alone cannot trigger Stop. An independent observer
+requires both a still-running bound native command and a complete, nonzero usage
+report for its current turn. After Stop, native cancellation and exact lease
+cleanup remain required. Before the redirect, the original run must have a
+complete accounting receipt, no pending accounting and a saved accounting
+timestamp. Receipt sources and sequences remain recorded, but controller changes
+and clock order cannot substitute for the run's actual settlement state. A receipt
+that was already ready before Stop is accepted only when the exact cancelled run
+is actually accounted and no longer pending. Canonical usage receipts, including
+raw, partial and complete forms, do not count as continued work when their API row
+and envelope match the observed run, company and agent, with consistent source
+event IDs, sequence numbers and instance IDs. An accounting source can change
+after Stop; its receipt does not need the pre-Stop Runner instance or accounting
+source and sequence. Pre-Stop work still requires the current Runner and turn.
+Missing context or mismatched source event IDs, sequence numbers, instances or
+envelope versions keep the usage row in the strict work evidence. Tools, messages
+and other item events still count, including work that arrives between
+cancellation and accounting settlement.
+These waits share the original journey deadline.
+The three-run limit, budget and original download checks remain unchanged.
+Missing or partial accounting never counts as free work. Local evidence controls
+do not establish a deployed pass.
+
 The question-resumption journey uses the same natural-language scenario, browser
 answer helper and behavioral grader as the classic `question-resume` suite. Native
-provider questions can stay in one run; durable native questions create one exactly bound
+reference cards may expose a text field or an explicit canonical written-answer
+control on one single-select question. The browser must type the complete reference
+and submit no predefined option. An absent or disabled custom-answer capability is
+not an equivalent form. The user still answers exactly two distinct native questions;
+the document must retain the actual choice and typed reference after reload.
+Provider questions can stay in one run; durable native questions create one exactly bound
 continuation each. Creation must have an applied semantic receipt or a completed native
 API mutation receipt with the original card, exact scope, form and idempotency key.
 An API receipt must retain its creation identity unchanged after the answer. A form or

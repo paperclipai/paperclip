@@ -2,11 +2,13 @@ import { lstat, realpath } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
-import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyGitHubCompanyChange } from "./github-connection-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { isRunnerApiResponseAsset } from "./asset-content-access.js";
 import { deleteCompany, lockCompanyLifecycle } from "./company-deletion.js";
@@ -467,9 +469,11 @@ export function companyService(
 
         if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
           await notifyRunDispatch(tx, { companyId: id });
+          await notifyGitHubCompanyChange(tx, id);
           await notifyDeferredExecutionEligibility(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+          await notifyExternalObjectRefresh(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
           await notifyStatusCardIssueChange(tx, id);
@@ -627,9 +631,11 @@ export function companyService(
 
         if (!wasAlreadyArchived) {
           await notifyRunDispatch(tx, { companyId: id });
+          await notifyGitHubCompanyChange(tx, id);
           await notifyDeferredExecutionEligibility(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+          await notifyExternalObjectRefresh(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
           await notifyStatusCardIssueChange(tx, id);
