@@ -67,6 +67,13 @@ function invalidAgentTokenMessage(token: string) {
   return "Agent token did not verify; obtain fresh credentials and retry";
 }
 
+function lapsedBoardKeyMessage(lapsed: { status: "expired" | "revoked"; at: Date }) {
+  const day = lapsed.at.toISOString().slice(0, 10);
+  return lapsed.status === "expired"
+    ? `Board API key expired on ${day}; run \`paperclipai auth login\` to get a new one`
+    : `Board API key was revoked on ${day}; run \`paperclipai auth login\` to get a new one`;
+}
+
 async function resolveLegacyRunResponsibleUserId(
   db: Db,
   input: { companyId: string; agentId: string; runId: string },
@@ -344,7 +351,8 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (!key) {
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
-        next(unauthorized(invalidAgentTokenMessage(token)));
+        const lapsedBoardKey = await boardAuth.findLapsedBoardApiKeyByToken(token);
+        next(unauthorized(lapsedBoardKey ? lapsedBoardKeyMessage(lapsedBoardKey) : invalidAgentTokenMessage(token)));
         return;
       }
 
