@@ -304,3 +304,6 @@ paperclipai uninstall
 It deliberately preserves `~/.paperclip/instances/`, including configuration,
 databases, uploads, logs, secrets, backups, and workspaces. Back up and remove
 that data separately only when you intend to delete the Paperclip instance.
+It first checks that the store is a Paperclip-managed install and that no
+install or update holds its lock. If either check fails, it stops before it
+touches the background service.
