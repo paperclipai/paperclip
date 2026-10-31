@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { appendPrivateAttemptDiagnostic, privateAttemptDiagnostic, readPrivateAttemptObservation } from "./private-attempt-diagnostic.js";
+import { canonicalProviderEventsFromOpenCodePart } from "../../packages/paperclip-runner/src/provider-events.js";
 it("projects only fixed outcomes from private result, run and carrier evidence", () => {
   const diagnostic = privateAttemptDiagnostic({ stage: "seal-original", result: { status: "failed", error: "Actual new native task reads inherited project context: private-value", runIds: ["private-id"] },
     error: new Error("Credential-contaminated original evidence cannot be retained"), evidence: { leaks: [{ file: "private-path", reason: "zip inspection exceeded its expanded-byte bound" }] },
@@ -12,6 +13,13 @@ it("projects only fixed outcomes from private result, run and carrier evidence",
 });
 it("never copies unknown error, stage, failure or status text", () => {
   expect(JSON.stringify(privateAttemptDiagnostic({ stage: "private-value", result: { status: "private-value", failureClass: "private-value", error: "private-value" }, error: new Error("private-value") }))).not.toContain("private-value");
+});
+it("counts a finish from the actual OpenCode event producer and recovers the pre-scan phase", () => {
+  const sourceEvents = ["pending", "running"].flatMap(status => canonicalProviderEventsFromOpenCodePart({ id: "private-call", type: "tool", tool: "paperclip_paperclip_finish", state: { status, input: {} } }));
+  const diagnostic = privateAttemptDiagnostic({ stage: "package-original", result: { error: "Secret leak in persisted Paperclip home state at private-path" },
+    observation: { sourceEvents, persistedState: { scanError: "private-error", originalResult: { error: "Canonical project-defaults turn settles: private-value" } } } });
+  expect(diagnostic).toMatchObject({ phase: "canonical-turn-timeout", privacy: { persistedState: true }, sourceProgress: { tools: { paperclip_finish: { started: 1, progressed: 1, completed: 0 }, other: { started: 0, completed: 0 } } } });
+  expect(JSON.stringify(diagnostic)).not.toMatch(/private-(?:call|path|error|value)/);
 });
 it("distinguishes an unfinished source tool and preserves a timeout hidden by privacy finalization", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "closed-eval-progress-"));

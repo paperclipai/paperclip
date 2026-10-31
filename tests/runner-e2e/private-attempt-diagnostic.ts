@@ -12,16 +12,16 @@ const failures = new Map([
   ["Complete original evidence exceeds entry allowance", "entry-bound"],
 ]);
 const phases = [["Real prior active Launch checkout", "held-work-timeout"], ["Canonical project-defaults turn settles", "canonical-turn-timeout"], ["Actual new native task reads inherited project context", "future-work-timeout"]];
-const toolNames = ["bash", "paperclip_call_api", "paperclip_paperclip_finish", "paperclip_get_workspace", "paperclip_get_run", "paperclip_list_runs"];
+const toolNames = ["bash", "paperclip_call_api", "paperclip_finish", "paperclip_get_workspace", "paperclip_get_run", "paperclip_list_runs"];
 function sourceProgress(value: unknown) {
   const rows = Array.isArray(value) ? value : [];
   const events = rows.map(row => record(record(row).payload).prpEvent ?? row).map(record);
-  const tools = events.filter(event => ["tool.execution.started", "tool.execution.completed"].includes(event.eventType));
+  const tools = events.filter(event => ["tool.execution.started", "tool.execution.progressed", "tool.execution.completed"].includes(event.eventType));
   return {
     events: Math.min(events.length, 100000),
     turns: Math.min(events.filter(event => event.eventType === "turn.started").length, 1000),
     finishProposals: Math.min(events.filter(event => event.eventType === "run.result.proposed").length, 1000),
-    tools: Object.fromEntries([...toolNames, "other"].map(name => [name, Object.fromEntries(["started", "completed"].map(status =>
+    tools: Object.fromEntries([...toolNames, "other"].map(name => [name, Object.fromEntries(["started", "progressed", "completed"].map(status =>
       [status, Math.min(tools.filter(event => event.eventType === `tool.execution.${status}` &&
         (name === "other" ? !toolNames.includes(record(event.payload).name) : record(event.payload).name === name)).length, 10000)]))])),
   };
@@ -32,8 +32,8 @@ export function privateAttemptDiagnostic(input: PrivateAttemptDiagnosticInput) {
   const runs = Array.isArray(observation.runs) ? observation.runs.map(record) : [];
   const status = (run: Record<string, any> | undefined) => member(run?.status, ["queued", "running", "succeeded", "failed", "cancelled", "timed_out"]);
   const message = input.error instanceof Error ? input.error.message : "", productError = typeof result.error === "string" ? result.error : "";
-  const privacy = record(envelope.privacy), original = record(privacy.originalResult);
-  const errors = [productError, original.error, record(envelope.persistedState).scanError].filter(value => typeof value === "string") as string[];
+  const privacy = record(envelope.privacy), original = record(privacy.originalResult), persistedState = record(envelope.persistedState);
+  const errors = [productError, original.error, persistedState.scanError, record(persistedState.originalResult).error].filter(value => typeof value === "string") as string[];
   const evidence = record(input.evidence), leaks = Array.isArray(evidence.leaks) ? evidence.leaks : [];
   return {
     schema: "paperclip.private-attempt-diagnostic/v1",
