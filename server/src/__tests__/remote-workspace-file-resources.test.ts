@@ -4,18 +4,25 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issues, type Db } from "@paperclipai/db";
-import type { RemoteWorkspaceAuthority } from "@paperclipai/shared";
+import { agents, companies, companySecrets, companySecretBindings, createDb, environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, plugins, secretAccessEvents, workspaceOperations, type Db } from "@paperclipai/db";
+import { INSPECTION_AUDIENCE, INSPECTION_HEADER, INSPECTION_PERMIT_TYPE, parseInspectionQuery, type InspectionQuery, type InspectionPermit, type RemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { errorHandler } from "../middleware/index.js";
 import { fileResourceRoutes } from "../routes/file-resources.js";
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 import { createRemoteWorkspaceFiles, REMOTE_WORKSPACE_FILES_SCRIPT } from "../services/remote-workspace-files.js";
 import { workspaceFileResourceService } from "../services/workspace-file-resources.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { customerSuccessRoutes } from "../routes/customer-success.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { secretService } from "../services/secrets.js";
+import { captureRemoteWorkspaceDirectory } from "../services/remote-workspace-snapshot-archive.js";
+import { beginWorkspaceSnapshot, uploadWorkspaceSnapshot } from "../services/remote-workspace-snapshot-storage.js";
+import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
+import { createStorageService } from "../storage/service.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const execFileAsync = promisify(execFile);
@@ -158,6 +165,141 @@ describeDatabase("remote workspace ordinary file routes", () => {
     expect(download.text).toBe("Remote useful result\n");
     expect(f.syncOut).toHaveBeenCalledTimes(2);
     expect(await fs.readdir(path.dirname(f.syncOut.mock.calls[0]![0].operations[0]!.files[0]!.targetPath)).catch(() => [])).toEqual([]);
+  });
+
+  it("serves signed support reads from secret-bound live and saved workspaces inside its read-only transaction", async () => {
+    const f = await fixture();
+    const other = await fixture();
+    const keyDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "inspection-workspace-key-"));
+    directories.push(keyDirectory);
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "");
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", path.join(keyDirectory, "master.key"));
+    vi.stubEnv("PAPERCLIP_CUSTOMER_SUCCESS_INSPECTION_ENABLED", "true");
+    vi.stubEnv("PAPERCLIP_CLOUD_STACK_ID", "remote-inspection-fixture");
+    vi.stubEnv("PAPERCLIP_CUSTOMER_SUCCESS_CLOUD_ORIGIN", "https://cloud.example.test");
+    const keys = generateKeyPairSync("ed25519");
+    vi.stubEnv("PAPERCLIP_CUSTOMER_SUCCESS_INSPECTION_JWKS", JSON.stringify({ keys: [{ ...keys.publicKey.export({ format: "jwk" }), kid: "cloud" }] }));
+    const consumed = vi.fn(async () => Response.json({ consumed: true }));
+    vi.stubGlobal("fetch", consumed);
+    try {
+      const pluginId = randomUUID();
+      const provider = `inspection-${pluginId}`;
+      const pluginKey = `paperclip.${provider}`;
+      await db.insert(plugins).values({ id: pluginId, pluginKey, packageName: `@paperclipai/${provider}`, version: "1.0.0", apiVersion: 1,
+        categories: ["automation"], status: "ready", manifestJson: {
+          id: pluginKey, apiVersion: 1, version: "1.0.0", displayName: "Inspection fixture", description: "Synthetic inspection provider", author: "Paperclip",
+          categories: ["automation"], capabilities: ["environment.drivers.register"], entrypoints: { worker: "dist/worker.js" },
+          environmentDrivers: [{ driverKey: provider, kind: "sandbox_provider", displayName: "Inspection fixture",
+            configSchema: { type: "object", properties: { apiKey: { type: "string", format: "secret-ref" } } } }],
+        } });
+      const secret = await secretService(db).create(f.ids.company, { name: "synthetic inspection provider", provider: "local_encrypted", value: "synthetic-provider-credential" });
+      await secretService(db).createBinding({ companyId: f.ids.company, secretId: secret.id,
+        targetType: "environment", targetId: f.ids.environment, configPath: "apiKey" });
+      await db.update(environments).set({ config: { provider, apiKey: secret.id } }).where(eq(environments.id, f.ids.environment));
+      await db.update(environmentLeases).set({ provider, metadata: { remoteCwd: f.root, provider, apiKey: secret.id,
+        pluginId, sandboxProviderPlugin: true } }).where(eq(environmentLeases.id, f.ids.lease));
+
+      const storage = createStorageService(createLocalDiskStorageProvider(path.join(keyDirectory, "objects")));
+      const archivePath = path.join(keyDirectory, "saved.pcws");
+      const archive = await captureRemoteWorkspaceDirectory({ cwd: f.root, archivePath });
+      const [operation] = await db.insert(workspaceOperations).values({ companyId: f.ids.company,
+        executionWorkspaceId: f.ids.workspace, phase: "synthetic_saved_fixture" }).returning();
+      const snapshot = await beginWorkspaceSnapshot(db, { companyId: f.ids.company, workspaceId: f.ids.workspace,
+        operationId: operation.id, generation: 1, epoch: 1 });
+      await uploadWorkspaceSnapshot({ db, storage, companyId: f.ids.company, workspaceId: f.ids.workspace,
+        snapshotId: snapshot.id, archivePath, manifestDigest: archive.manifestDigest });
+      await db.update(executionWorkspaceSnapshots).set({ status: "committed" }).where(eq(executionWorkspaceSnapshots.id, snapshot.id));
+      await fs.writeFile(path.join(f.root, "docs", "result.md"), "Updated live result\n");
+      await fs.symlink(other.root, path.join(f.root, "escape"));
+
+      const call = vi.fn(async (_pluginId: string, method: string, params: any) => {
+        expect(_pluginId).toBe(pluginId);
+        expect(params.companyId).toBe(f.ids.company);
+        expect(params.lease.providerLeaseId).toBe(f.authority.location!.providerLeaseId);
+        expect(params.config.apiKey).toBe("synthetic-provider-credential");
+        if (method === "environmentExecute") {
+          expect(params.bypassSession).toBe(true);
+          try {
+            const result = await execFileAsync(process.execPath, params.args, { cwd: params.cwd, maxBuffer: 2 * 1024 * 1024 });
+            return { ...result, exitCode: 0, timedOut: false, signal: null };
+          } catch (error) {
+            const result = error as { stdout: string; stderr: string };
+            return { stdout: result.stdout, stderr: result.stderr, exitCode: 1, timedOut: false, signal: null };
+          }
+        }
+        if (method === "environmentSyncOut") {
+          for (const operation of params.operations) for (const mapping of operation.files) await fs.copyFile(mapping.sourcePath, mapping.targetPath);
+          return { operations: [] };
+        }
+        throw new Error(`Inspection must not allocate or resume: ${method}`);
+      });
+      const workerManager = { call, isRunning: (id: string) => id === pluginId } as unknown as PluginWorkerManager;
+      const app = express();
+      app.use(express.json());
+      app.use("/api/customer-success/v1", customerSuccessRoutes(db, storage, { pluginWorkerManager: workerManager }));
+      app.use(errorHandler);
+      const inspect = (value: InspectionQuery) => {
+        const query = parseInspectionQuery(value);
+        const now = Math.floor(Date.now() / 1000);
+        const claims: InspectionPermit = { v: 1, iss: "paperclip-cloud", aud: INSPECTION_AUDIENCE, sub: "remote-inspection-fixture",
+          iat: now, exp: now + 60, jti: randomUUID(), bindingVersion: 1, grantId: randomUUID(), requestId: randomUUID(),
+          agentId: randomUUID(), keyId: "sha256:synthetic-fixture", runId: randomUUID(), query };
+        const header = Buffer.from(JSON.stringify({ alg: "EdDSA", typ: INSPECTION_PERMIT_TYPE, kid: "cloud" })).toString("base64url");
+        const body = Buffer.from(JSON.stringify(claims)).toString("base64url");
+        const payload = `${header}.${body}`;
+        return request(app).post("/api/customer-success/v1/read").set(INSPECTION_HEADER,
+          `${payload}.${sign(null, Buffer.from(payload), keys.privateKey).toString("base64url")}`).send(query);
+      };
+      const base = { companyId: f.ids.company, resourceId: f.ids.issue, context: { workspace: "execution" as const } };
+      const beforeSecret = await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id));
+      const beforeAudit = await db.select().from(secretAccessEvents).where(eq(secretAccessEvents.companyId, f.ids.company));
+      const transaction = db.transaction.bind(db);
+      const transactions: string[] = [];
+      const transactionSpy = vi.spyOn(db, "transaction").mockImplementation((async (callback, options) => transaction(async tx => {
+        const [row] = await tx.execute(sql`show transaction_read_only`);
+        transactions.push(String(row.transaction_read_only));
+        return callback(tx);
+      }, options)) as typeof db.transaction);
+      // A reader accidentally closed over the outer Db fails here; nested
+      // provider/config/secret reads must use the inspection transaction.
+      const selectSpy = vi.spyOn(db, "select").mockImplementation(() => { throw new Error("Inspection escaped its transaction"); });
+      try {
+        const listed = await inspect({ ...base, operation: "files.list" }).expect(200);
+        expect(listed.body).toMatchObject({ state: "available", workspace: { source: { kind: "live" } } });
+        expect(JSON.stringify(listed.body)).not.toContain(".env");
+        const read = await inspect({ ...base, operation: "files.read", path: "docs/result.md" }).expect(200);
+        expect(read.body.content.data).toBe("Updated live result\n");
+        const downloaded = await inspect({ ...base, operation: "files.download", path: "docs/result.md", range: { start: 2, end: 7 } }).expect(200);
+        expect(Buffer.from(downloaded.body.content, "base64").toString()).toBe("dated ");
+        expect(JSON.stringify([listed.body, read.body, downloaded.body])).not.toContain("synthetic-provider-credential");
+        const beforeDenied = call.mock.calls.length;
+        await inspect({ ...base, companyId: other.ids.company, operation: "files.read", path: "docs/result.md" }).expect(404);
+        await inspect({ ...base, operation: "files.read", path: ".env" }).expect(403);
+        await inspect({ ...base, context: { workspace: "execution", workspaceId: other.ids.workspace }, operation: "files.read", path: "docs/result.md" }).expect(422);
+        expect(call).toHaveBeenCalledTimes(beforeDenied);
+        await inspect({ ...base, operation: "files.read", path: "escape/docs/result.md" }).expect(403);
+      } finally { selectSpy.mockRestore(); transactionSpy.mockRestore(); }
+      expect(transactions.length).toBeGreaterThan(0);
+      expect(new Set(transactions)).toEqual(new Set(["on"]));
+      expect(await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id))).toEqual(beforeSecret);
+      expect(await db.select().from(secretAccessEvents).where(eq(secretAccessEvents.companyId, f.ids.company))).toEqual(beforeAudit);
+
+      await db.delete(companySecretBindings).where(eq(companySecretBindings.secretId, secret.id));
+      const beforeUnbound = call.mock.calls.length;
+      await inspect({ ...base, operation: "files.read", path: "docs/result.md" }).expect(422);
+      expect(call).toHaveBeenCalledTimes(beforeUnbound);
+      await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...f.authority, location: null, snapshotId: snapshot.id } } })
+        .where(eq(executionWorkspaces.id, f.ids.workspace));
+      call.mockClear();
+      const savedList = await inspect({ ...base, operation: "files.list" }).expect(200);
+      expect(savedList.body).toMatchObject({ workspace: { source: { kind: "saved", snapshotId: snapshot.id } } });
+      const savedRead = await inspect({ ...base, operation: "files.read", path: "docs/result.md" }).expect(200);
+      expect(savedRead.body.content.data).toBe("Remote useful result\n");
+      const savedDownload = await inspect({ ...base, operation: "files.download", path: "docs/result.md" }).expect(200);
+      expect(Buffer.from(savedDownload.body.content, "base64").toString()).toBe("Remote useful result\n");
+      expect(call).not.toHaveBeenCalled();
+      expect(consumed).toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); vi.unstubAllGlobals(); }
   });
 
   it("rejects denied files before provider access and prevents changed transfer bytes", async () => {

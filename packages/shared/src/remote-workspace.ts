@@ -15,7 +15,10 @@ export const remoteWorkspaceSourceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("empty"), repositories: z.array(repository).optional() }).strict(),
   z.object({
     kind: z.literal("git"), repoUrl: z.string().min(1), ref: z.string().nullable(),
-    branchName: z.string().nullable().optional(), repositories: z.array(repository).optional(),
+    branchName: z.string().nullable().optional(),
+    // Older recipes create a task branch from ref when branchName is present.
+    branchMode: z.enum(["create", "existing"]).optional(),
+    repositories: z.array(repository).optional(),
   }).strict(),
 ]);
 export type RemoteWorkspaceSource = z.infer<typeof remoteWorkspaceSourceSchema>;

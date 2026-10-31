@@ -39,6 +39,7 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
   taskDirectory?: boolean;
   ref?: string | null;
   branchName?: string | null;
+  branchMode?: "create" | "existing";
 }): Promise<{ source: RemoteWorkspaceSource; projectId: string | null; projectWorkspaceId: string | null;
   warnings?: string[]; referencedProjectFailures?: ResolvedWorkspaceForRun["referencedProjectFailures"] }> {
   const selected = await assertTaskWorkspaceExecutionAccess(db, {
@@ -130,6 +131,7 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
   return withReferences({ kind: "git", repoUrl: source.repoUrl,
     ref: input.ref ?? source.repoRef ?? source.defaultRef ?? null,
     ...(input.branchName ? { branchName: input.branchName } : {}),
+    ...(input.branchMode ? { branchMode: input.branchMode } : {}),
     ...(repositories.length ? { repositories } : {}),
   }, source.projectId, source.id);
 }

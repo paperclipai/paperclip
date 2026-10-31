@@ -21,6 +21,14 @@ import { deriveBundleState } from "./agent-instructions.js";
 import { readInstructionBytes } from "./agent-instruction-files.js";
 import { skillPackageStore } from "./skill-package-store.js";
 import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
+import { createRemoteWorkspaceFiles } from "./remote-workspace-files.js";
+import { createSavedWorkspaceLoader } from "./remote-workspaces.js";
+import { environmentRuntimeService } from "./environment-runtime.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+
+export interface CustomerSuccessInspectionOptions {
+  pluginWorkerManager?: PluginWorkerManager;
+}
 
 // This is a reviewed catalog of readers, not a proxy for existing GET routes.
 // Select credentials out of queries; never load encrypted identity records.
@@ -136,6 +144,7 @@ export async function readCustomerSuccessResource(
   db: Db,
   storage: StorageService,
   q: InspectionQuery,
+  options: CustomerSuccessInspectionOptions = {},
 ): Promise<unknown> {
   return db.transaction(
     async (rawTx) => {
@@ -328,7 +337,11 @@ export async function readCustomerSuccessResource(
       if (q.operation.startsWith("files.")) {
         try {
           const issue = await ownRow(tx, schema.issues, q.companyId!, q.resourceId!);
-          const files = workspaceFileResourceService(tx);
+          const remoteFiles = createRemoteWorkspaceFiles(tx, {
+            environmentRuntime: environmentRuntimeService(tx, { pluginWorkerManager: options.pluginWorkerManager, readOnlyInspection: true }),
+            loadSavedWorkspace: createSavedWorkspaceLoader(tx, storage),
+          });
+          const files = workspaceFileResourceService(tx, undefined, { remoteFiles });
           const input = { path: q.path ?? "", ...q.context, limit: q.limit, offset: q.offset };
           const opts = {
             issue: issue as unknown as NonNullable<Parameters<typeof files.list>[2]>["issue"],

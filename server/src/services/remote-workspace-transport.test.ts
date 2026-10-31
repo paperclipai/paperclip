@@ -96,6 +96,36 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     expect(await fs.readFile(path.join(outside, "sentinel"), "utf8")).toBe("untouched\n");
   });
 
+  it.each(["existing", "create"] as const)("selects the %s remote branch without confusing its tip with the base ref", async branchMode => {
+    const origin = await repository();
+    await git(origin, "checkout", "-b", "feature/diverged");
+    await fs.writeFile(path.join(origin, "source.txt"), "existing feature work\n");
+    await git(origin, "commit", "-am", "Existing feature work");
+    const featureTip = (await git(origin, "rev-parse", "HEAD")).stdout.trim();
+    await git(origin, "checkout", "main");
+    await fs.writeFile(path.join(origin, "source.txt"), "new main work\n");
+    await git(origin, "commit", "-am", "New main work");
+    const mainTip = (await git(origin, "rev-parse", "HEAD")).stdout.trim();
+    expect(featureTip).not.toBe(mainTip);
+    const { remote } = target(), root = path.join(workspace, "selected-branch");
+    await prepareRemoteWorkspaceDirectory({ target: remote, remoteCwd: root,
+      preparationIdentity: createHash("sha256").update(`synthetic-${branchMode}-branch`).digest("hex"),
+      source: { kind: "git", repoUrl: origin, ref: "main", branchName: "feature/diverged", branchMode },
+      resolveGitAuth: async () => null });
+    expect((await git(root, "rev-parse", "HEAD")).stdout.trim()).toBe(branchMode === "existing" ? featureTip : mainTip);
+    expect((await git(root, "symbolic-ref", "--short", "HEAD")).stdout.trim()).toBe("feature/diverged");
+    expect((await git(origin, "rev-parse", "refs/heads/feature/diverged")).stdout.trim()).toBe(featureTip);
+  });
+
+  it("rejects a missing existing remote branch without publishing a task folder", async () => {
+    const origin = await repository(), { remote } = target(), root = path.join(workspace, "missing-branch");
+    await expect(prepareRemoteWorkspaceDirectory({ target: remote, remoteCwd: root,
+      preparationIdentity: createHash("sha256").update("synthetic-missing-existing-branch").digest("hex"),
+      source: { kind: "git", repoUrl: origin, ref: "main", branchName: "feature/missing", branchMode: "existing" },
+      resolveGitAuth: async () => null })).rejects.toThrow();
+    expect(await fs.lstat(root).catch(() => null)).toBeNull();
+  });
+
   it("adopts an atomic restored folder after a lost reply without overwriting later edits", async () => {
     await fs.writeFile(path.join(workspace, "saved.txt"), "saved synthetic files\n");
     const { remote, execute } = target();
@@ -214,7 +244,8 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     const preparedRoot = path.join(workspace, "clone");
     const input = { target: remote, remoteCwd: preparedRoot,
       preparationIdentity: createHash("sha256").update(JSON.stringify({ run: "synthetic", workspace: "synthetic", epoch: 1, lease: "synthetic" })).digest("hex"),
-      source: { kind: "git" as const, repoUrl: origin, ref: "HEAD" }, resolveGitAuth: async () => null };
+      source: { kind: "git" as const, repoUrl: origin, ref: "unused-base-ref", branchName: "main", branchMode: "existing" as const },
+      resolveGitAuth: async () => null };
     await expect(prepareRemoteWorkspaceDirectory(input)).rejects.toThrow("synthetic lost preparation reply");
     await fs.writeFile(path.join(preparedRoot, "in-flight.txt"), "preserve this unsaved work\n");
     // A second clone is now impossible; successful retry must use its durable

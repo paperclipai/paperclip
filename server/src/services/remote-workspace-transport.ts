@@ -50,8 +50,18 @@ const {promisify}=require('node:util'); const exec=promisify(cp.execFile);
  const staged=await fs.mkdtemp(root+'.preparing-');
  if(input.kind==='git'){
   await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,staged],{env:cloneEnv});
-  if(input.ref)await exec('git',['-c','core.hooksPath=/dev/null','-C',staged,'checkout','--detach',input.ref],{env:localEnv});
-  if(input.branchName)await exec('git',['-c','core.hooksPath=/dev/null','-C',staged,'checkout','-B',input.branchName],{env:localEnv});
+  const git=async args=>exec('git',['-c','core.hooksPath=/dev/null','-C',staged,...args],{env:localEnv});
+  if(input.branchMode==='existing'){
+   if(!input.branchName)throw Error('existing_branch_required');
+   await git(['check-ref-format','--branch',input.branchName]);
+   const remoteRef='refs/remotes/origin/'+input.branchName;
+   await git(['rev-parse','--verify','--quiet',remoteRef+'^{commit}']);
+   const local=await git(['show-ref','--verify','--quiet','refs/heads/'+input.branchName]).then(()=>true,()=>false);
+   await git(local?['checkout',input.branchName]:['checkout','-b',input.branchName,remoteRef]);
+  }else{
+   if(input.ref)await git(['checkout','--detach',input.ref]);
+   if(input.branchName)await git(['checkout','-B',input.branchName]);
+  }
   await fs.mkdir(path.join(staged,'.git','info'),{recursive:true,mode:0o700});
   await fs.appendFile(path.join(staged,'.git','info','exclude'),'\n/.paperclip-runtime/\n/.paperclip-repositories/\n');
  }else{

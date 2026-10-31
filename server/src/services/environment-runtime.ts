@@ -1268,6 +1268,7 @@ function createSandboxEnvironmentDriver(
   db: Db,
   options: {
     pluginWorkerManager?: PluginWorkerManager;
+    readOnlyInspection?: boolean;
     pluginWorkerReadyTimeoutMs?: number;
     pluginWorkerReadyPollMs?: number;
     deferredOrphanCleanupBufferLimit?: number;
@@ -1498,7 +1499,7 @@ function createSandboxEnvironmentDriver(
         id: input.environment.id,
         driver: "sandbox",
         config: sandboxConfigForLeaseMetadata(metadataConfig),
-      });
+      }, { readOnlyInspection: options.readOnlyInspection });
       if (parsed.driver === "sandbox") {
         return dropInternalPluginSandboxConfigKeys(parsed.config as unknown as Record<string, unknown>);
       }
@@ -1510,16 +1511,19 @@ function createSandboxEnvironmentDriver(
           db,
           input.lease.companyId,
           input.environment,
+          { readOnlyInspection: options.readOnlyInspection },
         );
         if (parsed.driver === "sandbox" && parsed.config.provider === input.provider) {
           return dropInternalPluginSandboxConfigKeys(parsed.config as unknown as Record<string, unknown>);
         }
-      } catch {
+      } catch (error) {
+        if (options.readOnlyInspection) throw error;
         // Lease metadata below is intentionally kept sufficient for cleanup
         // after the environment config changes or becomes invalid.
       }
     }
 
+    if (options.readOnlyInspection) throw new Error("Inspection requires a validated sandbox configuration.");
     return {
       provider: input.provider,
       ...dropInternalPluginSandboxConfigKeys(input.lease.metadata),
@@ -3586,6 +3590,7 @@ export function environmentRuntimeService(
   options: {
     drivers?: EnvironmentRuntimeDriver[];
     pluginWorkerManager?: PluginWorkerManager;
+    readOnlyInspection?: boolean;
     pluginWorkerReadyTimeoutMs?: number;
     pluginWorkerReadyPollMs?: number;
     deferredOrphanCleanupBufferLimit?: number;
@@ -3602,6 +3607,7 @@ export function environmentRuntimeService(
     createSshEnvironmentDriver(db),
     createSandboxEnvironmentDriver(db, {
       pluginWorkerManager: options.pluginWorkerManager,
+      readOnlyInspection: options.readOnlyInspection,
       pluginWorkerReadyTimeoutMs: options.pluginWorkerReadyTimeoutMs,
       pluginWorkerReadyPollMs: options.pluginWorkerReadyPollMs,
       deferredOrphanCleanupBufferLimit: options.deferredOrphanCleanupBufferLimit,

@@ -286,6 +286,10 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     }
   }
   const workspaceServices = parseObject(mergedConfig.workspaceRuntime).services;
+  if (remoteAuthority && Array.isArray(workspaceServices) && workspaceServices.length > 0) {
+    throw new WorkspaceValidationFailure("Remote workspace storage does not support Core workspace services.",
+      { reason: "remote_workspace_runtime_services_unsupported" });
+  }
   if (pluginTaskWorkspace && Array.isArray(workspaceServices) && workspaceServices.length > 0) {
     throw new WorkspaceValidationFailure("The selected plugin environment does not support Core workspace services.",
       { reason: "plugin_workspace_services_unsupported" });
@@ -325,6 +329,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           existingWorkspace: fresh ? null : reusableExistingExecutionWorkspace ?? existingExecutionWorkspace,
           taskDirectory: useIsolatedTaskDirectory,
           ref: readNonEmptyString(strategy.baseRef),
+          branchMode: readNonEmptyString(strategy.existingBranch) ? "existing" : "create",
           branchName: readNonEmptyString(strategy.existingBranch) ??
             (resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, mergedConfig) === "git_worktree"
               ? sanitizeBranchName(renderWorkspaceTemplate(String(strategy.branchTemplate ?? "{{issue.identifier}}-{{slug}}"), {

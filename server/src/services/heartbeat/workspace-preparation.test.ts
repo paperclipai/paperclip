@@ -112,11 +112,13 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     return { input, source, issue, run, envOrchestrator };
   }
   it.each([
-    { kind: "empty", repoUrl: null },
-    { kind: "git", repoUrl: "https://github.com/example/remote.git" },
-    { kind: "git", repoUrl: "ssh://git@github.com/example/remote.git" },
-    { kind: "git", repoUrl: "git@github.com:example/remote.git" },
-  ] as const)("reserves a $kind remote workspace ($repoUrl) without materializing a controller checkout", async ({ kind, repoUrl }) => {
+    { kind: "empty", repoUrl: null, branchMode: null },
+    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: null },
+    { kind: "git", repoUrl: "ssh://git@github.com/example/remote.git", branchMode: null },
+    { kind: "git", repoUrl: "git@github.com:example/remote.git", branchMode: null },
+    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "existing" },
+    { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "create" },
+  ] as const)("reserves a $kind remote workspace ($repoUrl, branch: $branchMode) without materializing a controller checkout", async ({ kind, repoUrl, branchMode }) => {
     const { input, source, issue, envOrchestrator } = await fixture();
     const [savedEnvironment] = await db.insert(environments).values({ name: `Remote ${randomUUID()}`,
       driver: "sandbox", status: "active", config: { provider: "daytona" } }).returning();
@@ -129,6 +131,12 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled = true;
     input.policy.requestedExecutionWorkspaceMode = "agent_default";
     input.policy.useIsolatedTaskDirectory = kind === "empty";
+    if (branchMode) {
+      input.policy.requestedExecutionWorkspaceMode = "isolated_workspace";
+      input.policy.effectiveExecutionWorkspaceMode = "isolated_workspace";
+      input.config.mergedConfig = { workspaceStrategy: { type: "git_worktree", baseRef: "main",
+        ...(branchMode === "existing" ? { existingBranch: "feature/diverged" } : { branchTemplate: "test-{{issue.identifier}}" }) } };
+    }
     if (kind === "git") {
       await db.update(projectWorkspaces).set({ cwd: null, sourceType: "git", repoUrl, repoRef: "main" })
         .where(eq(projectWorkspaces.id, issue.projectWorkspaceId!));
@@ -150,14 +158,35 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       expect(resolve).not.toHaveBeenCalled();
       expect(repositoryPreparation).not.toHaveBeenCalled();
       const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.sourceIssueId, issue.id));
-      expect(workspace.mode).toBe("shared_workspace");
+      expect(workspace.mode).toBe(branchMode ? "isolated_workspace" : "shared_workspace");
       expect(workspace.metadata?.remoteWorkspace).toMatchObject({ source: { kind }, writerRunId: input.run.id });
+      if (branchMode) expect(workspace.metadata?.remoteWorkspace).toMatchObject({ source: {
+        ref: "main", branchMode, branchName: branchMode === "existing" ? "feature/diverged" : "test-WSP-1",
+      } });
       await expect(access(workspace.cwd!)).rejects.toThrow();
     } finally {
       for (const [key, value] of previous) {
         if (value === undefined) delete process.env[key]; else process.env[key] = value;
       }
     }
+  });
+
+  it("rejects automatic Core services before remote reservation or acquisition", async () => {
+    const { input, envOrchestrator } = await fixture();
+    input.agent.adapterType = "paperclip_runner";
+    input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
+      driver: "sandbox", config: { provider: "daytona" } };
+    input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled = true;
+    input.policy.useIsolatedTaskDirectory = true;
+    input.config.mergedConfig = { workspaceRuntime: { services: [{ name: "web", command: "node server.js" }] } };
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
+    const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun");
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      code: "workspace_validation_failed", resultJson: { reason: "remote_workspace_runtime_services_unsupported" },
+    });
+    expect(acquire).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
   });
 
   it("rejects a configured local folder before remote acquisition", async () => {
