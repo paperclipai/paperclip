@@ -17,18 +17,19 @@ import { notifyExecutionRunWork } from "../services/execution-control-notificati
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { writeEnvironmentCleanup } from "../services/environment-cleanup-notifications.js";
 import { beginLegacyShutdownWorkspaceSettlement } from "../services/legacy-shutdown-workspace-settlement.js";
-import { legacyControllerBootId } from "../services/legacy-controller-lease.js";
+import { renewLegacyControllerLease, legacyControllerBootId } from "../services/legacy-controller-lease.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { createHeartbeatRunOutput } from "../services/heartbeat/run-output.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { persistActivity } from "../services/activity-log.js";
 import { accountRunCost } from "../services/run-cost-accounting.js";
-import { createHeartbeatLifecycle } from "../services/heartbeat/run-lifecycle.js";
+import { persistHeartbeatRunProcessMetadata, createHeartbeatLifecycle } from "../services/heartbeat/run-lifecycle.js";
 import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { issueTreeControlService } from "../services/issue-tree-control.js";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { issueService } from "../services/issues.js";
+import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { logger } from "../middleware/logger.js";
 
 vi.setConfig({ testTimeout: 90_000 });
@@ -197,6 +198,74 @@ describe("residual recovery production matrix", () => {
     await vi.waitFor(async () => expect((await getRun(run.id)).processPid).toBeNull(), { timeout: 40_000 });
     expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, run.id),
       eq(heartbeatRunEvents.eventType, "native.local_process_stopped")))).toHaveLength(1);
+    await quiet();
+  });
+  it("excludes unverifiable local birth history until actual process identity arrives", async () => {
+    const f = await fixture(), startedAt = new Date();
+    const child = spawn(process.execPath, ["-e", "console.log('legacy-identity-proof')"], { stdio: "ignore" });
+    const pid = child.pid!; await once(child, "exit");
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      runtimeMode: "native", nativeIssueId: f.issue.id, status: "failed", finishedAt: new Date(), processPid: pid,
+      runnerProfileJson: { sessionCheckpoint: { sessionId: "legacy-unverifiable-session" } } }).returning();
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issue.id, runId: run.id, phase: "committed" });
+    const checks: string[] = [], prior = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query) => {
+      if (query.includes("sessionCheckpoint") && query.includes("for update")) checks.push(query);
+    };
+    try {
+      await start();
+      expect(checks).toEqual([]);
+      await db.transaction(tx => notifyLiveRunRecovery(tx, { companyId: f.companyId }));
+      await advance(31_000); expect(checks).toEqual([]);
+    } finally { db.$client.options.debug = prior; }
+    expect(await getRun(run.id)).toMatchObject({ processPid: pid, processStartedAt: null });
+    await quiet();
+    await persistHeartbeatRunProcessMetadata(db, run.id, { pid, processGroupId: null, startedAt: startedAt.toISOString() });
+    await advance(1_000);
+    await vi.waitFor(async () => expect((await getRun(run.id)).processPid).toBeNull());
+    expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, run.id),
+      eq(heartbeatRunEvents.eventType, "native.local_process_stopped")))).toHaveLength(1);
+    await quiet();
+  });
+  it("releases remote process identity without local birth after the exact provider stop receipt", async () => {
+    const f = await fixture();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      runtimeMode: "native", nativeIssueId: f.issue.id, status: "failed", finishedAt: new Date(), processPid: 12345,
+      runnerProfileJson: { sessionCheckpoint: { sessionId: "remote-no-local-birth" } } }).returning();
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issue.id, runId: run.id, phase: "committed" });
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: run.id,
+      provider: "daytona", providerLeaseId: randomUUID(), status: "released", releasedAt: new Date() }).returning();
+    await start(); expect((await getRun(run.id)).processPid).toBe(12345);
+    const receipt = remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "stopped" });
+    expect(receipt).toBeDefined();
+    await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({ cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: receipt } }).where(eq(environmentLeases.id, lease.id)),
+    { companyId: f.companyId, runId: run.id, leaseId: lease.id });
+    await advance(1_000);
+    await vi.waitFor(async () => expect((await getRun(run.id)).processPid).toBeNull());
+    expect((await getRun(run.id)).processStartedAt).toBeNull();
+    expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, run.id),
+      eq(heartbeatRunEvents.eventType, "native.local_process_stopped")))).toEqual([]);
+    await quiet();
+  });
+  it("renews only the active recovery owner and re-reads the moved controller deadline", async () => {
+    const f = await fixture(), old = new Date(Date.now() - 6 * 60_000), expiry = new Date(Date.now() + 20_000);
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      runtimeMode: "legacy", status: "running", controllerBootId: legacyControllerBootId,
+      controllerLeaseExpiresAt: expiry, executionStage: "preparing", startedAt: old, updatedAt: old,
+      lastOutputAt: new Date() }).returning();
+    await start(); expect(deadlines.get("active-execution-recovery")!()).toBe(expiry.getTime());
+    const before = timeline.length;
+    expect(await renewLegacyControllerLease(db, run)).toBe(true);
+    const moved = (await getRun(run.id)).controllerLeaseExpiresAt!;
+    expect(moved.getTime()).toBeGreaterThan(expiry.getTime());
+    await advance(1_000);
+    expect(timeline.slice(before).filter(event => Array.isArray(event) && event[0] === "pass")
+      .map(event => (event as unknown[])[1])).toEqual(["active-execution-recovery", "active-execution-recovery"]);
+    await advance(expiry.getTime() - Date.now());
+    expect((await getRun(run.id)).status).toBe("running");
+    expect(deadlines.get("active-execution-recovery")!()).toBe(moved.getTime());
+    await heartbeat.cancelRun(run.id, "Operator cancelled the controller renewal fixture");
     await quiet();
   });
   it("recovers orphan active leases after restart, including a deleted heartbeat reference, without starving behind 100 guarded rows", async () => {
