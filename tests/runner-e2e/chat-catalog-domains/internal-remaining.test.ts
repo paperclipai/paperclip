@@ -28,6 +28,19 @@ it("accepts natural future-default wording", () => { const o = defaults(); o.sta
 it("rejects description-only success without actual future context or native report", () => { const o = defaults(); o.futureContext.project.description = ""; expect(gradeProjectDefaults(o).passed).toBe(false); const wrong = defaults(); wrong.futureComments[0]!.createdByRunId = "prior"; expect(gradeProjectDefaults(wrong).passed).toBe(false); });
 it("rejects silently changing active ownership or gated environment", () => { const o = defaults(); o.tasks[0].assigneeAgentId = "ceo"; expect(gradeProjectDefaults(o).passed).toBe(false); const wrong = defaults(); wrong.projects[0].env = { TOKEN: "changed" }; expect(gradeProjectDefaults(wrong).passed).toBe(false); });
 it("rejects wrong goal and an unacknowledged future/active distinction", () => { const o = defaults(); o.projects[0].goalIds = ["wrong"]; expect(gradeProjectDefaults(o).passed).toBe(false); const wrong = defaults(); wrong.state.defaultsReply = "All work updated."; expect(gradeProjectDefaults(wrong).passed).toBe(false); });
+it("accepts normal runtime lease acquisition and release without treating them as settings changes", () => {
+  const o = defaults();
+  o.activity.push(...["environment.lease_acquired", "environment.lease_released"].map(action => ({ action, entityType: "environment_lease", agentId: "ceo" })));
+  expect(gradeProjectDefaults(o).passed).toBe(true);
+});
+it.each([
+  ["environment.created", "environment"], ["environment.updated", "environment"], ["environment.deleted", "environment"],
+  ["budget.policy_upserted", "budget_policy"], ["environment.lease_acquired", "environment"],
+  ["environment.lease_released", "environment"], ["environment.lease_unknown", "environment_lease"],
+])("rejects configuration changes and unrecognized lease activity: %s / %s", (action, entityType) => {
+  const o = defaults(); o.activity.push({ action, entityType, agentId: "ceo" });
+  expect(gradeProjectDefaults(o).passed).toBe(false);
+});
 it("accepts consumed supported same-project API reads without requiring a particular context DTO field", () => {
   const o = defaults(); o.futureContext.project.description = "";
   const digest = createHash("sha256").update(JSON.stringify({ operationId: "GET /api/projects/{id}", pathParams: { id: "p" } })).digest("hex");

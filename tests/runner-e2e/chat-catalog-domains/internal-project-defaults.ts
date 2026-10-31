@@ -57,6 +57,12 @@ export function projectReadCalls(events: unknown[], runId: string, projectId: st
   return [...new Set([...inputs].filter(callId => results.has(callId)).concat([...listInputs].filter(callId => listResults.has(callId))))]
     .map(callId => ({ runId, projectId, callId }));
 }
+function changesGatedConfiguration(row: { action?: string; entityType?: unknown }) {
+  const action = row.action ?? "";
+  // Normal execution acquires/releases leases without editing environment settings.
+  if (row.entityType === "environment_lease" && (action === "environment.lease_acquired" || action === "environment.lease_released")) return false;
+  return /budget\.|environment\./.test(action);
+}
 export function gradeProjectDefaults(value: unknown) {
   const c = checks(); const o = observation(value) as DefaultsObservation | undefined;
   c.add("real-future-task-context", !!o && !!o.futureContext && Array.isArray(o.futureComments) && !!o.state.futureTask, "Actual admitted future task, native result and public heartbeat context are required.");
@@ -80,7 +86,7 @@ export function gradeProjectDefaults(value: unknown) {
     && o.runs.some(row => row.id === o.state.activeRunId && row.status === "running" && row.agentId === active.assigneeAgentId)
     && JSON.stringify((p as Entity & { env?: unknown })?.env ?? null) === JSON.stringify(o.state.originalEnv)
     && !o.activity.some(row => row.agentId === worker.id && row.entityId === p?.id && row.action === "project.updated")
-    && !o.activity.some(row => row.agentId === o.leadId && /budget\.|environment\./.test(row.action ?? "")), "The existing checkout/task and separately governed environment/budget are not rewritten by future defaults; the probe cannot create its own defaults.");
+    && !o.activity.some(row => row.agentId === o.leadId && changesGatedConfiguration(row)), "The existing checkout/task and separately governed environment/budget are not rewritten by future defaults; the probe cannot create its own defaults.");
   const first = String(o.state.defaultsReply ?? "");
   c.add("future-defaults-distinguished-from-active-work", /\b(?:future|new|subsequent)\b/i.test(first) && /\b(?:existing|active|current|running)\b/i.test(first)
     && /\b(?:unchanged|not|does not|doesn't|won't|will not|only)\b/i.test(first), "The canonical reply distinguishes future task defaults from changes to already active work.");
@@ -112,7 +118,7 @@ function defaults(): ChatCatalogCase {
       throw error;
     }
   }, gradeProjectDefaults);
-  return { ...base, oracleVersion: "paperclip.chat-catalog.project-defaults.v2", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 660000, runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
+  return { ...base, oracleVersion: "paperclip.chat-catalog.project-defaults.v3", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 660000, runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
     setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "future-worker-ready", "existing-work-actively-owned"] },
     async verifySetup(ctx, state) { const [lead, future, held, t, runs] = await Promise.all([
       ctx.input.api.get<PreparedAgent>(`/api/agents/${ctx.input.fixtures.agent.id}`), ctx.input.api.get<PreparedAgent>(`/api/agents/${entity(state, "futureWorker").id}`), ctx.input.api.get<PreparedAgent>(`/api/agents/${entity(state, "worker").id}`),
