@@ -550,8 +550,8 @@ importers:
         specifier: 1.0.88
         version: 1.0.88
       '@github/copilot-linux-x64':
-        specifier: 1.0.88
-        version: 1.0.88
+        specifier: 1.0.95
+        version: 1.0.95
     devDependencies:
       '@paperclipai/paperclip-eval-kernel':
         specifier: workspace:*
@@ -1123,8 +1123,8 @@ importers:
         specifier: 1.0.88
         version: 1.0.88
       '@github/copilot-linux-x64':
-        specifier: 1.0.88
-        version: 1.0.88
+        specifier: 1.0.95
+        version: 1.0.95
     devDependencies:
       '@opentelemetry/context-async-hooks':
         specifier: 2.10.0
@@ -2753,8 +2753,8 @@ packages:
     os: [darwin]
     hasBin: true
 
-  '@github/copilot-linux-x64@1.0.88':
-    resolution: {integrity: sha512-wNigl8rqixvtYoRtygNf1NQIXx77MWC6XyqoV7fcfvSwWI3GJCltnczaNLbC611K9Hex39KyiUR5ZmGhQ+LzLw==}
+  '@github/copilot-linux-x64@1.0.95':
+    resolution: {integrity: sha512-xjZ6/72iFhy/ZcXpSUDzMzcplOayWkuIc0DrT+54Oqk4ODPYs3HCzk3wo1HnC3qP68Ft1KRA6btT3g3wO/PG5w==}
     cpu: [x64]
     os: [linux]
     hasBin: true
@@ -10902,7 +10902,7 @@ snapshots:
   '@github/copilot-darwin-x64@1.0.88':
     optional: true
 
-  '@github/copilot-linux-x64@1.0.88':
+  '@github/copilot-linux-x64@1.0.95':
     optional: true
 
   '@grpc/grpc-js@1.14.5':
