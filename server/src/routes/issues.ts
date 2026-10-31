@@ -1414,6 +1414,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "run_liveness_continuation",
   "heartbeat.disabled",
   "heartbeat.timer.no_actionable_work",
+  "heartbeat.wakeup.no_actionable_work",
   "heartbeat.wakeOnDemand.disabled",
 ]);
 

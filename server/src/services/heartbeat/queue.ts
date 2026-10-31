@@ -234,6 +234,7 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
 
 export const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const CONTENTLESS_UNBOUND_WAKE_KEY = "contentlessUnboundWake";
 
 export const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
   "queued",
@@ -588,6 +589,17 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     });
 
     return cancelled;
+  }
+
+  function hasWakePayloadContent(payload: Record<string, unknown> | null) {
+    if (!payload) return false;
+    return Object.entries(payload).some(([key, value]) => {
+      if (key === DEFERRED_WAKE_CONTEXT_KEY || key === "manualUserWake") return false;
+      if (value === null || value === undefined || value === "") return false;
+      if (Array.isArray(value)) return value.length > 0;
+      if (typeof value === "object") return Object.keys(value as object).length > 0;
+      return true;
+    });
   }
 
   async function hasActionableTimerWork(agent: typeof agents.$inferSelect) {
@@ -2836,6 +2848,71 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       });
       await markTimerHeartbeatChecked(agentId, source);
       return null;
+    }
+
+    const wakeRequesterType = readNonEmptyString(opts.requestedByActorType);
+    const wakeRequesterId = readNonEmptyString(opts.requestedByActorId);
+    const contentlessUnboundWake =
+      Boolean(wakeRequesterType && wakeRequesterId) &&
+      !caseRequest &&
+      enrichedContextSnapshot.forceFreshSession !== true &&
+      source !== "timer" &&
+      !issueId &&
+      !wakeCommentId &&
+      !readNonEmptyString(enrichedContextSnapshot.taskId) &&
+      !readNonEmptyString(enrichedContextSnapshot.taskKey) &&
+      !readNonEmptyString(reason) &&
+      !readNonEmptyString(enrichedContextSnapshot.wakeReason) &&
+      !hasWakePayloadContent(payload);
+    if (contentlessUnboundWake) {
+      enrichedContextSnapshot[CONTENTLESS_UNBOUND_WAKE_KEY] = true;
+      payload = {
+        ...payload,
+        [DEFERRED_WAKE_CONTEXT_KEY]: {
+          ...parseObject(payload?.[DEFERRED_WAKE_CONTEXT_KEY]),
+          [CONTENTLESS_UNBOUND_WAKE_KEY]: true,
+        },
+      };
+      const previous = await db
+        .select({
+          payload: agentWakeupRequests.payload,
+          requestedAt: agentWakeupRequests.requestedAt,
+          requestedByActorType: agentWakeupRequests.requestedByActorType,
+          requestedByActorId: agentWakeupRequests.requestedByActorId,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, agent.companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+          ),
+        )
+        .orderBy(desc(agentWakeupRequests.requestedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const previousWasContentless =
+        parseObject(
+          parseObject(previous?.payload)?.[DEFERRED_WAKE_CONTEXT_KEY],
+        )[CONTENTLESS_UNBOUND_WAKE_KEY] === true;
+      const previousWasSameRequester =
+        previous?.requestedByActorType === wakeRequesterType &&
+        previous?.requestedByActorId === wakeRequesterId;
+      const repeatWindowMs = 60 * 60 * 1000;
+      const previousIsRecent =
+        previous?.requestedAt instanceof Date &&
+        Date.now() - previous.requestedAt.getTime() < repeatWindowMs;
+      if (
+        previousWasContentless &&
+        previousWasSameRequester &&
+        previousIsRecent &&
+        !(await hasActionableTimerWork(agent))
+      ) {
+        await writeSkippedHeartbeatRequest("heartbeat.wakeup.no_actionable_work", {
+          reason:
+            "Repeated a contentless wake from the same requester: no issue, comment, task, reason or payload, and no assigned todo or in_progress issue since the previous one.",
+        });
+        return null;
+      }
     }
 
     if (issueId) {

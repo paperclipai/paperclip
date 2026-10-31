@@ -508,6 +508,223 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(runRows).toHaveLength(0);
   });
 
+  it("skips a repeated contentless unbound wake from the same requester when there is no actionable work", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const requester = { requestedByActorType: "user" as const, requestedByActorId: "responsible-user" };
+    await db.insert(issues).values([
+      {
+        companyId,
+        title: "Waiting on a reviewer",
+        status: "in_review" as const,
+        assigneeAgentId: agentId,
+      },
+      {
+        companyId,
+        title: "Waiting on an operator",
+        status: "blocked" as const,
+        assigneeAgentId: agentId,
+      },
+    ]);
+
+    const first = await heartbeat.wakeup(agentId, {
+      ...requester,
+      source: "on_demand",
+      triggerDetail: "manual",
+    });
+    expect(first).not.toBeNull();
+
+    const second = await heartbeat.wakeup(agentId, {
+      ...requester,
+      source: "on_demand",
+      triggerDetail: "manual",
+    });
+    expect(second).toBeNull();
+
+    const wakeups = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .orderBy(agentWakeupRequests.requestedAt);
+    expect(wakeups).toHaveLength(2);
+    expect(wakeups[0]?.status).not.toBe("skipped");
+    expect(wakeups[1]).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.wakeup.no_actionable_work",
+    });
+    expect(wakeups[1]?.payload).toMatchObject({
+      heartbeatSkip: {
+        reason: expect.stringContaining("no assigned todo or in_progress issue"),
+      },
+    });
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)).toHaveLength(1);
+  });
+
+  it("never suppresses a second contentless wake from a different requester", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const otherOperatorId = `operator-${randomUUID()}`;
+    await db.insert(authUsers).values({
+      id: otherOperatorId,
+      name: "Second operator",
+      email: `${otherOperatorId}@example.test`,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: otherOperatorId,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    const first = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      requestedByActorType: "user",
+      requestedByActorId: "responsible-user",
+    });
+    expect(first).not.toBeNull();
+
+    const second = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      requestedByActorType: "user",
+      requestedByActorId: otherOperatorId,
+    });
+    expect(second).not.toBeNull();
+    await heartbeat.waitForRunExecutionDrain(second!.id);
+  });
+
+  it("never suppresses a repeated service-level invoke with no requester", async () => {
+    const { agentId } = await seedCompanyAndAgent();
+
+    const first = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(first).not.toBeNull();
+
+    const second = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(second).not.toBeNull();
+    await heartbeat.waitForRunExecutionDrain(second!.id);
+  });
+
+  it("still starts a repeated contentless wake once the agent has actionable work", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: { maxConcurrentRuns: 2 },
+    });
+    const requester = { requestedByActorType: "user" as const, requestedByActorId: "responsible-user" };
+
+    const first = await heartbeat.wakeup(agentId, {
+      ...requester,
+      source: "on_demand",
+      triggerDetail: "manual",
+    });
+    expect(first).not.toBeNull();
+
+    await db.insert(issues).values({
+      companyId,
+      title: "Work awaiting a start",
+      status: "todo" as const,
+      assigneeAgentId: agentId,
+    });
+
+    const second = await heartbeat.wakeup(agentId, {
+      ...requester,
+      source: "on_demand",
+      triggerDetail: "manual",
+    });
+
+    expect(second).not.toBeNull();
+    expect(second!.id).toBeTruthy();
+  });
+
+  it("does not suppress a contentless-looking wake that states a reason", async () => {
+    const { agentId } = await seedCompanyAndAgent();
+    const requester = { requestedByActorType: "user" as const, requestedByActorId: "responsible-user" };
+
+    await heartbeat.wakeup(agentId, {
+      ...requester,
+      source: "on_demand",
+      triggerDetail: "manual",
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      ...requester,
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "operator_requested_check",
+    });
+
+    expect(run).not.toBeNull();
+  });
+
+  it("does not suppress a repeat that carries meaningful payload content", async () => {
+    const { agentId } = await seedCompanyAndAgent();
+    const requester = { requestedByActorType: "user" as const, requestedByActorId: "responsible-user" };
+
+    await heartbeat.wakeup(agentId, {
+      ...requester,
+      source: "on_demand",
+      triggerDetail: "manual",
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      ...requester,
+      source: "on_demand",
+      triggerDetail: "manual",
+      payload: { prompt: "Summarize the last release notes." },
+    });
+
+    expect(run).not.toBeNull();
+  });
+
+  it("does not suppress a repeat after the one-hour window has passed", async () => {
+    const { agentId } = await seedCompanyAndAgent();
+    const requester = { requestedByActorType: "user" as const, requestedByActorId: "responsible-user" };
+
+    const first = await heartbeat.wakeup(agentId, {
+      ...requester,
+      source: "on_demand",
+      triggerDetail: "manual",
+    });
+    expect(first).not.toBeNull();
+
+    await db
+      .update(agentWakeupRequests)
+      .set({ requestedAt: new Date(Date.now() - 61 * 60 * 1000) })
+      .where(eq(agentWakeupRequests.agentId, agentId));
+
+    const run = await heartbeat.wakeup(agentId, {
+      ...requester,
+      source: "on_demand",
+      triggerDetail: "manual",
+    });
+
+    expect(run).not.toBeNull();
+  });
+
+  it("does not suppress an explicit fresh-session request", async () => {
+    const { agentId } = await seedCompanyAndAgent();
+    const requester = { requestedByActorType: "user" as const, requestedByActorId: "responsible-user" };
+
+    await heartbeat.wakeup(agentId, {
+      ...requester,
+      source: "on_demand",
+      triggerDetail: "manual",
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      ...requester,
+      source: "on_demand",
+      triggerDetail: "manual",
+      contextSnapshot: { forceFreshSession: true },
+    });
+
+    expect(run).not.toBeNull();
+  });
+
   it("checks guarded issue status and assignee under the enqueue lock", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const parkedIssueId = randomUUID();
