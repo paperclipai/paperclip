@@ -1180,6 +1180,137 @@ describe("Cursor Cloud native driver", () => {
     expect(await readFile(f.options.relay.socketPath, "utf8")).toBe("unowned file");
   });
 
+  it("retries a failed terminal checkpoint save without ending its active delivery obligation", async () => {
+    const f = await fixture(new Peer(), { cancelTimeoutMs: 1_000, config: {
+      schema: "paperclip.cursor-cloud.config.v1", repos: [{ url: "https://github.com/example/repo" }], timeoutMs: 10_000,
+    } });
+    const started = await f.session.startTurn({ message: { role: "user", text: "Save the final answer durably" } });
+    await waitFor(() => f.events.some(event => event.eventType === "item.delta"));
+    const before = await savedCheckpoint(f.root, f.session);
+    const checkpointPath = join(f.root, `checkpoint-${cursorCloudDigest("session")}.json`);
+    const backupPath = `${checkpointPath}.before-terminal`;
+    const failed = deferred<unknown>(), releaseRetry = deferred();
+    const originalWrite = CursorCloudCheckpointStore.prototype.write;
+    const attempts: Array<NonNullable<typeof before.pendingTerminalDelivery>> = [];
+    let injected = false;
+    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(async function(value) {
+      if (this.path !== checkpointPath || value.phase !== "terminal") return originalWrite.call(this, value);
+      attempts.push(structuredClone(value.pendingTerminalDelivery));
+      if (injected) { await releaseRetry.promise; return originalWrite.call(this, value); }
+      injected = true;
+      await rename(checkpointPath, backupPath);
+      await mkdir(checkpointPath, { mode: 0o700 });
+      let failure: unknown;
+      try { await originalWrite.call(this, value); }
+      catch (error) { failure = error; }
+      finally {
+        await rm(checkpointPath, { recursive: true });
+        await rename(backupPath, checkpointPath);
+      }
+      failed.resolve(failure);
+      if (!failure) throw new Error("The controlled checkpoint rename must fail");
+      throw failure;
+    });
+    try {
+      f.peer.native!.status = "FINISHED"; f.peer.native!.result = "Durable final answer"; f.peer.release.resolve();
+      expect(await failed.promise).toMatchObject({ code: "EISDIR" });
+      expect(JSON.parse(await readFile(checkpointPath, "utf8"))).toMatchObject({ phase: "running", deadlineAt: before.deadlineAt });
+      expect(f.events.filter(event => event.turnId === started.turnId && event.eventType === "turn.completed")).toHaveLength(0);
+      releaseRetry.resolve();
+      await waitFor(() => f.events.some(event => event.turnId === started.turnId && event.eventType === "turn.completed"));
+      const pending = (await f.session.read()).pendingTerminalDelivery;
+      expect(attempts.length).toBeGreaterThanOrEqual(2);
+      expect(attempts.every(delivery => JSON.stringify(delivery) === JSON.stringify(pending))).toBe(true);
+      expect(JSON.parse(await readFile(checkpointPath, "utf8"))).toMatchObject({ phase: "terminal", deadlineAt: null, pendingTerminalDelivery: pending });
+      expect(f.events.filter(event => event.eventType === "item.completed" && event.payload.channel === "final")).toHaveLength(1);
+      expect(f.events.filter(event => event.eventType === "turn.completed")).toHaveLength(1);
+      expect(f.peer.createAgent).toHaveBeenCalledOnce(); expect(f.peer.createRun).not.toHaveBeenCalled(); expect(f.peer.cancelRun).not.toHaveBeenCalled();
+    } finally { releaseRetry.resolve(); write.mockRestore(); }
+  });
+
+  it.each(["FINISHED", "ERROR"] as const)("fences late tools and serializes a pending %s checkpoint with Stop, reconciliation and snapshots", async status => {
+    const f = await fixture();
+    const started = await f.session.startTurn({ message: { role: "user", text: "Complete this exact run" } });
+    await waitFor(() => f.events.some(event => event.eventType === "item.delta"));
+    const initialized = await rpc(f.options.relay.socketPath, { id: "initialize", method: "initialize" }, relayHeaders(f.peer));
+    const checkpointPath = join(f.root, `checkpoint-${cursorCloudDigest("session")}.json`);
+    const held = deferred(), release = deferred();
+    const originalWrite = CursorCloudCheckpointStore.prototype.write;
+    let paused = false;
+    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(value) {
+      if (this.path === checkpointPath && value.phase === "terminal" && !paused) {
+        paused = true; held.resolve(); return release.promise.then(() => originalWrite.call(this, value));
+      }
+      return originalWrite.call(this, value);
+    });
+    try {
+      f.peer.native!.status = status; f.peer.native!.result = "One terminal answer"; f.peer.release.resolve();
+      await held.promise;
+      expect(await f.session.read()).toMatchObject({ phase: "running", semanticCompletionReceipt: null });
+      const late = await rpc(f.options.relay.socketPath, { id: "late", method: "tools/call", params: { name: "write_note", arguments: { note: "No authority after provider termination" } } }, relayHeaders(f.peer), initialized.session);
+      expect(late.status).toBe(403); expect(f.handler).not.toHaveBeenCalled();
+      let stopped = false, reconciled = false, snapshotted = false;
+      const stop = f.session.interrupt!().finally(() => { stopped = true; });
+      const reconcile = f.session.reconcile!().finally(() => { reconciled = true; });
+      const snapshot = f.session.snapshot().finally(() => { snapshotted = true; });
+      await new Promise<void>(accept => setImmediate(accept));
+      expect({ stopped, reconciled, snapshotted }).toEqual({ stopped: false, reconciled: false, snapshotted: false });
+      await expect(f.session.startTurn({ message: { role: "user", text: "No replacement" } })).rejects.toThrow("unresolved remote work");
+      await expect(f.session.attachRun!({ runId: "different-owner" })).rejects.toThrow("active run");
+      release.resolve(); await Promise.all([stop, reconcile, snapshot]);
+      const terminalEvent = status === "FINISHED" ? "turn.completed" : "turn.failed";
+      await waitFor(() => f.events.some(event => event.turnId === started.turnId && event.eventType === terminalEvent));
+      const state = await f.session.read();
+      expect(JSON.parse(await readFile(checkpointPath, "utf8"))).toMatchObject({ phase: "terminal", deadlineAt: null, pendingTerminalDelivery: state.pendingTerminalDelivery });
+      expect(f.events.filter(event => event.eventType === "item.completed" && event.payload.channel === "final")).toHaveLength(1);
+      expect(f.events.filter(event => event.eventType === terminalEvent)).toHaveLength(1);
+      expect(f.peer.cancelRun).not.toHaveBeenCalled();
+    } finally { release.resolve(); write.mockRestore(); }
+  });
+
+  it("retains a failed terminal batch after bounded retries and preserves its event sequence on recovery", async () => {
+    const f = await fixture(new Peer(), { cancelTimeoutMs: 30, config: {
+      schema: "paperclip.cursor-cloud.config.v1", repos: [{ url: "https://github.com/example/repo" }], timeoutMs: 10_000,
+    } });
+    await f.session.startTurn({ message: { role: "user", text: "Retain the completed result while storage is unavailable" } });
+    await waitFor(() => f.events.some(event => event.eventType === "item.delta"));
+    const before = await savedCheckpoint(f.root, f.session);
+    const checkpointPath = join(f.root, `checkpoint-${cursorCloudDigest("session")}.json`);
+    const originalWrite = CursorCloudCheckpointStore.prototype.write;
+    const deliveries: unknown[] = [];
+    let unavailable = true;
+    const write = vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(function(value) {
+      if (this.path === checkpointPath && value.phase === "terminal") {
+        deliveries.push(structuredClone(value.pendingTerminalDelivery));
+        if (unavailable) return Promise.reject(Object.assign(new Error("controlled unavailable checkpoint storage"), { code: "ENOSPC" }));
+      }
+      return originalWrite.call(this, value);
+    });
+    try {
+      f.peer.native!.status = "FINISHED"; f.peer.native!.result = "Exact retained result"; f.peer.release.resolve();
+      await waitFor(() => f.events.some(event => event.payload.code === "cursor_cloud_terminal_checkpoint_pending"));
+      await expect(f.session.reconcile!()).rejects.toThrow("terminal checkpoint");
+      expect(await f.session.read()).toMatchObject({ phase: "running", pendingTerminalDelivery: null });
+      expect(JSON.parse(await readFile(checkpointPath, "utf8"))).toMatchObject({ phase: "running", deadlineAt: before.deadlineAt, pendingTerminalDelivery: null });
+      await expect(f.session.startTurn({ message: { role: "user", text: "No new provider work" } })).rejects.toThrow("unresolved remote work");
+      const reads = f.peer.getRun.mock.calls.length;
+      unavailable = false;
+      await f.session.reconcile!();
+      await waitFor(() => f.events.some(event => event.eventType === "turn.completed"));
+      const pending = (await f.session.read()).pendingTerminalDelivery;
+      expect(deliveries.every(delivery => JSON.stringify(delivery) === JSON.stringify(pending))).toBe(true);
+      const sequences = f.events.map(event => event.sourceSeq);
+      expect(new Set(f.events.map(event => event.sourceEventId)).size).toBe(f.events.length);
+      expect(sequences.every((seq, index) => index === 0 || seq === sequences[index - 1]! + 1)).toBe(true);
+      const snapshot = await f.session.snapshot();
+      expect(snapshot.lastSourceSequence).toBe(sequences.at(-1));
+      expect(JSON.parse(await readFile(checkpointPath, "utf8"))).toMatchObject({ phase: "terminal", sourceSequence: sequences.at(-1), pendingTerminalDelivery: pending });
+      expect(f.events.filter(event => event.eventType === "turn.completed")).toHaveLength(1);
+      expect(f.peer.getRun).toHaveBeenCalledTimes(reads); expect(f.peer.createAgent).toHaveBeenCalledOnce();
+      expect(f.peer.createRun).not.toHaveBeenCalled(); expect(f.peer.cancelRun).not.toHaveBeenCalled();
+    } finally { unavailable = false; write.mockRestore(); }
+  });
+
   it("retains the exact terminal delivery across restart until its receipt is acknowledged", async () => {
     const f = await fixture();
     const started = await f.session.startTurn({ message: { role: "user", text: "Retain the final result" } }); await f.peer.created.promise;
