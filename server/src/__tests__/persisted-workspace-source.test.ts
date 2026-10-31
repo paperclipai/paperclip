@@ -101,6 +101,49 @@ describe("persisted Git workspace source", () => {
     });
   });
 
+  it.each([
+    "https://example.invalid/original",
+    "https://example.invalid/original/",
+    "https://EXAMPLE.invalid/original.git",
+    "ssh://git@example.invalid/original.git",
+    "ssh://git@example.invalid:2222/original",
+    "git@example.invalid:original.git",
+    "example.invalid:original",
+  ])("accepts another spelling of the recorded repository (%s)", async origin => {
+    const { original, input } = await fixture();
+    await exec("git", ["-C", original, "remote", "set-url", "origin", origin]);
+    expect(await resolvePersistedGitWorkspaceSource(input)).toBe(original);
+  });
+
+  it.each([
+    "git@example.invalid:other.git",
+    "git@other.invalid:original.git",
+    "ssh://git@example.invalid/Original.git",
+    "https://example.invalid/team/original.git",
+  ])("rejects another repository in any spelling (%s)", async origin => {
+    const { original, input } = await fixture();
+    await exec("git", ["-C", original, "remote", "set-url", "origin", origin]);
+    await expect(resolvePersistedGitWorkspaceSource(input)).rejects.toMatchObject({ resultJson: { workspaceValidation: {
+      reasonCode: "source_repository_mismatch",
+    } } });
+  });
+
+  it("matches an SSH host alias through the repository's own url.insteadOf rules", async () => {
+    const { original, input } = await fixture();
+    await exec("git", ["-C", original, "config", "url.example-alias:.insteadOf", "https://example.invalid/"]);
+    await exec("git", ["-C", original, "remote", "set-url", "origin", "example-alias:original.git"]);
+    expect(await resolvePersistedGitWorkspaceSource(input)).toBe(original);
+  });
+
+  it("does not let url.insteadOf rules map the recorded URL onto another repository", async () => {
+    const { original, input } = await fixture();
+    await exec("git", ["-C", original, "config", "url.example-alias:other/.insteadOf", "https://example.invalid/"]);
+    await exec("git", ["-C", original, "remote", "set-url", "origin", "example-alias:original.git"]);
+    await expect(resolvePersistedGitWorkspaceSource(input)).rejects.toMatchObject({ resultJson: { workspaceValidation: {
+      reasonCode: "source_repository_mismatch",
+    } } });
+  });
+
   it("rejects multiple origin URLs even if the last one matches the saved repository", async () => {
     const { original, input } = await fixture();
     await exec("git", ["-C", original, "remote", "set-url", "origin", "https://example.invalid/other.git"]);
