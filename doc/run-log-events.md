@@ -464,6 +464,16 @@ byte budgets, including truncation markers. `retrievalTruncated` directs callers
 to the full adapter-bounded text in the run error or transcript. Other provider
 metadata and action payloads are not copied.
 
+When an ACP request fails with a JSON-RPC error, the engine also keeps the
+provider explanation. It reads a string `data`, or the string `data.details`, or
+the string `data.message`, in that order. It adds the explanation on a new line
+after the error message unless the message already contains it. The combined
+text passes through the same redaction and the 4,096-character title bound
+before it becomes the run error, the summary, and the `acpx.error` `message`.
+A numeric JSON-RPC error code appears as the optional integer `rpcCode` in
+`errorMeta` and in the `acpx.error` record. Errors without these fields keep
+their existing message and omit `rpcCode`.
+
 Recovery still uses the typed failure category and the adapter's existing
 classifier. Provider warnings do not become failures, and timeouts or lost
 control channels keep their authoritative failure messages. These diagnostics
