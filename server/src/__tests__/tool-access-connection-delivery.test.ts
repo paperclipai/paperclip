@@ -103,6 +103,23 @@ describePostgres("tool access writes notify the connection delivery worker", () 
     await expectNoDurableEffect();
   });
 
+  it("registers the notification before the connection write it guards", async () => {
+    const f = await seedDisabledConnection();
+    delivery = await startConnectionDelivery(db);
+    let release: (() => void) | undefined;
+    const holder = db.transaction(async tx => { await tx.execute(sql`lock table tool_connections in exclusive mode`); await new Promise<void>(resolve => { release = resolve; }); });
+    await expect.poll(() => release).toBeDefined();
+    const baseline = delivery.sweeps;
+    const updating = tools().updateConnection(f.connection.id, { enabled: true });
+    try {
+      await expect.poll(async () => (await db.execute(sql`select 1 from pg_stat_activity where wait_event_type = 'Lock'
+        and query ilike '%update "tool_connections"%'`)).length, { timeout: 10_000 }).toBe(1);
+      expect(databaseWorkPending(db, DELIVERY_QUEUES.connection)).toBe(true);
+    } finally { release!(); await Promise.allSettled([holder, updating]); }
+    await delivery.settle(baseline + 1);
+    await expectRetired(f.connection.id);
+  });
+
   it("leaves a raw connection write without a notification to the worker until something wakes it", async () => {
     const f = await seedDisabledConnection();
     delivery = await startConnectionDelivery(db);
