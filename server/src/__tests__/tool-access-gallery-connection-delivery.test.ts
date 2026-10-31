@@ -138,4 +138,53 @@ describePostgres("connectGalleryApp writes notify the connection delivery worker
     expect((await card()).status).toBe("expired");
     expect(delivery.wakeup).toHaveBeenCalledOnce();
   });
+
+  async function holdSweepBeforeRead() {
+    const blocker = createDb(temp.connectionString);
+    let locked!: () => void, release!: () => void;
+    const ready = new Promise<void>(resolve => { locked = resolve; });
+    const done = new Promise<void>(resolve => { release = resolve; });
+    const held = blocker.transaction(async (tx) => {
+      await tx.execute(sql`lock table issue_thread_interactions in access exclusive mode`);
+      locked();
+      await done;
+    }).finally(() => blocker.$client.end({ timeout: 1 }));
+    await ready;
+    const started = delivery!.sweeps;
+    delivery!.wake();
+    while (delivery!.sweeps === started) await new Promise(resolve => setTimeout(resolve, 10));
+    return async () => { release(); await held; };
+  }
+
+  it("retires once when the restore commits while a started sweep is held before its read", async () => {
+    const f = await seedLinkConnection("active");
+    await db.delete(issueThreadInteractions);
+    delivery = await startConnectionDelivery(db);
+    const baseline = delivery.sweeps;
+    let releaseSweep!: () => Promise<void>;
+    await expect(reconnectFailingAtCatalogRefresh(db, f, async () => {
+      await delivery!.settle(baseline + 1);
+      await db.insert(issueThreadInteractions).values(f.intent);
+      releaseSweep = await holdSweepBeforeRead();
+    })).rejects.toThrow("authority revoked");
+    await releaseSweep();
+    await delivery.settle(baseline + 3);
+    expect((await card()).status).toBe("expired");
+    expect(await db.select().from(connectionIntentDeliveries)).toHaveLength(1);
+    expect(delivery.wakeup).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the card pending when access widens and then narrows while a started sweep is held", async () => {
+    const f = await seedLinkConnection("draft");
+    delivery = await startConnectionDelivery(db);
+    const baseline = delivery.sweeps;
+    const releaseSweep = await holdSweepBeforeRead();
+    await db.update(toolConnections).set({ status: "active", enabled: true }).where(eq(toolConnections.id, f.connection.id));
+    await expect(reconnectFailingAtCatalogRefresh(db, f, async () => {
+      await releaseSweep();
+      await delivery!.settle(baseline + 2);
+      expect((await card()).status).toBe("pending");
+      expect(delivery!.wakeup).not.toHaveBeenCalled();
+    })).rejects.toThrow("authority revoked");
+  });
 });
