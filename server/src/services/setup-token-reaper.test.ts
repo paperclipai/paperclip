@@ -142,4 +142,40 @@ describe("setup-token reaper", () => {
     expect(second.released).toBe(0);
     expect(second.failed).toBe(0);
   });
+
+  it("removes a record with no lease id without releasing a lease", async () => {
+    const store = createMemoryStore();
+    store.seed({ sessionId: "no-lease", leaseId: "", state: "timed_out" });
+    const leases = createFakeLeases({
+      releaseImpl: async (leaseId) => {
+        if (!leaseId) throw new Error("invalid input syntax for type uuid");
+      },
+    });
+    const reaper = createSetupTokenReaper({ store, leases, now: () => NOW });
+
+    const result = await reaper.sweep();
+
+    expect(result).toEqual({ released: 1, failed: 0 });
+    expect(leases.releaseByIdCalls).toHaveLength(0);
+    expect(store.rows.size).toBe(0);
+  });
+
+  it("logs the session, lease and error when a release fails", async () => {
+    const store = createMemoryStore();
+    store.seed({ sessionId: "bad-1", leaseId: "lease-bad", state: "failed" });
+    const leases = createFakeLeases({
+      releaseImpl: async () => {
+        throw new Error("provider down");
+      },
+    });
+    const lines: string[] = [];
+    const reaper = createSetupTokenReaper({ store, leases, now: () => NOW, log: (line) => lines.push(line) });
+
+    await reaper.sweep();
+
+    const logged = lines.join("\n");
+    expect(logged).toContain("bad-1");
+    expect(logged).toContain("lease-bad");
+    expect(logged).toContain("provider down");
+  });
 });
