@@ -393,6 +393,44 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
     });
   });
 
+  it("persists command output with an unpaired surrogate without changing replay identity", async () => {
+    const seed = await seedNativeRun();
+    const nativeStore = store(seed);
+    const output = "Deployed 🚀".slice(0, 10);
+    const payload = {
+      schema: "paperclip.tool.execution.v1",
+      executionId: "deploy",
+      transport: "process",
+      operation: "execute",
+      status: "completed",
+      output,
+      outputBytes: Buffer.byteLength(output),
+      outputTruncated: false,
+      outputDigest: `sha256:${createHash("sha256").update(output).digest("hex")}`,
+      exitCode: 0,
+    };
+    const event: PrpEvent = {
+      ...runnerEvent(seed),
+      eventType: "tool.execution.completed",
+      payload,
+    };
+
+    await expect(db.execute(sql`select ${JSON.stringify(event)}::jsonb`))
+      .rejects.toMatchObject({ cause: { code: "22P02" } });
+    await expect(nativeStore.appendEvent(event)).resolves.toMatchObject({
+      disposition: "committed",
+      cursor: 1,
+    });
+    const [row] = await db.select().from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, seed.runId));
+    expect(row.payload).toEqual({ prpEvent: event });
+    expect(row.sourcePayloadSha256).toBe(`sha256:${nativeSha256(row.payload?.prpEvent)}`);
+    await expect(nativeStore.appendEvent(event)).resolves.toMatchObject({
+      disposition: "duplicate",
+      cursor: 1,
+    });
+  });
+
   it("persists events and results idempotently and leases finalization", async () => {
     const seed = await seedNativeRun();
     const nativeStore = store(seed);
