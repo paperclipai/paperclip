@@ -3555,6 +3555,31 @@ function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
   return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
 }
 
+export function pathValueFromEnv(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (platform !== "win32") {
+    if (typeof env.PATH === "string") return env.PATH;
+    if (typeof env.Path === "string") return env.Path;
+    return undefined;
+  }
+
+  const preferredKeys =
+    ["PATH", "Path", "path"];
+  for (const key of preferredKeys) {
+    const value = env[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === "path" && typeof value === "string" && value.length > 0) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 async function pathExists(candidate: string) {
   try {
     await fs.access(
@@ -3580,7 +3605,7 @@ async function resolveCommandPath(
     return (await pathExists(absolute)) ? absolute : null;
   }
 
-  const pathValue = env.PATH ?? env.Path ?? "";
+  const pathValue = pathValueFromEnv(env) ?? "";
   const delimiter = process.platform === "win32" ? ";" : ":";
   const dirs = pathValue.split(delimiter).filter(Boolean);
   const exts = process.platform === "win32" ? windowsPathExts(env) : [""];
@@ -3720,10 +3745,23 @@ async function resolveSpawnTarget(
   return { command: executable, args };
 }
 
-export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
-  return { ...env, PATH: defaultPathForPlatform() };
+export function ensurePathInEnv(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  const pathValue = pathValueFromEnv(env, platform);
+  if (platform !== "win32") {
+    if (pathValue !== undefined) return env;
+    return { ...env, PATH: defaultPathForPlatform() };
+  }
+
+  const pathKeys = Object.keys(env).filter((key) => key.toLowerCase() === "path");
+  if (pathKeys.length === 1 && pathKeys[0] === "PATH" && pathValue) return env;
+
+  const normalized = { ...env };
+  for (const key of pathKeys) delete normalized[key];
+  normalized.PATH = pathValue ?? defaultPathForPlatform();
+  return normalized;
 }
 
 export async function ensureAbsoluteDirectory(
