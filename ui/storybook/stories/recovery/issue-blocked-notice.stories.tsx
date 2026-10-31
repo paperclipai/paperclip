@@ -46,6 +46,14 @@ const meta = {
           "Blocked/recovery notice on the issue thread. Rule C: a `blocked` issue with a genuinely unresolved (not-done) blocker tells the human that a message won't reopen it yet and names the unresolved leaf with its status. Done-but-pending-finalize blockers are `done`, so they fall into the Rule B reopen path and are NOT shown as reopen-suppressed.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "recovery/diagnosis",
+        "task-coordination/dependencies"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 } satisfies Meta<typeof IssueBlockedNotice>;
 

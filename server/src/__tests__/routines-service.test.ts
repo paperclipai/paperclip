@@ -1,3 +1,6 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { subscribeDatabaseWork } from "@paperclipai/db";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -36,7 +39,8 @@ import * as providerRegistry from "../secrets/provider-registry.ts";
 import { routineService } from "../services/routines.ts";
 import { secretService } from "../services/secrets.ts";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ROUTINES_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const originalSecretsProviderEnv = process.env.PAPERCLIP_SECRETS_PROVIDER;
 const originalPaperclipApiUrlEnv = process.env.PAPERCLIP_API_URL;
@@ -53,8 +57,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   beforeAll(async () => {
     process.env.PAPERCLIP_API_URL = "http://localhost:3100";
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-service-");
-    db = createDb(tempDb.connectionString);
+    if (!externalUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-service-");
+    db = createDb(externalUrl ?? tempDb!.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -213,6 +217,40 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
+
+  it("notifies scheduled routine work after trigger transactions settle", async () => {
+    const f = await seedFixture();
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.routineSchedules, event => { events.push(event); });
+    try {
+      const created = await f.svc.createTrigger(f.routine.id,
+        { kind: "schedule", cronExpression: "0 * * * *", timezone: "UTC" }, {});
+      expect(events).toEqual(["intent", "settled"]);
+      events.length = 0;
+      await f.svc.updateTrigger(created.trigger.id, { cronExpression: "30 * * * *" }, {});
+      expect(events).toEqual(["intent", "settled"]);
+      events.length = 0;
+      await f.svc.deleteTrigger(created.trigger.id, {});
+      expect(events).toEqual(["intent", "settled"]);
+    } finally { unsubscribe(); }
+  });
+
+  it("notifies monitor work when an issue deadline is created and changed", async () => {
+    const f = await seedFixture();
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.issueMonitors, event => { events.push(event); });
+    const next = new Date(Date.now() + 600_000);
+    try {
+      const issue = await f.issueSvc.create(f.companyId, {
+        title: "Scheduled check", status: "in_progress", assigneeAgentId: f.agentId,
+        executionPolicy: { mode: "normal", commentRequired: true, stages: [], monitor: { nextCheckAt: next.toISOString() } },
+      });
+      expect(events).toEqual(["intent", "settled"]);
+      events.length = 0;
+      await f.issueSvc.update(issue.id, { monitorNextCheckAt: new Date(next.getTime() + 60_000) });
+      expect(events).toEqual(["intent", "settled"]);
+    } finally { unsubscribe(); }
+  });
 
   async function armWorktreeExecution(cutoff: Date, instanceId = "worktree-routines-test") {
     await db.insert(instanceSettings).values({
@@ -1297,7 +1335,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     ]);
   });
 
-  it("records the manual board runner on fresh routine issues so they appear in that user's inbox", async () => {
+  it("retains manual runner attribution without adding fresh routine issues to Mine", async () => {
     const { companyId, agentId, issueSvc, routine, svc } = await seedFixture();
     const userId = randomUUID();
 
@@ -1326,7 +1364,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       inboxArchivedByUserId: userId,
       includeRoutineExecutions: true,
     });
-    expect(inboxIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
+    expect(inboxIssues.map((issue) => issue.id)).not.toContain(run.linkedIssueId);
   });
 
   it("uses the routine revision responsible-user snapshot for automatic runs", async () => {
@@ -1448,7 +1486,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues[0]?.id).toBe(previousIssue.id);
   });
 
-  it("touches a coalesced routine issue for the manual runner's inbox", async () => {
+  it("preserves the archive and Mine membership when a manual run coalesces", async () => {
     const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const userId = randomUUID();
     const previousRunId = randomUUID();
@@ -1506,29 +1544,20 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.linkedIssueId).toBe(previousIssue.id);
     await expect(
       db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, previousIssue.id)),
-    ).resolves.toHaveLength(0);
+    ).resolves.toHaveLength(1);
     await expect(
       db.select().from(activityLog).where(eq(activityLog.entityId, previousIssue.id)),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        companyId,
-        actorType: "user",
-        actorId: userId,
-        action: "issue.inbox_touched",
-        entityType: "issue",
-        entityId: previousIssue.id,
-      }),
-    ]);
+    ).resolves.toEqual([]);
 
     const inboxIssues = await issueSvc.list(companyId, {
       touchedByUserId: userId,
       inboxArchivedByUserId: userId,
       includeRoutineExecutions: true,
     });
-    expect(inboxIssues.map((issue) => issue.id)).toContain(previousIssue.id);
+    expect(inboxIssues.map((issue) => issue.id)).not.toContain(previousIssue.id);
   });
 
-  it("touches a skipped active routine issue for the manual runner's inbox", async () => {
+  it("preserves the archive and Mine membership when a manual run is skipped", async () => {
     const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const userId = randomUUID();
     const previousRunId = randomUUID();
@@ -1592,26 +1621,17 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.linkedIssueId).toBe(previousIssue.id);
     await expect(
       db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, previousIssue.id)),
-    ).resolves.toHaveLength(0);
+    ).resolves.toHaveLength(1);
     await expect(
       db.select().from(activityLog).where(eq(activityLog.entityId, previousIssue.id)),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        companyId,
-        actorType: "user",
-        actorId: userId,
-        action: "issue.inbox_touched",
-        entityType: "issue",
-        entityId: previousIssue.id,
-      }),
-    ]);
+    ).resolves.toEqual([]);
 
     const inboxIssues = await issueSvc.list(companyId, {
       touchedByUserId: userId,
       inboxArchivedByUserId: userId,
       includeRoutineExecutions: true,
     });
-    expect(inboxIssues.map((issue) => issue.id)).toContain(previousIssue.id);
+    expect(inboxIssues.map((issue) => issue.id)).not.toContain(previousIssue.id);
   });
 
   it("does not coalesce live routine runs with different resolved variables", async () => {
@@ -2149,7 +2169,10 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       },
     });
 
-    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.decisionTargets, event => { events.push(event); });
+    const run = await svc.runRoutine(routine.id, { source: "manual" }).finally(unsubscribe);
+    expect(events).toEqual([]);
 
     expect(run.status).toBe("failed");
     expect(run.failureReason).toContain("queue unavailable");

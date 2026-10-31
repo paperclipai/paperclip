@@ -66,6 +66,8 @@ import {
   type LoginCommandKey,
 } from "./login-command.js";
 import { logger } from "../middleware/logger.js";
+import { measureRunPhase } from "./execution-preparation-timing.js";
+import { context as otelContext } from "@opentelemetry/api";
 import { traceparentFromContextToken } from "../instrumentation.js";
 
 // ---------------------------------------------------------------------------
@@ -539,6 +541,7 @@ interface PendingRequest {
 }
 
 interface ActiveInvocation {
+  providerSpanBudget: {remaining:number};
   scope: PluginInvocationScope;
   timer?: ReturnType<typeof setTimeout>;
   // The host-minted W3C `traceparent` for the active startup span, or undefined
@@ -716,6 +719,7 @@ export interface PluginWorkerHandle {
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
     executeLogSink?: ExecuteLogSink,
+    onWorkerSettled?: () => void,
   ): Promise<HostToWorkerMethods[M][1]>;
 
   /**
@@ -796,6 +800,8 @@ export interface WorkerDiagnostics {
  * for starting/stopping all workers and routing RPC calls.
  */
 export interface PluginWorkerManager {
+  /** Subscribe after a worker successfully applies live company configuration. */
+  onConfigApplied(listener: () => void): () => void;
   inspectIdleSleep?(hold: { ownerId: string; expiresAt: number }): Promise<{
     backgroundWork: "none" | "present" | "unknown"; pluginIds: string[];
   }>;
@@ -898,6 +904,7 @@ export function createPluginWorkerHandle(
   // Unlike RPC promises, these survive timeouts. A late response is the
   // completion receipt. A worker crash cannot manufacture one.
   const unsettledCalls = new Map<string | number, () => void>();
+  const unsettledInspections = new Set<() => void>();
   let activeHostHandlers = 0;
   let idleHold: { ownerId: string; expiresAt: number; ready: boolean } | null = null;
 
@@ -1154,7 +1161,26 @@ export function createPluginWorkerHandle(
     if (!isRecord(params)) return null;
 
     const directCompanyId = readNonEmptyString(params.companyId);
-    if (directCompanyId) return { companyId: directCompanyId };
+    if (directCompanyId) {
+      if (method === "resourceLifecycle" && params.resourceType === "project" && readNonEmptyString(params.resourceId)) {
+        return { companyId: directCompanyId, projectGit: { projectId: params.resourceId as string } };
+      }
+      if (method === "workspaceOperation" && isRecord(params.operation)) {
+        const operation = params.operation;
+        const source = operation.kind === "prepare" ? operation.source : operation.binding;
+        const workspaceId = isRecord(source) ? readNonEmptyString(operation.kind === "prepare" ? source.id : source.projectWorkspaceId) : null;
+        const projectId = readNonEmptyString(params.projectId);
+        if (projectId && workspaceId && (operation.kind === "prepare" || operation.kind === "inspect" || operation.kind === "remove")) {
+          // Only foreground preparation may use a run. Maintenance uses project consent.
+          const runId = operation.kind === "prepare" ? readNonEmptyString(params.runId) : null;
+          const agentId = operation.kind === "prepare" ? readNonEmptyString(params.agentId) : null;
+          if (Boolean(runId) !== Boolean(agentId)) return { companyId: directCompanyId };
+          return { companyId: directCompanyId, projectGit: { projectId, workspaceId, operation: operation.kind,
+            ...(runId && agentId ? { runId, agentId } : {}) } };
+        }
+      }
+      return { companyId: directCompanyId };
+    }
 
     if (method === "performAction" && isRecord(params.actorContext)) {
       const companyId = readNonEmptyString(params.actorContext.companyId);
@@ -1175,20 +1201,18 @@ export function createPluginWorkerHandle(
   }
 
   function registerInvocation(scope: PluginInvocationScope, ttlMs?: number): PluginInvocationContext {
-    // Mint a W3C `traceparent` from the active startup span, so the worker's
-    // provider span can parent to it. The host keeps the value on its own record
-    // (below) and never trusts the worker to supply the parent. Outside a
-    // measured startup step there is no active span, so this is undefined.
+    // Keep the owning operation's parent host-side; workspace/runtime operations
+    // use the same per-invocation contract as measured provider startup.
     const activeStep = getActiveStepContext();
     const traceparent = activeStep
       ? traceparentFromContextToken(activeStep.parentContext)
-      : undefined;
+      : process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? traceparentFromContextToken(otelContext.active()) : undefined;
     const invocation: PluginInvocationContext = {
       id: randomUUID(),
       scope,
       ...(traceparent ? { traceparent } : {}),
     };
-    const entry: ActiveInvocation = { scope, traceparent };
+    const entry: ActiveInvocation = { scope, traceparent, providerSpanBudget:{remaining:256} };
     if (ttlMs !== undefined) {
       entry.timer = setTimeout(() => {
         activeInvocations.delete(invocation.id);
@@ -2723,7 +2747,7 @@ export function createPluginWorkerHandle(
     }
     const entry = activeInvocations.get(invocationId);
     if (!entry) return { invalidInvocationScope: true };
-    return { invocationScope: entry.scope, traceparent: entry.traceparent };
+    return { invocationScope: entry.scope, traceparent: entry.traceparent, providerSpanBudget:entry.providerSpanBudget };
   }
 
   /**
@@ -3015,6 +3039,10 @@ export function createPluginWorkerHandle(
         stderrExcerpt,
       )),
     );
+
+    // Read-only requests cannot continue in an exited worker. Do not infer
+    // completion for execute/cleanup calls, whose provider work may outlive it.
+    for (const finish of [...unsettledInspections]) finish();
 
     // Close the one login pseudo-terminal route with a fixed non-secret exit and
     // clear the route one time. The pending pseudo-terminal calls
@@ -3349,14 +3377,31 @@ export function createPluginWorkerHandle(
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
     executeLogSink?: ExecuteLogSink,
+    onWorkerSettled?: () => void,
+  ): Promise<HostToWorkerMethods[M][1]> {
+    const dispatched = measureRunPhase("execution.plugin_dispatch", () => callInternalRaw(method, params, timeoutMs, executeLogSink, onWorkerSettled));
+    // Tracing wraps the RPC in a new promise. Guard the promise handed to the
+    // caller as well, without swallowing its eventual rejection for that caller.
+    void dispatched.catch(() => undefined);
+    return dispatched;
+  }
+
+  function callInternalRaw<M extends HostToWorkerMethodName>(
+    method: M,
+    params: HostToWorkerMethods[M][0],
+    timeoutMs?: number,
+    executeLogSink?: ExecuteLogSink,
+    onWorkerSettled?: () => void,
   ): Promise<HostToWorkerMethods[M][1]> {
     const rpcPromise = new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
       const idleControl = method === "prepareIdleSleep" || method === "releaseIdleSleep";
       if (!idleControl && method !== "shutdown" && idleSleepHeld()) {
+        onWorkerSettled?.();
         reject(new Error("Plugin is held for idle sleep"));
         return;
       }
       if (!childProcess?.stdin?.writable) {
+        onWorkerSettled?.();
         reject(
           new Error(
             `Cannot call "${method}" — worker for "${pluginId}" is not running`,
@@ -3366,7 +3411,20 @@ export function createPluginWorkerHandle(
       }
 
       const id = nextRequestId++;
-      if (!idleControl) unsettledCalls.set(id, beginIdleTrackedWork());
+      if (!idleControl) {
+        const finishIdle = beginIdleTrackedWork();
+        let completed = false;
+        const finish = () => {
+          if (completed) return;
+          completed = true;
+          finishIdle();
+          unsettledInspections.delete(finish);
+          unsettledCalls.delete(id);
+          onWorkerSettled?.();
+        };
+        unsettledCalls.set(id, finish);
+        if (method === "environmentInspectLease") unsettledInspections.add(finish);
+      }
       const timeout = resolveRpcCallTimeoutMs(timeoutMs, rpcTimeoutMs);
       const invocationScope = deriveInvocationScope(method, params);
       const invocation = invocationScope ? registerInvocation(invocationScope) : null;
@@ -3522,15 +3580,17 @@ export function createPluginWorkerHandle(
       params: HostToWorkerMethods[M][0],
       timeoutMs?: number,
       executeLogSink?: ExecuteLogSink,
+      onWorkerSettled?: () => void,
     ): Promise<HostToWorkerMethods[M][1]> {
       if (status !== "running" && status !== "starting") {
+        onWorkerSettled?.();
         return Promise.reject(
           new Error(
             `Cannot call "${method}" — worker for "${pluginId}" is ${status}`,
           ),
         );
       }
-      return callInternal(method, params, timeoutMs, executeLogSink);
+      return callInternal(method, params, timeoutMs, executeLogSink, onWorkerSettled);
     },
 
     openLoginPtySession(input: LoginPtyOpenInput) {
@@ -3726,6 +3786,8 @@ export function createPluginWorkerManager(
 ): PluginWorkerManager {
   const log = logger.child({ service: "plugin-worker-manager" });
   const workers = new Map<string, PluginWorkerHandle>();
+  const configApplied = new Set<() => void>();
+  let activeInspections = 0;
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
   // The one shared, process-scoped aggregate route-slot controller. The manager
@@ -3736,6 +3798,10 @@ export function createPluginWorkerManager(
   );
 
   return {
+    onConfigApplied(listener) {
+      configApplied.add(listener);
+      return () => { configApplied.delete(listener); };
+    },
     async inspectIdleSleep(hold) {
       if (startupLocks.size) return { backgroundWork: "unknown", pluginIds: [] };
       const snapshot = [...workers.entries()];
@@ -3872,7 +3938,23 @@ export function createPluginWorkerManager(
           new Error(`No worker registered for plugin "${pluginId}"`),
         );
       }
-      return handle.call(method, params, timeoutMs, executeLogSink);
+      let finishInspection: (() => void) | undefined;
+      if (method === "environmentInspectLease") {
+        if (activeInspections >= 2) return Promise.reject(new Error("Provider inspection concurrency limit reached"));
+        activeInspections += 1;
+        let finished = false;
+        finishInspection = () => { if (!finished) { finished = true; activeInspections -= 1; } };
+      }
+      // A caller timeout is not worker completion. Inspection capacity is
+      // released only by its actual reply, send failure, or worker exit.
+      const result = handle.call(method, params, timeoutMs, executeLogSink, finishInspection);
+      if (method === "configChanged") void result.then(() => {
+        for (const listener of configApplied) {
+          try { listener(); }
+          catch { log.warn({ pluginId }, "Plugin configuration listener failed"); }
+        }
+      }, () => {});
+      return result;
     },
 
     openLoginPtySession(pluginId: string, input: LoginPtyOpenInput) {

@@ -14,7 +14,13 @@ const meta = {
   title: "Tasks and conversations/Documents, attachments, and work products/Explorations/Artifact cards/Pull request",
   component: PullRequestCard,
   decorators,
-  parameters,
+  parameters: { ...parameters, paperclip: {
+      "capabilities": [
+        "documents-artifacts/work-products"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    } },
   argTypes: {
     ...identityControls,
     ...diffControls,

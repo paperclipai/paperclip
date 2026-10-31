@@ -25,7 +25,16 @@ function Frame({ children }: { children: ReactNode }) {
 const meta = {
   id: "pr-reviews-fireflies-and-app-webhooks",
   title: "Apps, channels, and extensions/Connection setup/PR reviews/Fireflies and app webhooks",
-  parameters: { layout: "fullscreen", docs: { description: { component: "Coverage of PR #13890: Fireflies catalog/artwork and shared connection flow, preserved action permissions, generic webhook wizard and saved settings, and both advanced trigger editors. All network mutations are simulated. Use the toolbar to switch theme or viewport. Legacy stories only demonstrate resuming existing configurations; new webhooks use Another app or script." } } },
+  parameters: { layout: "fullscreen", docs: { description: { component: "Coverage of PR #13890: Fireflies catalog/artwork and shared connection flow, preserved action permissions, generic webhook wizard and saved settings, and both advanced trigger editors. All network mutations are simulated. Use the toolbar to switch theme or viewport. Legacy stories only demonstrate resuming existing configurations; new webhooks use Another app or script." } },
+    paperclip: {
+      "capabilities": [
+        "connection-setup/credentials",
+        "routines/triggers"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   afterEach: ({ id }) => { document.body.dataset.firefliesStoryReady = id; },
   beforeEach: () => {
     delete document.body.dataset.firefliesStoryReady;

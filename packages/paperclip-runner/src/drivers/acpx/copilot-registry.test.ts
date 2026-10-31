@@ -8,8 +8,8 @@ import { verifyCopilotInstallation } from "./copilot-installation.js";
 import { verifyCursorInstallation } from "./cursor-installation.js";
 
 vi.mock("./copilot-installation.js", () => ({ verifyCopilotInstallation: vi.fn(async () => ({ commandDigest: "verified-by-native-factory" })) }));
+vi.mock("./cursor-installation.js", () => ({ verifyCursorInstallation: vi.fn(async () => ({ commandDigest: "verified-by-cursor-factory" })) }));
 
-vi.mock("./cursor-installation.js", () => ({ verifyCursorInstallation: vi.fn(async () => ({ commandDigest: "verified-cursor-factory" })) }));
 
 const context = { workspacePath: "/workspace", sessionId: "backend-1", turnId: "turn-1" };
 describe("Copilot provider registry conformance", () => {
@@ -24,9 +24,9 @@ describe("Copilot provider registry conformance", () => {
     const profile = resolveQualifiedAcpxProfile("copilot", "explicit-exact-model");
     expect(await verifyAcpxProfileInstallation(profile)).toMatchObject({ commandDigest: "verified-by-native-factory" });
     expect(verifyCopilotInstallation).toHaveBeenCalledExactlyOnceWith(profile);
-    const cursorProfile = resolveQualifiedAcpxProfile("cursor", "exact-model");
-    expect(await verifyAcpxProfileInstallation(cursorProfile)).toMatchObject({ commandDigest: "verified-cursor-factory" });
-    expect(verifyCursorInstallation).toHaveBeenCalledExactlyOnceWith(cursorProfile);
+    const cursor = resolveQualifiedAcpxProfile("cursor", "exact-model");
+    expect(await verifyAcpxProfileInstallation(cursor)).toMatchObject({ commandDigest: "verified-by-cursor-factory" });
+    expect(verifyCursorInstallation).toHaveBeenCalledExactlyOnceWith(cursor);
     expect(verifyCopilotInstallation).toHaveBeenCalledTimes(1);
   });
 

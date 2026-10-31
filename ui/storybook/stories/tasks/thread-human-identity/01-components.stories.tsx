@@ -15,7 +15,16 @@ const meta = {
   id: "chat-comments-human-identity-01-components",
   title: "Tasks and conversations/Task creation and lifecycle/Chat & Comments/Human identity/01 Components", component: Bubble,
   args: { viewer: alexId, photo: null },
-  parameters: { layout: "padded", docs: { description: { component: "Production adapter → model → TaskChatBubble → Identity. Other humans sit on the left on the same page surface as agents with their own name/photo; no-photo profiles use the shared initials fallback. Edit photo to exercise an uploaded Paperclip asset URL. External URLs use initials. The production avatar URL is taken from the company directory, never from the current viewer or the relay bot." } } },
+  parameters: { layout: "padded", docs: { description: { component: "Production adapter → model → TaskChatBubble → Identity. Other humans sit on the left on the same page surface as agents with their own name/photo; no-photo profiles use the shared initials fallback. Edit photo to exercise an uploaded Paperclip asset URL. External URLs use initials. The production avatar URL is taken from the company directory, never from the current viewer or the relay bot." } },
+    paperclip: {
+      "capabilities": [
+        "tasks/discussion"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
 } satisfies Meta<typeof Bubble>;
 export default meta;
 type Story = StoryObj<typeof meta>;

@@ -10,7 +10,7 @@ import type {
 } from "../../packages/shared/src/types/issue.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
-import { isBlockedUnstartedWake } from "./non-execution-wake.js";
+import { isBlockedUnstartedWake, isReassignedUnstartedWake } from "./non-execution-wake.js";
 import { collectRunEvents } from "./run-observations.js";
 import { chatMarker } from "./chat-cases.js";
 import { assertChatRememberedAfterRestart, assertChatStartupStopped, isChatStopReady, runChatHardeningFlow } from "./chat-hardening.js";
@@ -18,6 +18,8 @@ import { enableChatThroughSettings, runChatInterruption, runChatSettingsLifecycl
 import { runActiveReassignment, runWorkerCrash, runAnswerQuality } from "./chat-qualification.js";
 import { matchesRunCount, minimumRunCount } from "./run-count.js";
 import { runChatCompletionUpdate } from "./completion-update-flow.js";
+import { CHAT_FEATURE_SUITE } from "./chat-feature-cases.js";
+import { runChatFeatureFlow } from "./chat-feature-flow.js";
 
 /** Hiring alone admits bounded, verified lifecycle notifications. Other suites keep their count contract. */
 export function assertChatFlowRunCount(input: {
@@ -66,6 +68,7 @@ export interface ChatRun {
   sessionIdBefore?: string | null;
   sessionIdAfter?: string | null;
   startedAt?: string | null;
+  nativeIssueId?: string | null;
 }
 type Comment = {
   id: string;
@@ -294,10 +297,12 @@ export async function collectChatRunEvidence(
   const providerNeverStarted = run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
     run.logStore === null && run.logRef === null && ["failed", "interrupted"].includes(run.status) &&
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+  const reassignedBeforeStart = isReassignedUnstartedWake(run);
   return {
     runId: run.id,
     ...(providerNeverStarted ? { logOmissionReason: "provider_not_started" } : {}),
-    log: isResetRun(run) || isBlockedUnstartedWake({ ...run }) || providerNeverStarted
+    ...(reassignedBeforeStart ? { logOmissionReason: "assignee_changed_before_start" } : {}),
+    log: isResetRun(run) || isBlockedUnstartedWake({ ...run }) || providerNeverStarted || reassignedBeforeStart
       ? null
       : await api.get(`/api/heartbeat-runs/${run.id}/log?limitBytes=1048576`),
     events: await collectRunEvents((afterSeq, limit) =>
@@ -452,7 +457,10 @@ export async function runChatFlow(input: ChatFlowInput) {
     expect(await api.get(chatPath)).toBeNull();
     expect(await allRuns()).toHaveLength(0);
 
-    if (caseId === "confirmation-ambiguous") {
+    if (execution.suite.id === CHAT_FEATURE_SUITE) {
+      return await runChatFeatureFlow({ input, issue: () => issue, allRuns,
+        refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); if (issue) input.observe(issue, await allRuns()); } });
+    } else if (caseId === "confirmation-ambiguous") {
       await runAmbiguousConfirmationReply({ input, issue: () => issue!, idle, comments });
     } else if (caseId === "unanswered-question-return") {
       await runUnansweredQuestionReturn({ input, issue: () => issue!, idle, comments });

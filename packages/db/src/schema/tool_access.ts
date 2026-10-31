@@ -204,6 +204,8 @@ export const connectionGrants = pgTable(
          * per-grant because two users can authorize the same connection with different scopes.
          */
         requestedScopes?: string[];
+        /** Last successful consent; ordinary token refresh preserves this. */
+        consentedAt?: string;
         tokenType?: string;
         refreshedAt?: string;
         refreshTokenExpiresAt?: string;
@@ -564,6 +566,8 @@ export const toolMcpGatewayTokens = pgTable(
     subjectType: text("subject_type").$type<ToolMcpGatewayTokenSubjectType>().notNull().default("gateway_client"),
     subjectId: text("subject_id"),
     clientLabel: text("client_label").notNull().default(""),
+    // Null distinguishes board/legacy clients from delegated agent clients.
+    responsibleUserId: text("responsible_user_id"),
     ownerNote: text("owner_note").notNull().default(""),
     allowedActions: jsonb("allowed_actions").$type<ToolMcpGatewayTokenAction[]>().notNull().default(["tools/list", "tools/call"]),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
@@ -710,6 +714,7 @@ export const toolGatewaySessions = pgTable(
     uniqueIndex("tool_gateway_sessions_token_hash_uq").on(table.tokenHash),
     index("tool_gateway_sessions_company_agent_idx").on(table.companyId, table.agentId),
     index("tool_gateway_sessions_company_expires_idx").on(table.companyId, table.expiresAt),
+    index("tool_gateway_sessions_expiry_idx").on(table.expiresAt),
     index("tool_gateway_sessions_run_idx").on(table.companyId, table.runId),
     index("tool_gateway_sessions_issue_idx").on(table.companyId, table.issueId),
     index("tool_gateway_sessions_gateway_idx").on(table.companyId, table.gatewayId),
@@ -827,7 +832,14 @@ export const toolActionRequests = pgTable(
   },
   (table) => [
     index("tool_action_requests_company_status_idx").on(table.companyId, table.status),
+    index("tool_action_requests_pending_expiry_idx").on(table.expiresAt, table.id)
+      .where(sql`${table.status} = 'pending'`),
+    index("tool_action_requests_company_pending_expiry_idx").on(table.companyId, table.expiresAt)
+      .where(sql`${table.status} = 'pending'`),
+    index("tool_action_requests_executing_deadline_idx").on(table.updatedAt, table.id).where(sql`${table.status} = 'executing'`),
+    index("tool_action_requests_approved_idx").on(table.id).where(sql`${table.status} = 'approved'`),
     index("tool_action_requests_invocation_idx").on(table.invocationId),
+    index("tool_action_requests_company_interaction_idx").on(table.companyId, table.interactionId),
     index("tool_action_requests_issue_idx").on(table.companyId, table.issueId),
   ],
 );

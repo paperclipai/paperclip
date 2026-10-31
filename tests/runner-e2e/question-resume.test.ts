@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { gradeQuestionResume, questionPath, validResumeQuestionForm, type QuestionPath } from "./question-resume-scoring.js";
 import { gradeContinuation } from "./continuation-scoring.js";
 import { gradeLifecycleBaseline } from "./lifecycle-baseline.js";
@@ -26,7 +27,7 @@ function recording(paths: QuestionPath[] = ["provider", "semantic"]) {
   };
   for (let n = 0; n < 2; n++) {
     const run = runs.at(-1)!;
-    const provider = paths[n] === "provider";
+    const provider = paths[n] === "provider", api = paths[n] === "api";
     const request = `request-${n}`;
     const idempotencyKey = provider ? `paperclip-runner-question:${run.id}:${request}` : `question-${n}`;
     const field = n === 0 ? { id: "field-1-question_0-hash", answerMode: "single_select", options: [
@@ -36,12 +37,15 @@ function recording(paths: QuestionPath[] = ["provider", "semantic"]) {
     if (provider && n === 0) questions.push({ id: "field-2-question_0_custom-hash", answerMode: "text", header: "Other", required: false });
     const card: Row = { id: `card-${n}`, kind: "ask_user_questions", status: "pending",
       companyId: "company", issueId: "task", createdByAgentId: "agent", sourceRunId: run.id, idempotencyKey,
-      continuationPolicy: provider ? "none" : "wake_assignee",
+      continuationPolicy: provider ? "none" : "wake_assignee", createdByUserId: null,
       payload: { ...(provider ? { runtimeRequestId: request } : {}), questionSet: { questions } } };
     cards.push(card);
     if (!provider) {
       run.status = "succeeded";
-      run.resultJson.semanticToolReceipts[idempotencyKey] = { operationId: "request_human_input",
+      if (api) run.resultJson.apiToolReceipts = { ["a".repeat(64)]: { state: "completed", digest: "b".repeat(64),
+        operationId: "POST /api/issues/{id}/interactions", result: { ok: true, status: 201,
+          operationId: "POST /api/issues/{id}/interactions", data: structuredClone(card) } } };
+      else run.resultJson.semanticToolReceipts[idempotencyKey] = { operationId: "request_human_input",
         result: { disposition: "applied", interaction: structuredClone(card) } };
     }
     snap(n === 0 ? "initial" : "answered");
@@ -58,6 +62,58 @@ const failed = (r: any[]) => gradeQuestionResume(r, "AMBERnonce").filter(c => !c
 const question = (r: any[], n = 0) => r[n].interactions[n];
 
 describe("native question/resume path qualification", () => {
+  it("accepts a native API creation receipt with the retained server response shape", () => {
+    const point = JSON.parse(readFileSync(new URL("./fixtures/native-api-question.json", import.meta.url), "utf8"));
+    expect(questionPath(point, point.interactions[0])).toBe("api");
+    expect(validResumeQuestionForm(point, point.interactions[0], true)).toBe(true);
+  });
+  it.each(["missing", "pending", "wrong-operation", "wrong-result-operation", "unknown-outcome", "wrong-status", "missing-digest", "wrong-key",
+    "foreign-card", "foreign-company", "foreign-issue", "foreign-agent", "foreign-source", "wrong-idempotency", "changed-form", "changed-compatibility-form",
+    "board-created", "resolved-creation", "wrong-policy", "runtime-request", "legacy-run", "active-source", "foreign-run", "duplicate-source", "spoofed-store"])("rejects unverified native API provenance: %s", kind => {
+    const point = JSON.parse(readFileSync(new URL("./fixtures/native-api-question.json", import.meta.url), "utf8"));
+    const card = point.interactions[0], run = point.runs[0], receipts = run.resultJson.apiToolReceipts;
+    const receipt = Object.values(receipts)[0] as Row, original = receipt.result.data;
+    if (kind === "missing") delete run.resultJson.apiToolReceipts;
+    if (kind === "pending") receipt.state = "pending";
+    if (kind === "wrong-operation") receipt.operationId = "POST /api/issues/{id}/comments";
+    if (kind === "wrong-result-operation") receipt.result.operationId = "POST /api/issues/{id}/comments";
+    if (kind === "unknown-outcome") receipt.result.ok = false;
+    if (kind === "wrong-status") receipt.result.status = 200;
+    if (kind === "missing-digest") delete receipt.digest;
+    if (kind === "wrong-key") run.resultJson.apiToolReceipts = { "model-authored-claim": receipt };
+    if (kind === "foreign-card") original.id = "other";
+    if (kind === "foreign-company") original.companyId = "other";
+    if (kind === "foreign-issue") original.issueId = "other";
+    if (kind === "foreign-agent") original.createdByAgentId = "other";
+    if (kind === "foreign-source") original.sourceRunId = "other";
+    if (kind === "wrong-idempotency") original.idempotencyKey = "other";
+    if (kind === "changed-form") original.payload.questionSet.questions[0].options[1].label = "Other";
+    if (kind === "changed-compatibility-form") original.payload.questions[0].prompt = "Other";
+    if (kind === "board-created") original.createdByUserId = "other";
+    if (kind === "resolved-creation") original.status = "answered";
+    if (kind === "wrong-policy") card.continuationPolicy = "none";
+    if (kind === "runtime-request") card.payload.runtimeRequestId = "fabricated-provider-request";
+    if (kind === "legacy-run") run.runtimeMode = "legacy";
+    if (kind === "active-source") run.status = "running";
+    if (kind === "foreign-run") run.agentId = "other";
+    if (kind === "duplicate-source") point.runs.push(structuredClone(run));
+    if (kind === "spoofed-store") { run.resultJson.modelClaim = receipts; delete run.resultJson.apiToolReceipts; }
+    expect(questionPath(point, card)).toBeNull();
+  });
+  it.each(["lost-receipt", "changed-receipt", "interactionId", "sourceRunId", "issueId", "interactionStatus", "duplicate-continuation"])("retains one immutable API receipt and one bound answer wake: %s", kind => {
+    const r = recording(["api", "api"]), source = r[1].runs[0], next = r[1].runs[1];
+    if (kind === "lost-receipt") delete source.resultJson.apiToolReceipts;
+    else if (kind === "changed-receipt") source.resultJson.apiToolReceipts["a".repeat(64)].digest = "c".repeat(64);
+    else if (kind === "duplicate-continuation") r[1].runs.push({ ...structuredClone(next), id: "extra" });
+    else next.contextSnapshot[kind] = "other";
+    expect(failed(r)).toContain("question-resume.choice.path");
+  });
+  it.each(["lost", "changed"])("rejects the first API receipt %s after the second answer", kind => {
+    const r = recording(["api", "api"]), source = r[2].runs[0];
+    if (kind === "lost") delete source.resultJson.apiToolReceipts;
+    else source.resultJson.apiToolReceipts["a".repeat(64)].digest = "c".repeat(64);
+    expect(failed(r)).toContain("question-resume.choice.path");
+  });
   it("keeps the new journey explicit-only and the original documentation cells intact", () => {
     const cells = runnerMatrix.filter(c => c.suite.id === "question-resume");
     expect(cells.map(c => c.profile.id).sort()).toEqual(["runner-acpx-claude", "runner-codex"]);
@@ -70,6 +126,7 @@ describe("native question/resume path qualification", () => {
   });
   it.each([
     ["provider", "provider"], ["provider", "semantic"], ["semantic", "provider"], ["semantic", "semantic"],
+    ["api", "api"], ["api", "semantic"], ["semantic", "api"], ["provider", "api"], ["api", "provider"],
   ] as QuestionPath[][])("accepts exactly bound %s then %s journeys", (a, b) => {
     const r = recording([a,b]);
     expect(failed(r)).toEqual([]);

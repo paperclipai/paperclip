@@ -34,7 +34,7 @@ import {
 
 const COMPANY_ID = "company-storybook";
 const SELECTED_COMPANY_STORAGE_KEY = "paperclip.selectedCompanyId";
-const ISSUE_DRAFT_STORAGE_KEY = "paperclip:issue-draft";
+const ISSUE_DRAFT_STORAGE_KEY = `paperclip:issue-draft:${storybookAuthSession.user!.id}`;
 
 const storybookGoals: Goal[] = [
   {
@@ -682,6 +682,17 @@ const meta = {
         component:
           "Open-state stories for Paperclip creation dialogs, workspace confirmations, document diffing, image attachments, and path helper modals.",
       },
+    },
+    paperclip: {
+      "capabilities": [
+        "tasks/create",
+        "agents/hire",
+        "projects/lifecycle",
+        "goals/hierarchy"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
     },
   },
 } satisfies Meta;

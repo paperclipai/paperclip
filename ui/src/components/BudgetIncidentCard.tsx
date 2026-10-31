@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { BudgetIncident } from "@paperclipai/shared";
-import { AlertOctagon, ArrowUpRight, PauseCircle } from "lucide-react";
+import { AlertOctagon, AlertTriangle, ArrowUpRight, PauseCircle } from "lucide-react";
 import { formatCents } from "../lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,46 +36,66 @@ export function BudgetIncidentCard({
   onKeepPaused: () => void;
   isMutating?: boolean;
 }) {
+  const isWarning = incident.thresholdType === "soft";
   const [draftAmount, setDraftAmount] = useState(
-    centsInputValue(Math.max(incident.amountObserved + 1000, incident.amountLimit)),
+    centsInputValue(isWarning
+      ? Math.max(incident.amountObserved, incident.amountLimit) + 1000
+      : Math.max(incident.amountObserved + 1000, incident.amountLimit)),
   );
   const parsed = parseDollarInput(draftAmount);
   const stateLabel = incidentStateLabel(incident);
 
   return (
-    <Card className="overflow-hidden border-red-500/20 bg-(image:--gradient-extract-4)">
+    <Card className={isWarning ? "overflow-hidden border-amber-500/30 bg-amber-500/5" : "overflow-hidden border-red-500/20 bg-(image:--gradient-extract-4)"}>
       <CardHeader className="px-5 pt-5 pb-3">
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-red-700/90 dark:text-red-200/80">
-                {incident.scopeType} hard stop
+              <div className={isWarning
+                ? "text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-amber-700 dark:text-amber-200"
+                : "text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-red-700/90 dark:text-red-200/80"}>
+                {incident.scopeType} {isWarning ? "budget warning" : "hard stop"}
               </div>
               <Badge variant={incident.status === "resolved" ? "outline" : "secondary"}>
                 {stateLabel}
               </Badge>
             </div>
-            <CardTitle className="mt-1 text-base text-red-950 dark:text-red-50">{incident.scopeName}</CardTitle>
-            <CardDescription className="mt-1 text-red-900/75 dark:text-red-100/70">
+            <CardTitle className={isWarning ? "mt-1 text-base" : "mt-1 text-base text-red-950 dark:text-red-50"}>{incident.scopeName}</CardTitle>
+            <CardDescription className={isWarning ? "mt-1" : "mt-1 text-red-900/75 dark:text-red-100/70"}>
               {incident.thresholdType === "hard" && incident.amountObserved < incident.amountLimit
                 ? `Accounting is incomplete. Known spend is ${formatCents(incident.amountObserved)}; review pending or unpriced usage in the budget policy.`
                 : `Spending reached ${formatCents(incident.amountObserved)} against a limit of ${formatCents(incident.amountLimit)}.`}
             </CardDescription>
           </div>
-          <div className="rounded-full border border-red-400/30 bg-red-500/10 p-2 text-red-600 dark:text-red-200">
-            <AlertOctagon className="h-4 w-4" />
-          </div>
+          {isWarning ? (
+            <div className="rounded-full border border-amber-500/30 bg-amber-500/10 p-2 text-amber-600 dark:text-amber-200">
+              <AlertTriangle className="h-4 w-4" />
+            </div>
+          ) : (
+            <div className="rounded-full border border-red-400/30 bg-red-500/10 p-2 text-red-600 dark:text-red-200">
+              <AlertOctagon className="h-4 w-4" />
+            </div>
+          )}
         </div>
       </CardHeader>
       <CardContent className="space-y-4 px-5 pb-5 pt-0">
-        <div className="flex items-start gap-2 rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-sm text-red-950/90 dark:text-red-50/90">
-          <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
-          <div>
-            {incident.scopeType === "project"
-              ? "Project execution is paused. New work in this project will not start until you resolve the budget incident."
-              : "This scope is paused. New heartbeats will not start until you resolve the budget incident."}
+        {isWarning ? (
+          <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950/90 dark:text-amber-50/90">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              Spending crossed the warning threshold. This warning does not pause work.
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="flex items-start gap-2 rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-sm text-red-950/90 dark:text-red-50/90">
+            <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              {incident.scopeType === "project"
+                ? "Project execution is paused. New work in this project will not start until you resolve the budget incident."
+                : "This scope is paused. New heartbeats will not start until you resolve the budget incident."}
+            </div>
+          </div>
+        )}
 
         <div className="rounded-xl border border-border/60 bg-background/60 p-3">
           <label className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">
@@ -96,7 +116,7 @@ export function BudgetIncidentCard({
               }}
             >
               <ArrowUpRight className="h-4 w-4" />
-              {isMutating ? "Applying..." : "Raise budget & resume"}
+              {isMutating ? "Applying..." : isWarning ? "Raise budget" : "Raise budget & resume"}
             </Button>
           </div>
           {parsed !== null && parsed <= incident.amountObserved ? (
@@ -108,7 +128,7 @@ export function BudgetIncidentCard({
 
         <div className="flex justify-end">
           <Button variant="ghost" className="text-muted-foreground" disabled={isMutating} onClick={onKeepPaused}>
-            Keep paused
+            {isWarning ? "Dismiss warning" : "Keep paused"}
           </Button>
         </div>
       </CardContent>

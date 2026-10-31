@@ -84,6 +84,7 @@ export const agentRuntimeConfigSchema = z.object({
 });
 
 export const createAgentSchema = z.object({
+  setupId: z.string().guid().optional(),
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
   title: z.string().optional().nullable(),
@@ -93,6 +94,7 @@ export const createAgentSchema = z.object({
   capabilities: z.string().optional().nullable(),
   desiredSkills: z.array(agentDesiredSkillSelectionSchema).optional(),
   adapterType: agentAdapterTypeSchema,
+  runner: z.enum(["auto", "paperclip", "legacy"]).optional(),
   adapterConfig: adapterConfigSchema.optional().default({}),
   instructionsBundle: createAgentInstructionsBundleSchema.optional(),
   runtimeConfig: agentRuntimeConfigSchema.optional().default({}),
@@ -121,6 +123,7 @@ export type CreateAgent = z.infer<typeof createAgentSchema>;
 
 export const builtInAgentProvisionSchema = z.object({
   adapterType: agentAdapterTypeSchema.optional(),
+  runner: z.enum(["auto", "paperclip", "legacy"]).optional(),
   adapterConfig: adapterConfigSchema.optional(),
   budgetMonthlyCents: z.number().int().nonnegative().optional(),
 }).strict();
@@ -137,7 +140,8 @@ export const builtInAgentResetSchema = z.object({
 
 export type BuiltInAgentReset = z.infer<typeof builtInAgentResetSchema>;
 
-export const createAgentHireSchema = createAgentSchema.extend({
+export const createAgentHireSchema = createAgentSchema.omit({ setupId: true }).extend({
+  setupAgentId: z.string().guid().optional(),
   sourceIssueId: z.string().guid().optional().nullable(),
   sourceIssueIds: z.array(z.string().guid()).optional(),
   // Agent-authored hires may explicitly request the caller's native runner
@@ -147,18 +151,39 @@ export const createAgentHireSchema = createAgentSchema.extend({
 
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;
 
+// Narrow intent used by roster bulk edits. The server merges only these fields
+// into the latest configuration and rejects stale previews.
+export const agentRuntimeSettingsPatchSchema = z.object({
+  harness: z.string().min(1),
+  model: z.string().trim().min(1).max(512).optional(),
+  aiConnection: aiConnectionBindingSchema.optional(),
+  expected: z.object({
+    model: z.string().nullable(),
+    aiConnection: aiConnectionBindingSchema.nullable(),
+  }).strict(),
+}).strict().refine(value => value.model !== undefined || value.aiConnection !== undefined, {
+  message: "Choose a connection or default model to change",
+});
+export type AgentRuntimeSettingsPatch = z.infer<typeof agentRuntimeSettingsPatchSchema>;
+
 export const updateAgentSchema = objectWithoutDefaults(
-  createAgentSchema.omit({ permissions: true, onboardingFirstAgent: true }),
+  createAgentSchema.omit({ permissions: true, onboardingFirstAgent: true, setupId: true }),
 )
   .partial()
   .extend({
     permissions: z.never().optional(),
+    runtimeSettings: agentRuntimeSettingsPatchSchema.optional(),
     replaceAdapterConfig: z.boolean().optional(),
+    expectedConfigurationRevision: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     status: z.enum(["paused", "idle", "terminated"]).optional(),
     spentMonthlyCents: z.never().optional(),
   });
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
+
+export const qualifyAgentRunnerSchema = z.object({
+  expectedEnvironmentId: z.string().uuid(),
+}).strict();
 
 export const updateAgentInstructionsPathSchema = z.object({
   path: z.string().trim().min(1).nullable(),
@@ -256,6 +281,7 @@ export const resetAgentSessionSchema = z.object({
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
 export const testAdapterEnvironmentSchema = z.object({
+  runner: z.enum(["auto", "paperclip", "legacy"]).optional(),
   aiConnection: aiConnectionBindingSchema.optional(),
   /** Saved agent whose redacted environment entries are restored for this probe. */
   agentId: z.string().guid().optional(),
@@ -296,6 +322,10 @@ export const updateAgentPermissionsSchema = z.object({
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;
+
+export const addAgentProjectAccessSchema = z.object({
+  projectIds: z.array(z.string().uuid()).min(1).max(100),
+}).strict();
 
 export const resolveAgentInstructionCandidateSchema = z.object({
   baseRevisionId: z.string().uuid().nullable(),

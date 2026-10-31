@@ -43,7 +43,16 @@ const meta = {
   id: "connections-agentmail-setup",
   title: "Apps, channels, and extensions/External chat and email/Connections/AgentMail setup",
   component: AgentMailJourney,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "chat-channels/providers",
+        "connection-setup/channel-setup"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   args: { savedConnection: true },
   beforeEach(context) {
     const scenario = (context.parameters.agentmailScenario ?? {}) as Scenario;

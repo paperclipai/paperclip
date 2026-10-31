@@ -142,7 +142,15 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 const meta: Meta = {
   id: "product-user-secrets",
   title: "Apps, channels, and extensions/Secrets and proposals/Product/User secrets",
-  parameters: { layout: "fullscreen", a11y: { test: "off" } },
+  parameters: { layout: "fullscreen", a11y: { test: "off" },
+    paperclip: {
+      "capabilities": [
+        "secrets/user-secrets"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 type Story = StoryObj;

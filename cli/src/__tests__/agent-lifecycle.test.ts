@@ -70,6 +70,18 @@ describe("agent lifecycle commands", () => {
     ]);
   });
 
+  it("sends automatic selection when omitted and supports explicit runner overrides", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+    const payload = { name: "Builder", adapterType: "codex_local" };
+    await run(["agent", "create", "--company-id", COMPANY_ID, "--payload-json", JSON.stringify(payload)]);
+    await run(["agent", "create", "--company-id", COMPANY_ID, "--payload-json", JSON.stringify({ ...payload, runner: "auto" }), "--runner", "legacy"]);
+    await run(["agent", "hire", "--company-id", COMPANY_ID, "--payload-json", JSON.stringify(payload), "--runner", "paperclip"]);
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).runner).toBeUndefined();
+    expect(JSON.parse(fetchMock.mock.calls[1]![1].body).runner).toBe("legacy");
+    expect(JSON.parse(fetchMock.mock.calls[2]![1].body).runner).toBe("paperclip");
+  });
+
   it("wraps configuration, runtime, skills, and instructions endpoints", async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
     vi.stubGlobal("fetch", fetchMock);
@@ -97,7 +109,7 @@ describe("agent lifecycle commands", () => {
     await run(["agent", "instructions-bundle:update", AGENT_ID, "--payload-json", JSON.stringify({ mode: "managed" })]);
     await run(["agent", "instructions-file:get", AGENT_ID, "--path", "AGENTS.md"]);
     await run(["agent", "instructions-file:put", AGENT_ID, "--path", "AGENTS.md", "--content", "hello"]);
-    await run(["agent", "instructions-file:delete", AGENT_ID, "--path", "AGENTS.md"]);
+    await run(["agent", "instructions-file:delete", AGENT_ID, "--path", "AGENTS.md", "--yes"]);
 
     expect(fetchMock.mock.calls.map((call) => [call[1]?.method ?? "GET", call[0]])).toEqual([
       ["PATCH", `http://localhost:3100/api/agents/${AGENT_ID}/permissions`],
@@ -117,6 +129,20 @@ describe("agent lifecycle commands", () => {
       ["PUT", `http://localhost:3100/api/agents/${AGENT_ID}/instructions-bundle/file`],
       ["DELETE", `http://localhost:3100/api/agents/${AGENT_ID}/instructions-bundle/file?path=AGENTS.md`],
     ]);
+  });
+
+  it("refuses to delete an instructions file without confirmation", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+      throw new Error(`exit:${code ?? 0}`);
+    }) as typeof process.exit);
+
+    await expect(run(["agent", "instructions-file:delete", AGENT_ID, "--path", "AGENTS.md"])).rejects.toThrow(
+      "exit:1",
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

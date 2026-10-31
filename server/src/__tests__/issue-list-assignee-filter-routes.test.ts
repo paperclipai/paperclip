@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -96,6 +96,80 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       grantedByUserId: null,
     });
   }
+
+  it.each(["index", "rows"])("revalidates %s rows immediately after a mutation", async (view) => {
+    const companyId = randomUUID(), issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Fresh list", issuePrefix: uniqueIssuePrefix() });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Before" });
+    const app = createApp(companyId);
+    const before = await request(app).get(`/api/companies/${companyId}/issues`).query({ view, ids: issueId }).expect(200);
+    await db.update(issues).set({ title: "After" }).where(eq(issues.id, issueId));
+    const after = await request(app).get(`/api/companies/${companyId}/issues`).query({ view, ids: issueId })
+      .set("If-None-Match", before.headers.etag).expect(200);
+    expect(after.body[0].title).toBe("After");
+    expect(after.headers.etag).not.toBe(before.headers.etag);
+    expect(after.headers["x-paperclip-request-cache"]).toBe("miss");
+  });
+
+  it("keeps index and row batches scoped to readable tasks and validates their bounds", async () => {
+    vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
+    try {
+      const companyId = randomUUID(), foreignCompanyId = randomUUID();
+      const parentId = randomUUID(), childId = randomUUID(), privateId = randomUUID(), foreignId = randomUUID();
+      await db.insert(companies).values([
+        { id: companyId, name: "Lists", issuePrefix: uniqueIssuePrefix() },
+        { id: foreignCompanyId, name: "Other", issuePrefix: uniqueIssuePrefix() },
+      ]);
+      await seedCloudTenantMember(companyId);
+      await db.insert(issues).values([
+        { id: parentId, companyId, title: "Public parent" },
+        { id: childId, companyId, parentId, title: "Public child" },
+        { id: privateId, companyId, parentId, title: "Private child", visibility: "private", privacyRootIssueId: privateId, createdByUserId: "someone-else" },
+        { id: foreignId, companyId: foreignCompanyId, title: "Foreign task" },
+      ]);
+      const app = createApp(companyId);
+      for (const view of ["index", "rows"]) {
+        const selected = await request(app).get(`/api/companies/${companyId}/issues`).query({ view, ids: [parentId, privateId, foreignId].join(",") });
+        expect(selected.status, JSON.stringify(selected.body)).toBe(200);
+        expect(selected.body.map((row: { id: string }) => row.id)).toEqual([parentId]);
+        const children = await request(app).get(`/api/companies/${companyId}/issues`).query({ view, parentIds: parentId });
+        expect(children.status).toBe(200);
+        expect(children.body.map((row: { id: string }) => row.id)).toEqual([childId]);
+      }
+      const preview = await request(app).get(`/api/companies/${companyId}/issues`).query({ view: "index", parentIds: parentId, oneChildPerParent: true }).expect(200);
+      expect(preview.body.map((row: { id: string }) => row.id)).toEqual([childId]);
+      for (const query of [
+        { view: "index", ids: "invalid" },
+        { view: "index", parentIds: Array.from({ length: 101 }, () => randomUUID()).join(",") },
+        { view: "index", ids: parentId, attention: "blocked" },
+        { view: "compact", ids: parentId },
+        { view: "index", oneChildPerParent: true },
+        { view: "rows", parentIds: parentId, oneChildPerParent: true },
+        { view: "index", parentIds: parentId, oneChildPerParent: "invalid" },
+      ]) {
+        expect((await request(app).get(`/api/companies/${companyId}/issues`).query(query)).status).toBe(400);
+      }
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("returns one child per parent without letting a large collapsed tree fill the page", async () => {
+    const companyId = randomUUID(), firstParentId = randomUUID(), secondParentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Collapsed trees", issuePrefix: uniqueIssuePrefix() });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values([
+      { id: firstParentId, companyId, title: "First parent" },
+      { id: secondParentId, companyId, title: "Second parent" },
+    ]);
+    await db.insert(issues).values([
+      ...Array.from({ length: 120 }, (_, index) => ({ companyId, parentId: firstParentId, title: `Child ${index}` })),
+      { companyId, parentId: secondParentId, title: "Other child" },
+    ]);
+    const response = await request(createApp(companyId)).get(`/api/companies/${companyId}/issues`)
+      .query({ view: "index", parentIds: [firstParentId, secondParentId].join(","), oneChildPerParent: true, limit: 2 }).expect(200);
+    expect(response.body).toHaveLength(2);
+    expect(new Set(response.body.map((row: { parentId: string }) => row.parentId))).toEqual(new Set([firstParentId, secondParentId]));
+  });
 
   it("returns only unassigned issues for assigneeAgentId=null", async () => {
     const companyId = randomUUID();
@@ -240,6 +314,15 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
         assigneeAgentId: ownerAgentId,
       },
     });
+    const index = await request(app).get(`/api/companies/${companyId}/issues`).query({ view: "index", limit: "20" });
+    expect(index.status).toBe(200);
+    expect(index.body).toHaveLength(1);
+    expect(index.body[0]).toMatchObject({ id: issueId, listProjection: "index", description: null, activeRecoveryAction: null, successfulRunHandoff: null });
+    expect(index.headers.etag).not.toBe(res.headers.etag);
+    const detailRows = await request(app).get(`/api/companies/${companyId}/issues`).query({ view: "rows", ids: issueId });
+    expect(detailRows.status).toBe(200);
+    expect(detailRows.body[0]).toMatchObject({ id: issueId, listProjection: "rows", description: null, activeRecoveryAction: { id: recoveryAction.id } });
+
     expect(res.body[0]).not.toHaveProperty("workProducts");
     expect(res.body[0]).not.toHaveProperty("project");
     expect(res.body[0]).not.toHaveProperty("goal");
@@ -634,14 +717,21 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     });
 
     const app = createApp(companyId);
-    for (let index = 0; index < ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES + 5; index += 1) {
-      const res = await request(app)
-        .get(`/api/companies/${companyId}/issues`)
-        .query({ view: "compact", limit: "20", q: `cache-key-${index}` });
-      expect(res.status, JSON.stringify(res.body)).toBe(200);
-    }
+    // Filling the cache can take longer than its five-second expiry on CI.
+    // Keep entries alive so this test measures capacity eviction alone.
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    try {
+      for (let index = 0; index < ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES + 5; index += 1) {
+        const res = await request(app)
+          .get(`/api/companies/${companyId}/issues`)
+          .query({ view: "compact", limit: "20", q: `cache-key-${index}` });
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+      }
 
-    expect(__getIssueListResponseCacheSizeForTests()).toBe(ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES);
+      expect(__getIssueListResponseCacheSizeForTests()).toBe(ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("logs request_storm_detected for identical in-flight compact issue-list fanout without query values", async () => {
@@ -782,6 +872,64 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(res.body).toMatchObject({
       error: "assigneeAgentId must be a UUID or 'null'",
     });
+  });
+
+  it.each([
+    "projectId",
+    "parentId",
+    "parentIssueId",
+    "workspaceId",
+    "executionWorkspaceId",
+    "descendantOf",
+    "labelId",
+    "participantAgentId",
+    "createdFromIssueId",
+  ])("returns 422 instead of a DB error for malformed %s filters", async (param) => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", [param]: "d", limit: "20" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body).toMatchObject({ error: `${param} must be a UUID` });
+  });
+
+  it.each([
+    "projectId",
+    "parentId",
+    "parentIssueId",
+    "workspaceId",
+    "executionWorkspaceId",
+    "descendantOf",
+    "labelId",
+    "participantAgentId",
+    "createdFromIssueId",
+  ])("returns 422 from issues/count for malformed %s filters", async (param) => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues/count`)
+      .query({ attention: "blocked", [param]: "d" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body).toMatchObject({ error: `${param} must be a UUID` });
   });
 
   it("returns opt-in live descendant counts for offscreen live descendants only", async () => {

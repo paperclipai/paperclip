@@ -1,4 +1,5 @@
 import { type CopilotToolEvidence } from "./copilot-tool-evidence.js";
+import { resolveCompletionContinuation } from "../completion-continuation.js";
 import { isProviderMode } from "../../contracts/provider-mode.js";
 import { acpxProfileActivity, type AcpxActivityAdapter, type AcpxToolEvidence } from "./profile-activity.js";
 
@@ -59,6 +60,7 @@ import {
 } from "../runner-tool-bridge.js";
 import {
   DEFAULT_CODEX_ACPX_RUNTIME_SHUTDOWN_BOUND_MS,
+  AcpxProviderProcessLostError,
   openCodexAcpxRuntime,
 } from "./codex-runtime-adapter.js";
 import { normalizeAcpxPermission } from "./acp-permission-adapter.js";
@@ -72,6 +74,7 @@ import {
   validateAcpxDriverConfig,
 } from "./driver-profile.js";
 import {
+  assertAcpxProfileReleased,
   resolveQualifiedAcpxProfile,
   type QualifiedAcpxAgent,
 } from "./qualified-profiles.js";
@@ -148,6 +151,9 @@ export interface CodexAcpxDriverOptions {
   permissionMode?: NativeAcpxPermissionMode;
   mode?: string;
   piThinkingLevel?: "off" | "low" | "high" | "max";
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   providerPolicy?: { readOnly: boolean };
   runtimeContext?: OpenAcpxRuntimeHostOptions["runtimeContext"];
   systemInstructions?: string;
@@ -283,6 +289,7 @@ export class CodexAcpxDriver implements HarnessDriver {
     options: CodexAcpxDriverOptions,
     dependencies: CodexAcpxDriverDependencies = {},
   ) {
+    assertAcpxProfileReleased(options.agent ?? "codex");
     if (["pi", "cursor", "copilot"].includes(options.agent ?? "codex") && typeof options.providerPolicy?.readOnly !== "boolean") {
       throw new Error("ACP candidate requires an explicit provider read-only policy");
     }
@@ -463,6 +470,8 @@ export class CodexAcpxDriver implements HarnessDriver {
         permissionMode: this.#options.permissionMode ?? "approve-all",
         mode: this.#options.mode,
         piThinkingLevel: this.#options.piThinkingLevel,
+        claudeEffort: this.#options.claudeEffort,
+        grokEffort: this.#options.grokEffort, grokDisableWebSearch: this.#options.grokDisableWebSearch,
         providerPolicy: this.#options.providerPolicy,
         runtimeContext: this.#options.runtimeContext,
         systemInstructions: this.#options.systemInstructions,
@@ -1132,7 +1141,16 @@ class CodexAcpxSession implements HarnessSession {
     }
     const tool = canonicalRunnerToolName(call.tool);
     if (tool === PRP_COMPLETION_TOOL_NAME || tool === PRP_BLOCK_TOOL_NAME) {
-      const validation = validatePrpStructuredRunResult(call.arguments);
+      const completionInput = await resolveCompletionContinuation(call.arguments, this.#input.runId,
+        this.#dynamicToolHandler ? () => this.#dynamicToolHandler!({
+          tool: "get_task_context", callId: `${call.callId}:continuation`,
+          providerSessionId: this.#host.identity().agentSessionId, turnId, arguments: {}, signal: call.signal,
+        }) : undefined);
+      this.#assertOpen();
+      if (this.#activeTurnId !== turnId || this.#pendingTerminal || call.signal.aborted) {
+        throw new Error("The turn ended while resolving completion");
+      }
+      const validation = validatePrpStructuredRunResult(completionInput);
       if (!validation.ok) throw new Error("Invalid semantic run result");
       const blocked = validation.result.reportedWorkDisposition === "blocked";
       if (
@@ -1290,6 +1308,9 @@ class CodexAcpxSession implements HarnessSession {
         permissionMode: identity.permissionMode,
         ...(identity.mode === undefined ? {} : { mode: identity.mode }),
         ...(identity.piThinkingLevel === undefined ? {} : { piThinkingLevel: identity.piThinkingLevel }),
+        ...(identity.claudeEffort === undefined ? {} : { claudeEffort: identity.claudeEffort }),
+        ...(identity.grokEffort === undefined ? {} : { grokEffort: identity.grokEffort }),
+        ...(identity.grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch: identity.grokDisableWebSearch }),
         providerLifetimeFenceCandidates:
           identity.providerLifetimeFenceCandidates,
       },
@@ -1568,7 +1589,7 @@ class CodexAcpxSession implements HarnessSession {
     } catch (error) {
       if (this.#terminalTurns.has(turnId)) return;
       if (error instanceof TerminalEventCapacityError) throw error;
-      this.#cancelPendingRuntimeRequests("provider turn failed", turnId);
+      this.#cancelPendingRuntimeRequests(error instanceof AcpxProviderProcessLostError ? error : "provider turn failed", turnId);
       if (this.#closed || this.#closingStarted) {
         const reaffirmedSemanticResult =
           this.#pendingSemanticTransfer?.turnId === turnId
@@ -1599,7 +1620,7 @@ class CodexAcpxSession implements HarnessSession {
               : { reaffirmedSemanticResult }),
           }),
           "turn.failed",
-          { status: "failed", error: { message: safeMessage(error) } },
+          { status: "failed", error: { ...(error instanceof AcpxProviderProcessLostError ? { code: error.code } : {}), message: safeMessage(error) } },
         );
       }
     }
@@ -1743,9 +1764,7 @@ class CodexAcpxSession implements HarnessSession {
         const pending = this.#pendingRuntimeRequests.get(requestId);
         if (!pending || pending.settling || !this.#pendingRuntimeRequests.delete(requestId)) return;
         pending.cleanup();
-        this.#emit("runtime_request.cancelled", harnessRuntimeRequestOutcome(request, {
-          action: "cancel", reason: "provider request aborted",
-        }), { turnId, itemId });
+        this.#emitRequestAbort(request, context.signal.reason);
         settle(input.cancel());
       };
       this.#pendingRuntimeRequests.set(requestId, {
@@ -1794,9 +1813,7 @@ class CodexAcpxSession implements HarnessSession {
         const pending = this.#pendingRuntimeRequests.get(requestId);
         if (!pending || pending.settling || !this.#pendingRuntimeRequests.delete(requestId)) return;
         pending.cleanup();
-        this.#emit("runtime_request.cancelled", harnessRuntimeRequestOutcome(runtimeRequest, {
-          action: "cancel", reason: "provider request aborted",
-        }), { turnId, itemId: requestId });
+        this.#emitRequestAbort(runtimeRequest, signal.reason);
         settle({ outcome: "cancel" });
       };
       this.#pendingRuntimeRequests.set(requestId, {
@@ -1930,14 +1947,7 @@ class CodexAcpxSession implements HarnessSession {
         if (!pending || pending.settling) return;
         if (!this.#pendingRuntimeRequests.delete(requestId)) return;
         pending.cleanup();
-        this.#emit(
-          "runtime_request.cancelled",
-          harnessRuntimeRequestOutcome(runtimeRequest, {
-            action: "cancel",
-            reason: "provider request aborted",
-          }),
-          { turnId, itemId: requestId },
-        );
+        this.#emitRequestAbort(runtimeRequest, context.signal.reason);
         settle({ action: "cancel" });
       };
       context.signal.addEventListener("abort", cancel, { once: true });
@@ -1955,22 +1965,23 @@ class CodexAcpxSession implements HarnessSession {
     });
   }
 
-  #cancelPendingRuntimeRequests(reason: string, turnId?: string): void {
+  #emitRequestAbort(request: HarnessRuntimeRequest, reason: unknown): void {
+    const lost = reason instanceof AcpxProviderProcessLostError;
+    this.#emit(lost ? "runtime_request.expired" : "runtime_request.cancelled", {
+      ...harnessRuntimeRequestOutcome(request, {
+        ...(lost ? {} : { action: "cancel" as const }),
+        reason: lost ? "provider_process_lost" : typeof reason === "string" ? boundedText(reason, 1_000) : "provider request aborted",
+      }),
+      ...(lost ? { replayAllowed: false } : {}),
+    }, { turnId: request.turnId, itemId: request.itemId });
+  }
+
+  #cancelPendingRuntimeRequests(reason: string | AcpxProviderProcessLostError, turnId?: string): void {
     for (const [requestId, pending] of this.#pendingRuntimeRequests) {
       if (turnId && pending.request.turnId !== turnId) continue;
       if (!this.#pendingRuntimeRequests.delete(requestId)) continue;
       pending.cleanup();
-      this.#emit(
-        "runtime_request.cancelled",
-        harnessRuntimeRequestOutcome(pending.request, {
-          action: "cancel",
-          reason: boundedText(safeMessage(reason), 1_000),
-        }),
-        {
-          turnId: pending.request.turnId,
-          itemId: pending.request.itemId,
-        },
-      );
+      this.#emitRequestAbort(pending.request, reason);
       pending.cancel();
     }
   }
@@ -2153,6 +2164,9 @@ function validateRecoverySnapshot(snapshot: PersistedHarnessSession): void {
         identity.permissionMode,
       )) ||
     (identity.mode !== undefined && !isProviderMode(identity.mode)) ||
+    (identity.claudeEffort !== undefined && !["low", "medium", "high", "xhigh", "max"].includes(identity.claudeEffort)) ||
+    (identity.grokDisableWebSearch !== undefined && typeof identity.grokDisableWebSearch !== "boolean") ||
+    (identity.grokEffort !== undefined && !["minimal", "low", "medium", "high", "xhigh"].includes(identity.grokEffort)) ||
     (identity.piThinkingLevel !== undefined && !["off", "low", "high", "max"].includes(identity.piThinkingLevel)) ||
     !validProviderLifetimeFenceCandidates(
       identity.providerLifetimeFenceCandidates,

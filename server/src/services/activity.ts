@@ -1,3 +1,5 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { skillAccessService } from "./skill-access.js";
 import { credentialAccessConnectionNameSql } from "./credential-access-visibility.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
@@ -11,6 +13,7 @@ import {
   environments,
   heartbeatRunEvents,
   heartbeatRuns,
+  workspaceRestoreFailureCodesSql,
   issueComments,
   issueDocuments,
   issues,
@@ -29,6 +32,7 @@ export interface ActivityFilters {
   entityId?: string;
   limit?: number;
   readCondition?: SQL<boolean>;
+  caseReadCondition?: SQL<boolean>;
 }
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
@@ -106,7 +110,7 @@ export function activityService(db: Db) {
             )
           ) end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
-          in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
+          in (${workspaceRestoreFailureCodesSql})
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
         'workspaceRestorePath', case when length(${heartbeatRuns.resultJson} ->> 'workspaceRestorePath') <= 180
           then ${heartbeatRuns.resultJson} -> 'workspaceRestorePath' end,
@@ -354,8 +358,9 @@ export function activityService(db: Db) {
   }
 
   return {
-    list: (filters: ActivityFilters) => {
-      const conditions = [eq(activityLog.companyId, filters.companyId)];
+    list: async (filters: ActivityFilters) => {
+      const conditions = [eq(activityLog.companyId, filters.companyId), await skillAccessService(db).activityCondition(filters.companyId),
+        filters.caseReadCondition ?? sql<boolean>`${activityLog.entityType} <> 'case'`];
       const limit = normalizeActivityLimit(filters.limit);
 
       if (filters.agentId) {
@@ -392,8 +397,24 @@ export function activityService(db: Db) {
         .then((rows) => rows.map((r) => r.activityLog));
     },
 
-    forIssue: (issueId: string) =>
-      db
+    inputFactsForIssue: async (companyId: string, issueId: string, commentIds: string[]) => {
+      if (!commentIds.length) return [];
+      const commentId = sql<string>`${activityLog.details}->>'commentId'`;
+      return db.selectDistinctOn([commentId, activityLog.action])
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          inArray(commentId, commentIds),
+          inArray(activityLog.action, ["issue.queued_comment_steered", "issue.comment_added"]),
+          sql`${activityLog.details}->>'duplicate' is distinct from 'true'`,
+        ))
+        .orderBy(commentId, activityLog.action, asc(activityLog.createdAt), asc(activityLog.id));
+    },
+
+    forIssue: (issueId: string, limit?: number) => {
+      const query = db
         .select()
         .from(activityLog)
         .where(
@@ -403,14 +424,18 @@ export function activityService(db: Db) {
               sql`${activityLog.companyId} = (select company_id from issues where id = ${issueId})`),
           ),
         )
-        .orderBy(desc(activityLog.createdAt)),
+        .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
+      return limit === undefined ? query : query.limit(limit);
+    },
 
-    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null) => {
+    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null, limit?: number, selectedRunIds?: string[]) => {
+      if (selectedRunIds && !selectedRunIds.length) return [];
       scheduleRunLivenessBackfill(companyId, issueId);
-      const runs = await db
+      const runsQuery = db
         .select({
           runId: heartbeatRuns.id,
           runtimeMode: heartbeatRuns.runtimeMode,
+          wakeupRequestId: heartbeatRuns.wakeupRequestId,
           status: heartbeatRuns.status,
           agentId: heartbeatRuns.agentId,
           adapterType: agents.adapterType,
@@ -439,6 +464,7 @@ export function activityService(db: Db) {
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
           wakeCommentIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'wakeCommentIds'`,
+          queuedCommentSourceWakeIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'queuedCommentSourceWakeIds'`,
           wakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`,
           contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`,
           contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
@@ -454,6 +480,7 @@ export function activityService(db: Db) {
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
+            ...(selectedRunIds ? [inArray(heartbeatRuns.id, selectedRunIds)] : []),
             or(
               eq(heartbeatRuns.issueId, issueId),
               sql`exists (
@@ -467,7 +494,8 @@ export function activityService(db: Db) {
             ),
           ),
         )
-        .orderBy(desc(heartbeatRuns.createdAt));
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
+      const runs = await (limit === undefined ? runsQuery : runsQuery.limit(limit));
 
       if (runs.length === 0) return runs;
       const runIds = runs.map((run) => run.runId);
@@ -584,7 +612,7 @@ export function activityService(db: Db) {
       });
     },
 
-    issuesForRun: async (runId: string) => {
+    issuesForRun: async (runId: string, readCondition: SQL<boolean>) => {
       const run = await db
         .select({
           companyId: heartbeatRuns.companyId,
@@ -610,7 +638,9 @@ export function activityService(db: Db) {
             eq(activityLog.companyId, run.companyId),
             eq(activityLog.runId, runId),
             eq(activityLog.entityType, "issue"),
+            eq(issues.companyId, run.companyId),
             visibleIssueCondition(),
+            readCondition,
           ),
         )
         .orderBy(issueIdAsText);
@@ -633,6 +663,7 @@ export function activityService(db: Db) {
             eq(issues.companyId, run.companyId),
             eq(issues.id, contextIssueId),
             visibleIssueCondition(),
+            readCondition,
           ),
         )
         .then((rows) => rows[0] ?? null);
@@ -641,11 +672,10 @@ export function activityService(db: Db) {
       return [fromContext, ...fromActivity];
     },
 
-    create: (data: typeof activityLog.$inferInsert) =>
-      db
-        .insert(activityLog)
-        .values(data)
-        .returning()
-        .then((rows) => rows[0]),
+    create: (data: typeof activityLog.$inferInsert) => db.transaction(async tx => {
+      if (data.entityType === "issue") await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, `task:${data.entityId}`);
+      const [row] = await tx.insert(activityLog).values(data).returning();
+      return row;
+    }),
   };
 }

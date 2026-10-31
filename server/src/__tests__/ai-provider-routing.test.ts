@@ -1,12 +1,33 @@
 import { describe, it, expect } from "vitest";
 import {
   aiProviderRoutingSchema,
+  aiRoutingHarness,
+  aiRoutingModel,
   createAiConnectionSchema,
   isAiConnectionCompatible,
 } from "@paperclipai/shared";
 import { managedProviderRouting } from "../services/ai-provider-routing.js";
 
 describe("provider routing", () => {
+  it("routes managed OpenRouter accounts to direct and native Pi without OpenCode configuration", () => {
+    const routing = aiProviderRoutingSchema.parse({ kind: "openrouter", protocol: "chat" });
+    expect(aiRoutingHarness("paperclip_runner", "acpx", "pi")).toBe("pi_local");
+    for (const adapterType of ["pi_local", "paperclip_runner"]) {
+      expect(isAiConnectionCompatible({ provider: "openrouter", method: "api_key", routing }, adapterType, "openrouter/anthropic/model", "acpx", "pi")).toBe(true);
+    }
+    expect(aiRoutingModel(routing, "pi_local", "anthropic/model")).toBe("openrouter/anthropic/model");
+    expect(aiRoutingModel(routing, "pi_local", "openrouter/anthropic/model")).toBe("openrouter/anthropic/model");
+    const projected = managedProviderRouting(routing, "pi_local", "selected-pi-key", "anthropic/model");
+    expect(projected).toMatchObject({ config: { model: "openrouter/anthropic/model" }, env: { OPENROUTER_API_KEY: "selected-pi-key" } });
+    expect(projected.env).not.toHaveProperty("OPENCODE_CONFIG_CONTENT");
+    expect(isAiConnectionCompatible({ provider: "openai", method: "api_key", routing: aiProviderRoutingSchema.parse({ kind: "gateway", protocol: "chat", baseUrl: "https://gateway.example/v1" }) }, "pi_local", "custom/model")).toBe(false);
+  });
+  it.each(["openai", "anthropic", "google", "openrouter"] as const)("accepts Pi %s API keys only for matching models", provider => {
+    expect(isAiConnectionCompatible({ provider, method: "api_key" }, "paperclip_runner", `${provider}/model`, "acpx", "pi")).toBe(true);
+    expect(isAiConnectionCompatible({ provider, method: "subscription" }, "pi_local", `${provider}/model`)).toBe(false);
+    expect(isAiConnectionCompatible({ provider, method: "subscription", mode: "responsible_user" }, "pi_local", `${provider}/model`)).toBe(true);
+    expect(isAiConnectionCompatible({ provider, method: "api_key" }, "pi_local", "different/model")).toBe(false);
+  });
   it.each([
     "https://user:secret@gateway.example/v1",
     "https://gateway.example/v1?key=secret",

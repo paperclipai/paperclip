@@ -10,6 +10,14 @@ function ReviewGuide() {
     <p>These are representative fixtures, not a copy of private task data. The mixed journey uses the production shell, adapter, thread, and composer. Swap the viewer to verify that ownership follows authorUserId. Full Conversation includes all fixture messages. Sending is local to the preview.</p>
   </main>;
 }
-export default { id: "chat-comments-human-identity-00-review-guide",
+export default {
+  parameters: { paperclip: {
+      "capabilities": [
+        "tasks/discussion"
+      ],
+      "implementation": "guide",
+      "boundary": "static",
+      "notes": "Review guide retained; explanatory content does not establish runtime or production coverage. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    } }, id: "chat-comments-human-identity-00-review-guide",
   title: "Tasks and conversations/Task creation and lifecycle/Chat & Comments/Human identity/00 Review guide", component: ReviewGuide } satisfies Meta<typeof ReviewGuide>;
 export const DataFlow: StoryObj<typeof ReviewGuide> = {};

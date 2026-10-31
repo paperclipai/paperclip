@@ -203,7 +203,18 @@ const meta: Meta<typeof SkillDetailHarness> = {
   id: "skills-store-skill-detail",
   title: "Agents and reusable capabilities/Skills and Skill Studio/Skills Store/Skill detail",
   component: SkillDetailHarness,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "skills/discovery",
+        "skills/versions",
+        "skills/policy"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Related examples cover fixture revisions and agent attachment selection. Save and attachment submission callbacks are no-ops; durable authoring, grants and enforcement are not established."
+    },
+  },
 };
 
 export default meta;

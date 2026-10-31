@@ -1,3 +1,6 @@
+import type { PluginWorkspaceParams, PluginWorkspaceResult } from "./workspace-provider.js";
+import type { PluginEnvironmentTaskParams, PluginEnvironmentTaskResult } from "./environment-tasks.js";
+import type { PluginAgentRuntimeState, PluginAgentRuntimeIdentity } from "./types.js";
 import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 /**
@@ -56,6 +59,7 @@ export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
 import type {
   PluginEvent,
   ResourceLifecycleEvent,
+  ResourceLifecycleResult,
   PluginIssueCheckoutOwnership,
   PluginIssueOrchestrationSummary,
   PluginIssueRelationSummary,
@@ -285,6 +289,7 @@ export type PluginRpcErrorCode =
  */
 export interface PluginInvocationScope {
   companyId: string;
+  projectGit?: { projectId: string; workspaceId?: string; runId?: string; agentId?: string; operation?: "prepare" | "inspect" | "remove" };
 }
 
 /**
@@ -309,6 +314,8 @@ export interface PluginInvocationContext {
  * host-issued invocation id.
  */
 export interface WorkerHostCallContext {
+  /** Host-owned aggregate timing budget; never received from the worker. */
+  providerSpanBudget?: { remaining: number };
   invocationScope?: PluginInvocationScope | null;
   invalidInvocationScope?: boolean;
   /**
@@ -634,6 +641,12 @@ export interface PluginEnvironmentRunnerIngressEndpointParams
 
 export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
   runId: string;
+  creationOperationId?: string;
+  /** Explicit platform probes may request a provider-owned immutable snapshot
+   * identity. Supporting providers create by that ID and return snapshotIdentity
+   * in lease metadata. Older providers may omit it; the host then cannot qualify
+   * a mutable snapshot name. Ordinary discovery must not allocate a sandbox. */
+  resolveSnapshotIdentity?: boolean;
   workspaceMode?: string;
   requestedCwd?: string;
   agentId?: string;
@@ -660,6 +673,8 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
 }
 
 export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {
+  /** New run authority for a retained task; omitted by legacy environment consumers. */
+  runId?: string;
   providerLeaseId: string;
   leaseMetadata?: Record<string, unknown>;
 }
@@ -683,6 +698,20 @@ export interface PluginEnvironmentTerminationReceipt {
 }
 
 export interface PluginEnvironmentDestroyLeaseParams extends PluginEnvironmentReleaseLeaseParams {}
+
+/** Observe this exact allocation without starting, stopping or deleting it.
+ * Missing resources must be distinguished from permission/transport failures. */
+export interface PluginEnvironmentInspectLeaseParams extends PluginEnvironmentDriverBaseParams {
+  creationOperation?: { id: string; runId: string };
+  providerLeaseId: string;
+  leaseMetadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentLeaseObservation {
+  creationCleanup?: import("./environment-creation-cleanup.js").PluginEnvironmentCreationCleanup;
+  providerLeaseId: string;
+  state: "active" | "stopped" | "destroyed" | "unknown";
+}
 
 export interface PluginEnvironmentRealizeWorkspaceParams extends PluginEnvironmentDriverBaseParams {
   lease: PluginEnvironmentLease;
@@ -1351,6 +1380,7 @@ export interface HostToWorkerMethods {
   handleApiRequest: [params: PluginApiRequestInput, result: PluginApiResponse];
   /** @see PLUGIN_SPEC.md §13.8 */
   agentLifecycle: [params: AgentLifecycleRequest, result: AgentLifecycleResult];
+  resourceLifecycle: [params: ResourceLifecycleEvent, result: ResourceLifecycleResult];
   getData: [params: GetDataParams, result: unknown];
   /** @see PLUGIN_SPEC.md §13.9 */
   performAction: [params: PerformActionParams, result: unknown];
@@ -1373,6 +1403,8 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentValidateConfigParams,
     result: PluginEnvironmentValidationResult,
   ];
+  workspaceOperation: [params: PluginWorkspaceParams, result: PluginWorkspaceResult];
+  environmentTask: [params: PluginEnvironmentTaskParams, result: PluginEnvironmentTaskResult];
   environmentProbe: [
     params: PluginEnvironmentProbeParams,
     result: PluginEnvironmentProbeResult,
@@ -1396,6 +1428,10 @@ export interface HostToWorkerMethods {
   environmentDestroyLease: [
     params: PluginEnvironmentDestroyLeaseParams,
     result: PluginEnvironmentTerminationReceipt | void,
+  ];
+  environmentInspectLease: [
+    params: PluginEnvironmentInspectLeaseParams,
+    result: PluginEnvironmentLeaseObservation,
   ];
   environmentRealizeWorkspace: [
     params: PluginEnvironmentRealizeWorkspaceParams,
@@ -1488,6 +1524,8 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "handleWebhook",
   "handleApiRequest",
   "agentLifecycle",
+  "resourceLifecycle",
+  "workspaceOperation",
   "getData",
   "performAction",
   "executeTool",
@@ -1496,12 +1534,14 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "resolveExternalObject",
   "refreshExternalObjects",
   "environmentValidateConfig",
+  "environmentTask",
   "environmentProbe",
   "environmentAcquireLease",
   "environmentResumeLease",
   "environmentReleaseLease",
   "environmentStopLease",
   "environmentDestroyLease",
+  "environmentInspectLease",
   "environmentRealizeWorkspace",
   "environmentExecute",
   "environmentRunnerIngressEndpoint",
@@ -1532,6 +1572,18 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
  * These represent the SDK client calls that the worker makes back to the
  * host to access platform services (state, entities, config, etc.).
  */
+export interface PluginSpanRecord {
+  name: string;
+  /** A completed remote lifecycle is linked to its observer, never made its child. */
+  relationship?: "linked";
+  attributes?: Record<string, string | number | boolean>;
+  status?: { code: number; message?: string };
+  startTimeMs?: number;
+  endTimeMs?: number;
+  /** Nested timing receipts, bounded and validated again by the host. */
+  children?: PluginSpanRecord[];
+}
+
 export interface WorkerToHostMethods {
   // Config
   "config.get": [params: { companyId?: string }, result: Record<string, unknown>];
@@ -1725,25 +1777,7 @@ export interface WorkerToHostMethods {
   // real tracer. The worker never sends the parent `traceparent`; the host
   // recovers it from the echoed invocation id. The RPC is capability-gated.
   "span.record": [
-    params: {
-      /** The bounded span name (for example `pack` or `transfer`). The host
-       * clamps it to a closed set, so a name never carries free-form data. */
-      name: string;
-      /** The span attributes. The host drops every key that is not on the closed
-       * plugin-span allowlist and re-clamps each remaining value. */
-      attributes?: Record<string, string | number | boolean>;
-      /** The optional span status. */
-      status?: { code: number; message?: string };
-      /** The optional span start time as epoch milliseconds (`Date.now()`).
-       * The worker captures it when it opens the span. The host validates the
-       * pair and records the span with its true native width. An omitted value
-       * makes the host fall back to a synchronous open-and-end. */
-      startTimeMs?: number;
-      /** The optional span end time as epoch milliseconds (`Date.now()`). The
-       * worker captures it when it ends the span. The host uses it as the span
-       * end time when the pair passes the clock-safety check. */
-      endTimeMs?: number;
-    },
+    params: PluginSpanRecord,
     result: void,
   ];
 
@@ -1761,6 +1795,14 @@ export interface WorkerToHostMethods {
   "projects.list": [
     params: { companyId: string; limit?: number; offset?: number },
     result: Project[],
+  ];
+  "projects.resolveGitCredential": [
+    params: { projectId: string; workspaceId: string; companyId: string },
+    result: string | null,
+  ];
+  "projects.getInstanceSecrets": [
+    params: { projectId: string; companyId: string },
+    result: Record<string, string>,
   ];
   "projects.get": [
     params: { projectId: string; companyId: string },
@@ -2109,6 +2151,14 @@ export interface WorkerToHostMethods {
   "agents.list": [
     params: { companyId: string; status?: string; limit?: number; offset?: number },
     result: Agent[],
+  ];
+  "agents.getRuntimeIdentity": [
+    params: { agentId: string; companyId: string },
+    result: PluginAgentRuntimeIdentity | null,
+  ];
+  "agents.getRuntime": [
+    params: { agentId: string; companyId: string; environmentId?: string; installEnvironmentSkills?: boolean },
+    result: PluginAgentRuntimeState | null,
   ];
   "agents.get": [
     params: { agentId: string; companyId: string },

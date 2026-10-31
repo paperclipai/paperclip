@@ -7,7 +7,16 @@ const meta = {
   id: "connections-slack-managed-setup",
   title: "Apps, channels, and extensions/External chat and email/Connections/Slack/Managed setup", component: SlackSetupFixture,
   args: { managed: true },
-  parameters: { layout: "fullscreen", initialEntries: [`${start}&resume=slack-story`] },
+  parameters: { layout: "fullscreen", initialEntries: [`${start}&resume=slack-story`],
+    paperclip: {
+      "capabilities": [
+        "chat-channels/providers",
+        "connection-setup/channel-setup"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   render: args => <SlackSetupFixture key={`${args.scenario}-${args.workspaceCount}-${args.managedAvailable}-${args.optionsDelayMs}-${args.optionsError}`} {...args} />,
 } satisfies Meta<typeof SlackSetupFixture>;
 export default meta;

@@ -94,7 +94,16 @@ const meta: Meta<typeof GroupedList> = {
   id: "product-routines-·-list-grouped-cards",
   title: "Automation and structured work/Routines, schedules, and triggers/Product/Routines · List (grouped cards)",
   component: GroupedList,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "routines/definition",
+        "routines/management"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 

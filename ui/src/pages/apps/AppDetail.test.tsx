@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAppStoreDefinition } from "@paperclipai/shared";
 import type { AggregatorAppSnapshot, AggregatorAppsResponse } from "@paperclipai/shared/aggregator-apps";
+import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { rememberSkillSourceReturn, skillSourceReturnPath } from "@/lib/skill-source-connect-return";
 import { AppDetail } from "./AppDetail";
@@ -926,6 +927,9 @@ describe("AppDetail", () => {
 
     await renderAppDetail();
 
+    expect(container.textContent).toContain("Which agents can use this connection?");
+    expect(container.textContent).not.toContain("Always installed");
+    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Read (1)");
     expect(container.textContent).toContain("Write (1)");
     expect(container.textContent).toContain("Read repo");
@@ -1028,16 +1032,6 @@ describe("AppDetail", () => {
       askFirstCatalogEntryIds: [],
       access: "all_agents",
     });
-  });
-
-  it("removes the separate always-installed controls from Permissions", async () => {
-    mockParams.tab = "permissions";
-
-    await renderAppDetail();
-
-    expect(container.textContent).toContain("Which agents can use this connection?");
-    expect(container.textContent).not.toContain("Always installed");
-    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
   });
 
   it("shows and removes task-granted access without changing the connection's default permissions", async () => {
@@ -1434,6 +1428,52 @@ describe("AppDetail", () => {
     await renderAppDetail();
     expect(container.textContent).toContain("Retry access");
     expect(container.textContent).not.toContain("Reconnect required");
+  });
+
+  it("links a failed GitHub refresh to the suspended installation's settings", async () => {
+    mockParams.tab = "permissions";
+    const message = "The Paperclip GitHub installation is suspended. Unsuspend it on GitHub before refreshing access.";
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "oauth", healthStatus: "error", requiresReauthorization: false, healthMessage: message,
+    }));
+    checkConnectionHealthMock.mockRejectedValue(new ApiError(message, 422, {
+      error: message,
+      code: "github_installation_required",
+      details: {
+        code: "github_installation_required",
+        managementUrl: "https://github.com/organizations/paperclipai/settings/installations/101",
+      },
+    }));
+    const client = await renderAppDetail();
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Retry access")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(checkConnectionHealthMock).toHaveBeenCalledWith("conn-1");
+    expect(container.querySelector('a[href="https://github.com/organizations/paperclipai/settings/installations/101"]')?.textContent)
+      .toBe("Open installation settings on GitHub");
+
+    // An already-cached connection that also needs attention must not inherit that link.
+    const other = connection({
+      id: "conn-2", authKind: "oauth", healthStatus: "error", requiresReauthorization: false, healthMessage: message,
+    });
+    getConnectionMock.mockResolvedValue(other);
+    client.setQueryData(queryKeys.tools.connection("conn-2"), other);
+    mockParams.connectionId = "conn-2";
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <AppDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Retry access");
+    expect(container.querySelector('a[href="https://github.com/organizations/paperclipai/settings/installations/101"]')).toBeNull();
   });
 
   it("shows terminal OAuth failures as reconnect-required sign-in", async () => {

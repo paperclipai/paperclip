@@ -1,3 +1,5 @@
+import type { Message, Thread } from "chat";
+import type { ChatSdkMessageCallbackEvent } from "../chat-sdk-runtime.js";
 import type { Db, chatEndpoints } from "@paperclipai/db";
 import type { ToolCredentialSecretRef, ChatEndpointSetupState, ChatEndpointCallbackSurfaces } from "@paperclipai/shared";
 import type { ChatEndpointRuntime } from "../voice/voice-runtime.js";
@@ -49,4 +51,43 @@ export type InternalSetupState = ChatEndpointSetupState & {
   slackCallbackSurfaces?: Partial<
     Record<SlackCallbackSurface, SlackCallbackObservation>
   >;
+};
+
+export type VerifiedProviderIdentity = {
+  githubOwnerType?: "personal" | "organization";
+  githubOwnerLogin?: string;
+  providerAccountId?: string | null;
+  providerAccountLabel?: string | null;
+  botExternalId?: string | null;
+  botUsername?: string | null;
+  botLabel?: string | null;
+};
+
+export type PreparedProviderInventory = {
+  credentials: Record<string, string>;
+  inventory: import("../chat-provider-inventory.js").ChatProviderInventoryResult | null;
+  managementUrl?: string;
+};
+
+export type LiveInboundMessage = {
+  endpoint: EndpointRow;
+  message: Message;
+  receiptReactionSupported: boolean;
+  providerUrl: string | null;
+  runtimeContext?: InboundRuntimeContext;
+  thread: Thread;
+  trigger: ChatSdkMessageCallbackEvent["trigger"];
+};
+
+export type DiscordGatewayOwnership = {
+  companyId: string;
+  context: RuntimeContext;
+  endpointId: string;
+  expiresAt: Date;
+  leaseKey: "discord_gateway_runtime" | "photon_receiver_runtime";
+  renewTimer: ReturnType<typeof setInterval> | null;
+  renewal: Promise<void> | null;
+  stopPromise: Promise<void> | null;
+  stopping: boolean;
+  token: string;
 };

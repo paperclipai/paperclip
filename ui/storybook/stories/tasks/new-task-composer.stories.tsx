@@ -123,7 +123,7 @@ function NewTaskStory({
     }
     if (opened.current) return;
     opened.current = true;
-    localStorage.removeItem("paperclip:issue-draft");
+    localStorage.removeItem(`paperclip:issue-draft:${storybookAuthSession.user!.id}`);
     localStorage.removeItem("paperclip:recent-assignees");
     localStorage.removeItem(`paperclip:recent-assignees:${COMPANY_ID}`);
     localStorage.removeItem("paperclip:recent-projects");
@@ -216,6 +216,16 @@ const meta = {
         component:
           "The production new-task dialog renders TaskChatComposer. An inset bar shared with queued messages holds the colored project picker and, for projects with isolation enabled, Worktrees. Choose a new worktree or reuse a project worktree. The shared editor supports agent, person, project, and task mentions plus skill and routine slash-command chips. Agent mentions show the agent's current avatar. The editor, add menu, work modes, assignee/model/effort picker, and send button are shared with task chat. Creation is mocked locally; no agents run.",
       },
+    },
+    paperclip: {
+      "capabilities": [
+        "tasks/create",
+        "workspaces/binding"
+      ],
+      "status": "current",
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "WorktreePicker, ReuseWorktree, CreateWithReusedWorktree and NewWorktreeAfterReuse exercise workspace selection and submitted fixture request values. Actual admission/binding and execution remain outside this story. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
     },
   },
   args: { scenario: "empty" },

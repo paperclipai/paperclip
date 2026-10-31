@@ -1,25 +1,31 @@
+import { startToolHealthWorker } from "./helpers/tool-health-worker.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  applyPendingMigrations,
   activityLog,
   companies,
   connectionEventDeliveries,
   connectionGrants,
   createDb,
   externalObjects,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   toolApplications,
   toolConnections,
 } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { githubConnectionEventService } from "../services/github-connection-events.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { logger } from "../middleware/logger.js";
 import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_GITHUB_EVENTS_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("GitHub connection event delivery", () => {
@@ -27,9 +33,10 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-github-events-");
-    db = createDb(tempDb.connectionString);
-  }, 20_000);
+    if (!externalTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-github-events-");
+    if (externalTestDatabaseUrl) await applyPendingMigrations(externalTestDatabaseUrl);
+    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -42,10 +49,11 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
-  it("applies a normalized merged PR once, updates the snapshot, and acknowledges Cloud", async () => {
+  it.each([false, true])("applies a normalized merged PR once while retaining undecryptable siblings for retry (active setup=%s)", async activeSetup => {
     const companyId = randomUUID();
     const userId = `github-owner-${randomUUID()}`;
     const applicationId = randomUUID();
@@ -144,13 +152,31 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
       refresh: vi.fn(),
       revoke: vi.fn(),
       setWebhookBinding: vi.fn(async () => undefined),
-      leaseEvents: vi.fn(async () => ({ leaseId: `lease-${++poll}`, events: [leasedEvent] })),
+      leaseEvents: vi.fn(async () => ({ leaseId: `lease-${++poll}`, events: [leasedEvent], failedEventIds: ["undecryptable-delivery"] })),
       acknowledgeEvents: vi.fn(async () => 1),
     } as unknown as PaperclipCloudConnector;
     let currentTime = new Date("2026-09-04T12:00:05.000Z");
     const service = githubConnectionEventService(db, { connector, now: () => currentTime });
 
-    await expect(service.pollOnce()).resolves.toMatchObject({ leased: 1, processed: 1, duplicate: 0, failed: 0 });
+    if (activeSetup) {
+      // An existing personal connection can leave a long empty-queue backoff
+      // before a new dedicated App starts its signed-ping verification.
+      for (const delay of [0, 10_000, 20_000, 40_000, 80_000]) {
+        currentTime = new Date(currentTime.getTime() + delay);
+        vi.mocked(connector.leaseEvents).mockResolvedValueOnce(null);
+        await service.pollOnce();
+      }
+      currentTime = new Date(currentTime.getTime() + 5_000);
+      await expect(service.pollOnce()).resolves.toMatchObject({ leased: 0 });
+      expect(connector.leaseEvents).toHaveBeenCalledTimes(5);
+    }
+
+    const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    await expect(service.pollOnce({ forSetup: activeSetup })).resolves.toMatchObject({ leased: 2, processed: 1, duplicate: 0, failed: 1 });
+    expect(warning.mock.calls).toEqual([[{
+      deliveryId: "undecryptable-delivery", reason: "inner_event_authentication_failed",
+    }, "GitHub connector event retained for retry"]]);
+    warning.mockRestore();
     const [snapshot] = await db.select().from(externalObjects).where(eq(externalObjects.id, externalObjectId));
     expect(snapshot).toMatchObject({
       statusKey: "merged",
@@ -196,14 +222,26 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
       repositoryId: "99",
     });
     expect(connector.acknowledgeEvents).toHaveBeenCalledTimes(1);
+    expect(connector.acknowledgeEvents).toHaveBeenLastCalledWith(expect.objectContaining({
+      deliveryIds: [leasedEvent.id],
+    }));
+    expect(await db.select().from(connectionEventDeliveries).where(eq(
+      connectionEventDeliveries.providerDeliveryId, "undecryptable-delivery",
+    ))).toEqual([]);
 
     currentTime = new Date(currentTime.getTime() + 6_000);
-    await expect(service.pollOnce()).resolves.toMatchObject({ leased: 1, processed: 0, duplicate: 1, failed: 0 });
+    await expect(service.pollOnce()).resolves.toMatchObject({ leased: 2, processed: 0, duplicate: 1, failed: 1 });
     const [duplicateReceipt] = await db.select().from(connectionEventDeliveries).where(eq(
       connectionEventDeliveries.providerDeliveryId,
       leasedEvent.id,
     ));
     expect(duplicateReceipt?.attempts).toBe(1);
+    expect(connector.acknowledgeEvents).toHaveBeenCalledTimes(2);
+    vi.mocked(connector.leaseEvents).mockResolvedValue({
+      leaseId: "failed-only", events: [], failedEventIds: ["undecryptable-delivery"],
+    });
+    currentTime = new Date(currentTime.getTime() + 6_000);
+    await expect(service.pollOnce()).resolves.toMatchObject({ leased: 1, processed: 0, failed: 1 });
     expect(connector.acknowledgeEvents).toHaveBeenCalledTimes(2);
   });
 
@@ -232,6 +270,7 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
       credentialPolicy: "per_user",
       status: "active",
       enabled: true,
+      healthCheckedAt: new Date("2026-09-04T11:59:05.000Z"),
       config: { sourceTemplateKey: "github", oauth: { connectorProfile: "github.code" } },
       transportConfig: {},
     });
@@ -297,11 +336,18 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
     let currentTime = new Date("2026-09-04T12:00:05.000Z");
     const service = githubConnectionEventService(db, { connector, now: () => currentTime });
 
-    const unsubscribe = subscribeCompanyLiveEvents(companyId, () => {
-      throw new Error("fixture live subscriber failed");
-    });
-    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, duplicate: 0, failed: 0 });
-    unsubscribe();
+    const health = await startToolHealthWorker(db, companyId, currentTime);
+    try {
+      await health.expectDeadline(new Date("2026-09-04T12:14:05.000Z").getTime());
+      const unsubscribe = subscribeCompanyLiveEvents(companyId, () => {
+        throw new Error("fixture live subscriber failed");
+      });
+      try {
+        await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, duplicate: 0, failed: 0 });
+      } finally { unsubscribe(); }
+      await health.expectDeadline(currentTime.getTime() + 900_000 - (refreshed ? 60_000 : 0));
+      await health.expectQuiet();
+    } finally { await health.stop(); }
     let [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId));
     expect(grant?.providerTenant?.github).toMatchObject({ repositoryCount: refreshed ? 3 : 4, webhookHealth: "healthy" });
     if (refreshed) {

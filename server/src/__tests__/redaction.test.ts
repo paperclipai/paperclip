@@ -41,6 +41,22 @@ function receiptNotice(version: 1 | 2 = 1): Record<string, any> {
 const receiptSchemaValue = (notice: Record<string, any>) => notice.details.find((detail: any) => detail.name === "schema").value;
 
 describe("redaction", () => {
+  it.each([1, 2, 3] as const)("preserves structured panel activation and redacts adjacent secrets in PRP v%s", version => {
+    const event = { schema: `paperclip.prp.event.v${version}`, schemaVersion: version,
+      eventType: "runtime.activity.recorded", payload: { namespace: "example.runtime", activityKey: "desktop.used" } };
+    expect(redactEventPayload({ prpEvent: event })).toEqual({ prpEvent: event });
+    expect(redactEventPayload({ prpEvent: { ...event, payload: { ...event.payload, apiKey: "secret-sentinel" } } }))
+      .toEqual({ prpEvent: { ...event, payload: { ...event.payload, apiKey: REDACTED_EVENT_VALUE } } });
+  });
+  it.each([1, 2, 3] as const)("preserves credential update metadata and masks adjacent secrets in PRP v%s", version => {
+    const event = { schema: `paperclip.prp.event.v${version}`, schemaVersion: version,
+      eventType: "auth.credentials.updated", payload: { schema: "paperclip.auth.credentials.updated.v1",
+        provider: "codex", bindingId: "harness-auth", revision: 1, detection: "credential_store" } };
+    expect(redactEventPayload({ prpEvent: event })).toEqual({ prpEvent: event });
+    expect(redactEventPayload({ prpEvent: { ...event, payload: { ...event.payload, refresh_token: "secret-sentinel" } } }))
+      .toEqual({ prpEvent: { ...event, payload: { ...event.payload, refresh_token: REDACTED_EVENT_VALUE } } });
+  });
+
   it("preserves the actual Copilot receipt producer discriminator through nested durable redaction", () => {
     const events: Array<Record<string, any>> = [];
     const projector = createCopilotToolEvidence({ sessionId: "session", turnId: "turn", workingDirectory: "/workspace",
@@ -302,6 +318,11 @@ describe("redaction", () => {
         providerValue: input.nested.providerValue,
       },
     });
+    expect(sanitizeRecord({ schema: "paperclip.native-execution-input.v9" })).toEqual({ schema: "paperclip.native-execution-input.v9" });
+    expect(sanitizeRecord({ schema: "paperclip.native-execution-input.v7", runtimeSchema: "paperclip.native-execution-input.v8" })).toEqual({
+      schema: "paperclip.native-execution-input.v7",
+      runtimeSchema: "paperclip.native-execution-input.v8",
+    });
     expect(sanitizeRecord({ schema: "paperclip.native-execution-input.v4", runtimeSchema: "paperclip.native-model-envelope.v2" })).toEqual({
       schema: "paperclip.native-execution-input.v4",
       runtimeSchema: "paperclip.native-model-envelope.v2",
@@ -380,6 +401,10 @@ describe("redaction", () => {
       "runner.session.bootstrap",
       "runner.turn.submit",
       "runner.session.startup",
+      "provider_pack.select",
+      "provider_pack.discover",
+      "provider_pack.verify_uploaded",
+      "provider_pack.upload",
       "provider.turn.queue",
       "question_response.to_run_created",
       "native.session.execute",

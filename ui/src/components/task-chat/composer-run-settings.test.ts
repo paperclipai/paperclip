@@ -23,6 +23,12 @@ describe("composer run settings", () => {
     expect(composerDefaultModel(agent("grok_local"))).toBe("grok-build");
     expect(composerDefaultModel(undefined)).toBe("");
   });
+  it("offers native Grok effort and keeps its default model", () => {
+    const native = { ...agent("paperclip_runner", "acpx"), adapterConfig: { provider: "acpx", acpxAgent: "grok", reasoningEffort: "high" } };
+    expect(composerDefaultModel(native)).toBe("grok-4.7");
+    expect(composerEfforts(native, "grok-4.7", ["grok-4.7"])).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(readComposerRunSettings({ adapterConfig: native.adapterConfig }, native.adapterType)).toMatchObject({ effort: "high" });
+  });
   it("shows only effort levels known for the selected harness and model", () => {
     expect(composerEfforts(agent("codex_local"), "gpt-6-astra", [])).toContain("ultra");
     expect(composerEfforts(agent("paperclip_runner", "codex"), "gpt-6-astra", [])).toContain("ultra");

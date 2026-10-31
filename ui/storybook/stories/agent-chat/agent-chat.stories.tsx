@@ -13,6 +13,17 @@ const meta = {
           "Production Layout, AgentChat, IssueDetail, transcript and side-panel components run against in-memory routes. The landing page is a local ChatEntryLanding composition; first-use/default-agent behavior is not production acceptance. Sends append locally. Some unhandled API paths return empty fixture data, so this suite does not verify API contracts or primary-agent preference behavior.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "agent-chat/discovery",
+        "agent-chat/history",
+        "agent-chat/handoff"
+      ],
+      "status": "mixed",
+      "implementation": "mixed",
+      "boundary": "fixtures",
+      "notes": "Production conversation/task routes with a local ChatEntryLanding. Default-agent behavior and fallback API responses remain outside current-product parity. ProjectCreated, ExistingProject, MultipleRepositories, ProjectWithoutRepository and ProjectCreationFailed show linked handoff results/navigation through shipped chat/task hosts. Tool execution and persistence are simulated."
+    },
   },
   argTypes: {
     scenario: {

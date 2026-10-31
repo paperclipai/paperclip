@@ -46,6 +46,7 @@ import { buildEffectiveRunWorkspaceConfigMetadata, heartbeatService } from "../s
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/index.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { waitForPendingRunFailureReports } from "../services/run-failure-report.ts";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
@@ -100,6 +101,13 @@ const adapterExecute = vi.hoisted(() =>
     model: "test-model",
   })),
 );
+
+const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
+
+vi.mock("../sentry.ts", async () => {
+  const actual = await vi.importActual<typeof import("../sentry.ts")>("../sentry.ts");
+  return { ...actual, captureRunFailure: mockCaptureRunFailure };
+});
 
 vi.mock("../adapters/index.js", () => ({
   getServerAdapter: () => ({
@@ -1066,6 +1074,54 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       expect(await readFile(path.join(seeded.replacement, "replacement.txt"), "utf8")).toBe("replacement source must stay untouched\n");
     },
   );
+
+  it.each(["git_worktree", "project_primary"] as const)("reuses a %s workspace when a private historical task worktree shares its Git root", async (strategyType) => {
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "unexpected");
+    const seeded = await seedRetainedSourceRun("deleted");
+    if (strategyType === "project_primary") {
+      await db.update(projectWorkspaces).set({ cwd: seeded.owner, repoUrl: seeded.repoUrl }).where(eq(projectWorkspaces.id, seeded.newWorkspaceId));
+      await db.update(executionWorkspaces).set({ mode: "shared_workspace", strategyType,
+        projectWorkspaceId: seeded.newWorkspaceId, cwd: seeded.owner, providerRef: null,
+        providerType: "local_fs", branchName: null, metadata: null }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      await db.update(issues).set({ projectWorkspaceId: seeded.newWorkspaceId,
+        executionWorkspaceSettings: { mode: "shared_workspace" } }).where(eq(issues.id, seeded.issueId));
+    }
+    const [privateIssue] = await db.insert(issues).values({ companyId: seeded.companyId, projectId: seeded.projectId,
+      title: "Private work", visibility: "private" }).returning();
+    const privateCwd = path.join(seeded.owner, ".paperclip", "worktrees", "restricted-task");
+    await runGit(seeded.owner, ["worktree", "add", "-b", "restricted-task", privateCwd]);
+    const [privateWorkspace] = await db.insert(executionWorkspaces).values({ companyId: seeded.companyId, projectId: seeded.projectId,
+      sourceIssueId: privateIssue.id, name: "Private workspace", mode: "isolated_workspace", strategyType: "git_worktree",
+      providerType: "git_worktree", cwd: privateCwd, providerRef: privateCwd, branchName: "restricted-task", status: "idle" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: privateWorkspace.id }).where(eq(issues.id, privateIssue.id));
+
+    adapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, seeded.issueId));
+      return { exitCode: 0, signal: null, timedOut: false, summary: "Completed shared-root work.", provider: "test", model: "test-model" };
+    });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    const run = await waitForRunToFinish(heartbeat, seeded.runId);
+    await heartbeat.waitForRunExecutionDrain(seeded.runId);
+    await waitForPendingRunFailureReports();
+
+    expect(run).toMatchObject({ status: "succeeded", errorCode: null });
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
+    expect(adapterExecute.mock.calls[0]?.[0]).toMatchObject({ context: {
+      paperclipWorkspace: { cwd: strategyType === "project_primary" ? seeded.owner : seeded.worktree },
+      executionWorkspaceId: seeded.executionWorkspaceId,
+    } });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue).toMatchObject({ status: "done", executionWorkspaceId: seeded.executionWorkspaceId });
+    const comments = await db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments.map(comment => comment.body).join("\n")).not.toContain("The task couldn’t start.");
+    const actions = await db.select({ cause: issueRecoveryActions.cause }).from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, seeded.issueId));
+    expect(actions).toHaveLength(0);
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(1);
+    expect(await readFile(path.join(seeded.worktree, "retained.txt"), "utf8")).toBe("unexported original task edits\n");
+  });
 
   it("blocks projectless isolated git-worktree issues before dispatch", async () => {
     const companyId = randomUUID();

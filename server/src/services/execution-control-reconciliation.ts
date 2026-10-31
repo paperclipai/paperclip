@@ -1,3 +1,11 @@
+import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
+import { notifyExternalAgentSettlement } from "../modules/external-agents/index.js";
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
+import { notifyNativeFinalizationWork } from "./native-finalization-notifications.js";
+import { notifyUnsafeWorkspaceExportRunChange } from "./unsafe-workspace-export-notifications.js";
+import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
+import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { randomUUID } from "node:crypto";
 import { logger } from "../middleware/logger.js";
 import { and, eq, isNotNull, lte, sql } from "drizzle-orm";
@@ -10,8 +18,10 @@ import {
 } from "@paperclipai/db";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
+import { hasLiveLegacyController } from "./legacy-controller-lease.js";
 import { reportRunFailure } from "./run-failure-report.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
+import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
 
 /** Only newly recorded control deadlines are eligible. Upgrades never replay ambiguous historical runs. */
 export async function reconcileAbandonedExecutionControl(
@@ -140,6 +150,7 @@ export async function reconcileAbandonedExecutionControl(
           }
           // A persisted result belongs to the existing finalizer, not a replacement provider.
           if (coordinator?.resultId) {
+            await notifyNativeFinalizationWork(tx, { companyId: run.companyId, runId: run.id });
             await tx
               .update(nativeRunFinalizations)
               .set({
@@ -150,6 +161,13 @@ export async function reconcileAbandonedExecutionControl(
               })
               .where(eq(nativeRunFinalizations.runId, run.id));
             return true;
+          }
+          if (await hasLiveLegacyController(tx as unknown as Db, run)) {
+            await tx
+              .update(heartbeatRuns)
+              .set({ executionControlDeadlineAt: run.controllerLeaseExpiresAt })
+              .where(eq(heartbeatRuns.id, run.id));
+            return false;
           }
           const cause = "execution_finalization_deadline_exceeded";
           const nextAction =
@@ -173,6 +191,12 @@ export async function reconcileAbandonedExecutionControl(
                 updatedAt: now,
               })
               .where(eq(nativeRunFinalizations.runId, run.id));
+          await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
+          await notifyExternalAgentSettlement(tx, { companyId: run.companyId, runId: run.id });
+          await notifyNativeEnvironmentSettlement(tx, { companyId: run.companyId, runId: run.id });
+          await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
+          await notifyUnsafeWorkspaceExportRunChange(tx, run);
+          await notifyExecutionRunWork(tx);
           const [updatedRun] = await tx
             .update(heartbeatRuns)
             .set({
@@ -223,8 +247,11 @@ export async function reconcileAbandonedExecutionControl(
             ["done", "cancelled"].includes(task.status) ||
             (task.executionRunId && task.executionRunId !== run.id) ||
             (task.checkoutRunId && task.checkoutRunId !== run.id)
-          )
+          ) {
+            if (updatedRun) await preserveNativeFailedWorkspace(tx as unknown as Db, updatedRun);
             return true;
+          }
+          await notifyNativeStatusReassessment(tx, { companyId: task.companyId, issueId: task.id });
           await tx
             .update(issues)
             .set({ executionRunId: null, checkoutRunId: null, updatedAt: now })
@@ -251,6 +278,7 @@ export async function reconcileAbandonedExecutionControl(
             maxAttempts: 3,
             supersedeOnIdentityChange: true,
           });
+          if (updatedRun) await preserveNativeFailedWorkspace(tx as unknown as Db, updatedRun);
           return true;
         });
         if (repaired) surfaced += 1;
