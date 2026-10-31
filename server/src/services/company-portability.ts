@@ -1,3 +1,4 @@
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { createAgentLifecycle } from "./agent-lifecycle.js";
 import { agentAppearanceSchema, agentHarnessType, paperclipRunnerProfileForHarness, agentRunner, type AgentRunnerChoice } from "@paperclipai/shared";
 import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
@@ -6465,7 +6466,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           }
           if (relationRows.length > 0) {
             const relationCompanyId = targetCompany.id;
-            await db
+            await db.transaction(async tx => {
+              await notifyIssueRecovery(tx, { companyId: relationCompanyId });
+              await tx
               .insert(issueRelations)
               .values(relationRows.map((row) => ({
                 companyId: relationCompanyId,
@@ -6476,6 +6479,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 createdByUserId: actorUserId ?? null,
               })))
               .onConflictDoNothing();
+            });
           }
         }
 

@@ -10,7 +10,7 @@ afterEach(async () => { await coordinator?.stop(); vi.useRealTimers(); });
 it("preserves a subsecond replacement deadline when the owner does not require pass spacing", async () => {
   vi.useFakeTimers();
   const onError = vi.fn();
-  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
   coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError });
   const now = Date.now();
   let dueAt = now + 60_000;
@@ -43,7 +43,7 @@ type Entry = { id: string; companyId: string; issueId: string; dueAt: number };
 function concurrentFixture(entries: Entry[], limit = 4, concurrent = true) {
   vi.useFakeTimers();
   const onError = vi.fn();
-  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
   let canRun = true;
   let releaseAll = false;
   const releases = new Map<string, () => void>();
@@ -177,7 +177,7 @@ it("stops starting checks and awaits every admitted check during shutdown", asyn
 
 it("keeps failures isolated and retries their deadline without repeating successful checks", async () => {
   vi.useFakeTimers();
-  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
   const onError = vi.fn();
   coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError });
   const entries = [entry("1", "shared"), entry("2", "shared"), entry("3")];
@@ -199,4 +199,99 @@ it("keeps failures isolated and retries their deadline without repeating success
   expect(check.mock.calls.map(([entry]) => entry.id)).toEqual(["1", "3", "2", "1"]);
   expect(load).toHaveBeenCalledOnce();
   expect(coordinator.nextWakeAt()).toBeNull();
+});
+
+
+it("joins one beforePass across keyed parallel checks while retaining per-task order", async () => {
+  vi.useFakeTimers();
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
+  const onError = vi.fn(), beforePass = vi.fn(async () => {});
+  const started: string[] = [], completed = new Set<string>(), releases = new Map<string, () => void>();
+  let releaseAll = false;
+  const entries = [entry("first", "shared"), entry("second", "shared"), entry("independent", "other")];
+  const load = vi.fn(async () => entries.filter(row => !completed.has(row.id)));
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError });
+  const worker = registerScopedDeadlineWork(coordinator, {
+    queue: DELIVERY_QUEUES.nativeResponsePresentation, minimumPassIntervalMs: 0,
+    concurrentChecks: { limit: 2, key: (row: Entry) => `${row.companyId}:${row.issueId}` },
+    reconstructionIntervalMs: 30_000, beforePass,
+    decodeScope: hint => hint === "*" ? undefined : hint,
+    matches: (row, companyId?: string) => companyId === undefined || row.companyId === companyId,
+    load,
+    check: async row => {
+      started.push(row.id);
+      if (!releaseAll) await new Promise<void>(resolve => releases.set(row.id, resolve));
+      completed.add(row.id);
+      return null;
+    },
+  }, () => true);
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    expect(started).toEqual(["first", "independent"]);
+    expect(beforePass).toHaveBeenCalledOnce();
+    worker.invalidate("company");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(beforePass).toHaveBeenCalledOnce();
+    releases.get("independent")!();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(started).not.toContain("second");
+    releases.get("first")!();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(started).toEqual(["first", "independent", "second"]);
+    expect(beforePass).toHaveBeenCalledOnce();
+  } finally {
+    releaseAll = true; for (const release of releases.values()) release(); await worker.ready;
+  }
+  await vi.advanceTimersByTimeAsync(1);
+  expect(beforePass).toHaveBeenCalledTimes(2);
+  expect(load).toHaveBeenCalledTimes(2);
+  expect(coordinator.nextWakeAt()).toBeNull();
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(load).toHaveBeenCalledTimes(2); expect(beforePass).toHaveBeenCalledTimes(2);
+  expect(onError).not.toHaveBeenCalled();
+});
+
+it("keeps an exact deadline and late reconstruction debt with concurrency enabled across drain", async () => {
+  vi.useFakeTimers();
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
+  const onError = vi.fn(), beforePass = vi.fn(async () => {});
+  let canRun = true, completed = false, entered!: () => void, release!: () => void;
+  const loading = new Promise<void>(resolve => { entered = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const now = Date.now(), dueAt = now + 5_000;
+  const candidate = { ...entry("saved", "task"), dueAt };
+  const load = vi.fn(async () => { if (load.mock.calls.length === 2) { entered(); await held; } return completed ? [] : [candidate]; });
+  const check = vi.fn(async () => { completed = true; return null; });
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => canRun, onError });
+  const worker = registerScopedDeadlineWork(coordinator, {
+    queue: DELIVERY_QUEUES.nativeResponsePresentation, minimumPassIntervalMs: 0,
+    concurrentChecks: { limit: 2, key: (row: Entry) => row.issueId },
+    reconstructionIntervalMs: 30_000, beforePass,
+    decodeScope: hint => hint === "*" ? undefined : hint,
+    matches: (row, companyId?: string) => companyId === undefined || row.companyId === companyId,
+    load, check,
+  }, () => canRun);
+  await worker.ready;
+  worker.invalidate("company");
+  try {
+    await vi.advanceTimersByTimeAsync(1); await loading;
+    worker.invalidate("company");
+  } finally { release(); }
+  await vi.advanceTimersByTimeAsync(0);
+  expect(load).toHaveBeenCalledTimes(2);
+  expect(coordinator.nextWakeAt()).toBe(dueAt);
+  await vi.advanceTimersByTimeAsync(4_999);
+  expect(check).toHaveBeenCalledOnce(); expect(load).toHaveBeenCalledTimes(2);
+  expect(coordinator.nextWakeAt()).toBe(now + 30_001);
+  canRun = false; worker.wake();
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(load).toHaveBeenCalledTimes(2); expect(check).toHaveBeenCalledOnce();
+  canRun = true; worker.wake();
+  await vi.advanceTimersByTimeAsync(5_001);
+  expect(load).toHaveBeenCalledTimes(3); expect(check).toHaveBeenCalledOnce();
+  expect(beforePass).toHaveBeenCalledTimes(4);
+  expect(coordinator.nextWakeAt()).toBeNull();
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(load).toHaveBeenCalledTimes(3); expect(check).toHaveBeenCalledOnce();
+  expect(onError).not.toHaveBeenCalled();
 });
