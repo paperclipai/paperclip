@@ -9551,18 +9551,35 @@ export function issueService(db: Db) {
       };
     },
 
-    createChild: async (parentIssueId: string, data: IssueChildCreateInput) => {
-      const parent = await db
-        .select()
+    createChild: async (
+      parentIssueId: string,
+      data: IssueChildCreateInput,
+    ) => db.transaction(async (tx) => {
+      // Child creation and an optional parent-blocker relation are one
+      // serialized operation. Recovery locks the same parent row before it
+      // decides that no blocker exists, so it cannot cancel between creation
+      // of a blocking child and insertion of its relation.
+      // Lock order matches `update`: the company privacy-tree lock first, then
+      // the parent row. `create` below takes the same company lock again.
+      const parentCompany = await tx
+        .select({ companyId: issues.companyId })
         .from(issues)
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
+      if (!parentCompany) throw notFound("Parent issue not found");
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${parentCompany.companyId}`}, 0))`);
+      const parent = await tx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, parentIssueId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
       if (!parent) throw notFound("Parent issue not found");
-      await assertExecutionTaskParent(db, parent.companyId, parent.id);
+      await assertExecutionTaskParent(tx as unknown as Db, parent.companyId, parent.id);
 
       const idempotencyKey = data.idempotencyKey?.trim();
       if (idempotencyKey) {
-        const existingChild = await db
+        const existingChild = await tx
           .select({ issue: issues })
           .from(issueCreateIdempotencyKeys)
           .innerJoin(issues, eq(issueCreateIdempotencyKeys.issueId, issues.id))
@@ -9583,11 +9600,11 @@ export function issueService(db: Db) {
           await data.assertCanReuseIssue?.(existingChild);
           assertQualityReviewPolicyReuse(data.executionPolicy, existingChild.executionPolicy);
           data.onDeduplicated?.("idempotency_key");
-          const [enriched] = await withIssueLabels(db, [existingChild]);
+          const [enriched] = await withIssueLabels(tx, [existingChild]);
           const [withRelations] = await withIssueRelationSummaries(
             parent.companyId,
             [enriched],
-            db,
+            tx,
           );
           return {
             issue: withRelations,
@@ -9596,7 +9613,11 @@ export function issueService(db: Db) {
         }
       }
 
-      const [{ childCount }] = await db
+      if (data.blockParentUntilDone && (parent.status === "done" || parent.status === "cancelled")) {
+        throw conflict("Cannot add a blocking child to a terminal parent issue");
+      }
+
+      const [{ childCount }] = await tx
         .select({ childCount: sql<number>`count(*)::int` })
         .from(issues)
         .where(
@@ -9639,7 +9660,7 @@ export function issueService(db: Db) {
               parent.executionWorkspaceSettings,
             )
           : null;
-      let child = await issueService(db).create(parent.companyId, {
+      let child = await issueService(tx as unknown as Db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
         projectId: childProjectId,
@@ -9675,7 +9696,7 @@ export function issueService(db: Db) {
       });
 
       if (blockParentUntilDone) {
-        const existingBlockers = await db
+        const existingBlockers = await tx
           .select({ blockerIssueId: issueRelations.issueId })
           .from(issueRelations)
           .where(
@@ -9695,19 +9716,16 @@ export function issueService(db: Db) {
             ]),
           ],
           { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+          tx,
         );
-        [child] = await withIssueRelationSummaries(
-          parent.companyId,
-          [child],
-          db,
-        );
+        [child] = await withIssueRelationSummaries(parent.companyId, [child], tx);
       }
 
       return {
         issue: child,
         parentBlockerAdded: Boolean(blockParentUntilDone),
       };
-    },
+    }),
 
     decomposeAcceptedPlan: async (
       sourceIssueId: string,
