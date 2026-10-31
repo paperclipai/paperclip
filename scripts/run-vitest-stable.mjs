@@ -92,6 +92,7 @@ const nativeRunnerSuites = [
   "server/src/__tests__/dot-runner.test.ts",
   // These process cases otherwise skip in server shards without Runner binaries.
   "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts",
+  "server/src/services/native-runtime/native-usage-delivery.integration.test.ts",
 ];
 // In the PR workflow (pr.yml, the caller of pr-trusted.yml — reusable
 // workflows inherit the caller's GITHUB_WORKFLOW), the last Verify Paperclip
@@ -399,6 +400,10 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
     PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
     TMPDIR: path.join(testRoot, "t"),
   };
+  // The wrapper has already validated and consumed this shard's manifest.
+  // Tests may launch independent runner fixtures with a different root/inventory.
+  delete env.PAPERCLIP_CI_TEST_SELECTION;
+  delete env.PAPERCLIP_CI_SELECTION_HASH;
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
   if (testShard) {
@@ -452,9 +457,13 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
   });
 }
 
-async function runGeneralSuites(routeTests) {
+async function runGeneralSuites(routeTests, chatShards) {
+  for (const shard of chatShards ?? []) {
+    await runVitest(["--project", "@paperclipai/server", ...serializedServerVitestArgs, chatSuite],
+      "chat integration test shard", shard);
+  }
   for (const groupName of generalGroupNames) {
-    await runGeneralGroup(routeTests, groupName);
+    await runGeneralGroup(routeTests, groupName, null, null, chatShards ? [chatSuite] : []);
   }
 }
 
@@ -479,7 +488,7 @@ function chatShardWorkers(index, count) {
   }));
 }
 
-async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = null) {
+async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = null, additionalExcludedSuites = []) {
   if (groupName === generalChatGroupName) {
     // Each invocation gets its own temporary home and embedded PostgreSQL.
     // Wait for both children even on failure so no sibling is abandoned.
@@ -499,7 +508,7 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
     return;
   }
   if (generalServerGroups.includes(groupName)) {
-    const excludedSuites = excludedServerSuites(groupName);
+    const excludedSuites = [...excludedServerSuites(groupName), ...additionalExcludedSuites];
     const files = generalServerTestFiles.filter((file) => !excludedSuites.includes(file));
     if (shardCount !== null && shardCount > 1) {
       const shardFiles = selectGeneralServerShard(
@@ -636,6 +645,9 @@ if (selection && options.dryRun) {
   writeFileSync(1, JSON.stringify({ selection }));
   process.exit(0);
 }
+const defaultChatShards = !selection && options.group === null && options.mode !== serializedModeName && !process.env.PAPERCLIP_TEST_DATABASE_URL
+  ? Array.from({ length: 6 }, (_, index) => ({ index, count: 6 }))
+  : null;
 if (options.dryRun) {
   const serializedSuites =
     options.mode === serializedModeName
@@ -654,7 +666,9 @@ if (options.dryRun) {
         selectedSerializedSuites: serializedSuites.map((routeTest) => routeTest.repoPath),
         generalServerSuiteCount: generalServerTestFiles.length,
         selectedGeneralServerSuites:
-          options.mode === generalModeName && options.group === generalServerNativeRunnerGroupName
+          defaultChatShards
+            ? generalServerTestFiles.filter(file => file !== chatSuite)
+            : options.mode === generalModeName && options.group === generalServerNativeRunnerGroupName
             ? nativeRunnerSuites
             : options.mode === generalModeName &&
                 generalServerGroups.includes(options.group) &&
@@ -667,7 +681,7 @@ if (options.dryRun) {
                 )
               : null,
         chatVitestShards: options.group === generalChatGroupName
-          ? chatShardWorkers(options.shardIndex, options.shardCount) : null,
+          ? chatShardWorkers(options.shardIndex, options.shardCount) : defaultChatShards,
         workspaceProjects:
           options.group === generalWorkspacesAGroupName
             ? generalWorkspacesAProjects
@@ -704,7 +718,7 @@ try {
     if (options.group) {
       await runGeneralGroup(routeTests, options.group, options.shardIndex, options.shardCount);
     } else {
-      await runGeneralSuites(routeTests);
+      await runGeneralSuites(routeTests, defaultChatShards);
     }
   }
 

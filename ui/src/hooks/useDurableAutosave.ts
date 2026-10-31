@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useId, useRef, useState } from "react";
+import { QueryClientContext } from "@tanstack/react-query";
+import { bindAccount } from "@/lib/account-scope";
 import { classifyError, describeError, type ErrorDescription } from "@/api/errors";
 import { loadStructuredDraft, saveStructuredDraft } from "@/lib/composer-draft";
 import { useConnectivityStore } from "@/lib/connectivity";
@@ -108,6 +110,7 @@ const SAVED_LINGER_MS = 1600;
  * - Errors become readable copy for "Couldn't save (reason)".
  */
 export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): DurableAutosave<T> {
+  const client = useContext(QueryClientContext);
   const owner = useDraftOwner();
   const readOwner = useDraftOwnerReader();
   const instanceId = useId();
@@ -120,7 +123,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
   const targetKey = options.targetKey ?? options.sourceId;
   const targetRef = useRef(targetKey);
   targetRef.current = targetKey;
-  type Job = { token: symbol; registryKey: string; resends: number; saving?: boolean; id: number; target: string; owner: string | undefined; draft: T;
+  type Job = { token: symbol; registryKey: string; resends: number; saving?: boolean; id: number; target: string; owner: string | undefined; account: ReturnType<typeof bindAccount> | null; draft: T;
     save: (draft: T) => Promise<unknown>; matchesServer?: DurableAutosaveOptions<T>["matchesServer"];
     onRetryFailed?: DurableAutosaveJob<T>["onRetryFailed"]; storageKey: string | null; action: string };
   const jobs = useRef(new Map<string, Job>());
@@ -142,6 +145,22 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     entry?.active.delete(job.token);
     if (entry && !entry.active.size) registry.delete(job.registryKey);
   };
+  // Resolve first identity from the same generation guard used by mutations.
+  // This also runs after unmount, when React cannot migrate the job for us.
+  function owned(job: Job) {
+    if (job.account && !job.account.isCurrentScope()) return false;
+    const current = readOwner();
+    if (job.owner === undefined && current !== undefined) {
+      const nextKey = JSON.stringify([current, job.target]);
+      if (registry.get(job.registryKey)?.latest !== job.token || registry.has(nextKey)) return false;
+      releaseJob(job);
+      job.owner = current;
+      job.registryKey = nextKey;
+      registry.set(nextKey, { latest: job.token, active: new Set([job.token]) });
+    }
+    return current === job.owner && generations.current.get(job.target) === job.id
+      && registry.get(job.registryKey)?.latest === job.token;
+  }
   const mounted = useRef(true);
   const savingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -160,17 +179,11 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     if (previous === undefined && owner !== undefined) {
       for (const job of jobs.current.values()) {
         if (job.owner !== undefined) continue;
-        const nextKey = JSON.stringify([owner, job.target]);
-        const superseded = registry.get(job.registryKey)?.latest !== job.token || registry.has(nextKey);
-        releaseJob(job);
-        if (superseded) {
+        if (!owned(job)) {
+          releaseJob(job);
           jobs.current.delete(job.target);
           if (generations.current.get(job.target) === job.id) generations.current.delete(job.target);
-          continue;
         }
-        job.owner = owner;
-        job.registryKey = nextKey;
-        registry.set(nextKey, { latest: job.token, active: new Set([job.token]) });
       }
       refresh(value => value + 1);
       return;
@@ -194,12 +207,12 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     return stored?.version === 1 && stored.draft !== undefined ? stored.draft : null;
   }, [storageKey]);
   const execute = useCallback(async (job: Job, retry = false): Promise<DurableAutosaveResult> => {
-    const owned = () => readOwner() === job.owner && generations.current.get(job.target) === job.id && registry.get(job.registryKey)?.latest === job.token;
-    const visible = () => mounted.current && owned() && targetRef.current === job.target;
+    const stillOwned = () => owned(job);
+    const visible = () => mounted.current && stillOwned() && targetRef.current === job.target;
     const publish = (status: DurableAutosaveStatus, error: ErrorDescription | null = null) => {
       if (visible()) setView({ target: job.target, status, error });
     };
-    if (!owned()) {
+    if (!stillOwned()) {
       if (jobs.current.get(job.target) === job) jobs.current.delete(job.target);
       releaseJob(job);
       if (mounted.current) refresh(value => value + 1);
@@ -234,7 +247,20 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
       remove();
       return { kind: "saved" };
     };
-    try { await job.save(job.draft); return done(); }
+    try {
+      if (!mounted.current && job.account && !job.account.isCurrentAccount()) {
+        try { await job.account.whenAccountReady(); }
+        catch {
+          // Session discovery has not attempted the write. Keep its draft within
+          // the existing retry budget unless an account transition invalidated it.
+          if (!stillOwned()) remove();
+          return { kind: "waiting" };
+        }
+      }
+      if (!stillOwned()) { remove(); return { kind: "waiting" }; }
+      await job.save(job.draft);
+      return done();
+    }
     catch (initialCause) {
       let cause = initialCause;
       if (classifyError(cause) === "conflict" && job.matchesServer) {
@@ -255,7 +281,10 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     const current = optionsRef.current;
     const target = current.targetKey ?? current.sourceId;
     const admittedOwner = ownerRef.current ?? readOwner();
-    const job: Job = { token: Symbol(), registryKey: JSON.stringify([admittedOwner, target]), resends: 0, id: ++sequence.current, target, owner: admittedOwner, draft,
+    // A newer known-account edit supersedes an older startup job even if this
+    // save finishes before that job can adopt the account's registry key.
+    if (admittedOwner !== undefined) registry.delete(JSON.stringify([undefined, target]));
+    const job: Job = { token: Symbol(), registryKey: JSON.stringify([admittedOwner, target]), resends: 0, id: ++sequence.current, target, owner: admittedOwner, account: client ? bindAccount(client) : null, draft,
       save: overrides.save ?? current.save, matchesServer: overrides.matchesServer ?? current.matchesServer,
       onRetryFailed: overrides.onRetryFailed, storageKey: current.storageKey ?? null, action: current.action ?? "save" };
     const previous = jobs.current.get(target);
@@ -266,7 +295,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     generations.current.set(target, job.id); jobs.current.set(target, job);
     refresh(value => value + 1);
     return execute(job);
-  }, [execute, readOwner]);
+  }, [client, execute, readOwner]);
   const waitingJobs = [...jobs.current.values()].filter(job => !job.saving).length;
   const auto = useAutoResend({ sourceId: options.sourceId, active: waitingJobs > 0, pendingCount: waitingJobs,
     resend: async (): Promise<SendOutcome> => {
@@ -281,7 +310,6 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
   detachedWork.current = () => {
     if (!jobs.current.size) return;
     if (auto.stalled) { for (const job of jobs.current.values()) releaseJob(job); jobs.current.clear(); return; }
-    const admittedOwner = ownerRef.current;
     const source = `${optionsRef.current.sourceId}:detached:${instanceId}`;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let disposed = false, running = false;
@@ -298,7 +326,11 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     };
     const wake = async () => {
       if (disposed || running) return;
-      if (mounted.current || readOwner() !== admittedOwner || admittedOwner === undefined) { release(); return; }
+      if (mounted.current) { release(); return; }
+      for (const job of jobs.current.values()) if (!owned(job)) {
+        releaseJob(job);
+        jobs.current.delete(job.target);
+      }
       if (!jobs.current.size) { release(); return; }
       store.setPendingWrites(source, jobs.current.size);
       if (store.getSnapshot().status !== "online") return;

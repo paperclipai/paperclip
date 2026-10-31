@@ -41,7 +41,6 @@ function nativeQuestion() {
             description: "Deploy directly to production.",
           },
         ],
-        custom: true,
       },
       {
         id: "regions",

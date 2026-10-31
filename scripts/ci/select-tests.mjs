@@ -13,8 +13,11 @@ export function selectionEligibility(plan) {
   const changed = productInputs(plan.changed);
   if (!changed.length) return "Documentation-only diff";
   for (const file of changed) {
+    // Business modules can contain "config"/"setup" in their names. The graph
+    // separately tracks actual setup and configuration dependencies.
     if (!/^(?:ui\/src|server\/src|cli\/src|packages\/.+\/src)\/.+\.[cm]?[jt]sx?$/.test(file)
-      || /(?:config|setup)|\.d\.[cm]?ts$/i.test(file) || file.split("/").includes("..")) return `Broad input: ${file}`;
+      || /(?:^|\/)(?:vite|vitest)\.(?:config|setup)\.[cm]?[jt]sx?$|\.d\.[cm]?ts$/i.test(file)
+      || file.split("/").includes("..")) return `Broad input: ${file}`;
     try {
       if (!lstatSync(file).isFile()) return `Non-regular source: ${file}`;
     } catch { return `Deleted or missing source: ${file}`; }
@@ -56,7 +59,7 @@ export async function createTestSelection(plan, head) {
   const graphs = [];
   const changed = productInputs(plan.changed);
   for (const project of projects) {
-    const graph = await selectProjectTests({ project, changed, onlyOwnChanges: true });
+    const graph = await selectProjectTests({ project, changed });
     graphs.push(graph);
     console.log(`${project}: ${graph.selected.length}/${graph.inventory.length} files, ${graph.alwaysRun.length} retained conservatively, ${graph.seconds.toFixed(1)}s`);
     for (const owner of Object.values(owners)) if (owner[project] === null) owner[project] = graph.inventory;

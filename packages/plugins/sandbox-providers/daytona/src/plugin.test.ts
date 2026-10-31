@@ -51,6 +51,16 @@ describe("Daytona read-only resource inspection", () => {
     for (const method of [sandbox.start, sandbox.stop, sandbox.delete, sandbox.archive, sandbox.refreshData]) expect(method).not.toHaveBeenCalled();
     expect(mockCreate).not.toHaveBeenCalled();
   });
+  it.each(["active", "destroyed"])("inspects a normal lease with creation provenance by recorded ID: %s", async state => {
+    const provenance = { creationOperationId: "16cd534e-27a1-45de-a4ad-5adbb6481361" };
+    if (state === "active") mockGet.mockResolvedValue(createMockSandbox());
+    else mockGet.mockRejectedValue(new MockDaytonaNotFoundError("gone"));
+    expect(await plugin.definition.onEnvironmentInspectLease!({ ...params, leaseMetadata: provenance }))
+      .toEqual({ providerLeaseId: "sandbox-123", state });
+    expect(mockGet).toHaveBeenCalledExactlyOnceWith("sandbox-123");
+    expect(mockCreate).not.toHaveBeenCalled();
+    if (state === "destroyed") expect(await plugin.definition.onIdleDrain!(new AbortController().signal)).toBe("none");
+  });
   it("accepts only typed provider not-found as deletion proof", async () => {
     __resetDaytonaSandboxHandleCacheForTest();
     mockGet.mockRejectedValue(new MockDaytonaNotFoundError("not found"));
@@ -77,6 +87,46 @@ describe("Daytona read-only resource inspection", () => {
     expect((await plugin.definition.onEnvironmentInspectLease!(params)).state).toBe("unknown");
     expect((await plugin.definition.onEnvironmentInspectLease!(params)).state).toBe("destroyed");
     expect(mockGet).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Daytona durable creation identity", () => {
+  const id = "16cd534e-27a1-45de-a4ad-5adbb6481361";
+  const runId = "8cbd0194-e322-4b5b-9800-df4d5a682479";
+  const params = { driverKey: "daytona", companyId: "fixture-company", environmentId: "fixture-environment",
+    providerLeaseId: id, config: { apiKey: "fixture-not-a-key" },
+    creationOperation: { id, runId } };
+  beforeEach(() => { mockCreate.mockReset(); mockGet.mockReset(); __resetDaytonaSandboxHandleCacheForTest(); });
+  afterEach(() => { vi.unstubAllEnvs(); __resetDaytonaSandboxHandleCacheForTest(); });
+  function resource() { return { ...createMockSandbox({ name: `paperclip-create-${id}` }), labels: {
+    "paperclip-provider": "daytona", "paperclip-create-attempt": id,
+    "paperclip-company-id": params.companyId, "paperclip-environment-id": params.environmentId,
+    "paperclip-run-id": runId,
+  } }; }
+  it("locates the exact resource by stable name without creation or lifecycle calls", async () => {
+    const sandbox = resource(); mockGet.mockResolvedValue(sandbox);
+    const observed = await plugin.definition.onEnvironmentInspectLease!(params);
+    expect(mockGet).toHaveBeenCalledWith(`paperclip-create-${id}`);
+    expect(observed).toMatchObject({ providerLeaseId: `paperclip-create-${id}`, state: "active",
+      creationCleanup: { observedProviderLeaseId: sandbox.id, attemptId: id, runId } });
+    expect(mockCreate).not.toHaveBeenCalled(); expect(sandbox.delete).not.toHaveBeenCalled();
+    await plugin.definition.onEnvironmentDestroyLease!({ ...params, providerLeaseId: observed.providerLeaseId,
+      leaseMetadata: { failedCreateCleanup: observed.creationCleanup } });
+    expect(sandbox.delete).toHaveBeenCalledOnce();
+  });
+  it("retains uncertainty when a creation name is absent", async () => {
+    mockGet.mockRejectedValue(new MockDaytonaNotFoundError("not yet visible"));
+    expect(await plugin.definition.onEnvironmentInspectLease!(params)).toEqual({ providerLeaseId: `paperclip-create-${id}`, state: "unknown" });
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+  it("rejects a name or label owned by another creation", async () => {
+    mockGet.mockResolvedValue({ ...resource(), labels: { "paperclip-company-id": "foreign" } });
+    await expect(plugin.definition.onEnvironmentInspectLease!(params)).rejects.toThrow("ownership does not match");
+  });
+  it("requires the recorded endpoint when ambient configuration changes", async () => {
+    vi.stubEnv("DAYTONA_API_URL", "https://changed.example.test");
+    expect((await plugin.definition.onEnvironmentInspectLease!(params)).state).toBe("unknown");
+    expect(mockGet).not.toHaveBeenCalled();
   });
 });
 
@@ -537,7 +587,7 @@ describe("Daytona sandbox provider plugin", () => {
     // The bundled-plugin boot reconcile refreshes the stored manifest for an
     // existing install only when the version changes. The acquisition budget needs
     // the bump to reach an existing install.
-    expect(manifest.version).toBe("0.1.9");
+    expect(manifest.version).toBe("0.1.10");
   });
 
   it.each([false, true])("closes duplex routes on lease release even when bridge drain hangs: %s", async (hangDrain) => {

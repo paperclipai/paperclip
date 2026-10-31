@@ -1,3 +1,4 @@
+import type { ScrollingHistory } from "@/components/task-chat/TaskMessageScroller";
 import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
 import { useRunnerSubmission } from "@/hooks/useRunnerSubmission";
 import {
@@ -9,9 +10,10 @@ import {
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { workspaceRestoreMarkerDetail } from "@/lib/workspace-restore-marker";
 import { credentialAccessNotice } from "@/lib/credential-access-notice";
-import type { ActivityEvent, IssueQueuedCommentQueue, TaskBrowser } from "@paperclipai/shared";
+import type { ActivityEvent, Issue, IssueQueuedCommentQueue, TaskBrowser } from "@paperclipai/shared";
 import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
 import { skillCreatedItems } from "@/components/task-chat/skill-created-items";
+import { taskCreatedItems } from "@/components/task-chat/task-created-items";
 import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { CoordinatorChatHandoffStatus, CoordinatorChatTaskHandoff, standaloneChatHandoffs, useCoordinatorChatTaskHandoffs, useLiveChatHandoffIds } from "@/components/coordinator/CoordinatorChatTaskHandoffs";
 import { CoordinatorChatReceiptStatus, useCoordinatorChatDecisionReceipts } from "@/components/coordinator/CoordinatorChatDecisionReceipts";
@@ -428,7 +430,9 @@ function resolvedWithoutUserFacingResponse(value: unknown): boolean {
 export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread> & {
   conversationMode?: boolean;
   creationActivity?: ActivityEvent[];
+  createdTasks?: Issue[];
   compactHistory?: boolean;
+  scrollingHistory?: ScrollingHistory;
   historyControl?: ReactNode;
   onExpandHistory?: () => void;
   initialHistoryPending?: boolean;
@@ -619,9 +623,29 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const decisionReceipts = useCoordinatorChatDecisionReceipts(issueId, conversationMode);
   const pendingQuestions = useCoordinatorChatPendingQuestions(issueId, conversationMode);
   const taskHandoffs = useCoordinatorChatTaskHandoffs(issueId, conversationMode === true);
+  const scrollingHistory: ScrollingHistory | undefined = props.scrollingHistory ? {
+    hasMore: props.scrollingHistory.hasMore || !!decisionReceipts.hasNextPage || !!taskHandoffs.hasNextPage,
+    loading: props.scrollingHistory.loading || decisionReceipts.isFetchingNextPage || taskHandoffs.isFetchingNextPage,
+    error: props.scrollingHistory.error,
+    load: () => Promise.all([
+      props.scrollingHistory?.hasMore ? props.scrollingHistory.load() : undefined,
+      !decisionReceipts.isError && decisionReceipts.hasNextPage ? decisionReceipts.fetchNextPage() : undefined,
+      !taskHandoffs.isError && taskHandoffs.hasNextPage ? taskHandoffs.fetchNextPage() : undefined,
+    ]),
+  } : undefined;
+  const conversationWindowStart = props.scrollingHistory?.hasMore && comments.length
+    ? Math.min(...comments.map(comment => toMs(comment.createdAt))) : -Infinity;
   const liveHandoffIds = useLiveChatHandoffIds(`${currentUserId}:${issueId}`, taskHandoffs.handoffs, taskHandoffs.isSuccess);
   const createdProjectItems = useProjectCreatedItems(props.creationActivity ?? [], companyId);
   const createdSkillItems = useMemo(() => skillCreatedItems(props.creationActivity ?? []), [props.creationActivity]);
+  const createdTaskItems = useMemo(() => {
+    const representedTaskIds = new Set(taskHandoffs.handoffs.map((handoff) => handoff.issueId));
+    for (const interaction of interactions ?? []) {
+      if (interaction.kind !== "suggest_tasks" || interaction.status !== "accepted" || isSuppressedThreadInteraction(interaction)) continue;
+      for (const task of interaction.result?.createdTasks ?? []) representedTaskIds.add(task.issueId);
+    }
+    return taskCreatedItems(props.createdTasks ?? [], issueId, companyId, representedTaskIds);
+  }, [props.createdTasks, issueId, companyId, taskHandoffs.handoffs, interactions]);
   const [pendingComposerAssignee, setPendingComposerAssignee] = useState<
     string | null
   >(null);
@@ -1406,6 +1430,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     for (const item of createdSkillItems) {
       entries.push({ id: item.id, item, ms: toMs(item.timestamp), order: 2 });
     }
+    for (const item of createdTaskItems) {
+      entries.push({ id: item.id, item, ms: toMs(item.timestamp), order: 3 });
+    }
     // Older sessions arrive with their surrounding messages when history is
     // paged in; otherwise they would collect above the loaded conversation.
     const historyStart = hasOlderComments
@@ -1433,6 +1460,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   }, [
     createdProjectItems,
     createdSkillItems,
+    createdTaskItems,
     browsers,
     hasOlderComments,
     comments,
@@ -1545,10 +1573,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       entriesWithFailures.push({ id, ms: toMs(question.createdAt), order: 4, item: { id, kind: "pending_question", question } });
     }
     for (const receipt of decisionReceipts.receipts) {
+      if (toMs(receipt.resolvedAt) < conversationWindowStart) continue;
       entriesWithFailures.push({ id: `decision-receipt:${receipt.id}`, ms: toMs(receipt.resolvedAt), order: 4,
         item: { id: `decision-receipt:${receipt.id}`, kind: "decision_receipt", receipt } });
     }
     for (const handoff of standaloneChatHandoffs(taskHandoffs.handoffs, interactions ?? [])) {
+      if (toMs(handoff.createdAt) < conversationWindowStart) continue;
       entriesWithFailures.push({ id: handoff.id, ms: toMs(handoff.createdAt), order: 4,
         item: { id: handoff.id, kind: "task_handoff", handoff, animateEntry: liveHandoffIds.has(handoff.id) } });
     }
@@ -2237,6 +2267,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   }, [
     orderedEntries,
     coordinatorEnabled,
+    conversationWindowStart,
     decisionReceipts.receipts,
     pendingQuestions.questions,
     taskHandoffs.handoffs,
@@ -3045,7 +3076,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // latest viewport substantially. Compact opens hydrate only their bounded
   // recent window, but its saved cards and latest turn must arrive together so
   // the first readable frame already has its final structure.
-  const historyPending = initialHistoryPending || planLoading || transcriptHistoryPending;
+  const chatMetadataPending = Boolean(issueId && conversationMode && (
+    (pendingQuestions.enabled && pendingQuestions.isPending) ||
+    (decisionReceipts.enabled && decisionReceipts.isPending) ||
+    (taskHandoffs.enabled && taskHandoffs.isPending)
+  ));
+  const historyPending = initialHistoryPending || planLoading || transcriptHistoryPending || chatMetadataPending;
   const scrollNavigation = useTaskChatScrollNavigation();
   useEffect(() => {
     recordIssueDetailReadiness({ plan: !planLoading, transcripts: !transcriptHistoryPending, history: !historyPending });
@@ -3110,7 +3146,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   return (
     <TaskChatRequestHistoryContext.Provider value={issueId ?? "unknown"}>
     <TaskChatExpansionState.Provider value={expansionState.current}>
-      <TaskChatScrollReady.Provider value={!historyPending || historyWaitExpired}>
+      <TaskChatScrollReady.Provider value={historyRevealed || !historyPending || historyWaitExpired}>
         <TaskChatPresentationProvider
           mode={streamlinedUiEnabled ? "streamlined" : "production"}
         >
@@ -3166,7 +3202,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               >
                 {prepareInitialContent ? (
                   <>
-                    {items.length === 0 && !tailRunId && !optimisticRunnerStartup ? (
+                    {items.length === 0 && !tailRunId && !optimisticRunnerStartup && !scrollingHistory?.hasMore ? (
                       <div
                         className="min-h-0 flex-1 overflow-y-auto"
                       >
@@ -3180,8 +3216,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                             data-testid="task-chat-thread-header"
                           >
                             {threadHeaderWithBlockers}
-                            <CoordinatorChatQuestionStatus query={pendingQuestions} /><CoordinatorChatReceiptStatus query={decisionReceipts} />
-                            <CoordinatorChatHandoffStatus query={taskHandoffs} />
+                            <CoordinatorChatQuestionStatus query={pendingQuestions} /><CoordinatorChatReceiptStatus query={decisionReceipts} scroll={!!scrollingHistory} />
+                            <CoordinatorChatHandoffStatus query={taskHandoffs} scroll={!!scrollingHistory} />
                           </div>
                         ) : null}
                         <div className="px-3 py-10 text-center text-sm text-muted-foreground">
@@ -3201,8 +3237,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                     ) : (
                       <TaskChatThreadView
                         items={threadItems}
+                        scrollingHistory={scrollingHistory}
                         attachments={attachments}
-                        header={<>{threadHeaderWithBlockers}{!issueBrief ? historyControl : null}<CoordinatorChatQuestionStatus query={pendingQuestions} /><CoordinatorChatReceiptStatus query={decisionReceipts} /><CoordinatorChatHandoffStatus query={taskHandoffs} /></>}
+                        header={<>{threadHeaderWithBlockers}{!issueBrief ? historyControl : null}<CoordinatorChatQuestionStatus query={pendingQuestions} /><CoordinatorChatReceiptStatus query={decisionReceipts} scroll={!!scrollingHistory} /><CoordinatorChatHandoffStatus query={taskHandoffs} scroll={!!scrollingHistory} /></>}
                         renderInteraction={renderInteraction}
                         renderBrief={renderBrief}
                         renderMessageActions={renderMessageActions}

@@ -641,6 +641,7 @@ export interface PluginEnvironmentRunnerIngressEndpointParams
 
 export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
   runId: string;
+  creationOperationId?: string;
   /** Explicit platform probes may request a provider-owned immutable snapshot
    * identity. Supporting providers create by that ID and return snapshotIdentity
    * in lease metadata. Older providers may omit it; the host then cannot qualify
@@ -701,11 +702,13 @@ export interface PluginEnvironmentDestroyLeaseParams extends PluginEnvironmentRe
 /** Observe this exact allocation without starting, stopping or deleting it.
  * Missing resources must be distinguished from permission/transport failures. */
 export interface PluginEnvironmentInspectLeaseParams extends PluginEnvironmentDriverBaseParams {
+  creationOperation?: { id: string; runId: string };
   providerLeaseId: string;
   leaseMetadata?: Record<string, unknown>;
 }
 
 export interface PluginEnvironmentLeaseObservation {
+  creationCleanup?: import("./environment-creation-cleanup.js").PluginEnvironmentCreationCleanup;
   providerLeaseId: string;
   state: "active" | "stopped" | "destroyed" | "unknown";
 }

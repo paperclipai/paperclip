@@ -38,6 +38,8 @@ import {
   slackSearchConfigSchema,
   // Agent
   submitAgentCommentarySchema,
+  sendChatMessageSchema,
+  markIssueReadSchema,
   agentCommentaryQuerySchema,
   AGENT_PALETTE_IDS,
   AGENT_AVATAR_SIZES,
@@ -1670,6 +1672,7 @@ function resolveOperationAuthLevel(
       || /^\/api\/companies\/\{companyId\}\/agents\/\{agentId\}\/grok-binding(?:\/(?:routine|verify|retry|stop|recover))?$/.test(path)) return "board";
   if (PUBLIC_OPERATIONS.has(key)) return "public";
   if (key === "POST /api/companies/{companyId}/agent-commentary") return "agent_heartbeat";
+  if (key === "POST /api/agents/me/chat/messages") return "agent_heartbeat";
   if (method.toUpperCase() === "GET" && path.startsWith("/api/companies/{companyId}/agent-commentary")) return "board";
   if (key === "POST /api/mcp/project-tools" || key === "POST /api/companies/{companyId}/slack/tasks/{issueId}/tools") return "agent_run";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
@@ -4599,7 +4602,7 @@ registry.registerPath({
   path: "/api/issues/{id}/recent-comments",
   tags: ["issues"],
   summary: "Read a bounded recent task exchange",
-  description: "Returns four recent comments, the latest human comment, and the first human instruction when the task has no description. Includes latestCommentId and hasMore. Uses the same authorization and redaction as full comment reads.",
+  description: "Returns four recent comments, the latest human comment, and the first human instruction when the task has no description. Agent chats instead return the latest 20 contiguous comments and oldestCommentId for backward cursor paging. Includes latestCommentId and hasMore. Uses the same authorization and redaction as full comment reads.",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
@@ -4736,7 +4739,7 @@ registry.registerPath({
   path: "/api/issues/{id}/read",
   tags: ["issues"],
   summary: "Mark an issue as read",
-  request: { params: z.object({ id: z.string() }) },
+  request: { params: z.object({ id: z.string() }), body: { ...jsonBody(markIssueReadSchema), required: false } },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -5760,6 +5763,15 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
+registry.registerPath({
+  method: "post", path: "/api/agents/me/chat/messages", tags: ["agents"],
+  summary: "Send a task message to the agent's own chat",
+  description: "Requires the assigned agent's active standard task run, standard credentials and an active responsible human. Resolves or creates that agent's conversation automatically. Company visibility, task permissions, Stop and the shared cross-issue run cap apply. Equivalent retries do not spend another slot. Does not wake the chat agent or change task status.",
+  request: { body: jsonBody(sendChatMessageSchema) },
+  responses: { 200: r.ok(), 201: { ...r.ok(), description: "Message saved" }, 400: r.badRequest,
+    401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 429: r.tooManyRequests },
+});
+
 const agentCommentaryAcknowledgementSchema = z.object({
   id: z.string().uuid(),
   kind: z.enum(["complaint", "suggestion"]),
@@ -6091,8 +6103,8 @@ registry.registerPath({
   path: "/api/issues/{id}/runs",
   tags: ["activity"],
   summary: "List runs for an issue",
-  request: { params: z.object({ id: z.string() }), query: z.object({ view: z.literal("recent").optional().describe("At most two recent run summaries.") }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: { params: z.object({ id: z.string() }), query: z.object({ view: z.literal("recent").optional().describe("At most two recent run summaries."), runIds: z.string().optional().describe("Comma-separated list of 1 to 100 run UUIDs. Returns only those runs linked to this accessible issue.") }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({

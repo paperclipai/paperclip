@@ -412,6 +412,15 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     expect(await exists(session.current)).toBe(false);
   });
 
+  it("retains incomplete native snapshot publications even after the issue closes", async () => {
+    const session = await seedSession({ finalization: { phase: "committed" } });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeControllerRecovery: {
+      schema: "paperclip.native-controller-recovery.v1", checkpoint: null,
+    } } }).where(eq(heartbeatRuns.id, session.runId));
+    expect(await service().tick()).toMatchObject({ expired: 0, skipped: { native_recovery_incomplete: 1 } });
+    expect(await exists(session.current)).toBe(true);
+  });
+
   it.each([
     ["committed", "resuming_session"],
     ["terminal_failure", "blocked"],
@@ -645,8 +654,13 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     const available = await seedArchive(healthy.root, { name: `${dueAt - 7 * DAY_MS - 1}-${randomUUID()}` });
     await startEvidence({ isSessionBusy: scope => scope === busy.scope }); await settled(dueAt);
     await vi.advanceTimersByTimeAsync(dueAt - Date.now());
-    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(100); expect(await exists(available)).toBe(false); });
-    expect(await exists(held)).toBe(true); expect(coordinator!.nextWakeAt()! - Date.now()).toBeGreaterThan(59 * 60_000);
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await exists(available)).toBe(false);
+      expect(idleWorkSnapshot().active).toBe(0);
+      expect(coordinator!.nextWakeAt()! - Date.now()).toBeGreaterThan(59 * 60_000);
+    });
+    expect(await exists(held)).toBe(true);
     await quiet(60_000);
   });
 

@@ -1,3 +1,5 @@
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { addCents, compareCents, normalizeCents } from "@paperclipai/shared";
@@ -163,6 +165,19 @@ async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: s
   };
 }
 
+async function resolveSummaryScopeRecord(db: Db, companyId: string, scopeType: BudgetScopeType, scopeId: string): Promise<ScopeRecord> {
+  let scope: ScopeRecord;
+  try {
+    scope = await resolveScopeRecord(db, scopeType, scopeId);
+  } catch (error) {
+    if (!(error instanceof HttpError) || error.status !== 404 || (scopeType !== "agent" && scopeType !== "project")) throw error;
+    return { companyId, name: scopeType === "agent" ? "Deleted agent" : "Deleted project",
+      paused: false, pauseReason: null, budgetHeld: false };
+  }
+  if (scope.companyId !== companyId) throw notFound("Budget scope not found");
+  return scope;
+}
+
 // Keep a large dashboard from filling the database pool with queued reads.
 async function mapBudgetReads<T, R>(rows: T[], read: (row: T) => Promise<R>): Promise<R[]> {
   const result: R[] = [];
@@ -287,6 +302,13 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     }
 
     if (policy.scopeType === "project") {
+      // Admission rechecks the same hard stop. Lock current eligibility before
+      // publishing intent so a no-op pause cannot reactivate its own receipts.
+      const [project] = await db.select({ pausedAt: projects.pausedAt }).from(projects)
+        .where(and(eq(projects.id, policy.scopeId), eq(projects.companyId, policy.companyId))).for("update");
+      if (!project || project.pausedAt !== null) return;
+      await notifyRunDispatch(db, { companyId: policy.companyId });
+      await notifyDeferredExecutionEligibility(db, { companyId: policy.companyId });
       await db
         .update(projects)
         .set({
@@ -294,12 +316,14 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
           pausedAt: now,
           updatedAt: now,
         })
-        .where(and(eq(projects.id, policy.scopeId), isNull(projects.pausedAt)));
+        .where(and(eq(projects.id, policy.scopeId), eq(projects.companyId, policy.companyId), isNull(projects.pausedAt)));
       return;
     }
 
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.paused) return;
+    await notifyRunDispatch(db, { companyId: policy.companyId });
+    await notifyDeferredExecutionEligibility(db, { companyId: policy.companyId });
     await notifyCompanyRetentionWork(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
@@ -346,6 +370,8 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     }
 
     if (policy.scopeType === "project") {
+      await notifyRunDispatch(db, { companyId: policy.companyId });
+      await notifyDeferredExecutionEligibility(db, { companyId: policy.companyId });
       await db
         .update(projects)
         .set({
@@ -360,6 +386,8 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     await notifyDeliveryWork(db, DELIVERY_QUEUES.skillSourceSync);
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.pauseReason !== "budget") return;
+    await notifyRunDispatch(db, { companyId: policy.companyId });
+    await notifyDeferredExecutionEligibility(db, { companyId: policy.companyId });
     await notifyCompanyRetentionWork(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
@@ -395,7 +423,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
   }
 
   async function buildPolicySummary(policy: PolicyRow): Promise<BudgetPolicySummary> {
-    const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
+    const scope = await resolveSummaryScopeRecord(db, policy.companyId, policy.scopeType as BudgetScopeType, policy.scopeId);
     const observed = await computeObservedSpend(db, policy);
     const { total: observedAmount, totalExact: observedAmountExact, unpricedEventCount, pendingRunCount } = observed;
     const { windowStart: start, windowEnd: end } = observed;
@@ -560,7 +588,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     const approvalStatusById = new Map(approvalRows.map((row) => [row.id, row.status]));
 
     return mapBudgetReads(rows, async (row) => {
-      const scope = await resolveScopeRecord(db, row.scopeType as BudgetScopeType, row.scopeId);
+      const scope = await resolveSummaryScopeRecord(db, row.companyId, row.scopeType as BudgetScopeType, row.scopeId);
       return {
         id: row.id,
         companyId: row.companyId,
@@ -925,6 +953,13 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       if (incident.companyId !== companyId) throw notFound("Budget incident not found");
 
       const policy = await getPolicyRow(incident.policyId);
+      if (policy.companyId !== companyId || policy.scopeType !== incident.scopeType || policy.scopeId !== incident.scopeId) {
+        throw notFound("Budget scope not found");
+      }
+      const scope = input.action === "keep_paused"
+        ? await resolveSummaryScopeRecord(db, companyId, policy.scopeType as BudgetScopeType, policy.scopeId)
+        : await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
+      if (scope.companyId !== companyId) throw notFound("Budget scope not found");
       if (input.action === "raise_budget_and_resume") {
         const nextAmount = Math.max(0, Math.floor(input.amount ?? 0));
         const observed = await computeObservedSpend(db, policy);
