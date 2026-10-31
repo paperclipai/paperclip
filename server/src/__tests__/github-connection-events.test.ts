@@ -11,6 +11,8 @@ import {
   connectionGrants,
   createDb,
   externalObjects,
+  issues,
+  issueThreadInteractions,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   toolApplications,
   toolConnections,
@@ -36,12 +38,14 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
   beforeAll(async () => {
     if (!externalTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-github-events-");
     if (externalTestDatabaseUrl) await applyPendingMigrations(externalTestDatabaseUrl);
-    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 6 });
+    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 1 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(connectionEventDeliveries);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issues);
     await db.delete(externalObjects);
     await db.delete(connectionGrants);
     await db.delete(toolConnections);
@@ -106,6 +110,10 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
         },
       },
     });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Merge release", status: "in_progress" }).returning();
+    const [confirmation] = await db.insert(issueThreadInteractions).values({ companyId, issueId: issue!.id,
+      kind: "request_confirmation", title: "Confirm pull request merged", continuationPolicy: "none",
+      payload: { version: 1, prompt: "Confirm https://github.com/paperclipai/paperclip/pull/123 is merged" } }).returning();
     const externalObjectId = randomUUID();
     await db.insert(externalObjects).values({
       id: externalObjectId,
@@ -186,13 +194,17 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
     await started;
 
     const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
-    await expect(service.pollOnce({ forSetup: activeSetup })).resolves.toMatchObject({ leased: 2, processed: 1, duplicate: 0, failed: 1 });
+    const outcome = await service.pollOnce({ forSetup: activeSetup });
+    const [processingReceipt] = await db.select().from(connectionEventDeliveries).where(eq(connectionEventDeliveries.providerDeliveryId, leasedEvent.id));
+    expect(processingReceipt?.lastError).toBeNull();
+    expect(outcome).toMatchObject({ leased: 2, processed: 1, duplicate: 0, failed: 1 });
     expect(warning.mock.calls).toEqual([[{
       deliveryId: "undecryptable-delivery", reason: "inner_event_authentication_failed",
     }, "GitHub connector event retained for retry"]]);
     warning.mockRestore();
     releaseRefresh();
     await expect(oldRefresh).resolves.toMatchObject({ refreshed: false, reason: "refresh_superseded" });
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, confirmation!.id)))[0]!.status).toBe("accepted");
     const [snapshot] = await db.select().from(externalObjects).where(eq(externalObjects.id, externalObjectId));
     expect(snapshot).toMatchObject({
       statusKey: "merged",
@@ -263,7 +275,8 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
     expect(connector.acknowledgeEvents).toHaveBeenCalledTimes(2);
   });
 
-  it.each([false, true])("applies installation events once without discarding newer verified access (refreshed: %s)", async (refreshed) => {
+  it.each([false, true, "rollback-race"])("applies installation events once without discarding newer verified access (mode: %s)", async (mode) => {
+    const refreshed = mode === true;
     const companyId = randomUUID();
     const applicationId = randomUUID();
     const connectionId = randomUUID();
@@ -361,7 +374,55 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
         throw new Error("fixture live subscriber failed");
       });
       try {
-        await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, duplicate: 0, failed: 0 });
+        const competing = githubConnectionEventService(db, { connector, now: () => currentTime });
+        if (mode === "rollback-race") {
+          let enter!: () => void, release!: () => void, releaseFailure!: () => void;
+          const entered = new Promise<void>(resolve => { enter = resolve; });
+          const mayRollback = new Promise<void>(resolve => { release = resolve; });
+          const mayMarkFailure = new Promise<void>(resolve => { releaseFailure = resolve; });
+          const transaction = db.transaction.bind(db), update = db.update.bind(db);
+          let first = true;
+          vi.spyOn(db, "transaction").mockImplementation(((callback: (tx: unknown) => Promise<unknown>) => {
+            const rejectAfterApply = first; first = false;
+            return transaction(async tx => {
+              const value = await callback(tx);
+              if (rejectAfterApply) { enter(); await mayRollback; throw new Error("fixture rollback before receipt commit"); }
+              return value;
+            });
+          }) as typeof db.transaction);
+          vi.spyOn(db, "update").mockImplementation(((table: unknown) => {
+            const builder = update(table as typeof connectionEventDeliveries);
+            if (table === connectionEventDeliveries) {
+              const set = builder.set.bind(builder);
+              builder.set = ((values: { status?: string }) => {
+                const statement = set(values);
+                if (values.status === "failed") {
+                  const where = statement.where.bind(statement);
+                  statement.where = (async (...args: Parameters<typeof where>) => { await mayMarkFailure; return where(...args); }) as typeof statement.where;
+                }
+                return statement;
+              }) as typeof builder.set;
+            }
+            return builder;
+          }) as typeof db.update);
+          const rejected = service.pollOnce();
+          const firstResult = Promise.allSettled([rejected]);
+          try {
+            await entered;
+            const succeeding = competing.pollOnce();
+            release();
+            expect(await succeeding).toMatchObject({ processed: 1, failed: 0 });
+            expect((await db.select().from(connectionEventDeliveries).where(eq(connectionEventDeliveries.providerDeliveryId, leasedEvent.id)))[0]!.status).toBe("processed");
+            releaseFailure();
+            expect(await rejected).toMatchObject({ failed: 1 });
+            expect((await db.select().from(connectionEventDeliveries).where(eq(connectionEventDeliveries.providerDeliveryId, leasedEvent.id)))[0]!.status).toBe("processed");
+          } finally { release(); releaseFailure(); await firstResult; vi.restoreAllMocks(); }
+        } else {
+          const outcomes = await Promise.all([service.pollOnce(), competing.pollOnce()]);
+          expect(outcomes.reduce((sum, result) => sum + result.processed, 0)).toBe(1);
+          expect(outcomes.reduce((sum, result) => sum + result.duplicate, 0)).toBe(1);
+          expect(outcomes.every(result => result.failed === 0)).toBe(true);
+        }
       } finally { unsubscribe(); }
       await health.expectDeadline(currentTime.getTime() + 900_000 - (refreshed ? 60_000 : 0));
       await health.expectQuiet();
@@ -382,6 +443,6 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
       connectionEventDeliveries.providerDeliveryId,
       leasedEvent.id,
     ));
-    expect(receipt).toMatchObject({ status: "processed", attempts: 1 });
+    expect(receipt).toMatchObject({ status: "processed", attempts: mode === "rollback-race" ? 2 : 1 });
   });
 });

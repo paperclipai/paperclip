@@ -1,3 +1,4 @@
+import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
 import type { ConnectionManagementContext } from "../../connection-management.js";
 import { connectionActorUserId } from "../actor.js";
 import { toConnectionGrant } from "./projection.js";
@@ -537,6 +538,7 @@ replaceConnectionGrantMembers: async (
         providerRevocation = "local_only_shared_client";
       }
       const grant = await db.transaction(async (tx) => {
+        await notifyGitHubCredentialChange(tx, connection);
         const [lockedGrant] = await tx.select({ id: connectionGrants.id }).from(connectionGrants)
           .where(and(eq(connectionGrants.id, grantId), eq(connectionGrants.companyId, connection.companyId), eq(connectionGrants.connectionId, connection.id)))
           .for("update");

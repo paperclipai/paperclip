@@ -1,6 +1,6 @@
-import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyNativeReviewResponse } from "./native-review-response-notifications.js";
 import { isAgentStatusInvokable } from "@paperclipai/shared";
 import { notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
