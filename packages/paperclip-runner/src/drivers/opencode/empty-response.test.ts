@@ -5,12 +5,13 @@ import { expect, it } from "vitest";
 import { OpenCodeServerDriver } from "./opencode-server-driver.js";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 
-it.each(["reply", "empty-again", "request-fails", "normal", "foreign-idle"] as const)("handles an empty OpenCode response: %s", async mode => {
+it.each(["reply", "reply-no-finish", "reply-tool-finish", "slow-native-tool", "idle-stall", "tool-idle-stall", "empty-again", "request-fails", "normal", "foreign-idle", "queued-tool"] as const)("handles an empty OpenCode response: %s", async mode => {
   const root = await mkdtemp(join(tmpdir(), "opencode-empty-response-"));
   const command = join(root, "fake-opencode.mjs");
   await copyFile(resolve("test/fixtures/fake-opencode-server.mjs"), command);
   await chmod(command, 0o755);
   const prompts: Record<string, any>[] = [];
+  let toolTimer: ReturnType<typeof setTimeout> | undefined;
   let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
   const queued: Uint8Array[] = [];
   const emit = (value: unknown) => { const frame = new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`); if (stream) stream.enqueue(frame); else queued.push(frame); };
@@ -27,8 +28,24 @@ it.each(["reply", "empty-again", "request-fails", "normal", "foreign-idle"] as c
         const number = prompts.length, messageID = `assistant-${number}`;
         queueMicrotask(() => {
           if (mode === "foreign-idle") emit({ type: "session.idle", properties: { sessionID: "foreign-session" } });
-          emit({ type: "message.updated", properties: { info: { id: messageID, sessionID, role: "assistant", finish: "stop", time: { completed: Date.now() } } } });
-          const answer = mode === "normal" || mode === "foreign-idle" || number === 2 && mode === "reply";
+          const incompleteHeader = number === 2 && ["reply-no-finish", "reply-tool-finish", "idle-stall", "tool-idle-stall"].includes(mode);
+          emit({ type: "message.updated", properties: { info: { id: messageID, sessionID, role: "assistant",
+            ...(incompleteHeader ? ["reply-tool-finish", "tool-idle-stall"].includes(mode) ? { finish: "tool-calls" } : {} : { finish: "stop", time: { completed: Date.now() } }) } } });
+          if (mode === "slow-native-tool" && number === 2 || mode === "queued-tool") {
+            const toolPart = { id: `native-${number}`, messageID, sessionID, type: "tool", tool: "bash", callID: `call-${number}`,
+              state: { status: mode === "queued-tool" ? "pending" : "running", input: { command: "owned-controlled-command" } } };
+            emit({ type: "message.part.updated", properties: { part: toolPart } });
+            if (mode === "slow-native-tool") {
+              emit({ type: "session.idle", properties: { sessionID } });
+              toolTimer = setTimeout(() => {
+                emit({ type: "message.part.updated", properties: { part: { ...toolPart, state: { ...toolPart.state, status: "completed", output: "Owned tool completed.", time: { start: 1, end: 2 } } } } });
+                emit({ type: "message.part.updated", properties: { part: { id: `part-${number}`, messageID, sessionID, type: "text", text: "Here is the actual final answer.", time: { start: 3, end: 4 } } } });
+                emit({ type: "session.idle", properties: { sessionID } });
+              }, 22_000);
+              return;
+            }
+          }
+          const answer = mode === "normal" || mode === "foreign-idle" || mode === "queued-tool" || number === 2 && ["reply", "reply-no-finish", "reply-tool-finish"].includes(mode);
           emit({ type: "message.part.updated", properties: { sessionID, part: { id: `part-${number}`, messageID,
             type: answer ? "text" : "reasoning", text: answer ? "Here is the actual final answer." : "Synthetic reasoning must not become the answer.", time: { start: 1, end: 2 } } } });
           emit({ type: "session.idle", properties: { sessionID } });
@@ -40,24 +57,29 @@ it.each(["reply", "empty-again", "request-fails", "normal", "foreign-idle"] as c
     },
   });
   const session = await driver.openSession({ runId: "owned-run", normalizedSessionId: "owned-session", workingDirectory: root });
+  let deadline: ReturnType<typeof setTimeout> | undefined;
   try {
     const collected = (async () => { const rows: PrpEvent[] = []; for await (const event of session.events()) {
       rows.push(event); if (["turn.completed", "turn.failed"].includes(event.eventType)) break;
     } return rows; })();
     const { turnId } = await session.startTurn({ message: { role: "user", text: "Answer the current request." }, reasoningMode: "disabled" });
-    const events = await collected;
-    const succeeds = ["reply", "normal", "foreign-idle"].includes(mode);
+    const events = await Promise.race([collected, new Promise<PrpEvent[]>((_, reject) => {
+      deadline = setTimeout(() => reject(new Error("Controlled provider produced no terminal event")), mode.endsWith("idle-stall") || mode === "slow-native-tool" ? 26_000 : 5_000);
+    })]);
+    const succeeds = ["reply", "reply-no-finish", "reply-tool-finish", "slow-native-tool", "normal", "foreign-idle", "queued-tool"].includes(mode);
     expect(events.at(-1)?.eventType).toBe(succeeds ? "turn.completed" : "turn.failed");
     expect(events.filter(event => event.eventType === "turn.started")).toHaveLength(1);
     expect(events.every(event => !event.turnId || event.turnId === turnId)).toBe(true);
     const final = events.filter(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "final");
     expect(final.map(event => event.payload.text)).toEqual(succeeds ? ["Here is the actual final answer."] : []);
-    expect(prompts).toHaveLength(["normal", "foreign-idle"].includes(mode) ? 1 : 2);
+    expect(prompts).toHaveLength(["normal", "foreign-idle", "queued-tool"].includes(mode) ? 1 : 2);
     if (prompts.length === 2) {
       expect(prompts[1]).toMatchObject({ providerID: prompts[0]!.providerID, modelID: prompts[0]!.modelID, system: prompts[0]!.system, variant: "paperclip-no-reasoning" });
       expect(JSON.stringify(prompts[1]!.parts)).toContain("Do not repeat completed actions");
     }
   } finally {
+    clearTimeout(deadline);
+    clearTimeout(toolTimer);
     await session.close({ reason: "controlled test complete" });
     await rm(root, { recursive: true, force: true });
   }
