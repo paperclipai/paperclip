@@ -726,7 +726,11 @@ export function createHeartbeatScheduling(
     }
 
     try {
-      if (monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME) {
+      // A quota monitor is armed after the source run's bounded retries are
+      // spent, so its retry is usually exhausted too; it then wakes the target
+      // like any other monitor instead of being consumed with nothing queued.
+      let wakeTarget = monitor?.serviceName !== PROVIDER_QUOTA_MONITOR_SERVICE_NAME;
+      if (!wakeTarget) {
         // Normalized monitor projections redact externalRef. Read the claimed
         // persisted policy only on this server-owned quota recovery path.
         const sourceRunId = readNonEmptyString(
@@ -781,8 +785,10 @@ export function createHeartbeatScheduling(
           );
           if (scheduled.outcome === "not_scheduled")
             throw conflict(scheduled.reason);
+          if (scheduled.outcome === "retry_exhausted") wakeTarget = true;
         }
-      } else {
+      }
+      if (wakeTarget) {
         let executionDeferredCause: string | null = null;
         const wake = await enqueueWakeup(targetAgentId, {
           issueStateGuard: { statuses: [claimed.status], assigneeAgentId: claimed.assigneeAgentId,
