@@ -80,22 +80,20 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
         throw conflict("Only agents in error status can have their error cleared");
       }
 
-      const updated = await db
-        .update(agents)
-        .set({
-          status: "idle",
-          pauseReason: null,
-          pausedAt: null,
-          errorReason: null,
-          updatedAt: new Date(),
-        })
-        .where(and(eq(agents.id, id), eq(agents.status, "error"), eq(agents.lifecycleState, "ready")))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const updated = await effects.transaction(db, existing.companyId, async tx => {
+        const [current] = await tx.select({ status: agents.status, lifecycleState: agents.lifecycleState })
+          .from(agents).where(and(eq(agents.id, id), eq(agents.companyId, existing.companyId))).for("no key update");
+        if (current?.status !== "error" || current.lifecycleState !== "ready") {
+          throw conflict("Only agents in error status can have their error cleared");
+        }
+        await effects.beforeStatusChange(tx, existing.companyId, id, "error", "idle");
+        const [saved] = await tx.update(agents).set({
+          status: "idle", pauseReason: null, pausedAt: null, errorReason: null, updatedAt: new Date(),
+        }).where(and(eq(agents.id, id), eq(agents.status, "error"), eq(agents.lifecycleState, "ready"))).returning();
+        if (!saved) throw conflict("Only agents in error status can have their error cleared");
+        return saved;
+      });
 
-      if (!updated) {
-        throw conflict("Only agents in error status can have their error cleared");
-      }
       return getById(updated.id);
     },
 
