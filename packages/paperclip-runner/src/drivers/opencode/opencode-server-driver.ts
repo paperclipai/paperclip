@@ -540,6 +540,10 @@ class OpenCodeHarnessSession implements HarnessSession {
   readonly #companyObservability: ReturnType<typeof createOpenCodeCompanyObservability>;
   #closed = false;
   #completionSettlement: Promise<void> | null = null;
+  #turnStartSourceSeq = 0;
+  #turnReasoningMode: OpenCodeReasoningMode = "default";
+  #emptyResponseRecovery: { turnId: string; priorMessages: Set<string>; responseFinished: boolean } | null = null;
+  #emptyResponseAckTimer: ReturnType<typeof setTimeout> | undefined;
   #abort = new AbortController();
 
   constructor(input: {
@@ -686,14 +690,15 @@ class OpenCodeHarnessSession implements HarnessSession {
     const turnId = `turn-${randomBytes(12).toString("hex")}`;
     this.#streamingParts.clear();
     this.#activeTurnId = turnId;
+    this.#turnStartSourceSeq = this.#sourceSequence;
+    this.#turnReasoningMode = reasoningMode;
+    this.#emptyResponseRecovery = null;
     this.#emit("turn.submitted", {
       envelopeSchema: this.#taskEnvelope.schema,
       text: input.message.text,
     }, { turnId });
     this.#emit("turn.accepted", { turnId }, { turnId });
     this.#emit("turn.started", { status: "inProgress" }, { turnId });
-    const [providerID, ...modelParts] = this.#model.split("/");
-    const modelID = modelParts.join("/");
     // Keep the task envelope only on the initial task-mode wake. OpenCode
     // rebuilds system instructions from the latest user message, so system
     // instructions must still accompany every prompt (including recovery).
@@ -703,12 +708,21 @@ class OpenCodeHarnessSession implements HarnessSession {
           message: input.message.text,
         })
       : input.message.text;
+    await this.#submitPrompt(prompt);
+    this.#sendFullContext = false;
+    return { turnId };
+  }
+
+  async #submitPrompt(prompt: string): Promise<void> {
+    const [providerID, ...modelParts] = this.#model.split("/");
+    const modelID = modelParts.join("/");
     await api(
       this.#fetch,
       this.#runtime,
       `/session/${encodeURIComponent(this.#providerSessionId)}/prompt_async`,
       {
         method: "POST",
+        signal: this.#abort.signal,
         body: JSON.stringify({
           // OpenCode 1.18's PromptPayload carries the provider and model at the
           // top level.  Older examples used a nested `model` object; 1.18
@@ -721,7 +735,7 @@ class OpenCodeHarnessSession implements HarnessSession {
           // Always select the empty default variant on an ordinary turn so a
           // previous disabled turn cannot change this turn's provider defaults.
           ...(providerID === "openrouter"
-            ? { variant: reasoningMode === "disabled" ? "paperclip-no-reasoning" : "paperclip-default" }
+            ? { variant: this.#turnReasoningMode === "disabled" ? "paperclip-no-reasoning" : "paperclip-default" }
             : {}),
           // Keep question enabled in the isolated config. OpenCode 1.18.32
           // turns a prompt's deprecated `tools` map into replacement session
@@ -731,8 +745,39 @@ class OpenCodeHarnessSession implements HarnessSession {
         }),
       },
     );
-    this.#sendFullContext = false;
-    return { turnId };
+  }
+
+  #clearEmptyResponseAckTimer(): void {
+    clearTimeout(this.#emptyResponseAckTimer);
+    this.#emptyResponseAckTimer = undefined;
+  }
+
+  #failEmptyResponse(turnId: string, message: string): void {
+    if (this.#closed || this.#activeTurnId !== turnId || this.#result !== null) return;
+    this.#emit("turn.failed", { status: "failed", error: { code: "opencode_empty_response", message, retryable: false } }, { turnId });
+    this.#terminalTurns.set(turnId, canonicalJson({ status: "failed" }));
+    this.#activeTurnId = null;
+  }
+
+  #recoverEmptyResponse(turnId: string): boolean {
+    if (this.#result !== null || this.#pendingRuntimeRequests.size > 0) return false;
+    const recovery = this.#emptyResponseRecovery;
+    // Both idle event forms can remain queued from the empty response. Wait
+    // for the correction's own completed assistant message before settling.
+    if (recovery && !recovery.responseFinished) return true;
+    const boundary = Math.max(this.#turnStartSourceSeq, this.#lastNonTerminalToolSourceSeq);
+    if (this.#completedTextParts.some(part => part.observedSourceSeq > boundary)) return false;
+    if (recovery) {
+      this.#failEmptyResponse(turnId, "OpenCode ended without a final answer or accepted completion report after one correction.");
+      return true;
+    }
+    this.#emptyResponseRecovery = { turnId, priorMessages: new Set(this.#messageRoles.keys()), responseFinished: false };
+    this.#emit("harness.diagnostic", { code: "opencode_empty_response_correction", message: "Requesting one final response after an empty OpenCode completion." }, { turnId });
+    this.#emptyResponseAckTimer = setTimeout(() => this.#failEmptyResponse(turnId, "OpenCode did not start its requested final response."), 20_000);
+    this.#emptyResponseAckTimer.unref();
+    void this.#submitPrompt("Your response ended without a user-visible final answer or an accepted completion report. Continue this same request from the work already done. Give the user a concise final answer and submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.")
+      .catch(() => this.#failEmptyResponse(turnId, "OpenCode could not request a final response after an empty completion."));
+    return true;
   }
 
   async interrupt(input: { turnId?: string; reason?: string }): Promise<void> {
@@ -992,6 +1037,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     await this.#completionSettlement;
     if (this.#closed) return;
     this.#closed = true;
+    this.#clearEmptyResponseAckTimer();
     this.#abort.abort();
     // Settle whatever is still pending, including a request whose turn
     // already went terminal without the driver observing it (see
@@ -1583,7 +1629,8 @@ class OpenCodeHarnessSession implements HarnessSession {
     // adjacent tokens. Content deduplication would silently lose the second.
     // Key id-less events by digest: a retained canonical copy of each recent
     // event would hold up to 10,000 large tool payloads in memory.
-    const eventId = text(event.id) || (type === "message.part.delta"
+    const idle = type === "session.idle" || type === "session.status" && text(record(properties.status).type) === "idle";
+    const eventId = idle ? null : text(event.id) || (type === "message.part.delta"
       ? null
       : `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`);
     if (eventId !== null && this.#seenProviderEvents.has(eventId)) return;
@@ -1722,6 +1769,12 @@ class OpenCodeHarnessSession implements HarnessSession {
         text(info.messageID, text(info.messageId)),
       );
       const role = text(info.role);
+      const recovery = this.#emptyResponseRecovery;
+      if (recovery?.turnId === turnId && role === "assistant" && messageId && !recovery.priorMessages.has(messageId)) {
+        this.#clearEmptyResponseAckTimer();
+        if ((Number.isFinite(record(info.time).completed) || text(info.finish)) && !["tool-calls", "tool_calls"].includes(text(info.finish)))
+          recovery.responseFinished = true;
+      }
       // Record the message's owning turn at the moment OpenCode first
       // reports it. A later turn that reuses the same native message id
       // legitimately reclaims ownership; a stale message never sees this
@@ -1775,6 +1828,7 @@ class OpenCodeHarnessSession implements HarnessSession {
           text(record(properties.status).type) === "idle")) &&
       turnId
     ) {
+      if (this.#recoverEmptyResponse(turnId)) return;
       const fingerprint = canonicalJson({
         status: "completed",
         semanticResult: this.#resultFingerprint,
@@ -2147,7 +2201,11 @@ class OpenCodeHarnessSession implements HarnessSession {
       });
       return;
     }
+    if (eventType === "run.result.proposed" || eventType === "runtime_request.created") {
+      this.#clearEmptyResponseAckTimer();
+    }
     if (["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"].includes(eventType)) {
+      this.#clearEmptyResponseAckTimer();
       const performance = this.#runtime.performanceDiagnostics?.take(this.#performanceBoundaryMs);
       this.#performanceBoundaryMs = this.#now().getTime();
       if (performance) this.#emit("harness.diagnostic", performance, refs);
