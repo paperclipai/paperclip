@@ -379,6 +379,7 @@ export async function prepareManagedAiRuntime(
         provider: { openrouter: { options: { apiKey: value, headers: OPENROUTER_ATTRIBUTION_HEADERS } } },
       });
       env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
+      env.OPENCODE_ALLOW_ALL_MODELS = "true";
     }
     if (!routing && input.binding.provider === "google" && harness === "gemini_local") {
       // Gemini headless CLI requires an explicit auth choice even with an API key.

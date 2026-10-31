@@ -26,7 +26,12 @@ import {
   prepareAdapterExecutionTargetRuntime,
   overrideAdapterExecutionTargetRemoteCwd,
 } from "@paperclipai/adapter-utils/execution-target";
-import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable, requireOpenCodeModelId } from "./models.js";
+import {
+  discoverOpenCodeModels,
+  ensureOpenCodeModelConfiguredAndAvailable,
+  isTruthyEnvFlag,
+  requireOpenCodeModelId,
+} from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
@@ -235,24 +240,27 @@ export async function testEnvironment(
     let modelValidationPassed = false;
     const configuredModel = asString(config.model, "").trim();
 
-    // The native runner already selects a concrete model. Its real hello probe
-    // verifies model access and credentials; a full catalog scan adds another
-    // cold CLI launch (and discovery retries) without verifying that request.
+    // Native runners and explicitly allowed managed models use the real hello
+    // probe as the authority. A full catalog scan adds another cold CLI launch
+    // (and discovery retries) without verifying that exact request.
     const nativeModelProbe = ctx.adapterType === "paperclip_runner" && Boolean(configuredModel);
+    const modelValidationViaProbe = nativeModelProbe || isTruthyEnvFlag(runtimeEnv.OPENCODE_ALLOW_ALL_MODELS);
 
     // Model discovery and validation use local child processes against
     // OpenCode's `models` subcommand and JSON config; these are not yet
     // wired through the execution target. When probing a remote env, skip
     // discovery/validation and rely on the remote hello probe to surface
     // model/auth issues directly.
-    if (nativeModelProbe) {
+    if (modelValidationViaProbe) {
       try {
         requireOpenCodeModelId(configuredModel);
         modelValidationPassed = true;
         checks.push({
           code: "opencode_model_validation_via_probe",
           level: "info",
-          message: "The configured native-runner model will be validated by the hello probe.",
+          message: nativeModelProbe
+            ? "The configured native-runner model will be validated by the hello probe."
+            : "The configured managed model will be validated by the hello probe.",
         });
       } catch (error) {
         checks.push({ code: "opencode_model_invalid", level: "error",
@@ -335,7 +343,7 @@ export async function testEnvironment(
     const modelUnavailable = checks.some((check) => check.code === "opencode_hello_probe_model_unavailable");
     if (!configuredModel && !modelUnavailable) {
       // No model configured – skip model requirement if no model-related checks exist
-    } else if (!nativeModelProbe && !targetIsRemote && configuredModel && canRunProbe) {
+    } else if (!modelValidationViaProbe && !targetIsRemote && configuredModel && canRunProbe) {
       try {
         await ensureOpenCodeModelConfiguredAndAvailable({
           model: configuredModel,
