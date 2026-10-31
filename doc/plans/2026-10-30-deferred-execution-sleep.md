@@ -17,3 +17,7 @@ Three scoped owners reconstruct only their actual durable receipt predicates, wi
 The generic run-dispatch notifier and broad issue review-state notifier deliberately do not fan out deferred eligibility. Queue bookkeeping may write them while processing its own saved input. Separate eligibility commits and settlement-only chat notifications avoid a self-restaging loop.
 
 C2 remains separate and mandatory: active output silence deadlines, remaining orphan/process/controller/remote authority and resource debts, legacy shutdown settlements, stranded agent status, and final aggregate chain removal. Retained workspace and migrated native finalization workers remain their existing owners.
+
+Review controls cover queue edits that move an already loaded grace deadline. Each due check re-reads current stored grace or claim time before admission. Subtree hold release, subtree restore, and member archival publish eligibility inside their own transactions. Member archival preserves the cancelled Retry tombstone created by an earlier user reassignment.
+
+A resume that first records a new execution-wait reason arms its existing 30-second grace once. Writing the same closed-gate reason again does not publish another hint. A clock obligation, an eligibility change, and an infrastructure failure therefore retain separate exits: stored deadline, owning committed producer, and bounded failure backoff. Refreshing a diagnostic timestamp alone does not create permanent polling behind a deliberate pause.

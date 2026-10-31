@@ -79,6 +79,24 @@ export function registerDeferredReceiptWork(
       },
       check: async entry => {
         if (!enabled) return null;
+        if (kind !== "task_chat") {
+          const [current] = await db.select({ status: agentWakeupRequests.status, payload: agentWakeupRequests.payload,
+            updatedAt: agentWakeupRequests.updatedAt, claimedAt: agentWakeupRequests.claimedAt, error: agentWakeupRequests.error,
+            interruptedLegacy: sql<boolean>`exists (select 1 from heartbeat_runs r
+              where r.company_id = ${agentWakeupRequests.companyId} and r.agent_id = ${agentWakeupRequests.agentId}
+                and r.runtime_mode = 'legacy' and r.status = 'cancelled'
+                and r.result_json->>'queuedCommentInterruptQueueId' = ${agentWakeupRequests.id}::text)`,
+          }).from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, entry.companyId),
+            eq(agentWakeupRequests.id, entry.id)));
+          if (!current) return null;
+          const due = kind === "native" && current.status === "claimed" && current.claimedAt
+            ? current.claimedAt.getTime() + 60_000
+            : kind === "native" && current.status === "queued" && current.error ? current.updatedAt.getTime() + 30_000
+              : kind === "deferred" && current.status === "deferred_issue_execution" && !current.interruptedLegacy
+                && (current.payload?.queuedCommentInterrupt || current.payload?.executionWait)
+                ? current.updatedAt.getTime() + 30_000 : null;
+          if (due !== null && due > Date.now()) return { ...entry, dueAt: due };
+        }
         const errors: unknown[] = [];
         let next: number | null = null;
         const scope = { companyId: entry.companyId, requestId: entry.id };
