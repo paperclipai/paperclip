@@ -426,6 +426,14 @@ describe("openapi routes", () => {
     expect(properties).toHaveProperty("budgetMonthlyCents");
   });
 
+  it("documents project budget writes as forbidden", () => {
+    const document = buildOpenApiSpec() as any;
+    const schema = document.paths["/api/projects/{id}"].patch.requestBody.content["application/json"].schema;
+    expect(schema.properties.budgetMonthlyCents).toEqual({ not: {} });
+    expect(schema.required ?? []).not.toContain("budgetMonthlyCents");
+    expect(schema.properties.name).toMatchObject({ type: "string" });
+  });
+
   it("documents public Dot pairing capabilities while ordinary consent keeps board authentication", () => {
     const spec = buildOpenApiSpec() as any;
     for (const [method, path] of [
