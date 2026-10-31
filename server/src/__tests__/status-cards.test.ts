@@ -11,6 +11,7 @@ import {
   companyMemberships,
   costEvents,
   createDb,
+  databaseWorkPending,
   documentRevisions,
   documents,
   heartbeatRuns,
@@ -19,6 +20,7 @@ import {
   issues,
   statusCards,
   statusCardUpdates,
+  subscribeDatabaseWork,
 } from "@paperclipai/db";
 import {
   defaultStatusCardRefreshPolicy,
@@ -33,6 +35,7 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { issueService } from "../services/issues.js";
 import { statusCardService } from "../services/status-cards.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -700,6 +703,132 @@ describeEmbeddedPostgres("status card routes", () => {
     } finally {
       oldGate.resolve(); currentGate.resolve();
       await Promise.allSettled([oldRefresh, ...(currentRefresh ? [currentRefresh] : [])]);
+    }
+  });
+
+  it.each([
+    ...(["creator", "deduplicated"] as const).flatMap(winnerKind =>
+      (["active", "done", "cancelled"] as const).map(outcome => ({ winnerKind, outcome, requestTrigger: "interval" as const }))),
+    ...(["creator", "deduplicated"] as const).map(winnerKind => ({ winnerKind, outcome: "active" as const, requestTrigger: "manual" as const })),
+  ])("preserves a same-revision $winnerKind winner after summary and $outcome via $requestTrigger when its loser resumes", async ({ winnerKind, outcome, requestTrigger }) => {
+    const company = await seedCompany();
+    const summarizer = await seedSummarizer(company.id);
+    const service = statusCardService(db);
+    const realIssues = issueService(db);
+    await realIssues.create(company.id, { title: "Watched blocker", status: "blocked", priority: "medium" });
+    const card = await service.create(company.id, {
+      interestPrompt: "Completed winner race", titlePinned: false,
+      refreshPolicy: { ...defaultStatusCardRefreshPolicy, mode: "interval", intervalMinutes: 15 },
+    }, { agentId: null, userId: "board-user" });
+    await db.update(statusCards).set({ state: "active", fingerprint: {},
+      queries: [{ scope: "issues", status: ["blocked"], sort: "updated", limit: 20, offset: 0 }] as typeof card.queries,
+    }).where(eq(statusCards.id, card.id));
+    const gates = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const reached: string[] = [];
+    const start = (index: number) => statusCardService(db, { issuesSvc: {
+      ...realIssues,
+      update: async (...args: Parameters<typeof realIssues.update>) => {
+        const result = await realIssues.update(...args);
+        if (args[1].description) { reached[index] = args[0]; await gates[index]!.promise; }
+        return result;
+      },
+    } }).requestRefresh(card.id, { trigger: requestTrigger });
+    const creator = start(0);
+    let deduplicated: ReturnType<typeof start> | undefined;
+    try {
+      await vi.waitFor(() => expect(reached[0]).toBeTruthy());
+      deduplicated = start(1);
+      await vi.waitFor(() => expect(reached[1]).toBe(reached[0]));
+      const winnerIndex = winnerKind === "creator" ? 0 : 1;
+      gates[winnerIndex]!.resolve();
+      const winner = await (winnerIndex === 0 ? creator : deduplicated);
+      expect(winner.enqueued).toBe(true);
+      expect(winner.alreadyGenerating).toBe(winnerKind === "deduplicated");
+      const run = await seedRun(company.id, summarizer.id);
+      await db.update(issues).set({ checkoutRunId: run.id }).where(eq(issues.id, reached[0]!));
+      await service.writeSummary(card.id, {
+        generationIssueId: reached[0]!, markdown: "Completed winner summary",
+        changeSummary: "Summarized watched work", model: "test",
+      }, { agentId: summarizer.id, runId: run.id });
+      if (outcome !== "active") await realIssues.update(reached[0]!, { status: outcome });
+      expect(await service.getById(card.id)).toMatchObject({ generatingIssueId: null });
+      const completed = await realIssues.getById(reached[0]!);
+      expect(completed).toMatchObject({ status: outcome === "active" ? "todo" : outcome });
+
+      gates[1 - winnerIndex]!.resolve();
+      const loser = await (winnerIndex === 0 ? deduplicated : creator);
+      expect(loser).toMatchObject({ enqueued: false, alreadyGenerating: false, generatingIssue: null });
+      expect(await realIssues.getById(reached[0]!)).toMatchObject({
+        status: completed!.status, completedAt: completed!.completedAt, cancelledAt: completed!.cancelledAt,
+      });
+      const history = await service.listUpdates(card.id);
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({ generationIssueId: reached[0], status: "ok", finishedAt: expect.any(Date) });
+      expect(await service.getById(card.id)).toMatchObject({ generatingIssueId: null, state: "active" });
+      if (requestTrigger === "manual") {
+        const independent = await service.requestRefresh(card.id, { trigger: "manual" });
+        expect(independent.enqueued).toBe(true);
+        expect(independent.generatingIssue!.id).not.toBe(completed!.id);
+      }
+    } finally {
+      gates.forEach(gate => gate.resolve());
+      await Promise.allSettled([creator, ...(deduplicated ? [deduplicated] : [])]);
+    }
+  });
+
+  it("cancels an unclaimed archived refresh with one database connection", async () => {
+    const company = await seedCompany();
+    await seedSummarizer(company.id);
+    const single = createDb(externalDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 1 });
+    const service = statusCardService(single);
+    const realIssues = issueService(single);
+    let pending: Promise<unknown> | undefined;
+    let unsubscribe: (() => void) | undefined;
+    const signals: Array<{ event: string; pending: boolean; hints: string[] }> = [];
+    try {
+      const card = await service.create(company.id, {
+        interestPrompt: "One connection cleanup", titlePinned: false, refreshPolicy: defaultStatusCardRefreshPolicy,
+      }, { agentId: null, userId: "board-user" });
+      await single.update(statusCards).set({ state: "active",
+        queries: [{ scope: "issues", status: ["blocked"], sort: "updated", limit: 20, offset: 0 }] as typeof card.queries,
+      }).where(eq(statusCards.id, card.id));
+      const racing = statusCardService(single, { issuesSvc: {
+        ...realIssues,
+        update: async (...args: Parameters<typeof realIssues.update>) => {
+          const result = await realIssues.update(...args);
+          if (args[1].description) {
+            await service.update((await service.getById(card.id))!, {
+              archived: true,
+            }, { agentId: null, userId: "board-user" });
+            // Observe only the losing task's canonical cancellation, after the
+            // independent archive transaction has settled.
+            unsubscribe = subscribeDatabaseWork(single, DELIVERY_QUEUES.statusCardEvaluation, (event, hints) => {
+              signals.push({ event, pending: databaseWorkPending(single, DELIVERY_QUEUES.statusCardEvaluation), hints: [...hints ?? []] });
+            });
+          }
+          return result;
+        },
+      } });
+      let settled = false;
+      let rejection: unknown;
+      pending = racing.requestRefresh(card.id).then(() => { settled = true; }, error => {
+        rejection = error; settled = true;
+      });
+      await vi.waitFor(() => expect(settled).toBe(true), { timeout: 2_000 });
+      expect(rejection).toMatchObject({ status: 409 });
+      expect(await single.select().from(issues).where(eq(issues.companyId, company.id))).toEqual([
+        expect.objectContaining({ status: "cancelled" }),
+      ]);
+      expect(await service.listUpdates(card.id)).toHaveLength(0);
+      const cancellation = signals.filter(signal => signal.hints.includes(`changes:${company.id}`));
+      expect(cancellation).toContainEqual(expect.objectContaining({ event: "intent", pending: true }));
+      expect(cancellation.filter(signal => signal.event === "settled")).toEqual([
+        expect.objectContaining({ event: "settled", pending: false }),
+      ]);
+    } finally {
+      unsubscribe?.();
+      await single.$client.end({ timeout: 1 });
+      await pending;
     }
   });
 
