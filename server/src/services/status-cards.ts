@@ -601,7 +601,7 @@ export function statusCardService(
     for (const storedQuery of card.queries) {
       const query = companySearchQuerySchema.parse(storedQuery);
       const response = await companySearchService(queryDb).search(card.companyId, query, {
-        issueReadCondition: options.issueReadCondition, onNextMembershipChange,
+        issueReadCondition: options.issueReadCondition, onNextMembershipChange, issueResultsOnly: true,
       });
       for (const result of response.results) {
         if (result.type === "issue" && result.issue) issueMap.set(result.issue.id, result.issue);
@@ -1049,7 +1049,7 @@ export function statusCardService(
       return {
         query,
         result: await searchSvc.search(card.companyId, query, {
-          issueReadCondition: options.issueReadCondition,
+          issueReadCondition: options.issueReadCondition, issueResultsOnly: true,
         }),
       };
     }));
