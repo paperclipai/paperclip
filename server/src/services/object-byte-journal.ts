@@ -53,6 +53,14 @@ export class ObjectJournalConflictError extends Error {
     super("The output journal is owned by another writer");
   }
 }
+export class ObjectJournalSourcePrefixProofUnavailableError extends Error {
+  constructor(readonly writer: ObjectJournalWriter) {
+    super("The committed log prefix has no available source proof");
+  }
+}
+class ObjectJournalSourcePrefixProofInvalidError extends Error {
+  constructor() { super("object_journal_source_prefix_proof_invalid"); }
+}
 export function isObjectPreconditionFailure(error: unknown) {
   const e = error as { name?: string; $metadata?: { httpStatusCode?: number } };
   return e?.name === "PreconditionFailed" || e?.$metadata?.httpStatusCode === 412;
@@ -310,10 +318,11 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     let stored: Awaited<ReturnType<typeof getBytes>>;
     try { stored = await getBytes(proof.key, 4096, signal); }
     catch (error) { if (isMissing(error)) return false; throw error; }
-    if (!stored.bytes.equals(proof.bytes)) throw new Error("object_journal_source_prefix_proof_invalid");
+    if (!stored.bytes.equals(proof.bytes)) throw new ObjectJournalSourcePrefixProofInvalidError();
     return true;
   }
   async function recordVerifiedSourcePrefix(writer: ObjectJournalWriter, sourceCursor: number, signal?: AbortSignal) {
+    const callerSignal = signal;
     signal = signal
       ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
       : AbortSignal.timeout(15_000);
@@ -333,8 +342,24 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
         contentType: "application/json", ifNoneMatch: "*", signal,
       }), signal);
     } catch (error) {
+      callerSignal?.throwIfAborted();
+      if (error instanceof ObjectJournalConflictError) throw error;
       // A lost reply or an already published identical immutable proof is safe.
-      if (!await hasVerifiedSourcePrefix(writer.head, signal)) throw error;
+      try {
+        if (await hasVerifiedSourcePrefix(writer.head, signal)) return writer;
+      } catch (readError) {
+        callerSignal?.throwIfAborted();
+        if (readError instanceof ObjectJournalSourcePrefixProofInvalidError ||
+          readError instanceof ObjectJournalConflictError) throw readError;
+        if (signal.aborted || isRetryable(readError))
+          throw new ObjectJournalSourcePrefixProofUnavailableError(writer);
+        throw readError;
+      }
+      // Only this immutable proof publication is optional. The ownership read
+      // and any cursor/head CAS above retain their fatal failure boundary.
+      if (signal.aborted || isRetryable(error))
+        throw new ObjectJournalSourcePrefixProofUnavailableError(writer);
+      throw error;
     }
     return writer;
   }
