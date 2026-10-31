@@ -2838,6 +2838,7 @@ function StreamlinedInbox({
           showStatusColumn={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
           showIdentifierColumn={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
           showUpdatedColumn={visibleIssueColumnSet.has("updated") && availableIssueColumnSet.has("updated")}
+          showResponsibleColumn={visibleIssueColumnSet.has("assignee") && availableIssueColumnSet.has("assignee")}
           presentation={streamlinedUiEnabled ? "task" : "legacy"}
         />
         </div>
