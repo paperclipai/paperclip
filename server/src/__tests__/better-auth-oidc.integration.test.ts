@@ -44,7 +44,7 @@ describeEmbeddedPostgres("Better Auth OpenID Connect callback against the real s
       deploymentExposure: "private",
       authBaseUrlMode: "explicit",
       authPublicBaseUrl: ORIGIN,
-      authDisableSignUp: true,
+      authDisableSignUp: false,
       allowedHostnames: ["127.0.0.1"],
       port: 41998,
       authOidc: {
@@ -72,7 +72,7 @@ describeEmbeddedPostgres("Better Auth OpenID Connect callback against the real s
     app = express();
     app.all("/api/auth/{*authPath}", createBetterAuthHandler(createBetterAuthInstance(db, config, [ORIGIN])));
     const now = new Date();
-    await db.insert(authUsers).values({ id: "founder", name: "Founder", email: KNOWN_EMAIL, emailVerified: false, createdAt: now, updatedAt: now });
+    await db.insert(authUsers).values({ id: "founder", name: "Founder", email: KNOWN_EMAIL, emailVerified: true, createdAt: now, updatedAt: now });
   }, 60_000);
 
   afterEach(() => {
@@ -121,10 +121,19 @@ describeEmbeddedPostgres("Better Auth OpenID Connect callback against the real s
     expect(await db.select().from(authAccounts)).toHaveLength(before);
   });
 
+  it("does not link an account whose own email is unverified", async () => {
+    const now = new Date();
+    await db.insert(authUsers).values({ id: "pending", name: "Pending", email: "pending@example.com", emailVerified: false, createdAt: now, updatedAt: now });
+    const before = (await db.select().from(authAccounts)).length;
+    const callback = await signInWithProvider({ email: "pending@example.com", email_verified: true, sub: "subject-4" });
+    expect(sessionCookies(callback)).toHaveLength(0);
+    expect(await db.select().from(authAccounts)).toHaveLength(before);
+  });
+
   it("does not create a user for an unknown email", async () => {
     const callback = await signInWithProvider({ email: "stranger@example.com", email_verified: true, sub: "subject-3" });
     expect(sessionCookies(callback)).toHaveLength(0);
     const users = await db.select().from(authUsers);
-    expect(users.map((user) => user.email)).toEqual([KNOWN_EMAIL]);
+    expect(users.map((user) => user.email)).not.toContain("stranger@example.com");
   });
 });
