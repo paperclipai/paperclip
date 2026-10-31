@@ -6135,6 +6135,26 @@ describe("IssueDetail", () => {
       });
     });
 
+    it("keeps the composer enabled when a refetch fails after a successful response", async () => {
+      const response = await renderWithPendingTreeControl();
+      response.resolve({ activePauseHold: null });
+      await waitForAssertion(() => {
+        expect(queryClient.getQueryState(treeControlKey)?.status).toBe("success");
+      });
+
+      mockIssuesApi.getTreeControlState.mockClear().mockRejectedValue(new Error("502 Bad Gateway"));
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: treeControlKey });
+      });
+      await waitForAssertion(() => {
+        expect(queryClient.getQueryState(treeControlKey)?.status).toBe("error");
+        expect(mockIssuesApi.getTreeControlState).toHaveBeenCalledTimes(1);
+      });
+      await flushReact();
+      expect(composerProps().composerDisabledReason).toBeNull();
+      expect(composerProps().composerPause).toBeNull();
+    });
+
     it.each([true, false])("applies a late pause response (root=%s)", async (isRoot) => {
       const response = await renderWithPendingTreeControl();
       response.resolve({
