@@ -2203,7 +2203,7 @@ export function recoveryService(
     return Boolean(budgetBlock);
   }
 
-  async function reconcileUnassignedBlockingIssues() {
+  async function reconcileUnassignedBlockingIssues(opts?: { companyId?: string }) {
     const candidates = await db
       .select({
         id: issues.id,
@@ -2217,6 +2217,8 @@ export function recoveryService(
       .where(
         and(
           eq(issueRelations.type, "blocks"),
+          eq(issueRelations.companyId, issues.companyId),
+          opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
           inArray(issues.status, ["todo", "blocked"]),
           isNull(issues.assigneeAgentId),
           isNull(issues.assigneeUserId),
@@ -3501,7 +3503,7 @@ export function recoveryService(
     return Boolean(run || wake);
   }
 
-  async function reconcileActiveRecoveryActions() {
+  async function reconcileActiveRecoveryActions(opts?: { companyId?: string }) {
     const rows = await db
       .select({
         action: issueRecoveryActions,
@@ -3515,7 +3517,8 @@ export function recoveryService(
           eq(issues.companyId, issueRecoveryActions.companyId),
         ),
       )
-      .where(inArray(issueRecoveryActions.status, ["active", "escalated"]));
+      .where(and(inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        opts?.companyId ? eq(issueRecoveryActions.companyId, opts.companyId) : undefined));
 
     const result = {
       requeued: 0,
@@ -4532,6 +4535,7 @@ export function recoveryService(
     onDeferredDeadline?: (at: number) => void;
     issueCreatedAtGte?: Date | null;
     skipExternalConversationSettlement?: boolean;
+    skipRelatedRecovery?: boolean;
   }) {
     const candidates = await db
       .select(recoveryIssueFields)
@@ -5780,16 +5784,18 @@ export function recoveryService(
       }
     }
 
-    const orphanBlockerRecovery = await reconcileUnassignedBlockingIssues();
-    result.orphanBlockersAssigned = orphanBlockerRecovery.assigned;
-    result.skipped += orphanBlockerRecovery.skipped;
-    result.issueIds.push(...orphanBlockerRecovery.issueIds);
+    if (!opts?.skipRelatedRecovery) {
+      const orphanBlockerRecovery = await reconcileUnassignedBlockingIssues(opts);
+      result.orphanBlockersAssigned = orphanBlockerRecovery.assigned;
+      result.skipped += orphanBlockerRecovery.skipped;
+      result.issueIds.push(...orphanBlockerRecovery.issueIds);
 
-    const activeRecovery = await reconcileActiveRecoveryActions();
-    result.continuationRequeued += activeRecovery.requeued;
-    result.escalated += activeRecovery.escalated;
-    result.skipped += activeRecovery.skipped;
-    result.issueIds.push(...activeRecovery.issueIds);
+      const activeRecovery = await reconcileActiveRecoveryActions(opts);
+      result.continuationRequeued += activeRecovery.requeued;
+      result.escalated += activeRecovery.escalated;
+      result.skipped += activeRecovery.skipped;
+      result.issueIds.push(...activeRecovery.issueIds);
+    }
     result.issueIds = [...new Set(result.issueIds)];
 
     return result;
@@ -6563,6 +6569,8 @@ export function recoveryService(
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
+    reconcileUnassignedBlockingIssues,
+    reconcileActiveRecoveryActions,
     reconcileLegacyContinuation,
     legacyRepairDispatchBlock,
     sweepStaleIssueLocks,
