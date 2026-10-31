@@ -22,9 +22,10 @@ export function gradeProjectDefaultsSetup(value: { lead: PreparedAgent; future: 
 }
 function canonical(value: unknown): string { if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`; if (value && typeof value === "object") return `{${Object.entries(value).filter(([, v]) => v !== undefined).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`; return JSON.stringify(value) ?? "null"; }
 /** Public native history intentionally redacts API bodies but retains exact input digests, call identity and HTTP status. */
-export function projectReadCalls(events: unknown[], runId: string, projectId: string) {
+export function projectReadCalls(events: unknown[], runId: string, projectId: string, expectedDescription?: string) {
   const digest = createHash("sha256").update(canonical({ operationId: "GET /api/projects/{id}", pathParams: { id: projectId } })).digest("hex");
   const inputs = new Set<string>(); const results = new Set<string>();
+  const listInputs = new Set<string>(); const listResults = new Set<string>();
   // Codex emits these exact structured dynamic-tool events before/after the native
   // handler (codex-session-server-requests.ts). Never parse assistant prose as proof.
   for (const value of events) {
@@ -39,12 +40,22 @@ export function projectReadCalls(events: unknown[], runId: string, projectId: st
       const input = item.input as Record<string, unknown> | undefined;
       if (input?.apiPayloadRedacted === true && input.apiPayloadSha256 === digest) inputs.add(item.id);
     }
+    if (event.eventType === "item.started" && item.type === "tool_use" && item.name === "list_projects") listInputs.add(item.id);
     if (event.eventType === "item.completed" && item.type === "tool_result" && item.tool_use_id === item.id && item.is_error !== true) {
       const result = item.result as Record<string, unknown> | undefined;
       if (result?.apiOperationId === "GET /api/projects/{id}" && result.status === 200 && result.ok === true) results.add(item.id);
+      // A dedicated read is equally valid when it delivered the actual full
+      // saved defaults. Summaries, stale/truncated text and assistant prose are
+      // insufficient; retain exact run, envelope and tool-call correlation.
+      if (expectedDescription && Array.isArray(result?.projects) && result.projects.some(project => {
+        if (!project || typeof project !== "object") return false;
+        const row = project as Record<string, unknown>;
+        return row.id === projectId && row.description === expectedDescription && row.descriptionTruncated === false;
+      })) listResults.add(item.id);
     }
   }
-  return [...inputs].filter(callId => results.has(callId)).map(callId => ({ runId, projectId, callId }));
+  return [...new Set([...inputs].filter(callId => results.has(callId)).concat([...listInputs].filter(callId => listResults.has(callId))))]
+    .map(callId => ({ runId, projectId, callId }));
 }
 export function gradeProjectDefaults(value: unknown) {
   const c = checks(); const o = observation(value) as DefaultsObservation | undefined;
@@ -93,7 +104,7 @@ function defaults(): ChatCatalogCase {
     await ctx.input.evidence("chat-catalog-project-defaults-prerequisite-timeout.json", { heldWorkerId: worker.id, heldWorkerTimeoutSec: CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, holdDeadlineAt, remainingHoldBudgetMs: Math.max(0, holdDeadlineAt - Date.now()), canonicalTimeoutSec: CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, futureWorkerTimeoutSec: CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, authoredLegacyCanonicalStageMs: 150000, authoredLegacyFutureProbeStageMs: 180000, attemptBoundMs: 660000 });
     return { project: p, goal: g, checklist, task: held.task, worker, futureWorker, activeRunId: held.runs[0]!.id, originalEnv: (p as Entity & { env?: unknown }).env ?? null };
   }, gradeProjectDefaults);
-  return { ...base, expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 660000, runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
+  return { ...base, oracleVersion: "paperclip.chat-catalog.project-defaults.v2", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 660000, runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
     setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "future-worker-ready", "existing-work-actively-owned"] },
     async verifySetup(ctx, state) { const [lead, future, held, t, runs] = await Promise.all([
       ctx.input.api.get<PreparedAgent>(`/api/agents/${ctx.input.fixtures.agent.id}`), ctx.input.api.get<PreparedAgent>(`/api/agents/${entity(state, "futureWorker").id}`), ctx.input.api.get<PreparedAgent>(`/api/agents/${entity(state, "worker").id}`),
@@ -115,7 +126,7 @@ function defaults(): ChatCatalogCase {
     },
     async observe(ctx, state): Promise<DefaultsObservation> { const o = await observeInternal(ctx, state); const run = state.futureTask ? o.runs.find(row => row.agentId === entity(state, "futureWorker").id && (row.contextSnapshot?.issueId === entity(state, "futureTask").id || row.contextSnapshot?.taskId === entity(state, "futureTask").id)) : undefined;
       const events = run ? await collectRunEvents((after, limit) => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${after}&limit=${limit}`)) : [];
-      return { ...o, futureProjectReads: run ? projectReadCalls(events, run.id, entity(state, "project").id) : [],
+      return { ...o, futureProjectReads: run ? projectReadCalls(events, run.id, entity(state, "project").id, o.projects.find(project => project.id === entity(state, "project").id)?.description ?? undefined) : [],
       futureContext: state.futureTask ? await ctx.input.api.get(`/api/issues/${entity(state, "futureTask").id}/heartbeat-context`) : {},
       futureComments: state.futureTask ? await ctx.input.api.get(`/api/issues/${entity(state, "futureTask").id}/comments?order=asc`) : [] }; },
     async verifyResult(ctx, state) { const source = ctx.input.page.url(); try { await ctx.input.page.goto(new URL(`/${ctx.input.fixtures.company.issuePrefix}/projects/${entity(state, "project").id}`, ctx.input.api.baseURL).href); await expect(ctx.input.page.getByRole("heading", { name: "Launch", exact: true }).first()).toBeVisible(); } finally { await ctx.input.page.goto(source); await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible(); } },
