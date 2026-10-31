@@ -132,11 +132,14 @@ function isUrlishKey(key: string): boolean {
 export function stripSecretBearingUrlParts(value: string): string {
   const suffixStart = value.search(/[?#]/);
   const withoutQueryOrFragment =
-    suffixStart === -1 ? value : value.slice(0, suffixStart);
+    (suffixStart === -1 ? value : value.slice(0, suffixStart)).replace(
+      /(^|^[a-z][a-z\d+.-]*:\/\/[^/]*)(\/(?:(?:api\/)?invites\/(?![^/]+\/revoke(?:\/|$))|invite\/))[^/]+/i,
+      "$1$2[REDACTED]",
+    );
 
   try {
     const url = new URL(withoutQueryOrFragment);
-    if (!url.username && !url.password && suffixStart === -1) return value;
+    if (!url.username && !url.password) return withoutQueryOrFragment;
     url.username = "";
     url.password = "";
     return url.toString();
