@@ -68,6 +68,7 @@ export function buildNativeContinuationPrompt(input: {
   const humanResponses = (continuation?.humanResponses ?? []).filter((answer) => answer.id === wake.interactionId);
   // Do not substitute an unverified interaction outcome for an authorized answer.
   if (wake.interactionId && humanResponses.length === 0) return null;
+  const omittedDeletedIds = continuation?.coverage?.omittedDeletedIds ?? [];
   const events = {
     ...(wake.githubReviewConfigurations.some((config) => !input.previousGitHubReviewConfigurationKeys?.includes(config.key))
       ? { reviewConfigurations: wake.githubReviewConfigurations.filter((config) => !input.previousGitHubReviewConfigurationKeys?.includes(config.key)) }
@@ -84,7 +85,8 @@ export function buildNativeContinuationPrompt(input: {
     ...(wake.childIssueSummaries.length ? { childResults: wake.childIssueSummaries } : {}),
     ...(wake.childIssueSummaryTruncated ? { childResultsTruncated: true } : {}),
     ...(wake.unresolvedBlockerIssueIds.length ? { unresolvedBlockerIssueIds: wake.unresolvedBlockerIssueIds } : {}),
+    ...(omittedDeletedIds.length ? { omittedDeletedIds } : {}),
   };
-  if (!events.messages.length && !humanResponses.length && !wake.childIssueSummaries.length && !Object.keys(taskChanges).length && !input.workflowCase) return null;
+  if (!events.messages.length && !humanResponses.length && !wake.childIssueSummaries.length && !Object.keys(taskChanges).length && !input.workflowCase && omittedDeletedIds.length === 0) return null;
   return JSON.stringify(events);
 }
