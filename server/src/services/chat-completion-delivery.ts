@@ -235,15 +235,15 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
       if (runId) {
         const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
         if (run && activeRuns.includes(run.status)) return;
-        // Each callback gets one fixed grace, never a new window per sweep.
+
         const presentationDeadline = run?.runtimeMode === "native" && run.status === "succeeded" && run.finishedAt
           ? run.finishedAt.getTime() + MAX_ATTEMPTS * LEASE_MS : null;
         if (run && presentationDeadline !== null && Date.now() < presentationDeadline) {
           const scope = { companyId: claimed.companyId, issueId: row.handoff.conversationId,
             runId: run.id, agentId: row.handoff.agentId };
           const deferred = await db.transaction(async tx => {
-            // This selector defers a retry; only the presentation owner can
-            // authorize and save the accepted reply under its full guards.
+
+
             const candidates = nativeResponsePresentationCandidates(scope).as("pending_native_completion_reply");
             const [response] = await tx.select().from(candidates);
             if (!response || Date.now() >= presentationDeadline) return false;
@@ -259,8 +259,8 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
           if (deferred) return;
         }
         const advanced = await db.transaction(async tx => {
-          // Reply authority holds this same task lock through comment insertion
-          // and outbox acknowledgment. Let that winner finish before retrying.
+
+
           const [task] = await tx.select({ status: issues.status }).from(issues)
             .where(and(eq(issues.id, claimed.taskId), eq(issues.companyId, claimed.companyId))).for("update");
           if (task?.status !== "done") return false;
@@ -277,8 +277,8 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
             error: run?.error ?? "Completion turn ended without a reply" }).where(sameClaim).returning({ id: deliveries.id });
           return updated.length > 0;
         });
-        // Start the next attempt only after the winning transaction commits and
-        // releases the child-task lock; wake admission can lock its parent.
+
+
         if (advanced && claimed.attempts + 1 < MAX_ATTEMPTS) await deliver(id);
         return;
       }

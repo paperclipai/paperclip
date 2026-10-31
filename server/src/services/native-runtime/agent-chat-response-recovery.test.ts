@@ -94,8 +94,8 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     const work = nativeResponsePresentationWork(db);
     const [entry] = await work.load(f.input);
     expect(entry).toMatchObject({ id: f.runId });
-    // Deterministically order the real due-outbox handler before presentation;
-    // the already accepted answer must not require another model admission.
+
+
     await outbox.service.deliver(outbox.deliveryId);
     await expect(work.check(entry)).resolves.toBeNull();
     const [comment] = await comments(f.runId);
@@ -218,8 +218,8 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
       await Promise.race([locked, blocker]);
       const work = nativeResponsePresentationWork(db), [entry] = await work.load(f.input);
       presentation = work.check(entry); void presentation.catch(() => undefined);
-      // The real insert is paused after existingChatCompletionReply validated
-      // authority, while its child-task lock is still held until acknowledgment.
+
+
       await vi.waitFor(async () => {
         const [row] = await db.execute(sql`select exists (select 1 from pg_locks
           where locktype = 'advisory' and classid = 0 and objid = ${lockId}::oid and not granted
@@ -375,8 +375,8 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
       const work = nativeResponsePresentationWork(db), [entry] = await work.load(f.input);
       vi.setSystemTime(started + 300_000);
       expiry = outbox.service.deliver(outbox.deliveryId); void expiry.catch(() => undefined);
-      // The retry transaction now owns the child lock and has reached its real
-      // retarget write. Presentation must read the old row, then wait for it.
+
+
       await vi.waitFor(async () => {
         const [row] = await db.execute(sql`select exists (select 1 from pg_locks
           where locktype = 'advisory' and classid = 0 and objid = ${lockId}::oid and not granted
@@ -472,8 +472,8 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     });
     let old: Promise<unknown> | undefined;
     try {
-      // The actual candidate query and transaction intent complete first. Pause
-      // only the old producer before its CAS; the competing producer uses PG.
+
+
       old = outbox.service.deliver(outbox.deliveryId); void old.catch(() => undefined);
       await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1), { timeout: 5000 }); await ready;
       vi.setSystemTime(started + 60_000);
