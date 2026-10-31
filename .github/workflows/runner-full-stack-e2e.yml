@@ -1103,6 +1103,7 @@ jobs:
           path: runner-e2e-provider-pack
 
       - name: Verify and restore campaign outputs
+        id: restored_campaign_outputs
         if: startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth'
         env:
           NEEDS_RUNNER_TYPESCRIPT: ${{ matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-') || matrix.suiteId == 'openrouter-model-breadth' }}
@@ -1116,6 +1117,7 @@ jobs:
           tar --extract --gzip \
             --file runner-e2e-build/runner-e2e-build-bundle.tar.gz \
             --directory "$GITHUB_WORKSPACE"
+          printf 'bundle_sha256=%s\n' "$(sha256sum runner-e2e-build/runner-e2e-build-bundle.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
           test -d packages/paperclip-eval-kernel/dist
           if [ "$NEEDS_RUNNER_TYPESCRIPT" = true ]; then
             test -d packages/paperclip-runner/dist
@@ -1298,6 +1300,21 @@ jobs:
           finalization_status=$?
           test "$run_status" = 0 && test "$finalization_status" = 0
 
+      - name: Prepare source-built Pi for selected steering feature
+        id: steering_pi_setup
+        if: needs.catalog.outputs.operations_cadence == '' && matrix.executionId == 'chat-features.runner-opencode.local.steering.steer-active' && matrix.suiteId == 'chat-features' && matrix.profileId == 'runner-opencode' && matrix.environmentId == 'local' && steps.manual_private_verified.outcome == 'success' && steps.restored_campaign_outputs.outcome == 'success'
+        working-directory: .manual-private-trusted
+        env:
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+          GH_TOKEN: ${{ github.token }}
+          PAPERCLIP_RUNNER_E2E_PRIVATE_PREFLIGHT: ${{ format('{0}/preflight.json', steps.manual_private.outputs.root) }}
+          PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
+          STEERING_PI_RESTORED: ${{ steps.restored_campaign_outputs.outcome }}
+          STEERING_PI_BUILD_ARTIFACT: ${{ needs.build_runner_artifacts.outputs.build_artifact_name }}
+          STEERING_PI_BUILD_SHA256: ${{ steps.restored_campaign_outputs.outputs.bundle_sha256 }}
+        run: node "$GITHUB_WORKSPACE/.manual-private-trusted/cli/node_modules/tsx/dist/cli.mjs" tests/runner-e2e/steering-pi-setup.ts
+
       - name: Run paid cell
         if: needs.catalog.outputs.operations_cadence == '' && (steps.manual_cell_route.outputs.route == 'actions' || steps.manual_private_verified.outcome == 'success')
         env:
@@ -1352,6 +1369,18 @@ jobs:
         if: always() && needs.catalog.outputs.operations_cadence != '' && steps.stage_evidence.outputs.complete != 'true'
         run: exit 1
 
+      - name: Seal failed steering preparation as a private operation
+        id: steering_pi_failure
+        if: always() && (steps.steering_pi_setup.outcome == 'failure' || steps.steering_pi_setup.outcome == 'cancelled') && steps.manual_private_verified.outcome == 'success'
+        working-directory: .manual-private-trusted
+        env:
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+          GH_TOKEN: ${{ github.token }}
+          PAPERCLIP_RUNNER_E2E_PRIVATE_PREFLIGHT: ${{ format('{0}/preflight.json', steps.manual_private.outputs.root) }}
+          PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
+        run: node "$GITHUB_WORKSPACE/.manual-private-trusted/cli/node_modules/tsx/dist/cli.mjs" tests/runner-e2e/steering-pi-setup.ts seal-failure
+
       - name: Retain complete approved manual originals with no public fallback
         if: always() && steps.manual_private_verified.outcome == 'success'
         working-directory: .manual-private-trusted
@@ -1370,7 +1399,13 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ steps.manual_private_credentials.outputs.aws-secret-access-key }}
           AWS_SESSION_TOKEN: ${{ steps.manual_private_credentials.outputs.aws-session-token }}
           AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
-        run: node "$GITHUB_WORKSPACE/.manual-private-trusted/cli/node_modules/tsx/dist/cli.mjs" "$GITHUB_WORKSPACE/.manual-private-trusted/tests/runner-e2e/manual-private-transfer.ts" upload-cell
+        run: |
+          action=upload-cell
+          if [ "${{ steps.steering_pi_setup.outcome }}" = failure ] || [ "${{ steps.steering_pi_setup.outcome }}" = cancelled ]; then
+            test "${{ steps.steering_pi_failure.outcome }}" = success
+            action=upload-operation
+          fi
+          node "$GITHUB_WORKSPACE/.manual-private-trusted/cli/node_modules/tsx/dist/cli.mjs" "$GITHUB_WORKSPACE/.manual-private-trusted/tests/runner-e2e/manual-private-transfer.ts" "$action"
 
   test_recurring:
     name: ${{ matrix.executionId }}
@@ -1396,6 +1431,7 @@ jobs:
     runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: ${{ matrix.timeoutMinutes }}
     permissions:
+      actions: read
       contents: read
       id-token: write
     environment:

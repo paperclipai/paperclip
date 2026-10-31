@@ -1,3 +1,4 @@
+import { validateOperationOriginals } from "./manual-private-operation.js";
 import { createHash } from "node:crypto";
 import { appendFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -110,7 +111,27 @@ function cellCompleteness(id: string, receipt: { requiredEvidenceComplete: boole
   return { meaning: "available-files-and-transfer-only", doesNotAttestFeatureOutcome: true,
     cells: [{ executionId: id, availableFileInventoryComplete: true, requiredPassEvidenceComplete: receipt.requiredEvidenceComplete, missingRequiredEvidence: receipt.missingRequiredEvidence }] };
 }
-async function uploadCell(env: NodeJS.ProcessEnv) {
+export async function preparePrivateCellBundle(root: string, id: string, context: ManualPrivateHandoff, mode: "cell" | "preframework-operation" = "cell") {
+  const originals = await validateSealedOriginals(root, id, context), evidenceCompleteness = cellCompleteness(id, originals);
+  const original = path.join(root, "originals", manualCellKind(id));
+  const results = path.join(root, "sealed-results");
+  const exists = (file: string) => lstat(file).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; });
+  const operation = mode === "preframework-operation" ? await validateOperationOriginals(original, context) : undefined;
+  if (operation) {
+    if (originals.requiredEvidenceComplete !== null || originals.missingRequiredEvidence.length || await exists(results) || await exists(path.join(root, "results")) || await exists(path.join(root, "capture")))
+      throw new Error("Preframework operation has mixed framework evidence");
+  } else {
+    if (await exists(path.join(original, "snapshots/preframework-operation.json"))) throw new Error("Operation cannot be published as a framework cell");
+    await validateSealedInventory(path.join(results, "html-report"), "../result-evidence-inventory.json", undefined, "standard", context);
+  }
+  const bundle = path.join(root, "sealed-bundle"); await mkdir(bundle, { mode: 0o700 });
+  await mkdir(path.join(bundle, "originals"), { mode: 0o700 });
+  await cp(original, path.join(bundle, "originals", manualCellKind(id)), { recursive: true, errorOnExist: true, force: false });
+  if (!operation) await cp(results, path.join(bundle, "sealed-results"), { recursive: true, errorOnExist: true, force: false });
+  await writeFile(path.join(bundle, "identity.json"), JSON.stringify({ ...context, evidenceCompleteness, ...(operation ? { operation } : {}) }), { mode: 0o600, flag: "wx" });
+  return { bundle, evidenceCompleteness };
+}
+async function uploadCell(env: NodeJS.ProcessEnv, mode: "cell" | "preframework-operation" = "cell") {
   requireSession(env); const { approval, bucket } = request(env), id = env.SELECTED_EXECUTION_ID!;
   if (!approval.executionIds.includes(id)) throw new Error("Private evidence cell is not approved");
   const root = await realpath(env.PRIVATE_EVIDENCE_ROOT ?? ""), context = JSON.parse(await readFile(path.join(root, "preflight.json"), "utf8"));
@@ -118,18 +139,25 @@ async function uploadCell(env: NodeJS.ProcessEnv) {
     || context.runId !== approval.runId || context.executionIds.join() !== id || context.root !== root) throw new Error("Private evidence preflight identity changed");
   if (await lstat(path.join(root, "contamination.json")).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; }))
     throw new Error("Contaminated private evidence cannot be uploaded");
-  const originals = await validateSealedOriginals(root, id, context);
-  const evidenceCompleteness = cellCompleteness(id, originals);
-  const bundle = path.join(root, "sealed-bundle"); await mkdir(bundle, { mode: 0o700 });
-  const results = path.join(root, "sealed-results");
-  await validateSealedInventory(path.join(results, "html-report"), "../result-evidence-inventory.json", undefined, "standard", context);
-  await mkdir(path.join(bundle, "originals"), { mode: 0o700 });
-  await cp(path.join(root, "originals", manualCellKind(id)), path.join(bundle, "originals", manualCellKind(id)), { recursive: true, errorOnExist: true, force: false });
-  await cp(results, path.join(bundle, "sealed-results"), { recursive: true, errorOnExist: true, force: false });
-  await writeFile(path.join(bundle, "identity.json"), JSON.stringify({ ...context, evidenceCompleteness }), { mode: 0o600, flag: "wx" });
+  const { bundle, evidenceCompleteness } = await preparePrivateCellBundle(root, id, context, mode);
   const receipt = path.join(root, "cell-transfer.json"), publisher = new BoundedHistoryPublisher(receipt);
   await retainPrivateTransfer({ operation: "upload", kind: manualCellKind(id), runId: approval.runId, directory: bundle, bucket, publisher, evidenceCompleteness }, receipt,
     () => new BoundedHistoryPublisher(`${receipt}.retention.json`));
+}
+export async function verifyDownloadedPrivateCell(directory: string, id: string, identity: ManualPrivateHandoff & { operation?: unknown }) {
+  const originals = await validateSealedOriginals(directory, id, { ...identity, root: directory });
+  if (identity.operation !== undefined) {
+    const outer = await readdir(directory, { withFileTypes: true });
+    if (outer.map(entry => entry.name).sort().join() !== "identity.json,originals" || outer.some(entry => entry.isSymbolicLink() || (entry.name === "identity.json" ? !entry.isFile() : !entry.isDirectory()))) throw new Error("Unexpected private operation archive carrier");
+    const folders = await readdir(path.join(directory, "originals"), { withFileTypes: true });
+    if (folders.length !== 1 || folders[0]!.name !== manualCellKind(id) || folders[0]!.isSymbolicLink() || !folders[0]!.isDirectory()) throw new Error("Unexpected private operation namespace");
+    const operation = await validateOperationOriginals(path.join(directory, "originals", manualCellKind(id)), identity);
+    if (hash(JSON.stringify(operation)) !== hash(JSON.stringify(identity.operation)) || originals.requiredEvidenceComplete !== null
+      || await lstat(path.join(directory, "sealed-results")).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; })) throw new Error("Mixed preframework archive identity");
+    return { originals, operation };
+  }
+  await validateSealedInventory(path.join(directory, "sealed-results", "html-report"), "../result-evidence-inventory.json", undefined, "standard", { ...identity, root: directory });
+  return { originals, operation: undefined };
 }
 async function reportSession(env: NodeJS.ProcessEnv) {
   const { approval, bucket } = request(env);
@@ -155,11 +183,11 @@ async function downloadCell(env: NodeJS.ProcessEnv) {
     const identity = JSON.parse(await readFile(path.join(directory, "identity.json"), "utf8"));
     if (identity.targetSha !== approval.targetSha || identity.workflowSha !== approval.workflowSha || identity.runId !== approval.runId
       || identity.executionIds.join() !== id || identity.protocol !== MANUAL_PRIVATE_PROTOCOL) throw new Error("Private cell archive has a foreign identity");
-    const originals = await validateSealedOriginals(directory, id, { ...identity, root: directory }), summary = cellCompleteness(id, originals);
+    const { originals, operation } = await verifyDownloadedPrivateCell(directory, id, identity), summary = cellCompleteness(id, originals);
     if (hash(JSON.stringify(identity.evidenceCompleteness)) !== hash(JSON.stringify(summary))
       || hash(JSON.stringify(receipt.evidenceCompleteness)) !== hash(JSON.stringify(summary))) throw new Error("Private evidence completeness receipt differs from archive");
-    await validateSealedInventory(path.join(directory, "sealed-results", "html-report"), "../result-evidence-inventory.json", undefined, "standard", { ...identity, root: directory });
-    await cp(path.join(directory, "sealed-results", "html-report"), path.join(selected, manualCellKind(id)), { recursive: true, errorOnExist: true, force: false });
+    if (operation) await writeFile(path.join(root, `manual-cell-operation-${index}.json`), JSON.stringify(operation), { mode: 0o600, flag: "wx" });
+    else await cp(path.join(directory, "sealed-results", "html-report"), path.join(selected, manualCellKind(id)), { recursive: true, errorOnExist: true, force: false });
     await writeFile(path.join(root, `manual-cell-completeness-${index}.json`), JSON.stringify(summary), { mode: 0o600, flag: "wx" });
   }
 }
@@ -167,6 +195,8 @@ async function verifyDownloads(env: NodeJS.ProcessEnv) {
   const { approval } = request(env), root = await realpath(env.PRIVATE_REPORT_ROOT ?? "");
   const cells: PrivateEvidenceCompleteness["cells"] = [];
   for (const [index, id] of approval.executionIds.entries()) {
+    if (await lstat(path.join(root, `manual-cell-operation-${index}.json`)).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; }))
+      throw new Error("Private preparation operation retained; framework never started and no feature result exists");
     const summary = JSON.parse(await readFile(path.join(root, `manual-cell-completeness-${index}.json`), "utf8")) as PrivateEvidenceCompleteness;
     if (summary.meaning !== "available-files-and-transfer-only" || summary.doesNotAttestFeatureOutcome !== true
       || summary.cells.length !== 1 || summary.cells[0]!.executionId !== id) throw new Error("Private report lacks an exact cell transfer");
@@ -195,6 +225,7 @@ async function main() {
   if (action === "prepare") await prepare(process.env);
   else if (action === "verify") await verify(process.env);
   else if (action === "upload-cell") await uploadCell(process.env);
+  else if (action === "upload-operation") await uploadCell(process.env, "preframework-operation");
   else if (action === "report-session") await reportSession(process.env);
   else if (action === "download-cell") await downloadCell(process.env);
   else if (action === "verify-downloads") await verifyDownloads(process.env);
