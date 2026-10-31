@@ -5135,6 +5135,8 @@ const issueListSelect = {
   requestDepth: issues.requestDepth,
   billingCode: issues.billingCode,
   assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+  completionRequirement: issues.completionRequirement,
+  completionRequirementRevision: issues.completionRequirementRevision,
   executionPolicy: sql<null>`null`,
   executionState: sql<null>`null`,
   monitorNextCheckAt: issues.monitorNextCheckAt,
