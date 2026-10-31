@@ -67,6 +67,22 @@ describe("decideQueuedCommentQueueSteering", () => {
 
     expect(decision).toEqual({ protocol: "paperclip_runner_v1", kind: "probe", steeringRunId: "run-1" });
   });
+
+  it("keeps a preparing Paperclip Runner on the steering protocol until runtime selection finishes", () => {
+    expect(decideQueuedCommentQueueSteering({ state: "deferred", queueRunRuntimeMode: null,
+      activeRun: { id: "preparing-run", runtimeMode: "legacy", runtimeModeResolvedAt: null,
+        runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } } },
+      assignedAgentAdapterType: "paperclip_runner", queuedCommentCount: 1,
+    })).toEqual({ protocol: "paperclip_runner_v1", kind: "temporarily_unavailable" });
+  });
+
+  it("preserves the historical adapter when mutable agent settings change", () => {
+    expect(decideQueuedCommentQueueSteering({ state: "deferred", queueRunRuntimeMode: null,
+      activeRun: { id: "legacy-run", runtimeMode: "legacy", runtimeModeResolvedAt: null,
+        runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } } },
+      assignedAgentAdapterType: "paperclip_runner", queuedCommentCount: 1,
+    })).toEqual({ protocol: "legacy", kind: "unsupported" });
+  });
 });
 
 describe("buildQueuedCommentQueueSnapshot entry permissions", () => {
@@ -128,11 +144,12 @@ describe("withQueuedCommentIdsInRunContext", () => {
       paperclipTaskMarkdownAssignment: "assignment",
       paperclipTaskMarkdownAssignmentCompact: "assignment compact",
       paperclipTurnContext: { version: 1, events: { owner: "wake_prompt" } },
-    }, ["comment-2"]);
+    }, ["comment-2"], ["source-wake"]);
 
     expect(result).toMatchObject({
       issueId: "issue-1",
       preserved: "keep",
+      queuedCommentSourceWakeIds: ["source-wake"],
       wakeCommentIds: ["comment-2"],
       wakeCommentId: "comment-2",
       commentId: "comment-2",
@@ -144,5 +161,6 @@ describe("withQueuedCommentIdsInRunContext", () => {
     expect(result).not.toHaveProperty("paperclipTaskMarkdownAssignment");
     expect(result).not.toHaveProperty("paperclipTaskMarkdownAssignmentCompact");
     expect(result).not.toHaveProperty("paperclipTurnContext");
+    expect(withQueuedCommentIdsInRunContext(result, ["comment-3"]).queuedCommentSourceWakeIds).toEqual(["source-wake"]);
   });
 });

@@ -1,4 +1,5 @@
 import { redactDiagnosticText, REDACTED_COMMAND_TEXT_VALUE } from "../command-redaction.js";
+import type { AdapterExecutionResult } from "../types.js";
 
 export interface AcpxTerminalSessionFailure {
   category: string;
@@ -11,6 +12,23 @@ export interface AcpxTerminalSessionFailureDiagnostic extends AcpxTerminalSessio
 }
 
 const CATEGORIES = new Set(["connection", "access", "limit", "service", "request", "unknown"]);
+
+/** Inspect raw provider text before redaction can remove status codes or limits.
+ * Only definition paths qualify: invalid call arguments and overloads remain
+ * subject to their existing recovery contracts.
+ */
+export function classifyToolDefinitionFailure(
+  failure: AcpxTerminalSessionFailure,
+): Pick<AdapterExecutionResult, "errorCode" | "errorFamily"> | null {
+  const text = `${failure.title ?? ""}\n${failure.details ?? ""}`;
+  const definitionPath = /\btools(?:\.\d+|\[\d+\])(?:\.(?:custom|function))?\.(?:name|input_schema|parameters|description|type)\b/i;
+  const validation = /at most|too long|max(?:imum)?[_ ]?length|invalid|not valid|must|should|schema|validation|unsupported/i;
+  const namedDefinition = /(?:invalid|unsupported)\s+(?:tool|function)\s+(?:definition|schema|name)|invalid schema for (?:function|tool)/i;
+  if ((definitionPath.test(text) && validation.test(text)) || namedDefinition.test(text)) {
+    return { errorCode: "provider_tool_definition_invalid", errorFamily: "configuration" };
+  }
+  return null;
+}
 // Leave room under the server's 64 KiB run-log chunk limit even when every
 // retained character needs JSON escaping. The transcript stores the text once.
 const FIELD_LIMITS = { title: 4096, details: 24576 } as const;

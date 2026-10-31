@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -28,6 +29,7 @@ import {
   toolApplications,
   toolConnections,
 } from "@paperclipai/db";
+import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
@@ -36,6 +38,7 @@ import type { StorageService } from "../../storage/types.js";
 import { issueService } from "../issues.js";
 import { mergeHeartbeatRunResultJson } from "../heartbeat-run-summary.js";
 import {
+  authorizeChatConversationForBoundRun,
   prepareReusedChatAttachment,
   resolveExternalChatResponseWaitAuthorization,
   type ChatAttachmentReuseSource,
@@ -68,8 +71,9 @@ describe("native same-conversation chat attachment reuse", () => {
   );
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("native-chat-reuse-");
-    db = createDb(temporary.connectionString);
+    const external = resolveExternalTestDatabaseUrl("PAPERCLIP_CHAT_REUSE_TEST_DATABASE_URL");
+    if (!external) temporary = await startEmbeddedPostgresTestDatabase("native-chat-reuse-");
+    db = createDb(external ?? temporary!.connectionString);
     const storageRoot = await mkdtemp(
       path.join(tmpdir(), "paperclip-chat-reuse-"),
     );
@@ -293,6 +297,7 @@ describe("native same-conversation chat attachment reuse", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await temporary?.cleanup();
   });
 
@@ -306,6 +311,94 @@ describe("native same-conversation chat attachment reuse", () => {
       storage,
     });
   }
+
+  it("bounds current authorization reads without loading unrelated chat content", async () => {
+    const binding = { companyId, agentId, issueId, runId };
+    const [run] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpointId));
+    const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.id, conversationId));
+    const [resource] = await db.select().from(chatEndpointResources).where(eq(chatEndpointResources.id, resourceId));
+    const deliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpointId));
+    const bulk = randomBytes(64 * 1024).toString("base64");
+    const events: Array<Record<string, unknown>> = [];
+    let capture: ReturnType<typeof createDatabaseResponseCapture> | undefined;
+    try {
+      await db.update(chatEndpoints).set({ communicationInstructions: bulk,
+        setup: { ...endpoint.setup, unusedContent: bulk } as typeof endpoint.setup,
+      }).where(eq(chatEndpoints.id, endpointId));
+      await db.update(chatConversations).set({ communicationGuidance: bulk }).where(eq(chatConversations.id, conversationId));
+      await db.update(chatEndpointResources).set({ metadata: { ...resource.metadata, unusedContent: bulk } })
+        .where(eq(chatEndpointResources.id, resourceId));
+      for (const delivery of deliveries) {
+        await db.update(chatDeliveries).set({ normalizedEvent: { ...delivery.normalizedEvent, unusedContent: bulk } })
+          .where(eq(chatDeliveries.id, delivery.id));
+      }
+      const now = Date.now();
+      capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+      installDatabaseResponseCapture(db, { chatMessageLinks, chatDeliveries, chatConversations, chatEndpoints,
+        chatEndpointResources, chatExternalPrincipals, chatIdentityLinks, companyMemberships }, capture);
+      for (const lockMode of ["read", "blocking", "nonblocking"] as const) {
+        await expect(db.transaction(tx => authorizeChatConversationForBoundRun(tx as unknown as typeof db,
+          binding, run.contextSnapshot, lockMode))).resolves.toEqual({ conversationId, endpointId });
+      }
+      capture.flush();
+      expect(Number(events.at(-1)?.responseValueBytes)).toBeLessThan(12_000);
+      expect(Number(events.at(-1)?.completedQueries)).toBeGreaterThan(12);
+      expect(events.filter(event => event.queryErrors !== undefined).every(event => event.queryErrors === 0)).toBe(true);
+      expect((await db.select({ setup: chatEndpoints.setup }).from(chatEndpoints)
+        .where(eq(chatEndpoints.id, endpointId)))[0].setup).toEqual({ ...endpoint.setup, unusedContent: bulk });
+      expect((await db.select({ normalizedEvent: chatDeliveries.normalizedEvent }).from(chatDeliveries)
+        .where(eq(chatDeliveries.id, deliveries[0].id)))[0].normalizedEvent)
+        .toEqual({ ...deliveries[0].normalizedEvent, unusedContent: bulk });
+    } finally {
+      capture?.flush();
+      await db.update(chatEndpoints).set({ communicationInstructions: endpoint.communicationInstructions, setup: endpoint.setup })
+        .where(eq(chatEndpoints.id, endpointId));
+      await db.update(chatConversations).set({ communicationGuidance: conversation.communicationGuidance })
+        .where(eq(chatConversations.id, conversationId));
+      await db.update(chatEndpointResources).set({ metadata: resource.metadata }).where(eq(chatEndpointResources.id, resourceId));
+      for (const delivery of deliveries) {
+        await db.update(chatDeliveries).set({ normalizedEvent: delivery.normalizedEvent }).where(eq(chatDeliveries.id, delivery.id));
+      }
+    }
+  });
+
+  it.each([
+    { label: "matching numeric generation", generation: 7, fingerprint: "a".repeat(64), allowed: true },
+    { label: "string generation", generation: "7", fingerprint: "a".repeat(64), allowed: false },
+    { label: "wrong generation", generation: 8, fingerprint: "a".repeat(64), allowed: false },
+    { label: "missing generation", generation: undefined, fingerprint: "a".repeat(64), allowed: false },
+    { label: "invalid fingerprint", generation: 7, fingerprint: "not-a-fingerprint", allowed: false },
+    { label: "numeric fingerprint", generation: 7, fingerprint: 7, allowed: false },
+  ])("preserves setup-test authorization for $label", async ({ generation, fingerprint, allowed }) => {
+    const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpointId));
+    const deliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpointId));
+    const [run] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    try {
+      const setup = { step: "test" as const, testStartedAt: "2000-01-01T00:00:00.000Z", runtimeGeneration: 7 };
+      await db.update(chatEndpoints).set({ status: "verifying", setup }).where(eq(chatEndpoints.id, endpointId));
+      for (const delivery of deliveries) {
+        await db.update(chatDeliveries).set({
+          normalizedEvent: { runtimeContext: { generation, credentialFingerprint: fingerprint } },
+          receivedAt: new Date("2000-01-01T00:00:01.000Z"),
+          processedAt: new Date("2000-01-01T00:00:02.000Z"),
+        })
+          .where(eq(chatDeliveries.id, delivery.id));
+      }
+      const result = db.transaction(tx => authorizeChatConversationForBoundRun(tx as unknown as typeof db,
+        { companyId, agentId, issueId, runId }, run.contextSnapshot));
+      if (allowed) await expect(result).resolves.toEqual({ conversationId, endpointId });
+      else await expect(result).rejects.toThrow("paperclip_runner_chat_attachment_binding_denied");
+    } finally {
+      await db.update(chatEndpoints).set({ status: endpoint.status, setup: endpoint.setup }).where(eq(chatEndpoints.id, endpointId));
+      for (const delivery of deliveries) {
+        await db.update(chatDeliveries).set({ normalizedEvent: delivery.normalizedEvent,
+          receivedAt: delivery.receivedAt, processedAt: delivery.processedAt,
+        }).where(eq(chatDeliveries.id, delivery.id));
+      }
+    }
+  });
 
   it("authorizes an external-chat response wait only from current durable policy", async () => {
     const binding = { companyId, agentId, issueId, runId };

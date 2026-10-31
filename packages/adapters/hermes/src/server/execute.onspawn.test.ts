@@ -113,6 +113,18 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(call[2]).toContainEqual(expect.stringContaining("Current task brief"));
   });
 
+  it("launches in the assigned task workspace when no cwd was configured", async () => {
+    const { ctx } = makeCtx();
+    await execute({ ...ctx, context: { ...ctx.context, paperclipWorkspace: { cwd: "/private/qa/agent-workspace" } } } as any);
+    expect(vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![3].cwd).toBe("/private/qa/agent-workspace");
+  });
+
+  it("preserves an explicitly configured cwd", async () => {
+    const { ctx } = makeCtx({ cwd: "/private/qa/configured-workspace" });
+    await execute({ ...ctx, context: { ...ctx.context, paperclipWorkspace: { cwd: "/private/qa/agent-workspace" } } } as any);
+    expect(vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![3].cwd).toBe("/private/qa/configured-workspace");
+  });
+
   it("runChildProcess opts type includes onSpawn", () => {
     // Type-level assertion: if onSpawn were removed from the type,
     // this file would fail to compile. The runtime test above catches

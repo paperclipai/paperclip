@@ -54,10 +54,10 @@ export const chatStoryTasks = buildChatTasks([
 ]).map(task => ({ ...task, ...(task.id === "enable-disable-resume" ? {} : { minimumExpectedRunCount: 1 }) }));
 
 export function chatNeedsApiTools(suiteId: string, caseId: string): boolean {
-  return (suiteId === "agent-chat-qualification" && caseId === "grounded-answer-quality") || suiteId === "agent-chat-hardening" && ["hire-delegate-reuse", "blocked-status-review"].includes(caseId);
+  return suiteId === "hiring-templates" || (suiteId === "agent-chat-qualification" && caseId === "grounded-answer-quality") || suiteId === "agent-chat-hardening" && ["hire-delegate-reuse", "blocked-status-review"].includes(caseId);
 }
 export function isManagedHiringCase(suiteId: string, caseId: string): boolean {
-  return (suiteId === "everyday-workflows" && caseId === "hire-reuse") ||
+  return (suiteId === "hiring-templates" && caseId === "hire-coder-template-reuse") || (suiteId === "everyday-workflows" && caseId === "hire-reuse") ||
     (suiteId === "agent-chat-hardening" && caseId === "hire-delegate-reuse");
 }
 

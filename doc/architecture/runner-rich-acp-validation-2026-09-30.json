@@ -1,0 +1,849 @@
+{
+  "schema": "paperclip-runner-rich-acp-validation-checkpoint/v1",
+  "status": "rolling_checkpoint_qualification_pending",
+  "artifactBase": "private artifact set paperclip-rich-acp-production-20260929",
+  "sourceRevision": "5605c350b2a4dae75be3779f164d7e1a0e4a5a87",
+  "generatedAt": "2026-09-30",
+  "includedRootReconciledPaidCells": [
+    {
+      "id": "cursor-01",
+      "status": "root_reconciled_pass",
+      "sourceRevision": "5605c350b2a4dae75be3779f164d7e1a0e4a5a87",
+      "sourceRef": "qualification/current-profiles-5605",
+      "provider": "cursor",
+      "environment": "local",
+      "caseId": "hello-complete",
+      "profile": {
+        "id": "runner-acpx-cursor",
+        "version": 5,
+        "digest": "sha256:aa8c0b2b84786982bcd06b7634bf95be6f2bc42bb8def48a8751dc50cf739b6b",
+        "model": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+        "runtimeMode": "native"
+      },
+      "attempt": 1,
+      "runIds": [
+        "4728607a-05f7-412f-8ca5-93a08f3a8527"
+      ],
+      "startedAt": "2026-09-30T01:10:00.361Z",
+      "finishedAt": "2026-09-30T01:10:39.730Z",
+      "duration": {
+        "caseDurationMs": 39369,
+        "supervisedRunDurationSeconds": 76.202
+      },
+      "matchers": [
+        {
+          "kind": "message_exact",
+          "passed": true
+        },
+        {
+          "kind": "message_occurrences",
+          "passed": true
+        },
+        {
+          "kind": "issue_status",
+          "passed": true
+        },
+        {
+          "kind": "run_status",
+          "passed": true
+        },
+        {
+          "kind": "runtime_mode",
+          "passed": true
+        },
+        {
+          "kind": "environment",
+          "passed": true
+        }
+      ],
+      "matcherCount": 6,
+      "cleanup": {
+        "verifiedByRoot": true,
+        "exclusiveProductSlotReleased": true,
+        "remainingOwnedProcesses": 0,
+        "cleanupStatus": "stopped",
+        "screenshotReviewed": true
+      },
+      "costProvenance": {
+        "coverage": "account_upper_bound",
+        "providerUsage": "included; no incremental on-demand charge",
+        "costUpperBoundUsd": 0,
+        "nativePerRunPrice": "unavailable"
+      },
+      "evidence": {
+        "result": {
+          "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-01/result.json",
+          "sha256": "68fa08c1c3522d1299d89a1c612dd6fbfd2a0cd050dffe8235cdfe62b355c754"
+        },
+        "rootReconciliation": {
+          "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-01/root-reconciliation.private.json",
+          "sha256": "eada0bec37de846fa10a65877fd196ef823792966dc8a6ce5d685e4a1352f189",
+          "status": "root_reconciled",
+          "observedAt": "2026-09-30T01:12:05.563827+00:00"
+        },
+        "screenshots": [
+          {
+            "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-01/product-results/extended-harnesses/runner-acpx-cursor/local/hello-complete/attempt-1/final-state.png",
+            "sha256": "69a8b17fd3d8ae08afc1c2263069c5b56281dca6061d87bed53b2e994621416f",
+            "rootReviewed": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "cursor-02",
+      "status": "root_reconciled_pass",
+      "sourceRevision": "5605c350b2a4dae75be3779f164d7e1a0e4a5a87",
+      "sourceRef": "qualification/current-profiles-5605",
+      "provider": "cursor",
+      "environment": "local",
+      "caseId": "question-resume-complete",
+      "profile": {
+        "id": "runner-acpx-cursor",
+        "version": 5,
+        "digest": "sha256:aa8c0b2b84786982bcd06b7634bf95be6f2bc42bb8def48a8751dc50cf739b6b",
+        "model": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+        "runtimeMode": "native"
+      },
+      "attempt": 1,
+      "runIds": [
+        "cb5f4a0b-9c5e-4e5e-8fc4-6051b5beed4c",
+        "5272347e-996f-4627-bdd6-7cc9db784cd7"
+      ],
+      "startedAt": "2026-09-30T01:12:50.501Z",
+      "finishedAt": "2026-09-30T01:13:59.280Z",
+      "duration": {
+        "caseDurationMs": 68779,
+        "supervisedRunDurationSeconds": 99.186
+      },
+      "matchers": [
+        {
+          "kind": "message_exact",
+          "passed": true
+        },
+        {
+          "kind": "message_occurrences",
+          "passed": true
+        },
+        {
+          "kind": "issue_status",
+          "passed": true
+        },
+        {
+          "kind": "run_status",
+          "passed": true
+        },
+        {
+          "kind": "runtime_mode",
+          "passed": true
+        },
+        {
+          "kind": "environment",
+          "passed": true
+        }
+      ],
+      "matcherCount": 6,
+      "cleanup": {
+        "verifiedByRoot": true,
+        "exclusiveProductSlotReleased": true,
+        "remainingOwnedProcesses": 0,
+        "cleanupStatus": "stopped",
+        "screenshotReviewed": true
+      },
+      "costProvenance": {
+        "coverage": "account_upper_bound",
+        "providerUsage": "included; no incremental on-demand charge",
+        "costUpperBoundUsd": 0,
+        "nativePerRunPrice": "unavailable"
+      },
+      "evidence": {
+        "result": {
+          "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-02/result.json",
+          "sha256": "a402c35d9c003f8de6b67546cf170c77826e84b2bc1f1180d9756512ddcf1cd3"
+        },
+        "rootReconciliation": {
+          "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-02/root-reconciliation.private.json",
+          "sha256": "b2919a59a8bb1cd1cf3c7dda024a68abe99cfaa35a688744f912a6901b231970",
+          "status": "root_reconciled",
+          "observedAt": "2026-09-30T01:15:42.832650+00:00"
+        },
+        "screenshots": [
+          {
+            "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-02/product-results/extended-harnesses/runner-acpx-cursor/local/question-resume-complete/attempt-1/question-pending.png",
+            "sha256": "463c225dee683ab3e563774b37fd3878337d5b7cadfd486d9fc4edacadb7d3f9",
+            "rootReviewed": true
+          },
+          {
+            "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-02/product-results/extended-harnesses/runner-acpx-cursor/local/question-resume-complete/attempt-1/final-state.png",
+            "sha256": "582309fce62e4d7f727233dbeabe9555204feb8db6338df84c0dfc909ea0aad1",
+            "rootReviewed": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "cursor-03",
+      "status": "root_reconciled_pass",
+      "sourceRevision": "5605c350b2a4dae75be3779f164d7e1a0e4a5a87",
+      "sourceRef": "qualification/current-profiles-5605",
+      "provider": "cursor",
+      "environment": "local",
+      "caseId": "plan-approve-complete",
+      "profile": {
+        "id": "runner-acpx-cursor",
+        "version": 5,
+        "digest": "sha256:aa8c0b2b84786982bcd06b7634bf95be6f2bc42bb8def48a8751dc50cf739b6b",
+        "model": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+        "runtimeMode": "native"
+      },
+      "attempt": 1,
+      "runIds": [
+        "3adc7e0c-27c5-4527-88be-825c0db85bbc",
+        "04e3efe4-6794-4868-abbd-33eeddd67782"
+      ],
+      "startedAt": "2026-09-30T01:17:42.745Z",
+      "finishedAt": "2026-09-30T01:18:51.884Z",
+      "duration": {
+        "caseDurationMs": 69139,
+        "supervisedRunDurationSeconds": 98.064
+      },
+      "matchers": [
+        {
+          "kind": "message_exact",
+          "passed": true
+        },
+        {
+          "kind": "message_occurrences",
+          "passed": true
+        },
+        {
+          "kind": "issue_status",
+          "passed": true
+        },
+        {
+          "kind": "run_status",
+          "passed": true
+        },
+        {
+          "kind": "runtime_mode",
+          "passed": true
+        },
+        {
+          "kind": "environment",
+          "passed": true
+        }
+      ],
+      "matcherCount": 6,
+      "cleanup": {
+        "verifiedByRoot": true,
+        "exclusiveProductSlotReleased": true,
+        "remainingOwnedProcesses": 0,
+        "cleanupStatus": "stopped",
+        "screenshotReviewed": true
+      },
+      "costProvenance": {
+        "coverage": "account_upper_bound",
+        "providerUsage": "included; no incremental on-demand charge",
+        "costUpperBoundUsd": 0,
+        "nativePerRunPrice": "unavailable"
+      },
+      "evidence": {
+        "result": {
+          "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-03/result.json",
+          "sha256": "68dd8f2b8f95cc81fa532f3286a7ca9f06291204391f3f035ed7cba46afbfece"
+        },
+        "rootReconciliation": {
+          "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-03/root-reconciliation.private.json",
+          "sha256": "b95cb93e3ab47cf155363be8b6111b592d9b3b66cc463c1059143947ddd143da",
+          "status": "root_reconciled",
+          "observedAt": "2026-09-30T01:21:11.176553+00:00"
+        },
+        "screenshots": [
+          {
+            "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-03/product-results/extended-harnesses/runner-acpx-cursor/local/plan-approve-complete/attempt-1/plan-pending.png",
+            "sha256": "2eed6a09fea187742c1846947b2563016016990b753d5ece39d02cb74b18edb7",
+            "rootReviewed": true
+          },
+          {
+            "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-03/product-results/extended-harnesses/runner-acpx-cursor/local/plan-approve-complete/attempt-1/final-state.png",
+            "sha256": "3a3fa24da4a7558f481f981ea0cde8706b580b5d1fb3934cc6be67f0b7123278",
+            "rootReviewed": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "cursor-04",
+      "status": "root_reconciled_pass",
+      "sourceRevision": "5605c350b2a4dae75be3779f164d7e1a0e4a5a87",
+      "sourceRef": "qualification/current-profiles-5605",
+      "provider": "cursor",
+      "environment": "local",
+      "caseId": "structured-question-restart-resume",
+      "profile": {
+        "id": "runner-acpx-cursor",
+        "version": 5,
+        "digest": "sha256:aa8c0b2b84786982bcd06b7634bf95be6f2bc42bb8def48a8751dc50cf739b6b",
+        "model": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+        "runtimeMode": "native"
+      },
+      "attempt": 1,
+      "runIds": [
+        "41c0f689-8c7e-4d84-84c6-6736189e1b62",
+        "7a7710ae-01bd-4a35-891e-031b9d006bae"
+      ],
+      "startedAt": "2026-09-30T01:41:11.821Z",
+      "finishedAt": "2026-09-30T01:42:11.408Z",
+      "duration": {
+        "caseDurationMs": 59587,
+        "supervisedRunDurationSeconds": 72.36
+      },
+      "matchers": [
+        {
+          "kind": "message_exact",
+          "passed": true
+        },
+        {
+          "kind": "message_occurrences",
+          "passed": true
+        },
+        {
+          "kind": "issue_status",
+          "passed": true
+        },
+        {
+          "kind": "run_status",
+          "passed": true
+        },
+        {
+          "kind": "runtime_mode",
+          "passed": true
+        },
+        {
+          "kind": "environment",
+          "passed": true
+        }
+      ],
+      "matcherCount": 6,
+      "cleanup": {
+        "verifiedByRoot": true,
+        "exclusiveProductSlotReleased": true,
+        "remainingOwnedProcesses": 0,
+        "cleanupStatus": "stopped",
+        "screenshotReviewed": true
+      },
+      "costProvenance": {
+        "coverage": "account_upper_bound",
+        "providerUsage": "included; no incremental on-demand charge",
+        "costUpperBoundUsd": 0,
+        "nativePerRunPrice": "unavailable"
+      },
+      "evidence": {
+        "result": {
+          "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-04/result.json",
+          "sha256": "8da3a1a0aee98a2185906f648a6af90fb52efef536168f0ccdf168ff700c0ac8"
+        },
+        "rootReconciliation": {
+          "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-04/root-reconciliation.private.json",
+          "sha256": "e0bf9ccfdfde2bfb16e2c7d018750f3513c0ebad8f61abd00481e31186dc2fbe",
+          "status": "root_reconciled",
+          "observedAt": "2026-09-30T01:43:12.248240+00:00"
+        },
+        "screenshots": [
+          {
+            "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-04/product-results/extended-harnesses/runner-acpx-cursor/local/structured-question-restart-resume/attempt-1/question-pending.png",
+            "sha256": "a4d4bc10ce66d3be5eca5a8164604ee3ce5c0ce367fd860a3471771d122a707a",
+            "rootReviewed": true
+          },
+          {
+            "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-04/product-results/extended-harnesses/runner-acpx-cursor/local/structured-question-restart-resume/attempt-1/question-pending-after-server-restart.png",
+            "sha256": "e3d8f46ab2d6ca2a97c319d6c35ee2120f6bdeea693ff7e154392e1765330429",
+            "rootReviewed": true
+          },
+          {
+            "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-04/product-results/extended-harnesses/runner-acpx-cursor/local/structured-question-restart-resume/attempt-1/final-state.png",
+            "sha256": "3019f52969cfc9f7d748111932744ddae7e7300ab5812ed5ba0a52672d12b1f4",
+            "rootReviewed": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "cursor-05",
+      "status": "root_reconciled_pass",
+      "sourceRevision": "5605c350b2a4dae75be3779f164d7e1a0e4a5a87",
+      "sourceRef": "qualification/current-profiles-5605",
+      "provider": "cursor",
+      "environment": "local",
+      "caseId": "file-edit-validate",
+      "profile": {
+        "id": "runner-acpx-cursor",
+        "version": 5,
+        "digest": "sha256:aa8c0b2b84786982bcd06b7634bf95be6f2bc42bb8def48a8751dc50cf739b6b",
+        "model": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+        "runtimeMode": "native"
+      },
+      "attempt": 1,
+      "runIds": [
+        "5ccfe41c-5856-40ea-ab3e-188b53e70d03"
+      ],
+      "startedAt": "2026-09-30T01:43:35.817Z",
+      "finishedAt": "2026-09-30T01:44:30.917Z",
+      "duration": {
+        "caseDurationMs": 55100,
+        "supervisedRunDurationSeconds": 66.805
+      },
+      "matchers": [
+        {
+          "kind": "message_exact",
+          "passed": true
+        },
+        {
+          "kind": "message_occurrences",
+          "passed": true
+        },
+        {
+          "kind": "issue_status",
+          "passed": true
+        },
+        {
+          "kind": "run_status",
+          "passed": true
+        },
+        {
+          "kind": "runtime_mode",
+          "passed": true
+        },
+        {
+          "kind": "environment",
+          "passed": true
+        },
+        {
+          "kind": "file_exact",
+          "passed": true
+        }
+      ],
+      "matcherCount": 7,
+      "cleanup": {
+        "verifiedByRoot": true,
+        "exclusiveProductSlotReleased": true,
+        "remainingOwnedProcesses": 0,
+        "cleanupStatus": "stopped",
+        "screenshotReviewed": true
+      },
+      "costProvenance": {
+        "coverage": "account_upper_bound",
+        "providerUsage": "included; no incremental on-demand charge",
+        "costUpperBoundUsd": 0,
+        "nativePerRunPrice": "unavailable"
+      },
+      "evidence": {
+        "result": {
+          "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-05/result.json",
+          "sha256": "6561a436eda6f45539a8ac1dd11a50ae51e0b7370f95f38c8544b5004144fb75"
+        },
+        "rootReconciliation": {
+          "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-05/root-reconciliation.private.json",
+          "sha256": "3460cfb6f300839b488cdf4dc4c2b61e51b7eece321da89059abfadb2e3e319f",
+          "status": "root_reconciled",
+          "observedAt": "2026-09-30T01:45:03.515329+00:00"
+        },
+        "screenshots": [
+          {
+            "path": "current-profiles-5605-campaign-preparation/current-5605-cursor-05/product-results/extended-harnesses/runner-acpx-cursor/local/file-edit-validate/attempt-1/final-state.png",
+            "sha256": "75940cbbc248ee23e9424dc7c04ed15dcc0083589afd541ef7793c6d502b1f46",
+            "rootReviewed": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "copilot-remote-02",
+      "status": "root_reconciled_pass",
+      "sourceRevision": "5605c350b2a4dae75be3779f164d7e1a0e4a5a87",
+      "sourceRef": "refs/heads/codex/runner-acp-production",
+      "provider": "copilot",
+      "environment": "daytona",
+      "caseId": "hello-complete",
+      "profile": {
+        "id": "runner-acpx-copilot",
+        "version": 5,
+        "digest": "sha256:ece77e40876631a69a828b91813722001d71b6fc81be47ecd4b3dced84ff9473",
+        "model": "gpt-5.6-luna",
+        "runtimeMode": "native"
+      },
+      "attempt": 1,
+      "runIds": [
+        "19b3709c-3861-4997-bea1-781ccf55e0f8"
+      ],
+      "startedAt": "2026-09-30T01:32:33.450Z",
+      "finishedAt": "2026-09-30T01:33:56.309Z",
+      "duration": {
+        "caseDurationMs": 82859,
+        "supervisedRunDurationSeconds": 457.025
+      },
+      "matchers": [
+        {
+          "kind": "message_exact",
+          "passed": true
+        },
+        {
+          "kind": "message_occurrences",
+          "passed": true
+        },
+        {
+          "kind": "issue_status",
+          "passed": true
+        },
+        {
+          "kind": "run_status",
+          "passed": true
+        },
+        {
+          "kind": "runtime_mode",
+          "passed": true
+        },
+        {
+          "kind": "environment",
+          "passed": true
+        }
+      ],
+      "matcherCount": 6,
+      "cleanup": {
+        "verifiedByRoot": true,
+        "exclusiveProductSlotReleased": true,
+        "remainingOwnedProcesses": 0,
+        "cleanupStatus": "observed_absent",
+        "screenshotReviewed": true
+      },
+      "costProvenance": {
+        "providerUsage": "included with verified billing controls",
+        "infrastructureCost": "bounded, not zero",
+        "costUpperBoundUsd": 0.086931,
+        "nativePerRunPrice": "unknown; delayed analytics and full campaign-end authority pending"
+      },
+      "evidence": {
+        "result": {
+          "path": "current-profiles-5605-daytona-preparation-v2/current-5605-copilot-remote-02/result.json",
+          "sha256": "ec51a5a679041cada551386eb7b9795dd8b76db7b607d1cb8774642b5619a4a5"
+        },
+        "rootReconciliation": {
+          "path": "current-profiles-5605-daytona-preparation-v2/current-5605-copilot-remote-02/root-reconciliation.private.json",
+          "sha256": "3cfb9f58a9401d3b75f12c4a0437bd6ec073d07378827116447ba3fd4c0975a6",
+          "status": "root_reconciled",
+          "observedAt": "2026-09-30T01:40:43.538417+00:00"
+        },
+        "screenshots": [
+          {
+            "path": "current-profiles-5605-daytona-preparation-v2/current-5605-copilot-remote-02/product-results/extended-harnesses/runner-acpx-copilot/daytona/hello-complete/attempt-1/final-state.png",
+            "sha256": "8aa26e2004fd4e4bf20a2a5ee32a726c1ec065bfa3d8a916ab7b0942107d5d79",
+            "rootReviewed": true
+          }
+        ]
+      }
+    }
+  ],
+  "verifiedBuildIdentities": [
+    {
+      "platform": "macos-arm64",
+      "sourceRevision": "5605c350b2a4dae75be3779f164d7e1a0e4a5a87",
+      "status": "build_complete_not_qualified",
+      "provenance": {
+        "path": "combined-local-5605c350b/build-provenance.json",
+        "sha256": "9bb5fd97b217b966e5fc708b3f9bbab71a4d8eff27ee7c7e91046fc43f4b44ae"
+      },
+      "providerPackDigest": "sha256:3940fbe1c7b197b964b8f8182c1f1ae548cff822a95ecb4539e0ca851b4f2032",
+      "providerPackManifestSha256": "88cd3c55cd7b3c0fe14cd37acb18fbaa962b1ec5f8d500049d75e09cb12ded06",
+      "daemonSha256": "2ca711268d04cf34a9924faf7948eb964acfef54f40156e0437eae7815cfc63f"
+    },
+    {
+      "platform": "linux-x64",
+      "sourceRevision": "5605c350b2a4dae75be3779f164d7e1a0e4a5a87",
+      "status": "built_not_qualified",
+      "provenance": {
+        "path": "platform-next-staging/v5/linux-5605c350b-v5-build/build-provenance.json",
+        "sha256": "2e47d9fe27717e6ff15069186503d97d599b6b936ee52b55013ed0411b004ef9"
+      },
+      "providerPackDigest": "sha256:83702fae11105f5b9ee8f9731b86dc06becb12075f68bdc98dcdfe9f9c842473",
+      "providerPackManifestSha256": "bfc3ec392a6c836c5eb9fe51150b9b49fed74c8c092118d39164779118165c5c",
+      "daemonSha256": "9a47150d51fa056b4c8ab932a01e480318089a71d107b383a713a9a9ae39877b",
+      "immutableImage": "ghcr.io/paperclipai/paperclip-daytona-runner@sha256:16c8be9c512c28cd9b16fe9ad5331f3fd7b58c42c382d3ebbe5897f658de0bea",
+      "imageDigest": "sha256:16c8be9c512c28cd9b16fe9ad5331f3fd7b58c42c382d3ebbe5897f658de0bea",
+      "installedImageId": "sha256:16c8be9c512c28cd9b16fe9ad5331f3fd7b58c42c382d3ebbe5897f658de0bea"
+    },
+    {
+      "platform": "macos-x64",
+      "sourceRevision": "5605c350b2a4dae75be3779f164d7e1a0e4a5a87",
+      "status": "built_not_qualified",
+      "provenance": {
+        "path": "platform-next-staging/v6/macos-x64-5605c350b-v6-build/build-provenance.json",
+        "sha256": "b8e2d223726455145f10b9373db3c0903f43b667c4187990b08d56c55d56289a"
+      },
+      "providerPackDigest": "sha256:7e53a6b022468a0eb74e0e9184152e64972b4549513da8636ee64bf793649d6c",
+      "providerPackManifestSha256": "056fe49171104a207a4030abbabc750662674e25a02a499ff18bcc5e3d2ad398",
+      "daemonSha256": "6063513591dfd808597d4e8a172e00bb6a57a34339a73739b66c0c7a64a5065f",
+      "qualificationLimit": "x86_64 processes ran under Rosetta on Apple Silicon; no paid native-Intel qualification."
+    }
+  ],
+  "sourceLevelModePersistenceFix": {
+    "sourceRevision": "5605c350b2a4dae75be3779f164d7e1a0e4a5a87",
+    "testedFiles": {
+      "packages/paperclip-runner/src/drivers/codex/codex-driver-values.ts": "d1d0467ecc34b3e36f67fc9a7eb166094d120fd1a28f15650d7310dd84f71eaa",
+      "packages/paperclip-runner/src/drivers/codex/codex-app-server-driver.recovery.test.ts": "a609f0121ddbcdaf17919dfc20cf5e3937df11fbd9a06fa90483da9086e738b8"
+    },
+    "testFilesPassed": 2,
+    "testsPassed": 56,
+    "newRegressionCases": 9,
+    "testExitCode": 0,
+    "testDurationSeconds": 1.41,
+    "runnerTypeScriptBuildExitCode": 0,
+    "runnerTypeScriptBuildLogSha256": "52980f19636a56432dbd9b5f578708cf4fb969777454853c08c44b3b679d2c33",
+    "evidencePath": "cursor-mode-persistence-verification.json",
+    "evidenceSha256": "d0870762d5552e9559dcc89b7c2cf375d9c9310aef2f4dcd53f02c16a2d8c540",
+    "verifiedDetails": "56 tests passed across 2 files, including 9 regression cases; runner TypeScript build passed. See recorded test/build evidence and hashes in this record."
+  },
+  "qualificationState": {
+    "status": "blocked_pending_runtime_fixes_and_full_matrix",
+    "allIncludedCellResultsProvisional": true,
+    "includedCellCount": 6,
+    "fullProfileMatrixComplete": false,
+    "note": "The six root-reconciled cells remain provisional behavioral evidence. Cursor native-question diagnostics v2 and v3 both failed without callbacks; model statements do not establish a missing-tool inventory. The old campaign audit remains failed. A separate credential-free plugin-closure preparation now passes static UI, plugin admission, and full-start authority checks, and was root-reviewed for two subsequent paid attempts; neither passed quality, and neither reclassifies prior results. Two additional paid cells on the prepared plugin-closure stage failed quality: Cursor rendered a native plan but a fixture/JSON-key-order mismatch prevented delivery of a decision; Copilot delivered reject_once and the tool failed as expected, but acknowledged cancellation did not interrupt the turn and the bounded wait timed out. Runtime cancellation and permission-provenance fixes are in progress; the fresh 375/runtime565 harness copy is not admitted.",
+    "campaignEndAuditPassed": false,
+    "blockingEvidence": {
+      "cursor06": {
+        "cell": "cursor-native.runner-acpx-cursor.local.native-question-reconnect",
+        "qualityStatus": "failed",
+        "failure": "No native question callback was captured; the model reported that the AskQuestion tool was unavailable. This does not establish that the tool was definitively absent from discovery.",
+        "reconciliationScope": "root-failed-reconciliation.private.json records cost and cleanup reconciliation only; it does not reconcile quality as a pass.",
+        "resultPath": "current-profiles-5605-campaign-preparation/current-5605-cursor-06/result.json",
+        "resultSha256": "fc8f9d195bb0fe744d997bbe8c057121ba8468d8625b53713ce8f8df37b750aa",
+        "qualityEvidencePath": "current-profiles-5605-campaign-preparation/current-5605-cursor-06/product-results/cursor-native/runner-acpx-cursor/local/native-question-reconnect/attempt-1/result.json"
+      },
+      "campaignFullEndDependencyAudit": {
+        "status": "failed",
+        "finding": "During remote Copilot startup, 14,335 entries were added, 0 removed, all 111,348 baseline dependency entries were byte-identical, and all additions were under packages/plugins/sandbox-providers/daytona/node_modules/. One additional workspace-build metadata difference was found: packages/plugins/sdk/dist/dev-cli.js mode 0600\u21920755 with bytes unchanged. The pinned standalone plugin lock was unchanged.",
+        "implication": "Full campaign authority failed; the six included cells remain provisional behavioral evidence.",
+        "observedAt": "2026-09-30T01:32Z",
+        "diagnosisPath": "dependency-drift-5605-cursor06/diagnosis.md",
+        "diagnosisSha256": "221f98101a377ca57f8ce59a9e9d4f31247e0fd37be73fb3fdea303cc9078530",
+        "membershipDiffSha256": "e5a81e6449c389ce2193bcbeb12cb6de11c31fb9c95578ff806200ec220df42d",
+        "originalEntriesCheckSha256": "c2137210cdec6f8033d551cfaff1221c2de288e878fcb813e0b0f167bce45b7c",
+        "workspaceBuildCheckSha256": "88c41f0f8bfc19914d954121a378f7883f3da91c52913c53adb245053517a8b9",
+        "unboundDaytonaDistFiles": 60,
+        "unboundDaytonaDistComparisonPath": "plugin-closure-preparation-v2/plugin-dist-comparison.json",
+        "unboundDaytonaDistInterpretation": "All 60 Daytona dist entries were present in the frozen source tree but outside the authority closure at the time; bytes/modes matched there. This is retained as an authority-boundary issue, not a claim that those 60 files changed during the startup install.",
+        "unboundDaytonaDistComparisonSha256": "c177f70abfb9fbefa8b5b7bfe8fb47443c2ecce539fff757b4efbb587a7fc32f",
+        "workspaceBuildCheckPath": "dependency-drift-5605-cursor06/workspace-build-check.json"
+      }
+    },
+    "campaignEndAuditScope": "Original campaign containing the six behavioral pass receipts",
+    "supplementedStageFullEndAuditsPassed": true
+  },
+  "remainingLimitations": [
+    "Campaign qualification is blocked: Cursor06 native-question-reconnect failed without a captured callback (the model reported AskQuestion unavailable; tool absence was not proven), and the full-end dependency audit found 14,335 additive Daytona plugin node_modules entries plus one SDK dev-cli mode change. All baseline dependency bytes and the standalone lock remained unchanged; the mutated dependency closure still fails the campaign authority audit.",
+    "The capped Pi qualification key is still pending account sign-in; the available OpenRouter key lacks enforced spending limits and account-management access.",
+    "The macOS x64 build and initialize evidence ran under Rosetta on Apple Silicon; paid macOS x64 qualification remains unproven (physical Intel execution has not been established).",
+    "The remote Copilot cell has an infrastructure cost bound but native per-run USD is unknown; delayed analytics and full campaign-end authority remain pending.",
+    "The broader profile matrices contain rows not represented by this checkpoint."
+  ],
+  "historicalFailures": [
+    {
+      "status": "historical_failed_not_reclassified_as_pass",
+      "sourceRevision": "794e90a258763aac16923cd0247de43cea3bc312",
+      "cell": "extended-harnesses.runner-acpx-cursor.local.hello-complete",
+      "path": "current-profiles-794-campaign-preparation/remaining-794-cursor-01/result.json",
+      "sha256": "a93fa425fe02ca88a0f2070e4155e7f90253fad18c91fb01a03ea2440818ee3d",
+      "passed": false,
+      "note": "Earlier Cursor hello-complete failure on 794e90a is preserved as historical evidence; current 5605 root-reconciled cells are separate attempts."
+    }
+  ],
+  "privateEvidencePolicy": {
+    "containsRawEventLogs": false,
+    "containsAccountEmail": false,
+    "containsCredentialFields": false,
+    "artifactPathsRelativeToBase": true,
+    "costFields": "Only root-reconciled cost provenance and approved upper-bound controls are retained; no raw billing rows or usage events."
+  },
+  "frozenSourceRef": "qualification/current-profiles-5605",
+  "actualGitBranch": "codex/runner-acp-production",
+  "independentVerificationEvidence": {
+    "localSegmentedVerification": {
+      "receiptPath": "verification-rollup/status.json",
+      "receiptSha256": "1832c7e760bba03a8eed8a4123a652fd086e3ecd892f029b8fe3d020396d888c",
+      "sourceHead": "11b2842d6919cab60d413f52960e0080c1e4a66d",
+      "actualGitBranch": "codex/runner-acp-production",
+      "initialAndFinalWorktreeClean": true,
+      "typecheck": "passed (60.484s)",
+      "tokenGates": "passed (0.925s)",
+      "build": "passed once after segmented test follow-up (26.87s)",
+      "testRun": "pnpm test:run failed in its single invocation (720 files: 714 passed, 2 failed, 4 skipped); two embedded-Postgres startup timeout files passed in one focused retry=0 run after recovery. This is segmented coverage, not a green aggregate invocation.",
+      "segmentedCoverage": "All 149 distinct serialized server suites were attempted; failed route/activity suites passed in focused one-shot reruns and the remaining 48 passed. Workspace A/B coverage and focused recovery are recorded in the referenced receipt. The legacy Claude group and Codex process monitor had initial failures followed by one-shot passes after lock-overlay/environment repair.",
+      "limitations": "No claim that one pnpm test:run invocation passed; original failures are retained in receipt."
+    },
+    "currentHeadCI": {
+      "statusPath": "pr-handoff-staging/current-head-ci-review-status.json",
+      "statusSha256": "f37186f275b11db2569f9b7adf8984eea681414598964953d3faa2e91e91e3e9",
+      "rerunProvenancePath": "pr-handoff-staging/current-head-targeted-ci-reruns.json",
+      "rerunProvenanceSha256": "515148f8674e395eb367b207dedf40bd04654acdeee3b677817411b73909ae67",
+      "heads": [
+        {
+          "pr": 14631,
+          "head": "1cf7125b0168436b6607b503a03088ba93ef8b6a",
+          "workflowRun": 36654044022,
+          "attempt": 2,
+          "conclusion": "success",
+          "checks": {
+            "success": 52,
+            "skipped": 2,
+            "failure": 0,
+            "pending": 0
+          }
+        },
+        {
+          "pr": 14633,
+          "head": "e154e853944b635305a120e4321d8a62975e3223",
+          "workflowRun": 36654030284,
+          "attempt": 2,
+          "conclusion": "success",
+          "checks": {
+            "success": 51,
+            "skipped": 0,
+            "failure": 0,
+            "pending": 0
+          }
+        }
+      ],
+      "scope": "Current-head CI snapshot is separate evidence, not a qualification result for frozen source revision 5605 or the local 11b284 test aggregate."
+    }
+  },
+  "additionalDiagnosticEvidence": {
+    "status": "failed_diagnostics_not_qualification_passes",
+    "interpretation": "Two separately admitted native-question diagnostics produced no native callback. Model narrative is not proof of tool inventory or provider-side absence.",
+    "attempts": [
+      {
+        "cell": "cursor-native-question-gap/probe-preparation-v2/attempt-g6w5Va",
+        "resultPath": "cursor-native-question-gap/probe-preparation-v2/attempt-g6w5Va/result.private.json",
+        "resultSha256": "3a20c01e4f866b6da4023faec60f82549657de81d70b692b46ed0db891d18779",
+        "model": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+        "mode": "plan",
+        "instructionAckVerified": true,
+        "semanticMcpServers": [],
+        "callbacks": 0,
+        "deliveredAnswers": 0,
+        "status": "failed_native_callback_cost_reconciled"
+      },
+      {
+        "cell": "cursor-native.runner-acpx-cursor.local.native-question-reconnect",
+        "resultPath": "cursor-native-question-gap/probe-preparation-v3/attempt-PYs5XB/result.private.json",
+        "resultSha256": "7bf2283962a986972d9ed6e6dd02876b80eb19419ea25c0e296ee8a49b0f2b51",
+        "reconciliationPath": "cursor-native-question-gap/probe-preparation-v3/root-failure-reconciliation.private.json",
+        "reconciliationSha256": "c65c39ba3acbf165fc870c7496d1845e8bd435ad65acb90928d55b6c4cf68163",
+        "model": "composer-2.5[fast=true]",
+        "mode": "plan",
+        "instructionAckVerified": true,
+        "semanticMcpServers": [],
+        "callbacks": 0,
+        "deliveredAnswers": 0,
+        "status": "failed_native_callback_cost_reconciled",
+        "billing": "Included usage 14.6K; on-demand 0. Cost reconciliation only; not a behavioral pass."
+      }
+    ]
+  },
+  "newPluginClosurePreparation": {
+    "status": "root_reviewed_with_two_failed_paid_attempts",
+    "sourceRevision": "5605c350b2a4dae75be3779f164d7e1a0e4a5a87",
+    "priorCampaignFailureRemains": true,
+    "sourceCodeChanged": false,
+    "credentialsRead": false,
+    "providerCalls": 0,
+    "cloudRequests": 0,
+    "staticUiAndPluginAdmission": "passed; plugin was ready, auto-build disabled, pnpm tripwire not triggered; dependency inventory unchanged",
+    "dependencyInventoryEntries": 125683,
+    "workspaceBuildInventoryEntries": 5930,
+    "combinedSealedInventoryEntries": 131613,
+    "fullStartAuthority": "passed and root-reviewed before paid attempts",
+    "fullStartAuthorityPath": "plugin-closure-preparation-v2/local-single-v2/full-start-authority.prepared.json",
+    "fullStartAuthoritySha256": "55944930781554f9820090acdace7c661a790353785618cee0b72941f50d2a53",
+    "credentialFreeAdmissionPath": "plugin-closure-preparation-v2/admission-03/receipt.json",
+    "credentialFreeAdmissionSha256": "ac8f2e7eb856799403215cc54de4f51bbbd881f290b8e599adba445cdd1b4ee9",
+    "sealedPreparationPath": "plugin-closure-preparation-v2/preparation-supplement.final.json",
+    "sealedPreparationSha256": "7c51f24d402183b649c26a83bd47da022100df72ddcbe9a335d4082e6c68f32d",
+    "qualificationEffect": "Root reviewed the new complete closure. Both subsequent paid attempts failed behavior but passed full-end authority and cleanup. The original six behavioral passes remain provisional. Runtime cancellation/provenance repairs and the required matrix are incomplete.",
+    "rootReviewedBindingPath": "plugin-closure-preparation-v2/local-single-v2/campaign-binding.reviewed.json",
+    "rootReviewedBindingSha256": "e93fe9a834de445a162a4a40b6826e738d9800c256a3dcbf9f6209d0eb5addfe",
+    "credentialFieldsScope": "Credential-free preparation only; separately recorded paid attempts used explicitly bound credentials."
+  },
+  "newFailedPaidCells": {
+    "status": "two_additional_failed_cells_cost_and_cleanup_reconciled_quality_failed",
+    "qualificationEffect": "These two paid cells add failure evidence only. The original six behavioral passes remain provisional; full qualification remains blocked.",
+    "cells": [
+      {
+        "cell": "cursor-native.runner-acpx-cursor.local.native-plan-reject-revise-accept",
+        "campaign": "supplemented-5605-cursor-plan-01",
+        "provider": "cursor",
+        "model": "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+        "durationSeconds": 149.418,
+        "nativePlanRendered": true,
+        "quality": "failed: fixture adapter mismatch and question-set JSON key ordering caused the planned decision not to be delivered; native plan was observed.",
+        "cost": "Included 26.7K; on-demand 0; native per-run USD unavailable.",
+        "resultPath": "plugin-closure-preparation-v2/local-single-v2/supplemented-5605-cursor-plan-01/result.json",
+        "resultSha256": "1df60114ba240e3a29f44a1d9d5aadd31f5a977afe76caa1bc93e9192ec88165",
+        "reconciliationPath": "plugin-closure-preparation-v2/local-single-v2/supplemented-5605-cursor-plan-01/root-failed-reconciliation.private.json",
+        "reconciliationSha256": "7a19c6365c00397eff6a6b7b2ce9bb7c5454bc3f6769db9d29a810ff57812351",
+        "fullEndAuthorityPassed": true,
+        "cleanupVerified": true,
+        "automaticRetries": 0,
+        "readonlyDiagnosisPath": "cursor-native-question-gap/native-plan-fixture-diagnosis/offline-proof.json",
+        "readonlyDiagnosisSha256": "d2e57c976596a9fe9796777273f0dba829ee360d1d2f805a54f046c0eb44eeb8",
+        "readonlyDiagnosis": {
+          "path": "cursor-native-question-gap/native-plan-fixture-diagnosis/offline-proof.json",
+          "sha256": "d2e57c976596a9fe9796777273f0dba829ee360d1d2f805a54f046c0eb44eeb8",
+          "planRequestMethod": "cursor/create_plan",
+          "provider": "cursor",
+          "boundedOriginAccepted": true,
+          "requestAndRunMatched": true,
+          "questionSetDeepEqual": true,
+          "questionSetSerializedEqual": false,
+          "terminal": "failed",
+          "terminalError": "native session timed out after 120000ms",
+          "uiCall": "goto issue page after task creation; no answer submission observed"
+        }
+      },
+      {
+        "cell": "copilot-protection.runner-acpx-copilot.local.native-permission-deny-write",
+        "campaign": "supplemented-5605-copilot-deny-01",
+        "provider": "copilot",
+        "model": "gpt-5.6-luna",
+        "durationSeconds": 144.581,
+        "quality": "failed: native reject_once delivered and the exact tool failed with target absent; cancellation was acknowledged without durable turn interruption, then the 120-second process wait timed out and failed the run.",
+        "runtimeWatchComplete": false,
+        "additionalUsageEnabled": false,
+        "additionalUsageBudgetUsd": 0,
+        "additionalUsageSpentUsd": 0,
+        "nativePerRunUsd": null,
+        "resultPath": "plugin-closure-preparation-v2/local-single-v2/supplemented-5605-copilot-deny-01/result.json",
+        "resultSha256": "a545d12ea6d9f8fd1566a658cb752aa20de5bf9ead7b8d155c7fdfc15a80d518",
+        "reconciliationPath": "plugin-closure-preparation-v2/local-single-v2/supplemented-5605-copilot-deny-01/root-failed-reconciliation.private.json",
+        "reconciliationSha256": "c61f476cf71e8d0e69debe509d206c20a50a040f2f528fa8eda8a4ad84e18245",
+        "fullEndAuthorityPassed": true,
+        "cleanupVerified": true,
+        "automaticRetries": 0
+      }
+    ]
+  },
+  "runtimeRemediation": {
+    "status": "implementation_in_progress_not_verified",
+    "pending": "Runtime cancellation and permission-provenance fixes are under implementation; no new paid GO was issued.",
+    "testOnlyFixCommit": "375cdf6eb993b425bd5fc753a025fb06e5e8a2f6",
+    "testOnlyEvidence": "7 files; 880 fixture tests and typecheck passed. This does not establish a new PR-head CI green result.",
+    "freshHarness": "A 375/runtime565 copy exists but is not admitted and is not qualification evidence.",
+    "ciBoundary": "The previously recorded e154 PR head remains green; no claim is made for the new test-only commit or current implementation."
+  },
+  "rootPublicationReview": {
+    "reviewedAt": "2026-09-30T02:25:28.227559+00:00",
+    "qualificationPassed": false,
+    "preparationCandidateSha256": "1aa79c0e695b71ecf0223afe045f941f5a4467ef40fb19c5ffc0f54d1f622a02",
+    "nativePerRunPricesRemainUnknown": true,
+    "originalFailuresPreserved": true
+  }
+}

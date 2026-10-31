@@ -53,4 +53,5 @@ Notes:
 - Use \`grok models\` to inspect authentication and available models on the host.
 - Local subscription runs use the host \`grok login\` (\`~/.grok\`) until the company Grok home has a usable \`auth.json\` (sandbox device login). \`XAI_API_KEY\` authenticates without a home. Remote/sandbox runs never fall back to the host login.
 - Without a usable company login, local runs preserve an inherited or configured \`GROK_HOME\`. Managed AI connections keep their selected home. An explicit empty \`XAI_API_KEY\` clears an inherited key and selects subscription authentication.
+- Managed local connections use disposable homes and do not retain or restore session transcripts. Missing local history starts a fresh task handoff without attempting remote subscription recovery.
 `;

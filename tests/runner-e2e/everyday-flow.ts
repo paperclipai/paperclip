@@ -1,3 +1,10 @@
+import { stopAndRedirectThroughUi } from "./stop-redirect-flow.js";
+import { downloadStoryArtifact } from "./story-artifact.js";
+import { editCreatedSkillThroughStudio } from "./skill-studio-flow.js";
+import { decideProtectedActionThroughUi, readServiceBriefing, serviceBriefingChecks } from "./protected-action-flow.js";
+import { gradeAgentmailSetup } from "./agentmail-setup-evidence.js";
+import { CONNECTION_GUIDANCE_SUITE, CONNECTION_GUIDANCE_BUDGET_CENTS } from "./connection-guidance-cases.js";
+import { gradeConnectionGuidanceDecline, hasConnectionGuidanceDeclineReply, explainsConnectionUnavailable, type ConnectionGuidanceDeclineInput } from "./connection-guidance-evidence.js";
 import { expect, type Page } from "@playwright/test";
 import { runnerApiToolsEnabled } from "../../server/src/services/native-runtime/runner-api-rollout.js";
 import { spawn } from "node:child_process";
@@ -12,11 +19,15 @@ import {
 } from "./everyday-delivery.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
-import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
-import { waitForTaskChatRendered } from "./continuation-screenshot.js";
+import { submitTaskReply } from "./user-actions.js";
+import { createTaskFromPromptThroughUi } from "./plan-task-ui.js";
+import { waitForTaskChatRendered, waitForTaskIdentity } from "./continuation-screenshot.js";
 import { hasPersistedSource, isSavedSourceCheckpoint } from "./everyday-interruption.js";
+import { collectRunEvents } from "./run-observations.js";
+import { gradeRemoteRestart, observeRemoteRestartBoundary, projectRemoteRestartEvents, projectRemoteRestartRun, waitForRemoteRestartBoundary, type RemoteRestartEvidence } from "./everyday-remote-restart.js";
+import { controllerOutageForExecution, type ControllerOutageReceipt } from "./controller-outage.js";
 import { setupAggregatorFixture } from "./aggregator-fixture.js";
-import { gradeProviderChoice, gradeProviderOutcome } from "./connection-routing-evidence.js";
+import { gradeProviderChoice, gradeProviderOutcome, requireProviderAccessCard } from "./connection-routing-evidence.js";
 import { setupConnectionReview } from "./connection-reviews.js";
 import {
   pendingStoryDecision,
@@ -37,6 +48,7 @@ import {
   storyReviewContinuationTimeoutDetail,
   storyHasStrandedBlockedLeaf,
   storyHasDurableAgentReviewContinuation,
+  storyHasDurableServiceContinuation,
   storyIssueHasBlockedTimelineBefore,
   storyIssueHasUnresolvedDependency,
   storyRunReportsDependencyBlock,
@@ -60,8 +72,10 @@ export interface EverydayEvidence {
   fixtureConfiguration?: {
     apiToolsEnabled: boolean;
     aiConnection?: LiveFixtureValues["aiConnection"];
+    connectionGuidanceBudgets?: { companyMonthlyCents: unknown; agentMonthlyCents: unknown };
   };
   documents?: Row[];
+  declineGradeEvidence?: { capturedAt: string; input: ConnectionGuidanceDeclineInput; checks: StoryCheck[] };
   checks: StoryCheck[];
   timeline: Array<{ at: string; action: string; detail?: unknown }>;
   issues: Array<StoryIssue & Row>;
@@ -69,6 +83,7 @@ export interface EverydayEvidence {
   agents: Row[];
   downloads: Row[];
   allowedInterruptedRuns: string[];
+  remoteRestart?: RemoteRestartEvidence;
 }
 interface Input {
   page: Page;
@@ -79,7 +94,8 @@ interface Input {
   workspacePath: string;
   privateDir: string;
   deadlineAt: number;
-  restart(): Promise<void>;
+  restartCount?: number;
+  restart(binding?: import("./controller-recovery-observer.js").RecoveryBinding, controllerDowntimeMs?: number): Promise<ControllerOutageReceipt | void>;
   observe(issue: StoryIssue, runs: StoryRun[]): void;
   capture(id: string, label: string, file: string): Promise<void>;
   evidence(name: string, value: unknown): Promise<void>;
@@ -158,14 +174,17 @@ export async function runEverydayFlow(input: Input) {
   let review: Awaited<ReturnType<typeof setupConnectionReview>> | undefined;
   let project = fixtures.project;
   const caseId = execution.task.id;
+  const requireRemoteRestart = controllerOutageForExecution(execution, process.env) !== undefined;
   const providerChoice = caseId === "provider-decline" || caseId === "provider-second";
   const nativeProviderCase = caseId === "provider-native";
   let aggregatorFixture: Awaited<ReturnType<typeof setupAggregatorFixture>> | undefined;
-  const decliningConnection = caseId === "connection-decline" || nativeProviderCase;
+  const agentmailSetup = caseId === "agentmail-setup";
+  const decliningConnection = caseId === "connection-decline" || nativeProviderCase || agentmailSetup;
   const declining = decliningConnection || caseId === "service-decline";
   let decisionId: string | undefined;
   let decisionResolvedAt: string | undefined;
   let initialConnections: string[] = [];
+  let providerAccessDecision: { id: string; connectionId: string } | undefined;
   let stoppedWorkspace: Record<string, string> | undefined;
   let settledAgentReply: Row | undefined;
   let reviewHandoffBoundary: {
@@ -239,11 +258,11 @@ export async function runEverydayFlow(input: Input) {
     `/${prefix}/issues/${issue.identifier ?? issue.id}`;
   async function openTask(issue: StoryIssue) {
     await page.goto(taskUrl(issue), { waitUntil: "domcontentloaded" });
+    await waitForTaskIdentity(page, taskUrl(issue), issue.identifier ?? issue.id);
     if (providerChoice || nativeProviderCase) {
       await expect(page.locator('[data-testid="task-chat-thread"], [data-testid="thread-root"]').first()).toBeVisible({timeout:30_000});
-      await expect(page.getByRole("heading", {name:String(issue.title),exact:true})).toBeVisible();
       await expect(page.getByTestId("issue-chat-skeleton")).toHaveCount(0);
-    } else await waitForTaskChatRendered(page, String(issue.title));
+    } else await waitForTaskChatRendered(page);
   }
   async function openParent() {
     await openTask(parent!);
@@ -293,15 +312,28 @@ export async function runEverydayFlow(input: Input) {
       commentIds: added.map((c) => c.id),
     });
   }
+  function declineInput(state: Pick<EverydayEvidence, "issues" | "runs">): ConnectionGuidanceDeclineInput | undefined {
+    if (execution.suite.id !== CONNECTION_GUIDANCE_SUITE ||
+      (caseId !== "service-decline" && caseId !== "connection-decline" && caseId !== "provider-decline")) return;
+    const issue = state.issues.find(i => i.id === parent?.id);
+    return {
+      caseId, decisionId: decisionId ?? "", decisions: issue?.interactions as any ?? [],
+      leadAgentId: fixtures.agent.id, issueId: parent?.id ?? "", replies: issue?.comments ?? [],
+      runs: state.runs, marker: (caseId === "provider-decline" ? "CONTACTS_" : "SERVICE_") + nonce,
+      // Readiness never grades these external observations. They are filled at the grading boundary below.
+      sameConnections: false,
+    };
+  }
   async function settled(expectedAgentReply?: string) {
     const settledState = await pollUntil({
       label: `everyday ${caseId} settled`,
       deadlineAt: input.deadlineAt,
-      timeoutDetail: (state) => state &&
+      timeoutDetail: (state) => state && (
         storyReviewContinuationTimeoutDetail(
           state.issues, parent?.id ?? "", fixtures.agent.id, state.runs,
           observableAgentIds(state),
-        ),
+        ) ?? (storyHasDurableServiceContinuation(state.issues, parent?.id ?? "", fixtures.agent.id, state.runs)
+          ? "task is Blocked without an active continuation after resolved service approval" : undefined)),
       intervalMs: 1000,
       load: refresh,
       accept: (state) =>
@@ -315,6 +347,7 @@ export async function runEverydayFlow(input: Input) {
         state.runs.some(
           (r) => Date.parse(r.finishedAt ?? "") >= lastSubmissionAt,
         ) &&
+        (!declineInput(state) || hasConnectionGuidanceDeclineReply(declineInput(state)!)) &&
         (!expectedAgentReply ||
           storyHasAgentReply(
             state.issues.find((issue) => issue.id === parent?.id),
@@ -339,7 +372,8 @@ export async function runEverydayFlow(input: Input) {
             parent?.id ?? "",
             fixtures.agent.id,
             state.runs,
-          )
+          ) &&
+          !storyHasDurableServiceContinuation(state.issues, parent?.id ?? "", fixtures.agent.id, state.runs)
         )
           return "task is Blocked without an active continuation";
         if (
@@ -447,41 +481,15 @@ export async function runEverydayFlow(input: Input) {
     if (!attachment) throw new Error("Selected delivery is no longer available");
     const issue = ev.issues.find((i) => i.id === issueId)!;
     await openTask(issue);
-    const links = page.locator(
-      `a[href*="/api/attachments/${attachment.id}/content"]`,
-    );
-    const link = links.filter({ hasText: /Download/i }).first();
-    await expect(link).toBeVisible({ timeout: 15_000 });
-    const pending = page.waitForEvent("download", { timeout: 30_000 });
-    await link.click();
-    const file = await pending;
-    const target = path.join(input.privateDir, "snapshots", `${phase}.zip`);
-    await file.saveAs(target);
-    const bytes = await readFile(target);
-    const digest = createHash("sha256").update(bytes).digest("hex");
-    const result = await runCommand(process.env.PYTHON ?? "python3", [
-      path.join(import.meta.dirname, "everyday-artifact.py"),
-      target,
-      "--mode",
-      mode,
-    ], Math.max(1, Math.min(60_000, input.deadlineAt - Date.now())));
-    const oracle = JSON.parse(result.stdout) as { checks: StoryCheck[] };
-    ev.checks.push(
-      ...oracle.checks.map((c) => ({ ...c, id: `${phase}.${c.id}` })),
-    );
-    ev.downloads.push({
-      phase,
-      attachmentId: attachment.id,
-      issueId,
-      sha256: digest,
-      bytes: bytes.length,
-      filename: file.suggestedFilename(),
-      mode,
-    });
+    const delivered = await downloadStoryArtifact({ page, attachmentId: attachment.id,
+      directory: path.join(input.privateDir, "snapshots"), phase, mode, deadlineAt: input.deadlineAt });
+    ev.checks.push(...delivered.checks.map(c => ({ ...c, id: `${phase}.${c.id}` })));
+    const { checks: _checks, ...receipt } = delivered;
+    ev.downloads.push({ phase, issueId, mode, ...receipt });
     note("download-verified", {
       phase,
       attachmentId: attachment.id,
-      sha256: digest,
+      sha256: delivered.sha256,
     });
     await openParent();
   }
@@ -520,6 +528,19 @@ export async function runEverydayFlow(input: Input) {
   async function sourceReady() {
     await recordSource("source-saved-before-interruption", "source-before-interruption.json", true);
   }
+  async function remoteRestartBoundary(runId?: string, recovered = false) {
+    await refresh();
+    const active = ev.runs.filter(run => (run.status === "running" || (recovered && run.status === "succeeded")) && run.nativeIssueId === parent!.id
+      && (!runId || run.id === runId));
+    if (active.length !== 1) throw new Error("Remote restart boundary unexercised: the original run is not active");
+    const run = active[0]!;
+    const [rows, leases] = await Promise.all([
+      collectRunEvents<Row>((afterSeq, limit) => api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`)),
+      api.get<Row[]>(`/api/environments/${fixtures.environment.id}/leases`),
+    ]);
+    return observeRemoteRestartBoundary(run, rows, leases, { companyId: fixtures.company.id,
+      agentId: fixtures.agent.id, issueId: parent!.id, environmentId: fixtures.environment.id }, recovered);
+  }
   async function prepareStopBoundary() {
     // Providers can finish a short first turn before the browser can click
     // Stop. If that happens, submit one ordinary user follow-up through the
@@ -549,8 +570,17 @@ export async function runEverydayFlow(input: Input) {
       "everyday-decisions.ts",
       "aggregator-fixture.ts",
       "connection-routing-evidence.ts",
+      "agentmail-setup-evidence.ts",
       "everyday-delivery.ts",
       "everyday-observations.ts",
+      "everyday-remote-restart.ts",
+      "controller-outage.ts",
+      "controller-recovery-observer.ts",
+      "upgrade-artifacts.ts",
+      "server.ts",
+      "server-stop.ts",
+      "native-event-envelope.ts",
+      "run-observations.ts",
       "everyday-artifact.py",
       "user-actions.ts",
       "runner.spec.ts",
@@ -561,6 +591,20 @@ export async function runEverydayFlow(input: Input) {
       "connection-reviews.ts",
       "catalog.ts",
     ];
+    if (execution.suite.id === CONNECTION_GUIDANCE_SUITE) {
+      harnessFiles.push("connection-guidance-cases.ts", "connection-guidance-evidence.ts");
+      const [company, agent] = await Promise.all([
+        api.get<Row>("/api/companies/" + fixtures.company.id),
+        api.get<Row>("/api/agents/" + fixtures.agent.id),
+      ]);
+      ev.fixtureConfiguration!.connectionGuidanceBudgets = {
+        companyMonthlyCents: company.budgetMonthlyCents, agentMonthlyCents: agent.budgetMonthlyCents,
+      };
+      const budgetsMatch = company.budgetMonthlyCents === CONNECTION_GUIDANCE_BUDGET_CENTS &&
+        agent.budgetMonthlyCents === CONNECTION_GUIDANCE_BUDGET_CENTS;
+      check("guidance-budget-hard-stops", budgetsMatch, "Public company and lead records retain both 1,000-cent hard stops before task creation.");
+      if (!budgetsMatch) throw new Error("Connection guidance budget admission failed before task creation");
+    }
     ev.harnessDigest = createHash("sha256")
       .update(
         (
@@ -645,11 +689,17 @@ export async function runEverydayFlow(input: Input) {
         marker: `Pages: Roadmap, Meeting notes. Verification code: SERVICE_${nonce}`,
         authenticated: true,
       });
-    if (providerChoice || nativeProviderCase) {
-      if (caseId === "provider-second") aggregatorFixture = await setupAggregatorFixture(api, fixtures.company.id, fixtures.agent.id, `CONTACTS_${nonce}`);
+    if (providerChoice || nativeProviderCase || (execution.suite.id === CONNECTION_GUIDANCE_SUITE && Boolean(review))) {
+      if (caseId === "provider-second" || (execution.suite.id === CONNECTION_GUIDANCE_SUITE && caseId === "provider-decline")) aggregatorFixture = await setupAggregatorFixture(api, fixtures.company.id, fixtures.agent.id, `CONTACTS_${nonce}`, execution.suite.id === CONNECTION_GUIDANCE_SUITE);
       const state = await api.get<{connections:Row[]}>(`/api/companies/${fixtures.company.id}/tools/connections`);
       initialConnections = state.connections.map(c=>c.id);
+      if (aggregatorFixture && execution.suite.id === CONNECTION_GUIDANCE_SUITE) {
+        await input.evidence("provider-initial-access.json", aggregatorFixture.initialAccess);
+        check("provider-not-installed-before-choice", !aggregatorFixture.initialAccess.installed && aggregatorFixture.initialAccess.allowedToolIds.length === 0,
+          "The company connection is configured, but this agent has no installed or allowed HubSpot tool before the decision.");
+      }
     }
+    if (agentmailSetup) await api.patch("/api/instance/settings/experimental", { enableChatConnectors: true });
     if (decliningConnection) {
       const state = await api.get<{ connections: Row[] }>(
         `/api/companies/${fixtures.company.id}/tools/connections`,
@@ -663,25 +713,15 @@ export async function runEverydayFlow(input: Input) {
       if (state.connections.length)
         throw new Error("New-connection story requires an unconnected company");
     }
-    await createTaskThroughUi({
+    const created = await createTaskFromPromptThroughUi({
       page,
+      companyId: fixtures.company.id,
       issuePrefix: prefix,
       agentName: fixtures.agent.name,
-      title: execution.task.buildTitle(nonce),
       prompt: ev.prompt,
-      workMode: "standard",
       projectName: project?.name,
     });
-    parent = await pollUntil({
-      label: "browser-created story task",
-      deadlineAt: Date.now() + 30_000,
-      load: () =>
-        api.get<StoryIssue[]>(`/api/companies/${fixtures.company.id}/issues`),
-      accept: (rows) =>
-        rows.some((i) => i.title === execution.task.buildTitle(nonce)),
-    }).then((rows) =>
-      rows.find((i) => i.title === execution.task.buildTitle(nonce))!,
-    );
+    parent = await api.get<StoryIssue>(`/api/issues/${created.id}`);
     input.observe(parent!, []);
     note("task-submitted", { issueId: parent!.id });
     await openParent();
@@ -859,31 +899,52 @@ export async function runEverydayFlow(input: Input) {
           "Fault boundary was not exercised: no active execution",
         );
       if (caseId === "stop-redirect") {
-        await page.getByTestId("task-chat-composer-stop").last().click();
         ev.allowedInterruptedRuns.push(active.id);
-        note("stop-clicked", { runId: active.id });
-        await pollUntil({
-          label: "owned runner stopped",
-          deadlineAt: input.deadlineAt,
-          load: () => runnerStopped(active),
-          accept: Boolean,
-          intervalMs: 250,
+        await stopAndRedirectThroughUi({ page, nonce,
+          awaitRetirement: async () => {
+            note("stop-clicked", { runId: active.id });
+            await pollUntil({ label: "owned runner stopped", deadlineAt: input.deadlineAt,
+              load: () => runnerStopped(active), accept: Boolean, intervalMs: 250 });
+          },
+          beforeRedirect: async () => {
+            await recordSource("source-saved-after-interruption", "source-after-interruption.json");
+            stoppedWorkspace = await workspaceFiles();
+            note("stopped-workspace-snapshot", stoppedWorkspace);
+          },
+          reply: async message => { await reply(message); note("new-direction-submitted"); },
         });
-        await recordSource("source-saved-after-interruption", "source-after-interruption.json");
-        stoppedWorkspace = await workspaceFiles();
-        note("stopped-workspace-snapshot", stoppedWorkspace);
-        await reply(
-          `Change direction. Leave the project as it is. Reply with just this short note: "The studio is ready. Reference ${nonce}."`,
-        );
-        note("new-direction-submitted");
-        await page.reload();
       } else {
         await reply(LATE_REQUIREMENT);
         note("followup-submitted-before-interruption");
-        ev.allowedInterruptedRuns.push(active.id);
-        await input.restart();
-        note("controller-restarted");
-        await openParent();
+        for (let restartIndex = 0; restartIndex < (requireRemoteRestart ? input.restartCount ?? 1 : 1); restartIndex += 1) {
+          let currentBefore: RemoteRestartEvidence["before"];
+          if (requireRemoteRestart) {
+            const before = await waitForRemoteRestartBoundary({
+              deadlineAt: input.deadlineAt, load: async () => {
+                await refresh();
+                const original = ev.runs.find(run => run.id === active.id);
+                if (!original || original.status !== "running") return { run: original };
+                const rows = await collectRunEvents<Row>((afterSeq, limit) => api.get(`/api/heartbeat-runs/${active.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
+                if (!rows.some(row => row.payload?.prpEvent?.eventType === "tool.execution.completed" && row.payload.prpEvent.payload?.status === "completed")) return { run: original };
+                return { run: original, boundary: await remoteRestartBoundary(active.id) };
+              } });
+            currentBefore = before;
+            ev.remoteRestart ??= { before, expectedReplacements: input.restartCount ?? 1, replacements: [] };
+            await input.evidence(`remote-restart-${restartIndex + 1}-before.json`, before);
+          } else ev.allowedInterruptedRuns.push(active.id);
+          const outage = await input.restart(requireRemoteRestart ? { companyId: fixtures.company.id, issueId: parent!.id, runId: active.id } : undefined, requireRemoteRestart ? 125_000 : undefined);
+          if (requireRemoteRestart) ev.remoteRestart!.outage = outage || undefined;
+          note("controller-restarted");
+          await openParent();
+          if (requireRemoteRestart) {
+            const after = await remoteRestartBoundary(active.id, true);
+            ev.remoteRestart!.after = after;
+            if (!outage || !currentBefore) throw new Error("Missing replacement fault evidence");
+            ev.remoteRestart!.replacements!.push({ before: currentBefore, after, outage });
+            await input.evidence(`remote-restart-${restartIndex + 1}-after.json`, { after, outage });
+            if (!gradeRemoteRestart(ev.remoteRestart)[0]!.passed) throw new Error("Remote restart changed the original native process, lease or receipt prefix");
+          }
+        }
       }
     }
     if (providerChoice) {
@@ -916,6 +977,37 @@ export async function runEverydayFlow(input: Input) {
         accept:rows=>rows.some(row=>row.id===decisionId && row.status==="answered"),
       });
       note("provider-choice-submitted", {interactionId:decisionId, selected:caseId === "provider-decline" ? "none" : "via:arcade:hubspot"});
+      if (execution.suite.id === CONNECTION_GUIDANCE_SUITE && caseId === "provider-second") {
+        const rows = await pollUntil({
+          label: "selected Arcade access request", deadlineAt: input.deadlineAt,
+          load: async () => ({
+            rows: await api.get<Row[]>(`/api/issues/${parent!.id}/interactions`),
+            issue: await api.get<StoryIssue>(`/api/issues/${parent!.id}`),
+            calls: aggregatorFixture!.invocationCount(),
+            runs: await api.get<StoryRun[]>(`/api/issues/${parent!.id}/runs`),
+          }),
+          accept: state => state.rows.some(row => row.id !== decisionId && row.status === "pending"),
+          reject: state => state.calls > 0 ? "Provider ran before tool-access approval"
+            : state.runs.some(run => ["failed", "timed_out"].includes(run.status)) ? "Agent failed before tool-access approval"
+            : ["done", "blocked", "cancelled"].includes(state.issue.status) ? "Task ended without the required access request" : undefined,
+        });
+        const card = requireProviderAccessCard({ rows: rows.rows as any, decisionId: decisionId!, connectionId: aggregatorFixture!.connectionId,
+          agentId: fixtures.agent.id, catalogEntryIds: aggregatorFixture!.catalogEntryIds, calls: rows.calls });
+        providerAccessDecision = { id: card.id, connectionId: aggregatorFixture!.connectionId };
+        await openParent();
+        const accessCard = page.getByTestId("connection-intent-access-request");
+        await expect(accessCard).toHaveCount(1);
+        await expect(accessCard.getByText("Hubspot_ListContacts", { exact: true })).toBeVisible();
+        await input.capture("provider-access", "Separate HubSpot tool-access approval", "provider-access.png");
+        check("no-call-before-provider-access", aggregatorFixture!.invocationCount() === 0, "Selecting a provider alone did not expose or execute its tool.");
+        await accessCard.getByRole("button", { name: "Grant access", exact: true }).click();
+        await pollUntil({ label: "Arcade access grant saved", deadlineAt: input.deadlineAt,
+          load: () => api.get<Row[]>(`/api/issues/${parent!.id}/interactions`),
+          accept: rows => rows.some(row => row.id === card.id && row.status === "accepted"
+            && row.result?.connectionId === aggregatorFixture!.connectionId),
+        });
+        note("provider-access-granted", { interactionId: card.id, connectionId: aggregatorFixture!.connectionId });
+      }
     }
     if (review || decliningConnection) {
       const interactions = await pollUntil({
@@ -952,7 +1044,7 @@ export async function runEverydayFlow(input: Input) {
         interactions.interactions,
         review
           ? { kind: "tool", connectionId: review.connectionId }
-          : { kind: "connection", serviceSlug: nativeProviderCase ? "jira" : "notion" },
+          : { kind: "connection", serviceSlug: agentmailSetup ? "agentmail" : nativeProviderCase ? "jira" : "notion" },
       );
       await expect(
         page.getByRole("button", {
@@ -971,8 +1063,28 @@ export async function runEverydayFlow(input: Input) {
         true,
         review
           ? "Tool approval belongs to the installed page service."
-          : `New connection request is for ${nativeProviderCase ? "Jira" : "Notion"}, without an external-provider question.`,
+          : `New connection request is for ${agentmailSetup ? "AgentMail" : nativeProviderCase ? "Jira" : "Notion"}, without an external-provider question.`,
       );
+      if (agentmailSetup) {
+        // Reload proves the card is durable, rather than a transient model UI.
+        await page.reload();
+        const form = page.getByTestId("agentmail-inline-setup");
+        await expect(form).toBeVisible();
+        const card = page.getByTestId("connection-intent-focus-target").filter({ has: form });
+        const rows = await api.get<Parameters<typeof gradeAgentmailSetup>[0]["interactions"]>(`/api/issues/${parent!.id}/interactions`);
+        const checks = gradeAgentmailSetup({
+          // This harness boots a dedicated local_trusted instance.
+          interactions: rows, agentId: fixtures.agent.id, userId: "local-board",
+          visible: await form.isVisible(),
+          inputTypes: await card.locator("input").evaluateAll(inputs => inputs.map(input => input.getAttribute("type") ?? "text")),
+          keyLink: await form.getByRole("link", { name: "Get an AgentMail API key" }).getAttribute("href"),
+          accessSelectorCount: await card.locator('[role="radiogroup"], [role="combobox"], select').count(),
+          dialogCount: await page.getByRole("dialog").count(),
+        });
+        ev.checks.push(...checks);
+        await input.capture("agentmail-inline-key", "AgentMail API-key card after reload", "agentmail-inline-key.png");
+        if (checks.some(result => !result.passed)) throw new Error("AgentMail inline setup evidence failed");
+      }
       if (review)
         check(
           "no-call-before-approval",
@@ -984,19 +1096,24 @@ export async function runEverydayFlow(input: Input) {
           .getByRole("button", { name: "Not now", exact: true })
           .click();
       } else {
-        const dismiss = page.getByRole("button", {
-          name: "Dismiss Approve tool action",
-        });
-        if (await dismiss.isVisible()) await dismiss.click();
-        await page
-          .getByRole("button", { name: "Review request", exact: true })
-          .click();
-        await page
-          .getByRole("button", {
-            name: declining ? "Decline" : "Approve & run",
-            exact: true,
-          })
-          .click();
+        if (review) await decideProtectedActionThroughUi({ page,
+          rows: [pendingInteraction], connectionId: review.connectionId, decline: declining,
+          invocationCount: review.invocationCount });
+        else {
+          const dismiss = page.getByRole("button", {
+            name: "Dismiss Approve tool action",
+          });
+          if (await dismiss.isVisible()) await dismiss.click();
+          await page
+            .getByRole("button", { name: "Review request", exact: true })
+            .click();
+          await page
+            .getByRole("button", {
+              name: declining ? "Decline" : "Approve & run",
+              exact: true,
+            })
+            .click();
+        }
       }
       const decisionStatus = declining ? "rejected" : "accepted";
       const decided = await pollUntil({
@@ -1040,66 +1157,37 @@ export async function runEverydayFlow(input: Input) {
       );
       if (created) {
         await openParent();
-        const card = page.getByRole("article", {
-          name: "Skill created: release-readiness-checklist",
-        });
-        await expect(card).toHaveCount(1);
-        await expect(card).toBeVisible();
-        await card.getByRole("button").click();
-        await expect(page.getByRole("heading", { name: "release-readiness-checklist" })).toBeVisible();
-        await expect(page.getByText("Verify checks.", { exact: true })).toBeVisible();
-        check("feed-card-opened", true, "The task thread card opened the created skill sidebar.");
-        const openStudio = page.getByRole("button", { name: "Open in Skill Studio", exact: true });
-        await expect(openStudio).toBeVisible();
-        await openStudio.click();
-        await expect(page).toHaveURL(new RegExp(`/skills/studio/${created.id}$`));
-        // Studio's skill selector identifies the resource. Headings inside the
-        // authored document can differ from its canonical skill name.
-        await expect(page.getByRole("combobox").filter({ hasText: "release-readiness-checklist" })).toBeVisible();
-        const editor = page.getByRole("textbox", { name: "editable markdown", exact: true });
-        await editor.click();
-        await editor.press("ControlOrMeta+End");
-        await editor.press("Enter");
-        await editor.press("Enter");
-        await editor.pressSequentially("Studio edit marker: verified");
-        await page.getByRole("button", { name: /^Save$/ }).click();
-        await pollUntil({
-          label: "Skill Studio edit persisted",
-          deadlineAt: Math.min(input.deadlineAt, Date.now() + 30_000),
-          load: () => api.get<Row>(
-            `/api/companies/${fixtures.company.id}/skills/${encodeURIComponent(String(created.id))}`,
-          ),
-          accept: (detail) => JSON.stringify(detail).includes("Studio edit marker: verified"),
-        });
-        const detail = await api.get<Row>(
-          `/api/companies/${fixtures.company.id}/skills/${encodeURIComponent(String(created.id))}`,
-        );
-        check(
-          "studio-edit-persisted",
-          JSON.stringify(detail).includes("Studio edit marker: verified"),
-          "The Skill Studio edit remains in the persisted skill after returning to the page.",
-        );
-        check("studio-opened", true, "The skill detail opened in Skill Studio.");
-        await page.goBack();
-        await expect(page).toHaveURL(new RegExp(`/issues/`));
-        const returnedCard = page.getByRole("article", {
-          name: "Skill created: release-readiness-checklist",
-        });
-        await expect(returnedCard).toBeVisible();
-        await returnedCard.getByRole("button").click();
-        await expect(page.getByRole("heading", { name: "release-readiness-checklist" })).toBeVisible();
-        await expect(page.getByText("Studio edit marker: verified", { exact: true })).toBeVisible();
-        check("return-content-persisted", true, "Returning to the task shows the saved Skill Studio edit.");
+        await editCreatedSkillThroughStudio({ page, skillId: created.id, skillName: created.name,
+          marker: "Studio edit marker: verified", deadlineAt: input.deadlineAt,
+          read: () => api.get(`/api/companies/${fixtures.company.id}/skills/${created.id}`) });
+        check("feed-card-opened", true, "The task activity card opens the created skill.");
+        check("studio-opened", true, "The skill opens in Skill Studio.");
+        check("studio-edit-persisted", true, "The Studio edit persists across reload.");
+        check("return-content-persisted", true, "The saved edit is readable from the task card.");
       }
     }
     if (providerChoice) {
       const issue = ev.issues.find(i=>i.id===parent!.id)!;
       const state = await api.get<{connections:Row[]}>(`/api/companies/${fixtures.company.id}/tools/connections`);
-      ev.checks.push(...gradeProviderOutcome({rows:issue.interactions as any, decisionId:decisionId!,
+      ev.checks.push(...gradeProviderOutcome({rows:issue.interactions as any, decisionId:decisionId!, accessDecision:providerAccessDecision,
         selected:caseId === "provider-decline" ? "none" : "via:arcade:hubspot", calls:aggregatorFixture?.invocationCount() ?? 0,
         response: (issue.comments ?? []).filter((c:Row)=>c.authorAgentId).map((c:Row)=>c.body).join("\n"), marker:`CONTACTS_${nonce}`,
         sameConnections:isDeepStrictEqual(state.connections.map(c=>c.id).sort(), initialConnections.sort()),
       }));
+    }
+    if (execution.suite.id === CONNECTION_GUIDANCE_SUITE &&
+      (caseId === "service-decline" || caseId === "connection-decline" || caseId === "provider-decline")) {
+      const state = await api.get<{ connections: Row[] }>("/api/companies/" + fixtures.company.id + "/tools/connections");
+      const gradeInput = structuredClone({
+        ...declineInput(ev)!,
+        calls: review?.invocationCount() ?? aggregatorFixture?.invocationCount(),
+        sameConnections: isDeepStrictEqual(state.connections.map(c => c.id).sort(), initialConnections.sort()),
+      });
+      const checks = gradeConnectionGuidanceDecline(gradeInput);
+      // Keep the actual assertion input independent of the later final/cleanup refreshes.
+      ev.declineGradeEvidence = { capturedAt: new Date().toISOString(), input: gradeInput, checks: structuredClone(checks) };
+      await input.evidence("connection-guidance-decline-grade.json", ev.declineGradeEvidence);
+      ev.checks.push(...checks);
     }
     if (declining) {
       const issue = ev.issues.find((i) => i.id === parent!.id)!;
@@ -1120,9 +1208,7 @@ export async function runEverydayFlow(input: Input) {
       check(
         "decline-visible-explanation",
         replies.length > 0 &&
-          /declin|not now|could(?:n.t| not)|cannot|can.t|unable|not (?:connect|retriev)|without (?:access|connect)/i.test(
-            text,
-          ),
+          explainsConnectionUnavailable(text),
         "A new agent response explains the missing access after the saved decline.",
       );
       check(
@@ -1388,48 +1474,8 @@ export async function runEverydayFlow(input: Input) {
         "Exactly one approved service call; none after decline.",
       );
       if (caseId === "service-approve") {
-        const docs = await api.get<Row[]>(
-          `/api/issues/${parent!.id}/documents`,
-        );
-        const bodies = await Promise.all(
-          docs.map((d) =>
-            api.get<Row>(
-              `/api/issues/${parent!.id}/documents/${encodeURIComponent(d.key)}`,
-            ),
-          ),
-        );
-        const attachments = await api.get<Row[]>(
-          `/api/issues/${parent!.id}/attachments`,
-        );
-        for (const attachment of attachments.filter(
-          (a) =>
-            /\.(?:md|txt)$/i.test(a.originalFilename ?? a.filename ?? "") ||
-            ["text/markdown", "text/plain"].includes(a.contentType),
-        )) {
-          const url = `/api/attachments/${attachment.id}/content`;
-          const response = await api.request.get(url);
-          if (!response.ok()) continue;
-          await expect(page.locator(`a[href*="${url}"]`).first()).toBeVisible();
-          bodies.push({
-            id: attachment.id,
-            title: attachment.originalFilename ?? attachment.filename,
-            body: await response.text(),
-            source: "delivered-attachment",
-          });
-        }
-        const text = bodies
-          .map((d) => String(d.body ?? d.revision?.body ?? ""))
-          .join("\n");
-        check(
-          "briefing-uses-real-result",
-          text.includes(`SERVICE_${nonce}`),
-          "A delivered issue document or Markdown attachment contains the actual service verification code.",
-        );
-        check(
-          "briefing-includes-page-titles",
-          text.includes("Roadmap") && text.includes("Meeting notes"),
-          "The briefing includes both page titles returned by the service.",
-        );
+        const bodies = await readServiceBriefing({ page, api, issueId: parent!.id });
+        for (const result of serviceBriefingChecks(bodies, `SERVICE_${nonce}`)) check(result.id, result.passed, result.detail);
         ev.documents = bodies;
         ev.issues.find((i) => i.id === parent!.id)!.documents = bodies;
       }
@@ -1485,6 +1531,32 @@ export async function runEverydayFlow(input: Input) {
         ),
       "Successful runs retain the native terminal contract.",
     );
+    if (requireRemoteRestart) {
+      const runId = ev.remoteRestart?.before?.identity.runId;
+      if (!runId) throw new Error("Remote restart has no saved original run boundary");
+      const final = await pollUntil({ label: "original remote run committed with workspace receipt",
+        deadlineAt: input.deadlineAt, load: async () => {
+          const [run, rows, operationRows, recovery, issue] = await Promise.all([
+            api.get<StoryRun>(`/api/heartbeat-runs/${runId}`),
+            collectRunEvents<Row>((afterSeq, limit) => api.get(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=${limit}`)),
+            api.get<Row[]>(`/api/heartbeat-runs/${runId}/workspace-operations`),
+            api.get<{ active: Row | null; actions: Row[] }>(`/api/issues/${parent!.id}/recovery-actions`),
+            api.get<StoryIssue>(`/api/issues/${parent!.id}`),
+          ]);
+          if (!Array.isArray(operationRows) || !Array.isArray(recovery.actions) || !("active" in recovery)) throw new Error("Remote restart finalization evidence is incomplete");
+          const final = { observedAt: new Date().toISOString(), run: projectRemoteRestartRun(run), events: projectRemoteRestartEvents(run, rows),
+            operations: operationRows.map(operation => ({ companyId: operation.companyId, heartbeatRunId: operation.heartbeatRunId,
+              issueId: operation.issueId, executionWorkspaceId: operation.executionWorkspaceId, phase: operation.phase, status: operation.status })),
+            scheduledRetry: issue.scheduledRetry,
+            recoveryActions: [recovery.active, ...recovery.actions].filter((action): action is Row => action !== null).map(action => ({ status: action.status })) };
+          ev.remoteRestart!.final = final;
+          return final;
+        }, accept: final => gradeRemoteRestart({ ...ev.remoteRestart, final }).every(check => check.passed),
+        reject: final => ["failed", "cancelled", "timed_out"].includes(final.run.status) ? "Original remote run failed after restart"
+          : final.run.status === "succeeded" && final.run.nativePhase === "committed"
+            && !gradeRemoteRestart({ ...ev.remoteRestart, final })[1]!.passed ? "Original remote turn completed with failed tools or conflicting/repeated execution receipts" : undefined });
+      await input.evidence("remote-restart-final.json", final);
+    }
     ev.checks.push(
       ...storyLifecycleChecks({
         issues: ev.issues as StoryIssue[],
@@ -1492,6 +1564,8 @@ export async function runEverydayFlow(input: Input) {
         parentId: parent!.id,
         leadId: fixtures.agent.id,
         allowedInterruptedRuns: ev.allowedInterruptedRuns,
+        requireRemoteRestart,
+        remoteRestart: ev.remoteRestart,
       }),
     );
     check(
@@ -1502,7 +1576,10 @@ export async function runEverydayFlow(input: Input) {
       "No completion confirmation or unanswered interaction remains.",
     );
     if (providerChoice || nativeProviderCase) await openParent();
-    else await waitForTaskChatRendered(page, String(parent!.title));
+    else {
+      await waitForTaskIdentity(page, taskUrl(parent!), parent!.identifier ?? parent!.id);
+      await waitForTaskChatRendered(page);
+    }
     const latestAgentComment = ev.issues
       .find((i) => i.id === parent!.id)
       ?.comments?.filter((c: Row) => c.authorAgentId)

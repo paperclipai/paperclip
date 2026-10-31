@@ -12,9 +12,16 @@ is shared across the catalog scan.
 Discovery includes tool, channel/email, and AI methods. Channel methods follow
 the instance's Chat connectors experimental setting. Each catalog method names
 its `purpose`. Channel and AI methods include a company-scoped `setupPath` to
-their existing setup flow. `connection_request` still creates tool setup cards;
-channel discovery does not turn an email inbox into an executable MCP tool or
-add channel setup to that card.
+their existing setup flow. AgentMail also supports `connection_request`: it
+creates an inline API-key card addressed to the responsible user. Search guidance
+prefers this card over a setup link or asking for credentials in chat. Other
+channel methods continue to use their setup path.
+
+The AgentMail card grants company-wide human access and installs access only for
+the requesting agent. It saves the credential, provisions or connects an inbox,
+and completes only after the server verifies that the assigned inbox is usable.
+A saved key alone does not make the search result ready. Partial setup can resume
+after reload using the same request ID, without duplicating the account or inbox.
 
 The agent chooses the relevant match using descriptions and method purposes.
 It should clarify only when the task remains ambiguous. A search match does not
@@ -50,6 +57,12 @@ grants consent. A provider connection is not proof that its underlying app is
 authorized. Multiple matching aggregator apps are returned as candidates; the
 agent searches the selected `aggregator.targetService` to get its provider question.
 
+A fuzzy or partial external app match remains a suggestion alongside authorized
+installed capability matches. It cannot replace those matches with a mandatory
+provider question. For example, a query for a page service can return the
+installed page tools alongside a Page X suggestion; selecting the exact Page X
+service is required before that external route asks for provider consent.
+
 ## Regression coverage
 
 ```sh
@@ -62,3 +75,10 @@ Circleback/Attio/ClickUp, indexed Executor tools, and provider consent. The nati
 tool authority test searches a paragraph longer than the old 200-character limit
 and then creates a real connection interaction. Existing tests retain checks for
 private metadata, administrative denials, stale identities, and saved declines.
+
+When `connection_request` rejects an unknown `toolNames` entry, its error includes
+up to twenty exact names from that eligible connection's active tool catalog.
+This is discovery metadata: the request still fails with 422, grants no access,
+and creates no approval card. The agent must select the needed exact names and
+submit a new request; normal user approval, catalog-version and policy checks
+still apply. Ineligible connections and inactive catalog entries are excluded.

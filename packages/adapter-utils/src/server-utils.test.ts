@@ -20,16 +20,21 @@ import {
   isPaperclipExternalChatQuestionResponseTurn,
   isPaperclipExternalChatTurn,
   materializePaperclipSkillCopy,
+  normalizePaperclipRunnerAdapterConfig,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
+  PAPERCLIP_FEEDBACK_SKILL_KEYS,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
   resolveLegacyPaperclipDesiredSkillNames,
   resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
   selectInitialCommunicationGuidance,
+  hydrateFreshSessionHandoff,
   runningProcesses,
   runChildProcess,
   sanitizeSshRemoteEnv,
+  sanitizeInheritedPaperclipEnv,
+  isForbiddenConfigEnvKey,
   signalRunningProcess,
   shapePaperclipWorkspaceEnvForExecution,
   rewriteWorkspaceCwdEnvVarsForExecution,
@@ -38,6 +43,34 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
+
+it("keeps Pi draft models empty and preserves saved native Pi settings", () => {
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { provider: "acpx", acpxAgent: "pi", model: "" })).toMatchObject({ provider: "acpx", acpxAgent: "pi", model: "" });
+  const saved = { provider: "acpx", acpxAgent: "pi", model: "openrouter/provider/model", piThinkingLevel: "max", acpxPermissionMode: "approve-reads", lifecycleMode: "warm" };
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", saved)).toMatchObject(saved);
+});
+
+it.each([undefined, "", "kimi-for-coding"])("keeps Kimi draft model selection explicit: %s", model => {
+  const config = { provider: "acpx", acpxAgent: "kimi", ...(model === undefined ? {} : { model }),
+    acpxPermissionMode: "approve-reads", lifecycleMode: "warm" };
+  const normalized = normalizePaperclipRunnerAdapterConfig("paperclip_runner", config);
+  expect(normalized).toMatchObject(config);
+  expect(normalized.model).toBe(model);
+});
+
+it("keeps Claude draft defaults and explicit model selection", () => {
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { provider: "acpx", acpxAgent: "claude" }))
+    .toMatchObject({ model: "claude-opus-5-5" });
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" }))
+    .toMatchObject({ model: "claude-sonnet-5" });
+});
+
+it("reserves identity credentials even for mixed-case inherited or configured keys", () => {
+  const keys = ["PAPERCLIP_AGENT_KEY_ID", "Paperclip_Agent_Public_Key", "paperclip_agent_private_key"];
+  const inherited = Object.fromEntries(keys.map(key => [key, "host-override"]));
+  expect(sanitizeInheritedPaperclipEnv({ ...inherited, PATH: "/usr/bin" })).toEqual({ PATH: "/usr/bin" });
+  for (const key of keys) expect(isForbiddenConfigEnvKey(key)).toBe(true);
+});
 
 describe("runtime connection tool delivery", () => {
   const access = {
@@ -141,6 +174,17 @@ describe("legacy adapter skill selection", () => {
     expect(resolvePaperclipDesiredSkillNames({}, [operationalEntry])).toEqual(
       [],
     );
+  });
+
+  it("makes feedback available to existing legacy agents without opting native agents into API skills", () => {
+    const inventory = [operationalEntry, ...PAPERCLIP_FEEDBACK_SKILL_KEYS.map((key) => ({ key }))];
+    for (const config of [{}, { paperclipSkillSync: { desiredSkills: [] } }]) {
+      expect(resolveLegacyPaperclipDesiredSkillNames(config, inventory)).toEqual([
+        PAPERCLIP_OPERATIONAL_SKILL_KEY, ...PAPERCLIP_FEEDBACK_SKILL_KEYS,
+      ]);
+      expect(resolvePaperclipDesiredSkillNames(config, inventory)).toEqual([]);
+    }
+    expect(resolveLegacyPaperclipDesiredSkillNames({}, inventory.slice(1))).toEqual([]);
   });
 });
 
@@ -318,6 +362,37 @@ describe("materializePaperclipSkillCopy", () => {
       await expect(
         fs.readFile(path.join(target, "local-marker.txt"), "utf8"),
       ).resolves.toBe("keep\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not lock an already-current materialized skill", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skill-copy-"),
+    );
+    try {
+      const source = path.join(root, "source");
+      const skillsHome = path.join(root, "skills");
+      const target = path.join(skillsHome, "skill");
+      const lock = `${target}.lock`;
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+      await materializePaperclipSkillCopy(source, target);
+
+      await fs.mkdir(lock);
+      const owner = path.join(lock, "owner.json");
+      await fs.writeFile(
+        owner,
+        JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }),
+        "utf8",
+      );
+
+      await expect(
+        materializePaperclipSkillCopy(source, target),
+      ).resolves.toMatchObject({ copiedFiles: 0 });
+      expect((await fs.readdir(skillsHome)).sort()).toEqual(["skill", "skill.lock"]);
+      await expect(fs.readFile(owner, "utf8")).resolves.toContain(`"pid":${process.pid}`);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -913,6 +988,20 @@ describe("runChildProcess", () => {
 });
 
 describe("renderPaperclipWakePrompt", () => {
+  it.each([false, true])("renders the runtime checkout flag for ordinary task wakes (resume=%s)", resumedSession => {
+    const payload = { reason: "issue_assigned", issue: { id: "issue-1", status: "in_progress" },
+      comments: [], commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false };
+    const claimed = renderPaperclipWakePrompt({ ...payload, checkedOutByHarness: true }, { resumedSession });
+    expect(claimed).toContain(resumedSession ? "checkout: already claimed by the harness for this run" :
+      "The harness already checked out this issue for the current run.");
+    for (const checkedOutByHarness of [false, undefined]) {
+      const unclaimed = renderPaperclipWakePrompt({ ...payload, checkedOutByHarness }, { resumedSession });
+      expect(unclaimed).not.toContain("checkout: already claimed");
+      expect(unclaimed).not.toContain("The harness already checked out this issue for the current run.");
+    }
+  });
+
   it("leaves conversation disposition and accepted-plan handoff to the injected chat policy", () => {
     const payload = {
       reason: "issue_commented",
@@ -924,7 +1013,7 @@ describe("renderPaperclipWakePrompt", () => {
       fallbackFetchNeeded: false,
     };
     const ordinary = renderPaperclipWakePrompt(payload, { resumedSession: true });
-    expect(ordinary).toContain("Execution contract:");
+    expect(ordinary).not.toContain("Execution contract:");
     expect(ordinary).toContain("Create child issues from the approved plan");
     for (const resumedSession of [false, true]) {
       const chat = renderPaperclipWakePrompt(payload, {
@@ -1109,10 +1198,14 @@ describe("renderPaperclipWakePrompt", () => {
       );
       expect(prompt).toContain("server-authenticated github chat turn");
       expect(prompt).toContain("Make zero Paperclip API calls");
+      expect(prompt).toContain("text answer that does not require structured human input");
       expect(prompt).toContain("answer directly");
       expect(prompt).toContain("exactly one semantic completion");
       expect(prompt).toContain("summary is the user-visible final answer");
       expect(prompt).toContain("Private progress commentary is not delivered");
+      expect(prompt).toContain("periodically edit that same comment with update_comment");
+      expect(prompt).toContain("semantic completion remains internal to Paperclip");
+      expect(prompt).toContain("do not post progress or completion comments");
       expect(prompt).toContain("any actionable file-access or delivery limitation");
       expect(prompt).toContain(
         "Keep wait and review dispositions in the semantic control fields",
@@ -1170,7 +1263,7 @@ describe("renderPaperclipWakePrompt", () => {
     expect(incompleteResumePrompt).toContain(
       "[continuation summary truncated]",
     );
-    expect(incompleteResumePrompt).toContain(
+    expect(incompleteResumePrompt).not.toContain(
       "a successful process exit or final response is not sufficient",
     );
   });
@@ -1409,76 +1502,18 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
-  it("keeps the default local-agent prompt action-oriented", () => {
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "Start actionable work in this heartbeat",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "do not stop at a plan",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "clear final disposition",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "evidence, not valid liveness paths by themselves",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "keep `in_progress` only when a live continuation path exists",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "Prefer the smallest verification that proves the change",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "After 2 consecutive failures of the same control-plane write",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "adapter/runtime status channel as the sanctioned fallback",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "Use child issues",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "instead of polling agents, sessions, or processes",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "Create child issues directly when you know what needs to be done",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "POST /api/issues/$PAPERCLIP_TASK_ID/interactions",
-    );
-    // URL paths in prompt text carry real ids or env vars, never brace
-    // placeholders: agents paste these lines verbatim, and a literal {issueId}
-    // reaches the server as /api/issues/%7BissueId%7D and 404s.
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).not.toContain(
-      "/api/issues/{issueId}",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).not.toContain(
-      "/api/issues/{id}",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "kind suggest_tasks, ask_user_questions, or request_confirmation",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "Use continuationPolicy wake_assignee when you need to resume after a response (it wakes on acceptance and rejection alike; only expiry does not wake); use wake_assignee_on_accept when you want to resume only after acceptance",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).not.toContain(
-      "for request_confirmation this resumes only after acceptance",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "Never create probe or throwaway issue-thread interactions to discover the interactions API shape or your permissions",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "confirmation:{issueId}:plan:{revisionId}",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "Wait for acceptance before creating implementation subtasks",
-    );
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "Respect budget, pause/cancel, approval gates, and company boundaries",
-    );
+  it("keeps task and chat defaults to identity and connection guidance", () => {
+    for (const template of [
+      DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+      DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
+    ]) {
+      expect(template).toBe(
+        `You are agent {{agent.id}} ({{agent.name}}).\n\n${CONNECTION_INTENT_AGENT_GUIDANCE}`,
+      );
+    }
   });
 
-  it("leaves the execution contract to the heartbeat template on fresh scoped wake prompts", () => {
+  it("keeps current task data without generic procedures on fresh scoped wake prompts", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_assigned",
       issue: {
@@ -1498,12 +1533,12 @@ describe("renderPaperclipWakePrompt", () => {
 
     expect(prompt).toContain("## Paperclip Wake Payload");
     expect(prompt).not.toContain("Execution contract:");
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).not.toContain(
       "Execution contract:",
     );
   });
 
-  it("adds the execution contract to resume delta prompts and opted-in fresh prompts", () => {
+  it("does not restore generic procedures on resume or with the legacy opt-in", () => {
     const payload = {
       reason: "issue_assigned",
       issue: {
@@ -1521,36 +1556,19 @@ describe("renderPaperclipWakePrompt", () => {
       fallbackFetchNeeded: false,
     };
 
-    for (const prompt of [
-      renderPaperclipWakePrompt(payload, { resumedSession: true }),
-      renderPaperclipWakePrompt(payload, { includeExecutionContract: true }),
-    ]) {
-      expect(prompt).toContain(
-        "Execution contract: take concrete action in this heartbeat",
-      );
-      expect(prompt).toContain("clear final disposition");
-      expect(prompt).toContain(
-        "Immediately before returning, verify that Paperclip records one of those dispositions",
-      );
-      expect(prompt).toContain(
-        "a successful process exit or final response is not sufficient",
-      );
-      expect(prompt).toContain(
-        "If no valid disposition is recorded, record it now and do not end the run",
-      );
-      expect(prompt).toContain(
-        "After 2 consecutive failures of the same control-plane write",
-      );
-      expect(prompt).toContain(
-        "adapter/runtime status channel as the sanctioned fallback",
-      );
-      expect(prompt).toContain(
-        "evidence, not valid liveness paths by themselves",
-      );
-      expect(prompt).toContain(
-        "Use child issues for long or parallel delegated work instead of polling",
-      );
-      expect(prompt).toContain("named unblock owner/action");
+    for (const resumedSession of [false, true]) {
+      for (const includeExecutionContract of [undefined, false, true]) {
+        const prompt = renderPaperclipWakePrompt(payload, {
+          resumedSession, includeExecutionContract,
+        });
+        expect(prompt).toContain(resumedSession ? "## Paperclip Resume Delta" : "## Paperclip Wake Payload");
+        expect(prompt).toContain("- reason: issue_assigned");
+        expect(prompt).toContain("- issue: PAP-1580 Update prompts");
+        expect(prompt).toContain("- issue status: in_progress");
+        expect(prompt).not.toContain("Execution contract:");
+        expect(prompt).not.toContain("clear final disposition");
+        expect(prompt).not.toContain("do not end the run");
+      }
     }
   });
 
@@ -1946,7 +1964,7 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
-  it("keeps exactly one execution contract in a composed fresh heartbeat prompt", () => {
+  it("keeps connection guidance without a generic manual in a composed fresh prompt", () => {
     const wakePrompt = renderPaperclipWakePrompt({
       reason: "issue_assigned",
       issue: {
@@ -1966,7 +1984,8 @@ describe("renderPaperclipWakePrompt", () => {
     const composed = [wakePrompt, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE].join(
       "\n\n",
     );
-    expect(composed.match(/Execution contract/g)).toHaveLength(1);
+    expect(composed).toContain(CONNECTION_INTENT_AGENT_GUIDANCE);
+    expect(composed).not.toContain("Execution contract:");
   });
 
   it("trims comment-batch boilerplate on fresh wakes with zero pending comments", () => {
@@ -3091,11 +3110,28 @@ describe("selectPaperclipTaskMarkdown", () => {
     expect(selectInitialCommunicationGuidance({ paperclipTaskCommunicationGuidance: "  Slack preference  " })).toBe("Slack preference");
     expect(selectInitialCommunicationGuidance(context, { resumedSession: true })).toBe("");
     expect(selectInitialCommunicationGuidance({})).toBe("");
+    const handoffContext = { ...context, paperclipFreshSessionHandoffMarkdown: "Prior goal and approved decisions" };
+    expect(selectInitialCommunicationGuidance(handoffContext, { resumedSession: true })).toBe("");
+    expect(selectInitialCommunicationGuidance(handoffContext, { resumedSession: false })).toContain("Prior goal and approved decisions");
     expect(selectPaperclipTaskMarkdown(context, { resumedSession: true })).toBe(compactMarkdown);
     expect(selectPaperclipTaskMarkdown(context, { includeCommunicationGuidance: false })).toBe(fullMarkdown);
     context.paperclipWake = { ...wake("issue_monitor_recovery"), recovery: { cause: "process_lost" } } as typeof context.paperclipWake;
     expect(selectPaperclipTaskMarkdown(context, { resumedSession: true })).toBe(fullMarkdown);
     expect(selectPaperclipTaskMarkdown(context, { resumedSession: false }).match(/Saved initial guidance/g)).toHaveLength(1);
+  });
+
+  it("reads history only at a fresh provider attempt, including resume fallback", async () => {
+    let reads = 0;
+    const ctx = { context: {} as Record<string, unknown>, getFreshSessionHandoff: async () => {
+      reads += 1;
+      return "Original goal and prior answer";
+    } };
+    await hydrateFreshSessionHandoff(ctx, { resumedSession: true });
+    expect(reads).toBe(0);
+    expect(ctx.context.paperclipFreshSessionHandoffMarkdown).toBeUndefined();
+    await hydrateFreshSessionHandoff(ctx, { resumedSession: false });
+    expect(reads).toBe(1);
+    expect(selectInitialCommunicationGuidance(ctx.context)).toContain("Original goal and prior answer");
   });
 
   it("falls back to the full markdown when no compact variant exists", () => {

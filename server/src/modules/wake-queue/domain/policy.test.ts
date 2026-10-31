@@ -248,6 +248,28 @@ describe("decideWakeOutcome", () => {
       expected: { kind: "fail_not_invokable" },
     },
     {
+      name: "defer_agent_pause: a paused recipient keeps its accepted request",
+      facts: { ...baseWakeOutcomeFacts, agent: { agentFound: true, invokable: false, paused: true } },
+      expected: { kind: "defer_agent_pause" },
+    },
+    {
+      name: "fail_not_invokable: a pause cannot authorize a missing recipient",
+      facts: { ...baseWakeOutcomeFacts, agent: { agentFound: false, invokable: false, paused: true } },
+      expected: { kind: "fail_not_invokable" },
+    },
+    {
+      name: "cancel_pause_hold: an explicit task hold still suppresses a paused recipient",
+      facts: { agent: { agentFound: true, invokable: false, paused: true },
+        pauseHold: { activePauseHold: true, treeHoldInteractionWake: false } },
+      expected: { kind: "cancel_pause_hold" },
+    },
+    {
+      name: "defer_agent_pause: a permitted tree interaction cannot invoke a paused agent",
+      facts: { agent: { agentFound: true, invokable: false, paused: true },
+        pauseHold: { activePauseHold: true, treeHoldInteractionWake: true } },
+      expected: { kind: "defer_agent_pause" },
+    },
+    {
       name: "fail_not_invokable: the agent is found but not invokable",
       facts: { ...baseWakeOutcomeFacts, agent: { agentFound: true, invokable: false } },
       expected: { kind: "fail_not_invokable" },

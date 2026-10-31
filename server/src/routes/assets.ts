@@ -1,3 +1,4 @@
+import { canActorReadAssetContent } from "../services/asset-content-access.js";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import createDOMPurify from "dompurify";
@@ -184,7 +185,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       sha256: stored.sha256,
       originalFilename: stored.originalFilename,
       createdByAgentId: actor.agentId,
-      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : req.actor.onBehalfOfUserId ?? null,
     });
 
     await logActivity(db, {
@@ -198,7 +199,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       entityType: "asset",
       entityId: asset.id,
       details: {
-        originalFilename: asset.originalFilename,
+        ...(namespaceSuffix.startsWith("issues/") ? {} : { originalFilename: asset.originalFilename }),
         contentType: asset.contentType,
         byteSize: asset.byteSize,
       },
@@ -327,6 +328,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const assetId = req.params.assetId as string;
     const asset = await getAccessibleResource(req, res, svc.getById(assetId), "Asset not found");
     if (!asset) return;
+    if (!(await canActorReadAssetContent(db, req.actor, asset))) {
+      res.status(404).json({ error: "Asset not found" }); return;
+    }
 
     // Use the persisted size only after resource authorization. Single ranges
     // keep saved API text pages bounded all the way to disk or object storage.
@@ -354,7 +358,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       res.status(206);
       res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${asset.byteSize}`);
     }
-    res.setHeader("Cache-Control", "private, max-age=60");
+    res.setHeader("Cache-Control", "private, no-store");
     res.setHeader("X-Content-Type-Options", "nosniff");
     if (!inlineSafe) {
       res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");

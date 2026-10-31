@@ -20,7 +20,7 @@ export function AgentCharacter({ agent, appearance, size = 256, state = "idle", 
   const slotId = useRef(Symbol("agent-character"));
   const owner = useSyncExternalStore(characterSlot.subscribe, characterSlot.getSnapshot, () => null);
   const [visible, setVisible] = useState(false), [reduced, setReduced] = useState(true), [failed, setFailed] = useState(false), [ready, setReady] = useState(false);
-  const active = visible && !reduced && !failed && motion === "auto" && state !== "rest";
+  const active = !identity.customAvatarAssetId && visible && !reduced && !failed && motion === "auto" && state !== "rest";
   useEffect(() => {
     if (typeof matchMedia !== "function" || typeof IntersectionObserver !== "function") return;
     const media = matchMedia("(prefers-reduced-motion: reduce)");
@@ -57,7 +57,7 @@ export function AgentCharacter({ agent, appearance, size = 256, state = "idle", 
   }, [identity, muted, state, ready]);
   return <span ref={root} role={label ? "img" : undefined} aria-label={label} aria-hidden={label ? undefined : true}
     className={cn("relative inline-block shrink-0", avatarSizeClasses[size], className)}>
-    <AgentAvatar agent={agent} appearance={identity} size={size < 256 ? 256 : size} name={name} pose={state} muted={muted} className={cn("size-full", ready && "invisible")} />
+    <AgentAvatar agent={agent} appearance={identity} size={size < 256 ? 256 : size} name={name} pose={state} muted={muted} className={cn("size-full", ready && !identity.customAvatarAssetId && "invisible")} />
     <span ref={host} className="absolute inset-0" />
   </span>;
 }

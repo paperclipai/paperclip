@@ -38,20 +38,42 @@ const copy = {
   },
 } as const;
 
+const prerequisiteCopy = {
+  idle: { title: "Check prerequisites", description: "Check instance settings and public connection configuration.", action: "Check setup" },
+  running: { title: "Checking prerequisites", description: "Checking instance settings and public connection configuration…", action: "Checking…" },
+  pass: { title: "Setup checks passed", description: "Review the setup details before assigning work.", action: "Check again" },
+  warn: { title: "Pairing required", description: "Create this agent, then pair it and verify event delivery.", action: "Check again" },
+  fail: { title: "Prerequisite check failed", description: "Review the setup details and retry.", action: "Retry check" },
+} as const;
+
 export function RuntimeTestCard({
   state,
   result,
   error,
   onTest,
   disabled = false,
+  variant = "connection",
+  metadataOnly = false,
 }: {
   state: TestState | "warn";
   result: AdapterEnvironmentTestResult | null;
   error?: string | null;
   onTest: () => void;
   disabled?: boolean;
+  variant?: "connection" | "prerequisites";
+  metadataOnly?: boolean;
 }) {
-  const content = copy[state];
+  const missingRuntime = state === "fail"
+    ? result?.checks.find(check => check.code === "acpx_runtime_package_missing")
+    : undefined;
+  const content = missingRuntime
+    ? { ...copy.fail, title: "Runtime missing", description: missingRuntime.message }
+    : (variant === "prerequisites" ? prerequisiteCopy : copy)[state];
+  const description = metadataOnly && state === "idle"
+    ? "Verify your saved token, runtime installation, and selected model without sending a model prompt."
+    : metadataOnly && state === "running"
+      ? "Checking the saved token, runtime, and selected model…"
+      : content.description;
   const Icon =
     state === "running"
       ? Loader2
@@ -92,7 +114,7 @@ export function RuntimeTestCard({
           >
             <h3 className="text-sm font-medium">{content.title}</h3>
             <p className="text-xs leading-relaxed text-muted-foreground">
-              {state === "fail" && error ? error : content.description}
+              {state === "fail" && error ? error : description}
             </p>
           </div>
           <Button

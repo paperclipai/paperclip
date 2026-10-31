@@ -1,4 +1,5 @@
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
+import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -20,7 +21,7 @@ import {
   adapterExecutionTargetEnablesSandboxDuplexBridge,
   readAdapterExecutionTarget,
   readAdapterExecutionTargetHomeDir,
-  resolveAdapterExecutionTargetTimeoutSec,
+  resolveAdapterExecutionTargetTimeout,
   resolveAdapterExecutionTargetCommandForLogs,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
@@ -40,6 +41,7 @@ import {
   ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
   renderTemplate,
+  hydrateFreshSessionHandoff,
   selectPaperclipPromptSections,
   selectInitialCommunicationGuidance,
   isPaperclipRecoveryWakePayload,
@@ -51,7 +53,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl, createOpenCodeJsonlParser } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
@@ -59,6 +61,7 @@ import {
   requireOpenCodeModelId,
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
+import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveOpenCodeSkillsHome } from "./skills.js";
@@ -82,7 +85,7 @@ function parseModelProvider(model: string | null): string | null {
 }
 
 function resolveOpenCodeBiller(env: Record<string, string>, provider: string | null): string {
-  return inferOpenAiCompatibleBiller(env, null) ?? provider ?? "unknown";
+  return provider === "openai" ? inferOpenAiCompatibleBiller(env, "openai") ?? "unknown" : provider ?? "unknown";
 }
 
 const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 20;
@@ -271,7 +274,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = {
-    ...buildPaperclipEnv(agent),
+    ...buildPaperclipEnv(agent, ctx.agentIdentity),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
   env.PAPERCLIP_RUN_ID = runId;
@@ -327,7 +330,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
+    env, config,
+    sandboxToolOomPreference: executionTarget?.kind === "remote" && executionTarget.transport === "sandbox",
+  });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
   try {
@@ -336,10 +342,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
-    const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
+    const adapterExecutionTimeout = resolveAdapterExecutionTargetTimeout(
       executionTarget,
       asNumber(config.timeoutSec, 0),
     );
+    const timeoutSec = adapterExecutionTimeout.timeoutSec;
     const graceSec = asNumber(config.graceSec, 20);
     await ensureAdapterExecutionTargetRuntimeCommandInstalled({
       runId,
@@ -618,11 +625,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (resumeSessionId) args.push("--session", resumeSessionId);
       if (model) args.push("--model", model);
       if (variant) args.push("--variant", variant);
+      // OpenCode prefers the inherited PWD over process.cwd(). Use the realized
+      // workspace unless the operator already selected a directory explicitly.
+      const optionTerminator = extraArgs.indexOf("--");
+      const extraOptionArgs = optionTerminator === -1 ? extraArgs : extraArgs.slice(0, optionTerminator);
+      if (!extraOptionArgs.some((arg) => arg === "--dir" || arg.startsWith("--dir="))) {
+        args.push("--dir", effectiveExecutionCwd);
+      }
       if (extraArgs.length > 0) args.push(...extraArgs);
       return args;
     };
 
+    // Remote targets receive only the prepared environment, never host keys.
+    const accountingEnv = executionTargetIsRemote ? preparedRuntimeConfig.env : runtimeEnv;
     const runAttempt = async (resumeSessionId: string | null) => {
+      await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
       const { basePrompt, promptMetrics } = buildPrompt(Boolean(resumeSessionId));
       const prompt = joinPromptSections([
         selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
@@ -643,8 +660,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
+      const consumeAccounting = createOpenCodeJsonlParser();
+      let hasAccounting = false;
+      const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage ?? (async () => {}), stdout => {
+        hasAccounting = true;
+        const parsed = consumeAccounting(stdout);
+        const provider = parseModelProvider(model || null);
+        return { usage: parsed.usageReported ? parsed.usage : undefined, costUsd: parsed.costUsd,
+          costStatus: parsed.usageComplete || parsed.costUsd != null ? undefined : "unpriced",
+          usageBasis: "per_run", provider, biller: resolveOpenCodeBiller(accountingEnv, provider), billingType: apiKeyBillingType(provider, accountingEnv), model, complete: false };
+      });
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         onProcessStopped: providerStop.beginInvocation(),
+        // Keep a long sandbox run off the synchronous command HTTP request.
+        // Probes and preparation keep their existing execution paths.
+        ...(runtimeExecutionTarget?.kind === "remote" && runtimeExecutionTarget.transport === "sandbox"
+          && runtimeExecutionTarget.providerKey === "daytona" ? { useSession: true } : {}),
         cwd,
         env: preparedRuntimeConfig.env,
         stdin: prompt,
@@ -652,15 +683,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         graceSec,
         onSpawn,
         onRuntimeProgress: ctx.onRuntimeProgress,
-        onLog,
+        onLog: accountingLog,
         runLogTail: paperclipBridge?.runLogTail,
         settleRunDisposition: paperclipBridge?.settleRunDisposition,
       });
-      return {
-        proc,
-        rawStderr: proc.stderr,
-        parsed: parseOpenCodeJsonl(proc.stdout),
-      };
+      // Parse any unterminated final record before deciding whether its usage
+      // is complete. A clean exit alone cannot turn absent counters into zero.
+      await accountingLog.flush();
+      const retainedAccounting = consumeAccounting("");
+      await accountingLog.flush({ complete: proc.exitCode === 0 && !proc.timedOut && !proc.signal
+        && (retainedAccounting.usageComplete || retainedAccounting.costUsd != null) });
+      // Display output is capped by the process transport. Keep accounting
+      // from the full stream, including when no checkpoint callback is installed.
+      const parsed = parseOpenCodeJsonl(proc.stdout);
+      if (hasAccounting) {
+        const retained = consumeAccounting("");
+        parsed.usage = retained.usage;
+        parsed.usageReported = retained.usageReported;
+        parsed.usageComplete = retained.usageComplete;
+        parsed.costUsd = retained.costUsd;
+      }
+      return { proc, rawStderr: proc.stderr, parsed };
     };
 
     const toResult = (
@@ -676,7 +719,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          errorMessage: `Timed out after ${timeoutSec}s`,
+          usageComplete: false,
+          usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
+          usageBasis: "per_run",
+          provider: parseModelProvider(model || null),
+          biller: resolveOpenCodeBiller(accountingEnv, parseModelProvider(model || null)),
+          model,
+          billingType: apiKeyBillingType(parseModelProvider(model || null), accountingEnv),
+          costUsd: attempt.parsed.costUsd,
+          costStatus: attempt.parsed.usageComplete || attempt.parsed.costUsd != null ? undefined : "unpriced",
+          // A provider or output-observation timeout can arrive before the
+          // configured execution deadline. The boolean does not prove which
+          // timer fired, and provider stderr is not safe exception text.
+          errorMessage: "OpenCode execution timed out",
+          resultJson: { adapterExecutionTimeout },
           clearSession: clearSessionOnMissingSession,
         };
       }
@@ -713,25 +769,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: synthesizedExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
+        usageComplete: attempt.proc.exitCode === 0 && !attempt.proc.signal
+          && (attempt.parsed.usageComplete || attempt.parsed.costUsd != null),
+        usageBasis: "per_run",
         errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
         // Forward the transport-level error code from the run-disposition seam.
         // A lost duplex control channel surfaces the typed `duplex_channel_lost`
         // code; every other result carries no code here.
         errorCode: attempt.proc.errorCode ?? null,
-        usage: {
-          inputTokens: attempt.parsed.usage.inputTokens,
-          outputTokens: attempt.parsed.usage.outputTokens,
-          cachedInputTokens: attempt.parsed.usage.cachedInputTokens,
-        },
+        usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
         provider: parseModelProvider(modelId),
-        biller: resolveOpenCodeBiller(runtimeEnv, parseModelProvider(modelId)),
+        biller: resolveOpenCodeBiller(accountingEnv, parseModelProvider(modelId)),
         model: modelId,
-        billingType: "unknown",
+        billingType: apiKeyBillingType(parseModelProvider(modelId), accountingEnv),
         costUsd: attempt.parsed.costUsd,
+        costStatus: attempt.parsed.usageComplete || attempt.parsed.costUsd != null ? undefined : "unpriced",
         resultJson: {
+          adapterExecutionTimeout,
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
         },

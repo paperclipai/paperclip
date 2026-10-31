@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Agent } from "@paperclipai/shared";
 import {
-  composerCatalogProvider, composerEfforts, composerFastAvailable, mergeComposerRunSettings,
+  composerCatalogProvider, composerDefaultModel, composerEfforts, composerFastAvailable, mergeComposerRunSettings,
   readComposerRunSettings, supportsComposerModel,
 } from "./composer-run-settings";
 
@@ -10,6 +10,32 @@ const agent = (adapterType: Agent["adapterType"], provider?: string) => ({
 }) as Agent;
 
 describe("composer run settings", () => {
+  it("resolves known adapter defaults without guessing local CLI settings", () => {
+    expect(composerDefaultModel(agent("claude_local"))).toBe("");
+    expect(composerDefaultModel({ ...agent("claude_local"), adapterConfig: { model: "claude-opus-5" } })).toBe("claude-opus-5");
+    expect(composerDefaultModel({ ...agent("claude_local"), adapterConfig: { env: { ANTHROPIC_MODEL: "claude-sonnet-5" } } })).toBe("claude-sonnet-5");
+    expect(composerDefaultModel({ ...agent("claude_local"), adapterConfig: { env: { CLAUDE_CODE_USE_BEDROCK: "1" } } })).toBe("");
+    expect(composerDefaultModel({ ...agent("claude_local"), adapterConfig: { env: { CLAUDE_CODE_USE_VERTEX: "1" } } })).toBe("");
+    expect(composerDefaultModel({ ...agent("claude_local"), adapterConfig: { env: { ANTHROPIC_MODEL: { type: "secret_ref", secretId: "model-secret" } } } })).toBe("");
+    expect(composerDefaultModel({ ...agent("codex_local"), adapterConfig: { model: " private-codex " } })).toBe("private-codex");
+    expect(composerDefaultModel(agent("codex_local"))).toBe("");
+    expect(composerDefaultModel(agent("paperclip_runner", "codex"))).toBe("gpt-5.6-sol");
+    expect(composerDefaultModel(agent("grok_local"))).toBe("grok-build");
+    expect(composerDefaultModel(undefined)).toBe("");
+  });
+  it("offers native Grok effort and keeps its default model", () => {
+    const native = { ...agent("paperclip_runner", "acpx"), adapterConfig: { provider: "acpx", acpxAgent: "grok", reasoningEffort: "high" } };
+    expect(composerDefaultModel(native)).toBe("grok-4.7");
+    expect(composerEfforts(native, "grok-4.7", ["grok-4.7"])).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(readComposerRunSettings({ adapterConfig: native.adapterConfig }, native.adapterType)).toMatchObject({ effort: "high" });
+  });
+  it("preserves the explicit native Kimi model without inventing a default or effort control", () => {
+    const native = { ...agent("paperclip_runner", "acpx"), adapterConfig: { provider: "acpx", acpxAgent: "kimi" } };
+    expect(composerDefaultModel(native)).toBe("");
+    const configured = { ...native, adapterConfig: { ...native.adapterConfig, model: "exact-kimi-model" } };
+    expect(composerDefaultModel(configured)).toBe("exact-kimi-model");
+    expect(composerEfforts(configured, "exact-kimi-model", ["exact-kimi-model"])).toEqual([]);
+  });
   it("shows only effort levels known for the selected harness and model", () => {
     expect(composerEfforts(agent("codex_local"), "gpt-6-astra", [])).toContain("ultra");
     expect(composerEfforts(agent("paperclip_runner", "codex"), "gpt-6-astra", [])).toContain("ultra");

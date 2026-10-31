@@ -17,22 +17,22 @@ import {
  */
 describe("connectionSetupStateForApp", () => {
   it("puts one-click OAuth connectors in the authorize state", () => {
-    for (const slug of ["notion", "linear", "sentry", "stripe", "jira", "asana"]) {
+    for (const slug of ["notion", "linear", "sentry", "stripe", "jira"]) {
       expect(connectionSetupStateForApp(getConnectableAppDefinition(slug)), slug).toBe("authorize");
     }
   });
 
-  it("follows the instance's ownership availability rather than the catalog order", () => {
-    // Google and GitHub publish a Paperclip-managed method, but it is
+  it.each(["gmail", "asana"])("follows %s ownership availability rather than the catalog order", (slug) => {
+    // These providers publish a Paperclip-managed method, but it is
     // `platform_shared` and therefore unavailable until an operator configures
     // the cloud connector. The state has to reflect what this instance can
     // actually do, or the card promises one click and the screen shows a form.
-    const gmail = getConnectableAppDefinition("gmail")!;
-    expect(connectionSetupStateForApp(gmail)).toBe("register");
+    const app = getConnectableAppDefinition(slug)!;
+    expect(connectionSetupStateForApp(app)).toBe("register");
     expect(
       connectionSetupStateForApp({
-        ...gmail,
-        ownershipAvailability: { ...gmail.ownershipAvailability, platform_shared: true },
+        ...app,
+        ownershipAvailability: { ...app.ownershipAvailability, platform_shared: true },
       }),
     ).toBe("authorize");
   });

@@ -76,8 +76,15 @@ export function queuedCommentQueueRevision(input: {
 export function withQueuedCommentIdsInRunContext(
   contextValue: unknown,
   ids: string[],
+  sourceWakeIds?: string[],
 ): Record<string, unknown> {
   const context = { ...record(contextValue) };
+  if (sourceWakeIds) {
+    context.queuedCommentSourceWakeIds = uniqueIds([
+      ...uniqueIds(context.queuedCommentSourceWakeIds),
+      ...sourceWakeIds,
+    ]);
+  }
   if (ids.length > 0) {
     const latestId = ids[ids.length - 1]!;
     context[QUEUE_IDS_KEY] = ids;
@@ -128,11 +135,16 @@ export function decideQueuedCommentQueueSteering(facts: {
   /** The queued run's own runtime mode. Read only when `state` is `"queued"`. */
   queueRunRuntimeMode: string | null;
   /** The currently running turn, if any. Read only when `state` is `"deferred"`. */
-  activeRun: { id: string; runtimeMode: string | null } | null;
+  activeRun: { id: string; runtimeMode: string | null; runtimeModeResolvedAt?: Date | null; runnerProfileJson?: Record<string, unknown> | null } | null;
   assignedAgentAdapterType: string | null;
   queuedCommentCount: number;
 }): QueuedCommentQueueSteeringDecision {
-  const persistedRuntimeMode =
+  // The default legacy value is not a selection receipt during preparation.
+  // Use the run's immutable dispatch choice, never the agent's mutable settings.
+  const preparingNative = facts.state === "deferred" && facts.activeRun?.runtimeMode === "legacy" &&
+    facts.activeRun.runtimeModeResolvedAt === null &&
+    record(facts.activeRun.runnerProfileJson?.adapterDispatch).adapterType === "paperclip_runner";
+  const persistedRuntimeMode = preparingNative ? null :
     facts.state === "queued"
       ? facts.queueRunRuntimeMode
       : facts.state === "deferred"
@@ -140,7 +152,7 @@ export function decideQueuedCommentQueueSteering(facts: {
         : null;
 
   const protocol: QueuedCommentQueueProtocol =
-    persistedRuntimeMode === "native"
+    preparingNative || persistedRuntimeMode === "native"
       || (persistedRuntimeMode === null && facts.assignedAgentAdapterType === "paperclip_runner")
       ? "paperclip_runner_v1"
       : "legacy";
@@ -150,7 +162,7 @@ export function decideQueuedCommentQueueSteering(facts: {
   }
 
   const steeringRun = facts.state === "deferred" ? facts.activeRun : null;
-  if (!steeringRun || facts.queuedCommentCount === 0) {
+  if (!steeringRun || preparingNative || facts.queuedCommentCount === 0) {
     return { protocol, kind: "temporarily_unavailable" };
   }
 

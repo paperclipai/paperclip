@@ -416,3 +416,9 @@ describeEmbeddedPostgres("agents adapter-config user-secret resolution routes", 
 function beforeEachActor(actor: TestActor) {
   currentActor = actor;
 }
+
+vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/agent-lifecycle.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+  }) };
+});

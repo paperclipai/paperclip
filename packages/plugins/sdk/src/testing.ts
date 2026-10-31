@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+import { createIssueThreadInteractionSchema, pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import type {
   PaperclipPluginManifestV1,
   PluginCapability,
@@ -16,7 +16,6 @@ import type {
   Issue,
   IssueComment,
   IssueThreadInteraction,
-  CreateIssueThreadInteraction,
   IssueAttachment,
   IssueDocument,
   Agent,
@@ -31,6 +30,7 @@ import type {
   PluginJobContext,
   PluginLauncherRegistration,
   PluginEvent,
+  ResourceLifecycleEvent,
   ScopeKey,
   ToolResult,
   ToolRunContext,
@@ -52,6 +52,8 @@ import type {
   PluginEnvironmentProbeParams,
   PluginEnvironmentProbeResult,
   PluginEnvironmentLease,
+  PluginEnvironmentInspectLeaseParams,
+  PluginEnvironmentLeaseObservation,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentReleaseLeaseParams,
@@ -109,6 +111,8 @@ export interface TestHarness {
   /** Seed host entities for `ctx.companies/projects/issues/agents/goals/access/authorization` reads. */
   seed(input: {
     companies?: Company[];
+    lifecycleEvents?: ResourceLifecycleEvent[];
+    projectInstanceSecrets?: Array<{ companyId: string; projectId: string; values: Record<string, string> }>;
     projects?: Project[];
     issues?: Issue[];
     issueComments?: IssueComment[];
@@ -162,6 +166,7 @@ export interface EnvironmentEventRecord {
     | "resumeLease"
     | "releaseLease"
     | "stopLease"
+    | "inspectLease"
     | "destroyLease"
     | "realizeWorkspace"
     | "execute"
@@ -189,6 +194,7 @@ export interface EnvironmentTestHarnessOptions extends TestHarnessOptions {
     onResumeLease?: (params: PluginEnvironmentResumeLeaseParams) => Promise<PluginEnvironmentLease>;
     onReleaseLease?: (params: PluginEnvironmentReleaseLeaseParams) => Promise<PluginEnvironmentTerminationReceipt | void>;
     onStopLease?: (params: PluginEnvironmentReleaseLeaseParams) => Promise<PluginEnvironmentTerminationReceipt>;
+    onInspectLease?: (params: PluginEnvironmentInspectLeaseParams) => Promise<PluginEnvironmentLeaseObservation>;
     onDestroyLease?: (params: PluginEnvironmentDestroyLeaseParams) => Promise<PluginEnvironmentTerminationReceipt | void>;
     onRealizeWorkspace?: (params: PluginEnvironmentRealizeWorkspaceParams) => Promise<PluginEnvironmentRealizeWorkspaceResult>;
     onExecute?: (params: PluginEnvironmentExecuteParams) => Promise<PluginEnvironmentExecuteResult>;
@@ -216,6 +222,8 @@ export interface EnvironmentTestHarness extends TestHarness {
   releaseLease(params: PluginEnvironmentReleaseLeaseParams): Promise<PluginEnvironmentTerminationReceipt | void>;
   /** Stop and preserve an allocation independently of its release policy. */
   stopLease(params: PluginEnvironmentReleaseLeaseParams): Promise<PluginEnvironmentTerminationReceipt>;
+  /** Observe an allocation without starting or modifying it. */
+  inspectLease(params: PluginEnvironmentInspectLeaseParams): Promise<PluginEnvironmentLeaseObservation | undefined>;
   /** Invoke the environment driver's destroyLease hook. */
   destroyLease(params: PluginEnvironmentDestroyLeaseParams): Promise<PluginEnvironmentTerminationReceipt | void>;
   /** Invoke the environment driver's realizeWorkspace hook. */
@@ -496,7 +504,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const entities = new Map<string, PluginEntityRecord>();
   const entityExternalIndex = new Map<string, string>();
   const companies = new Map<string, Company>();
+  const lifecycleEvents = new Map<string, ResourceLifecycleEvent>();
+  const lifecycleAcknowledgments = new Set<string>();
   const projects = new Map<string, Project>();
+  const projectInstanceSecrets = new Map<string, Record<string, string>>();
   const routines = new Map<string, Routine>();
   const routineRuns = new Map<string, RoutineRun>();
   const issues = new Map<string, Issue>();
@@ -863,6 +874,34 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     events: {
+      async listLifecycle(companyId, limit = 50, afterId) {
+        requireCapability(manifest, capabilitySet, "events.subscribe");
+        requireCompanyId(companyId);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("limit must be an integer from 1 to 100");
+        if (afterId !== undefined && (typeof afterId !== "string" || !/^[1-9]\d*$/.test(afterId) || !Number.isSafeInteger(Number(afterId)))) throw new Error("Invalid lifecycle page id");
+        const pending = [...lifecycleEvents.values()].filter(event => event.companyId === companyId && !lifecycleAcknowledgments.has(event.id))
+          .sort((a, b) => (a.action === "create" ? 0 : 1) - (b.action === "create" ? 0 : 1) || Number(a.id) - Number(b.id));
+        const resources = new Set<string>();
+        return pending.filter(event => {
+          const key = `${event.resourceType}:${event.resourceId}`;
+          if (resources.has(key)) return false;
+          resources.add(key);
+          return true;
+        }).filter(event => afterId === undefined || Number(event.id) > Number(afterId))
+          .sort((a, b) => Number(a.id) - Number(b.id)).slice(0, limit);
+      },
+      async acknowledgeLifecycle(companyId, eventId) {
+        requireCapability(manifest, capabilitySet, "events.subscribe");
+        requireCompanyId(companyId);
+        const event = lifecycleEvents.get(eventId);
+        if (!event || event.companyId !== companyId) throw new Error("Lifecycle event not found");
+        const earlier = [...lifecycleEvents.values()].some(other => other.companyId === companyId
+          && other.resourceType === event.resourceType && other.resourceId === event.resourceId
+          && event.action !== "create" && (other.action === "create" || Number(other.id) < Number(event.id))
+          && !lifecycleAcknowledgments.has(other.id));
+        if (earlier) throw new Error("Acknowledge earlier lifecycle events for this resource first");
+        lifecycleAcknowledgments.add(eventId);
+      },
       on(name: PluginEventType | `plugin.${string}`, filterOrFn: EventFilter | ((event: PluginEvent) => Promise<void>), maybeFn?: (event: PluginEvent) => Promise<void>): () => void {
         requireCapability(manifest, capabilitySet, "events.subscribe");
         let registration: EventRegistration;
@@ -993,6 +1032,18 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     projects: {
+      async resolveGitCredential() {
+        requireCapability(manifest, capabilitySet, "projects.git-credentials");
+        throw new Error("Git credentials require a matching host project operation");
+      },
+      async getInstanceSecrets(projectId, companyId) {
+        requireCapability(manifest, capabilitySet, "projects.instance-secrets");
+        requireCapability(manifest, capabilitySet, "events.subscribe");
+        if (!manifest.resourceLifecycle?.includes("project")) throw new Error("Project instance secrets outside plugin scope");
+        const project = projects.get(projectId);
+        if (!isInCompany(project, companyId) || project.archivedAt) throw new Error("Project instance secrets unavailable");
+        return structuredClone(projectInstanceSecrets.get(JSON.stringify([companyId, projectId])) ?? {});
+      },
       async list(input) {
         requireCapability(manifest, capabilitySet, "projects.read");
         const companyId = requireCompanyId(input?.companyId);
@@ -1603,6 +1654,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           projectWorkspaceId: null,
           goalId: input.goalId ?? null,
           parentId: input.parentId ?? null,
+          visibility: "open",
+          privacyRootIssueId: null,
           title: input.title,
           description: input.description ?? null,
           status: input.status ?? "todo",
@@ -1750,6 +1803,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const parentIssue = issues.get(issueId);
         if (!isInCompany(parentIssue, companyId)) {
           throw new Error(`Issue not found: ${issueId}`);
+        }
+        if (interaction.kind === "ask_user_questions") {
+          interaction = createIssueThreadInteractionSchema.parse(interaction);
         }
         const now = new Date();
         const current = issueInteractions.get(issueId) ?? [];
@@ -2045,6 +2101,14 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     agents: {
+      async getRuntimeIdentity() {
+        requireCapability(manifest, capabilitySet, "agents.lifecycle.manage");
+        throw new Error("Agent runtime identity requires a host service fixture");
+      },
+      async getRuntime() {
+        requireCapability(manifest, capabilitySet, "agents.lifecycle.manage");
+        throw new Error("Agent runtime state requires a host service fixture");
+      },
       async list(input) {
         requireCapability(manifest, capabilitySet, "agents.read");
         const companyId = requireCompanyId(input?.companyId);
@@ -2537,8 +2601,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const harness: TestHarness = {
     ctx,
     seed(input) {
+      for (const row of input.lifecycleEvents ?? []) lifecycleEvents.set(row.id, row);
       for (const row of input.companies ?? []) companies.set(row.id, row);
       for (const row of input.projects ?? []) projects.set(row.id, row);
+      for (const row of input.projectInstanceSecrets ?? []) projectInstanceSecrets.set(JSON.stringify([row.companyId, row.projectId]), structuredClone(row.values));
       for (const row of input.issues ?? []) {
         issues.set(row.id, row);
         if (row.blockedBy) {
@@ -2734,6 +2800,9 @@ export function createEnvironmentTestHarness(options: EnvironmentTestHarnessOpti
     async stopLease(params) {
       return callHook("stopLease", driver.onStopLease, params, "onStopLease");
     },
+    async inspectLease(params) {
+      return callHook("inspectLease", driver.onInspectLease, params, "onInspectLease");
+    },
     async destroyLease(params) {
       return callHook("destroyLease", driver.onDestroyLease, params, "onDestroyLease");
     },
@@ -2786,4 +2855,13 @@ export function createEnvironmentTestHarness(options: EnvironmentTestHarnessOpti
   };
 
   return envHarness;
+}
+
+/** Run the same operation/result validation as the worker RPC boundary. */
+export function createWorkspaceProviderHarness(handler: (params: import("./workspace-provider.js").PluginWorkspaceParams) => Promise<import("./workspace-provider.js").PluginWorkspaceResult>) {
+  return { async operation(params: import("./workspace-provider.js").PluginWorkspaceParams) {
+    const { pluginWorkspaceParamsSchema, parseWorkspaceProviderResult } = await import("./workspace-provider.js");
+    pluginWorkspaceParamsSchema.parse(params);
+    return parseWorkspaceProviderResult(params, await handler(params));
+  } };
 }

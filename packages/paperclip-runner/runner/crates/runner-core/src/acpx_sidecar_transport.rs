@@ -78,12 +78,117 @@ pub struct AcpxSidecarEvent {
 pub struct AcpxSidecarTransport {
     process: SupervisedProcess,
     request_timeout: Duration,
+    session_open_timeout: Duration,
     next_request_id: u64,
     last_event_sequence: u64,
     buffered_events: VecDeque<AcpxSidecarEvent>,
     stderr_tail: BoundedLogBuffer,
     stderr_categories: BTreeSet<&'static str>,
     poisoned: bool,
+}
+
+// A fresh Pi process verifies and copies its native closure before ACP admission.
+// Reopen/recovery uses the same path. Ordinary sidecar requests retain their bound.
+fn session_open_timeout(agent: &str, ordinary: Duration) -> Duration {
+    if agent == "pi" {
+        Duration::from_secs(60)
+    } else {
+        ordinary
+    }
+}
+
+// Pi's provider catalog is caller-selected. The authenticated controller binds
+// credential names (including custom models.json references); a Rust provider
+// roster would silently drop credentials before the sidecar can validate them.
+fn pi_credential_environment_keys(binding: Option<&str>) -> Result<Vec<String>, LocalRunnerError> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Binding {
+        schema: String,
+        agent: String,
+        session_id: String,
+        names: Vec<String>,
+    }
+    let invalid = || LocalRunnerError::invalid("Pi credentials require a valid controller binding");
+    let Some(raw) = binding else {
+        return Ok(Vec::new());
+    };
+    if raw.len() > 4_096 {
+        return Err(invalid());
+    }
+    let value: Binding = serde_json::from_str(raw).map_err(|_| invalid())?;
+    if value.schema != "paperclip.acpx_credential_binding.v1"
+        || value.agent != "pi"
+        || !is_stable_id(&value.session_id, SHORT_STABLE_ID_CHARS)
+        || value.names.len() > 128
+    {
+        return Err(invalid());
+    }
+    let mut seen = BTreeSet::new();
+    for name in &value.names {
+        let valid_name = name.len() <= 128
+            && name.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+            && name
+                .bytes()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_');
+        // Match pi-provider-config.ts: prefixes such as LD_API_KEY are valid
+        // credentials; only the reserved process controls are rejected.
+        let protected_name = (name.starts_with("PAPERCLIP_") && name != "PAPERCLIP_PI_PROVIDERS")
+            || name.starts_with("NODE_")
+            || name.starts_with("NPM_")
+            || matches!(
+                name.as_str(),
+                "PATH"
+                    | "HOME"
+                    | "SHELL"
+                    | "TMPDIR"
+                    | "BASH_ENV"
+                    | "ENV"
+                    | "ZDOTDIR"
+                    | "LD_AUDIT"
+                    | "LD_LIBRARY_PATH"
+                    | "LD_PRELOAD"
+                    | "LD_DEBUG"
+                    | "LD_DEBUG_OUTPUT"
+                    | "LD_PROFILE"
+                    | "LD_PROFILE_OUTPUT"
+                    | "LD_TRACE_LOADED_OBJECTS"
+                    | "LD_ORIGIN_PATH"
+                    | "LD_BIND_NOW"
+                    | "LD_BIND_NOT"
+                    | "LD_DYNAMIC_WEAK"
+                    | "LD_HWCAP_MASK"
+                    | "LD_SHOW_AUXV"
+                    | "LD_USE_LOAD_BIAS"
+                    | "LD_VERBOSE"
+                    | "LD_WARN"
+                    | "LD_ASSUME_KERNEL"
+                    | "LD_PREFER_MAP_32BIT_EXEC"
+                    | "DYLD_INSERT_LIBRARIES"
+                    | "DYLD_LIBRARY_PATH"
+                    | "DYLD_FRAMEWORK_PATH"
+                    | "DYLD_FALLBACK_LIBRARY_PATH"
+                    | "DYLD_FALLBACK_FRAMEWORK_PATH"
+                    | "DYLD_VERSIONED_LIBRARY_PATH"
+                    | "DYLD_VERSIONED_FRAMEWORK_PATH"
+                    | "DYLD_ROOT_PATH"
+                    | "DYLD_IMAGE_SUFFIX"
+                    | "DYLD_SHARED_CACHE_DIR"
+                    | "GLIBC_TUNABLES"
+                    | "GCONV_PATH"
+                    | "LOCPATH"
+                    | "NLSPATH"
+                    | "AWS_ACCESS_KEY_ID"
+                    | "AWS_SECRET_ACCESS_KEY"
+                    | "AWS_SESSION_TOKEN"
+            );
+        if !valid_name || protected_name || !seen.insert(name) {
+            return Err(invalid());
+        }
+    }
+    // The sidecar still checks every name against Pi's pinned SDK/custom
+    // configuration and the exact session.open identity before provider launch.
+    Ok(value.names)
 }
 
 impl AcpxSidecarTransport {
@@ -96,12 +201,26 @@ impl AcpxSidecarTransport {
         agent: &str,
     ) -> Result<Self, LocalRunnerError> {
         let credential_keys: &[&str] = match agent {
-            "claude" => &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
-            "codex" => &["OPENAI_API_KEY", "CODEX_API_KEY"],
+            "claude" => &[
+                "ANTHROPIC_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "ANTHROPIC_AUTH_TOKEN",
+                "AWS_BEARER_TOKEN_BEDROCK",
+            ],
+            "codex" => &[
+                "OPENAI_API_KEY",
+                "CODEX_API_KEY",
+                "PAPERCLIP_AI_PROVIDER_KEY",
+            ],
             "grok" => &["XAI_API_KEY", "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET"],
-            "pi" => &["OPENROUTER_API_KEY"],
+            "pi" => &[],
             "cursor" => &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
             "copilot" => &["COPILOT_GITHUB_TOKEN"],
+            "kimi" => &["KIMI_API_KEY"],
+            "antigravity" => &[
+                "GEMINI_API_KEY",
+                "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET",
+            ],
             _ => {
                 return Err(LocalRunnerError::invalid(
                     "ACPX sidecar credentials require a known agent profile",
@@ -109,6 +228,9 @@ impl AcpxSidecarTransport {
             }
         };
         let mut keys = vec![
+            "PAPERCLIP_AGENT_KEY_ID",
+            "PAPERCLIP_AGENT_PUBLIC_KEY",
+            "PAPERCLIP_AGENT_PRIVATE_KEY",
             "LANGUAGE",
             "SSL_CERT_FILE",
             "SSL_CERT_DIR",
@@ -127,17 +249,110 @@ impl AcpxSidecarTransport {
             // The qualified sidecar configures the runner-owned gateway. Keep
             // its credential with the name/URL; unrelated secrets stay excluded.
             "PAPERCLIP_NATIVE_MCP_TOKEN",
+            "PAPERCLIP_NATIVE_MCP_STDIO",
+            "PAPERCLIP_NATIVE_MCP_PROXY",
             "PAPERCLIP_ACPX_BUILTIN_ROOT",
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
         ];
-        if matches!(agent, "pi" | "cursor" | "copilot") {
+        if matches!(agent, "pi" | "cursor" | "copilot" | "kimi" | "antigravity") {
             // Credential values alone are not proof of an explicit task binding.
             // The sidecar checks this controller-minted provider/session marker.
             keys.push("PAPERCLIP_ACPX_CREDENTIAL_BINDING");
         }
+        if agent == "claude" {
+            keys.extend_from_slice(&[
+                // Launcher/controller-owned helper paths; credentials stay behind the broker.
+                "BASH_ENV",
+                "ZDOTDIR",
+                "GH_CONFIG_DIR",
+                "PAPERCLIP_GITHUB_LAUNCHER_DIR",
+                "ANTHROPIC_BASE_URL",
+                "CLAUDE_CODE_ENABLE_TELEMETRY",
+                "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+                "ENABLE_ENHANCED_TELEMETRY_BETA",
+                "OTEL_LOGS_EXPORTER",
+                "OTEL_TRACES_EXPORTER",
+                "OTEL_METRICS_EXPORTER",
+                "OTEL_RESOURCE_ATTRIBUTES",
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_PROTOCOL",
+                "OTEL_EXPORTER_OTLP_HEADERS",
+                "OTEL_EXPORTER_OTLP_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+                "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+                "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+                "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+                "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+                "OTEL_LOG_USER_PROMPTS",
+                "OTEL_LOG_ASSISTANT_RESPONSES",
+                "OTEL_LOG_TOOL_DETAILS",
+                "OTEL_LOG_TOOL_CONTENT",
+                "OTEL_LOG_RAW_API_BODIES",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "AWS_REGION",
+                "AWS_DEFAULT_REGION",
+                "AWS_EC2_METADATA_DISABLED",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+                "ANTHROPIC_MODEL",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "CLAUDE_CODE_SUBAGENT_MODEL",
+            ]);
+        }
+        if agent == "codex" {
+            keys.extend_from_slice(&[
+                "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG",
+                "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+                "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+            ]);
+        }
+        let pi_keys = if agent == "pi" {
+            pi_credential_environment_keys(
+                std::env::var("PAPERCLIP_ACPX_CREDENTIAL_BINDING")
+                    .ok()
+                    .as_deref(),
+            )?
+        } else {
+            Vec::new()
+        };
+        keys.extend(pi_keys.iter().map(String::as_str));
+        if std::env::var("PAPERCLIP_RUNNER_HOME_MODE").as_deref() == Ok("preconfigured") {
+            keys.extend_from_slice(&[
+                "PAPERCLIP_RUNNER_HOME_MODE",
+                "ACPX_CLAUDE_INCLUDE_USER_SETTINGS",
+                "CODEX_HOME",
+                "CLAUDE_CONFIG_DIR",
+                "XDG_CONFIG_HOME",
+                "XDG_DATA_HOME",
+                "XDG_CACHE_HOME",
+            ]);
+        }
+        if agent == "claude" && std::env::var_os("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME").is_some()
+        {
+            keys.push("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME");
+        }
         keys.extend_from_slice(credential_keys);
-        Self::start_with_environment_keys(config, &keys)
+        // Pi owns a native distribution copy, including a pending refresh at
+        // suspension. Allow its bounded cleanup to settle before group KILL;
+        // the ordinary two-second grace can cut off deletion mid-tree.
+        config.validate()?;
+        let mut launch_config = config.clone();
+        if agent == "pi" {
+            launch_config.shutdown_grace = Duration::from_secs(30);
+        }
+        let mut transport = Self::start_with_environment_keys(&launch_config, &keys)?;
+        transport.session_open_timeout = session_open_timeout(agent, config.request_timeout);
+        Ok(transport)
     }
 
     fn start_with_environment_keys(
@@ -164,6 +379,7 @@ impl AcpxSidecarTransport {
         Ok(Self {
             process,
             request_timeout: config.request_timeout,
+            session_open_timeout: config.request_timeout,
             next_request_id: 1,
             last_event_sequence: 0,
             buffered_events: VecDeque::new(),
@@ -171,6 +387,14 @@ impl AcpxSidecarTransport {
             stderr_categories: BTreeSet::new(),
             poisoned: false,
         })
+    }
+
+    fn command_timeout(&self, command: GeneratedAcpxSidecarCommand) -> Duration {
+        if command == GeneratedAcpxSidecarCommand::SessionOpen {
+            self.session_open_timeout
+        } else {
+            self.request_timeout
+        }
     }
 
     pub fn process_id(&self) -> u32 {
@@ -268,7 +492,8 @@ impl AcpxSidecarTransport {
         })?;
         self.next_request_id = request_id + 1;
 
-        let deadline = Instant::now() + self.request_timeout;
+        let timeout = self.command_timeout(command);
+        let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -682,6 +907,24 @@ fn stderr_diagnostic_categories(value: &str) -> BTreeSet<&'static str> {
 
 fn response_error_classification(error: &ResponseError) -> &'static str {
     match error.code.as_str() {
+        "GROK_EFFORT_ACKNOWLEDGEMENT_MISSING" => return "grok_effort_acknowledgement_missing",
+        "GROK_EFFORT_MISMATCH" => return "grok_effort_mismatch",
+        "GROK_MODEL_MISMATCH" => return "grok_model_mismatch",
+        "GROK_SESSION_MISMATCH" => return "grok_session_mismatch",
+        "GROK_CONFIGURATION_CONFLICT" => return "grok_configuration_conflict",
+        "GROK_CONFIGURATION_DRIFT" => return "grok_configuration_drift",
+        "GROK_ADMISSION_PROTOCOL_VIOLATION" => return "grok_admission_protocol_violation",
+        "ACPX_ADMISSION_BINDING" => return "admission_binding",
+        "ACPX_ADMISSION_INSTALLATION" => return "admission_installation",
+        "ACPX_ADMISSION_SANDBOX" => return "admission_sandbox",
+        "ACPX_ADMISSION_CREDENTIAL" => return "admission_credential",
+        "ACPX_ADMISSION_CONFIGURATION" => return "admission_configuration",
+        "ACPX_ADMISSION_SKILLS" => return "admission_skills",
+        "ACPX_ADMISSION_COMMAND" => return "admission_command",
+        "ACPX_ADMISSION_TOOL_BRIDGE" => return "admission_tool_bridge",
+        "ACPX_ADMISSION_RUNTIME" => return "admission_runtime",
+        "ACPX_ADMISSION_IDENTITY" => return "admission_identity",
+        "ACPX_RUNTIME_PACKAGE_MISSING" => return "runtime_package_missing",
         "ACP_MODEL_UNSUPPORTED" => return "requested_model_unsupported",
         "AGENT_STARTUP_FAILED" => return "agent_startup_failed",
         "AGENT_STARTUP_FAILED.UNVERIFIED_MODULE" => return "agent_startup_unverified_module",
@@ -695,8 +938,12 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         "AGENT_STARTUP_FAILED.EXIT_NONZERO" => return "agent_startup_exit_nonzero",
         "AGENT_STARTUP_FAILED.OTHER" => return "agent_startup_other",
         "AGENT_DISCONNECTED" => return "agent_disconnected",
+        "ACPX_TOOL_CALL_STALE" => return "provider_tool_call_retired",
         "AUTH_REQUIRED" => return "authentication_required",
         "COPILOT_AUTH_REQUIRED" => return "authentication_required",
+        "COPILOT_INSTALLATION_INVALID" => return "agent_installation_invalid",
+        "COPILOT_POLICY_VIOLATION" => return "copilot_policy_violation",
+        "COPILOT_DETACHED_WORK_UNSUPPORTED" => return "copilot_detached_work_unsupported",
         "COPILOT_ENTITLEMENT_DENIED" => return "provider_entitlement_denied",
         "COPILOT_MODEL_UNAVAILABLE" => return "requested_model_unsupported",
         "SESSION_RESUME_REQUIRED" => return "session_resume_required",
@@ -765,7 +1012,108 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pi_credentials_require_a_bounded_binding_without_process_control_variables() {
+        assert!(pi_credential_environment_keys(None).unwrap().is_empty());
+        for name in [
+            "NODE_OPTIONS",
+            "PATH",
+            "HOME",
+            "LD_PRELOAD",
+            "DYLD_INSERT_LIBRARIES",
+            "PAPERCLIP_NATIVE_MCP_TOKEN",
+            "INVALID-NAME",
+        ] {
+            let binding = json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"pi", "sessionId":"session-1", "names":[name]});
+            assert!(pi_credential_environment_keys(Some(&binding.to_string())).is_err());
+        }
+        for binding in [
+            json!({"schema":"other", "agent":"pi", "sessionId":"session-1", "names":[]}),
+            json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"cursor", "sessionId":"session-1", "names":[]}),
+            json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"pi", "sessionId":"session-1", "names":["MY_PI_KEY", "MY_PI_KEY"]}),
+            json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"pi", "sessionId":"session-1", "names":[], "extra":true}),
+        ] {
+            assert!(pi_credential_environment_keys(Some(&binding.to_string())).is_err());
+        }
+        assert!(pi_credential_environment_keys(Some(&"x".repeat(4_097))).is_err());
+    }
+
+    #[test]
+    fn pi_loader_and_shell_controls_match_the_controller_reservations() {
+        let names: Vec<String> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../test-fixtures/pi-acp/reserved-credential-names.json"
+        )))
+        .unwrap();
+        for name in names {
+            let binding = json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"pi", "sessionId":"session-1", "names":[name]});
+            assert!(pi_credential_environment_keys(Some(&binding.to_string())).is_err());
+        }
+    }
+
+    #[test]
+    fn pi_custom_credential_names_follow_the_controller_contract() {
+        let names = vec!["LD_API_KEY", "DYLD_API_KEY", "MY_PI_SERVICE_KEY"];
+        let binding = json!({"schema":"paperclip.acpx_credential_binding.v1", "agent":"pi", "sessionId":"session-1", "names":names});
+        assert_eq!(
+            pi_credential_environment_keys(Some(&binding.to_string())).unwrap(),
+            names
+        );
+    }
+
+    #[test]
+    fn only_pi_cold_open_gets_the_longer_admission_budget() {
+        let ordinary = Duration::from_secs(30);
+        assert_eq!(
+            session_open_timeout("pi", ordinary),
+            Duration::from_secs(60)
+        );
+        for agent in ["claude", "codex", "grok", "cursor", "copilot"] {
+            assert_eq!(session_open_timeout(agent, ordinary), ordinary);
+        }
+    }
+
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn managed_claude_helpers_reach_the_sidecar_without_host_credentials() {
+        const CHILD: &str = "PAPERCLIP_TEST_MANAGED_HELPER_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "acpx_sidecar_transport::tests::managed_claude_helpers_reach_the_sidecar_without_host_credentials"])
+                .env_clear()
+                .env(CHILD, "1")
+                .env("PATH", "/usr/bin:/bin")
+                .env("BASH_ENV", "/managed/.bashrc")
+                .env("ZDOTDIR", "/managed")
+                .env("GH_CONFIG_DIR", "/managed")
+                .env("PAPERCLIP_GITHUB_LAUNCHER_DIR", "/managed")
+                .env("GH_TOKEN", "unbound-secret")
+                .env("PAPERCLIP_GITHUB_BROKER_TOKEN", "unbound-capability")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
+        let config = AcpxSidecarTransportConfig {
+            command: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "printf '%s|%s|%s|%s|%s|%s\\n' \"$BASH_ENV\" \"$ZDOTDIR\" \"$GH_CONFIG_DIR\" \"$PAPERCLIP_GITHUB_LAUNCHER_DIR\" \"$GH_TOKEN\" \"$PAPERCLIP_GITHUB_BROKER_TOKEN\"".into()],
+            verified_launch: None,
+            request_timeout: Duration::from_secs(1),
+            shutdown_grace: Duration::from_millis(100),
+        };
+        let mut transport = AcpxSidecarTransport::start_for_agent(&config, "claude").unwrap();
+        let line = transport
+            .receive_stdout_line(Duration::from_secs(2), "managed-helper test")
+            .unwrap()
+            .expect("sidecar did not report its environment");
+        assert_eq!(line, "/managed/.bashrc|/managed|/managed|/managed||");
+    }
 
     #[test]
     fn parse_frame_does_not_echo_untrusted_deserialization_details() {
@@ -812,6 +1160,9 @@ mod tests {
     #[test]
     fn candidate_auth_diagnostics_use_only_closed_codes_and_never_provider_text() {
         for (code, expected) in [
+            ("ACPX_RUNTIME_PACKAGE_MISSING", "runtime_package_missing"),
+            ("ACPX_TOOL_CALL_STALE", "provider_tool_call_retired"),
+            ("ACPX_TOOL_CALL_STALE_EXTRA", "unclassified"),
             ("COPILOT_AUTH_REQUIRED", "authentication_required"),
             ("COPILOT_ENTITLEMENT_DENIED", "provider_entitlement_denied"),
             ("COPILOT_MODEL_UNAVAILABLE", "requested_model_unsupported"),
@@ -840,6 +1191,20 @@ mod tests {
             message: message.to_owned(),
             retryable: false,
         };
+        for (code, expected) in [
+            ("ACPX_ADMISSION_SANDBOX", "admission_sandbox"),
+            ("ACPX_ADMISSION_CREDENTIAL", "admission_credential"),
+            ("ACPX_ADMISSION_RUNTIME", "admission_runtime"),
+            (
+                "GROK_EFFORT_ACKNOWLEDGEMENT_MISSING",
+                "grok_effort_acknowledgement_missing",
+            ),
+        ] {
+            assert_eq!(
+                response_error_classification(&error(code, "private-token-canary")),
+                expected
+            );
+        }
         assert_eq!(
             response_error_classification(&error(
                 "acpx_sidecar_command_failed",
@@ -888,6 +1253,11 @@ mod tests {
             "provider_lifetime_owned"
         );
         let admission_failures = [
+            ("COPILOT_POLICY_VIOLATION", "copilot_policy_violation"),
+            (
+                "COPILOT_DETACHED_WORK_UNSUPPORTED",
+                "copilot_detached_work_unsupported",
+            ),
             (
                 "ACPX_RUNTIME_ADMISSION_VERIFICATION_TIMEOUT",
                 "runtime_admission_verification_timeout",

@@ -1,14 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, exists, inArray, isNotNull, ne, not, or, sql } from "drizzle-orm";
 import { heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
 import type {
   NativeExecutionInput,
   PersistedNativeSession,
 } from "../../vendor/paperclip-runner/index.js";
-import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { canonicalNativeRuntimeContextDigest, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 
 export type NativeToolExecutionTargetKind = "local" | "remote";
+
+/** Fence live ACPX owners when shared runtime semantics change, even if the
+ * underlying native executable/profile did not change. Undefined preserves
+ * the existing configuration digest for other provider transports.
+ */
+export function nativeRuntimeContractForProvider(
+  provider: NativeExecutionInput["provider"],
+): string | undefined {
+  return provider.kind === "acpx" ? "paperclip.acpx-runtime-contract.v1" : undefined;
+}
 
 /**
  * Persisted provider threads retain their dynamic-tool declarations. This
@@ -19,25 +29,32 @@ export type NativeToolExecutionTargetKind = "local" | "remote";
  */
 export function nativeToolContractFingerprintForTarget(
   executionTargetKind: NativeToolExecutionTargetKind,
+  providerKind?: NativeExecutionInput["provider"]["kind"],
 ): string {
   return `sha256:${createHash("sha256")
     .update(
       JSON.stringify({
-        schema: "paperclip.native-tool-contract.v13",
+        schema: "paperclip.native-tool-contract.v18",
         executionTargetKind,
         advertisementPolicy: {
           // Direct provider threads retain declarations from thread/start.
           // Keep this explicit so changing a tool from conditional to stable
           // advertisement rotates checkpoints even when its schema is unchanged.
-          readCurrentWakeComments: "always_advertised_binding_gated.v1",
+          readCurrentWakeComments: "always_advertised_binding_gated.v2",
           historicalChatAttachments:
             "always_advertised_conversation_binding_gated.v1",
           registerDeliverable: "verified_local_or_remote_workspace.v2",
-          readChatAttachment: "always_advertised_run_scope_local_staging.v1",
+          readChatAttachment: "always_advertised_run_scope_local_staging.v2",
           structuredHumanInput:
             "always_advertised_run_issue_agent_binding_gated_current_task_description.v2",
           semanticCompletion: "finish_accessible_deliverable_evidence.v4",
+          ...(providerKind === "opencode"
+            ? { opencodeAssignedMcpTools: "server_gateway_prp_on_demand_exact_names.v2" }
+            : {}),
           connectorTools: "assigned_resources_and_pinned_skill_bundle.v1",
+          chatTaskTools: "durable_task_binding_and_accepted_origin.v1",
+          githubResponses: "bound_working_comment_progress_and_final.v1",
+          githubInstructionSkills: "trusted_configuration_native_selection.v1",
           ...(executionTargetKind === "remote"
             ? { assignedMcpTools: "codex_server_gateway_prp_relay.v1" }
             : {}),
@@ -169,6 +186,16 @@ export function selectNativeSessionResumeRun<
   return null;
 }
 
+const NATIVE_SESSION_PROVIDER_EVENT_TYPES = [
+  "harness.ready",
+  "session.started",
+  "session.resumed",
+  "session.updated",
+  "turn.started",
+  "provider.event",
+  "provider.rpc_result",
+];
+
 export async function nativeSessionProviderEvidence(
   db: Pick<Db, "select">,
   runIds: string[],
@@ -180,15 +207,7 @@ export async function nativeSessionProviderEvidence(
     .where(
       and(
         inArray(heartbeatRunEvents.runId, runIds),
-        inArray(heartbeatRunEvents.eventType, [
-          "harness.ready",
-          "session.started",
-          "session.resumed",
-          "session.updated",
-          "turn.started",
-          "provider.event",
-          "provider.rpc_result",
-        ]),
+        inArray(heartbeatRunEvents.eventType, NATIVE_SESSION_PROVIDER_EVENT_TYPES),
       ),
     )
     .groupBy(heartbeatRunEvents.runId);
@@ -207,7 +226,50 @@ export async function findNativeSessionResumeRun(
   },
 ) {
   if (!isNativeSessionId(input.normalizedSessionId)) return null;
-  const runs = await db
+  const candidates = db.$with("native_resume_candidates").as(db
+    .select({
+      id: heartbeatRuns.id,
+      runtimeMode: heartbeatRuns.runtimeMode,
+      status: heartbeatRuns.status,
+      createdAt: heartbeatRuns.createdAt,
+      processPid: heartbeatRuns.processPid,
+      processGroupId: heartbeatRuns.processGroupId,
+      processStartedAt: heartbeatRuns.processStartedAt,
+      hasCheckpoint: sql<boolean>`coalesce(${heartbeatRuns.runnerProfileJson}->'sessionCheckpoint' <> 'null'::jsonb, false)`.as("has_checkpoint"),
+    })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        ne(heartbeatRuns.id, input.currentRunId),
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+        eq(heartbeatRuns.nativeIssueId, input.issueId),
+        eq(heartbeatRuns.nativeSessionId, input.normalizedSessionId),
+      ),
+    )
+    .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+    .limit(32));
+  const terminalStatuses = [...LEGACY_RETRY_SOURCE_TERMINAL_STATUSES];
+  const barrier = db.$with("native_resume_barrier").as(db
+    .select()
+    .from(candidates)
+    .where(or(
+      ne(candidates.runtimeMode, "native"),
+      not(inArray(candidates.status, terminalStatuses)),
+      candidates.hasCheckpoint,
+      isNotNull(candidates.processPid),
+      isNotNull(candidates.processGroupId),
+      isNotNull(candidates.processStartedAt),
+      exists(db.select({ runId: heartbeatRunEvents.runId })
+        .from(heartbeatRunEvents)
+        .where(and(
+          eq(heartbeatRunEvents.runId, candidates.id),
+          inArray(heartbeatRunEvents.eventType, NATIVE_SESSION_PROVIDER_EVENT_TYPES),
+        ))),
+    ))
+    .orderBy(desc(candidates.createdAt), desc(candidates.id))
+    .limit(1));
+  const [run] = await db.with(candidates, barrier)
     .select({
       id: heartbeatRuns.id,
       companyId: heartbeatRuns.companyId,
@@ -221,29 +283,39 @@ export async function findNativeSessionResumeRun(
       processPid: heartbeatRuns.processPid,
       processGroupId: heartbeatRuns.processGroupId,
       processStartedAt: heartbeatRuns.processStartedAt,
-      runnerProfileJson: heartbeatRuns.runnerProfileJson,
-      contextSnapshot: heartbeatRuns.contextSnapshot,
+      runnerProfileJson: sql<{
+        nativeToolContractFingerprint: unknown;
+        nativeExecutionInput: unknown;
+        sessionCheckpoint: unknown;
+      }>`jsonb_build_object(
+        'nativeToolContractFingerprint', ${heartbeatRuns.runnerProfileJson}->'nativeToolContractFingerprint',
+        'nativeExecutionInput', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput',
+        'sessionCheckpoint', ${heartbeatRuns.runnerProfileJson}->'sessionCheckpoint'
+      )`,
+      contextSnapshot: sql<{
+        paperclipWake: unknown;
+        paperclipIssue: unknown;
+      }>`jsonb_build_object(
+        'paperclipWake', ${heartbeatRuns.contextSnapshot}->'paperclipWake',
+        'paperclipIssue', case when jsonb_typeof(${heartbeatRuns.contextSnapshot}->'paperclipIssue') = 'object'
+          then (select coalesce(jsonb_object_agg(brief.key, brief.value), '{}'::jsonb)
+            from jsonb_each(${heartbeatRuns.contextSnapshot}->'paperclipIssue') as brief
+            where brief.key in ('id', 'title', 'description')) else ${heartbeatRuns.contextSnapshot}->'paperclipIssue' end
+      )`,
     })
     .from(heartbeatRuns)
-    .where(
-      and(
-        ne(heartbeatRuns.id, input.currentRunId),
-        eq(heartbeatRuns.companyId, input.companyId),
-        eq(heartbeatRuns.agentId, input.agentId),
-        eq(heartbeatRuns.nativeIssueId, input.issueId),
-        eq(heartbeatRuns.nativeSessionId, input.normalizedSessionId),
-      ),
-    )
-    .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
-    .limit(32);
-  return selectNativeSessionResumeRun({
-    ...input,
-    runs,
-    providerEvidenceRunIds: await nativeSessionProviderEvidence(
-      db,
-      runs.map((run) => run.id),
-    ),
-  });
+    .innerJoin(barrier, eq(heartbeatRuns.id, barrier.id))
+    .where(and(
+      eq(barrier.runtimeMode, "native"),
+      inArray(barrier.status, terminalStatuses),
+      eq(barrier.hasCheckpoint, true),
+      sql`${heartbeatRuns.companyId}::text = ${input.companyId}`,
+      sql`${heartbeatRuns.agentId}::text = ${input.agentId}`,
+      sql`${heartbeatRuns.nativeIssueId}::text = ${input.issueId}`,
+      sql`${heartbeatRuns.nativeSessionId}::text = ${input.normalizedSessionId}`,
+      sql`date_trunc('milliseconds', ${barrier.createdAt}) <= ${input.beforeCreatedAt.toISOString()}::timestamptz`,
+    ));
+  return run ?? null;
 }
 
 /** A preassigned session id may rotate only before immutable native admission. */
@@ -386,6 +458,8 @@ export function buildNativeExecutionWithCheckpoint(input: {
     Parameters<typeof rebindNativeSessionCheckpoint>[0]["previousRun"] | null;
   normalizedSessionId: string;
   executionTargetKind?: NativeToolExecutionTargetKind;
+  toolRefreshOnResume?: boolean;
+  refreshTools?: boolean;
   buildExecution: (options: {
     normalizedSessionId: string;
     resumedSession: boolean;
@@ -411,6 +485,8 @@ export function buildNativeExecutionWithCheckpoint(input: {
         previousRun: input.previousRun,
         currentExecution: retainedFormat,
         executionTargetKind: input.executionTargetKind,
+        toolRefreshOnResume: input.toolRefreshOnResume,
+        refreshTools: input.refreshTools,
       });
       if (retainedCheckpoint) return { execution: retainedFormat, checkpoint: retainedCheckpoint, normalizedSessionId: input.normalizedSessionId };
     }
@@ -420,6 +496,8 @@ export function buildNativeExecutionWithCheckpoint(input: {
         previousRun: input.previousRun,
         currentExecution: execution,
         executionTargetKind: input.executionTargetKind,
+        toolRefreshOnResume: input.toolRefreshOnResume,
+        refreshTools: input.refreshTools,
       })
     : null;
   if (checkpoint)
@@ -456,11 +534,14 @@ export function rebindNativeSessionCheckpoint(input: {
   };
   currentExecution: NativeExecutionInput;
   executionTargetKind?: NativeToolExecutionTargetKind;
+  toolRefreshOnResume?: boolean;
+  refreshTools?: boolean;
 }): PersistedNativeSession | null {
+  if (input.refreshTools && input.toolRefreshOnResume !== true) return null;
   const previousProfile = record(input.previousRun.runnerProfileJson);
   if (
     previousProfile.nativeToolContractFingerprint !==
-    nativeToolContractFingerprintForTarget(input.executionTargetKind ?? "local")
+    nativeToolContractFingerprintForTarget(input.executionTargetKind ?? "local", input.currentExecution.provider.kind)
   ) {
     return null;
   }
@@ -509,10 +590,15 @@ export function rebindNativeSessionCheckpoint(input: {
       ("executionMode" in current ? current.executionMode : "default") ||
     !sameProvider(previousExecution.provider, current.provider) ||
     previousExecution.schema !== current.schema ||
+    ("homeMode" in previousExecution ? previousExecution.homeMode : "isolated") !== ("homeMode" in current ? current.homeMode : "isolated") ||
     ("runtimeContext" in previousExecution &&
       "runtimeContext" in current &&
-      previousExecution.runtimeContext.aggregateDigest !==
-        current.runtimeContext.aggregateDigest)
+      previousExecution.runtimeContext.aggregateDigest !== current.runtimeContext.aggregateDigest &&
+      !(input.toolRefreshOnResume === true &&
+        canonicalNativeRuntimeContextDigest({
+          ...previousExecution.runtimeContext,
+          mcp: current.runtimeContext.mcp,
+        }) === current.runtimeContext.aggregateDigest))
   )
     return null;
 
@@ -525,7 +611,7 @@ export function rebindNativeSessionCheckpoint(input: {
     record(rawGoal).status !== "complete";
   const providerRecoveryPolicy = hasUnfinishedGoal
     ? ("same_session_only" as const)
-    : priorSemanticResult.reportedWorkDisposition === "yielded" &&
+    : !input.refreshTools && priorSemanticResult.reportedWorkDisposition === "yielded" &&
         priorContinuation.kind === "response_wake"
       ? ("allow_replacement_after_governed_wait" as const)
       : ("allow_replacement_after_resume_failure" as const);
@@ -545,6 +631,9 @@ export function rebindNativeSessionCheckpoint(input: {
     activeTurnId: null,
     terminalTurns: [],
     pendingRuntimeRequests: [],
+    // Settlement evidence belongs to the prior heartbeat run, even when the
+    // provider session is reused for the user's response.
+    governedWait: undefined,
     providerRecoveryPolicy,
   };
 }

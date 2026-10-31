@@ -17,27 +17,57 @@
   "redirectConstraints": "https-or-loopback-http",
   "methods": [
     {
-      "key": "mcp-own-oauth",
+      "key": "managed",
       "transport": "mcp_remote",
       "auth": "oauth",
       "ownershipModes": [
-        "dcr",
-        "customer"
+        "platform_shared"
       ],
-      "whenToUse": "Sign in with Asana. Paperclip registers its own OAuth client automatically.",
+      "whenToUse": "Connect your Asana account with Paperclip's app.",
       "defaults": {
         "serverUrl": "https://mcp.asana.com/v2/mcp",
         "scopesHint": [
           "default"
         ]
       },
-      "guidanceMd": "Connect Asana in the browser. Paperclip registers its own OAuth client with Asana's MCP server, so a local Paperclip needs no developer-console setup. Asana only accepts localhost callbacks, so a hosted deployment falls back to entering your own OAuth app.",
+      "guidanceMd": "Sign in to Asana with Paperclip. Asana gives this connection access to the workspaces available to your account.",
       "riskTier": "S3",
       "label": "Sign in with Asana",
       "consoleLinks": {
-        "register": "https://developers.asana.com/docs/integrating-with-asanas-mcp-server",
         "docs": "https://developers.asana.com/docs/integrating-with-asanas-mcp-server"
-      }
+      },
+      "warnings": [],
+      "oauthStrategy": "paperclip_cloud_connector",
+      "connectorProfile": "asana.mcp",
+      "grantKinds": [
+        "user",
+        "agent"
+      ]
+    },
+    {
+      "key": "mcp-own-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Register an OAuth app with Asana, then enter its client ID and secret.",
+      "defaults": {
+        "serverUrl": "https://mcp.asana.com/v2/mcp",
+        "discoveryUrl": "https://mcp.asana.com/.well-known/oauth-protected-resource/v2",
+        "scopesHint": [
+          "default"
+        ]
+      },
+      "guidanceMd": "Create an MCP app in Asana, then add the callback URL below under OAuth. Under Manage distribution, select your workspace and save. API apps do not work with Asana MCP.",
+      "riskTier": "S3",
+      "label": "Use your own OAuth app",
+      "consoleLinks": {
+        "register": "https://app.asana.com/0/my-apps",
+        "docs": "https://developers.asana.com/docs/integrating-with-asanas-mcp-server"
+      },
+      "warnings": [],
+      "oauthClientSecretRequired": true
     }
   ]
 }

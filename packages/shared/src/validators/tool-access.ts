@@ -1,3 +1,4 @@
+import { connectionAgentInstructionsSchema } from "../connection-instructions.js";
 import { isRemoteMcpConnectorMethod } from "../remote-mcp-connectors.js";
 import { z } from "zod";
 import {
@@ -42,7 +43,7 @@ import { objectWithoutDefaults } from "./partial.js";
 
 export const toolApplicationTypeSchema = z.enum(TOOL_APPLICATION_TYPES);
 export const toolApplicationStatusSchema = z.enum(TOOL_APPLICATION_STATUSES);
-export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio", "chat_sdk"]);
+export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio", "chat_sdk", "voice"]);
 export const toolConnectionPurposeSchema = z.enum(["tool", "channel"]);
 export const toolConnectionAuthKindSchema = z.enum(["oauth", "api_key", "none"]);
 export const toolConnectionOwnershipSchema = z.enum(["platform_shared", "platform_provisioned", "customer", "dcr"]);
@@ -178,6 +179,7 @@ export const updateToolApplicationSchema = createToolApplicationSchema.partial()
 export type UpdateToolApplication = z.infer<typeof updateToolApplicationSchema>;
 
 export const createToolConnectionSchema = z.object({
+  agentInstructions: connectionAgentInstructionsSchema.nullable().optional(),
   applicationId: z.string().guid().optional(),
   applicationName: z.string().trim().min(1).max(160).optional(),
   name: z.string().trim().min(1).max(160),
@@ -218,6 +220,9 @@ export const connectionGrantSchema = z.object({
       strategy: z.string().trim().min(1).max(100).optional(),
       accessTokenExpiresAt: z.string().datetime().nullable().optional(),
       scopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+      scopeSource: z.enum(["provider", "requested_fallback"]).optional(),
+      unrequestedScopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+      requestedScopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
       tokenType: z.string().trim().min(1).max(100).optional(),
       refreshTokenExpiresAt: z.string().datetime().optional(),
       refreshedAt: z.string().datetime().optional(),
@@ -406,7 +411,15 @@ function rejectUnsafeHeaderCredentials(
   }
 }
 
+export const googleWorkspaceServiceSelectionSchema = z.object({
+  gmail: z.enum(["read", "write"]).optional(),
+  drive: z.enum(["read", "write"]).optional(),
+  calendar: z.enum(["read", "write"]).optional(),
+}).strict().refine(value => Object.keys(value).length > 0, "Select at least one Google service");
+
 export const connectToolAppSchema = z.object({
+  workspaceServices: googleWorkspaceServiceSelectionSchema.optional(),
+  agentInstructions: connectionAgentInstructionsSchema.nullable().optional(),
   galleryKey: z.string().trim().min(1).max(120).optional(),
   connectionMethodKey: z.string().trim().min(1).max(120).optional(),
   link: z.string().trim().url().max(2000).optional(),
@@ -435,6 +448,9 @@ export const connectToolAppSchema = z.object({
   /** Same-company agent that owns a dedicated provider identity. */
   subjectAgentId: z.string().guid().optional(),
 }).superRefine((value, ctx) => {
+  if (value.workspaceServices && value.galleryKey !== "google-workspace") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspaceServices"], message: "Service selection requires Google Workspace" });
+  }
   if (value.configValues) rejectSensitiveConfigKeys(value.configValues, ctx, ["configValues"]);
   if (value.credentialValues) rejectUnsafeHeaderCredentials(value.credentialValues, ctx, ["credentialValues"]);
   if ((value.grantKind === "agent") !== Boolean(value.subjectAgentId)) {
@@ -488,6 +504,7 @@ export const reconnectToolAppSchema = z.object({
 export type ReconnectToolApp = z.infer<typeof reconnectToolAppSchema>;
 
 export const finishToolAppSchema = z.object({
+  agentInstructions: connectionAgentInstructionsSchema.nullable().optional(),
   /** Task setup adds access while preserving existing assignments and action policies. */
   preserveExistingAccess: z.boolean().optional(),
   enabledCatalogEntryIds: z.array(z.string().guid()).max(500).default([]),
@@ -514,6 +531,7 @@ export const finalizeOAuthAccessSchema = z.object({
 export type FinalizeOAuthAccess = z.infer<typeof finalizeOAuthAccessSchema>;
 
 export const startToolOAuthSchema = z.object({
+  workspaceServices: googleWorkspaceServiceSelectionSchema.optional(),
   asCurrentUser: z.boolean().optional(),
   asAgentId: z.string().uuid().optional(),
   interactionId: z.string().uuid().optional(),

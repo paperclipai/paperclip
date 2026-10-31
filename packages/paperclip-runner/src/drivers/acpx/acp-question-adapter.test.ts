@@ -201,3 +201,24 @@ describe("ACP form question adapter", () => {
     expect(JSON.stringify(response.content)).toBe('{"__proto__":"safe"}');
   });
 });
+
+
+describe("ACP initial text", () => {
+  it.each(["", "  Draft\n漢字\n"])("keeps exact string defaults through canonical parsing and explicit submission", initialText => {
+    const form = normalizeAcpFormElicitation({ mode: "form", requestedSchema: { type: "object", properties: { answer: { type: "string", default: initialText } }, required: ["answer"] } })!;
+    const question = form.questionSet.questions[0]!;
+    expect(question.initialText).toBe(initialText);
+    expect(() => form.accept({ schema: "paperclip.question_response.v1", answers: {} })).toThrow(/required/);
+    const edited = `${initialText}Edited`;
+    expect(form.accept({ schema: "paperclip.question_response.v1", answers: { [question.id]: { text: edited } } })).toEqual({ action: "accept", content: { answer: edited } });
+  });
+  it("bounds defaults, rejects wrong types, and keeps response constraints authoritative", () => {
+    const request = (property: unknown) => ({ mode: "form", requestedSchema: { type: "object", properties: { answer: property }, required: ["answer"] } });
+    expect(() => normalizeAcpFormElicitation(request({ type: "string", default: "x".repeat(100_001) }))).toThrow(/initialText/);
+    expect(() => normalizeAcpFormElicitation(request({ type: "string", default: 3 }))).toThrow(/incompatible/);
+    const number = normalizeAcpFormElicitation(request({ type: "integer", default: 0, minimum: 1 }))!;
+    expect(number.questionSet.questions[0]!.initialText).toBe("0");
+    expect(() => number.accept({ schema: "paperclip.question_response.v1", answers: { [number.questionSet.questions[0]!.id]: { text: "0" } } })).toThrow(/at least 1/);
+    expect(normalizeAcpFormElicitation(request({ type: "string", enum: ["a", "b"], default: "a" }))!.questionSet.questions[0]).not.toHaveProperty("initialText");
+  });
+});

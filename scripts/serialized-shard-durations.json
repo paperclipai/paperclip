@@ -124,7 +124,6 @@
     "server/src/__tests__/openclaw-invite-prompt-route.test.ts": 5131,
     "server/src/__tests__/opencode-local-adapter-environment.test.ts": 8676,
     "server/src/__tests__/permissions-upgrade-boundary-routes.test.ts": 16917,
-    "server/src/__tests__/pipelines-routes.test.ts": 20408,
     "server/src/__tests__/plugin-install-route-security.test.ts": 13924,
     "server/src/__tests__/plugin-routes-authz.test.ts": 5693,
     "server/src/__tests__/plugin-scoped-api-routes.test.ts": 6245,

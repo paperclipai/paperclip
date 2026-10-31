@@ -47,6 +47,8 @@ export interface NativeRunnerFileHandoffBinding {
   readonly executionTargetKind: "local" | "remote";
   /** Server-bound reader. Never supplied by the model or a request body. */
   readonly readRemoteWorkspaceFile?: RemoteWorkspaceFileReader;
+  /** Provider-bound reader which authorizes absolute paths within task-granted locations. */
+  readonly readRemoteTaskFile?: RemoteWorkspaceFileReader;
 }
 
 export interface NativeRunnerFileHandoffInput {
@@ -245,7 +247,13 @@ async function openedFilePath(fd: number): Promise<string> {
       execFile(
         "/usr/sbin/lsof",
         ["-a", "-p", String(process.pid), "-d", String(fd), "-F0n"],
-        { encoding: "buffer", maxBuffer: 16_384, timeout: 1_000 },
+        {
+          encoding: "buffer",
+          maxBuffer: 16_384,
+          timeout: 1_000,
+          // lsof escapes non-ASCII names under the C locale, breaking descriptor verification.
+          env: { ...process.env, LC_ALL: "en_US.UTF-8" },
+        },
         (error, stdout) => {
           if (error) reject(error);
           else resolve(Buffer.from(stdout));
@@ -290,7 +298,7 @@ function sameFileIdentity(left: Stats, right: Stats): boolean {
   );
 }
 
-async function readVerifiedWorkspaceFile(
+export async function readVerifiedWorkspaceFile(
   binding: NativeRunnerFileHandoffBinding,
   input: NativeRunnerFileHandoffInput,
 ): Promise<VerifiedWorkspaceFile> {
@@ -320,14 +328,15 @@ async function readVerifiedWorkspaceFile(
   }
 
   if (binding.executionTargetKind === "remote") {
-    if (!binding.readRemoteWorkspaceFile) throw new Error("paperclip_runner_file_handoff_remote_unsupported");
+    const readFile = binding.readRemoteTaskFile ?? binding.readRemoteWorkspaceFile;
+    if (!readFile) throw new Error("paperclip_runner_file_handoff_remote_unsupported");
     const contentRef = requiredText(input.contentRef, "content_ref", 2_000);
-    if (path.posix.isAbsolute(contentRef) || /^[a-z][a-z0-9+.-]*:/iu.test(contentRef)
+    if ((!binding.readRemoteTaskFile && path.posix.isAbsolute(contentRef)) || /^[a-z][a-z0-9+.-]*:/iu.test(contentRef)
       || contentRef.includes("\\") || path.posix.normalize(contentRef) === ".."
       || path.posix.normalize(contentRef).startsWith("../")) {
       throw new Error("paperclip_runner_file_handoff_path_denied");
     }
-    const body = await binding.readRemoteWorkspaceFile({ contentRef, byteSize: input.byteSize, sha256: expectedSha256 });
+    const body = await readFile({ contentRef, byteSize: input.byteSize, sha256: expectedSha256 });
     if (body.length !== input.byteSize) throw new Error("paperclip_runner_file_handoff_size_denied");
     if (createHash("sha256").update(body).digest("hex") !== expectedSha256) throw new Error("paperclip_runner_file_handoff_hash_mismatch");
     return { body, contentType, filename, sha256: expectedSha256, title };
@@ -883,10 +892,10 @@ export async function stageNativeRunnerWakeAttachments(input: {
   if (workspaceRoot) {
     const processDirectoryName = await currentStagingProcessDirectoryName();
     await withStagingRegistryLock(workspaceRoot, async () => {
-      const stagingDirectory = await ensurePrivateStagingDirectory(
-        workspaceRoot,
-        processDirectoryName,
-      );
+      // Empty wakes still scrub abandoned bytes, but need no new staging paths.
+      const stagingDirectory = selections.length > 0
+        ? await ensurePrivateStagingDirectory(workspaceRoot, processDirectoryName)
+        : null;
       const activePaths =
         activeStagingPathsByWorkspace.get(workspaceRoot) ?? new Set<string>();
       const reusablePaths = await scrubNativeRunnerStagingResidue(
@@ -894,7 +903,7 @@ export async function stageNativeRunnerWakeAttachments(input: {
         activePaths,
         processDirectoryName,
       );
-      if (selections.length > 0) {
+      if (stagingDirectory !== null) {
         stagingDestinations = reusablePaths.slice(0, selections.length);
         while (stagingDestinations.length < selections.length) {
           const candidate = path.join(stagingDirectory, randomUUID());
@@ -1132,14 +1141,11 @@ async function assertCurrentBinding(
 export async function prepareNativeRunnerFileHandoff(input: {
   readonly db: Db;
   readonly binding: NativeRunnerFileHandoffBinding;
-  readonly deliverable: NativeRunnerFileHandoffInput;
+  readonly verifiedFile: VerifiedWorkspaceFile;
   readonly storage?: StorageService;
 }): Promise<PreparedNativeRunnerFileHandoff> {
   const { statusVersion } = await assertCurrentBinding(input.db, input.binding);
-  const verified = await readVerifiedWorkspaceFile(
-    input.binding,
-    input.deliverable,
-  );
+  const verified = input.verifiedFile;
 
   const [existing] = await input.db
     .select({

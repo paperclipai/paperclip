@@ -417,6 +417,66 @@ fn completed_receipts_are_exact_until_the_controlled_turn_limit() {
 }
 
 #[test]
+fn blocked_turn_error_names_at_most_four_receipts_per_set() {
+    let mut bridge = ProviderToolBridge::default();
+    bridge.prepare(tools("computed")).unwrap();
+    for index in 0..4 {
+        bridge
+            .begin_call(
+                format!("call-{index}"),
+                "get_task_context".into(),
+                json!({}),
+            )
+            .unwrap();
+    }
+
+    let message = bridge
+        .prepare_turn()
+        .expect_err("pending calls block the next turn")
+        .to_string();
+    assert!(message.contains(
+        "pending: 4 [get_task_context:call-0, get_task_context:call-1, \
+         get_task_context:call-2, get_task_context:call-3]"
+    ));
+    assert!(!message.contains("..."));
+
+    bridge
+        .begin_call("call-4".into(), "get_task_context".into(), json!({}))
+        .unwrap();
+    let message = bridge
+        .prepare_turn()
+        .expect_err("pending calls block the next turn")
+        .to_string();
+    assert!(message.contains(
+        "pending: 5 [get_task_context:call-0, get_task_context:call-1, \
+         get_task_context:call-2, get_task_context:call-3, ...]"
+    ));
+    assert!(!message.contains("call-4"));
+    assert!(message.contains("completed: 0"));
+
+    for index in 0..5 {
+        bridge
+            .apply_result(ToolResult {
+                call_id: format!("call-{index}"),
+                operation_id: "get_task_context".into(),
+                result: json!({"ok": true}),
+                is_error: false,
+            })
+            .unwrap();
+    }
+    let message = bridge
+        .prepare_turn()
+        .expect_err("unsettled completed calls block the next turn")
+        .to_string();
+    assert!(message.contains("pending: 0;"));
+    assert!(message.contains(
+        "completed: 5 [get_task_context:call-0, get_task_context:call-1, \
+         get_task_context:call-2, get_task_context:call-3, ...]"
+    ));
+    assert!(!message.contains("call-4"));
+}
+
+#[test]
 fn turn_settlement_cannot_be_blocked_by_completed_value_pressure() {
     let mut bridge = ProviderToolBridge::default();
     bridge.prepare(tools("computed")).unwrap();

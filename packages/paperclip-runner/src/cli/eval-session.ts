@@ -23,6 +23,7 @@ import {
   CapabilityLiveSessionService,
   type CapabilityLiveSession,
   type CapabilityLiveSessionSnapshot,
+  type CapabilityLiveSessionServiceOptions,
   type CapabilityLiveTurnResult,
   type CreateCapabilityLiveSessionInput,
 } from "../live/live-session.js";
@@ -35,11 +36,18 @@ import {
   type EvalSessionUsage,
 } from "./eval-session-contract.js";
 import { evalProviderTransportOptions } from "./eval-provider-runtime.js";
+import { prepareEvalGatewayRuntime } from "./eval-gateway-runtime.js";
+import { prepareEvalObservabilityRuntime } from "./eval-observability-runtime.js";
+import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
+import { NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
 
 interface EvalSessionCliOptions {
   requestPath: string;
   outputPath: string;
   candidateProfile?: EvalCandidateProfile;
+  expectedAcpxProfile?: Record<string, unknown>;
+  gatewayConfigPath?: string;
+  observabilityConfigPath?: string;
 }
 
 function argument(args: string[], name: string): string {
@@ -50,7 +58,7 @@ function argument(args: string[], name: string): string {
 }
 
 export function parseEvalSessionCliArgs(args: string[]): EvalSessionCliOptions {
-  const allowed = new Set(["--request", "--output", "--candidate-profile"]);
+  const allowed = new Set(["--request", "--output", "--candidate-profile", "--expected-acpx-profile", "--gateway-config", "--observability-config"]);
   const seen = new Set<string>();
   for (let index = 0; index < args.length; index += 2) {
     if (!allowed.has(args[index] ?? "")) {
@@ -60,13 +68,36 @@ export function parseEvalSessionCliArgs(args: string[]): EvalSessionCliOptions {
     seen.add(args[index]!);
     if (args[index + 1] === undefined || args[index + 1]!.startsWith("--")) throw new Error(`missing ${args[index]}`);
   }
+  if (seen.has("--observability-config") && !seen.has("--gateway-config")) throw new Error("Eval observability requires an explicit controller gateway");
   const candidateIndex = args.indexOf("--candidate-profile");
   const candidateProfile = candidateIndex < 0 ? undefined : args[candidateIndex + 1];
-  if (candidateProfile !== undefined && candidateProfile !== "pi" && candidateProfile !== "cursor" && candidateProfile !== "copilot") {
-    throw new Error("--candidate-profile must be pi, cursor, or copilot");
+  if (candidateProfile !== undefined && candidateProfile !== "pi" && candidateProfile !== "cursor" && candidateProfile !== "copilot" && candidateProfile !== "kimi") {
+    throw new Error("--candidate-profile must be pi, cursor, copilot, or kimi");
+  }
+  const expectedIndex = args.indexOf("--expected-acpx-profile");
+  const expectedText = expectedIndex < 0 ? undefined : args[expectedIndex + 1];
+  if (candidateProfile !== undefined && expectedText === undefined) {
+    throw new Error("Candidate evals require --expected-acpx-profile before provider execution");
+  }
+  let expectedAcpxProfile: Record<string, unknown> | undefined;
+  if (expectedText !== undefined) {
+    if (Buffer.byteLength(expectedText, "utf8") > 4_096) {
+      throw new Error("--expected-acpx-profile exceeds its 4096-byte bound");
+    }
+    let parsed: unknown;
+    try { parsed = JSON.parse(expectedText); } catch {
+      throw new Error("--expected-acpx-profile must be a JSON object");
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("--expected-acpx-profile must be a JSON object");
+    }
+    expectedAcpxProfile = parsed as Record<string, unknown>;
   }
   return {
     ...(candidateProfile === undefined ? {} : { candidateProfile }),
+    ...(expectedAcpxProfile === undefined ? {} : { expectedAcpxProfile }),
+    ...(seen.has("--gateway-config") ? { gatewayConfigPath: argument(args, "--gateway-config") } : {}),
+    ...(seen.has("--observability-config") ? { observabilityConfigPath: argument(args, "--observability-config") } : {}),
     requestPath: argument(args, "--request"),
     outputPath: argument(args, "--output"),
   };
@@ -82,6 +113,7 @@ const EVAL_RUNTIME_INSTRUCTIONS = [
   "Use the provided Paperclip semantic tools to inspect and act on the assigned task.",
   "Treat the seeded control-plane state as authoritative and keep every action within the requested scope.",
   "The current user request defines the work for this turn. Seeded task descriptions, notes, and past interaction results are background context; they do not supersede that request or establish that a newly requested action has already been performed.",
+  "For a bounded request, read only the context needed for that request, perform the requested action, and end the turn. A request to record a brief progress update does not require investigating unrelated history or documents.",
   "Task-state changes in this mock control plane use finish_task and block_task. Native paperclip_finish and paperclip_block report the provider run result but do not update the mock task. When asked to finish or block the assigned task, use its task-state semantic operation before reporting the run result.",
   "Do not finish or block the mock task unless the current request asks for that state change. Ending the provider turn after another requested action does not authorize additional task-state changes or completion comments.",
   "",
@@ -171,9 +203,9 @@ export function evalSessionProviderVersion(
   request: EvalSessionRequest,
 ): string | null {
   if (request.provider === "opencode") {
-    const version = request.opencodeVersion ?? "1.18.32";
-    if (version !== "1.18.32") {
-      throw new Error(`OpenCode evals require exact version 1.18.32; received ${version}`);
+    const version = request.opencodeVersion ?? "1.18.34";
+    if (version !== "1.18.34") {
+      throw new Error(`OpenCode evals require exact version 1.18.34; received ${version}`);
     }
     return version;
   }
@@ -203,8 +235,28 @@ function failureClass(error: unknown): {
   class: string;
   category: string;
   retryable: boolean;
-  diagnostics: Record<string, never>;
+  diagnostics: Record<string, unknown>;
 } {
+  if (error instanceof NativeSessionCloseUnrecoverableError) {
+    const settlement = error.settlement ?? {};
+    const state = settlement.suspensionState !== null && typeof settlement.suspensionState === "object"
+      ? settlement.suspensionState as Record<string, unknown> : {};
+    const closedValue = (value: unknown, allowed: string[]) =>
+      typeof value === "string" && allowed.includes(value) ? value : null;
+    const observedBoolean = (value: unknown) => typeof value === "boolean" ? value : null;
+    return {
+      class: "runner_infrastructure_failure",
+      category: "runner_infrastructure",
+      retryable: false,
+      diagnostics: {
+        runnerSuspended: observedBoolean(settlement.runnerSuspended),
+        providerDrained: observedBoolean(settlement.providerDrained),
+        suspensionCommandStatus: closedValue(state.commandStatus, ["pending", "completed", "failed", "rejected", "indeterminate"]),
+        runnerLifecycle: closedValue(state.runnerLifecycle, ["ready", "suspended", "closed", "recoverable_failure"]),
+        runnerIdentityMatches: observedBoolean(state.runnerIdentityMatches),
+      },
+    };
+  }
   if (error instanceof EvalSessionBudgetError && error.coverageUnknown) {
     return { class: "provider_budget_coverage_unknown", category: "provider_budget", retryable: false, diagnostics: {} };
   }
@@ -265,7 +317,7 @@ export function boundedEvalSessionUsage(
   }
   const candidate = request.provider === "acpx"
     && request.acpxAgent !== undefined
-    && ["pi", "cursor", "copilot"].includes(request.acpxAgent)
+    && ["pi", "cursor", "copilot", "kimi"].includes(request.acpxAgent)
     && turn.snapshot.config.provider === "acpx"
     && turn.snapshot.config.acpxAgent === request.acpxAgent;
   const measuredTurns = new Set(turn.snapshot.usageLedger?.map((entry) => entry.turnId));
@@ -297,6 +349,9 @@ export function boundedEvalSessionUsage(
   ) {
     throw new EvalSessionBudgetError("provider-reported cost limit exceeded");
   }
+  if (usage?.legacyLedgerCostNanodollars !== undefined && usage.legacyLedgerCostNanodollars > request.limits.maxEstimatedCostNanodollars) {
+    throw new EvalSessionBudgetError("legacy ledger cost limit exceeded");
+  }
   if (unavailable || usage === null || (usage.estimatedCostNanodollars === null && usage.providerReportedCostNanodollars === null)) {
     throw new EvalSessionBudgetError("budget cost coverage is unavailable for one or more completed turns", true);
   }
@@ -316,6 +371,7 @@ export async function runEvalSessionCli(
   options: {
     serviceFactory?: (
       runnerBinary: string,
+      transportOptions: NonNullable<CapabilityLiveSessionServiceOptions["transportOptions"]>,
     ) => CapabilityLiveSessionService;
   } = {},
 ): Promise<number> {
@@ -324,6 +380,20 @@ export async function runEvalSessionCli(
     JSON.parse(await readFile(cli.requestPath, "utf8")),
     { candidateProfile: cli.candidateProfile },
   );
+  // Check the built CLI's profile before constructing any runtime context,
+  // transport or service. Scoring after a paid turn is too late for admission.
+  if (cli.expectedAcpxProfile !== undefined) {
+    if (request.provider !== "acpx") {
+      throw new Error("--expected-acpx-profile requires an ACPX request");
+    }
+    const actualProfile = resolveQualifiedAcpxProfile(request.acpxAgent ?? "codex", request.model);
+    const entries = Object.entries(actualProfile);
+    if (Object.keys(cli.expectedAcpxProfile).length !== entries.length || entries.some(
+      ([key, value]) => !Object.hasOwn(cli.expectedAcpxProfile!, key) || cli.expectedAcpxProfile![key] !== value,
+    )) {
+      throw new Error("--expected-acpx-profile does not match the built runner profile");
+    }
+  }
   const runnerdPath = resolve(request.runnerd.path);
   const actualDigest = await sha256(runnerdPath);
   if (actualDigest !== request.runnerd.sha256.replace(/^sha256:/, "")) {
@@ -338,32 +408,35 @@ export async function runEvalSessionCli(
   const requestedDriver = request.driver ??
     expectedEvalSessionDriver(requestedProvider);
   const requestedProviderVersion = evalSessionProviderVersion(request);
-  const runtimeContext = await prepareEvalRuntimeContext(
-    resolve(request.session.workingDirectory ?? process.cwd()),
-  );
-  const service = options.serviceFactory?.(runnerdPath) ??
-    new CapabilityLiveSessionService({
-      transportOptions: {
-        ...evalProviderTransportOptions(requestedProvider, request.limits.turnTimeoutMs),
-        runnerBinary: runnerdPath,
-        ...(cli.candidateProfile === undefined ? {} : { acpxCandidateProfile: cli.candidateProfile }),
-        runtimeContext,
-        baseInstructions: evalRuntimeSystemInstructions(runtimeContext),
-        // The transport performs the provider-specific allowlisting. Supplying
-        // the source environment here is still required: without it the
-        // isolated Codex home has no credential source and runnerd receives no
-        // executable PATH from the Evalbook CLI process.
-        environment: process.env,
-        onDiagnostic: (message) => {
-          process.stderr.write(`[eval-session runnerd] ${message}\n`);
-        },
-      },
-    });
+  const gateway = cli.gatewayConfigPath
+    ? await prepareEvalGatewayRuntime(cli.gatewayConfigPath, request)
+    : undefined;
+  let observability: Awaited<ReturnType<typeof prepareEvalObservabilityRuntime>> | undefined;
+  const redact = (message: string) => redactObservabilityDiagnostic(message, observability?.transportOptions.environment, observability?.transportOptions.observability.otelConfig);
   let session: CapabilityLiveSession | null = null;
   let turn: CapabilityLiveTurnResult | null = null;
   let snapshot: CapabilityLiveSessionSnapshot | null = null;
 
   try {
+    if (cli.observabilityConfigPath) observability = await prepareEvalObservabilityRuntime(cli.observabilityConfigPath, request, gateway!);
+    const runtimeContext = await prepareEvalRuntimeContext(
+      resolve(request.session.workingDirectory ?? process.cwd()),
+    );
+    const transportOptions: NonNullable<CapabilityLiveSessionServiceOptions["transportOptions"]> = {
+      ...evalProviderTransportOptions(requestedProvider, request.limits.turnTimeoutMs, request.session.workingDirectory),
+      runnerBinary: runnerdPath,
+      ...(cli.candidateProfile === undefined ? {} : { acpxCandidateProfile: cli.candidateProfile }),
+      runtimeContext,
+      baseInstructions: evalRuntimeSystemInstructions(runtimeContext),
+      environment: process.env,
+      ...gateway?.transportOptions,
+      ...observability?.transportOptions,
+      onDiagnostic: (message) => {
+        process.stderr.write(`[eval-session runnerd] ${redact(message)}\n`);
+      },
+    };
+    const service = options.serviceFactory?.(runnerdPath, transportOptions)
+      ?? new CapabilityLiveSessionService({ transportOptions });
     // PR3 expands this same service input with the two qualified remote
     // profiles. The cast keeps this isolated PR typecheckable before PR3 lands;
     // the runtime fields and their fail-closed validation are already present.
@@ -372,7 +445,7 @@ export async function runEvalSessionCli(
       provider: requestedProvider,
       requestedModel: request.model,
       ...(requestedProvider === "acpx"
-        ? { acpxAgent: request.acpxAgent ?? "codex" }
+        ? { acpxAgent: request.acpxAgent ?? "codex", ...(request.piThinkingLevel === undefined ? {} : { piThinkingLevel: request.piThinkingLevel }) }
         : { acpxAgent: undefined }),
       ...(request.managedProfile === undefined
         ? {}
@@ -404,17 +477,20 @@ export async function runEvalSessionCli(
     await closeSession(session, "eval session complete");
     snapshot = session.snapshot();
 
-    await writeFile(cli.outputPath, `${JSON.stringify({
+    await writeFile(cli.outputPath, redact(`${JSON.stringify({
       schema: "paperclip-runner/eval-session-artifact/v1",
       attemptId: request.attemptId,
       build: PAPERCLIP_RUNNER_BUILD_METADATA,
       runnerd: { path: "[withheld]", sha256: `sha256:${actualDigest}` },
       requestedModel: request.model,
+      ...(gateway ? { requestRouting: gateway.evidence } : {}),
+      ...(observability ? { nativeObservability: observability.evidence } : {}),
       ...(cli.candidateProfile === undefined ? {} : { diagnosticCandidateProfile: cli.candidateProfile }),
       provider: requestedProvider,
       driver: requestedDriver,
       providerVersion: requestedProviderVersion,
       providerSessionId: snapshot.providerSessionId,
+      ...(request.acpxAgent === "pi" ? { piThinkingLevel: snapshot.process?.piThinkingLevel ?? null } : {}),
       ...(requestedProvider === "claude_managed"
         ? {
             managedProfile: request.managedProfile,
@@ -454,7 +530,7 @@ export async function runEvalSessionCli(
         finishedAt: new Date().toISOString(),
         durationMs: Date.now() - startedAtMs,
       },
-    }, null, 2)}\n`);
+    }, null, 2)}\n`));
     return accountingError === null ? 0 : 2;
   } catch (error) {
     if (session !== null) {
@@ -480,7 +556,7 @@ export async function runEvalSessionCli(
       snapshot = session.snapshot();
     }
     const usage = usageIfAvailable(request, snapshot);
-    await writeFile(cli.outputPath, `${JSON.stringify({
+    await writeFile(cli.outputPath, redact(`${JSON.stringify({
       schema: "paperclip-runner/eval-session-artifact/v1",
       attemptId: request.attemptId,
       infrastructureError: error instanceof Error ? error.message : String(error),
@@ -488,6 +564,8 @@ export async function runEvalSessionCli(
       build: PAPERCLIP_RUNNER_BUILD_METADATA,
       runnerd: { path: "[withheld]", sha256: `sha256:${actualDigest}` },
       requestedModel: request.model,
+      ...(gateway ? { requestRouting: gateway.evidence } : {}),
+      ...(observability ? { nativeObservability: observability.evidence } : {}),
       ...(cli.candidateProfile === undefined ? {} : { diagnosticCandidateProfile: cli.candidateProfile }),
       provider: requestedProvider,
       driver: requestedDriver,
@@ -512,8 +590,10 @@ export async function runEvalSessionCli(
         finishedAt: new Date().toISOString(),
         durationMs: Date.now() - startedAtMs,
       },
-    }, null, 2)}\n`);
+    }, null, 2)}\n`));
     return 2;
+  } finally {
+    await gateway?.close();
   }
 }
 

@@ -127,6 +127,54 @@ describe("sentryReady", () => {
 });
 
 describe("captureException", () => {
+  it("sends only private normalized portfolio diagnostics on the matching event", async () => {
+    process.env[BACKEND_DSN_ENV] = "https://fixture@example.com/1";
+    const sdk = mockSentryPackage();
+    const { captureException, sentryReady } = await importFreshSentry();
+    const { CloudPortfolioError } = await import("../services/cloud-portfolio-error.js");
+    await sentryReady;
+    const error = new CloudPortfolioError("upstream", { phase: "fetch", elapsedMs: 270, upstreamStatus: null }, { code: "ECONNRESET" });
+    Object.assign(error, { cause: new Error("private cause"), headers: { authorization: "private token" } });
+    Object.defineProperty(error, "diagnostics", { value: { token: "private replacement" } });
+    captureException(error);
+    const unrelated = new Error("unrelated");
+    captureException(unrelated);
+    expect(sdk.captureException.mock.calls[0]).toEqual([
+      expect.objectContaining({ message: error.message, stack: error.stack }),
+      { tags: { error_code: "cloud_portfolio_failure" }, fingerprint: ["{{ default }}"], contexts: {
+        cloud_portfolio: { phase: "fetch", elapsedMs: 270, upstreamStatus: null, networkCode: "ECONNRESET" },
+      } },
+    ]);
+    expect(JSON.stringify(sdk.captureException.mock.calls[0])).not.toContain("private");
+    expect(sdk.captureException.mock.calls[0]![0]).not.toHaveProperty("cause");
+    expect(sdk.captureException.mock.calls[1]).toEqual([unrelated]);
+  });
+
+  it("adds the normalized storage failure to the original error's event only", async () => {
+    process.env[BACKEND_DSN_ENV] = "https://fixture@example.com/1";
+    const sdk = mockSentryPackage();
+    const { captureException, sentryReady } = await importFreshSentry();
+    const { recordS3Failure } = await import("../storage/s3-failure.js");
+    await sentryReady;
+    const error = Object.assign(new Error("The request signature we calculated does not match"), {
+      name: "SignatureDoesNotMatch",
+      $metadata: { httpStatusCode: 403, requestId: "req-4G-1", attempts: 1, extendedRequestId: "private host id" },
+      StringToSign: "private string to sign",
+    });
+    recordS3Failure(error, "get_object");
+    captureException(error);
+    const unrelated = new Error("unrelated");
+    captureException(unrelated);
+    expect(sdk.captureException.mock.calls[0]).toEqual([
+      error,
+      { tags: { storage_operation: "get_object", storage_error_code: "SignatureDoesNotMatch" }, fingerprint: ["{{ default }}"], contexts: {
+        storage_failure: { provider: "s3", operation: "get_object", errorCode: "SignatureDoesNotMatch", httpStatus: 403, requestId: "req-4G-1", attempts: 1 },
+      } },
+    ]);
+    expect(JSON.stringify(sdk.captureException.mock.calls[0]![1])).not.toContain("private");
+    expect(sdk.captureException.mock.calls[1]).toEqual([unrelated]);
+  });
+
   it("adds bounded Stop timeout context only to that event", async () => {
     process.env[BACKEND_DSN_ENV] = "https://fixture@example.com/1";
     const sdk = mockSentryPackage();
@@ -136,6 +184,7 @@ describe("captureException", () => {
     const error = new AdapterStopTimeoutError(60_000, {
       runId: "11111111-1111-4111-8111-111111111111",
       adapterType: "cursor", runtimeMode: "legacy", abortRequested: true,
+      phase: "instruction_collection", phaseElapsedMs: 60_321,
     });
     Object.assign(error, { providerResponse: "private fixture payload" });
     captureException(error);
@@ -144,7 +193,8 @@ describe("captureException", () => {
     expect(sdk.captureException.mock.calls[0]).toEqual([
       expect.objectContaining({ message: error.message, stack: error.stack }),
       { tags: { error_code: "adapter_stop_unconfirmed" }, fingerprint: ["{{ default }}"], contexts: {
-        adapter_stop: { runId: "11111111-1111-4111-8111-111111111111", adapterType: "cursor", runtimeMode: "legacy", abortRequested: true, timeoutMs: 60_000 },
+        adapter_stop: { runId: "11111111-1111-4111-8111-111111111111", adapterType: "cursor", runtimeMode: "legacy", abortRequested: true, timeoutMs: 60_000,
+          phase: "instruction_collection", phaseElapsedMs: 60_321 },
       } },
     ]);
     expect(JSON.stringify(sdk.captureException.mock.calls[0])).not.toContain("private fixture payload");
@@ -159,10 +209,12 @@ describe("captureException", () => {
     await sentryReady;
     captureException(new AdapterStopTimeoutError(NaN, {
       runId: "private fixture payload", adapterType: "private fixture payload", runtimeMode: "private fixture payload",
+      phase: "private fixture payload", phaseElapsedMs: Infinity,
     }));
     expect(JSON.stringify(sdk.captureException.mock.calls)).not.toContain("private fixture payload");
     expect(sdk.captureException.mock.calls[0]).toEqual([expect.any(Error), expect.objectContaining({ contexts: {
-      adapter_stop: { runId: null, adapterType: "unknown", runtimeMode: "unknown", abortRequested: null, timeoutMs: null },
+      adapter_stop: { runId: null, adapterType: "unknown", runtimeMode: "unknown", abortRequested: null, timeoutMs: null,
+        phase: "unknown", phaseElapsedMs: null },
     } })]);
   });
 

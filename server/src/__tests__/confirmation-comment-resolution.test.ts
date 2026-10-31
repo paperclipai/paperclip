@@ -52,7 +52,10 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await pendingNativeGovernance({ db, ...f, executionState: null })).toBeNull();
     expect((await readCard(f.card.id)).status).toBe("pending");
     await db.update(issueThreadInteractions).set({ sourceRunId: f.runId }).where(eq(issueThreadInteractions.id, f.card.id));
-    expect(await pendingNativeGovernance({ db, ...f, executionState: null })).toEqual({ kind: "interaction", id: f.card.id });
+    // A later human message makes ordinary questions historical even when
+    // they came from the current run; confirmations still require a decision.
+    expect(await pendingNativeGovernance({ db, ...f, executionState: null }))
+      .toEqual(kind === "ask_user_questions" ? null : { kind: "interaction", id: f.card.id });
   });
 
   it.each(["ordinary-task", "human_only", "toolAction", "secretProposal", "connectionAuthorization"])("preserves the existing %s completion gate", async kind => {

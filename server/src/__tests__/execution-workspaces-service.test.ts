@@ -1,3 +1,6 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import * as localServiceSupervisor from "../services/local-service-supervisor.js";
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
@@ -9,9 +12,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { eq, inArray, sql } from "drizzle-orm";
 import {
   activityLog,
+  applyPendingMigrations,
   agents,
   companies,
   createDb,
+  databaseWorkPending,
   executionWorkspaces,
   heartbeatRuns,
   issueComments,
@@ -21,6 +26,7 @@ import {
   issues,
   projectWorkspaces,
   projects,
+  subscribeDatabaseWork,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
@@ -39,6 +45,8 @@ import {
   readMetadataReopenPendingConsumptionSince,
 } from "../services/execution-workspaces.ts";
 import { issueService } from "../services/issues.ts";
+import { workProductService } from "../services/work-products.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
@@ -154,7 +162,8 @@ describe("execution workspace config helpers", () => {
   });
 });
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_EXECUTION_WORKSPACES_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -252,8 +261,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   }>();
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-execution-workspaces-service-");
-    db = createDb(tempDb.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else tempDb = await startEmbeddedPostgresTestDatabase("paperclip-execution-workspaces-service-");
+    db = createDb(externalUrl ?? tempDb!.connectionString);
+    await resetDatabase();
     svc = executionWorkspaceService(db, {
       resolvePullRequestDetails: vi.fn(async (companyId, reference) =>
         pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
@@ -264,9 +275,9 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       // tests further down.
       workspaceReaperCooldownDays: 0,
     });
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
-  afterEach(async () => {
+  async function resetDatabase() {
     await db.delete(workspaceRuntimeServices);
     await db.delete(activityLog);
     await db.delete(issueRecoveryActions);
@@ -280,6 +291,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
+  }
+
+  afterEach(async () => {
+    await resetDatabase();
     pullRequestDetailsByKey.clear();
 
     for (const dir of tempDirs) {
@@ -289,8 +304,107 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
+
+  function insertBlockedSourceTask(issueId: string, companyId: string, projectId: string) {
+    return db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Source task",
+      status: "blocked",
+      priority: "medium",
+    });
+  }
+
+  function insertBoardWorkspaceRecovery(companyId: string, issueId: string, fingerprint: string) {
+    return db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "workspace_validation",
+      status: "active",
+      ownerType: "board",
+      cause: "workspace_validation_failed",
+      fingerprint,
+      evidence: {
+        workspaceValidation: {
+          fingerprint,
+        },
+      },
+      nextAction: "Repair the source issue workspace link.",
+    });
+  }
+
+  function insertMissingRecordedBranchWorkspace(executionWorkspaceId: string, companyId: string, projectId: string, issueId: string, worktreePath: string) {
+    return db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "feature/never-created",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "feature/never-created",
+      baseRef: "main",
+    });
+  }
+
+  function insertRecordedBranchWorkspace(executionWorkspaceId: string, companyId: string, projectId: string, projectWorkspaceId: string, issueId: string, worktreePath: string) {
+    return db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "feature/recorded",
+      status: "active",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "feature/recorded",
+      baseRef: "main",
+    });
+  }
+
+  function insertRunningWorkspaceService(runtimeServiceId: string, companyId: string, projectId: string, executionWorkspaceId: string, issueId: string, worktreePath: string) {
+    return db.insert(workspaceRuntimeServices).values({
+      id: runtimeServiceId,
+      companyId,
+      projectId,
+      executionWorkspaceId,
+      issueId,
+      scopeType: "execution_workspace",
+      serviceName: "web",
+      status: "running",
+      lifecycle: "shared",
+      command: "pnpm dev",
+      cwd: worktreePath,
+      provider: "local_process",
+      healthStatus: "healthy",
+    });
+  }
+
+  function insertActiveCodexCoder(agentId: string, companyId: string) {
+    return db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Codex Coder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+  }
 
   async function seedTerminalWorkspace(options: {
     mergedPr?: boolean;
@@ -419,26 +533,206 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     return { companyId, projectId, executionWorkspaceId, sourceIssueId, identifier, repoRoot, worktreePath, headSha };
   }
 
-  it("reports a squash cross-branch delivery as merged_via_pr and suppresses the ancestry warning", async () => {
-    const repoRoot = await createTempRepo();
-    tempDirs.add(repoRoot);
-    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-delivery-${randomUUID()}`);
-    tempDirs.add(worktreePath);
-    await runGit(repoRoot, ["branch", "PAP-16015-delivery"]);
-    await runGit(repoRoot, ["worktree", "add", worktreePath, "PAP-16015-delivery"]);
-    await fs.writeFile(path.join(worktreePath, "delivered.txt"), "delivered\n", "utf8");
-    await runGit(worktreePath, ["add", "delivered.txt"]);
-    await runGit(worktreePath, ["commit", "-m", "Delivered change"]);
+  it("skips nonterminal trees, cooldowns, and active runs without a Git scan", async () => {
+    await seedTerminalWorkspace({ childStatus: "todo" });
+    const recent = await seedTerminalWorkspace({ mergedPr: true });
+    const running = await seedTerminalWorkspace({ activeRun: true });
+    await db.update(issues).set({ completedAt: new Date("2020-01-01") }).where(eq(issues.id, running.sourceIssueId));
+    await db.update(issues).set({ completedAt: new Date() }).where(eq(issues.id, recent.sourceIssueId));
+    const service = executionWorkspaceService(db, { workspaceReaperCooldownDays: 7 });
+    const scan = vi.spyOn(workspaceGitOperationScheduler, "run");
+    try {
+      expect(await service.sweepTerminalWorkspaces()).toMatchObject({
+        archived: 0, skippedNonTerminalTree: 1, skippedCooldown: 1, skippedActiveRun: 1,
+      });
+      expect(scan).not.toHaveBeenCalled();
+    } finally { scan.mockRestore(); }
+  });
 
-    const seeded = await seedTerminalWorkspace();
-    pullRequestDetailsByKey.set(`${seeded.companyId}:10623`, {
-      state: "merged",
-      headRef: "PAP-16015-delivery",
-      headSha: await readGit(worktreePath, ["rev-parse", "HEAD"]),
+  it("derives cooldown deadlines from the full company-scoped terminal tree", async () => {
+    const seed = await seedTerminalWorkspace({ childStatus: "done" });
+    const [child] = await db.select().from(issues).where(eq(issues.parentId, seed.sourceIssueId));
+    const sourceDone = new Date("2026-01-01T00:00:00Z"), childCancelled = new Date("2026-01-02T00:00:00Z");
+    await db.update(issues).set({ completedAt: sourceDone }).where(eq(issues.id, seed.sourceIssueId));
+    await db.update(issues).set({ status: "cancelled", cancelledAt: childCancelled }).where(eq(issues.id, child!.id));
+    const unrelated = await seedTerminalWorkspace();
+    await db.update(issues).set({ parentId: seed.sourceIssueId, status: "todo" }).where(eq(issues.id, unrelated.sourceIssueId));
+    const service = executionWorkspaceService(db, {
+      workspaceReaperCooldownDays: 7, now: () => new Date("2026-01-03T00:00:00Z"),
     });
+    await service.sweepTerminalWorkspaces();
+    const select = vi.spyOn(db, "select");
+    try {
+      expect(await service.nextTerminalWorkspaceSweepAt()).toBe(childCancelled.getTime() + 7 * 86_400_000);
+      expect(await service.nextTerminalWorkspaceSweepAt()).toBe(childCancelled.getTime() + 7 * 86_400_000);
+      expect(select).not.toHaveBeenCalled();
+    } finally { select.mockRestore(); }
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, child!.id));
+    await service.sweepTerminalWorkspaces();
+    expect(await service.nextTerminalWorkspaceSweepAt()).toBeNull();
+    await db.update(issues).set({ status: "done", completedAt: null, updatedAt: sourceDone }).where(eq(issues.id, child!.id));
+    await service.sweepTerminalWorkspaces();
+    expect(await service.nextTerminalWorkspaceSweepAt()).toBe(sourceDone.getTime() + 7 * 86_400_000);
+  });
+
+  it("does not use cached display Git state to remove a worktree", async () => {
+    const seed = await seedTerminalWorkspace({ mergedPr: true });
+    await svc.getById(seed.executionWorkspaceId);
+    await fs.writeFile(path.join(seed.worktreePath, "unsaved.txt"), "keep this work\n");
+    expect(await svc.sweepTerminalWorkspaces()).toMatchObject({ archived: 0, skippedUndelivered: 1 });
+    expect(await fs.readFile(path.join(seed.worktreePath, "unsaved.txt"), "utf8")).toBe("keep this work\n");
+  });
+
+  it("shares compatible Git inspections within a batch while keeping branch and company decisions separate", async () => {
+    const first = await seedTerminalWorkspace();
+    const otherCompany = await seedTerminalWorkspace();
+    const [original] = await db.select().from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, first.executionWorkspaceId));
+    await db.insert(executionWorkspaces).values([
+      { ...original!, id: randomUUID(), name: "Same directory", updatedAt: new Date("2020-01-01") },
+      { ...original!, id: randomUUID(), name: "Different base", baseRef: "other-base", updatedAt: new Date("2020-01-01") },
+    ]);
     await db.update(executionWorkspaces).set({
-      cwd: worktreePath,
-      providerRef: worktreePath,
+      cwd: first.worktreePath,
+      providerRef: first.worktreePath,
+      branchName: original!.branchName,
+      baseRef: original!.baseRef,
+    }).where(eq(executionWorkspaces.id, otherCompany.executionWorkspaceId));
+    const service = executionWorkspaceService(db, { workspaceReaperCooldownDays: 0 });
+    const scan = vi.spyOn(workspaceGitOperationScheduler, "run");
+    const select = vi.spyOn(db, "select");
+    try {
+      expect(await service.sweepTerminalWorkspaces()).toMatchObject({ checked: 4, archived: 0 });
+      expect(scan.mock.calls.filter(([input]) => input.operation === "execution_workspaces.close_readiness_status"))
+        .toHaveLength(3);
+      expect(select.mock.calls.filter(([fields]) => fields && "completedAt" in fields && "cancelledAt" in fields))
+        .toHaveLength(4);
+    } finally {
+      scan.mockRestore();
+      select.mockRestore();
+    }
+  });
+
+  it("backs off unchanged terminal candidates while unrelated commits wake the worker", async () => {
+    await seedTerminalWorkspace();
+    let clock = Date.now();
+    const service = executionWorkspaceService(db, {
+      workspaceReaperCooldownDays: 0, terminalWorkspaceInspectionBackoffMs: 300_000,
+      now: () => new Date(clock),
+    });
+    const scan = vi.spyOn(workspaceGitOperationScheduler, "run");
+    try {
+      expect(await service.sweepTerminalWorkspaces()).toMatchObject({ archived: 0, skippedUndelivered: 1 });
+      const initial = scan.mock.calls.length;
+      expect(initial).toBeGreaterThan(0);
+      service.terminalWorkspaceWorkSettled(new Set(["issue:unrelated"]));
+      expect(await service.sweepTerminalWorkspaces()).toMatchObject({ skippedBackoff: 1 });
+      expect(scan).toHaveBeenCalledTimes(initial);
+      clock += 240_000;
+      expect(await service.nextTerminalWorkspaceSweepAt()).toBe(clock + 60_000);
+      clock += 60_000;
+      await service.sweepTerminalWorkspaces();
+      expect(scan).toHaveBeenCalledTimes(initial * 2);
+    } finally { scan.mockRestore(); }
+  });
+
+  it("invalidates a candidate backoff after its real PR producer commits", async () => {
+    const seed = await seedTerminalWorkspace();
+    const service = executionWorkspaceService(db, {
+      workspaceReaperCooldownDays: 0, terminalWorkspaceInspectionBackoffMs: 300_000,
+      resolvePullRequestDetails: async () => ({ state: "merged", headRef: "PAP-16015-delivery", headSha: seed.headSha }),
+    });
+    expect(await service.sweepTerminalWorkspaces()).toMatchObject({ archived: 0, skippedUndelivered: 1 });
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.terminalWorkspaces, (event, hints) => {
+      if (event === "settled") service.terminalWorkspaceWorkSettled(hints);
+    });
+    try {
+      await workProductService(db).createForIssue(seed.sourceIssueId, seed.companyId, {
+        type: "pull_request", provider: "github", title: "PR", status: "merged",
+        url: "https://github.com/paperclipai/paperclip/pull/10623", executionWorkspaceId: seed.executionWorkspaceId,
+      });
+      expect(await service.sweepTerminalWorkspaces()).toMatchObject({ archived: 1 });
+      await expect(fs.access(seed.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { unsubscribe(); }
+  });
+
+  it("rescans committed changes that arrive behind a bounded recovery cursor", async () => {
+    const seed = await seedTerminalWorkspace();
+    const service = executionWorkspaceService(db, {
+      workspaceReaperCooldownDays: 0,
+      resolvePullRequestDetails: async () => ({ state: "merged", headRef: "PAP-16015-delivery", headSha: seed.headSha }),
+    });
+    expect(await service.sweepTerminalWorkspaces(1)).toMatchObject({ checked: 1, skippedUndelivered: 1 });
+    await workProductService(db).createForIssue(seed.sourceIssueId, seed.companyId, {
+      type: "pull_request", provider: "github", title: "PR", status: "merged",
+      url: "https://github.com/paperclipai/paperclip/pull/10623",
+    });
+    service.terminalWorkspaceWorkSettled(new Set([`issue:${seed.sourceIssueId}`]));
+    expect(await service.sweepTerminalWorkspaces(1)).toMatchObject({ checked: 0 });
+    expect(service.hasTerminalWorkspaceSweepContinuation()).toBe(true);
+    expect(await service.sweepTerminalWorkspaces(2)).toMatchObject({ checked: 1, archived: 1 });
+    expect(service.hasTerminalWorkspaceSweepContinuation()).toBe(false);
+    expect(await service.nextTerminalWorkspaceSweepAt()).toBeNull();
+  });
+
+  it("retries unread rows from a failed full page before it can park recovery", async () => {
+    const seed = await seedTerminalWorkspace({ mergedPr: true });
+    await seedTerminalWorkspace({ childStatus: "todo" });
+    await db.update(executionWorkspaces).set({ updatedAt: new Date("2019-01-01") })
+      .where(eq(executionWorkspaces.id, seed.executionWorkspaceId));
+    const service = executionWorkspaceService(db, {
+      workspaceReaperCooldownDays: 0,
+      resolvePullRequestDetails: async () => ({ state: "merged", headRef: "PAP-16015-delivery", headSha: seed.headSha }),
+    });
+    const original = db.select.bind(db);
+    let fail = true;
+    const select = vi.spyOn(db, "select").mockImplementation(((fields: any) => {
+      if (fail && fields?.completedAt && fields?.cancelledAt) {
+        fail = false;
+        throw new Error("task tree read failed");
+      }
+      return original(fields);
+    }) as typeof db.select);
+    try {
+      await expect(service.sweepTerminalWorkspaces(1)).rejects.toThrow("task tree read failed");
+      expect(service.hasTerminalWorkspaceSweepContinuation()).toBe(true);
+      expect(await service.sweepTerminalWorkspaces(1)).toMatchObject({ checked: 1, archived: 1 });
+      expect(await service.sweepTerminalWorkspaces(1)).toMatchObject({ checked: 1, skippedNonTerminalTree: 1 });
+      expect(await service.sweepTerminalWorkspaces(1)).toMatchObject({ checked: 0 });
+      expect(service.hasTerminalWorkspaceSweepContinuation()).toBe(false);
+      expect(await service.nextTerminalWorkspaceSweepAt()).toBeNull();
+      await expect(fs.access(seed.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { select.mockRestore(); }
+  });
+
+  it("signals real issue producers before writes and waits for the outer transaction", async () => {
+    const seed = await seedTerminalWorkspace();
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.terminalWorkspaces, event => events.push(event));
+    try {
+      await db.transaction(async tx => {
+        await issueService(db).update(seed.sourceIssueId, { status: "cancelled" }, tx);
+        expect(events).toEqual(["intent"]);
+        expect(databaseWorkPending(db, DELIVERY_QUEUES.terminalWorkspaces)).toBe(true);
+        const [outside] = await db.select().from(issues).where(eq(issues.id, seed.sourceIssueId));
+        expect(outside?.status).toBe("done");
+      });
+      expect(events).toEqual(["intent", "settled"]);
+      expect(databaseWorkPending(db, DELIVERY_QUEUES.terminalWorkspaces)).toBe(false);
+      await workProductService(db).createForIssue(seed.sourceIssueId, seed.companyId, {
+        type: "pull_request", provider: "github", title: "PR", status: "merged", url: "https://github.com/paperclipai/paperclip/pull/10623",
+      });
+      expect(events.slice(-2)).toEqual(["intent", "settled"]);
+      await svc.update(seed.executionWorkspaceId, { status: "idle" });
+      expect(events).toHaveLength(6);
+    } finally { unsubscribe(); }
+  });
+
+  it("reports a squash cross-branch delivery as merged_via_pr and suppresses the ancestry warning", async () => {
+    const seeded = await seedTerminalWorkspace();
+    await db.update(executionWorkspaces).set({
+      cwd: seeded.worktreePath,
+      providerRef: seeded.worktreePath,
       providerType: "git_worktree",
       baseRef: "main",
       repoUrl: "https://github.com/paperclipai/paperclip.git",
@@ -477,6 +771,101 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(archived).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
     expect(archived?.cleanupEligibleAt).toBeInstanceOf(Date);
   }, 20_000);
+
+  describe("delivery reads after a pooled disconnect", () => {
+    const issueTreeFields = "id,status,completedAt,cancelledAt,updatedAt";
+    const pullRequestProductFields = "id,url,externalId,title,summary,metadata";
+
+    function disconnected() {
+      return new Error("Failed query", {
+        cause: Object.assign(new Error("write CONNECTION_CLOSED"), { code: "CONNECTION_CLOSED" }),
+      });
+    }
+
+    // Fails the first `failuresPerRead` awaits of each delivery read, like a
+    // stale pooled socket, and counts every attempt by projection. Each
+    // attempt builds a fresh query, so recovery must rebuild the read.
+    function flakyDeliveryDb(failuresPerRead: number) {
+      const attempts = new Map<string, number>();
+      const errors: Error[] = [];
+      function failingQuery<T extends object>(query: T, key: string): T {
+        return new Proxy(query, {
+          get(target, prop, receiver) {
+            const value = Reflect.get(target, prop, target);
+            if (typeof value !== "function") return value;
+            if (prop === "then") {
+              return (resolve: (rows: unknown) => unknown, reject: (error: unknown) => unknown) => {
+                const attempt = attempts.get(key) ?? 0;
+                attempts.set(key, attempt + 1);
+                if (attempt >= failuresPerRead) return value.call(target, resolve, reject);
+                const error = disconnected();
+                errors.push(error);
+                return Promise.reject(error).then(resolve, reject);
+              };
+            }
+            return (...args: unknown[]) => {
+              const result = value.apply(target, args);
+              return result === target ? receiver : result;
+            };
+          },
+        });
+      }
+      const flaky = new Proxy(db, {
+        get(target, prop, receiver) {
+          if (prop !== "select") return Reflect.get(target, prop, receiver);
+          return (fields?: Record<string, unknown>) => {
+            const builder = target.select(fields as never);
+            const key = fields ? Object.keys(fields).join(",") : "";
+            if (key !== issueTreeFields && key !== pullRequestProductFields) return builder;
+            return new Proxy(builder, {
+              get(inner, builderProp) {
+                const value = Reflect.get(inner, builderProp, inner);
+                if (builderProp !== "from" || typeof value !== "function") return value;
+                return (...args: unknown[]) => failingQuery(value.apply(inner, args) as object, key);
+              },
+            });
+          };
+        },
+      });
+      return { db: flaky, attempts, errors };
+    }
+
+    function serviceFor(flakyDb: typeof db) {
+      return executionWorkspaceService(flakyDb, {
+        resolvePullRequestDetails: vi.fn(async (companyId, reference) =>
+          pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
+          ?? { state: "unknown", headRef: null, headSha: null }
+        ),
+        workspaceReaperCooldownDays: 0,
+      });
+    }
+
+    it("rebuilds the issue tree and pull request reads in close readiness", async () => {
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      const expected = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+      const flaky = flakyDeliveryDb(1);
+
+      const readiness = await serviceFor(flaky.db).getCloseReadiness(seeded.executionWorkspaceId);
+
+      expect(readiness).toEqual(expected);
+      expect(readiness?.deliveryState).toBe("merged_via_pr");
+      expect(flaky.errors).toHaveLength(2);
+      expect(flaky.attempts.get(issueTreeFields)).toBe(2);
+      expect(flaky.attempts.get(pullRequestProductFields)).toBe(2);
+    }, 20_000);
+
+    it("propagates a persistent disconnect after three issue tree attempts", async () => {
+      const seeded = await seedTerminalWorkspace({ mergedPr: true });
+      const flaky = flakyDeliveryDb(3);
+
+      const failure = await serviceFor(flaky.db).getCloseReadiness(seeded.executionWorkspaceId)
+        .then(() => null, (error: unknown) => error);
+      expect(flaky.errors).toHaveLength(3);
+      expect(failure).toBe(flaky.errors[2]);
+      expect(flaky.attempts.get(issueTreeFields)).toBe(3);
+      expect(flaky.attempts.get(pullRequestProductFields)).toBeUndefined();
+    }, 20_000);
+  });
 
   async function seedAncestryTerminalWorkspace(overrides: { updatedAt?: Date } = {}) {
     // Build a worktree whose HEAD equals the base ref, so HEAD is an ancestor
@@ -555,6 +944,66 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0 });
     expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
   }, 20_000);
+
+  it("reads company-scoped execution configuration without live Git inspection", async () => {
+    const seed = await seedAncestryTerminalWorkspace();
+    const service = executionWorkspaceService(db, {
+      inspectGitCloseReadiness: async () => { throw new Error("Git inspection unavailable"); },
+    });
+    const config = { provisionCommand: "echo prepare", environmentId: randomUUID() };
+    await db.update(executionWorkspaces).set({ metadata: { config } })
+      .where(eq(executionWorkspaces.id, seed.executionWorkspaceId));
+
+    expect(await service.getStoredById(seed.companyId, seed.executionWorkspaceId)).toMatchObject({
+      id: seed.executionWorkspaceId, companyId: seed.companyId,
+      cwd: seed.worktreePath, baseRef: "main", config,
+      deliveryState: "unknown", runtimeServices: [],
+    });
+    const runtimeServiceId = randomUUID();
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, seed.executionWorkspaceId));
+    await insertRunningWorkspaceService(runtimeServiceId, seed.companyId, workspace!.projectId!, seed.executionWorkspaceId, workspace!.sourceIssueId!, seed.worktreePath);
+    expect(await service.getStoredById(seed.companyId, seed.executionWorkspaceId, { includeRuntimeServices: true })).toMatchObject({
+      deliveryState: "unknown", runtimeServices: [{ id: runtimeServiceId, status: "running", healthStatus: "healthy" }],
+    });
+    await expect(service.getStoredById(randomUUID(), seed.executionWorkspaceId, { includeRuntimeServices: true }))
+      .rejects.toThrow("Task workspace access is no longer available");
+    await expect(service.getStoredById(randomUUID(), seed.executionWorkspaceId))
+      .rejects.toThrow("Task workspace access is no longer available");
+    expect(await service.getStoredById(seed.companyId, randomUUID())).toBeNull();
+    await expect(service.getById(seed.executionWorkspaceId)).rejects.toThrow("Git inspection unavailable");
+  });
+
+  it("derives ancestry from the existing comparison and stays unknown for an invalid base", async () => {
+    const seed = await seedAncestryTerminalWorkspace();
+    const traceDir = await fs.mkdtemp(path.join(os.tmpdir(), "workspace-git-trace-"));
+    tempDirs.add(traceDir);
+    const tracePath = path.join(traceDir, "git.trace");
+    const previousTrace = process.env.GIT_TRACE;
+    process.env.GIT_TRACE = tracePath;
+    try {
+      const merged = await svc.getCloseReadiness(seed.executionWorkspaceId);
+      expect(merged?.git).toMatchObject({ aheadCount: 0, behindCount: 0, isMergedIntoBase: true });
+      expect(await fs.readFile(tracePath, "utf8")).not.toContain("merge-base");
+
+      await fs.writeFile(path.join(seed.worktreePath, "new.txt"), "Undelivered work\n");
+      await runGit(seed.worktreePath, ["add", "new.txt"]);
+      await runGit(seed.worktreePath, ["commit", "-m", "Undelivered work"]);
+      const ahead = await svc.getCloseReadiness(seed.executionWorkspaceId);
+      expect(ahead?.git).toMatchObject({ aheadCount: 1, behindCount: 0, isMergedIntoBase: false });
+      expect(ahead?.deliveryState).toBe("unmerged");
+
+      await db.update(executionWorkspaces).set({ baseRef: "missing-base" })
+        .where(eq(executionWorkspaces.id, seed.executionWorkspaceId));
+      const unknown = await svc.getCloseReadiness(seed.executionWorkspaceId);
+      expect(unknown?.git).toMatchObject({ aheadCount: null, behindCount: null, isMergedIntoBase: null });
+      expect(unknown?.deliveryState).toBe("unknown");
+      expect(await svc.sweepTerminalWorkspaces()).toMatchObject({ archived: 0, skippedUndelivered: 1 });
+      await expect(fs.access(seed.worktreePath)).resolves.toBeUndefined();
+    } finally {
+      if (previousTrace === undefined) delete process.env.GIT_TRACE;
+      else process.env.GIT_TRACE = previousTrace;
+    }
+  });
 
   it("fails closed before archive when git status inspection is unavailable", async () => {
     const seeded = await seedAncestryTerminalWorkspace();
@@ -685,6 +1134,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         .set({ sourceIssueId: openIssueId, updatedAt: new Date(Date.UTC(2020, 0, index + 1)) })
         .where(eq(executionWorkspaces.id, workspaceId));
     }
+    await db.execute(sql`update execution_workspaces set updated_at = updated_at + interval '456 microseconds'
+      where id in (${sql.join(skippedWorkspaceIds.map(id => sql`${id}::uuid`), sql`, `)})`);
     // The eligible workspace is newest, so it sorts after the whole skipped page.
     const eligible = await seedAncestryTerminalWorkspace({ updatedAt: new Date(Date.UTC(2020, 0, 9)) });
 
@@ -2202,21 +2653,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       branchName: "feature/recorded",
       baseRef: "main",
     });
-    await db.insert(issueRecoveryActions).values({
-      companyId,
-      sourceIssueId: issueId,
-      kind: "workspace_validation",
-      status: "active",
-      ownerType: "board",
-      cause: "workspace_validation_failed",
-      fingerprint,
-      evidence: {
-        workspaceValidation: {
-          fingerprint,
-        },
-      },
-      nextAction: "Repair the source issue workspace link.",
-    });
+    await insertBoardWorkspaceRecovery(companyId, issueId, fingerprint);
 
     const result = await svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
       mode: "forward",
@@ -2309,21 +2746,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       status: "blocked",
       priority: "medium",
     });
-    await db.insert(executionWorkspaces).values({
-      id: executionWorkspaceId,
-      companyId,
-      projectId,
-      sourceIssueId: issueId,
-      mode: "isolated_workspace",
-      strategyType: "git_worktree",
-      name: "feature/never-created",
-      status: "idle",
-      providerType: "git_worktree",
-      cwd: worktreePath,
-      providerRef: worktreePath,
-      branchName: "feature/never-created",
-      baseRef: "main",
-    });
+    await insertMissingRecordedBranchWorkspace(executionWorkspaceId, companyId, projectId, issueId, worktreePath);
 
     const result = await svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
       mode: "forward",
@@ -2390,21 +2813,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       status: "blocked",
       priority: "medium",
     });
-    await db.insert(executionWorkspaces).values({
-      id: executionWorkspaceId,
-      companyId,
-      projectId,
-      sourceIssueId: issueId,
-      mode: "isolated_workspace",
-      strategyType: "git_worktree",
-      name: "feature/never-created",
-      status: "idle",
-      providerType: "git_worktree",
-      cwd: worktreePath,
-      providerRef: worktreePath,
-      branchName: "feature/never-created",
-      baseRef: "main",
-    });
+    await insertMissingRecordedBranchWorkspace(executionWorkspaceId, companyId, projectId, issueId, worktreePath);
 
     await expect(svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
       mode: "forward",
@@ -2463,21 +2872,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       status: "blocked",
       priority: "medium",
     });
-    await db.insert(executionWorkspaces).values({
-      id: executionWorkspaceId,
-      companyId,
-      projectId,
-      sourceIssueId: issueId,
-      mode: "isolated_workspace",
-      strategyType: "git_worktree",
-      name: "feature/never-created",
-      status: "idle",
-      providerType: "git_worktree",
-      cwd: worktreePath,
-      providerRef: worktreePath,
-      branchName: "feature/never-created",
-      baseRef: "main",
-    });
+    await insertMissingRecordedBranchWorkspace(executionWorkspaceId, companyId, projectId, issueId, worktreePath);
 
     await expect(svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
       mode: "forward",
@@ -2527,17 +2922,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       issuePrefix: "PAP",
       requireBoardApprovalForNewAgents: false,
     });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Codex Coder",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
+    await insertActiveCodexCoder(agentId, companyId);
     await db.insert(projects).values({
       id: projectId,
       companyId,
@@ -2563,37 +2948,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       priority: "medium",
       assigneeAgentId: agentId,
     });
-    await db.insert(executionWorkspaces).values({
-      id: executionWorkspaceId,
-      companyId,
-      projectId,
-      projectWorkspaceId,
-      sourceIssueId: issueId,
-      mode: "isolated_workspace",
-      strategyType: "git_worktree",
-      name: "feature/recorded",
-      status: "active",
-      providerType: "git_worktree",
-      cwd: worktreePath,
-      providerRef: worktreePath,
-      branchName: "feature/recorded",
-      baseRef: "main",
-    });
-    await db.insert(issueRecoveryActions).values({
-      companyId,
-      sourceIssueId: issueId,
-      kind: "workspace_validation",
-      status: "active",
-      ownerType: "board",
-      cause: "workspace_validation_failed",
-      fingerprint,
-      evidence: {
-        workspaceValidation: {
-          fingerprint,
-        },
-      },
-      nextAction: "Repair the source issue workspace link.",
-    });
+    await insertRecordedBranchWorkspace(executionWorkspaceId, companyId, projectId, projectWorkspaceId, issueId, worktreePath);
+    await insertBoardWorkspaceRecovery(companyId, issueId, fingerprint);
 
     const result = await svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
       mode: "quarantine_restore",
@@ -2717,21 +3073,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       branchName: "feature/recorded",
       baseRef: "main",
     });
-    await db.insert(workspaceRuntimeServices).values({
-      id: runtimeServiceId,
-      companyId,
-      projectId,
-      executionWorkspaceId,
-      issueId,
-      scopeType: "execution_workspace",
-      serviceName: "web",
-      status: "running",
-      lifecycle: "shared",
-      command: "pnpm dev",
-      cwd: worktreePath,
-      provider: "local_process",
-      healthStatus: "healthy",
-    });
+    await insertRunningWorkspaceService(runtimeServiceId, companyId, projectId, executionWorkspaceId, issueId, worktreePath);
 
     await expect(svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
       mode: "quarantine_restore",
@@ -2875,37 +3217,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         lastDecisionOutcome: null,
       },
     });
-    await db.insert(executionWorkspaces).values({
-      id: executionWorkspaceId,
-      companyId,
-      projectId,
-      projectWorkspaceId,
-      sourceIssueId: issueId,
-      mode: "isolated_workspace",
-      strategyType: "git_worktree",
-      name: "feature/recorded",
-      status: "active",
-      providerType: "git_worktree",
-      cwd: worktreePath,
-      providerRef: worktreePath,
-      branchName: "feature/recorded",
-      baseRef: "main",
-    });
-    await db.insert(issueRecoveryActions).values({
-      companyId,
-      sourceIssueId: issueId,
-      kind: "workspace_validation",
-      status: "active",
-      ownerType: "board",
-      cause: "workspace_validation_failed",
-      fingerprint,
-      evidence: {
-        workspaceValidation: {
-          fingerprint,
-        },
-      },
-      nextAction: "Repair the source issue workspace link.",
-    });
+    await insertRecordedBranchWorkspace(executionWorkspaceId, companyId, projectId, projectWorkspaceId, issueId, worktreePath);
+    await insertBoardWorkspaceRecovery(companyId, issueId, fingerprint);
 
     const result = await svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
       mode: "quarantine_restore",
@@ -2986,17 +3299,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         issuePrefix: "PAP",
         requireBoardApprovalForNewAgents: false,
       });
-      await db.insert(agents).values({
-        id: agentId,
-        companyId,
-        name: "Codex Coder",
-        role: "engineer",
-        status: "active",
-        adapterType: "codex_local",
-        adapterConfig: {},
-        runtimeConfig: {},
-        permissions: {},
-      });
+      await insertActiveCodexCoder(agentId, companyId);
       await db.insert(projects).values({
         id: projectId,
         companyId,
@@ -3159,14 +3462,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       name: "Branch reconcile",
       status: "in_progress",
     });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      projectId,
-      title: "Source task",
-      status: "blocked",
-      priority: "medium",
-    });
+    await insertBlockedSourceTask(issueId, companyId, projectId);
     await db.insert(executionWorkspaces).values({
       id: executionWorkspaceId,
       companyId,
@@ -3244,14 +3540,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       name: "Branch reconcile",
       status: "in_progress",
     });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      projectId,
-      title: "Source task",
-      status: "blocked",
-      priority: "medium",
-    });
+    await insertBlockedSourceTask(issueId, companyId, projectId);
     await db.insert(executionWorkspaces).values({
       id: executionWorkspaceId,
       companyId,
@@ -3329,14 +3618,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       name: "Branch reconcile",
       status: "in_progress",
     });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      projectId,
-      title: "Source task",
-      status: "blocked",
-      priority: "medium",
-    });
+    await insertBlockedSourceTask(issueId, companyId, projectId);
     await db.insert(executionWorkspaces).values({
       id: executionWorkspaceId,
       companyId,
@@ -3433,14 +3715,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       name: "Branch reconcile",
       status: "in_progress",
     });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      projectId,
-      title: "Source task",
-      status: "blocked",
-      priority: "medium",
-    });
+    await insertBlockedSourceTask(issueId, companyId, projectId);
     await db.insert(executionWorkspaces).values({
       id: executionWorkspaceId,
       companyId,
@@ -3456,21 +3731,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       branchName: "feature/recorded",
       baseRef: "main",
     });
-    await db.insert(workspaceRuntimeServices).values({
-      id: runtimeServiceId,
-      companyId,
-      projectId,
-      executionWorkspaceId,
-      issueId,
-      scopeType: "execution_workspace",
-      serviceName: "web",
-      status: "running",
-      lifecycle: "shared",
-      command: "pnpm dev",
-      cwd: worktreePath,
-      provider: "local_process",
-      healthStatus: "healthy",
-    });
+    await insertRunningWorkspaceService(runtimeServiceId, companyId, projectId, executionWorkspaceId, issueId, worktreePath);
 
     await expect(svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
       mode: "override",
@@ -3540,14 +3801,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       name: "Branch reconcile",
       status: "in_progress",
     });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      projectId,
-      title: "Source task",
-      status: "blocked",
-      priority: "medium",
-    });
+    await insertBlockedSourceTask(issueId, companyId, projectId);
     await db.insert(executionWorkspaces).values({
       id: executionWorkspaceId,
       companyId,
@@ -3669,14 +3923,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       name: "Branch reconcile",
       status: "in_progress",
     });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      projectId,
-      title: "Source task",
-      status: "blocked",
-      priority: "medium",
-    });
+    await insertBlockedSourceTask(issueId, companyId, projectId);
     await db.insert(executionWorkspaces).values({
       id: executionWorkspaceId,
       companyId,
@@ -3704,6 +3951,9 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     ].join(" ");
     const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(serverScript)}`;
 
+    const portOwner = vi.spyOn(localServiceSupervisor, "readLocalServicePortOwner").mockResolvedValue(null);
+    const adoption = vi.spyOn(localServiceSupervisor, "findAdoptableLocalService").mockResolvedValue(null);
+    const runtimeOutput: string[] = [];
     let startedServices: Awaited<ReturnType<typeof startRuntimeServicesForWorkspaceControl>> = [];
     try {
       const startPromise = startRuntimeServicesForWorkspaceControl({
@@ -3750,9 +4000,11 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
           },
         },
         adapterEnv: {},
+        onLog: async (stream, chunk) => { runtimeOutput.push(`${stream}: ${chunk}`); },
       });
 
-      await Promise.race([
+      try {
+        await Promise.race([
         waitForPath(runtimeStartedMarker),
         startPromise.then(
           () => {
@@ -3762,7 +4014,13 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
             throw error;
           },
         ),
-      ]);
+        ]);
+      } catch (error) {
+        const activity = await db.execute(sql`select state, wait_event_type, wait_event,
+          left(query, 240) as query from pg_stat_activity
+          where datname = current_database() and pid <> pg_backend_pid()`);
+        throw new Error(`Runtime activation did not reach its process marker. Output: ${runtimeOutput.join("") || "<none>"}. Database activity: ${JSON.stringify(activity)}`, { cause: error });
+      }
 
       const reconcileErrorPromise = svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
         mode: "override",
@@ -3800,12 +4058,17 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         },
       });
     } finally {
-      await stopRuntimeServicesForExecutionWorkspace({
-        db,
-        executionWorkspaceId,
-        workspaceCwd: worktreePath,
-      });
-      await fs.rm(runtimeStartedMarker, { force: true });
+      try {
+        await stopRuntimeServicesForExecutionWorkspace({
+          db,
+          executionWorkspaceId,
+          workspaceCwd: worktreePath,
+        });
+        await fs.rm(runtimeStartedMarker, { force: true });
+      } finally {
+        portOwner.mockRestore();
+        adoption.mockRestore();
+      }
     }
 
     const [workspace] = await db
@@ -3852,14 +4115,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       name: "Branch reconcile",
       status: "in_progress",
     });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      projectId,
-      title: "Source task",
-      status: "blocked",
-      priority: "medium",
-    });
+    await insertBlockedSourceTask(issueId, companyId, projectId);
     await db.insert(executionWorkspaces).values({
       id: executionWorkspaceId,
       companyId,

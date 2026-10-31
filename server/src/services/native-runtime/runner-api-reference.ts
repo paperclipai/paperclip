@@ -198,21 +198,6 @@ export const runnerApiReference: Record<string, { section: string; description?:
           "continuationPolicy": "wake_assignee",
           "payload": {
             "version": 1,
-            "questions": [
-              {
-                "id": "responsibility",
-                "prompt": "What should the new agent be responsible for?",
-                "selectionMode": "single",
-                "required": true,
-                "options": [
-                  {
-                    "id": "describe",
-                    "label": "I'll describe it",
-                    "freeText": true
-                  }
-                ]
-              }
-            ],
             "questionSet": {
               "schema": "paperclip.question_set.v1",
               "questions": [
@@ -236,27 +221,32 @@ export const runnerApiReference: Record<string, { section: string; description?:
           "continuationPolicy": "wake_assignee",
           "payload": {
             "version": 1,
-            "questions": [
-              {
-                "id": "responsibility",
-                "prompt": "What should the new agent be responsible for?",
-                "selectionMode": "single",
-                "required": true,
-                "allowOther": true,
-                "options": [
-                  {
-                    "id": "research",
-                    "label": "Research",
-                    "description": "Find and summarize information."
+            "questionSet": {
+              "schema": "paperclip.question_set.v1",
+              "questions": [
+                {
+                  "id": "responsibility",
+                  "prompt": "What should the new agent be responsible for?",
+                  "answerMode": "single_select",
+                  "required": true,
+                  "customAnswer": {
+                    "enabled": true
                   },
-                  {
-                    "id": "writing",
-                    "label": "Writing",
-                    "description": "Draft and edit content."
-                  }
-                ]
-              }
-            ]
+                  "options": [
+                    {
+                      "id": "research",
+                      "label": "Research",
+                      "description": "Find and summarize information."
+                    },
+                    {
+                      "id": "writing",
+                      "label": "Writing",
+                      "description": "Draft and edit content."
+                    }
+                  ]
+                }
+              ]
+            }
           }
         }
       },

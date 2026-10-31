@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline';
 if (process.argv.includes('--version')) { console.log('codex-cli 0.115.0 (in-feed fixture)'); process.exit(0); }
 let threadId = `fixture-${randomUUID()}`;
 let turnId, toolSequence = 0, declined = false;
+let helloProbe = false;
 const recoveryFixture = process.env.PAPERCLIP_RECOVERY_FIXTURE === "1";
 let currentObjective = "";
 let emitCeoLineage = false;
@@ -55,10 +56,25 @@ async function finish(text, evidenceRef) {
     evidence: [{ ref: evidenceRef }], verification: [{ commandOrCheck: 'Fixture outcome', status: 'passed' }], attentionRequests: [], artifacts: [] });
 }
 async function execute() {
+  if (helloProbe) {
+    send({ method: 'item/completed', params: { threadId, turnId, item: { id: `answer-${turnId}`, type: 'agentMessage', phase: 'final_answer', text: 'hello' } } });
+    send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'completed' } } });
+    return;
+  }
+  if (process.argv.includes('--task-retry-fixture')) {
+    const text = 'The saved result is confirmed. No external publication was repeated.';
+    await call('report_progress', { idempotencyKey: 'saved-result-confirmation', body: text });
+    await finish(text, 'fixture:preserved-result');
+    send({ method: 'item/completed', params: { threadId, turnId, item: { id: `answer-${turnId}`, type: 'agentMessage', phase: 'final_answer', text } } });
+    send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'completed' } } });
+    return;
+  }
   if (process.argv.includes('--completion-stream-fixture')) {
     // Report completion before a deliberately slow final answer. The real
     // runner and control plane must keep listening after the tool succeeds.
     await finish('The fixture work is complete.', 'fixture:STREAM-42');
+    send({ method: 'item/completed', params: { threadId, turnId,
+      item: { id: `waiting-${turnId}`, type: 'agentMessage', phase: 'commentary', text: 'STREAM-42: waiting for the final answer.' } } });
     // Exceed both former completion deadlines: cold (5s) and reusable (30s).
     await new Promise((resolve) => setTimeout(resolve, 31_000));
     const itemId = `answer-${turnId}`;
@@ -140,10 +156,13 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     if (recoveryFixture) send({ method: 'configWarning', params: { message: 'Recovery fixture startup notice before the first turn' } });
     if (method === 'thread/resume' && message.params?.threadId) threadId = message.params.threadId;
     if (message.params?.completionContract) completionContract = message.params.completionContract;
-    send({ id, result: { model: 'in-feed-fixture', modelProvider: 'fixture', thread: { id: threadId, sessionId: threadId } } });
+    const model = process.argv.includes('--completion-stream-fixture') ? message.params?.model ?? 'in-feed-fixture' : 'in-feed-fixture';
+    send({ id, result: { model, modelProvider: 'fixture', thread: { id: threadId, sessionId: threadId } } });
   }
   else if (method === 'thread/read') send({ id, result: { thread: { id: threadId, turns: [] } } });
   else if (method === 'turn/start') {
+    helloProbe = process.argv.includes('--completion-stream-fixture')
+      && JSON.stringify(message.params?.input).includes('Respond only with hello. Do not use tools or inspect files.');
     emitCeoLineage = JSON.stringify(message.params).includes('CEO descendant fixture');
     declined = /connection_intent/.test(JSON.stringify(message.params)) && /rejected/.test(JSON.stringify(message.params));
     for (const part of message.params?.input ?? []) {

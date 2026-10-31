@@ -34,7 +34,7 @@ async function fixture() {
     provider: "opencode",
     driver: "opencode_server",
     model: "openrouter/example/model",
-    opencodeVersion: "1.18.32",
+    opencodeVersion: "1.18.34",
   };
   const evalCase = {
     schema: "paperclip-runner/eval-case/v1",
@@ -101,6 +101,30 @@ test("maps every qualified driver to one explicit credential boundary", () => {
   assert.throws(
     () => credentialForConfig({ provider: "unknown" }),
     /credential policy/,
+  );
+});
+
+test("selects the Copilot token for the exact protocol roster and execution matrix", async () => {
+  const { root, program, config } = await fixture();
+  await writeFile(join(program, "configs/live-opencode-model.json"), JSON.stringify({
+    ...config,
+    provider: "acpx",
+    driver: "acpx_runtime",
+    acpxAgent: "copilot",
+    model: "gpt-5.6-luna",
+  }));
+  const catalog = await buildProtocolEvalCatalog({
+    evalsRoot: root,
+    campaignId: "copilot-credential-01",
+    rosterSelection: "live-opencode-model.json",
+  });
+  assert.equal(catalog.rosters.length, 1);
+  assert.equal(catalog.rosters[0].credentialName, "COPILOT_GITHUB_TOKEN");
+  assert.equal(catalog.cells.length, 1);
+  assert.equal(catalog.cells[0].credentialName, "COPILOT_GITHUB_TOKEN");
+  assert.deepEqual(
+    catalog.matrices.flatMap(matrix => matrix.include).map(cell => cell.credentialName),
+    ["COPILOT_GITHUB_TOKEN"],
   );
 });
 

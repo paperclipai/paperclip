@@ -163,6 +163,48 @@ async function makeCtx(runId: string, cwd: string): Promise<AdapterExecutionCont
 }
 
 describe("grok_local execute", () => {
+  it.each([false, true])("resumes a managed connection only when its isolated history exists (%s)", async present => {
+    const root = await makeTempRoot();
+    const ctx = await makeCtx("managed-resume", root);
+    ctx.config.managedAiConnection = true;
+    ctx.config.env = { GROK_HOME: path.join(root, "home"), XAI_API_KEY: "fixture-key" };
+    ctx.runtime.sessionParams = { sessionId: "fixture-session", cwd: root };
+    if (present) await fs.mkdir(path.join(root, "home", "sessions", "encoded-cwd", "fixture-session"), { recursive: true });
+    runProcessMock.mockResolvedValue(makeSuccessfulRunResult({ sessionId: "next-session" }));
+    const result = await execute(ctx);
+    expect((runProcessMock.mock.calls[0][3] as string[]).includes("--resume")).toBe(present);
+    expect(result.sessionParams?.sessionId).toBe("next-session");
+  });
+  it("resumes the conversation while rotating runtime tool access", async () => {
+    const root = await makeTempRoot();
+    runProcessMock.mockResolvedValue(makeSuccessfulRunResult({ sessionId: "existing-session" }));
+    const first = await execute(await makeCtx("before-tools", root));
+    const second = await makeCtx("after-tools", root);
+    second.runtime.sessionParams = first.sessionParams ?? null;
+    second.context.refreshTools = true;
+    second.runtimeTools = { version: 1, guidance: "GitHub is now connected", mcpEndpoint: "https://example.test/current-tools/mcp",
+      rest: { connectionsSearch: "https://example.test/search", connectionRequest: "https://example.test/request" },
+      bearerToken: "current-tool-token", expiresAt: "2027-01-01T00:00:00Z", tools: ["connections_search", "connection_request"] };
+    const result = await execute(second);
+    const args = runProcessMock.mock.calls[1][3] as string[];
+    expect(args[args.indexOf("--resume") + 1]).toBe("existing-session");
+    expect(runProcessMock.mock.calls[1][4].env.PAPERCLIP_RUNTIME_TOOLS_MCP_URL).toBe("https://example.test/current-tools/mcp");
+    expect(result.sessionParams?.sessionId).toBe("existing-session");
+  });
+
+  it("clears an unavailable managed session when the fresh turn provides no replacement ID", async () => {
+    const root = await makeTempRoot();
+    const ctx = await makeCtx("missing-history", root);
+    ctx.config.managedAiConnection = true;
+    ctx.config.env = { GROK_HOME: path.join(root, "home"), XAI_API_KEY: "fixture-key" };
+    ctx.runtime.sessionParams = { sessionId: "discarded-session", cwd: root };
+    runProcessMock.mockResolvedValue({ ...makeSuccessfulRunResult(), stdout: JSON.stringify({ type: "end", stopReason: "EndTurn" }) });
+    const result = await execute(ctx);
+    expect((runProcessMock.mock.calls[0][3] as string[]).includes("--resume")).toBe(false);
+    expect(result.sessionParams).toBeNull();
+    expect(result.clearSession).toBe(true);
+  });
+
   it.each(["grok-4.7", "grok-4.6"])("forwards the explicit %s model and xhigh effort", async (model) => {
     const root = await makeTempRoot();
     const ctx = await makeCtx("model-selection", root);

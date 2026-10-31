@@ -8,6 +8,15 @@ import {
 } from "./native-restart-recovery.js";
 
 describe("native restart recovery classification", () => {
+  it.each([true, false])("uses the remote fenced lease instead of the old container PID (live=%s)", async live => {
+    const now = new Date();
+    const probe = vi.fn(() => { throw new Error("must not probe another container's PID"); });
+    const result = await evaluateNativeControllerTakeover({ now, remoteLeaseFenced: true,
+      owner: { leaseOwner: "old-controller", leaseExpiresAt: new Date(now.getTime() + (live ? 1000 : -1000)),
+        controllerPid: process.pid, controllerProcessStartedAt: now }, isProcessAlive: probe });
+    expect(result.allowed).toBe(!live);
+    expect(probe).not.toHaveBeenCalled();
+  });
   it("does not reopen a failed checkpoint or reset an exhausted provider budget", () => {
     const evidence = {
       runnerPidAlive: false,
@@ -206,6 +215,13 @@ describe("native controller takeover fencing", () => {
       allowed: true,
       reason: "controller_process_dead",
     });
+  });
+
+  it.each([true, false])("requires a stopped idle controller even after its run lease was released: alive=%s", async alive => {
+    await expect(evaluateNativeControllerTakeover({
+      owner: owner({ leaseOwner: null, leaseExpiresAt: null }), now, requireStoppedController: true,
+      isProcessAlive: () => alive, readProcessStartedAt: async () => recordedStart,
+    })).resolves.toEqual({ allowed: !alive, reason: alive ? "controller_still_alive" : "controller_process_dead" });
   });
 
   it("takes over a recycled controller PID", async () => {

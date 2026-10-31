@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   agents,
   assets,
@@ -17,6 +17,7 @@ import {
   issueAttachments,
   issueComments,
   issues,
+  resourceLifecycleEvents,
   startEmbeddedPostgresTestDatabase,
   toolApplications,
   toolConnections,
@@ -29,7 +30,7 @@ const external = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const support = external
   ? { supported: true }
   : await getEmbeddedPostgresTestSupport();
-const suite = support.supported ? describe.sequential : describe.skip;
+const suite = support.supported ? describe : describe.skip;
 suite("Teams same-transaction publication projection (real PostgreSQL)", () => {
   let db: ReturnType<typeof createDb>;
   let temporary:
@@ -288,6 +289,18 @@ suite("Teams same-transaction publication projection (real PostgreSQL)", () => {
       endpoint,
     };
   }
+
+  it("ignores file-publication bookkeeping and journals endpoint instruction changes", async () => {
+    const f = await fixture("delivered");
+    const events = () => db.select().from(resourceLifecycleEvents).where(and(eq(resourceLifecycleEvents.companyId, f.companyId), eq(resourceLifecycleEvents.resourceType, "agent_runtime"))).orderBy(resourceLifecycleEvents.id);
+    const before = await events();
+    await f.project();
+    expect((await f.endpoint()).lastPublicationAt).not.toBeNull();
+    expect(await events()).toEqual(before);
+    await db.update(chatEndpoints).set({ communicationInstructions: "Use fixture replies" })
+      .where(eq(chatEndpoints.id, (await f.endpoint()).id));
+    expect(await events()).toHaveLength(before.length + 1);
+  });
 
   it.each([
     ["consent_pending", "pending"],

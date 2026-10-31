@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
@@ -8,7 +9,7 @@ import {
   agents,
   approvals,
   companies,
-  createDb,
+  createDb, applyPendingMigrations,
   decisionQueueItems,
   decisionQueues,
   decisionTriage,
@@ -26,7 +27,8 @@ import { errorHandler } from "../middleware/index.js";
 import { decisionQueueRoutes } from "../routes/decision-queues.js";
 import { decisionQueueService } from "../services/decision-queues.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_DECISION_QUEUES_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -40,8 +42,9 @@ describeEmbeddedPostgres("decision queue routes", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-decision-queues-");
-    db = createDb(tempDb.connectionString);
+    if (external) await applyPendingMigrations(external);
+    else tempDb = await startEmbeddedPostgresTestDatabase("paperclip-decision-queues-");
+    db = createDb(external ?? tempDb!.connectionString);
   }, 30_000);
 
   afterEach(async () => {
@@ -59,6 +62,7 @@ describeEmbeddedPostgres("decision queue routes", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 

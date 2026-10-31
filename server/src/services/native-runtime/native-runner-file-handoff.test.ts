@@ -8,6 +8,8 @@ import {
   link,
   mkdir,
   readFile,
+  readdir,
+  rm,
   symlink,
   unlink,
   writeFile,
@@ -39,6 +41,7 @@ import { issueService } from "../issues.js";
 import { findHeartbeatRunCompletionComment, resolveHeartbeatRunResponse } from "../heartbeat-run-summary.js";
 import {
   renderNativeRunnerStagedAttachmentPrompt,
+  stageNativeRunnerAttachmentBytes,
   stageNativeRunnerWakeAttachments,
 } from "./native-runner-file-handoff.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
@@ -119,6 +122,7 @@ describe("native runner file handoff", () => {
     overrides: Partial<{
       companyId: string;
       executionTargetKind: "local" | "remote";
+      readRemoteTaskFile: (input: { contentRef: string; byteSize: number; sha256: string }) => Promise<Buffer>;
       readRemoteWorkspaceFile: (input: { contentRef: string; byteSize: number; sha256: string }) => Promise<Buffer>;
     }> = {},
   ) {
@@ -130,6 +134,7 @@ describe("native runner file handoff", () => {
       workspaceRoot,
       executionTargetKind: overrides.executionTargetKind ?? "local",
       readRemoteWorkspaceFile: overrides.readRemoteWorkspaceFile,
+      readRemoteTaskFile: overrides.readRemoteTaskFile,
       storage: createStorageService(
         createLocalDiskStorageProvider(storageRoot),
       ),
@@ -195,6 +200,91 @@ describe("native runner file handoff", () => {
     };
   }
 
+  async function stageEmptyWake(root: string, boundCompanyId = companyId) {
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId } })
+      .where(eq(heartbeatRuns.id, runId));
+    return stageNativeRunnerWakeAttachments({
+      db,
+      binding: {
+        companyId: boundCompanyId, issueId, runId, agentId,
+        workspaceRoot: root, executionTargetKind: "local",
+      },
+    });
+  }
+
+  it("leaves an empty workspace unchanged for an empty wake and permits later explicit staging", async () => {
+    const root = await mkdtemp(path.join(temporaryRoot, "empty-wake-"));
+    try {
+      const wake = await stageEmptyWake(root);
+      expect(wake.attachments).toEqual([]);
+      await wake.cleanup();
+      await expect(readdir(root)).resolves.toEqual([]);
+
+      const explicit = await stageNativeRunnerAttachmentBytes({ workspaceRoot: root, body: Buffer.from("later authorized bytes") });
+      await expect(readFile(path.join(root, explicit.workspaceRelativePath), "utf8"))
+        .resolves.toBe("later authorized bytes");
+      await explicit.cleanup();
+      await expect(readFile(path.join(root, explicit.workspaceRelativePath)))
+        .resolves.toEqual(Buffer.alloc(0));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("scrubs inactive staging bytes on an empty wake without creating another directory", async () => {
+    const root = await mkdtemp(path.join(temporaryRoot, "empty-wake-residue-"));
+    try {
+      const previous = await stageNativeRunnerAttachmentBytes({ workspaceRoot: root, body: Buffer.from("previous attachment") });
+      await previous.cleanup();
+      const slot = path.join(root, previous.workspaceRelativePath);
+      await writeFile(slot, "stale bytes after an interrupted owner");
+      const directories = await readdir(path.join(root, ".paperclip-inbound"));
+
+      const wake = await stageEmptyWake(root);
+      expect(wake.attachments).toEqual([]);
+      await wake.cleanup();
+      await expect(readFile(slot)).resolves.toEqual(Buffer.alloc(0));
+      await expect(readdir(path.join(root, ".paperclip-inbound"))).resolves.toEqual(directories);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["root-file", "root-symlink", "entry-symlink"] as const)(
+    "rejects unsafe %s staging on an empty wake without changing outside bytes",
+    async (kind) => {
+      const root = await mkdtemp(path.join(temporaryRoot, "empty-wake-unsafe-"));
+      const outside = await mkdtemp(path.join(temporaryRoot, "empty-wake-outside-"));
+      try {
+        await writeFile(path.join(outside, "keep.txt"), "outside bytes");
+        const inbound = path.join(root, ".paperclip-inbound");
+        if (kind === "root-file") await writeFile(inbound, "not a directory");
+        else if (kind === "root-symlink") await symlink(outside, inbound);
+        else {
+          await mkdir(inbound);
+          await symlink(outside, path.join(inbound, "untrusted-owner"));
+        }
+        await expect(stageEmptyWake(root)).rejects.toThrow(/staging_(?:path|residue)_denied/);
+        await expect(readFile(path.join(outside, "keep.txt"), "utf8")).resolves.toBe("outside bytes");
+      } finally {
+        await rm(root, { recursive: true, force: true });
+        await rm(outside, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("still authorizes an empty wake before touching its workspace", async () => {
+    const root = await mkdtemp(path.join(temporaryRoot, "empty-wake-unauthorized-"));
+    try {
+      await expect(stageEmptyWake(root, "00000000-0000-4000-8000-000000009199"))
+        .rejects.toThrow("paperclip_runner_attachment_staging_not_authorized");
+      await expect(readdir(root)).resolves.toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a workspace-only file completion and invented delivery receipts without asking the user to approve completion", async () => {
     for (const ref of ["launch-checklist.md", "./out/report.pdf", "/workspace/answer.txt", "file:out/report.csv", "deliverable:00000000-0000-4000-8000-000000000001"]) {
       await expect(nativeCompletionFeedback(db, runId, doneReport([ref])))
@@ -235,11 +325,52 @@ describe("native runner file handoff", () => {
       await db.update(issueWorkProducts).set({ status: "failed" }).where(eq(issueWorkProducts.id, product.id));
       await expect(nativeCompletionFeedback(db, runId, doneReport([`work_product:${product.id}`])))
         .rejects.toThrow("requested file has no accessible delivery evidence");
-      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionContinuation: { objective: "Do not create a file. Explain the result inline." } } }).where(eq(heartbeatRuns.id, runId));
+      for (const objective of [
+        "Do not create a file. Explain the result inline.",
+        "Run hostname, id, and pwd. Report the output in a completion comment. Do not modify repository files or create attachments.",
+      ]) {
+        await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionContinuation: { objective } } }).where(eq(heartbeatRuns.id, runId));
+        await expect(nativeCompletionFeedback(db, runId, doneReport([])))
+          .resolves.toContain("Completion report accepted");
+      }
+    } finally {
+      await db.delete(issueWorkProducts).where(eq(issueWorkProducts.id, product.id));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+
+  it.each([
+    "Use native write/read file tools. Write memory/pi-native.txt inside AGENT_HOME. This is personal memory, not a task deliverable.",
+    "Use native write to copy bytes into pi-agent-memory-proof.txt. This is an internal assertion file, not a deliverable.",
+    "Attempt native write once to /outside/pi-unassigned.txt. This intentionally unassigned root must be denied.",
+    "Write internal-proof.txt; then check it exists. This is an internal verification file, not a deliverable.",
+    "Attempt native write to /outside/probe.txt and create no files. This negative test must be denied.",
+    "Write internal-proof.txt and return it in chat. This is an internal verification file, not a deliverable.",
+    "Write internal-proof.txt and send it as a code block in your response. This is an internal verification file, not a deliverable.",
+  ])("accepts an internal file outcome without treating it as published output: %s", async objective => {
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionContinuation: { objective } } })
+      .where(eq(heartbeatRuns.id, runId));
+    try {
       await expect(nativeCompletionFeedback(db, runId, doneReport([])))
         .resolves.toContain("Completion report accepted");
     } finally {
-      await db.delete(issueWorkProducts).where(eq(issueWorkProducts.id, product.id));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+
+  it.each([
+    "Write report.pdf; write internal-proof.txt. This is an internal verification file, not a deliverable.",
+    "Write report.pdf and attempt native write to /outside/probe.txt; this negative test must be denied.",
+    "Write report.txt and attach it. This is an internal verification file, not a deliverable.",
+    "Write report.txt and send it to me. This is an internal verification file, not a deliverable.",
+    "Write report.txt. This is an internal verification file, not a deliverable. Send it as a download link in your response.",
+  ])("still requires publication when the task also asks for internal or denied writes: %s", async objective => {
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionContinuation: { objective } } })
+      .where(eq(heartbeatRuns.id, runId));
+    try {
+      await expect(nativeCompletionFeedback(db, runId, doneReport([])))
+        .rejects.toThrow("requested file has no accessible delivery evidence");
+    } finally {
       await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, runId));
     }
   });
@@ -315,6 +446,15 @@ describe("native runner file handoff", () => {
 
     await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${first.entityRefs[0]}`])))
       .resolves.toContain("Completion report accepted");
+    await db.update(issues).set({ title: "Create a Markdown document on this task." }).where(eq(issues.id, issueId));
+    try {
+      await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${first.entityRefs[0]}`])))
+        .resolves.toContain("Completion report accepted");
+      await expect(nativeCompletionFeedback(db, runId, doneReport(["out/answer.txt"])))
+        .rejects.toThrow("write_document");
+    } finally {
+      await db.update(issues).set({ title: "Prepare a requested file" }).where(eq(issues.id, issueId));
+    }
     const otherIssueId = "00000000-0000-4000-8000-000000009111";
     await db.insert(issues).values({ id: otherIssueId, companyId, title: "Unrelated file", status: "in_progress" });
     await db.update(issueAttachments).set({ issueId: otherIssueId }).where(eq(issueAttachments.id, first.entityRefs[0]));
@@ -465,6 +605,49 @@ describe("native runner file handoff", () => {
     await expect(authority({ executionTargetKind: "remote", readRemoteWorkspaceFile: badReader })
       .execute(callFor("remote-only/drift.txt", body, "remote-drift")))
       .rejects.toThrow(/size|hash/);
+  });
+
+  it("reads provider files before mutation locks and replays without reading again", async () => {
+    const body = Buffer.from("Provider callback output\n");
+    const reader = vi.fn(async () => {
+      await db.transaction(async tx => {
+        await tx.execute(sql`set local lock_timeout = '500ms'`);
+        await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, agentId)).for("share");
+      });
+      return body;
+    });
+    const remote = authority({ executionTargetKind: "remote", readRemoteTaskFile: reader });
+    const call = callFor("proof.txt", body, "provider-lock-callback");
+    const result = await remote.execute(call);
+    reader.mockRejectedValueOnce(new Error("The original file is no longer available"));
+    await expect(remote.execute(call)).resolves.toEqual(result);
+    expect(reader).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects publication if agent authority changes during a provider read", async () => {
+    const body = Buffer.from("Revoked output\n");
+    const before = await db.select({ id: issueAttachments.id }).from(issueAttachments);
+    const reader = vi.fn(async () => {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+      return body;
+    });
+    try {
+      await expect(authority({ executionTargetKind: "remote", readRemoteTaskFile: reader })
+        .execute(callFor("proof.txt", body, "revoked-during-read")))
+        .rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+      expect(await db.select({ id: issueAttachments.id }).from(issueAttachments)).toEqual(before);
+    } finally {
+      await db.update(agents).set({ status: "active" }).where(eq(agents.id, agentId));
+    }
+  });
+
+  it("registers an absolute file only through a task-location-authorizing reader", async () => {
+    const body=Buffer.from("Home output\n");const reader=vi.fn(async()=>body);
+    const call=callFor("/home/agent/proof.txt",body,"home-output");
+    await expect(authority({executionTargetKind:"remote",readRemoteWorkspaceFile:reader}).execute(call)).rejects.toThrow("path_denied");
+    expect(reader).not.toHaveBeenCalled();
+    await expect(authority({executionTargetKind:"remote",readRemoteTaskFile:reader}).execute(call)).resolves.toBeDefined();
+    expect(reader).toHaveBeenCalledWith(expect.objectContaining({contentRef:"/home/agent/proof.txt"}));
   });
 
   it("stages only exact wake-bound inbound bytes without exposing an API credential", async () => {

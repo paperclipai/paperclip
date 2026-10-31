@@ -19,6 +19,7 @@ import {
   issueComments,
   issues,
   issueWorkProducts,
+  runIdentityContexts,
 } from "@paperclipai/db";
 
 import {
@@ -28,9 +29,37 @@ import {
 } from "../../attachment-types.js";
 import { getStorageService } from "../../storage/index.js";
 import type { StorageService } from "../../storage/types.js";
+import { loadConfig } from "../../config.js";
+import { HttpError } from "../../errors.js";
+import { voiceSessionStore, type VoiceTransaction } from "../voice/voice-session-store.js";
 import { issueService } from "../issues.js";
+import { readInheritedGitHubReviewWait } from "../chat-channels/github/review-wait.js";
 import { boundExternalChatProvider } from "./external-chat-provider.js";
 import { resolveExternalChatQuestionResponse } from "./external-chat-question-response.js";
+import { githubRunReplyState } from "../chat-run-publications.js";
+
+// This boundary reads identity and wake authority, never launch renderings,
+// saved provider profiles, or run output. Keep the nested wake proof narrow too.
+const responseWaitContextKeys = ["source", "issueId", "wakeReason", "wakeCommentId", "wakeCommentIds",
+  "interactionId", "interactionKind", "interactionStatus", "sourceRunId", "sourceCommentId",
+  "externalChatContinuation", "paperclipExternalChatQuestionResponse", "paperclipHarnessCheckedOut",
+  "paperclipExternalChatExecutionBound"] as const;
+const responseWaitRun = {
+  id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+  nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId, status: heartbeatRuns.status,
+  responsibleUserId: heartbeatRuns.responsibleUserId, activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
+  contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+    then (select coalesce(jsonb_object_agg(field.key, field.value), '{}'::jsonb)
+      from jsonb_each(${heartbeatRuns.contextSnapshot}) as field(key, value)
+      where field.key in (${sql.join(responseWaitContextKeys.map(key => sql`${key}`), sql`, `)}))
+      || jsonb_build_object('paperclipWake', jsonb_build_object(
+        'checkedOutByHarness', ${heartbeatRuns.contextSnapshot}#>'{paperclipWake,checkedOutByHarness}',
+        'externalChatExecutionBound', ${heartbeatRuns.contextSnapshot}#>'{paperclipWake,externalChatExecutionBound}',
+        'externalChatProvider', ${heartbeatRuns.contextSnapshot}#>'{paperclipWake,externalChatProvider}',
+        'issue', jsonb_build_object('id', ${heartbeatRuns.contextSnapshot}#>'{paperclipWake,issue,id}'),
+        'commentIds', ${heartbeatRuns.contextSnapshot}#>'{paperclipWake,commentIds}'))
+    else null end`,
+};
 
 export const LIST_CHAT_ATTACHMENTS_TOOL_NAME = "list_chat_attachments";
 export const REUSE_CHAT_ATTACHMENT_TOOL_NAME = "reuse_chat_attachment";
@@ -108,6 +137,17 @@ export type ExternalChatResponseWaitAuthorization =
   | "not_applicable";
 
 type AuthorizationLockMode = "blocking" | "nonblocking" | "read";
+
+type AuthorizationEndpoint = Pick<typeof chatEndpoints.$inferSelect,
+  "id" | "companyId" | "provider" | "providerAccountId" | "status" | "setup"
+  | "allowDirectMessages" | "allowGroupChats" | "allowUnlinkedPeople" | "sponsorUserId"
+>;
+type AuthorizationConversation = Pick<typeof chatConversations.$inferSelect,
+  "id" | "resourceId" | "isDirectMessage"
+>;
+type AuthorizationResource = Pick<typeof chatEndpointResources.$inferSelect,
+  "availability" | "type" | "enabled"
+>;
 
 class ExternalChatWaitAuthorizationContentionError extends Error {
   constructor() {
@@ -264,9 +304,9 @@ function decodeListCursor(
 }
 
 function destinationAllowed(
-  endpoint: typeof chatEndpoints.$inferSelect,
-  conversation: typeof chatConversations.$inferSelect,
-  resource: typeof chatEndpointResources.$inferSelect | null,
+  endpoint: AuthorizationEndpoint,
+  conversation: AuthorizationConversation,
+  resource: AuthorizationResource | null,
 ): boolean {
   if (conversation.isDirectMessage) return endpoint.allowDirectMessages;
   if (!resource || resource.availability !== "available") return false;
@@ -280,7 +320,7 @@ function destinationAllowed(
 }
 
 function currentSetupTestAcceptsBoundDeliveries(
-  endpoint: typeof chatEndpoints.$inferSelect,
+  endpoint: AuthorizationEndpoint,
   deliveries: Array<{
     normalizedEvent: unknown;
     processedAt: Date | null;
@@ -323,7 +363,7 @@ function currentSetupTestAcceptsBoundDeliveries(
 
 async function principalAuthorized(
   tx: Db,
-  endpoint: typeof chatEndpoints.$inferSelect,
+  endpoint: AuthorizationEndpoint,
   principalId: string,
   lockMode: AuthorizationLockMode = "blocking",
 ): Promise<boolean> {
@@ -340,7 +380,7 @@ async function principalAuthorized(
     }
   }
   const principalQuery = tx
-    .select({ id: chatExternalPrincipals.id })
+    .select({ id: chatExternalPrincipals.id, externalId: chatExternalPrincipals.externalId })
     .from(chatExternalPrincipals)
     .where(
       and(
@@ -359,6 +399,16 @@ async function principalAuthorized(
       ? principalQuery.for("update", { noWait: true }).limit(1)
       : principalQuery.for("update").limit(1));
   if (!principal) return false;
+  if (endpoint.provider === "speko") {
+    try {
+      await voiceSessionStore(tx, { allowLocalBoard: loadConfig().deploymentMode === "local_trusted", nonblockingAuthority: lockMode === "nonblocking" })
+        .authorizePrincipal(tx as unknown as VoiceTransaction, endpoint.companyId, endpoint.id, principal.externalId);
+      return true;
+    } catch (error) {
+      if (error instanceof HttpError && [403, 404].includes(error.status)) return false;
+      throw error;
+    }
+  }
   const linkQuery = tx
     .select({
       status: chatIdentityLinks.status,
@@ -432,10 +482,32 @@ export async function authorizeChatConversationForBoundRun(
   const linksQuery = tx
     .select({
       commentId: chatMessageLinks.commentId,
-      conversation: chatConversations,
-      endpoint: chatEndpoints,
+      conversation: {
+        id: chatConversations.id,
+        resourceId: chatConversations.resourceId,
+        isDirectMessage: chatConversations.isDirectMessage,
+      },
+      endpoint: {
+        id: chatEndpoints.id,
+        companyId: chatEndpoints.companyId,
+        provider: chatEndpoints.provider,
+        providerAccountId: chatEndpoints.providerAccountId,
+        status: chatEndpoints.status,
+        allowDirectMessages: chatEndpoints.allowDirectMessages,
+        allowGroupChats: chatEndpoints.allowGroupChats,
+        allowUnlinkedPeople: chatEndpoints.allowUnlinkedPeople,
+        sponsorUserId: chatEndpoints.sponsorUserId,
+        setup: sql<AuthorizationEndpoint["setup"]>`jsonb_build_object(
+          'step', ${chatEndpoints.setup}->'step',
+          'testStartedAt', ${chatEndpoints.setup}->'testStartedAt',
+          'runtimeGeneration', ${chatEndpoints.setup}->'runtimeGeneration'
+        )`,
+      },
       principalId: chatDeliveries.principalId,
-      normalizedEvent: chatDeliveries.normalizedEvent,
+      normalizedEvent: sql<unknown>`jsonb_build_object('runtimeContext', jsonb_build_object(
+        'generation', ${chatDeliveries.normalizedEvent}->'runtimeContext'->'generation',
+        'credentialFingerprint', ${chatDeliveries.normalizedEvent}->'runtimeContext'->'credentialFingerprint'
+      ))`,
       processedAt: chatDeliveries.processedAt,
       receivedAt: chatDeliveries.receivedAt,
     })
@@ -505,7 +577,11 @@ export async function authorizeChatConversationForBoundRun(
   const resource = conversation.resourceId
     ? await (() => {
         const query = tx
-          .select()
+          .select({
+            availability: chatEndpointResources.availability,
+            type: chatEndpointResources.type,
+            enabled: chatEndpointResources.enabled,
+          })
           .from(chatEndpointResources)
           .where(
             and(
@@ -602,7 +678,7 @@ export async function resolveExternalChatResponseWaitAuthorizationInTransaction(
       : issueQuery.for("update").limit(1));
 
   const runQuery = tx
-    .select()
+    .select(responseWaitRun)
     .from(heartbeatRuns)
     .where(
       and(
@@ -634,12 +710,12 @@ export async function resolveExternalChatResponseWaitAuthorizationInTransaction(
     !answerContext
   )
     return "revoked";
-  const candidate = run
-    ? externalChatWaitCandidate(
-        answerContext?.authorizationContext ?? run.contextSnapshot,
-        binding,
-      )
-    : null;
+  const directContext = answerContext?.authorizationContext ?? run?.contextSnapshot;
+  const inheritedReviewWait = run && !externalChatWaitCandidate(directContext, binding)
+    ? await readInheritedGitHubReviewWait(tx, run) : null;
+  if (inheritedReviewWait?.kind === "revoked") return "revoked";
+  const authorizationContext = inheritedReviewWait?.context ?? directContext;
+  const candidate = run ? externalChatWaitCandidate(authorizationContext, binding) : null;
   if (!candidate) return "not_applicable";
 
   const actorQuery = tx
@@ -729,7 +805,7 @@ export async function resolveExternalChatResponseWaitAuthorizationInTransaction(
     await authorizeChatConversationForBoundRun(
       tx,
       binding,
-      run.contextSnapshot,
+      authorizationContext,
       lockMode,
     );
     return "authorized";
@@ -759,6 +835,49 @@ export async function resolveExternalChatResponseWaitAuthorization(input: {
       "read",
     ),
   );
+}
+
+const publishedGitHubReviewWaitKey = "github-review-response:";
+
+export function isPublishedGitHubReviewCompletionContinuation(value: unknown): boolean {
+  const continuation = record(value);
+  return continuation.kind === "response_wake" && typeof continuation.idempotencyKey === "string" &&
+    continuation.idempotencyKey.startsWith(publishedGitHubReviewWaitKey);
+}
+
+/** Project a wait from the same saved publication and current authority used
+ * by finalization. Inherited waits need an accepted tree resume or a confirmed
+ * reply from this run to its exact current source. An arbitrary old review does
+ * not assign an unanswered new turn a wait. */
+export async function readPublishedGitHubReviewCompletionContinuationInTransaction(
+  tx: Db, binding: ChatReuseBinding, lockMode: AuthorizationLockMode = "read",
+) {
+  const [run] = await tx.select(responseWaitRun).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, binding.runId), eq(heartbeatRuns.companyId, binding.companyId),
+    eq(heartbeatRuns.agentId, binding.agentId), eq(heartbeatRuns.nativeIssueId, binding.issueId),
+    eq(heartbeatRuns.runtimeMode, "native"),
+  )).limit(1);
+  if (!run || run.status !== "running") return null;
+  const wait = await readInheritedGitHubReviewWait(tx, run);
+  if (wait?.kind !== "published") return null;
+  if (wait.reviewRunId !== run.id) {
+    const [identity] = await tx.select({ cause: runIdentityContexts.cause, parentContextId: runIdentityContexts.parentContextId })
+      .from(runIdentityContexts).where(and(eq(runIdentityContexts.id, run.activeIdentityContextId!),
+        eq(runIdentityContexts.companyId, run.companyId), eq(runIdentityContexts.runId, run.id),
+        eq(runIdentityContexts.status, "accepted"))).limit(1);
+    const resumed = run.contextSnapshot?.source === "issue.tree_resume" && identity?.cause === "issue_tree_resumed" &&
+      Boolean(identity.parentContextId);
+    if (!resumed && !(run.contextSnapshot?.source === "chat:github" &&
+        await githubRunReplyState(tx, { ...binding, endpointId: wait.endpointId,
+          sourceCommentId: wait.context.wakeCommentId, requireSettled: true }) === "confirmed")) return null;
+  }
+  if (await resolveExternalChatResponseWaitAuthorizationInTransaction(tx, binding, lockMode) !== "authorized") return null;
+  return { kind: "response_wake" as const, summary: "Wait for the next authorized GitHub response to the published review.",
+    idempotencyKey: `${publishedGitHubReviewWaitKey}${run.id}:${wait.reviewId}:${wait.headSha}` };
+}
+
+export async function readPublishedGitHubReviewCompletionContinuation(input: { db: Db; binding: ChatReuseBinding }) {
+  return input.db.transaction(tx => readPublishedGitHubReviewCompletionContinuationInTransaction(tx as unknown as Db, input.binding));
 }
 
 async function sourceLineageExists(

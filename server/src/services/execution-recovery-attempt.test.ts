@@ -27,7 +27,7 @@ describe("failure attempts across resource waits", () => {
 });
 
 describe("persisted independent accounting", () => {
-  it.each(["max_turns_continuation", "issue_disposition_repair", "workspace_busy", "ai_connection_busy"])("%s cannot erase prior infrastructure debits or spend more", scheduledRetryReason => {
+  it.each(["max_turns_continuation", "issue_disposition_repair", "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait"])("%s cannot erase prior infrastructure debits or spend more", scheduledRetryReason => {
     expect(executionFailureRetryCount({ scheduledRetryReason, scheduledRetryAttempt: 20,
       contextSnapshot: { executionRetryAccounting: { version: 1, failureRetries: 2, maxTurnContinuations: 1 } },
     })).toBe(2);

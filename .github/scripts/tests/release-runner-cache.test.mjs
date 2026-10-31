@@ -38,14 +38,19 @@ test("parallel lanes cover check:all exactly once and never bypass verification"
   const scripts = JSON.parse(readFileSync(new URL("../../../packages/paperclip-runner/package.json", import.meta.url))).scripts;
   const checks = [...runner.matchAll(/^            checks: (.+)$/gm)].flatMap(([, value]) => value.split(" "));
   assert.deepEqual(checks, scripts["check:all"].split(" && ").map((command) => command.replace(/^pnpm run /, "")));
-  assert.deepEqual([...runner.matchAll(/^          - lane: (.+)$/gm)].map(([, value]) => value), ["protocol", "rust"]);
+  assert.deepEqual([...runner.matchAll(/^          - lane: (.+)$/gm)].map(([, value]) => value), ["protocol", "rust", "server-integration"]);
   assert.match(runner, /fail-fast: false/);
   assert.doesNotMatch(runner, /max-parallel: 1|^    needs:|continue-on-error:/m);
   const verify = runner.split("      - name: Verify Paperclip Runner\n")[1].split("      - name: Warm debug")[0];
   assert.match(verify, /RUNNER_CHECKS: \$\{\{ matrix.checks \}\}/);
   assert.match(verify, /set -euo pipefail/);
   assert.match(verify, /for check in \$RUNNER_CHECKS; do\s+pnpm --filter @paperclipai\/paperclip-runner "\$check"\s+done/);
-  assert.doesNotMatch(verify, /if:|cache-hit/);
+  const verifyIf = verify.match(/^\s*if: \$\{\{ (.+) \}\}$/m)?.[1];
+  assert.equal(verifyIf, "matrix.lane != 'server-integration'");
+  for (const lane of ["protocol", "rust", "server-integration"]) {
+    assert.equal(runInNewContext(verifyIf, { matrix: { lane } }), lane !== "server-integration");
+  }
+  assert.doesNotMatch(verify, /cache-hit/);
   assert.doesNotMatch(runner, /id-token: write|packages: write|secrets: inherit/);
 });
 
@@ -57,7 +62,7 @@ test("only the trusted Rust lane writes, and warms both build profiles before sa
   assert.match(warm, /run: pnpm --filter @paperclipai\/paperclip-runner build:rust/);
   const sha = "a".repeat(40);
   const base = { repository: "paperclipai/paperclip", event_name: "push", ref: "refs/heads/master", sha };
-  for (const lane of ["protocol", "rust"]) {
+  for (const lane of ["protocol", "rust", "server-integration"]) {
     for (const [overrides, ref, trusted] of [
       [{}, sha, true],
       [{ event_name: "pull_request", ref: "refs/pull/1/merge" }, sha, false],

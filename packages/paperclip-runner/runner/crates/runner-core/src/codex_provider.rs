@@ -23,8 +23,54 @@ use crate::provider_events::normalized_codex_terminal_event_type;
 use crate::qualified_launch::verify_launch_artifact;
 use crate::question_response::validate_question_response;
 
+#[cfg(unix)]
+pub(crate) fn runtime_notification_codex_args(
+    args: &[String],
+    profile: &str,
+    paths: &[PathBuf; 4],
+) -> Vec<String> {
+    let prefix = "shell_environment_policy.include_only=";
+    let Some(keys) = args.iter().rev().find_map(|arg| arg.strip_prefix(prefix)) else {
+        return vec![];
+    };
+    let Ok(mut keys) = serde_json::from_str::<Vec<String>>(keys) else {
+        return vec![];
+    };
+    for key in [
+        crate::runtime_notifications::CONTEXT_ENV,
+        crate::runtime_notifications::HELPER_ENV,
+    ] {
+        if !keys.iter().any(|existing| existing == key) {
+            keys.push(key.into());
+        }
+    }
+    let mut extra = vec![
+        "-c".into(),
+        format!("{prefix}{}", serde_json::to_string(&keys).unwrap()),
+        "-c".into(),
+        "shell_environment_policy.inherit=\"all\"".into(),
+    ];
+    for profile in BTreeSet::from([profile, "paperclip-runner-workspace-read-only"]) {
+        let prefix = format!("permissions.{profile}.filesystem=");
+        let Some(value) = args.iter().rev().find_map(|arg| arg.strip_prefix(&prefix)) else {
+            continue;
+        };
+        let Ok(mut config) = format!("filesystem={value}").parse::<toml_edit::DocumentMut>() else {
+            continue;
+        };
+        let Some(filesystem) = config["filesystem"].as_inline_table_mut() else {
+            continue;
+        };
+        for (path, mode) in paths.iter().zip(["read", "read", "read", "write"]) {
+            filesystem.insert(path.to_string_lossy().as_ref(), mode.into());
+        }
+        extra.extend(["-c".into(), format!("{prefix}{filesystem}")]);
+    }
+    extra
+}
+
 pub const CODEX_APP_SERVER_MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
-const QUALIFIED_OPENCODE_VERSION: &str = "1.18.32";
+const QUALIFIED_OPENCODE_VERSION: &str = "1.18.34";
 const DEFAULT_PROVIDER_TRACE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BUFFERED_MESSAGES: usize = 1_024;
 const MAX_BUFFERED_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -32,12 +78,26 @@ const WARM_ATTACHMENT_TAIL_DRAIN_LIMIT: usize = 256;
 const WARM_ATTACHMENT_QUIET_WINDOW: Duration = Duration::from_millis(10);
 const WARM_ATTACHMENT_DRAIN_DEADLINE: Duration = Duration::from_millis(100);
 const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "PAPERCLIP_OBSERVABILITY_OPENCODE",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_RESOURCE_ATTRIBUTES",
+    "OTEL_LOG_USER_PROMPTS",
+    "OTEL_LOG_ASSISTANT_RESPONSES",
+    "OTEL_LOG_TOOL_DETAILS",
+    "OTEL_LOG_TOOL_CONTENT",
+    "PAPERCLIP_AI_PROVIDER_KEY",
+    "PAPERCLIP_AI_PROVIDER_URL",
+    "PAPERCLIP_AGENT_KEY_ID",
+    "PAPERCLIP_AGENT_PUBLIC_KEY",
+    "PAPERCLIP_AGENT_PRIVATE_KEY",
     "OPENROUTER_API_KEY",
     "PAPERCLIP_NATIVE_MCP_NAME",
     "PAPERCLIP_NATIVE_MCP_URL",
     "PAPERCLIP_NATIVE_MCP_TOKEN",
     "PAPERCLIP_OPENCODE_PERMISSION_MODE",
     "PAPERCLIP_OPENCODE_RUNTIME_DIR",
+    "PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS",
     "PAPERCLIP_RUNNER_INSTANCE_ID",
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_NORMALIZED_SESSION_ID",
@@ -242,6 +302,15 @@ impl ProviderTraceSink {
     }
 
     fn frame(&mut self, direction: &str, raw: &[u8]) -> Option<u64> {
+        // Raw protocol frames can contain arbitrary private-key fragments.
+        // Preserve trace metadata without retaining raw content for identity runs.
+        let redacted =
+            if std::env::var("PAPERCLIP_AGENT_PRIVATE_KEY").is_ok_and(|key| !key.is_empty()) {
+                "[REDACTED: agent identity runtime]".to_owned()
+            } else {
+                String::from_utf8_lossy(raw).into_owned()
+            };
+        let raw = redacted.as_bytes();
         if self.captured_bytes.saturating_add(raw.len()) > self.max_bytes {
             self.truncated = true;
             return None;
@@ -353,6 +422,8 @@ pub struct CodexProviderConfig {
     pub approval_policy: String,
     #[serde(default)]
     pub externally_sandboxed: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub read_only: bool,
     // Older persisted configurations deliberately retain the provider default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_skill_instructions: Option<bool>,
@@ -370,6 +441,13 @@ pub struct CodexSkillInput {
     pub input_type: String,
     pub name: String,
     pub path: String,
+}
+
+/// Optional inputs for one turn; omitted fields preserve provider defaults.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CodexTurnOptions<'a> {
+    pub skills: &'a [CodexSkillInput],
+    pub reasoning_mode: Option<&'a str>,
 }
 
 impl CodexSkillInput {
@@ -519,6 +597,10 @@ pub enum CodexProviderEvent {
         request_id: String,
         question_set: Value,
     },
+    McpPermissionRequest {
+        request_id: String,
+        params: Value,
+    },
     Exited {
         exit_code: Option<i32>,
         success: bool,
@@ -642,12 +724,14 @@ enum AmbiguousTurnMessage {
 
 pub struct CodexProvider {
     process: SupervisedProcess,
+    _stdio_mcp: Option<crate::stdio_mcp::StdioMcpSession>,
     stderr_tail: BoundedLogBuffer,
     config: CodexProviderConfig,
     authorized_tools: Vec<AuthorizedTool>,
     next_request_id: u64,
     thread_id: String,
     provider_session_id: Option<String>,
+    observed_model: Option<String>,
     active_provider_turn_id: Option<String>,
     pending_messages: VecDeque<BufferedProviderMessage>,
     deferred_ambiguous_messages: VecDeque<BufferedProviderMessage>,
@@ -792,6 +876,18 @@ const GITHUB_CREDENTIAL_ENVIRONMENT_KEYS: &[&str] = &[
 ];
 
 const CODEX_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
+    "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+    "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "PAPERCLIP_AI_PROVIDER_KEY",
+    "PAPERCLIP_AGENT_KEY_ID",
+    "PAPERCLIP_AGENT_PUBLIC_KEY",
+    "PAPERCLIP_AGENT_PRIVATE_KEY",
+    "PAPERCLIP_RUNNER_HOME_MODE",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
     "CODEX_HOME",
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
@@ -804,6 +900,10 @@ fn codex_permission_profile(provider: &str, external_sandbox: bool) -> &'static 
     } else {
         "paperclip-runner-workspace-only"
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl CodexProvider {
@@ -865,7 +965,9 @@ impl CodexProvider {
         observe: &mut dyn FnMut(ProviderStartupObservation) -> Result<(), LocalRunnerError>,
     ) -> Result<Self, LocalRunnerError> {
         config.validate()?;
-        if config.provider == "codex" {
+        if config.provider == "codex"
+            && std::env::var("PAPERCLIP_RUNNER_HOME_MODE").as_deref() != Ok("preconfigured")
+        {
             if let Some(home) = std::env::var_os("CODEX_HOME") {
                 crate::codex_startup_trust::trust_startup_root(
                     Path::new(&home),
@@ -879,11 +981,15 @@ impl CodexProvider {
             ));
         }
         let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
-        let permission_profile = codex_permission_profile(
-            &config.provider,
-            config.externally_sandboxed
-                || std::env::var("PAPERCLIP_RUNNER_EXTERNAL_SANDBOX").as_deref() == Ok("1"),
-        );
+        let permission_profile = if config.read_only {
+            "paperclip-runner-workspace-read-only"
+        } else {
+            codex_permission_profile(
+                &config.provider,
+                config.externally_sandboxed
+                    || std::env::var("PAPERCLIP_RUNNER_EXTERNAL_SANDBOX").as_deref() == Ok("1"),
+            )
+        };
         let (dynamic_tools, authorized_tool_ids) =
             codex_dynamic_tools(authorized_tools.iter().cloned())?;
         let common_environment_keys = [
@@ -913,6 +1019,37 @@ impl CodexProvider {
             .chain(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.iter().copied())
             .collect::<Vec<_>>();
         let runtime_request_scope = new_runtime_request_scope()?;
+        let stdio_mcp = if config.provider == "codex" && !config.read_only {
+            crate::stdio_mcp::StdioMcpSession::create()
+                .map_err(|e| LocalRunnerError::invalid(e.to_string()))?
+        } else {
+            None
+        };
+        let mut launch_args = config.args.clone();
+        if let Some(session) = &stdio_mcp {
+            let position = launch_args
+                .iter()
+                .position(|arg| arg == "app-server")
+                .unwrap_or(launch_args.len());
+            launch_args.splice(
+                position..position,
+                session
+                    .codex_args()
+                    .map_err(|e| LocalRunnerError::invalid(e.to_string()))?,
+            );
+        }
+        #[cfg(unix)]
+        if config.provider == "codex" {
+            if let Some(paths) = crate::runtime_notifications::access_paths() {
+                let extra =
+                    runtime_notification_codex_args(&launch_args, &permission_profile, &paths);
+                let position = launch_args
+                    .iter()
+                    .position(|arg| arg == "app-server")
+                    .unwrap_or(launch_args.len());
+                launch_args.splice(position..position, extra);
+            }
+        }
         let spawn = (|| {
             if config.provider == "opencode" {
                 let profile = opencode_launch_profile.ok_or_else(|| {
@@ -938,7 +1075,7 @@ impl CodexProvider {
             } else {
                 SupervisedProcess::spawn_in_directory_with_environment_keys(
                     &config.command,
-                    &config.args,
+                    &launch_args,
                     Duration::from_secs(2),
                     CODEX_APP_SERVER_MAX_FRAME_BYTES,
                     &environment_keys,
@@ -969,6 +1106,7 @@ impl CodexProvider {
         }
         let mut provider = Self {
             process,
+            _stdio_mcp: stdio_mcp,
             stderr_tail: BoundedLogBuffer::new(
                 MAX_PROVIDER_STDERR_LINES,
                 MAX_PROVIDER_STDERR_BYTES,
@@ -978,6 +1116,7 @@ impl CodexProvider {
             next_request_id: 1,
             thread_id: String::new(),
             provider_session_id: None,
+            observed_model: None,
             active_provider_turn_id: None,
             pending_messages: VecDeque::new(),
             deferred_ambiguous_messages: VecDeque::new(),
@@ -1036,14 +1175,21 @@ impl CodexProvider {
             let mut params = json!({
                 "cwd": config.cwd,
                 "model": config.model,
-                "approvalPolicy": config.approval_policy,
+                "approvalPolicy": if provider._stdio_mcp.is_some() { crate::stdio_mcp::codex_approval_policy() } else { json!(config.approval_policy) },
                 "runtimeWorkspaceRoots": [config.cwd],
-                "baseInstructions": config.instructions,
                 "dynamicTools": dynamic_tools,
             });
             let params_object = params
                 .as_object_mut()
                 .expect("Codex thread parameters are an object");
+            // Codex's baseInstructions replaces its stock prompt. OpenCode
+            // uses the same protocol facade but keeps its existing contract.
+            let instruction_field = if config.provider == "codex" {
+                "developerInstructions"
+            } else {
+                "baseInstructions"
+            };
+            params_object.insert(instruction_field.to_owned(), json!(config.instructions));
             if provider.permission_profile == "paperclip-runner-external-sandbox" {
                 // The execution target (for example Daytona) is the OS sandbox.
                 // Codex must not try to create nested user/network namespaces,
@@ -1101,6 +1247,12 @@ impl CodexProvider {
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned);
+            provider.observed_model = opened
+                .get("model")
+                .or_else(|| opened.pointer("/thread/model"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty() && value.len() <= 240)
+                .map(str::to_owned);
 
             if resume_thread_id.is_some() {
                 stage = ProviderStartupStage::ThreadRead;
@@ -1141,6 +1293,10 @@ impl CodexProvider {
 
     pub fn provider_session_id(&self) -> Option<&str> {
         self.provider_session_id.as_deref()
+    }
+
+    pub fn observed_model(&self) -> Option<&str> {
+        self.observed_model.as_deref()
     }
 
     pub(crate) fn take_provider_trace_frame_id(&mut self) -> Option<u64> {
@@ -1186,6 +1342,7 @@ impl CodexProvider {
         &mut self,
         authorized_tools: impl IntoIterator<Item = AuthorizedTool>,
         completion_contract: Option<(&str, &[String])>,
+        accounting: &mut Vec<(String, Value)>,
     ) -> Result<bool, LocalRunnerError> {
         let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
         let completion_contract =
@@ -1198,7 +1355,15 @@ impl CodexProvider {
         {
             return Ok(false);
         }
-        let blockers = self.warm_run_attachment_blockers(true)?;
+        let (tail, result) = self.drain_completed_turn_tail_for_warm_attachment();
+        accounting.extend(tail);
+        result?;
+        if !accounting.is_empty() {
+            return Err(LocalRunnerError::invalid(
+                "Codex warm run attachment requires pending accounting reconciliation",
+            ));
+        }
+        let blockers = self.warm_run_attachment_blockers()?;
         if !blockers.is_empty() {
             return Err(LocalRunnerError::invalid(
                 format!(
@@ -1219,49 +1384,53 @@ impl CodexProvider {
         Ok(true)
     }
 
-    fn drain_completed_turn_tail_for_warm_attachment(&mut self) -> Result<(), LocalRunnerError> {
-        let Some(completed_turn_id) = self
-            .completed_turn_authority
-            .as_ref()
-            .map(|authority| authority.provider_turn_id.clone())
-        else {
-            return Ok(());
-        };
-        if self.active_provider_turn_id.is_some() {
-            return Ok(());
-        }
-
-        // Readiness probes run over the PRP command channel while provider
-        // stdout is drained by runnerd's adjacent control-loop iteration. A
-        // final usage/warning/item frame can therefore land after the last
-        // successful probe but before run.attach executes. Close that race in
-        // the same critical section as authority rotation. Only bounded tail
-        // notifications for the already-settled turn may be discarded: a new
-        // turn, provider request, process exit, or mismatched turn remains a
-        // fail-closed attachment error.
-        let deadline = std::time::Instant::now() + WARM_ATTACHMENT_DRAIN_DEADLINE;
-        let mut quiet_since: Option<std::time::Instant> = None;
-        let mut drained = 0usize;
-        loop {
-            if std::time::Instant::now() >= deadline {
-                return Err(LocalRunnerError::invalid(
-                    "Codex warm run attachment tail did not become quiescent",
-                ));
+    pub(crate) fn drain_completed_turn_tail_for_warm_attachment(
+        &mut self,
+    ) -> (Vec<(String, Value)>, Result<(), LocalRunnerError>) {
+        let mut accounting = Vec::new();
+        let result = (|| {
+            let Some(completed_turn_id) = self
+                .completed_turn_authority
+                .as_ref()
+                .map(|authority| authority.provider_turn_id.clone())
+            else {
+                return Ok(());
+            };
+            if self.active_provider_turn_id.is_some() {
+                return Ok(());
             }
-            match self.poll()? {
-                Some(CodexProviderEvent::Notification { method, params }) => {
-                    quiet_since = None;
-                    drained = drained.saturating_add(1);
-                    if drained > WARM_ATTACHMENT_TAIL_DRAIN_LIMIT {
-                        return Err(LocalRunnerError::invalid(
-                            "Codex warm run attachment tail exceeded its bounded frame limit",
-                        ));
-                    }
-                    let names_other_turn = notification_turn_id(&params)
-                        .is_some_and(|turn_id| turn_id != completed_turn_id);
-                    let safe_tail_method = matches!(
-                        method.as_str(),
-                        "warning"
+
+            // Readiness probes run over the PRP command channel while provider
+            // stdout is drained by runnerd's adjacent control-loop iteration. A
+            // final usage/warning/item frame can therefore land after the last
+            // successful probe but before run.attach executes. Close that race in
+            // the same critical section as authority rotation. Only bounded tail
+            // notifications for the already-settled turn may be discarded: a new
+            // turn, provider request, process exit, or mismatched turn remains a
+            // fail-closed attachment error.
+            let deadline = std::time::Instant::now() + WARM_ATTACHMENT_DRAIN_DEADLINE;
+            let mut quiet_since: Option<std::time::Instant> = None;
+            let mut drained = 0usize;
+            loop {
+                if std::time::Instant::now() >= deadline {
+                    return Err(LocalRunnerError::invalid(
+                        "Codex warm run attachment tail did not become quiescent",
+                    ));
+                }
+                match self.poll()? {
+                    Some(CodexProviderEvent::Notification { method, params }) => {
+                        quiet_since = None;
+                        drained = drained.saturating_add(1);
+                        if drained > WARM_ATTACHMENT_TAIL_DRAIN_LIMIT {
+                            return Err(LocalRunnerError::invalid(
+                                "Codex warm run attachment tail exceeded its bounded frame limit",
+                            ));
+                        }
+                        let names_other_turn = notification_turn_id(&params)
+                            .is_some_and(|turn_id| turn_id != completed_turn_id);
+                        let safe_tail_method = matches!(
+                            method.as_str(),
+                            "warning"
                             | "configWarning"
                             | "remoteControl/status/changed"
                             | "mcpServer/startupStatus/updated"
@@ -1280,72 +1449,82 @@ impl CodexProvider {
                             | "thread/status/changed"
                             | "turn/diff/updated"
                             | "turn/plan/updated"
-                    );
-                    if names_other_turn || !safe_tail_method {
-                        return Err(LocalRunnerError::invalid(format!(
+                        );
+                        if names_other_turn || !safe_tail_method {
+                            return Err(LocalRunnerError::invalid(format!(
                             "Codex warm run attachment observed unsafe post-terminal provider method {}",
                             bounded_method(&method)
                         )));
-                    }
-                    if let Some(frame_id) = self.take_provider_trace_frame_id() {
-                        self.record_provider_trace_interpretation(
+                        }
+                        if matches!(
+                            method.as_str(),
+                            "thread/tokenUsage/updated" | "paperclip/resumeUsageSnapshot"
+                        ) {
+                            accounting.push((method, params));
+                            continue;
+                        }
+                        if let Some(frame_id) = self.take_provider_trace_frame_id() {
+                            self.record_provider_trace_interpretation(
                             frame_id,
                             "codex.warm_attachment.completed_turn_tail",
                             "ignored",
                             Vec::new(),
                             "Provider emitted a bounded tail notification after the prior turn terminal and before run attachment",
                         );
+                        }
                     }
-                }
-                Some(CodexProviderEvent::ResourceLimit { .. }) => {
-                    return Err(LocalRunnerError::invalid("Codex descendant capacity requires reconciliation before fresh-session continuation"));
-                }
-                Some(CodexProviderEvent::ProtocolFailure { .. }) => {
-                    return Err(LocalRunnerError::invalid(
-                        "Codex protocol integrity failed during warm attachment",
-                    ));
-                }
-                Some(CodexProviderEvent::DescendantNotification { .. }) => {
-                    // Child output cannot certify a quiescent root attachment.
-                    return Err(LocalRunnerError::invalid(
-                        "Codex descendant remains active during warm run attachment",
-                    ));
-                }
-                Some(CodexProviderEvent::ToolCall { .. })
-                | Some(CodexProviderEvent::RuntimeRequest { .. }) => {
-                    return Err(LocalRunnerError::invalid(
-                        "Codex warm run attachment observed a post-terminal provider request",
-                    ));
-                }
-                Some(CodexProviderEvent::Exited { .. }) => {
-                    return Err(LocalRunnerError::invalid(
-                        "Codex exited while quiescing for warm run attachment",
-                    ));
-                }
-                None => {
-                    let now = std::time::Instant::now();
-                    let quiet_start = quiet_since.get_or_insert(now);
-                    if now.duration_since(*quiet_start) >= WARM_ATTACHMENT_QUIET_WINDOW {
-                        return Ok(());
+                    Some(CodexProviderEvent::ResourceLimit { .. }) => {
+                        return Err(LocalRunnerError::invalid("Codex descendant capacity requires reconciliation before fresh-session continuation"));
                     }
-                    std::thread::sleep(Duration::from_millis(1));
+                    Some(CodexProviderEvent::ProtocolFailure { .. }) => {
+                        return Err(LocalRunnerError::invalid(
+                            "Codex protocol integrity failed during warm attachment",
+                        ));
+                    }
+                    Some(CodexProviderEvent::DescendantNotification { .. }) => {
+                        // Child output cannot certify a quiescent root attachment.
+                        return Err(LocalRunnerError::invalid(
+                            "Codex descendant remains active during warm run attachment",
+                        ));
+                    }
+                    Some(CodexProviderEvent::ToolCall { .. })
+                    | Some(CodexProviderEvent::RuntimeRequest { .. })
+                    | Some(CodexProviderEvent::McpPermissionRequest { .. }) => {
+                        return Err(LocalRunnerError::invalid(
+                            "Codex warm run attachment observed a post-terminal provider request",
+                        ));
+                    }
+                    Some(CodexProviderEvent::Exited {
+                        completed_turn_authoritative,
+                        completion_reconciles_exit,
+                        ..
+                    }) if completion_reconciles_exit
+                        || (completed_turn_authoritative && self.process.stdout_drained()) =>
+                    {
+                        return Ok(())
+                    }
+                    Some(CodexProviderEvent::Exited { .. }) => {
+                        return Err(LocalRunnerError::invalid(
+                            "Codex exited while quiescing for warm run attachment",
+                        ));
+                    }
+                    None => {
+                        let now = std::time::Instant::now();
+                        let quiet_start = quiet_since.get_or_insert(now);
+                        if now.duration_since(*quiet_start) >= WARM_ATTACHMENT_QUIET_WINDOW {
+                            return Ok(());
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
                 }
             }
-        }
+        })();
+        (accounting, result)
     }
 
     pub(crate) fn warm_run_attachment_blockers(
         &mut self,
-        quiesce_completed_tail: bool,
     ) -> Result<Vec<&'static str>, LocalRunnerError> {
-        // Only an explicit attachment-readiness probe may consume the bounded,
-        // already-settled provider suffix. Ordinary checkpoint snapshots run
-        // immediately after a terminal frame while the provider can still be
-        // unwinding; turning those observations into quiescence barriers can
-        // quarantine an otherwise reusable runner before its next turn.
-        if quiesce_completed_tail {
-            self.drain_completed_turn_tail_for_warm_attachment()?;
-        }
         let mut blockers = Vec::new();
         if self.process.try_wait()?.is_some() {
             blockers.push("process_exited");
@@ -1360,7 +1539,18 @@ impl CodexProvider {
             blockers.push("ambiguous_turn_start");
         }
         if !self.pending_messages.is_empty() {
-            blockers.push("pending_messages");
+            blockers.push(
+                if self.pending_messages.iter().any(|message| {
+                    matches!(
+                        message.value.get("method").and_then(Value::as_str),
+                        Some("paperclip/resumeUsageSnapshot" | "thread/tokenUsage/updated")
+                    )
+                }) {
+                    "pending_accounting_reconciliation"
+                } else {
+                    "pending_messages"
+                },
+            );
         }
         if !self.deferred_ambiguous_messages.is_empty() {
             blockers.push("deferred_messages");
@@ -1645,15 +1835,37 @@ impl CodexProvider {
     }
 
     pub fn start_turn(&mut self, message: &str, cwd: &str) -> Result<Value, LocalRunnerError> {
-        self.start_turn_with_skills(message, cwd, &[])
+        self.start_turn_with_options(message, cwd, CodexTurnOptions::default())
     }
 
-    pub fn start_turn_with_skills(
+    pub fn start_turn_with_options(
         &mut self,
         message: &str,
         cwd: &str,
-        skills: &[CodexSkillInput],
+        options: CodexTurnOptions<'_>,
     ) -> Result<Value, LocalRunnerError> {
+        self.start_turn_with_options_and_effort(message, cwd, options, None, None)
+    }
+
+    pub(crate) fn start_turn_with_options_and_effort(
+        &mut self,
+        message: &str,
+        cwd: &str,
+        options: CodexTurnOptions<'_>,
+        effort: Option<&Value>,
+        run_id: Option<&str>,
+    ) -> Result<Value, LocalRunnerError> {
+        let CodexTurnOptions {
+            skills,
+            reasoning_mode,
+        } = options;
+        if reasoning_mode.is_some_and(|mode| {
+            self.config.provider != "opencode" || !matches!(mode, "default" | "disabled")
+        }) {
+            return Err(LocalRunnerError::invalid(
+                "turn.reasoningMode requires OpenCode and must be default or disabled",
+            ));
+        }
         if skills.len() > 64 || (self.config.provider != "codex" && !skills.is_empty()) {
             return Err(LocalRunnerError::invalid(
                 "explicit skills require Codex and at most 64 selections",
@@ -1661,6 +1873,17 @@ impl CodexProvider {
         }
         for skill in skills {
             skill.validate()?;
+        }
+        let effort = effort.filter(|value| !value.is_null());
+        if effort.is_some_and(|value| {
+            !matches!(
+                value.as_str(),
+                Some("minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra")
+            )
+        }) {
+            return Err(LocalRunnerError::invalid(
+                "unsupported native Codex reasoning effort",
+            ));
         }
         if self.quarantined {
             return Err(LocalRunnerError::invalid(
@@ -1702,6 +1925,19 @@ impl CodexProvider {
         let turn_params_object = turn_params
             .as_object_mut()
             .expect("Codex turn parameters are an object");
+        // The retained proxy's launch environment belongs to its first run.
+        // Only runnerd's rotated authority supplies the current run identity.
+        if self.config.provider == "opencode" {
+            if let Some(run_id) = run_id {
+                turn_params_object.insert("paperclipRunId".to_owned(), json!(run_id));
+            }
+        }
+        if let Some(effort) = effort {
+            turn_params_object.insert("effort".to_owned(), effort.clone());
+        }
+        if let Some(mode) = reasoning_mode {
+            turn_params_object.insert("reasoningMode".to_owned(), json!(mode));
+        }
         if self.permission_profile == "paperclip-runner-external-sandbox" {
             turn_params_object.insert(
                 "sandboxPolicy".to_owned(),
@@ -1984,7 +2220,11 @@ impl CodexProvider {
                 "runtime response belongs to another Codex turn",
             ));
         }
-        let result = codex_question_response(&pending, response)?;
+        let result = if pending.method == "mcpServer/elicitation/request" {
+            crate::stdio_mcp::tool_approval_response(response)?
+        } else {
+            codex_question_response(&pending, response)?
+        };
         self.process
             .send(&json!({"id": pending.rpc_id, "result": result}))?;
         if let Some(completed) = self.pending_runtime_requests.remove(request_id) {
@@ -2442,11 +2682,18 @@ impl CodexProvider {
             if matches!(
                 method,
                 "item/tool/requestUserInput" | OPENCODE_RUNTIME_REQUEST_METHOD
-            ) {
+            ) || (method == "mcpServer/elicitation/request"
+                && message
+                    .pointer("/params/_meta/codex_approval_kind")
+                    .and_then(Value::as_str)
+                    == Some("mcp_tool_call"))
+            {
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
-                if method == "item/tool/requestUserInput"
-                    && params.get("threadId").and_then(Value::as_str)
-                        != Some(self.thread_id.as_str())
+                if matches!(
+                    method,
+                    "item/tool/requestUserInput" | "mcpServer/elicitation/request"
+                ) && params.get("threadId").and_then(Value::as_str)
+                    != Some(self.thread_id.as_str())
                 {
                     if params
                         .get("threadId")
@@ -2481,6 +2728,20 @@ impl CodexProvider {
                 let (provider_request_id, question_set, option_labels) =
                     if method == OPENCODE_RUNTIME_REQUEST_METHOD {
                         opencode_question_set(&params)?
+                    } else if method == "mcpServer/elicitation/request" {
+                        let servers = self
+                            ._stdio_mcp
+                            .as_ref()
+                            .map(|session| {
+                                session
+                                    .entries
+                                    .iter()
+                                    .map(|(name, _)| name.as_str())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        crate::stdio_mcp::validate_tool_approval(&params, &servers)?;
+                        (rpc_id.to_string(), Value::Null, BTreeMap::new())
                     } else {
                         codex_question_set(&rpc_id, &params)?
                     };
@@ -2492,6 +2753,8 @@ impl CodexProvider {
                     &question_set,
                     &option_labels,
                 )?;
+                let mcp_params =
+                    (method == "mcpServer/elicitation/request").then(|| params.clone());
                 let pending = PendingRuntimeRequest {
                     rpc_id: rpc_id.clone(),
                     turn_id: active_turn_id.clone(),
@@ -2552,6 +2815,12 @@ impl CodexProvider {
                     .insert(request_id.clone(), pending);
                 self.pending_runtime_request_bytes =
                     retained_request_bytes.expect("bounded runtime request bytes checked above");
+                if let Some(params) = mcp_params {
+                    return Ok(Some(CodexProviderEvent::McpPermissionRequest {
+                        request_id,
+                        params,
+                    }));
+                }
                 return Ok(Some(CodexProviderEvent::RuntimeRequest {
                     request_id,
                     question_set,
@@ -2683,13 +2952,11 @@ impl CodexProvider {
                 .and_then(Value::as_str);
             if notification_turn_id.is_some()
                 && notification_turn_id != self.active_provider_turn_id.as_deref()
-                && notification_turn_id
+                && (notification_turn_id
                     .is_some_and(|turn_id| self.settled_provider_turn_ids.contains(turn_id))
+                    || (self.active_provider_turn_id.is_none()
+                        && method == "thread/tokenUsage/updated"))
             {
-                self.notification_identity_diagnostics += 1;
-                if self.notification_identity_diagnostics > 32 {
-                    return Ok(None);
-                }
                 // Resume replays the cumulative usage of the last settled turn.
                 // Keep its identity and baseline, but never bill its `last`
                 // measurement to the newly attached run.
@@ -2704,6 +2971,10 @@ impl CodexProvider {
                             "total": params.pointer("/tokenUsage/total"),
                         }),
                     }));
+                }
+                self.notification_identity_diagnostics += 1;
+                if self.notification_identity_diagnostics > 32 {
+                    return Ok(None);
                 }
                 return Ok(Some(CodexProviderEvent::Notification {
                     method: "warning".to_owned(),
@@ -3998,6 +4269,77 @@ fn codex_question_response(
 mod tests {
     use super::*;
 
+    #[test]
+    #[cfg(unix)]
+    fn runtime_notification_policy_grants_only_discovery_files_and_ipc() {
+        let mut args = vec![
+            "shell_environment_policy.include_only=[\"PATH\",\"LANG\",\"PAPERCLIP_API_KEY\"]"
+                .into(),
+        ];
+        for name in [
+            "paperclip-runner-workspace-only",
+            "paperclip-runner-workspace-read-only",
+        ] {
+            args.push(format!(
+                "permissions.{name}.filesystem={{\":root\"=\"none\",\"/state/private\"=\"none\"}}"
+            ));
+        }
+        let paths = [
+            PathBuf::from("/runtime/runnerd"),
+            PathBuf::from("/state/private/runtime-notifications.json"),
+            PathBuf::from("/state/private/runtime-activity.lock"),
+            PathBuf::from("/tmp/prn-channel"),
+        ];
+        let extra =
+            runtime_notification_codex_args(&args, "paperclip-runner-workspace-only", &paths);
+        let keys: Vec<String> = serde_json::from_str(
+            extra[1]
+                .strip_prefix("shell_environment_policy.include_only=")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            keys,
+            [
+                "PATH",
+                "LANG",
+                "PAPERCLIP_API_KEY",
+                crate::runtime_notifications::CONTEXT_ENV,
+                crate::runtime_notifications::HELPER_ENV
+            ]
+        );
+        let serialized = extra.join("\n");
+        for profile in [
+            "paperclip-runner-workspace-only",
+            "paperclip-runner-workspace-read-only",
+        ] {
+            let prefix = format!("permissions.{profile}.filesystem=");
+            let value = extra
+                .iter()
+                .find_map(|arg| arg.strip_prefix(&prefix))
+                .unwrap();
+            let config = format!("filesystem={value}")
+                .parse::<toml_edit::DocumentMut>()
+                .unwrap();
+            let filesystem = config["filesystem"].as_inline_table().unwrap();
+            for (path, mode) in [
+                (":root", "none"),
+                ("/state/private", "none"),
+                ("/runtime/runnerd", "read"),
+                ("/state/private/runtime-notifications.json", "read"),
+                ("/state/private/runtime-activity.lock", "read"),
+                ("/tmp/prn-channel", "write"),
+            ] {
+                assert_eq!(
+                    filesystem.get(path).and_then(toml_edit::Value::as_str),
+                    Some(mode)
+                );
+            }
+        }
+        assert!(!serialized.contains("network."));
+        assert!(!serialized.contains("PAPERCLIP_RUN_ID"));
+    }
+
     #[cfg(unix)]
     fn completion_tail_provider() -> CodexProvider {
         completion_tail_provider_with_stdout_flood(false)
@@ -4048,6 +4390,7 @@ done
             instructions: "Test only.".to_owned(),
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
+            read_only: false,
             include_skill_instructions: None,
             conversation_mode: None,
         };
@@ -4084,9 +4427,58 @@ done
             });
         // poll() normalizes settled-turn usage to paperclip/resumeUsageSnapshot.
         // That accounting fact is not new work and must not force replacement.
-        let result = provider.drain_completed_turn_tail_for_warm_attachment();
+        let (accounting, result) = provider.drain_completed_turn_tail_for_warm_attachment();
         provider.shutdown().unwrap();
-        result.expect("historical usage must not break provider continuity");
+        result.expect("historical usage must remain available to its owner");
+        assert_eq!(accounting.len(), 1);
+        assert_eq!(accounting[0].1["total"]["inputTokens"], 120);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_warm_drain_retains_consumed_usage_before_unsafe_tail() {
+        for attach in [false, true] {
+            let mut provider = completion_tail_provider();
+            provider
+                .restore_completed_turn_authority(true, Some(1), Some("reader-tail-1"))
+                .unwrap();
+            provider.active_provider_turn_id = None;
+            for value in [
+                json!({"method":"thread/tokenUsage/updated","params":{"threadId":"reader-tail-thread","turnId":"reader-tail-1","tokenUsage":{"total":{"inputTokens":120,"outputTokens":12}}}}),
+                json!({"method":"turn/started","params":{"threadId":"reader-tail-thread","turn":{"id":"unsafe-next-turn"}}}),
+            ] {
+                provider
+                    .pending_messages
+                    .push_back(BufferedProviderMessage {
+                        value,
+                        trace_frame_id: None,
+                    });
+            }
+            let (accounting, result) = if attach {
+                let mut accounting = Vec::new();
+                let tools = provider.authorized_tools.clone();
+                let contract = provider.completion_contract.clone();
+                let result = provider
+                    .attach_run_in_place(
+                        tools,
+                        contract.as_ref().map(|contract| {
+                            (
+                                contract.revision.as_str(),
+                                contract.criterion_ids.as_slice(),
+                            )
+                        }),
+                        &mut accounting,
+                    )
+                    .map(|_| ());
+                (accounting, result)
+            } else {
+                provider.drain_completed_turn_tail_for_warm_attachment()
+            };
+            provider.shutdown().unwrap();
+            assert!(result.is_err());
+            assert_eq!(accounting.len(), 1);
+            assert_eq!(accounting[0].1["total"]["inputTokens"], 120);
+        }
     }
 
     #[cfg(unix)]
@@ -4435,6 +4827,7 @@ done
             instructions: String::new(),
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
+            read_only: false,
             include_skill_instructions: None,
             conversation_mode: None,
         };
@@ -4481,6 +4874,7 @@ done
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
     fn verified_opencode_proxy_executes_the_descriptor_safe_commonjs_bundle() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -4555,6 +4949,7 @@ done
             instructions: String::new(),
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
+            read_only: false,
             include_skill_instructions: None,
             conversation_mode: None,
         };

@@ -1,3 +1,4 @@
+import { isOpenRouterUrl, openRouterAttributionHeaders } from "@paperclipai/adapter-utils/openrouter-attribution";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -121,6 +122,19 @@ export async function preparePiRuntimeConfig(input: {
     };
   }
 
+  for (const [name, provider] of Object.entries(providers)) {
+    if (!isPlainObject(provider)) continue;
+    if (isOpenRouterUrl(provider.baseUrl) || (name === "openrouter" && provider.baseUrl === undefined)) {
+      provider.headers = openRouterAttributionHeaders(isPlainObject(provider.headers) ? provider.headers as Record<string, string> : {});
+      const models = [
+        ...(Array.isArray(provider.models) ? provider.models : []),
+        ...(isPlainObject(provider.modelOverrides) ? Object.values(provider.modelOverrides) : []),
+      ];
+      for (const model of models) {
+        if (isPlainObject(model)) model.headers = openRouterAttributionHeaders(isPlainObject(model.headers) ? model.headers as Record<string, string> : {});
+      }
+    }
+  }
   const agentConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-agent-config-"));
   try {
     await fs.writeFile(

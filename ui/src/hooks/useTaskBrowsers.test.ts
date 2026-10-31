@@ -3,18 +3,25 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { TaskBrowser } from "@paperclipai/shared";
-import { useBrowserArrivals } from "./useTaskBrowsers";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { browserUseApi } from "@/api/browser-use";
+import { useBrowserArrivals, useTaskBrowsers } from "./useTaskBrowsers";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const cleanups = new Set<() => void>();
 function cleanup() { for (const unmount of cleanups) unmount(); }
-function renderHook<R, P = undefined>(callback: (props: P) => R, options?: { initialProps: P }) {
+function renderHook<R, P = undefined>(callback: (props: P) => R, options?: { initialProps: P; client?: QueryClient }) {
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
   let props = options?.initialProps as P;
   const result = {} as { current: R };
   function Harness() { result.current = callback(props); return null; }
-  function rerender(next = props) { props = next; act(() => root.render(createElement(Harness))); }
+  function rerender(next = props) {
+    props = next;
+    act(() => root.render(options?.client
+      ? createElement(QueryClientProvider, { client: options.client }, createElement(Harness))
+      : createElement(Harness)));
+  }
   function unmount() { act(() => root.unmount()); host.remove(); cleanups.delete(unmount); }
   cleanups.add(unmount);
   rerender();
@@ -26,7 +33,32 @@ const browser = (id: string): TaskBrowser => ({
   error: null, createdAt: "2026-09-29T10:00:00Z",
 });
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
+it("starts browser polling when a chat draft becomes a saved task and stops on the next draft", async () => {
+  vi.useFakeTimers();
+  const list = vi.spyOn(browserUseApi, "list").mockResolvedValue([]);
+  const client = new QueryClient();
+  const taskId = "12345678-1234-4234-8234-123456789abc";
+  const { rerender, unmount } = renderHook(useTaskBrowsers, {
+    initialProps: undefined as string | undefined,
+    client,
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+  expect(list).not.toHaveBeenCalled();
+  rerender(`chat:${taskId}`);
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+  expect(list).not.toHaveBeenCalled();
+  rerender(taskId);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(list).toHaveBeenCalledExactlyOnceWith(taskId);
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+  expect(list).toHaveBeenCalledTimes(2);
+  rerender(`chat:${taskId}`);
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+  expect(list).toHaveBeenCalledTimes(2);
+  unmount();
+  client.clear();
+});
 it("queues simultaneous arrivals and claims only after the panel acknowledges", () => {
   const browsers = [browser("first"), browser("next")];
   const { result, rerender } = renderHook(() => useBrowserArrivals("user", "task", browsers));

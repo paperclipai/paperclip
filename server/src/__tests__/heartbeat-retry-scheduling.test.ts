@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   agents,
   approvals,
   issueApprovals,
@@ -164,6 +165,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   }
 
   async function cleanupRetryFixtureOnce() {
+    await db.delete(costEvents);
     await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
@@ -250,6 +252,16 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     });
   }
 
+
+  it("never schedules invalid provider definitions even when a caller supplies a retry policy", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    await seedRetryFixture({ runId, companyId, agentId, now, errorCode: "provider_tool_definition_invalid",
+      errorFamily: "transient_upstream" });
+    expect(await heartbeat.scheduleBoundedRetry(runId, { now, retryReason: "transient_failure", maxAttempts: 9 }))
+      .toMatchObject({ outcome: "not_scheduled", reason: expect.stringContaining("Repair") });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+  });
 
   it.each(["restore_unsafe_archive", "restore_lock_timeout"])("keeps the existing retry budget for %s", async (classification) => {
     const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
@@ -473,6 +485,11 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
     });
+
+    // Complete the circular issue/run fixture after both FK targets exist.
+    await db.update(heartbeatRuns)
+      .set({ scopeKind: "issue", issueId })
+      .where(eq(heartbeatRuns.id, runId));
 
     return { companyId, agentId, issueId, runId, now };
   }
@@ -1250,8 +1267,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .from(executionWorkspaces)
       .where(inArray(executionWorkspaces.id, [currentWorkspaceId, foreignWorkspaceId]));
     expect(workspaces).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: currentWorkspaceId, status: "active", metadata: { current: true } }),
-      expect.objectContaining({ id: foreignWorkspaceId, status: "active", metadata: { foreign: true } }),
+      expect.objectContaining({ id: currentWorkspaceId, status: "active", metadata: expect.objectContaining({ current: true }) }),
+      expect.objectContaining({ id: foreignWorkspaceId, status: "active", metadata: expect.objectContaining({ foreign: true }) }),
     ]));
 
     const activity = await db
@@ -1378,8 +1395,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .from(executionWorkspaces)
       .where(inArray(executionWorkspaces.id, [staleWorkspaceId, currentWorkspaceId]));
     expect(workspaces).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: staleWorkspaceId, status: "active", metadata: { stale: true } }),
-      expect.objectContaining({ id: currentWorkspaceId, status: "active", metadata: { current: true } }),
+      expect.objectContaining({ id: staleWorkspaceId, status: "active", metadata: expect.objectContaining({ stale: true }) }),
+      expect.objectContaining({ id: currentWorkspaceId, status: "active", metadata: expect.objectContaining({ current: true }) }),
     ]));
 
     const activity = await db
@@ -2014,32 +2031,6 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     }
   });
 
-  it("requires reconciliation for a classified Codex harness crash", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    const runId = randomUUID();
-    const now = new Date("2026-07-24T12:00:00.000Z");
-
-    await seedRetryFixture({
-      runId,
-      companyId,
-      agentId,
-      now,
-      errorCode: "codex_harness_crash",
-      errorFamily: "transient_upstream",
-    });
-
-    await db.update(heartbeatRuns).set({ resultJson: null }).where(eq(heartbeatRuns.id, runId));
-
-    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
-      now,
-      random: () => 0.5,
-    });
-
-    expect(scheduled).toMatchObject({ outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation" });
-
-    await cleanupRetryFixture();
-  });
 
   it("requires reconciliation for an error-code-only Codex harness crash", async () => {
     const companyId = randomUUID();

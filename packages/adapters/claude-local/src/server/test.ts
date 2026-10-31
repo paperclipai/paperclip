@@ -14,6 +14,7 @@ import {
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
+  isAdapterExecutionTargetUnavailableError,
   runAdapterExecutionTargetProcess,
   resolveAdapterExecutionTargetCwd,
   resolveAdapterExecutionTargetCommandForLogs,
@@ -29,8 +30,8 @@ import {
   claudeCommandLooksLike,
   claudeCommandSupportsEffortFlag,
   minimumClaudeCliVersionForModel,
-  readClaudeCommandVersion,
 } from "./cli-capabilities.js";
+import { prepareCompatibleClaudeCommand } from "./sandbox-cli-version.js";
 import { isBedrockModelId } from "./models.js";
 import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
@@ -87,7 +88,7 @@ export async function testEnvironment(
 
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
-  const command = asString(config.command, "claude");
+  let command = asString(config.command, "claude");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
@@ -114,6 +115,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "claude_cwd_invalid",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Invalid working directory",
       detail: cwd,
@@ -168,6 +170,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "claude_command_unresolvable",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Command is not executable",
       detail: command,
@@ -203,6 +206,8 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
       hint: "Ensure AWS credentials (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or AWS_PROFILE) and AWS_REGION are configured.",
     });
+  } else if (config.managedAiRouting) {
+    checks.push({ code: "claude_managed_provider_configured", level: "info", message: "Testing the selected connection’s provider and model." });
   } else if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
     const selectedApiKey = Boolean(config.managedAiConnection) || isNonEmpty(configApiKey);
@@ -272,7 +277,7 @@ export async function testEnvironment(
     });
   } else if (canRunProbe && minimumCliVersion && versionProbeCommand) {
     const versionProbeEnv = localProbe?.env ?? env;
-    const detectedCliVersion = await readClaudeCommandVersion({
+    const prepared = await prepareCompatibleClaudeCommand({
       runId,
       command: versionProbeCommand,
       target,
@@ -280,7 +285,11 @@ export async function testEnvironment(
       env: versionProbeEnv,
       timeoutSec: 45,
       graceSec: 5,
+      minimumVersion: minimumCliVersion,
     });
+    if (prepared.check) checks.push(prepared.check);
+    command = prepared.command;
+    const detectedCliVersion = prepared.version;
     if (
       !detectedCliVersion ||
       !claudeCliVersionAtLeast(detectedCliVersion, minimumCliVersion)
@@ -293,7 +302,9 @@ export async function testEnvironment(
         detail: detectedCliVersion
           ? `Detected Claude Code ${detectedCliVersion}.`
           : "Could not determine the installed Claude Code version.",
-        hint: "Upgrade Claude Code or restore the default ACP lane, then retry the Test.",
+        hint: targetIsSandbox && command === "claude"
+          ? "Paperclip could not prepare a compatible Claude runtime. Retry connecting."
+          : "Upgrade Claude Code or restore the default ACP lane, then retry the Test.",
       });
     }
   }
