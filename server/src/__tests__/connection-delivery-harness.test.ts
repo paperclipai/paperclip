@@ -80,8 +80,14 @@ describePostgres("connection delivery harness lifecycle", () => {
   });
 
   it("returns a working delivery whose cleanup stops the coordinator", async () => {
-    const seeded = await seedPendingAccessRequest(db, "owner");
-    expect(await db.select().from(issueThreadInteractions)).toEqual([expect.objectContaining({ id: seeded.intent.id, status: "pending" })]);
+    const first = await seedPendingAccessRequest(db, "owner");
+    const second = await seedPendingAccessRequest(db, "owner");
+    expect(second.companyId).not.toBe(first.companyId);
+    expect(await db.select().from(issueThreadInteractions)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: first.intent.id, status: "pending" }),
+      expect.objectContaining({ id: second.intent.id, status: "pending" }),
+    ]));
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(2);
     const activeBefore = idleWorkSnapshot().active;
     const beforeSweep = vi.fn().mockResolvedValue(undefined);
     const delivery = await startConnectionDelivery(db, { beforeSweep });

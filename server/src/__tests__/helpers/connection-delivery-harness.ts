@@ -10,7 +10,7 @@ const RETRY_MS = 600_000;
 
 export async function seedPendingAccessRequest(db: Db, owner: string) {
   const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
-  await db.insert(companies).values({ id: companyId, name: "Connections", issuePrefix: "CON", defaultResponsibleUserId: owner });
+  await db.insert(companies).values({ id: companyId, name: "Connections", issuePrefix: `CON${companyId.slice(0, 8).toUpperCase()}`, defaultResponsibleUserId: owner });
   await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: owner, status: "active", membershipRole: "member" });
   await db.insert(agents).values({ id: agentId, companyId, name: "Assignee", role: "engineer", adapterType: "claude_local", status: "idle", runtimeConfig: { heartbeat: { wakeOnDemand: true } } });
   await db.insert(issues).values({ id: issueId, companyId, title: "Use Sentry", status: "in_review", assigneeAgentId: agentId, responsibleUserId: owner });
