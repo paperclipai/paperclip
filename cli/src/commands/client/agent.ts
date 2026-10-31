@@ -332,16 +332,19 @@ export function registerAgentCommands(program: Command): void {
     agent
       .command("get")
       .description("Get one agent")
-      .argument("<agentId>", "Agent ID")
+      .argument("<agentId>", "Agent ID or shortname/url-key")
+      .option("-C, --company-id <id>", "Company ID for shortname/url-key lookup")
       .action(async (agentId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const row = await ctx.api.get<Agent>(apiPath`/api/agents/${agentId}`);
+          const query = ctx.companyId ? `?${new URLSearchParams({ companyId: ctx.companyId }).toString()}` : "";
+          const row = await ctx.api.get<Agent>(`${apiPath`/api/agents/${agentId}`}${query}`);
           printOutput(row, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
       }),
+    { includeCompany: false },
   );
 
   addCommonClientOptions(
@@ -750,7 +753,7 @@ export function registerAgentCommands(program: Command): void {
       .action(async (agentRef: string, opts: AgentWakeOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const query = opts.companyId ? `?${new URLSearchParams({ companyId: opts.companyId }).toString()}` : "";
+          const query = ctx.companyId ? `?${new URLSearchParams({ companyId: ctx.companyId }).toString()}` : "";
           const agentRow = await ctx.api.get<Agent>(`${apiPath`/api/agents/${agentRef}`}${query}`);
           if (!agentRow) {
             throw new Error(`Agent not found: ${agentRef}`);

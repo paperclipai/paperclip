@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerAgentCommands } from "../commands/client/agent.js";
@@ -28,10 +31,14 @@ describe("run inspection commands", () => {
     vi.restoreAllMocks();
     delete process.env.PAPERCLIP_API_KEY;
     delete process.env.PAPERCLIP_API_URL;
+    delete process.env.PAPERCLIP_COMPANY_ID;
+    delete process.env.PAPERCLIP_CONTEXT;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    delete process.env.PAPERCLIP_COMPANY_ID;
+    delete process.env.PAPERCLIP_CONTEXT;
   });
 
   it("lists and reads heartbeat runs through run subcommands", async () => {
@@ -216,5 +223,131 @@ describe("run inspection commands", () => {
     expect(fetchMock.mock.calls[2]?.[0]).toBe("http://localhost:3100/api/issues/PC-1/runs");
     expect(fetchMock.mock.calls[3]?.[0]).toBe("http://localhost:3100/api/issues/PC-1/live-runs");
     expect(fetchMock.mock.calls[4]?.[0]).toBe("http://localhost:3100/api/issues/PC-1/active-run");
+  });
+
+  it("forwards resolved companyId from env and context profile for agent wake and agent get shortname lookups", async () => {
+    const contextDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-agent-shortname-"));
+    try {
+      const contextPath = path.join(contextDir, "context.json");
+      const emptyContextPath = path.join(contextDir, "empty-context.json");
+      fs.writeFileSync(
+        contextPath,
+        JSON.stringify({
+          version: 1,
+          defaultProfile: "default",
+          profiles: {
+            default: {
+              apiBase: "http://localhost:3100",
+              companyId: COMPANY_ID,
+            },
+          },
+        }),
+      );
+      fs.writeFileSync(
+        emptyContextPath,
+        JSON.stringify({
+          version: 1,
+          defaultProfile: "default",
+          profiles: {
+            default: {
+              apiBase: "http://localhost:3100",
+            },
+          },
+        }),
+      );
+
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({
+          id: AGENT_ID,
+          name: "Builder",
+          companyId: COMPANY_ID,
+          urlKey: "builder",
+        }), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({
+          id: RUN_ID,
+          companyId: COMPANY_ID,
+          agentId: AGENT_ID,
+          status: "queued",
+        }), { status: 202 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({
+          id: AGENT_ID,
+          name: "Builder",
+          companyId: COMPANY_ID,
+          urlKey: "builder",
+        }), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({
+          id: RUN_ID,
+          companyId: COMPANY_ID,
+          agentId: AGENT_ID,
+          status: "queued",
+        }), { status: 202 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({
+          id: AGENT_ID,
+          name: "Builder",
+          companyId: COMPANY_ID,
+          urlKey: "builder",
+        }), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({
+          id: AGENT_ID,
+          name: "Builder",
+          companyId: COMPANY_ID,
+          urlKey: "builder",
+        }), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({
+          id: AGENT_ID,
+          name: "Builder",
+          companyId: COMPANY_ID,
+          urlKey: "builder",
+        }), { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      vi.spyOn(console, "log").mockImplementation(() => {});
+
+      process.env.PAPERCLIP_COMPANY_ID = COMPANY_ID;
+      await createProgram().parseAsync([
+        "agent", "wake", "builder",
+        "--context", emptyContextPath,
+        "--api-base", "http://localhost:3100",
+        "--api-key", "board-token",
+      ], { from: "user" });
+
+      delete process.env.PAPERCLIP_COMPANY_ID;
+      await createProgram().parseAsync([
+        "agent", "wake", "builder",
+        "--context", contextPath,
+        "--api-key", "board-token",
+      ], { from: "user" });
+
+      await createProgram().parseAsync([
+        "agent", "get", "builder",
+        "--context", contextPath,
+        "--api-key", "board-token",
+      ], { from: "user" });
+
+      await createProgram().parseAsync([
+        "agent", "get", "builder",
+        "--context", emptyContextPath,
+        "--api-base", "http://localhost:3100",
+        "--api-key", "board-token",
+        "--company-id", COMPANY_ID,
+      ], { from: "user" });
+
+      await createProgram().parseAsync([
+        "agent", "get", AGENT_ID,
+        "--context", emptyContextPath,
+        "--api-base", "http://localhost:3100",
+        "--api-key", "board-token",
+      ], { from: "user" });
+
+      expect(fetchMock.mock.calls[0]?.[0]).toBe(`http://localhost:3100/api/agents/builder?companyId=${COMPANY_ID}`);
+      expect(fetchMock.mock.calls[1]?.[0]).toBe(`http://localhost:3100/api/agents/${AGENT_ID}/wakeup`);
+      expect(fetchMock.mock.calls[2]?.[0]).toBe(`http://localhost:3100/api/agents/builder?companyId=${COMPANY_ID}`);
+      expect(fetchMock.mock.calls[3]?.[0]).toBe(`http://localhost:3100/api/agents/${AGENT_ID}/wakeup`);
+      expect(fetchMock.mock.calls[4]?.[0]).toBe(`http://localhost:3100/api/agents/builder?companyId=${COMPANY_ID}`);
+      expect(fetchMock.mock.calls[5]?.[0]).toBe(`http://localhost:3100/api/agents/builder?companyId=${COMPANY_ID}`);
+      expect(fetchMock.mock.calls[6]?.[0]).toBe(`http://localhost:3100/api/agents/${AGENT_ID}`);
+    } finally {
+      fs.rmSync(contextDir, { recursive: true, force: true });
+    }
   });
 });
