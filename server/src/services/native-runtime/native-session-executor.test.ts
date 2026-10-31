@@ -6601,6 +6601,49 @@ function cancellationDb(options?: {
 }
 
 describe("native startup cancellation fence", () => {
+  it.each(["deadline", "stop"])("retires a claimed warm owner when %s interrupts its reuse diagnostic", async mode => {
+    const first: NativeExecutionInputV1 = { ...execution,
+      binding: { ...execution.binding, runId: `reuse-log-first-${mode}`, executionWorkspaceId: `reuse-log-workspace-${mode}` },
+      session: { ...execution.session, normalizedSessionId: `reuse-log-session-${mode}`, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } } };
+    const second = { ...first, binding: { ...first.binding, runId: `reuse-log-second-${mode}` } };
+    const third = { ...first, binding: { ...first.binding, runId: `reuse-log-third-${mode}` } };
+    const close = vi.fn(async () => undefined), session = { close };
+    const replacement = { close: vi.fn(async () => undefined) };
+    const result = { result: { summary: "done" }, terminal: { runTerminalState: "succeeded" }, turnId: "first",
+      normalizedSessionId: first.session.normalizedSessionId, providerSessionId: "reuse-log-provider", driverKind: "test", driverVersion: "1",
+      nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    state.execute.mockReset().mockImplementationOnce(async options => { await options.onSession(session); return result; })
+      .mockImplementationOnce(async options => {
+        expect(options.existingSession).toBeUndefined();
+        await options.onSession(replacement);
+        return { ...result, turnId: "third" };
+      });
+    await executePaperclipNativeSession({ db: leaseDb(first), execution: first, runnerInstanceId: `reuse-log-${mode}` });
+    const originalRenewal = nativeLeaseRenewal.startNativeSessionExecutionLeaseRenewal;
+    const renewal = vi.spyOn(nativeLeaseRenewal, "startNativeSessionExecutionLeaseRenewal").mockImplementationOnce(input => ({
+      ...originalRenewal(input), remainingMs: () => mode === "deadline" ? 250 : 60_000,
+    }));
+    let entered!: () => void, release!: () => void;
+    const writing = new Promise<void>(resolve => { entered = resolve; });
+    const written = new Promise<void>(resolve => { release = resolve; });
+    const db = leaseDb(second);
+    try {
+      const startup = executePaperclipNativeSession({ db, execution: second, runnerInstanceId: `reuse-log-${mode}`,
+        onEvent: async event => {
+          if (event.eventType === "run.startup.reuse" && event.payload?.layer === "runner") { entered(); await written; }
+        } });
+      const failure = startup.catch(error => error);
+      await writing;
+      const stopping = mode === "stop" ? cancelNativeSession(second.binding.runId, "Stop during reuse write") : undefined;
+      expect(await failure).toMatchObject({ message: mode === "deadline" ? "native_execution_startup_expired" : "native_cancellation_pending_recovery" });
+      await stopping;
+      expect(close).toHaveBeenCalledOnce();
+      release();
+      await executePaperclipNativeSession({ db: leaseDb(third), execution: third, runnerInstanceId: `reuse-log-${mode}` });
+      expect(state.execute).toHaveBeenCalledTimes(2);
+    } finally { release(); renewal.mockRestore(); await closeIdleWarmNativeSessionsForRestart(); }
+  });
+
   it("uses the common startup context and durable Stop fence for a retained local session", async () => {
     const first: NativeExecutionInputV1 = { ...execution,
       binding: { ...execution.binding, runId: "local-context-first", executionWorkspaceId: "local-context-workspace" },
