@@ -67,7 +67,7 @@ try {
         const old = new Date(Date.now() - 6 * 60_000);
         const companyId = message.orphanLease.companyId;
         const [lease] = await writeEnvironmentCleanup(app.locals.paperclipDb, tx => tx.insert(environmentLeases).values({
-          companyId, provider: "local", providerLeaseId: null, status: "active", leasePolicy: "ephemeral",
+          companyId, provider: "local", providerLeaseId: null, status: "active", leasePolicy: "ephemeral", metadata: { driver: "local" },
           acquiredAt: old, lastUsedAt: old, createdAt: old, updatedAt: old,
         }).returning(), { companyId });
         process.send?.({ id: message.id, kind: "leaseCreated", leaseId: lease!.id });

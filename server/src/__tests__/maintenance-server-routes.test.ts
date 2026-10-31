@@ -92,11 +92,18 @@ describe("assembled maintenance server production wiring", () => {
       expect(failedWake!.count).toBe(0);
       const start = (await server.snapshot()).now;
       const { leaseId } = await server.createOrphanLease(companyId);
-      await server.advance(1_000); await settleClock(server);
-      const [lease] = await fixture.$client`select status, cleanup_status, provider, provider_lease_id from environment_leases where id=${leaseId}`;
-      expect(lease).toMatchObject({ status: "expired", cleanup_status: "success", provider: "local", provider_lease_id: null });
+      let discovered: Record<string, unknown> | undefined;
+      for (let step = 0; step < 10; step++) {
+        await server.advance(1_000); await delay(50);
+        [discovered] = await fixture.$client`select status, failure_reason, provider, provider_lease_id from environment_leases where id=${leaseId}`;
+        if (discovered?.status === "pending_cleanup") break;
+      }
+      expect(discovered).toMatchObject({ status: "pending_cleanup", failure_reason: "orphaned_active_lease_recovered", provider: "local", provider_lease_id: null });
       const elapsedClockMs = (await server.snapshot()).now - start;
       expect(elapsedClockMs).toBeLessThan(30_000);
+      await server.advance(30_000); await settleClock(server);
+      const [lease] = await fixture.$client`select status, cleanup_status, provider, provider_lease_id from environment_leases where id=${leaseId}`;
+      expect(lease).toMatchObject({ status: "expired", cleanup_status: "success", provider: "local", provider_lease_id: null });
       await fixture.$client.unsafe(`create or replace function maintenance_age_isolation_attention() returns trigger language plpgsql as $$begin
         if new.title = 'Attention after goal failure' then new.updated_at = now() - interval '91 days'; end if; return new; end$$`);
       await fixture.$client.unsafe(`create trigger maintenance_age_isolation_attention before insert on issue_thread_interactions for each row execute function maintenance_age_isolation_attention()`);
@@ -107,7 +114,7 @@ describe("assembled maintenance server production wiring", () => {
       const [archived] = await fixture.$client`select archived_reason, archived_at is not null as archived from decision_retention where source_id=${card.id}`;
       expect(archived).toMatchObject({ archived_reason: "idle_ttl", archived: true });
       await writeFile(path.join(server.directory, "startup-failure-measurement.json"), JSON.stringify({ phase: "actual-goal-startup-failure-isolation",
-        companyId, actionId: action!.id, retained, failedWake, leaseId, lease, elapsedClockMs, archived, frames: server.proxy.frames,
+        companyId, actionId: action!.id, retained, failedWake, leaseId, discovered, lease, elapsedClockMs, archived, frames: server.proxy.frames,
         boundary: "fixture-only conditional goal_control INSERT failure; actual native classification untouched; actual environment cleanup ingress and ordinary attention HTTP producer",
       }, null, 2));
     } finally {
