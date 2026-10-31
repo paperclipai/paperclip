@@ -184,7 +184,11 @@ export function unadmittedChatWakeupCondition(
   issueId: SQLWrapper,
   companyId: SQLWrapper,
 ) {
-  return sql`exists (
+  return sql`case when exists (
+    select 1 from chat_conversations unadmitted_conversation
+    where unadmitted_conversation.company_id = ${companyId}
+      and unadmitted_conversation.issue_id = ${issueId}
+  ) then exists (
     select 1 from chat_actions chat_unadmitted
     where chat_unadmitted.company_id = ${companyId}
       and chat_unadmitted.payload->>'issueId' = ${issueId}::text
@@ -224,7 +228,7 @@ export function unadmittedChatWakeupCondition(
           and chat_later_admission.agent_id::text = chat_later.payload->>'agentId'
           and chat_later_admission.status <> 'skipped'
       ))
-  )`;
+  ) else false end`;
 }
 
 export interface DeferredChatWakeScope {
