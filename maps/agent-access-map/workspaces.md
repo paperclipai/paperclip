@@ -228,7 +228,18 @@ API: `present` — representative operation IDs:
 - `GET /api/issues/{issueId}/file-resources/list`.
 
 Agent access: `partial` — Authorized workspace filesystem tools; Dot workspace bridge
-when enabled; board file-resource HTTP UI.
+when enabled; board file-resource HTTP UI. Native standard-mode `download_artifact`
+installs an authorized saved asset (up to 10 MiB) into the admitted workspace,
+requiring exact saved size/hash. Linux local and lease-owned remote command
+runners are supported; plugin task providers without an installer and Dot/Muse/Grok
+profiles do not expose it. The tool follows API rollout policy, current task/run,
+issue mutation and asset-content ACLs, including responsible-user capture ownership.
+Publication is create-only after staging/hash checks; conflicting files and symlink
+paths fail. Retry the identical identity after an unknown outcome. Audit records
+contain identity/outcome only; contents remain untrusted and screening still applies.
+The [authority regression](../../server/src/services/native-runtime/artifact-transfer.integration.test.ts)
+and [filesystem faults](../../server/src/services/native-runtime/artifact-transfer.test.ts)
+use disposable data and real files; provider transport qualification is separate.
 
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.
