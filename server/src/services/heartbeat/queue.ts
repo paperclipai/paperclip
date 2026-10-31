@@ -1,3 +1,4 @@
+import { notifyRunDispatch } from "../run-dispatch-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
@@ -1972,7 +1973,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
   // Release admission promptly without first scanning unrelated recovery work.
   // Every run still passes the ordinary per-agent claim and dispatch gates.
-  async function resumeQueuedRunsAfterDrain() {
+  async function resumeQueuedRunsAfterDrain(scope?: { companyId: string }) {
     if ((await getSchedulingSuppression()).suppressed) return;
     const cutoff = await getWorktreeExecutionCutoff();
     const queuedRuns = await db
@@ -1982,6 +1983,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       .where(
         and(
           eq(heartbeatRuns.status, "queued"),
+          scope ? eq(heartbeatRuns.companyId, scope.companyId) : undefined,
           eq(companies.status, "active"),
           cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
         ),
@@ -4632,6 +4634,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
 
     const queueOutcome = await db.transaction(async (tx) => {
+      await notifyRunDispatch(tx, { companyId: agent.companyId });
       await tx.execute(
         sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
       );

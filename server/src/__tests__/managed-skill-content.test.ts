@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { skillInstallationMaintenance } from "../services/skill-installation-maintenance.js";
 import { removeRuntimeAssetTree } from "../services/native-runtime/runtime-asset-retention.js";
 import { eq } from "drizzle-orm";
@@ -76,6 +78,93 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     expect(await service.readFile(companyId, skill.id, "references/guide.md"))
       .toMatchObject({ content: "complete root guide" });
   });
+
+  it("loads persisted Cloud configuration for read-only maintenance without seeding it", async () => {
+    const companyId = await company();
+    const objects = new Map<string, Buffer>();
+    const server = createServer((request, response) => {
+      void (async () => {
+        const key = new URL(request.url!, "http://fixture").pathname;
+        if (request.method === "PUT") {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          let body = Buffer.concat(chunks);
+          if (request.headers["content-encoding"]?.includes("aws-chunked")) {
+            const decoded: Buffer[] = [];
+            let offset = 0;
+            while (offset < body.length) {
+              const end = body.indexOf("\r\n", offset);
+              const size = Number.parseInt(body.subarray(offset, end).toString().split(";")[0]!, 16);
+              if (size === 0) break;
+              decoded.push(body.subarray(end + 2, end + 2 + size)); offset = end + 2 + size + 2;
+            }
+            body = Buffer.concat(decoded);
+          }
+          objects.set(key, body); response.writeHead(200, { etag: '"fixture"' }).end(); return;
+        }
+        const body = objects.get(key);
+        if (!body) { response.writeHead(404).end(); return; }
+        response.writeHead(200, { "content-length": body.length, "content-type": "application/octet-stream", etag: '"fixture"' });
+        response.end(request.method === "HEAD" ? undefined : body);
+      })().catch(() => { response.writeHead(500).end(); });
+    });
+    await new Promise<void>(resolve => { server.listen(0, "127.0.0.1", resolve); });
+    const address = server.address(); if (!address || typeof address === "string") throw new Error("Expected fixture address");
+    const endpoint = `http://127.0.0.1:${address.port}`;
+    const credentials = { AWS_ACCESS_KEY_ID: "fixture-access-key", AWS_SECRET_ACCESS_KEY: "fixture-secret-key", AWS_SESSION_TOKEN: "" };
+    const previousCredentials = Object.fromEntries(Object.keys(credentials).map(key => [key, process.env[key]]));
+    Object.assign(process.env, credentials);
+    vi.mocked(storageModule.getStorageService).mockReturnValue(createStorageService(createS3StorageProvider({
+      bucket: "managed-skill-fixture", region: "us-east-1", endpoint, forcePathStyle: true,
+    })));
+    const key = "cloud-runtime-config:v1";
+    try {
+      await companySkillService(db).createLocalSkill(companyId, { name: "Cloud CLI", markdown: "# Cloud CLI" });
+      const run = (phase: string) => promisify(execFile)(process.execPath, [
+        "--import", fileURLToPath(import.meta.resolve("tsx")),
+        fileURLToPath(new URL("../../scripts/migrate-skill-packages.ts", import.meta.url)),
+        `--phase=${phase}`, `--company=${companyId}`, "--limit=50",
+      ], { env: { ...process.env, ...credentials, DATABASE_URL: database.connectionString,
+        PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "disposable-cloud-cli-fixture",
+        PAPERCLIP_SECRETS_MASTER_KEY: "a".repeat(64), PAPERCLIP_STORAGE_PROVIDER: "s3",
+        PAPERCLIP_STORAGE_S3_BUCKET: "managed-skill-fixture", PAPERCLIP_STORAGE_S3_REGION: "us-east-1",
+        PAPERCLIP_STORAGE_S3_ENDPOINT: endpoint, PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE: "true", PAPERCLIP_STORAGE_S3_PREFIX: "" },
+        timeout: 60_000, maxBuffer: 1024 * 1024 });
+      await expect(run("eligibility")).rejects.toThrow("Initialize Cloud runtime configuration");
+      expect(await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key))).toHaveLength(0);
+      await db.insert(instanceSettings).values({ singletonKey: key, general: { version: 1, revision: 0, config: null } });
+      const eligibility = JSON.parse((await run("eligibility")).stdout.trim().split("\n").at(-1)!);
+      expect(eligibility.results).toEqual([expect.objectContaining({ status: "version_backed" })]);
+      const before = [...objects.entries()].map(([key, body]) => [key, Buffer.from(body)] as const);
+      const verification = JSON.parse((await run("verification")).stdout.trim().split("\n").at(-1)!);
+      expect(verification.results).toEqual([expect.objectContaining({ status: "remote_storage" })]);
+      expect([...objects.entries()]).toEqual(before);
+      const archiveKey = [...objects.keys()].find(key => key.endsWith("/files.tar.gz"))!;
+      const archive = objects.get(archiveKey)!;
+      const corrupted = Buffer.from(archive); corrupted[0] = corrupted[0]! ^ 1;
+      objects.set(archiveKey, corrupted);
+      const corrupt = JSON.parse((await run("verification")).stdout.trim().split("\n").at(-1)!);
+      expect(corrupt.results).toEqual([expect.objectContaining({ status: "corrupt_package" })]);
+      objects.set(archiveKey, archive);
+      const manifestKey = [...objects.keys()].find(key => key.endsWith("/manifest.json"))!;
+      const manifest = objects.get(manifestKey)!; objects.delete(manifestKey);
+      const unavailable = JSON.parse((await run("verification")).stdout.trim().split("\n").at(-1)!);
+      expect(unavailable.results).toEqual([expect.objectContaining({ status: "unavailable_or_corrupt_package" })]);
+      objects.set(manifestKey, manifest);
+      const recovered = JSON.parse((await run("verification")).stdout.trim().split("\n").at(-1)!);
+      expect(recovered.results).toEqual([expect.objectContaining({ status: "remote_storage" })]);
+      expect([...objects.entries()].sort()).toEqual([...before].sort());
+      expect(await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key)))
+        .toEqual([expect.objectContaining({ general: { version: 1, revision: 0, config: null } })]);
+    } finally {
+      await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, key));
+      vi.mocked(storageModule.getStorageService).mockReturnValue(createStorageService(createLocalDiskStorageProvider(path.join(root, "objects"))));
+      for (const [key, value] of Object.entries(previousCredentials)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+      server.closeAllConnections(); await new Promise<void>(resolve => { server.close(() => resolve()); });
+    }
+  }, 180_000);
 
   it.each([
     { storage: "legacy local", env: { PAPERCLIP_STORAGE_PROVIDER: "local_disk" }, expectedStatus: "local_storage" },
