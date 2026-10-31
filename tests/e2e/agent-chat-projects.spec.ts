@@ -468,9 +468,9 @@ test("plan approval hands the preserved revision to an assigned project task", a
     expect(task.projectId).toBeTruthy();
     expect(task.assigneeAgentId).toBe(f.agent.id);
     const completion = page.getByText("Delegated work completed:", { exact: false });
-    await expect(completion.getByRole("link", {
-      name: `Issue ${task.identifier}: ${task.title}`, exact: true,
-    })).toBeVisible();
+    await expect(completion.getByRole("link").and(page.locator(
+      `a[href="/${f.company.issuePrefix}/issues/${task.identifier}"]`,
+    ))).toBeVisible();
     const plan = await json(
       await request.get(`/api/issues/${task.id}/documents/plan`),
     );
