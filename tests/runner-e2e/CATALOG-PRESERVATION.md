@@ -73,7 +73,7 @@ and no live launch or publication authority comes from this source preservation.
 ## Integration candidate, 2026-10-31
 
 This owned integration branch combines preserved source `e2b35be76f` with
-master `12b0cc6304`. The original preservation branch and its historical results
+master `51ea624344`. The original preservation branch and its historical results
 remain unchanged. No historical pass transfers to this composed source.
 The frozen 244-case OpenCode catalog keeps its historical IDs and DeepSeek 1017
 model. The two shipped subscription aliases and the separate TestOps backlog cell
@@ -90,5 +90,7 @@ production frozen source manifest and all private-value rejection checks remain
 unchanged. No SDK runtime qualification follows from those synthetic tests.
 
 The refreshed base includes current master's committed Agent Chat reply recovery
-and durable retry deadlines. They are upstream product changes, not qualifications
+and durable retry deadlines. It also contains event-driven issue/receipt recovery
+and the guard against a native run changing its own task status. These are
+upstream product changes, not qualifications
 of the preserved scenarios. Fresh pilots remain bound to their exact source.
