@@ -8,6 +8,7 @@ import {
 import {
   parseSetupTokenCredential,
   parseSetupTokenPrompt,
+  renderTerminalScreen,
   type SetupTokenPrompt,
 } from "./setup-token-parse.js";
 
@@ -242,6 +243,7 @@ export async function runSetupTokenLogin(
   // it binds the token. It bounds the retained window the same way as the prompt
   // buffer, so the secret-bearing stream never grows without a bound.
   let tokenBuffer = "";
+  let transcript = "";
 
   // Reads the browser code and writes it to the matched prompt one time. The
   // routine never throws: it logs a fixed line on a provider error or a write
@@ -278,10 +280,12 @@ export async function runSetupTokenLogin(
   // bytes later, after a clean exit, through {@link deliverCredential}.
   const captureCredential = (): void => {
     if (!onCredential || tokenBytes) return;
-    const token = parseSetupTokenCredential(tokenBuffer);
+    const token = parseSetupTokenCredential(tokenBuffer)
+      ?? parseSetupTokenCredential(renderTerminalScreen(transcript));
     if (!token) return;
     tokenBytes = Buffer.from(token, "utf8");
     tokenBuffer = "";
+    transcript = "";
   };
 
   // Awaits the mandatory sink one time with the bound token bytes and reports
@@ -308,6 +312,12 @@ export async function runSetupTokenLogin(
   };
 
   const onData = (chunk: string): void => {
+    if (onCredential && !tokenBytes) {
+      transcript += chunk;
+      if (transcript.length > CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS) {
+        transcript = transcript.slice(transcript.length - CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS);
+      }
+    }
     if (!promptSurfaced) {
       // Parse the full buffer before any truncation. This order finds an early
       // prompt inside one large chunk, so the runner never drops it.

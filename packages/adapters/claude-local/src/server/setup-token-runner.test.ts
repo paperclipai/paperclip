@@ -96,6 +96,44 @@ async function flush(): Promise<void> {
 }
 
 describe("runSetupTokenLogin", () => {
+  it("binds the token from a 2.1.3xx diff redraw of the success screen", async () => {
+    const promptFrame = [
+      " Browser didn't open? Use the url below to sign in (c to copy)",
+      ` ${VALID_URL}`,
+      " Paste code here if prompted >",
+    ];
+    const successFrame = [
+      " Your OAuth token (valid for 1 year):",
+      ` ${FULL_TOKEN}`,
+      " Store this token securely. You won't be able to see it again.",
+    ];
+    let redraw = `\x1b[${promptFrame.length}A`;
+    for (let row = 0; row < successFrame.length; row += 1) {
+      const before = promptFrame[row] ?? "";
+      const after = successFrame[row];
+      redraw += "\r";
+      let skipped = false;
+      for (let col = 0; col < after.length; col += 1) {
+        if (before[col] === after[col]) { skipped = true; continue; }
+        if (skipped) { redraw += `\x1b[${col + 1}G`; skipped = false; }
+        redraw += after[col];
+      }
+      if (before.length > after.length) redraw += "\x1b[K";
+      redraw += "\x1b[1B";
+    }
+    const fake = createFakeDriver({ chunks: [`${promptFrame.join("\r\n")}\r\n`, redraw], exitCode: 0 });
+    const delivered: string[] = [];
+    const result = await runSetupTokenLogin(fake.driver, {
+      onPrompt: () => {},
+      provideCode: async () => BROWSER_CODE,
+      onCredential: async (bytes) => { delivered.push(bytes.toString("utf8")); },
+      timeoutMs: 1000,
+      codeSubmitSettleMs: 0,
+    });
+    expect(result.outcome).toBe("success");
+    expect(delivered).toEqual([FULL_TOKEN]);
+  });
+
   it("sends one login URL through onPrompt", async () => {
     // A success stream and a resolving sink, so the run reports success after the
     // runner delivers the credential.
