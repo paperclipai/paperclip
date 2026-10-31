@@ -10,6 +10,7 @@ import {
   taskStatusVarDefault,
 } from "../lib/status-colors";
 import { StatusGlyph } from "./StatusGlyph";
+import { displayText } from "@/i18n/display-text";
 
 /** Inline `--sc` local var pointing a status helper at a base-hue CSS var. */
 function scStyle(cssVar: string): CSSProperties {
@@ -19,7 +20,7 @@ function scStyle(cssVar: string): CSSProperties {
 /** "in_review" → "In review" (sentence case). */
 function sentenceCaseStatus(status: string): string {
   const s = status.replace(/_/g, " ");
-  return s.charAt(0).toUpperCase() + s.slice(1);
+  return displayText(s.charAt(0).toUpperCase() + s.slice(1));
 }
 
 /**
@@ -36,7 +37,7 @@ export function StatusBadge({ status, label, className }: { status: string; labe
         className
       )}
     >
-      {label ?? status.replace(/[_-]/g, " ")}
+      {label ?? displayText(status.replace(/[_-]/g, " "))}
     </span>
   );
 }
@@ -54,7 +55,7 @@ export function AgentStatusBadge({ status }: { status: string }) {
       className="status-chip inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium leading-none whitespace-nowrap shrink-0"
       style={scStyle(cssVar)}
     >
-      {label.replace(/_/g, " ")}
+      {displayText(label.replace(/_/g, " "))}
     </span>
   );
 }

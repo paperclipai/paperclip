@@ -29,6 +29,7 @@ import { startServiceWorkerUpdates } from "./lib/service-worker-updates";
 import { connectivity } from "./lib/connectivity";
 import { bindConnectivity, createAppQueryClient } from "./lib/query-client";
 import { captureBrowserException } from "./lib/sentry";
+import { initDisplayLanguage } from "./i18n/display-text";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
@@ -99,6 +100,8 @@ function CompanyVoiceCalls({ children }: { children: React.ReactNode }) {
   const { userId } = useAccountIdentity();
   return <VoiceCallProvider companyId={selectedCompanyId} userId={userId}>{children}</VoiceCallProvider>;
 }
+
+await initDisplayLanguage();
 
 const rootElement = document.getElementById("root");
 if (!rootElement) throw new Error("Paperclip root element is missing");
