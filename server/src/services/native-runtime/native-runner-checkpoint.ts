@@ -1,3 +1,4 @@
+import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql } from "drizzle-orm";
 import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
 import { inspectDurablePrpCheckpointHeader, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
@@ -75,6 +76,7 @@ export function nativeRunnerCheckpointWriter(db: Db, owner: Owner) {
           eq(heartbeatRuns.nativeSessionId, checkpoint.predecessor.normalizedSessionId)));
         if (!prior) throw new Error("native_runner_checkpoint_binding_mismatch");
       }
+      await notifyLiveRunRecovery(tx, { companyId: owner.companyId, runId: owner.runId });
       if (checkpoint.reset) await tx.delete(nativeRunnerCheckpoints).where(and(
         eq(nativeRunnerCheckpoints.companyId, owner.companyId), eq(nativeRunnerCheckpoints.runId, owner.runId)));
       else if (checkpoint.removedRecords.length) await tx.delete(nativeRunnerCheckpoints).where(and(

@@ -1,3 +1,4 @@
+import { notifyEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { and, eq, gt, inArray, ne, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
@@ -33,6 +34,7 @@ export function maintainLegacyShutdownWorkspaceSettlement(db: Db, run: Run) {
     pending = db.transaction(async tx => {
       await tx.execute(sql`SET LOCAL lock_timeout = '1s'`);
       await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
+      await notifyEnvironmentCleanup(tx, { companyId: run.companyId, runId: run.id });
       await tx.update(environmentLeases).set({ metadata: sql`jsonb_set(${environmentLeases.metadata},
         '{legacyShutdownWorkspaceSettlement,deadlineAt}', ${JSON.stringify(new Date(Date.now() + SETTLEMENT_LEASE_MS).toISOString())}::jsonb)` })
         .where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
@@ -73,8 +75,10 @@ export async function legacyShutdownWorkspaceResourceProtected(db: Db,
 }
 
 /** Released stop receipts still need reconciliation if export never settled. */
-export async function sweepLegacyShutdownWorkspaceSettlements(db: Db, now = new Date()) {
+export async function sweepLegacyShutdownWorkspaceSettlements(db: Db, now = new Date(), scope: { companyId?: string; leaseId?: string } = {}) {
   const rows = await db.select().from(environmentLeases).where(and(
+    scope.companyId ? eq(environmentLeases.companyId, scope.companyId) : undefined,
+    scope.leaseId ? eq(environmentLeases.id, scope.leaseId) : undefined,
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'schema' = ${SCHEMA}`,
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'state' = 'pending'`,
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'deadlineAt' <= ${now.toISOString()}`,
@@ -84,23 +88,29 @@ export async function sweepLegacyShutdownWorkspaceSettlements(db: Db, now = new 
 
 /** Commit the fence while the run is still live, before exposing interruption. */
 export async function beginLegacyShutdownWorkspaceSettlement(db: Db, run: Run, deadlineAt: Date) {
-  await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) ||
+  await db.transaction(async tx => {
+    await notifyEnvironmentCleanup(tx, { companyId: run.companyId, runId: run.id });
+    await tx.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) ||
     ${JSON.stringify({ legacyShutdownWorkspaceSettlement: { schema: SCHEMA, state: "pending", runId: run.id,
       controllerBootId: legacyControllerBootId, deadlineAt: deadlineAt.toISOString() } })}::jsonb`,
   }).where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
     eq(environmentLeases.status, "active"), ne(environmentLeases.provider, "local"),
     or(sql`${environmentLeases.metadata}->>'driver' = 'sandbox'`, sql`${environmentLeases.metadata}->>'sandboxProviderPlugin' = 'true'`)));
+  });
 }
 
 /** The owner joins settlement, or records exact retention before timeout cleanup. */
 export async function finishLegacyShutdownWorkspaceSettlement(db: Db, run: Run, state: "settled" | "expired" = "settled") {
-  await db.update(environmentLeases).set({ metadata: sql`jsonb_set(${environmentLeases.metadata},
+  await db.transaction(async tx => {
+    await notifyEnvironmentCleanup(tx, { companyId: run.companyId, runId: run.id });
+    await tx.update(environmentLeases).set({ metadata: sql`jsonb_set(${environmentLeases.metadata},
     '{legacyShutdownWorkspaceSettlement,state}', ${JSON.stringify(state)}::jsonb)` }).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'schema' = ${SCHEMA}`,
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'controllerBootId' = ${legacyControllerBootId}`,
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'state' = 'pending'`,
   ));
+  });
 }
 
 /** A restart or another cleanup worker must never infer saved files from timeout. */
@@ -138,6 +148,7 @@ export async function allowLegacyShutdownWorkspaceCleanup(db: Db, lease: Lease, 
     if (!Number.isFinite(deadline) || deadline > now.getTime()) return false;
     // A killed container cannot certify export. Preserve source and hold in
     // this same transaction before any worker may perform provider cleanup.
+    await notifyEnvironmentCleanup(tx, { companyId: run.companyId, runId: run.id });
     if (current.status !== "active") {
       const { hasConfirmedSandboxStopAndRetain, readStopOnlyCleanup } = await import("./sandbox-stop-and-retain.js");
       if (!(current.status === "released" && hasConfirmedSandboxStopAndRetain(current))
