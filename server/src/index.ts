@@ -1786,12 +1786,6 @@ async function startServerWithDatabaseTeardown(
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerStoppedInstructionCollectionWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
 
-    // Startup housekeeping: provider and connection sweeps that every timer tick
-    // repeats and that neither serving requests nor run recovery depends on.
-    // Readiness does not wait for it. It is tracked as scheduler work, so idle
-    // sleep and shutdown wait for it. Each step logs its own failure and the
-    // next step still runs. The scheduler interval starts after it, so the login
-    // reapers and the lease cleanup still finish before the first timer tick.
     const runStartupHousekeeping = async () => {
       const step = (name: string, work: () => Promise<unknown>) =>
         work().catch((err: unknown) => {
