@@ -198,7 +198,7 @@ describeEmbeddedPostgres("heartbeat timer active hours", () => {
 
   it("still enqueues comment and on-demand wakes outside the window", async () => {
     const { agentId } = await seedTimerAgent({
-      activeHours: { start: "09:00", end: "18:00", timezone: "UTC" },
+      activeHours: { start: hoursFromNowUtc(2), end: hoursFromNowUtc(3), timezone: "UTC" },
     });
     const lastHeartbeatAt = new Date("2026-07-15T10:00:00.000Z");
     await markTimerDue(agentId, lastHeartbeatAt);
