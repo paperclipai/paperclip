@@ -28,6 +28,7 @@ export type {
   RunSummary,
 } from "./application/types.js";
 export { WakeQueueApplicationError } from "./application/types.js";
+export { hasReviewerAssignmentContinuation, ordinaryWakeRequestPredicate } from "./receipt-namespace.js";
 export type {
   IssueSnapshot,
   RunSnapshot,

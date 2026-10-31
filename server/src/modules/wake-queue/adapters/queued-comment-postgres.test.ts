@@ -138,6 +138,26 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     return id;
   }
 
+  it.each([null, "invalid", { version: 99 }])("rejects a reserved receipt ID as a queued comment (%j)", async namespace => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const commentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId, commentIds: [commentId] });
+    const [original] = await db.update(agentWakeupRequests).set({ payload: {
+      issueId, _paperclipWakeContext: { wakeCommentIds: [commentId] },
+      _paperclipReviewerAssignmentContinuation: namespace,
+    } }).where(eq(agentWakeupRequests.id, wakeId)).returning();
+    await expect(createQueuedCommentIssueLockWriter(db, noopDeps).withLockedQueue({
+      issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+      actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
+      queueId: wakeId,
+    }, async () => { throw new Error("Reserved receipt must not reach a comment mutation"); }))
+      .rejects.toMatchObject({ code: "queued_comment_not_pending" });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0]).toEqual(original);
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0].deletedAt).toBeNull();
+  });
+
   it("scopes the wake lookup to its own company: a foreign-company issue context resolves not_pending and deletes nothing", async () => {
     const companyId = await seedCompany();
     const otherCompanyId = await seedCompany();

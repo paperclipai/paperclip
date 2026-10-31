@@ -18,6 +18,7 @@ import {
   withQueuedCommentIdsInWakePayload,
 } from "../../../services/issue-queued-comment-queue.js";
 import { logActivity as persistActivityLogRow, type ActivityPublication } from "../../../services/activity-log.js";
+import { ordinaryWakeRequestPredicate } from "../receipt-namespace.js";
 import { decideQueuedCommentWakeLookup } from "../domain/policy.js";
 import { parseObject, readNonEmptyString } from "../domain/values.js";
 import { QueuedCommentMutationError } from "../application/queued-comment-use-cases.js";
@@ -75,7 +76,7 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
       const row = await tx
         .update(agentWakeupRequests)
         .set({ payload: withQueuedCommentIdsInWakePayload(payload, ids), updatedAt })
-        .where(and(eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)))
+        .where(and(ordinaryWakeRequestPredicate(), eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)))
         .returning()
         .then((rows) => rows[0]);
       return toWakeRow(row);
@@ -107,7 +108,7 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
       await tx
         .update(agentWakeupRequests)
         .set({ status: "cancelled", finishedAt: now, error: reason, updatedAt: now })
-        .where(and(eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)));
+        .where(and(ordinaryWakeRequestPredicate(), eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)));
     },
 
     async cancelQueueRun({ queueRunId, reason, now }) {
@@ -242,7 +243,7 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
           .from(agentWakeupRequests)
           .where(
             and(
-              eq(agentWakeupRequests.id, input.queueId),
+              ordinaryWakeRequestPredicate(), eq(agentWakeupRequests.id, input.queueId),
               eq(agentWakeupRequests.companyId, companyId),
               input.issue.assigneeAgentId ? eq(agentWakeupRequests.agentId, input.issue.assigneeAgentId) : undefined,
             ),
