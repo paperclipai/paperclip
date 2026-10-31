@@ -113,7 +113,15 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 const meta: Meta = {
   id: "product-built-in-agents",
   title: "Agents and reusable capabilities/Hiring, configuration, and organization/Product/Built-in Agents",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "agents/built-in"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 

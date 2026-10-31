@@ -101,6 +101,13 @@ function ActivityCard({
 }
 
 const meta: Meta = {
+  parameters: { paperclip: {
+      "capabilities": [
+        "steering/interrupt"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    } },
   id: "surfaces-interrupt-handoff",
   title: "Tasks and conversations/Steering and queued messages/Surfaces/Interrupt Handoff",
 };

@@ -309,7 +309,15 @@ const meta: Meta<typeof DiscoveryGridHarness> = {
   id: "skills-store-discovery-grid",
   title: "Agents and reusable capabilities/Skills and Skill Studio/Skills Store/Discovery grid",
   component: DiscoveryGridHarness,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "skills/discovery"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 
 export default meta;

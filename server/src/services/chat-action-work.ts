@@ -1,5 +1,5 @@
 import { and, eq, inArray, lte, or, sql } from "drizzle-orm";
-import { chatActions, chatEndpoints, type Db } from "@paperclipai/db";
+import { chatActions, chatEndpoints, toolConnections, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { CHAT_ACTION_QUEUES, type ScheduledChatAction } from "./chat-work-notifications.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
@@ -50,7 +50,17 @@ function pendingChatAction(kind: ScheduledChatAction) {
           ? inArray(chatActions.status, ["received", "processing"])
           : or(inArray(chatActions.status, ["received", "processing"]),
           and(eq(chatActions.status, "failed"), sql`${chatActions.result}->>'retryable' = 'true'`));
-  return and(eq(chatActions.kind, kind), status);
+  // Subscription repair is parked while its current endpoint/connection is
+  // inactive. Registration and removal retain their existing dispatch rules.
+  const telegramEligible = kind === "telegram_maintenance" ? sql`(
+    ${chatActions.payload}->>'operation' <> 'stop_subscription' or exists (
+      select 1 from ${chatEndpoints} inner join ${toolConnections}
+        on ${toolConnections.id} = ${chatEndpoints.connectionId} and ${toolConnections.companyId} = ${chatEndpoints.companyId}
+      where ${chatEndpoints.id} = ${chatActions.endpointId} and ${chatEndpoints.companyId} = ${chatActions.companyId}
+        and ${chatEndpoints.provider} = 'telegram' and ${chatEndpoints.status} = 'active'
+        and ${toolConnections.status} = 'active' and ${toolConnections.enabled} = true
+    ))` : undefined;
+  return and(eq(chatActions.kind, kind), status, telegramEligible);
 }
 
 export function dueChatAction(kind: ScheduledChatAction, now = Date.now()) {
@@ -67,6 +77,10 @@ export async function nextChatActionAt(db: Db, kind: ScheduledChatAction): Promi
 
 type ChatActionService = {
   processFailedChatRunRetries(): Promise<unknown>;
+  processPendingTelegramActions(): Promise<unknown>;
+  processTelegramSubscriptionDiscovery(signal?: AbortSignal): Promise<unknown>;
+  scheduleTelegramSubscriptionDiscovery(connectionId: string): void;
+  hasPendingTelegramSubscriptionDiscovery(): boolean;
   processPendingProviderEffects(): Promise<unknown>;
   processPendingGitHubWebhookIngress(): Promise<unknown>;
   processPendingSlackSessionSyncs(): Promise<unknown>;
@@ -86,6 +100,7 @@ export function registerChatActionWork(
 ) {
   const actions = [
     { kind: "failed_run_retry", run: service.processFailedChatRunRetries },
+    { kind: "telegram_maintenance", run: service.processPendingTelegramActions },
     { kind: "provider_effect", run: service.processPendingProviderEffects },
     { kind: "github_webhook_ingress", run: service.processPendingGitHubWebhookIngress },
     { kind: "slack_session_sync", run: service.processPendingSlackSessionSyncs },
@@ -101,5 +116,15 @@ export function registerChatActionWork(
     queue: DELIVERY_QUEUES.chatVerification,
     run: service.processPendingVerificationMessages, next: service.nextVerificationMessageAt,
   }, canRun));
+  // Startup recovery visits the full inventory in bounded pages. Configuration
+  // commits only enqueue the changed connection, never restart a global sweep.
+  const discovery = coordinator.register(DELIVERY_QUEUES.chatTelegramSubscriptions, {
+    retryMs: 1000,
+    run: signal => service.processTelegramSubscriptionDiscovery(signal),
+    onSettled: hints => { for (const id of hints ?? []) service.scheduleTelegramSubscriptionDiscovery(id); },
+    // Preserve a configuration wake received during idle drain without SQL.
+    hasPending: async () => !canRun() || service.hasPendingTelegramSubscriptionDiscovery(),
+  });
+  workers.push(discovery);
   return { ready: Promise.all(workers.map(worker => worker.ready)) };
 }

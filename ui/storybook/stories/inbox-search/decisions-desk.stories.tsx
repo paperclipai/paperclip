@@ -446,7 +446,16 @@ const INTERACTION_AUDIENCE_ITEMS: AttentionItem[] = [
 const meta: Meta = {
   id: "pages-decisions-desk",
   title: "Tasks and conversations/Inbox, decisions, and search/Pages/Decisions Desk",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "inbox-search/decisions"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
 };
 export default meta;
 

@@ -1,6 +1,7 @@
 import type { EndpointRow, DbTransaction, LifecycleRuntimeFence } from "../runtime-types.js";
 
-import { PROVIDER_EFFECT_STALE_MS } from "../../chat-action-work.js";
+import { PROVIDER_EFFECT_STALE_MS, dueChatAction } from "../../chat-action-work.js";
+import { notifyChatActionWork } from "../../chat-work-notifications.js";
 
 import type { chatCredentialMutationLease, CredentialMutationLeaseGuard } from "../../chat-credential-mutation-lease.js";
 
@@ -12,8 +13,6 @@ import {
   asc,
   eq,
   gt,
-  lte,
-  or,
   sql,
 } from "drizzle-orm";
 
@@ -103,6 +102,16 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
   const { endpointRecord, runtimeContextForRecord, withCredentialMutationLease, resolveCredentials, clearCredentials, runtimeCallbackEndpoint, getWebhookPublicBaseUrl, fetchImpl, runtimeGeneration, credentialFingerprint, redactError, credentialCheckTimeoutMs: PROVIDER_CREDENTIAL_CHECK_TIMEOUT_MS } = options;
 
   let telegramSubscriptionScanAfter: string | null = null;
+  let startupDiscoveryPending = true;
+  let startupDiscoveryAfter: string | null = null;
+  const pendingDiscovery = new Map<string, { after: string | null }>();
+
+  function withMaintenanceWrite<T>(write: (tx: DbTransaction) => Promise<T>): Promise<T> {
+    return db.transaction(async tx => {
+      await notifyChatActionWork(tx, "telegram_maintenance");
+      return write(tx);
+    });
+  }
 
   async function stageTelegramMaintenance(
     endpoint: EndpointRow,
@@ -122,7 +131,7 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
         ? `${context.generation}:${record.endpoint.setup.testStartedAt ?? record.endpoint.updatedAt.toISOString()}`
         : String(context.generation);
     const providerActionId = `telegram_maintenance:${operation}:${operationGeneration}`;
-    const [inserted] = await db
+    const [inserted] = await withMaintenanceWrite(tx => tx
       .insert(chatActions)
       .values({
         companyId: endpoint.companyId,
@@ -144,7 +153,7 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
         status: "received",
       })
       .onConflictDoNothing()
-      .returning();
+      .returning());
     return (
       inserted ??
       (await db
@@ -241,7 +250,7 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
     if (action.status === "processed") return "processed";
     const payload = telegramMaintenancePayload(action.payload);
     if (!payload) {
-      await db
+      await withMaintenanceWrite(tx => tx
         .update(chatActions)
         .set({
           status: "failed",
@@ -251,18 +260,18 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
           },
           updatedAt: new Date(),
         })
-        .where(eq(chatActions.id, action.id));
+        .where(eq(chatActions.id, action!.id)));
       return "failed";
     }
     if (action.status === "processing") {
       if (action.updatedAt > new Date(Date.now() - PROVIDER_EFFECT_STALE_MS))
         return "pending";
-      await db
+      await withMaintenanceWrite(tx => tx
         .update(chatActions)
         .set({
           status: "failed",
           result: {
-            ...(action.result ?? {}),
+            ...(action!.result ?? {}),
             retryable: true,
             retryAt: new Date().toISOString(),
           },
@@ -270,11 +279,11 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
         })
         .where(
           and(
-            eq(chatActions.id, action.id),
+            eq(chatActions.id, action!.id),
             eq(chatActions.status, "processing"),
-            eq(chatActions.updatedAt, action.updatedAt),
+            eq(chatActions.updatedAt, action!.updatedAt),
           ),
-        );
+        ));
       action = await db
         .select()
         .from(chatActions)
@@ -297,7 +306,7 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
         ? action.result.attempts
         : 0) + 1;
     let providerConfirmed = action.result?.providerConfirmed === true;
-    const [claimed] = await db.transaction(async (tx) => {
+    const [claimed] = await withMaintenanceWrite(async (tx) => {
       await credentialLease.assertOwned(tx);
       const rows = await tx
         .update(chatActions)
@@ -334,7 +343,7 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
         // Empty refs prove removal cleanup crossed its final local boundary;
         // settle the idempotent action instead of misclassifying it as a
         // credential rotation.
-        await db.transaction(async (tx) => {
+        await withMaintenanceWrite(async (tx) => {
           await credentialLease.assertOwned(tx);
           await tx
             .update(chatActions)
@@ -361,7 +370,7 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
           runtimeGeneration(record.endpoint.setup) !==
             payload.runtimeGeneration)
       ) {
-        await db.transaction(async (tx) => {
+        await withMaintenanceWrite(async (tx) => {
           await credentialLease.assertOwned(tx);
           await tx
             .update(chatActions)
@@ -422,7 +431,7 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
           providerConfirmed = true;
         }
         await credentialLease.assertOwned();
-        await db.transaction(async (tx) => {
+        await withMaintenanceWrite(async (tx) => {
           await credentialLease.assertOwned(tx);
           const confirmed = await tx
             .update(chatActions)
@@ -450,7 +459,7 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
         await credentialLease.assertOwned();
         await clearCredentials(record.endpoint, credentialLease);
       }
-      await db.transaction(async (tx) => {
+      await withMaintenanceWrite(async (tx) => {
         await credentialLease.assertOwned(tx);
         const processed = await tx
           .update(chatActions)
@@ -499,7 +508,7 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
         ? new Date(Date.now() + retryAfterMs).toISOString()
         : null;
       const diagnostic = redactError(error);
-      await db
+      await withMaintenanceWrite(tx => tx
         .update(chatActions)
         .set({
           status: "failed",
@@ -507,7 +516,7 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
             attempts: attempt,
             code: `telegram_maintenance_${disposition.kind}`,
             providerConfirmed:
-              providerConfirmed || action.result?.providerConfirmed === true,
+              providerConfirmed || action!.result?.providerConfirmed === true,
             redactedError: diagnostic,
             retryable,
             retryAt,
@@ -516,11 +525,11 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
         })
         .where(
           and(
-            eq(chatActions.id, action.id),
+            eq(chatActions.id, action!.id),
             eq(chatActions.status, "processing"),
             sql`(${chatActions.result}->>'attempts')::int = ${attempt}`,
           ),
-        );
+        ));
       await logActivity(db, {
         companyId: action.companyId,
         actorType: "system",
@@ -554,7 +563,7 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
     }
   }
 
-  async function processPendingTelegramMaintenance(limit = 25) {
+  async function discoverTelegramSubscriptions(limit: number, after: string | null, connectionId?: string, signal?: AbortSignal) {
     // Keyset scanning bounds each sweep without starving endpoints behind a
     // page whose subscriptions were already confirmed. No provider I/O here.
     const candidates = await db
@@ -573,18 +582,16 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
           eq(chatEndpoints.status, "active"),
           eq(toolConnections.status, "active"),
           eq(toolConnections.enabled, true),
-          telegramSubscriptionScanAfter
-            ? gt(chatEndpoints.id, telegramSubscriptionScanAfter)
+          connectionId !== undefined ? eq(chatEndpoints.connectionId, connectionId) : undefined,
+          after
+            ? gt(chatEndpoints.id, after)
             : undefined,
         ),
       )
       .orderBy(asc(chatEndpoints.id))
       .limit(Math.max(1, Math.min(limit, 100)));
-    telegramSubscriptionScanAfter =
-      candidates.length >= Math.max(1, Math.min(limit, 100))
-        ? candidates.at(-1)!.endpoint.id
-        : null;
     for (const { endpoint } of candidates) {
+      signal?.throwIfAborted();
       try {
         const record = await endpointRecord(endpoint.id);
         if (
@@ -595,42 +602,58 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
           ))
         )
           await stageTelegramMaintenance(record.endpoint, "stop_subscription");
-      } catch {
+      } catch (error) {
         logger.warn(
           { endpointId: endpoint.id },
           "Telegram subscription maintenance could not be staged",
         );
+        // Keep the pass recoverable. Earlier staged rows are idempotent, and
+        // failed discovery must not become invisible until the next restart.
+        throw error;
       }
     }
-    const now = new Date();
-    const staleBefore = new Date(now.getTime() - PROVIDER_EFFECT_STALE_MS);
+    return candidates.length >= Math.max(1, Math.min(limit, 100))
+      ? candidates.at(-1)!.endpoint.id : null;
+  }
+
+  async function processTelegramSubscriptionDiscovery(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const scoped = pendingDiscovery.entries().next().value;
+    if (scoped) {
+      const [connectionId, request] = scoped;
+      const after = await discoverTelegramSubscriptions(100, request.after, connectionId, signal);
+      // A commit during this page replaces the request and requires a fresh
+      // scoped pass, including changes behind its cursor.
+      if (pendingDiscovery.get(connectionId) === request) {
+        if (after === null) pendingDiscovery.delete(connectionId);
+        else request.after = after;
+      }
+    } else if (startupDiscoveryPending) {
+      startupDiscoveryAfter = await discoverTelegramSubscriptions(100, startupDiscoveryAfter, undefined, signal);
+      startupDiscoveryPending = startupDiscoveryAfter !== null;
+    }
+  }
+
+  function scheduleTelegramSubscriptionDiscovery(connectionId: string) {
+    pendingDiscovery.set(connectionId, { after: null });
+  }
+
+  function hasPendingTelegramSubscriptionDiscovery() {
+    return startupDiscoveryPending || pendingDiscovery.size > 0;
+  }
+
+  async function processPendingTelegramMaintenance(limit = 25) {
+    // Preserve the explicit bounded recovery helper. The app's periodic
+    // reconciliation no longer calls it; registered workers own both lanes.
+    telegramSubscriptionScanAfter = await discoverTelegramSubscriptions(limit, telegramSubscriptionScanAfter);
+    return processPendingTelegramActions(limit);
+  }
+
+  async function processPendingTelegramActions(limit = 25) {
     const actions = await db
       .select({ id: chatActions.id })
       .from(chatActions)
-      .where(
-        and(
-          eq(chatActions.kind, "telegram_maintenance"),
-          sql`(${chatActions.payload}->>'operation' <> 'stop_subscription' or exists (
-            select 1 from ${chatEndpoints} inner join ${toolConnections}
-              on ${toolConnections.id} = ${chatEndpoints.connectionId} and ${toolConnections.companyId} = ${chatEndpoints.companyId}
-            where ${chatEndpoints.id} = ${chatActions.endpointId} and ${chatEndpoints.companyId} = ${chatActions.companyId}
-              and ${chatEndpoints.provider} = 'telegram' and ${chatEndpoints.status} = 'active'
-              and ${toolConnections.status} = 'active' and ${toolConnections.enabled} = true
-          ))`,
-          or(
-            eq(chatActions.status, "received"),
-            and(
-              eq(chatActions.status, "processing"),
-              lte(chatActions.updatedAt, staleBefore),
-            ),
-            and(
-              eq(chatActions.status, "failed"),
-              sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'true'`,
-              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${now.toISOString()}::timestamptz)`,
-            ),
-          ),
-        ),
-      )
+      .where(dueChatAction("telegram_maintenance"))
       .orderBy(asc(chatActions.createdAt))
       .limit(limit);
     for (const action of actions) await processTelegramMaintenance(action.id);
@@ -927,5 +950,5 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
     await assertCurrent();
     await recordTelegramStopSubscription(endpoint, context, lease);
   }
-  return { stageTelegramMaintenance, processTelegramMaintenance, processPendingTelegramMaintenance, hasTelegramStopSubscription, recordTelegramStopSubscription };
+  return { stageTelegramMaintenance, processTelegramMaintenance, processPendingTelegramMaintenance, processPendingTelegramActions, processTelegramSubscriptionDiscovery, scheduleTelegramSubscriptionDiscovery, hasPendingTelegramSubscriptionDiscovery, hasTelegramStopSubscription, recordTelegramStopSubscription };
 }

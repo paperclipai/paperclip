@@ -87,6 +87,14 @@ const meta = {
   parameters: {
     layout: "fullscreen",
     docs: { description: { component: "Production catalog cards and setup pages with local API query fixtures. GitHub opens account/tool access; GitHub Code Review Bot opens Choose agent. These stories cover discovery and entry into setup, without live GitHub consent or app installation." } },
+    paperclip: {
+      "capabilities": [
+        "chat-channels/providers",
+        "connection-setup/channel-setup"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 } satisfies Meta<typeof GitHubConnections>;
 export default meta;

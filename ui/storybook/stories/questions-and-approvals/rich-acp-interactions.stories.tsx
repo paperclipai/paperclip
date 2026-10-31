@@ -183,7 +183,17 @@ function ProviderNotice() {
 const meta = {
   id: "chat-comments-rich-acp-interactions",
   title: "Tasks and conversations/Questions and approvals/Chat & Comments/Rich ACP interactions",
-  parameters: { layout: "fullscreen", docs: { description: { component: "Credential-free production UI fixtures. Callback receipts establish UI payload fidelity only; they do not claim provider execution or server persistence." } } },
+  parameters: { layout: "fullscreen", docs: { description: { component: "Credential-free production UI fixtures. Callback receipts establish UI payload fidelity only; they do not claim provider execution or server persistence." } },
+    paperclip: {
+      "capabilities": [
+        "questions-and-approvals/questions",
+        "questions-and-approvals/confirmations",
+        "questions-and-approvals/audience"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 } satisfies Meta;
 export default meta;
 type Story = StoryObj<typeof meta>;

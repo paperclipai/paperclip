@@ -13,6 +13,16 @@ const meta = {
           "Design preview: a paused task replaces the entire composer with an amber takeover. Resume restores the real composer; no dismiss, attachments, or sending while paused. Actions are local Storybook fixtures. See Tasks / Execution Controls for the current behavior.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "steering/stop-and-pause"
+      ],
+      "status": "historical",
+      "implementation": "prototype",
+      "boundary": "fixtures",
+      "notes": "Retained local paused takeover; task-execution-controls exercises the shipped pause/stop controls.",
+      "replacement": "ui/storybook/stories/steering/task-execution-controls.stories.tsx"
+    },
   },
 } satisfies Meta<typeof PausedComposerPreview>;
 export default meta;

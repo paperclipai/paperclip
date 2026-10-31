@@ -6,7 +6,18 @@ const meta = {
   id: "product-routines-webhooks",
   title: "Automation and structured work/Routines, schedules, and triggers/Product/Routines/Webhooks",
   component: WebhookReview,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "routines/triggers",
+        "routines/history",
+        "activity/routine-audit"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Runs and Activity mount RoutineDetail with fixture execution tasks/events and play assertions. Scheduler execution, delivery and audit persistence are not live."
+    },
+  },
   args: { signingMode: "bearer", state: "configured" },
 } satisfies Meta<typeof WebhookReview>;
 export default meta;

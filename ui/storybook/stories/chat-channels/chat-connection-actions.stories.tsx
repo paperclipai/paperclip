@@ -13,7 +13,15 @@ const meta = {
   id: "connections-chat-connection-actions",
   title: "Apps, channels, and extensions/External chat and email/Connections/Chat connection actions",
   component: ConnectorCard,
-  parameters: { layout: "padded" },
+  parameters: { layout: "padded",
+    paperclip: {
+      "capabilities": [
+        "chat-channels/providers"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   args: {
     row: {
       key: "slack", slug: "slack", name: "Slack", brandKey: "slack",

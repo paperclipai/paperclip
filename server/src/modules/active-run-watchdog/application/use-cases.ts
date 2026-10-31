@@ -72,6 +72,7 @@ export function createBuildRunOutputSilence(deps: BuildRunOutputSilenceDeps) {
 }
 
 export type FoldSourceResolvedRunDeps = {
+  reader: Pick<WatchdogRunReader, "isRuntimeSettlementPending">;
   writer: WatchdogWriter;
   processController: RunProcessController;
 };
@@ -89,6 +90,9 @@ export type FoldSourceResolvedRunUseCaseInput = {
 
 export function createFoldSourceResolvedRun(deps: FoldSourceResolvedRunDeps) {
   return async function foldSourceResolvedRun(input: FoldSourceResolvedRunUseCaseInput): Promise<FoldOutcome> {
+    if (await deps.reader.isRuntimeSettlementPending(input.run.companyId, input.run.id)) {
+      return { kind: "stale" };
+    }
     const cleanup = await deps.processController.cleanupRunProcess({
       runId: input.run.id,
       adapterType: input.runningAgentAdapterType,

@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ChatExecutionDefaults } from "./ChatExecutionDefaults";
+import type { ChatExecutionDefaults as Defaults } from "@paperclipai/shared";
 const mocks = vi.hoisted(() => ({ projects: vi.fn(), workspaces: vi.fn(), save: vi.fn() }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: mocks.projects } }));
 vi.mock("@/api/execution-workspaces", () => ({ executionWorkspacesApi: { listSummaries: mocks.workspaces } }));
@@ -14,8 +15,8 @@ beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 });
 afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); });
-async function render() {
-  await act(async () => root.render(<QueryClientProvider client={client}><ChatExecutionDefaults companyId="company" value={{ projectId: null }} resource onSave={mocks.save} /></QueryClientProvider>));
+async function render(value: Defaults | null = { projectId: null }) {
+  await act(async () => root.render(<QueryClientProvider client={client}><ChatExecutionDefaults companyId="company" value={value} resource onSave={mocks.save} /></QueryClientProvider>));
   await vi.waitFor(() => expect(container.querySelectorAll("select")[1].disabled).toBe(false));
 }
 async function choose(value: string) {
@@ -37,6 +38,19 @@ it("keeps edits visible after a save failure and permits retry", async () => {
   await save();
   expect(mocks.save).toHaveBeenLastCalledWith({ projectId: null, workspace: { kind: "task_directory" } });
   expect(container.textContent).toContain("Saved for new tasks.");
+});
+
+it("retains accepted selections until the parent refreshes and then follows later defaults", async () => {
+  await render();
+  await choose("task");
+  await save();
+  expect(container.querySelectorAll("select")[1].value).toBe("task");
+  expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
+  expect(container.textContent).toContain("Saved for new tasks.");
+  await render({ projectId: null, workspace: { kind: "task_directory" } });
+  await render({ projectId: null, workspace: null });
+  expect(container.querySelectorAll("select")[1].value).toBe("clear");
+  expect(mocks.save).toHaveBeenCalledTimes(1);
 });
 
 it("offers and saves an idle workspace from the shared task selection filter", async () => {

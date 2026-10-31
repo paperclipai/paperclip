@@ -21,6 +21,14 @@ const baseProps = {
 };
 
 const meta: Meta<typeof ActionCard> = {
+  parameters: { paperclip: {
+      "capabilities": [
+        "app-permissions/test-action",
+        "app-permissions/action-policy"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    } },
   id: "tools-access-actioncard",
   title: "Apps, channels, and extensions/App access and action permissions/Tools & Access/ActionCard",
   component: ActionCard,

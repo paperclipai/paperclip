@@ -726,6 +726,14 @@ const meta = {
           "Full search page surfaces and Command K Search-all handoff. Reuses StatusIcon, StatusBadge, Identity and PageTabBar; adds MatchSourceChip + SearchResultRow.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "inbox-search/search"
+      ],
+      "implementation": "prototype",
+      "boundary": "fixtures",
+      "notes": "Local search-page composition mounts production result components; does not establish parity with the production Search route. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
   },
 } satisfies Meta<typeof SearchStories>;
 

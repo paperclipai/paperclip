@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  applyPendingMigrations,
   activityLog,
   agents,
   authUsers,
@@ -31,13 +32,15 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { agentService } from "../services/agents.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_INTERACTIONS_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("issueThreadInteractionService", () => {
@@ -47,8 +50,9 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-thread-interactions-");
-    db = createDb(tempDb.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-thread-interactions-");
+    db = createDb(externalUrl ?? tempDb!.connectionString);
     issuesSvc = issueService(db);
     interactionsSvc = issueThreadInteractionService(db);
   }, 20_000);
@@ -78,6 +82,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -717,8 +722,10 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const release = new Promise<void>((resolve) => { releaseInsert = resolve; });
 
     await db.transaction(async (tx) => {
-      const lockedTx = new Proxy(tx as any, {
+      const observeInserts = (runner: typeof tx): typeof tx => new Proxy(runner as any, {
         get(target, property, receiver) {
+          if (property === "transaction") return (callback: (nested: typeof tx) => Promise<unknown>) =>
+            target.transaction((nested: typeof tx) => callback(observeInserts(nested)));
           if (property !== "insert") return Reflect.get(target, property, receiver);
           return (table: unknown) => {
             const builder = target.insert(table);
@@ -752,10 +759,10 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         "Comment inserted under a caller-owned transaction.",
         { userId: "board-user" },
         { authorType: "user" },
-        lockedTx,
+        observeInserts(tx),
       );
-      await reached;
       try {
+        await Promise.race([reached, commentPromise.then(() => { throw new Error("Comment insert was not intercepted"); })]);
         await expect(db.transaction(async (observer) => {
           await observer.execute(sql`
             select id from issues
@@ -2721,6 +2728,33 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(expired).toHaveLength(0);
     expect((await db.select().from(issueThreadInteractions))[0]?.status).toBe("pending");
   });
+
+  it.each(["verdicts", "suggestions", "dismiss"] as const)(
+    "rolls back %s when external action authorization or receipt ownership changes",
+    async (kind) => {
+      const { companyId, issueId } = await seedConfirmationIssue("External form transaction");
+      const issue = { id: issueId, companyId };
+      const interaction = await interactionsSvc.create(issue, kind === "verdicts"
+        ? { kind: "request_item_verdicts", payload: { version: 1, prompt: "Review", items: [{ id: "api", label: "API" }] } }
+        : { kind: "suggest_tasks", payload: { version: 1, tasks: [{ clientKey: "check", title: "Check the result" }] } },
+        { userId: "local-board" });
+      const resolve = (options: import("../services/issue-thread-interactions.js").InteractionResolutionMutationOptions) => kind === "verdicts"
+        ? interactionsSvc.submitItemVerdicts(issue, interaction.id, { verdicts: [{ id: "api", verdict: "approve" }] }, { userId: "local-board" }, options)
+        : kind === "dismiss"
+          ? interactionsSvc.rejectInteraction(issue, interaction.id, {}, { userId: "local-board" }, options)
+          : interactionsSvc.acceptInteraction(issue, interaction.id, { selectedClientKeys: ["check"] }, { userId: "local-board" }, options);
+      for (const hook of ["beforeResolveInTransaction", "afterResolveInTransaction"] as const) {
+        await expect(resolve({ [hook]: async () => { throw new Error("External action no longer authorized"); } })).rejects.toThrow("External action no longer authorized");
+        expect((await interactionsSvc.listForIssue(issueId)).find(item => item.id === interaction.id)).toMatchObject({ status: "pending", result: null });
+        expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.parentId, issueId))).toEqual([]);
+      }
+      await resolve({});
+      const resolved = (await interactionsSvc.listForIssue(issueId)).find(item => item.id === interaction.id);
+      expect(resolved?.status).toBe(kind === "verdicts" ? "answered" : kind === "dismiss" ? "rejected" : "accepted");
+      const children = await db.select({ id: issues.id }).from(issues).where(eq(issues.parentId, issueId));
+      expect(children).toHaveLength(kind === "suggestions" ? 1 : 0);
+    },
+  );
 
   it("submits request_item_verdicts partially and completes when all items are resolved", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Item verdict partial submit");

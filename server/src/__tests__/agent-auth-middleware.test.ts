@@ -31,7 +31,7 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
 }
 
 function createDbState(input: {
-  agent: { id: string; companyId: string; status?: string };
+  agent: { id: string; companyId: string; status?: string; lifecycleHolds?: string[] };
   agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null };
   run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null;
     status?: string; contextSnapshot?: Record<string, unknown>; resultJson?: Record<string, unknown> };
@@ -41,6 +41,7 @@ function createDbState(input: {
     id: input.agent.id,
     companyId: input.agent.companyId,
     status: input.agent.status ?? "active",
+    lifecycleHolds: input.agent.lifecycleHolds ?? [],
   };
   const keyRow = input.agentKey
     ? {
@@ -303,6 +304,19 @@ describe("agent auth middleware", () => {
     expect(res.body.error).toContain(error);
   });
 
+  it.each(["key", "jwt"])("rejects unfinished setup authentication with a %s", async kind => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const token = kind === "jwt" ? createLocalAgentJwt(agentId, companyId, "codex_local", randomUUID(), "user-1") : "pcp_setup-test-token";
+    const { db } = createDbState({
+      agent: { id: agentId, companyId, status: "paused", lifecycleHolds: ["setup"] },
+      ...(kind === "key" ? { agentKey: { id: randomUUID(), agentId, companyId, keyHash: hashToken(token), responsibleUserId: "user-1" } } : {}),
+    });
+    const res = await request(createApp(db, "local_trusted")).get("/actor").set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("setup is incomplete");
+  });
+
   it("rejects an agent JWT when the agent record belongs to another company", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -424,6 +438,38 @@ describe("agent auth middleware", () => {
       runId,
       details: { claimRunId: runId, headerRunId: spoofedRunId },
     });
+  });
+
+  it("audits a run header mismatch even when the claimed run does not exist", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const claimedRunId = randomUUID();
+    const spoofedRunId = randomUUID();
+    const { db, activity } = createDbState({
+      agent: { id: agentId, companyId },
+    });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", claimedRunId, "user-claim");
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", spoofedRunId);
+
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe("agent_jwt_run_id_mismatch");
+    expect(activity).toHaveLength(1);
+    expect(activity[0]).toMatchObject({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      action: "auth.agent_jwt_run_header_mismatch",
+      entityType: "heartbeat_run",
+      entityId: claimedRunId,
+      details: { claimRunId: claimedRunId, headerRunId: spoofedRunId },
+    });
+    // run_id carries a real FK to heartbeat_runs; a nonexistent claim must not
+    // be written into it or the whole audit row is lost to the FK violation.
+    expect(activity[0].runId).toBeUndefined();
   });
 
   it("falls back to the run row responsible user for legacy claim-less agent JWTs", async () => {

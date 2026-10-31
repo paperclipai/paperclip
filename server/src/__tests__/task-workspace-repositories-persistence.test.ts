@@ -195,6 +195,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await readFile(path.join(checkout, "source.txt"), "utf8")).toBe("uncommitted work\n");
     if (process.platform !== "win32") {
       const receiptPath = path.join(checkout, ".git", "paperclip-workspace-owner.json");
+      await rm(receiptPath, { force: true });
       await promisify(execFileCallback)("mkfifo", [receiptPath]);
       let deadline: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -210,7 +211,7 @@ const support = await getEmbeddedPostgresTestSupport();
       }
     }
   });
-  it("reuses the same physical checkout across logical workspaces and rechecks retained privacy", async () => {
+  it("reuses the exact published checkout across logical workspaces without applying historical task privacy", async () => {
     const [secondAgent] = await db.insert(agents).values({ companyId, name: "Second agent", adapterType: "process" }).returning();
     const [secondWorkspace] = await db.insert(executionWorkspaces).values({ companyId, projectId: null, name: "Same configured folder", cwd, mode: "shared_workspace", strategyType: "operator_directory" }).returning();
     const [secondIssue] = await db.insert(issues).values({ companyId, title: "Second task", assigneeAgentId: secondAgent.id, executionWorkspaceId: secondWorkspace.id }).returning();
@@ -218,10 +219,13 @@ const support = await getEmbeddedPostgresTestSupport();
     const intent = await service.request({ companyId, issueId: secondIssue.id, actor, request: { repository: { kind: "catalog", id: "123" }, requestKey: "shared-second" } });
     const admission = { companyId, issueId: secondIssue.id, workspaceId: secondWorkspace.id, cwd, agentId: secondAgent.id, runId: randomUUID(), responsibleUserId: null };
     const [original] = await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.executionWorkspaceId, workspaceId));
+    await writeFile(path.join(cwd, original.relativePath, ".git", "paperclip-workspace-owner.json"),
+      JSON.stringify({ version: 1, repositoryId: original.id, pinnedCommit: original.pinnedCommit }));
     const prepared = await prepareForAdmission(admission);
     expect(prepared[0]).toMatchObject({ id: intent.operationId, cwd: path.join(await realpath(cwd), original.relativePath), pinnedCommit: original.pinnedCommit });
     expect(await readFile(path.join(prepared[0].cwd, "source.txt"), "utf8")).toBe("uncommitted work\n");
-    expect(await readFile(path.join(prepared[0].cwd, ".git", "paperclip-workspace-owner.json"), "utf8").catch(() => null)).toBeNull();
+    expect(JSON.parse(await readFile(path.join(prepared[0].cwd, ".git", "paperclip-workspace-owner.json"), "utf8")))
+      .toMatchObject({ repositoryId: intent.operationId, pinnedCommit: original.pinnedCommit });
     const [differentRefWorkspace] = await db.insert(executionWorkspaces).values({ companyId, name: "Conflicting ref", cwd, mode: "shared_workspace", strategyType: "operator_directory" }).returning();
     const [differentRefIssue] = await db.insert(issues).values({ companyId, title: "Different ref", executionWorkspaceId: differentRefWorkspace.id }).returning();
     await service.request({ companyId, issueId: differentRefIssue.id, actor, request: { repository: { kind: "catalog", id: "123" }, ref: "release", requestKey: "conflicting-ref" } });
@@ -233,7 +237,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await owner.bindTaskWorkspace(companyId, privateSource.id, movedWorkspace.id);
     const [retainedWorkspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
     expect(retainedWorkspace.metadata?._issuePrivacySources).toMatchObject({ [privateSource.id]: true });
-    await expect(prepareForAdmission(admission)).rejects.toThrow(/Task workspace access is no longer available/);
+    await expect(prepareForAdmission(admission)).resolves.toHaveLength(1);
     expect(await readFile(path.join(prepared[0].cwd, "source.txt"), "utf8")).toBe("uncommitted work\n");
   });
   it("stages a root change without replacing active files or adding a wake", async () => {

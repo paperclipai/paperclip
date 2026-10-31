@@ -90,6 +90,14 @@ const meta = {
   },
   parameters: {
     layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "questions-and-approvals/plan-review",
+        "task-coordination/delegation"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 } satisfies Meta<typeof HydratedSection>;
 

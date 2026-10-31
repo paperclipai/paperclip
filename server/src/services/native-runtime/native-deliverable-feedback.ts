@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { assets, documents, documentRevisions, heartbeatRuns, issueDocuments, issueAttachments, issueWorkProducts, type Db } from "@paperclipai/db";
+import { assets, documents, documentRevisions, heartbeatRuns, issueDocuments, issueAttachments, issueWorkProducts, mcpAttachmentUploads, dotRunnerAssignments, type Db } from "@paperclipai/db";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 
 function evidenceRefs(value: unknown): string[] {
@@ -17,7 +17,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 async function hasCurrentPublicationReceipt(db: Db, companyId: string, receipts: unknown, attachment: {
-  id: string; filename: string | null; byteSize: number; sha256: string;
+  id: string; originatingRunId: string | null; filename: string | null; byteSize: number; sha256: string;
 }): Promise<boolean> {
   for (const value of Object.values(record(receipts))) {
     const receipt = record(value);
@@ -25,6 +25,22 @@ async function hasCurrentPublicationReceipt(db: Db, companyId: string, receipts:
     const result = record(receipt.result);
     if ((result.disposition !== "applied" && result.disposition !== "duplicate") ||
         !Array.isArray(result.entityRefs) || result.entityRefs[0] !== attachment.id) continue;
+    if (receipt.operationId === "publish_external_deliverable" && result.source === "authenticated_upload"
+      && result.commandId === `deliverable-uploaded:${attachment.id}` && typeof input.uploadId === "string"
+      && typeof input.workSessionId === "string" && attachment.originatingRunId && attachment.filename
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(input.uploadId)
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(input.workSessionId)
+      && input.filename === attachment.filename
+      && input.byteSize === attachment.byteSize && input.sha256 === attachment.sha256) {
+      const [upload] = await db.select({ id: mcpAttachmentUploads.id }).from(mcpAttachmentUploads)
+        .innerJoin(dotRunnerAssignments, and(eq(dotRunnerAssignments.id, mcpAttachmentUploads.workSessionId),
+          eq(dotRunnerAssignments.companyId, companyId)))
+        .where(and(eq(mcpAttachmentUploads.id, input.uploadId), eq(mcpAttachmentUploads.companyId, companyId),
+          eq(mcpAttachmentUploads.workSessionId, input.workSessionId), eq(mcpAttachmentUploads.attachmentId, attachment.id),
+          eq(dotRunnerAssignments.runId, attachment.originatingRunId), eq(mcpAttachmentUploads.originalFilename, attachment.filename),
+          eq(mcpAttachmentUploads.byteSize, attachment.byteSize), eq(mcpAttachmentUploads.sha256, attachment.sha256))).limit(1);
+      if (upload) return true;
+    }
     if (receipt.operationId === "register_deliverable" &&
         result.commandId === `deliverable-prepared:${attachment.id}` &&
         typeof input.filename === "string" && input.filename.trim() === attachment.filename &&
@@ -66,42 +82,60 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
   const sentences = objective.replaceAll("\\_", "_").split(/(?:[.!?](?:\s|$)|\n)/iu);
   let precedingFileOutput = false;
   return sentences.some((sentence, index) => {
-    const file = /\b(?:files?|attachments?|downloads?|pdf|spreadsheets?|workbooks?|slide decks?|powerpoints?|docx|xlsx|csv)\b|\b[^\s/]+\.(?:md|txt|pdf|docx?|xlsx?|csv|pptx?|png|jpe?g|svg|zip)\b/giu;
+    const file = /\b(?:files?|attachments?|downloads?|pdf|spreadsheets?|workbooks?|slide decks?|powerpoints?|docx|xlsx|csv)\b|\b[^\s/]+\.(?:md|txt|json|pdf|docx?|xlsx?|csv|pptx?|png|jpe?g|svg|zip)\b/giu;
     const outputs = sentence.split(/(?:[;,]|\bbut\b)/iu).flatMap(clause => {
-      const creates = [...clause.matchAll(/\b(?:create|make|write|save|export|attach|send|generate|produce|prepare|provide|give|return|build)\b/giu)];
+      const creates = [...clause.matchAll(/\b(?:create|make|write|save|export|attach|send|generate|produce|prepare|provide|give|return|build|publish)\b/giu)];
       return creates.flatMap((create, createIndex) => {
         const before = clause.slice(0, create.index);
-        if (/\b(?:do not|don't|never|no need to)\s*$/iu.test(before)) return [];
+        if (/\b(?:do not|don['’]t|never|no need to)\s*$/iu.test(before)) return [];
+        const negation = /\b(?:do not|don['’]t|never|no need to)\b/iu.exec(before);
+        if (negation) {
+          const rest = before.slice(negation.index + negation[0].length);
+          if (!/\binstead\b/iu.test(rest) && /^(?:\s*|[\s\S]*\b(?:and|or|nor)\s*)$/iu.test(rest)) return [];
+        }
         // Bind each object to its own verb. A denied write or "create no files"
         // cannot suppress a separate requested report in this same clause.
         const output = clause.slice(create.index + create[0].length, creates[createIndex + 1]?.index);
+        // An explicit attachment/export request can refer to the file by
+        // pronoun. It still requires publication when its name is omitted.
+        const referencesOutput = /^(?:attach|export|send|provide|give|return|publish)$/iu.test(create[0])
+          && /^\s+(?:me\s+)?(?:it|them|this|that)\b/iu.test(output);
+        const referencedAttachment = referencesOutput && /^(?:attach|export)$/iu.test(create[0]);
+        const inlineDestination = /\b(?:inline|(?:in|within|inside|as|into)\s+(?:(?:a|an|the|my|your|our|final|plain|markdown|chat|fenced)\s+)*(?:chat|response|reply|message|comment|text|code block))\b/iu;
+        const inline = inlineDestination.test(output) || /\b(?:its|the) contents\b/iu.test(output);
+        const downloadable = referencedAttachment || (!/\b(?:no|without)\s+(?:downloadable|attached)/iu.test(output)
+          && /\b(?:downloadable|attached)\s+(?:file|report|document|checklist|draft)\b/iu.test(output));
+        const inlineOnly = inlineDestination.test(output.split(/\s+(?:and|then)\s+/iu, 1)[0]) && !downloadable && !/^(?:attach|export|publish)$/iu.test(create[0])
+          && !/\bas (?:an? )?attachment\b/iu.test(output);
         const objects = [...output.matchAll(file)].filter(match => {
           const prefix = output.slice(0, match.index);
           const suffix = output.slice(match.index + match[0].length);
           // "Create no files" is a prohibition, even though it contains a creation
           // verb. Negate this object only; another explicit output can still count.
-          if (/\b(?:no|zero|without(?:\s+any)?)\s+(?:(?:new|temporary|downloadable|attached|additional)\s+)*$/iu.test(prefix)) return false;
+          if (/\b(?:no|zero|without(?:\s+(?:any|a|an))?)\s+(?:(?:new|temporary|downloadable|attached|additional)\s+)*$/iu.test(prefix)) return false;
           // "Write a summary of this PDF" names input, not a requested file.
           // Explicit export destinations still count after such input references.
-          const destination = /\b(?:as|into|to)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*$/iu.test(prefix);
-          if (!destination && /\b(?:of|about|on|from|using|for|with)\b/iu.test(prefix)) return false;
+          const json = /\.json$/iu.test(match[0]);
+          const inputReference = /\b(?:of|about|on|from|using|for|with)\b/iu;
+          const destinationMatch = (json
+            ? /\b(as|into|to|named|called)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*["'`*]*(?:[^\s]*\/)?$/iu
+            : /\b(?:as|into|to)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*$/iu).exec(prefix);
+          const beforeDestination = prefix.slice(0, destinationMatch?.index ?? 0);
+          const destination = destinationMatch !== null && (!json || !/^(?:to|named|called)$/iu.test(destinationMatch[1])
+            || !inputReference.test(beforeDestination));
+          if (json) {
+            const directObject = /^\s*(?:(?:a|an|the|my|your|our|their|his|her|its|this|that)\s+(?:(?:new|separate|downloadable|attached)\s+)*([\p{L}\p{N}_-]+\s+)?|(?:(?:new|separate|downloadable|attached)\s+)*)["'`*]*(?:[^\s]*\/)?$/iu.exec(prefix);
+            if (!destination && (!directObject || inputReference.test(directObject[1] ?? ""))) return false;
+          } else if (!destination && inputReference.test(prefix)) return false;
           if (/^files?$/iu.test(match[0]) && /^\s+(?:tools?|permissions?|systems?|formats?|names?|paths?|types?|sizes?|descriptors?)\b/iu.test(suffix)) return false;
           return true;
         });
-        // An explicit attachment/export request can refer to the file by
-        // pronoun. It still requires publication when its name is omitted.
-        const referencesOutput = /^(?:attach|export|send|provide|give|return)$/iu.test(create[0])
-          && /^\s+(?:me\s+)?(?:it|them|this|that)\b/iu.test(output);
-        const referencedAttachment = referencesOutput && /^(?:attach|export)$/iu.test(create[0]);
-        const inline = /\b(?:inline|(?:in|within|inside|as|into)\s+(?:(?:a|an|the|my|your|our|final|plain|markdown|chat|fenced)\s+)*(?:chat|response|reply|message|comment|text|code block)|(?:its|the) contents)\b/iu.test(output);
-        const downloadable = referencedAttachment || (!/\b(?:no|without)\s+(?:downloadable|attached)/iu.test(output)
-          && /\b(?:downloadable|attached)\s+(?:file|report|document|checklist|draft)\b/iu.test(output));
-        const publication = /\b(?:downloadable|attached|attach|export|send|provide|return|give)\b/iu.test(create[0] + output);
+        const publication = /\b(?:downloadable|attached|attach|export|send|provide|return|give|publish)\b/iu.test(create[0] + output);
         const deniedAttempt = create[0].toLowerCase() === "write" && objects.length === 1
           && /\b(?:attempt|try)\s+(?:the\s+)?native\s*$/iu.test(before)
           && /\b(?:must be denied|denial is (?:the )?expected|(?:this|the) negative test)\b/iu.test(objective);
         if (objects.length === 0 && !downloadable && /^\s+(?:no|zero|without)\b/iu.test(output)) return [];
-        return [{ objects: objects.length, downloadable, publication, deniedAttempt,
+        return [{ namesFile: objects.length > 0, objects: objects.filter(match => !inlineOnly || !/\.json$/iu.test(match[0])).length, downloadable, publication, deniedAttempt,
           referencesOutput, publicationReference: referencesOutput && !inline }];
       });
     });
@@ -112,7 +146,7 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
       && /^\s*This is (?:an? )?(?:personal memory|internal (?:assertion|verification) file)\b[^.!?]*\bnot a (?:task )?deliverable\b/iu.test(sentences[index + 1] ?? "");
     return outputs.some(output => {
       const publicationReference = output.publicationReference && precedingFileOutput;
-      if (!output.referencesOutput) precedingFileOutput = output.objects > 0;
+      if (!output.referencesOutput) precedingFileOutput = output.namesFile;
       return (output.objects > 0 || output.downloadable || publicationReference)
         && (output.publication || (!internal && !output.deniedAttempt));
     });

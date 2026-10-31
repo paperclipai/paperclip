@@ -1,11 +1,23 @@
+import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
 import { type ThreadScrollAnchor, threadScrollAnchorDelta } from "./scroll-anchor";
 import { createContext, useContext } from "react";
 
 export const TaskChatScrollNavigation = createContext<{ key: string; restore: boolean; hash: string } | null>(null);
 export const TaskChatScrollReady = createContext(true);
 
+/** Decision links name the conversation anchor separately from the artifact. */
+export function taskChatHashAnchor(hash: string): string | null {
+  const documentTarget = parseDocumentAnnotationHash(hash);
+  if (documentTarget?.interactionId) return `interaction-${documentTarget.interactionId}`;
+  if (documentTarget) return null;
+  try { return hash ? decodeURIComponent(hash.slice(1).split("&")[0]!) : null; } catch { return null; }
+}
+
 /** Document navigation opens a pane without starting a new thread reading. */
 export function taskChatScrollEntry(location: { key: string; hash: string; pathname: string; state: unknown }): { key: string; hash: string; pathname: string } {
+  if (parseDocumentAnnotationHash(location.hash)?.interactionId) {
+    return { key: location.key, hash: location.hash, pathname: location.pathname };
+  }
   const saved = location.state && typeof location.state === "object" && "taskDocumentScrollEntry" in location.state
     ? location.state.taskDocumentScrollEntry : null;
   if (saved && typeof saved === "object" && "key" in saved && "hash" in saved && "pathname" in saved && saved.pathname === location.pathname && typeof saved.key === "string" && typeof saved.hash === "string") {
@@ -16,7 +28,7 @@ export function taskChatScrollEntry(location: { key: string; hash: string; pathn
 
 // Scoped to browser-history entries, not issues: opening the same task from a
 // new Inbox click starts at latest, while Back restores the previous reading.
-const positions = new Map<string, { top: number; anchor: ThreadScrollAnchor | null }>();
+const positions = new Map<string, { top: number; anchor: ThreadScrollAnchor | null; followBottom: boolean }>();
 
 export function useTaskChatScrollNavigation() {
   const navigation = useContext(TaskChatScrollNavigation);
@@ -32,22 +44,24 @@ export function useTaskChatScrollNavigation() {
       if (!navigation) return null;
       if (navigation.restore && positionKey && positions.has(positionKey)) {
         const saved = positions.get(positionKey)!;
+        // A saved pixel offset goes stale when rotation changes text wrapping.
+        // Bottom-follow needs no row measurements, even across navigation.
+        if (saved.followBottom) return Math.max(0, root.scrollHeight - root.clientHeight);
         if (saved.anchor && [...root.querySelectorAll<HTMLElement>("[data-thread-anchor]")].some((row) => row.dataset.threadAnchor === saved.anchor?.id)) {
           return scrollTop + threadScrollAnchorDelta(root, saved.anchor, viewportTop);
         }
         return saved.top;
       }
       if (navigation.hash) {
-        let id: string;
-        try { id = decodeURIComponent(navigation.hash.slice(1)); } catch { return null; }
-        const target = document.getElementById(id);
+        const id = taskChatHashAnchor(navigation.hash);
+        const target = id ? document.getElementById(id) : null;
         if (target && root.contains(target)) return scrollTop + target.getBoundingClientRect().top - viewportTop;
       }
       return null;
     },
-    remember(top: number, anchor: ThreadScrollAnchor | null) {
+    remember(top: number, anchor: ThreadScrollAnchor | null, followBottom: boolean) {
       if (!positionKey || !ready) return;
-      positions.set(positionKey, { top, anchor });
+      positions.set(positionKey, { top, anchor, followBottom });
       if (positions.size > 100) positions.delete(positions.keys().next().value!);
     },
   };

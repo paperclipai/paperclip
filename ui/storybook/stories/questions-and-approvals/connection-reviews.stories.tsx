@@ -46,7 +46,16 @@ const readRequest: RequestConfirmationInteraction = {
 const meta = {
   id: "chat-comments-connection-reviews",
   title: "Tasks and conversations/Questions and approvals/Chat & Comments/Connection Reviews",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "questions-and-approvals/tool-review",
+        "connection-setup/task-request"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 } satisfies Meta;
 export default meta;
 type Story = StoryObj<typeof meta>;

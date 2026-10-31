@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
-import { idleWorkSnapshot } from "../services/task-admission.js";
+import { beginIdleTrackedWork, idleWorkSnapshot, isIdleTaskDrainActive, readTaskDrain, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
+import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
+import type { Db } from "@paperclipai/db";
 
 const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
-afterEach(async () => { for (const c of coordinators.splice(0)) await c.stop(); vi.useRealTimers(); });
+afterEach(async () => { stopTaskDrain(); for (const c of coordinators.splice(0)) await c.stop(); vi.useRealTimers(); });
 function setup() {
   vi.useFakeTimers();
   let outcome = "committed";
@@ -45,6 +47,70 @@ describe("delivery work coordinator", () => {
     expect(vi.getTimerCount()).toBe(0);
     expect(idleWorkSnapshot().active).toBe(0);
   });
+  it("preserves a future deadline when the clock advances between scheduling reads", async () => {
+    const s = setup(), t = task();
+    let now = Date.now();
+    const due = now + 1000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now++);
+    try {
+      await s.coordinator.register(DELIVERY_QUEUES.chatGitHubPublications, { ...t, nextRunAt: () => due }).ready;
+      expect(s.coordinator.nextWakeAt()).toBe(due);
+      expect(t.run).toHaveBeenCalledTimes(1);
+      expect(s.onError).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); }
+  });
+  it("honors a future backlog deadline after failure while preserving the fallback retry", async () => {
+    const s = setup(), t = task();
+    let next: number | null = Date.now() + 1000;
+    t.run.mockRejectedValueOnce(new Error("One item failed"));
+    await s.coordinator.register(DELIVERY_QUEUES.feedback, { ...t, nextRunAt: () => next }).ready;
+    expect(s.coordinator.nextWakeAt()).toBe(next);
+    expect(s.onError).toHaveBeenCalledOnce();
+    next = null;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(t.run).toHaveBeenCalledTimes(2);
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+  });
+  it("dispatches another due item after a worker records scoped failure backoffs", async () => {
+    const s = setup(), t = task(), now = Date.now();
+    t.run.mockRejectedValueOnce(new Error("One scoped item failed"));
+    const nextRunAtOnError = vi.fn(() => now);
+    await s.coordinator.register(DELIVERY_QUEUES.feedback, { ...t, nextRunAtOnError }).ready;
+    expect(nextRunAtOnError).toHaveBeenCalledOnce();
+    expect(s.coordinator.nextWakeAt()).toBe(now);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(t.run).toHaveBeenCalledTimes(2);
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+  });
+  it.each(["reconcile", "pending"])("does not consume scoped retry deadlines for a %s failure", async mode => {
+    const s = setup(), t = task(), now = Date.now();
+    if (mode === "reconcile") {
+      s.failCommit();
+      await expect(s.enqueue()).rejects.toThrow("lost commit reply");
+      s.execute.mockRejectedValueOnce(new Error("Database unavailable"));
+    } else t.hasPending.mockRejectedValueOnce(new Error("Pending state unavailable"));
+    const nextRunAtOnError = vi.fn(() => now);
+    await s.coordinator.register(DELIVERY_QUEUES.feedback, { ...t, nextRunAtOnError }).ready;
+    expect(nextRunAtOnError).not.toHaveBeenCalled();
+    expect(s.coordinator.nextWakeAt()).toBe(now + 5000);
+    expect(s.onError).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(s.onError).toHaveBeenCalledOnce();
+  });
+  it.each(["overdue", "later", "unreadable", "draining"])("keeps failure backoff for a %s deadline", async mode => {
+    const s = setup(), t = task(), now = Date.now();
+    t.run.mockImplementation(async () => {
+      if (mode === "draining") { s.canRun.mockReturnValue(false); s.canReconcile.mockReturnValue(true); }
+      throw new Error("Unavailable");
+    });
+    await s.coordinator.register(DELIVERY_QUEUES.feedback, { ...t, nextRunAt: () => {
+      if (mode === "unreadable") throw new Error("Deadline unavailable");
+      return mode === "overdue" ? now : now + (mode === "later" ? 60_000 : 1000);
+    } }).ready;
+    expect(s.coordinator.nextWakeAt()).toBe(now + 5000);
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(t.run).toHaveBeenCalledOnce();
+  });
   it("schedules maintenance without holding idle intent, and lets new work preempt it", async () => {
     const s = setup(), t = task();
     let next: number | null = Date.now() + 60_000;
@@ -76,6 +142,43 @@ describe("delivery work coordinator", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(t.run).toHaveBeenCalledTimes(3);
     expect(idleWorkSnapshot().active).toBe(0);
+  });
+  it.each([false, true])("pauses passive maintenance through a slow owned backup while preserving new work (%s)", async newWork => {
+    const s = setup(), t = task();
+    s.canRun.mockImplementation(() => !isIdleTaskDrainActive());
+    s.canReconcile.mockReturnValue(true);
+    await s.coordinator.register(DELIVERY_QUEUES.connection, {
+      ...t, nextRunAt: () => Date.now() + 5000, pausePassiveMaintenance: true,
+    }).ready;
+    const drain = startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
+    const getStatus = () => {
+      const current = readTaskDrain(new Date());
+      return { ...current, draining: current !== null, startedAt: current?.startedAt ?? null,
+        expiresAt: current?.expiresAt ?? null, activeRuns: 0, pendingWakes: 0 };
+    };
+    const db = { transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({ execute: async () => [{ blocked: false }] }) } as unknown as Db;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const checkpoint = async () => {
+      const finish = beginIdleTrackedWork(); entered();
+      try { await new Promise(resolve => setTimeout(resolve, 6000)); return true; }
+      finally { finish(); }
+    };
+    expect(idleWorkSnapshot().active).toBe(0);
+    const scan = readIdleSleepSafety(db, getStatus, Date.now, drain.ownerId, async () => "none", undefined, checkpoint);
+    await Promise.race([started, scan.then(result => { throw new Error(`Backup did not start: ${JSON.stringify(result)}`); })]);
+    expect(idleWorkSnapshot().active).toBe(1);
+    if (newWork) await s.enqueue(DELIVERY_QUEUES.connection);
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(await scan).toEqual({ version: 1, backgroundWork: newWork ? "unknown" : "none" });
+    expect(t.run).toHaveBeenCalledTimes(1);
+    expect(t.hasPending).toHaveBeenCalledTimes(newWork ? 2 : 1);
+    expect(idleWorkSnapshot().active).toBe(0);
+    stopTaskDrain();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(t.run).toHaveBeenCalledTimes(2);
+    expect(s.onError).not.toHaveBeenCalled();
   });
   it("fences unresolved writes until the server settles, then scans and releases the idle hold", async () => {
     const s = setup(), t = task();
@@ -163,6 +266,62 @@ describe("delivery work coordinator", () => {
     expect(t.run).toHaveBeenCalledTimes(2);
     expect(idleWorkSnapshot().active).toBe(0);
   });
+  it("delivers already-admitted stop work during drain while respecting warm standby", async () => {
+    const s = setup(), t = task();
+    await s.coordinator.register(DELIVERY_QUEUES.budgetEnforcement, { ...t, runDuringDrain: true }).ready;
+    s.canRun.mockReturnValue(false);
+    s.canReconcile.mockReturnValue(true);
+    await s.enqueue(DELIVERY_QUEUES.budgetEnforcement);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(t.run).toHaveBeenCalledTimes(2);
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+    s.canReconcile.mockReturnValue(false);
+    await s.enqueue(DELIVERY_QUEUES.budgetEnforcement);
+    await vi.advanceTimersByTimeAsync(5001);
+    expect(t.run).toHaveBeenCalledTimes(2);
+    s.canReconcile.mockReturnValue(true);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(t.run).toHaveBeenCalledTimes(3);
+    expect(idleWorkSnapshot().active).toBe(0);
+  });
+  it("bounds an expired deadline retry during idle reconciliation and resumes after drain", async () => {
+    const s = setup(), t = task();
+    const due = Date.now() + 10_000;
+    let next: number | null = due;
+    const scheduled = { ...t, nextRunAt: () => next };
+    await s.coordinator.register(DELIVERY_QUEUES.routineSchedules, scheduled).ready;
+    s.canRun.mockReturnValue(false);
+    s.canReconcile.mockReturnValue(true);
+    await vi.advanceTimersByTimeAsync(10_020);
+    expect(t.run).toHaveBeenCalledTimes(1);
+    expect(t.hasPending).toHaveBeenCalledTimes(2);
+    expect(s.coordinator.nextWakeAt()).toBe(due + t.retryMs);
+    expect(idleWorkSnapshot().active).toBe(0);
+    next = null;
+    s.canRun.mockReturnValue(true);
+    await vi.advanceTimersByTimeAsync(t.retryMs - 20);
+    expect(t.run).toHaveBeenCalledTimes(2);
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+  });
+
+  it("preserves a future deadline while reconciling a write during idle drain", async () => {
+    const s = setup(), t = task();
+    const due = Date.now() + 1000;
+    let next: number | null = due;
+    await s.coordinator.register(DELIVERY_QUEUES.routineSchedules, { ...t, nextRunAt: () => next }).ready;
+    s.canRun.mockReturnValue(false);
+    s.canReconcile.mockReturnValue(true);
+    await s.enqueue(DELIVERY_QUEUES.routineSchedules);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(s.coordinator.nextWakeAt()).toBe(due);
+    expect(t.run).toHaveBeenCalledTimes(1);
+    next = null;
+    s.canRun.mockReturnValue(true);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(t.run).toHaveBeenCalledTimes(2);
+    expect(idleWorkSnapshot().active).toBe(0);
+  });
+
   it("does not query during standby and resumes when admission opens", async () => {
     const s = setup(), t = task(); s.canRun.mockReturnValue(false);
     await s.coordinator.register(DELIVERY_QUEUES.toolAction, t).ready;

@@ -244,6 +244,8 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     const completed = await waitForRun(db, run!.id);
     expect(completed).toMatchObject({ status: "succeeded", responsibleUserId: operatorId });
     expect(completed?.contextSnapshot?.wakeCommentIds).toEqual([commentId]);
+    expect(completed?.contextSnapshot?.queuedCommentSourceWakeIds).toEqual([queueId]);
+    expect(completed?.wakeupRequestId).not.toBe(queueId);
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     expect((await db.select().from(heartbeatRuns)).every(row => row.responsibleUserId === operatorId)).toBe(true);
   });

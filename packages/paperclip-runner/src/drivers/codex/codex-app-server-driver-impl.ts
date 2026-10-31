@@ -1,7 +1,8 @@
+import { usesPreconfiguredHome } from "../preconfigured-home.js";
+import { writeManagedCodexObservability, redactObservabilityDiagnostic } from "../agent-observability.js";
 import { trustCodexStartupRoot } from "./codex-startup-trust.js";
 import { readCodexThreadState, readCodexTurnMetadata } from "./codex-history.js";
 import { codexExecutableReadOnlyRoots } from "./codex-security-config.js";
-import { resolve } from "node:path";
 
 import type {
   HarnessDriver,
@@ -35,6 +36,7 @@ import {
 } from "./app-server-transport.js";
 import {
   boundedCodexValue,
+  codexThreadWorkingDirectory,
   validateCodexWorkingDirectory as validateWorkingDirectory,
 } from "./codex-boundaries.js";
 import {
@@ -166,6 +168,10 @@ export class CodexAppServerDriver implements HarnessDriver {
     if (!this.#caps.read) this.#caps.reconciliation = false;
   }
 
+  #preparedLaunch(): boolean {
+    return this.#options.workingDirectoryAuthority === "runner_prepared_launch";
+  }
+
   #direct(): boolean {
     return this.#options.conversationMode === "direct";
   }
@@ -264,27 +270,38 @@ export class CodexAppServerDriver implements HarnessDriver {
 
   async openSession(input: OpenHarnessSessionInput): Promise<HarnessSession> {
     input.signal?.throwIfAborted();
-    const workingDirectory = validateWorkingDirectory(
-      input.workingDirectory,
-      this.#options.environment,
-      this.#options.workingDirectoryAuthority,
+    // A prepared launch resolves its directory on the runner filesystem. The
+    // caller's directory is controller-local and never authorizes itself.
+    const workingDirectory = this.#preparedLaunch()
+      ? null
+      : validateWorkingDirectory(
+          input.workingDirectory,
+          this.#options.environment,
+          this.#options.workingDirectoryAuthority,
+        );
+    const transport = this.#transport(
+      workingDirectory === null ? undefined : { workingDirectory },
     );
-    const transport = this.#transport({ workingDirectory });
     const cancellation = bootstrapCancellation(transport, input.signal);
     try {
       await cancellation.wait(this.#persistProcessOwnership(transport));
       const initialize = await cancellation.wait(this.#initialize(transport));
       const requestedMode =
         this.#options.requestedCollaborationMode ?? "default";
+      const threadParams = createSecuredCodexThreadParams(
+        workingDirectory ?? "",
+        requestedMode,
+        this.#options.includeCollaborationModeInstructions ?? true,
+        this.#options.includeSkillInstructions ?? false,
+        this.#options.environment,
+      );
+      if (workingDirectory === null) {
+        delete threadParams.cwd;
+        delete threadParams.runtimeWorkspaceRoots;
+      }
       const response = await cancellation.wait(
         transport.request("thread/start", {
-          ...createSecuredCodexThreadParams(
-            workingDirectory,
-            requestedMode,
-            this.#options.includeCollaborationModeInstructions ?? true,
-            this.#options.includeSkillInstructions ?? false,
-            this.#options.environment,
-          ),
+          ...threadParams,
           approvalPolicy: this.#options.approvalPolicy ?? "never",
           ...(this.#options.model ? { model: this.#options.model } : {}),
           ...(this.#direct()
@@ -389,6 +406,14 @@ export class CodexAppServerDriver implements HarnessDriver {
     try {
       await cancellation.wait(this.#persistProcessOwnership(transport));
       const initialize = await cancellation.wait(this.#initialize(transport));
+      if (transport.prepareConversationResume) {
+        const resumeDirectory = snapshot.workingDirectory
+          ? validateWorkingDirectory(snapshot.workingDirectory, this.#options.environment, this.#options.workingDirectoryAuthority)
+          : undefined;
+        await cancellation.wait(transport.prepareConversationResume(resumeDirectory
+          ? this.#resumeThreadParams(snapshot.driverSessionId, resumeDirectory)
+          : { threadId: snapshot.driverSessionId }));
+      }
       const existing = await cancellation.wait(
         readCodexThreadState(transport, snapshot.driverSessionId),
       );
@@ -407,24 +432,19 @@ export class CodexAppServerDriver implements HarnessDriver {
         this.#options.environment,
         this.#options.workingDirectoryAuthority,
       );
+      if (
+        this.#preparedLaunch() &&
+        snapshot.workingDirectory !== undefined &&
+        snapshot.workingDirectory !== workingDirectory
+      ) {
+        await cancellation.wait(cancellation.close());
+        return {
+          recovered: false,
+          reason: "provider read a different working directory",
+        };
+      }
       const response = await cancellation.wait(
-        transport.request("thread/resume", {
-          excludeTurns: true,
-          threadId: snapshot.driverSessionId,
-          ...createSecuredCodexThreadParams(
-            workingDirectory,
-            this.#options.requestedCollaborationMode ?? "default",
-            this.#options.includeCollaborationModeInstructions ?? true,
-            this.#options.includeSkillInstructions ?? false,
-            this.#options.environment,
-          ),
-          ...this.#instructionParams(this.#direct() ? "" : this.#baseInstructions()),
-          approvalPolicy: this.#options.approvalPolicy ?? "never",
-          ...(this.#options.model ? { model: this.#options.model } : {}),
-          dynamicTools: this.#providerDynamicTools(),
-          ...(this.#prepared() ? { conversationMode: "prepared" } : {}),
-          persistExtendedHistory: false,
-        }),
+        transport.request("thread/resume", this.#resumeThreadParams(snapshot.driverSessionId, workingDirectory)),
       );
       await cancellation.wait(this.#persistProcessOwnership(transport));
       const collaborationMode = await cancellation.wait(
@@ -623,6 +643,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         resumed: true,
         activeTurnId: recoveredActiveTurnId,
         semanticResult: snapshot.semanticResult ?? null,
+        normalizeReplayPayload: options.normalizeReplayPayload,
         terminalTurns: snapshot.terminalTurns ?? [],
         codexUsageBaseline: snapshot.codexUsageBaseline,
         dispositionOnlyRecoveryConsumed,
@@ -657,6 +678,22 @@ export class CodexAppServerDriver implements HarnessDriver {
     }
   }
 
+  #resumeThreadParams(threadId: string, workingDirectory: string): Record<string, unknown> {
+    return {
+      excludeTurns: true, threadId,
+      ...createSecuredCodexThreadParams(workingDirectory,
+        this.#options.requestedCollaborationMode ?? "default",
+        this.#options.includeCollaborationModeInstructions ?? true,
+        this.#options.includeSkillInstructions ?? false, this.#options.environment),
+      ...this.#instructionParams(this.#direct() ? "" : this.#baseInstructions()),
+      approvalPolicy: this.#options.approvalPolicy ?? "never",
+      ...(this.#options.model ? { model: this.#options.model } : {}),
+      dynamicTools: this.#providerDynamicTools(),
+      ...(this.#prepared() ? { conversationMode: "prepared" } : {}),
+      persistExtendedHistory: false,
+    };
+  }
+
   #transport(context?: {
     workingDirectory?: string;
     providerRecoveryPolicy?: PersistedHarnessSession["providerRecoveryPolicy"];
@@ -669,16 +706,21 @@ export class CodexAppServerDriver implements HarnessDriver {
     >;
   }): CodexAppServerTransport {
     const workingDirectory = context?.workingDirectory ?? this.#options.environment?.PAPERCLIP_WORKSPACE_CWD;
-    if (!this.#options.transportFactory && this.#options.environment?.CODEX_HOME && workingDirectory) {
+    if (this.#options.observability?.otelConfig && !this.#options.transportFactory && !usesPreconfiguredHome(this.#options.environment)) {
+      const home = this.#options.environment?.CODEX_HOME;
+      if (home) writeManagedCodexObservability(home, this.#options.observability.otelConfig);
+      else this.#options.onDiagnostic?.("Company observability requires a managed Codex home");
+    }
+    if (!usesPreconfiguredHome(this.#options.environment) && !this.#options.transportFactory && this.#options.environment?.CODEX_HOME && workingDirectory) {
       trustCodexStartupRoot(this.#options.environment.CODEX_HOME, workingDirectory);
     }
     return (
       this.#options.transportFactory?.(context) ??
       new ProcessCodexAppServerTransport({
         workingDirectory,
-        args: createIsolatedCodexAppServerArgs(this.#options.environment, codexExecutableReadOnlyRoots(this.#options.environment ?? process.env), this.#options.instructionWorkingCopyRoot),
+        args: createIsolatedCodexAppServerArgs(this.#options.environment, codexExecutableReadOnlyRoots(this.#options.environment ?? process.env), this.#options.instructionWorkingCopyRoot, [], this.#options.disableWebSearch),
         environment: createSanitizedCodexEnvironment(this.#options.environment),
-        onDiagnostic: this.#options.onDiagnostic,
+        onDiagnostic: message => this.#options.onDiagnostic?.(redactObservabilityDiagnostic(message, this.#options.environment, this.#options.observability?.otelConfig)),
         processGroup: true,
       })
     );
@@ -801,7 +843,7 @@ export class CodexAppServerDriver implements HarnessDriver {
   #openedThread(
     response: Record<string, unknown>,
     initialize: Record<string, unknown>,
-    workingDirectory: string,
+    expectedWorkingDirectory: string | null,
     collaborationMode: Record<string, unknown> | null,
   ): OpenedCodexThread {
     const thread = record(response.thread);
@@ -817,6 +859,11 @@ export class CodexAppServerDriver implements HarnessDriver {
         `provider_initialize_protocol_error: provider=${this.#options.driverIdentity?.kind ?? "codex"} stage=session.open omitted provider session identity`,
       );
     }
+    const workingDirectory = codexThreadWorkingDirectory(
+      response.cwd,
+      expectedWorkingDirectory,
+      this.#options.workingDirectoryAuthority,
+    );
     const activePermissionProfile = record(thread.activePermissionProfile);
     const permissionProfileId = text(activePermissionProfile.id);
     const requestedMode = this.#options.requestedCollaborationMode ?? "default";
@@ -834,12 +881,6 @@ export class CodexAppServerDriver implements HarnessDriver {
       ...activePermissionProfile,
       id: requiredPermissionProfile,
     };
-    const returnedWorkingDirectory = text(response.cwd, workingDirectory);
-    if (resolve(returnedWorkingDirectory) !== workingDirectory) {
-      throw new Error(
-        "Codex thread response changed the assigned working directory",
-      );
-    }
     const providerIdentity = parseProviderIdentity(thread.providerIdentity);
     return {
       threadId,
@@ -923,6 +964,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     resumed: boolean;
     activeTurnId?: string | null;
     semanticResult?: PersistedHarnessSemanticResult | null;
+    normalizeReplayPayload?: HarnessSessionRecoveryOptions["normalizeReplayPayload"];
     terminalTurns?: PersistedHarnessTurnTerminal[];
     codexUsageBaseline?: PersistedHarnessSession["codexUsageBaseline"];
     dispositionOnlyRecoveryConsumed?: boolean;

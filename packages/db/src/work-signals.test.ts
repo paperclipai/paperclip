@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDb, withDedicatedDbConnection } from "./client.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
-import { databaseWorkPending, installDatabaseWorkSignals, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
+import { databaseWorkScopeKey, databaseWorkPending, installDatabaseWorkSignals, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("database work signals", () => {
@@ -46,6 +46,24 @@ const support = await getEmbeddedPostgresTestSupport();
     await reconcileDatabaseWork(db, "rollback");
     expect(databaseWorkPending(db, "rollback")).toBe(false);
     expect(await db.execute(sql`select * from work_signal_test where id = 'rollback'`)).toHaveLength(0);
+  });
+
+  it("coalesces scoped hints and publishes them only when the outer transaction settles", async () => {
+    const settled: string[][] = [];
+    const unsubscribe = subscribeDatabaseWork(db, "scoped", (event, hints) => {
+      if (event === "settled") settled.push([...(hints ?? [])]);
+    });
+    try {
+      await db.transaction(async tx => {
+        await signalDatabaseWork(tx, "scoped", "connection-a");
+        await tx.transaction(async nested => {
+          await signalDatabaseWork(nested, "scoped", "connection-b");
+          await signalDatabaseWork(nested, "scoped", "connection-a");
+        });
+        expect(settled).toEqual([]);
+      });
+      expect(settled).toEqual([["connection-a", "connection-b"]]);
+    } finally { unsubscribe(); }
   });
 
   it("keeps outer ownership after a caught savepoint rollback", async () => {
@@ -92,19 +110,25 @@ const support = await getEmbeddedPostgresTestSupport();
     }) as typeof raw.transaction;
     const owner = installDatabaseWorkSignals(raw);
     const topic = `late-${outcome}`;
+    const settled: string[][] = [];
+    const unsubscribe = subscribeDatabaseWork(owner, topic, (event, hints) => {
+      if (event === "settled") settled.push([...(hints ?? [])]);
+    });
     try {
       await expect(owner.transaction(async tx => {
-        await signalDatabaseWork(tx, topic);
+        await signalDatabaseWork(tx, topic, "connection-late");
         await tx.execute(sql`insert into work_signal_test values (${topic})`);
       })).rejects.toThrow("lost transaction response");
       await reconcileDatabaseWork(owner, topic);
       expect(databaseWorkPending(owner, topic)).toBe(true);
       expect(await db.execute(sql`select * from work_signal_test where id = ${topic}`)).toHaveLength(0);
+      settled.length = 0;
       release(); await serverDone.catch(() => {});
       await reconcileDatabaseWork(owner, topic);
+      expect(settled).toEqual([["connection-late"]]);
       expect(databaseWorkPending(owner, topic)).toBe(false);
       expect(await db.execute(sql`select * from work_signal_test where id = ${topic}`)).toHaveLength(outcome === "commit" ? 1 : 0);
-    } finally { release(); await serverDone?.catch(() => {}); }
+    } finally { release(); await serverDone?.catch(() => {}); unsubscribe(); }
   });
 
   it("recovers after a real backend disconnect without replaying the queue write", async () => {
@@ -161,5 +185,25 @@ describe("work signal query boundaries", () => {
   it("rejects registration on an autocommit root", async () => {
     const connection = installDatabaseWorkSignals({ execute: vi.fn(), transaction: vi.fn() });
     await expect(signalDatabaseWork(connection, "bad")).rejects.toThrow("inside a transaction");
+  });
+});
+
+
+describe("database work scope identity", () => {
+  type TestConnection = { execute: () => Promise<unknown[]>; transaction: (callback: (tx: TestConnection) => unknown) => Promise<unknown> };
+  function connection(): TestConnection {
+    return { execute: vi.fn(async () => []), transaction: async callback => callback(connection()) };
+  }
+  it("shares owner identity through child pools and nested transactions, but isolates independent owners", async () => {
+    const first = installDatabaseWorkSignals(connection());
+    const second = installDatabaseWorkSignals(connection());
+    const child = installDatabaseWorkSignals(connection(), first);
+    const key = databaseWorkScopeKey(first);
+    expect(databaseWorkScopeKey(second)).not.toBe(key);
+    expect(databaseWorkScopeKey(child)).toBe(key);
+    await child.transaction(async tx => {
+      expect(databaseWorkScopeKey(tx)).toBe(key);
+      await tx.transaction(async nested => { expect(databaseWorkScopeKey(nested)).toBe(key); });
+    });
   });
 });

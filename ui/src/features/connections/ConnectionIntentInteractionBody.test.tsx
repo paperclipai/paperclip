@@ -237,6 +237,21 @@ afterEach(async () => {
 });
 
 describe("ConnectionIntentInteractionBody states and audience", () => {
+  it("opens the saved chat authentication step without another setup form", async () => {
+    const interaction = { ...pendingConnectionIntentInteraction, payload: { ...pendingConnectionIntentInteraction.payload,
+      purpose: "channel" as const, serviceSlug: "slack", serviceName: "Slack", phase: "authorizing" as const,
+      savedSetup: { endpointId: "endpoint", connectionId: "connection" } } };
+    setupOptionsMock.mockResolvedValue({ version: 1, interaction, requestedAgentId: interaction.payload.requestingAgentId,
+      existingConnections: [], service: { service: "slack", name: "Slack", methods: [], state: "needs_user_action" },
+      chatSetup: { endpointId: "endpoint", connectionId: "connection", path: "/ACME/apps/chat/connect?provider=slack&resume=endpoint" } });
+    renderBody(interaction);
+    await waitForAssertion(() =>
+      expect(document.querySelector('a')?.getAttribute("href")).toBe("/ACME/apps/chat/connect?provider=slack&resume=endpoint"),
+    );
+    expect(document.querySelector('[data-testid="shared-connection-setup"]')).toBeNull();
+    expect(completeMock).not.toHaveBeenCalled();
+  });
+
   it.each([
     [pendingConnectionIntentInteraction, "Connect"],
     [
@@ -257,6 +272,18 @@ describe("ConnectionIntentInteractionBody states and audience", () => {
   ] as const)("renders the %s state", (interaction, expected) => {
     renderBody(interaction as ConnectionIntentInteraction);
     expect(document.body.textContent).toContain(expected);
+  });
+
+  it("shows the stored reason on an expired request", () => {
+    // The server writes what actually expired the request and what to do next.
+    // A generic "no longer active" line left the reader with no next step.
+    const reason = "The task was reassigned before the connection request was answered, so the Notion connection is still not connected. Reconnect it or choose an available connection.";
+    renderBody({
+      ...terminal("expired", "expired"),
+      result: { version: 1, outcome: "expired", reason },
+    } as ConnectionIntentInteraction);
+    expect(document.body.textContent).toContain(reason);
+    expect(document.body.textContent).not.toContain("This request is no longer active.");
   });
 
   it("shows non-addressees only the waiting state and never loads setup", () => {
@@ -627,6 +654,15 @@ describe("AI repair inside the card", () => {
     await act(() => button("Fix connection")!.click());
     expect(document.body.textContent).toContain("Dotta must reconnect My Codex account");
     expect(document.querySelector('[data-testid="shared-ai-credentials"]')).toBeNull();
+  });
+  it("shows a withdrawn AI request as terminal without another setup action", () => {
+    renderBody({ ...interaction, status: "cancelled", resolvedAt: new Date() });
+    expect(document.body.textContent).toContain("Connection request withdrawn");
+    expect(document.body.textContent).not.toContain("This task can’t run");
+    expect(button("Fix connection")).toBeUndefined();
+    expect(document.querySelector('[data-testid="connection-intent-terminal"]')).not.toBeNull();
+    expect(setupOptionsMock).not.toHaveBeenCalled();
+    expect(credentialRender).not.toHaveBeenCalled();
   });
   it("does not promise to run without credentials when declined", () => {
     renderBody({ ...interaction, status: "rejected" });
