@@ -132,6 +132,15 @@ describe("deployment hiring qualification", () => {
     expect(() => assertHireRuns(scope, f.agent.id, [f.task], [f.taskRun, f.taskRun])).toThrow();
     expect(() => assertHireRuns(scope, f.agent.id, [f.task], [f.leadRun, f.taskRun], 5)).toThrow();
   });
+  it("rejects a lead task run from create-self-then-reassign even after the saved assignee is correct", () => {
+    const f = fixture();
+    const delegation = { ...f.run("delegate-chat", scope.chatId, scope.leadId), status: "running" };
+    const extra = { ...f.run("self-assigned-task", f.task.id, scope.leadId), status: "cancelled", errorCode: "issue_reassigned" };
+    const child = { ...f.taskRun, status: "running" };
+    expect(f.task.assigneeAgentId).toBe(f.agent.id);
+    expect(() => assertHireRuns(scope, f.agent.id, [f.task], [f.leadRun, delegation, extra, child])).toThrow("hire_run_scope_mismatch");
+    expect(() => assertHireRuns(scope, f.agent.id, [f.task], [f.leadRun, f.taskRun])).not.toThrow();
+  });
   it("accounts for three requested lead turns, two exact completion callbacks and two child runs", () => {
     const f = fixture(), second = { ...f.task, id: "review", identifier: "TEST-2" };
     const requested = ["message-1", "message-2", "message-3"].map((id, i) => ({ ...f.run(`lead-${i}`, scope.chatId, scope.leadId),

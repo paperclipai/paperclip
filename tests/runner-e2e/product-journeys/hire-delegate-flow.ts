@@ -176,7 +176,7 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
   check("one-attributed-native-hire", state.tasks.length === 0);
   const marker = `HIRE${campaignId.replace(/[^a-z0-9]/gi, "")}`;
   await session.own({ kind: "issue", name: names.checklist, journeyId: "hire-delegate-reuse" });
-  state = await turn(`Have the existing ${names.hire} write a concise launch checklist as a saved Paperclip document with the line "Reference: ${marker}". Create exactly one task titled ${names.checklist} in ${names.project}, assigned to that teammate. Link the result here and let the teammate complete it. Do not hire another agent.`, 4);
+  state = await turn(`Have the existing ${names.hire} write a concise launch checklist as a saved Paperclip document with the line "Reference: ${marker}". Create exactly one task titled ${names.checklist} in ${names.project}, already assigned to that teammate when it is created. Link the result here and let the teammate complete it. Do not hire another agent.`, 4);
   const first = state.tasks.find(task => task.title === names.checklist);
   check("first-delegated-task-complete", typeof first?.identifier === "string" && state.tasks.length === 1);
   const readOutput = async (task: Row, token: string, runs: Row[]) => {
@@ -189,7 +189,7 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
   const originalTask = mutableIssueSnapshot(await api.get<Task>(`/api/issues/${first!.id}`));
   check("checklist-authored-by-hired-run");
   await session.own({ kind: "issue", name: names.review, journeyId: "hire-delegate-reuse" });
-  state = await turn(`Have the existing ${names.hire} review the checklist on ${first!.identifier} and write a separate saved review document with the line "Reference: REVIEW${marker}". Create exactly one task titled ${names.review} in ${names.project}, assigned to that same teammate. Include the actual checklist in the handoff. Preserve the original checklist and task. Link the completed review here. Do not hire another agent.`, 7);
+  state = await turn(`Have the existing ${names.hire} review the checklist on ${first!.identifier} and write a separate saved review document with the line "Reference: REVIEW${marker}". Create exactly one task titled ${names.review} in ${names.project}, already assigned to that same teammate when it is created. Include the actual checklist in the handoff. Preserve the original checklist and task. Link the completed review here. Do not hire another agent.`, 7);
   const second = state.tasks.find(task => task.title === names.review);
   check("same-teammate-reused", typeof second?.identifier === "string" && state.tasks.length === 2 && state.tasks.every(task => taskNames.includes(task.title)));
   const reviewOutput = await readOutput(second!, `REVIEW${marker}`, state.runs);
