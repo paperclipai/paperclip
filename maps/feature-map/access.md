@@ -45,6 +45,8 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). For 
 
 Automated: [auth UI](../../ui/src/pages/Auth.test.tsx) and [session routes](../../server/src/__tests__/auth-session-route.test.ts) cover their respective layers.
 
+The [board claim delivery regression](../../server/src/__tests__/board-claim-connection-delivery.test.ts) covers transaction-triggered retirement of satisfied connection requests after membership restoration, including rollback, outer commit, duplicate, race and drain behavior on real PostgreSQL.
+
 Manual: Sign in, reload a company deep link, sign out, and revisit it. Confirm the browser requests authentication rather than showing cached company data. Test an invalid claim separately on disposable state.
 
 ### `invite-members`
