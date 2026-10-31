@@ -2257,7 +2257,7 @@ export type WithdrawIssueThreadInteraction = z.infer<
 >;
 
 export const respondIssueThreadInteractionSchema = z.object({
-  answers: z.array(askUserQuestionsAnswerSchema).max(20),
+  answers: z.array(askUserQuestionsAnswerSchema).max(64),
   summaryMarkdown: multilineTextSchema
     .pipe(z.string().max(20000))
     .nullable()
