@@ -1164,6 +1164,14 @@ Lifecycle polls can page past failed resources using the last returned event id 
 cursor, never a persisted high-water mark. This retries failures and includes
 transactions that commit later with lower ids.
 
+Delegated-task completion deliveries acknowledge only a final persisted reply
+selected by the server. Finalization also acknowledges an existing provider
+comment when it reuses that comment as the final response. The acknowledgement
+revalidates the company, task, run, agent and conversation generation under the
+publication lock and records the response comment against the turn's frozen
+delivery batch. Progress comments alone leave deliveries queued; subsequent
+sweeps leave acknowledged deliveries alone.
+
 ## Legacy controller ownership
 
 Legacy run claims atomically record `controller_boot_id`, a database-clock
