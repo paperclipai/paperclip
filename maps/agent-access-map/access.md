@@ -79,8 +79,9 @@ API: `present` — representative operation IDs:
 - `GET /api/companies/{companyId}/members`.
 - `PATCH /api/companies/{companyId}/members/{memberId}/permissions`.
 
-Agent access: `partial` — REST with the specific company permission; native fallback for
-unrestricted operations.
+Agent access: `restricted` — agents cannot administer agent grants or mutate human
+membership through the protected member routes. The action-specific invitation
+permission remains a separate capability.
 
 Policy: Company access plus action-specific grants; instance administration requires a
 board administrator.
@@ -93,8 +94,14 @@ credentials/run context; inspect its result and applicable persistence/attributi
 Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
-Gaps: Company membership APIs include agent grants; instance-admin user operations stay
-board-only.
+Board operators with `users:manage_permissions` can discover agent membership IDs
+with `GET /api/companies/{companyId}/members?principalType=agent` and replace their
+operational grants through the existing permissions route. Agent targets cannot
+receive `users:manage_permissions` or `joins:approve` through that route. Default
+human listings, role/self/owner protections and user audit attribution remain.
+
+Gaps: Delegated human-membership mutation is not implemented by this contract.
+Instance-admin user operations stay board-only.
 
 ## `resources`
 

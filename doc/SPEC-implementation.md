@@ -857,6 +857,13 @@ access does not bypass that decision, and `agents:suggest-changes` alone cannot
 apply the lifecycle change. Pause, clear-error, terminate, approval, and
 key-management routes remain board-only.
 
+Board operators with company `users:manage_permissions` authority can discover
+agent memberships through the explicit `principalType=agent` members query and
+replace their grants through the existing member-permissions route. Agent actors
+cannot administer these grants. The route rejects `users:manage_permissions` and
+`joins:approve` on agent targets and records the acting board user. Human member
+role and removal protections are unchanged.
+
 An ordinary standard agent receives a direct `agents:configure` grant on
 creation. Existing agents keep their current permissions; no backfill runs.
 Low-trust and managed built-in agents do not receive this default. See

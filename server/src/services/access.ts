@@ -465,6 +465,26 @@ export function accessService(db: Db) {
       .orderBy(sql`${companyMemberships.createdAt} desc`);
   }
 
+  async function listAgentMembers(companyId: string) {
+    const members = await db.select({ member: companyMemberships }).from(companyMemberships)
+      .innerJoin(agents, and(eq(sql`${agents.id}::text`, companyMemberships.principalId), eq(agents.companyId, companyId)))
+      .where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "agent")))
+      .orderBy(sql`${companyMemberships.createdAt} desc`);
+    if (!members.length) return [];
+    const grants = await db.select().from(principalPermissionGrants).where(and(
+      eq(principalPermissionGrants.companyId, companyId), eq(principalPermissionGrants.principalType, "agent"),
+      inArray(principalPermissionGrants.principalId, members.map(({ member }) => member.principalId)),
+    ));
+    const grantsByPrincipal = new Map<string, typeof grants>();
+    for (const grant of grants) {
+      const principalGrants = grantsByPrincipal.get(grant.principalId) ?? [];
+      principalGrants.push(grant);
+      grantsByPrincipal.set(grant.principalId, principalGrants);
+    }
+    return members.map(({ member }) => ({ ...member, principalType: "agent" as const,
+      grants: grantsByPrincipal.get(member.principalId) ?? [] }));
+  }
+
   async function getMemberById(companyId: string, memberId: string) {
     return db
       .select()
@@ -1210,6 +1230,7 @@ export function accessService(db: Db) {
     getMemberById,
     ensureMembership,
     listMembers,
+    listAgentMembers,
     listActiveUserMemberships,
     copyActiveUserMemberships,
     ensureRoleDefaultGrants,
