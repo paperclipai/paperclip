@@ -266,6 +266,7 @@ import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
 import {
   assertBoard,
   assertCompanyAccess,
+  assertCompanyReadAccess,
   getAccessibleResource,
   getActorInfo,
 } from "./authz.js";
@@ -10514,7 +10515,7 @@ export function issueRoutes(
     validate(externalObjectSummariesSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      assertCompanyReadAccess(req, companyId);
       const requestedIssueIds = [...new Set(req.body.issueIds as string[])];
       const candidateIssues =
         requestedIssueIds.length > 0
