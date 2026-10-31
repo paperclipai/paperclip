@@ -4,6 +4,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
+import { authApi } from "@/api/auth";
+import { useSignOut } from "./useSignOut";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import {
@@ -243,6 +245,73 @@ describe("useDurableAutosave", () => {
       client.clear();
     },
   );
+
+  it("invalidates an unknown-account detached draft through the real sign-out reset", async () => {
+    store.setBrowserOnline(false);
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, enabled: false } } });
+    client.setQueryData(queryKeys.health, { status: "ok", deploymentMode: "authenticated" });
+    const lookup = vi.spyOn(authApi, "getSession").mockReturnValue(new Promise(() => {}));
+    const signOutApi = vi.spyOn(authApi, "signOut").mockResolvedValue({ success: true });
+    const save = vi.fn().mockResolvedValue(undefined);
+    let signOut!: ReturnType<typeof useSignOut>;
+    function SignOut() { signOut = useSignOut(); return null; }
+    try {
+      act(() => root.render(<QueryClientProvider client={client}><ConnectivityProvider store={store}>
+        <Harness sourceId="unknown-account-draft" save={save} />
+      </ConnectivityProvider></QueryClientProvider>));
+      await act(async () => { await current.run("Private title before sign-out"); });
+      act(() => { root.unmount(); root = createRoot(container); });
+      act(() => root.render(<QueryClientProvider client={client}><SignOut /></QueryClientProvider>));
+      await act(async () => { await signOut.mutateAsync(); });
+      expect(signOutApi).toHaveBeenCalledOnce();
+      expect(client.getQueryData(queryKeys.auth.session)).toBeUndefined();
+      act(() => client.setQueryData(queryKeys.auth.session, { user: { id: "next-account" } }));
+      await act(async () => { store.setBrowserOnline(true); store.reportSuccess(); });
+      await advance(2_000);
+      expect(save).not.toHaveBeenCalled();
+      expect(store.getSnapshot().pendingWrites).toBe(0);
+    } finally { client.clear(); lookup.mockRestore(); signOutApi.mockRestore(); }
+  });
+
+  it.each([403, 404])("retains detached startup work after a definitive session lookup error (%s)", async status => {
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, enabled: false } } });
+    const lookup = vi.spyOn(authApi, "getSession").mockRejectedValue(new ApiError("Session lookup unavailable", status, {}));
+    const save = vi.fn().mockRejectedValueOnce(outage()).mockResolvedValue(undefined);
+    try {
+      act(() => root.render(<QueryClientProvider client={client}><ConnectivityProvider store={store}>
+        <Harness sourceId="startup-lookup-error" save={save} />
+      </ConnectivityProvider></QueryClientProvider>));
+      await act(async () => { await current.run("Retained title"); });
+      act(() => { root.unmount(); root = createRoot(container); });
+      await advance(0);
+      expect(lookup).toHaveBeenCalled();
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(store.getSnapshot().pendingWrites).toBe(1);
+      act(() => client.setQueryData(queryKeys.auth.session, { user: { id: "first-account" } }));
+      await advance(30_000);
+      expect(save).toHaveBeenCalledTimes(2);
+      expect(save).toHaveBeenLastCalledWith("Retained title");
+      expect(store.getSnapshot().pendingWrites).toBe(0);
+    } finally { client.clear(); lookup.mockRestore(); }
+  });
+
+  it("bounds detached session discovery when the first identity never becomes available", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, enabled: false } } });
+    const lookup = vi.spyOn(authApi, "getSession").mockRejectedValue(new ApiError("Session unavailable", 403, {}));
+    const save = vi.fn().mockRejectedValue(outage());
+    try {
+      act(() => root.render(<QueryClientProvider client={client}><ConnectivityProvider store={store}>
+        <Harness sourceId="bounded-startup-lookup" save={save} />
+      </ConnectivityProvider></QueryClientProvider>));
+      await act(async () => { await current.run("Retained title"); });
+      act(() => { root.unmount(); root = createRoot(container); });
+      for (let attempt = 0; attempt < 10; attempt++) await advance(30_000);
+      expect(lookup.mock.calls.length).toBeGreaterThan(1);
+      expect(lookup.mock.calls.length).toBeLessThanOrEqual(9);
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(store.getSnapshot().pendingWrites).toBe(0);
+    } finally { client.clear(); lookup.mockRestore(); }
+  });
 
   it("bounds retries after an editor unmounts", async () => {
     const save = vi.fn().mockRejectedValue(outage());
