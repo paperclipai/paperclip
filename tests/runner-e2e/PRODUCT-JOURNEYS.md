@@ -40,7 +40,12 @@ never start a server or depend on a tenant filesystem.
 
 The question-resumption journey uses the same natural-language scenario, browser
 answer helper and behavioral grader as the classic `question-resume` suite. Native
-provider questions can stay in one run; durable native questions create one exactly bound
+reference cards may expose a text field or an explicit canonical written-answer
+control on one single-select question. The browser must type the complete reference
+and submit no predefined option. An absent or disabled custom-answer capability is
+not an equivalent form. The user still answers exactly two distinct native questions;
+the document must retain the actual choice and typed reference after reload.
+Provider questions can stay in one run; durable native questions create one exactly bound
 continuation each. Creation must have an applied semantic receipt or a completed native
 API mutation receipt with the original card, exact scope, form and idempotency key.
 An API receipt must retain its creation identity unchanged after the answer. A form or
