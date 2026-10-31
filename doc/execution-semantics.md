@@ -2529,7 +2529,8 @@ wake from a server-verified human card response references that entry in
 `humanResponses`, whose answer is already present in the current request context.
 Agent/tool outcomes and generated summaries are not promoted to human direction.
 
-Standing agent chats complete the current response stage. Each pending request
+Standing agent chats, identified by both conversation agent and user IDs through
+the shared conversation predicate, complete the current response stage. Each pending request
 keeps its criterion identity and source, with instructions to address it within
 that stage. Authorized chat actions require verified results. Delegation requires
 a verified handoff and a reply; the worker's task remains separate. An unavailable
