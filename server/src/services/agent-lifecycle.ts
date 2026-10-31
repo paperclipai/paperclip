@@ -20,13 +20,15 @@ import { trackIdleWork } from "./task-admission.js";
 import { environmentService } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { pluginEnvironmentRequiresAgent } from "./plugin-environment-driver.js";
+import { isProviderApiSetupDraft } from "./native-runtime/provider-api-placement.js";
 
 export { scheduleAgentLifecycle, processAgentLifecycle } from "../modules/agent-lifecycle/index.js";
 export type { LifecycleDriver, LifecycleAgent } from "../modules/agent-lifecycle/index.js";
 
 export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): lifecycle.LifecycleEffects {
   return {
-    async setupRequiresPreparation(db, companyId, environmentId) {
+    async setupRequiresPreparation(db, companyId, environmentId, profile) {
+      if (isProviderApiSetupDraft(profile)) return false;
       const id = environmentId ?? (await instanceSettingsService(db).get()).defaultEnvironmentId;
       const environment = id ? await environmentService(db).getById(id) : null;
       if (!environment || !await pluginEnvironmentRequiresAgent(db, environment)) return false;

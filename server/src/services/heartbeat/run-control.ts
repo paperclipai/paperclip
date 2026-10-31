@@ -34,6 +34,7 @@ import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { readQueuedInteractionResponse } from "../queued-interaction-response.js";
 import {
   isAcknowledgedNativeStop,
+  acknowledgedNativeApiStopExecutionHasStopped,
   acknowledgedNativeStopExecutionHasStopped,
 } from "../acknowledged-native-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../../vendor/paperclip-runner/index.js";
@@ -501,27 +502,54 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         completeTerminatedRemoteNativeSessionCleanup({ companyId, runId, remoteCleanupScope });
       }
     }
-    const stopped = state?.status === "cancelled" ? await getRun(runId) : null;
-    // Native interrupt acknowledgement is not physical containment. Publish the
-    // shared Stop receipt only after every exact remote lease confirms teardown.
-    // Keep workspace preservation separate: a stopped provider can still owe files.
-    if (stopped?.status === "cancelled" &&
-        parseObject(stopped.resultJson?.executionCancellation).state === "requested" &&
-        (stopped.runtimeMode === "native" ? isAcknowledgedNativeStop(stopped)
-          : stopped.runtimeMode === "legacy" && await runUsedConversationAdapter(db, stopped)) &&
-        await remoteExecutionHasStopped(db, companyId, runId)) {
-      await db.update(heartbeatRuns).set({
-        resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
-          executionCancellation: { ...parseObject(stopped.resultJson?.executionCancellation),
-            state: "acknowledged", acknowledgedAt: new Date().toISOString(),
-            proof: "provider_termination_receipt" },
-          ...(stopped.runtimeMode === "legacy" ? { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } : {}),
-                 })}::jsonb`,
-        updatedAt: new Date(),
-      }).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId),
-        eq(heartbeatRuns.status, "cancelled"),
-        sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'requested'`,
-        stopped.runtimeMode === "native" ? sql`${heartbeatRuns.resultJson}->'nativeCancellation' = ${JSON.stringify(stopped.resultJson?.nativeCancellation)}::jsonb` : undefined));
+    // Finalization can append a harmless event after proof was read. Retry
+    // only a lost API compare-and-set, with fresh complete proof each time.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const stopped = state?.status === "cancelled" ? await getRun(runId) : null;
+      // Native interrupt acknowledgement is not physical containment. Require
+      // exact remote lease teardown, or the API provider's terminal receipt and
+      // the local controller's retirement, before publishing shared Stop proof.
+      // Keep workspace preservation separate: a stopped provider can still owe files.
+      if (stopped?.status === "cancelled" && stopped.companyId === companyId &&
+          parseObject(stopped.resultJson?.executionCancellation).state === "requested" &&
+          (stopped.runtimeMode === "native" ? isAcknowledgedNativeStop(stopped)
+            : stopped.runtimeMode === "legacy" && await runUsedConversationAdapter(db, stopped))) {
+        const apiStopped = stopped.runtimeMode === "native" && await acknowledgedNativeApiStopExecutionHasStopped(db, stopped);
+        if (!apiStopped && !await remoteExecutionHasStopped(db, companyId, runId)) return;
+        const acknowledged = await db.update(heartbeatRuns).set({
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
+            executionCancellation: { ...parseObject(stopped.resultJson?.executionCancellation),
+              state: "acknowledged", acknowledgedAt: new Date().toISOString(),
+              proof: apiStopped ? "provider_api_stop_receipt" : "provider_termination_receipt" },
+            ...(stopped.runtimeMode === "legacy" ? { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } : {}),
+                   })}::jsonb`,
+          updatedAt: new Date(),
+        }).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "cancelled"),
+          sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'requested'`,
+          apiStopped ? and(eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.driverKind, "cursor_cloud_api"),
+            eq(heartbeatRuns.nextEventSeq, stopped.nextEventSeq),
+            eq(heartbeatRuns.agentId, stopped.agentId), eq(heartbeatRuns.nativeIssueId, stopped.nativeIssueId!),
+            isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId),
+            eq(heartbeatRuns.nativeSessionId, stopped.nativeSessionId!), eq(heartbeatRuns.runnerInstanceId, stopped.runnerInstanceId!),
+            sql`${heartbeatRuns.runnerProfileJson}->'executionPlacement' = ${JSON.stringify({ kind: "provider_api", provider: "cursor_cloud", controller: "paperclip" })}::jsonb`,
+            sql`${heartbeatRuns.runnerProfileJson}->>'backend' = 'cursor_cloud_api'`,
+            sql`jsonb_build_object(
+              'companyId', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'binding'->'companyId',
+              'runId', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'binding'->'runId',
+              'agentId', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'binding'->'agentId',
+              'issueId', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'binding'->'issueId'
+            ) = ${JSON.stringify({ companyId, runId, agentId: stopped.agentId, issueId: stopped.nativeIssueId })}::jsonb`,
+            sql`jsonb_build_object(
+              'normalizedSessionId', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'session'->'normalizedSessionId',
+              'driverKind', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'session'->'driverKind'
+            ) = ${JSON.stringify({ normalizedSessionId: stopped.nativeSessionId, driverKind: "cursor_cloud_api" })}::jsonb`,
+            sql`${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'provider'->>'kind' = 'cursor_cloud'`,
+            sql`not exists (select 1 from ${environmentLeases} where ${environmentLeases.companyId} = ${heartbeatRuns.companyId}
+              and ${environmentLeases.heartbeatRunId} = ${heartbeatRuns.id})`) : undefined,
+          stopped.runtimeMode === "native" ? sql`${heartbeatRuns.resultJson}->'nativeCancellation' = ${JSON.stringify(stopped.resultJson?.nativeCancellation)}::jsonb` : undefined)).returning({ id: heartbeatRuns.id });
+        if (!apiStopped || acknowledged.length > 0) return;
+      } else return;
     }
   }
 

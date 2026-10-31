@@ -36,7 +36,7 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
         const [company] = await tx.select({ status: companies.status }).from(companies).where(eq(companies.id, companyId));
         const companyHolds = company?.status === "paused" ? ["company_paused"] : company?.status === "archived" ? ["company_archived"] : [];
         const holds = [...(status === "paused" ? [pauseReason ?? "manual"] : []), ...companyHolds];
-        const prepareSetup = options?.setupOnly && !companyHolds.length && await effects.setupRequiresPreparation(txDb, companyId, prepared.defaultEnvironmentId);
+        const prepareSetup = options?.setupOnly && !companyHolds.length && await effects.setupRequiresPreparation(txDb, companyId, prepared.defaultEnvironmentId, prepared);
         const lifecycleState = status === "pending_approval" ? "pending_approval" : status === "terminated" ? "terminated"
           : prepareSetup ? "preparing" : status === "paused" ? "paused" : companyHolds.length ? "pausing" : "preparing";
         if (lifecycleState === "preparing" || lifecycleState === "pausing") await effects.notifyWork(tx);

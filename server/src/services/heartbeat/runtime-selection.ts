@@ -1,3 +1,4 @@
+import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { museRunnerBroker } from "../muse-runner-broker.js";
 import { measureRunTransaction } from "../execution-transaction-timing.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
@@ -121,7 +122,7 @@ export interface HeartbeatRuntimeSelectionInput {
     persistedExecutionWorkspace: { id: string } | null;
     executionWorkspace: Omit<Parameters<typeof buildNativeExecutionInput>[0]["workspace"], "id">;
     executionTarget: Parameters<typeof prepareNativeWorkspaceSync>[0]["target"];
-    activeEnvironmentLease: Pick<Parameters<typeof prepareNativeWorkspaceSync>[0], "lease">;
+    activeEnvironmentLease: Pick<Parameters<typeof prepareNativeWorkspaceSync>[0], "lease"> | null;
     isDotRun: boolean;
     projectRepositoryPaths: string[];
     onCheckpoint?: Parameters<typeof prepareNativeWorkspaceSync>[0]["onCheckpoint"];
@@ -276,7 +277,11 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       throw new Error("native_runtime_ineligible: issue is required");
     }
     const nativeExecutionWorkspaceId =
-      persistedExecutionWorkspace?.id ?? run.id;
+      persistedNativeExecutionInput?.provider.kind === "cursor_cloud"
+        // Older Cursor runs keep their admitted binding identity. Their task
+        // files and Computer are not part of the recovered API controller.
+        ? persistedNativeExecutionInput.binding.executionWorkspaceId
+        : persistedExecutionWorkspace?.id ?? run.id;
     const nativeReviewContext = readNativeReviewAssignmentContext(context);
     const nativeReview = nativeReviewContext ? await measureRunPhase("runtime_selection.review", () => getNativeReviewAssignment(db, {
       companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id,
@@ -960,6 +965,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
           runnerProfileJson: {
             ...nativeRuntimeResolution.profile,
             ...lockedProfile,
+            ...(nativeExecution?.provider.kind === "cursor_cloud" ? { executionPlacement: resolveProviderApiPlacement({ agent, run }) } : {}),
             nativePreparationFencingVersion: !lockedRun.runnerInstanceId && !lockedRun.nativeSessionId
               ? NATIVE_PREPARATION_FENCING_VERSION
               : lockedProfile.nativePreparationFencingVersion,
@@ -1048,14 +1054,15 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     });
     if (!nativeSelected) return { selected: false };
     stopControllerLease();
-    nativeWorkspaceSync = await measureRunPhase("runtime_selection.workspace_sync", () => prepareNativeWorkspaceSync({
+    if (nativeExecution?.provider.kind !== "cursor_cloud" && !activeEnvironmentLease) throw new Error("native_environment_lease_unavailable");
+    nativeWorkspaceSync = nativeExecution?.provider.kind === "cursor_cloud" ? null : await measureRunPhase("runtime_selection.workspace_sync", () => prepareNativeWorkspaceSync({
       db,
       runId: run.id,
       companyId: agent.companyId,
       workspaceId: nativeExecutionWorkspaceId,
       workspaceLocalDir: executionWorkspace.cwd,
       target: executionTarget,
-      lease: activeEnvironmentLease.lease,
+      lease: activeEnvironmentLease!.lease,
       restartRecovery: runOptions.nativeRestartRecovery,
       sameRunRecovery: Boolean(runOptions.nativeLeaseOwner),
       resourceDisposition: providerResourceDispositionForRun,
