@@ -89,4 +89,39 @@ describe("Cloudflare bridge client timeouts", () => {
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(String(init.body))).toMatchObject({ streamOutput: true });
   });
+
+  it("rejects a file download shorter than the reported size", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "X-File-Size": "10" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const client = createCloudflareBridgeClient({
+        config: {
+          bridgeBaseUrl: "https://bridge.example.workers.dev",
+          bridgeAuthToken: "t",
+          bridgeRequestTimeoutMs: 1_000,
+          timeoutMs: 1_000,
+        } as never,
+      });
+      const chunks: number[] = [];
+      await expect(
+        client.downloadFile({
+          providerLeaseId: "pc-1",
+          path: "/tmp/a",
+          consume: async (body) => {
+            const reader = body.getReader();
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              chunks.push(...value);
+            }
+          },
+        }),
+      ).rejects.toThrow("truncated for /tmp/a: 3/10 bytes");
+      expect(chunks).toEqual([1, 2, 3]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
