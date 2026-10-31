@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -28,12 +29,13 @@ import {
 import { issueReadSqlCondition, projectReadSqlCondition } from "../services/authorization.js";
 import { issueService } from "../services/issues.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_COMPANY_SEARCH_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
-    `Skipping embedded Postgres company search tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+    `Skipping embedded Postgres company search tests on this host: ${("reason" in embeddedPostgresSupport ? embeddedPostgresSupport.reason : "unsupported environment")}`,
   );
 }
 
@@ -80,8 +82,11 @@ describeEmbeddedPostgres("companySearchService", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-search-");
-    db = createDb(tempDb.connectionString);
+    if (!externalDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-search-");
+    db = createDb(externalDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 6 });
+    // External suites can reuse this dedicated database sequentially. Match
+    // the fresh embedded fixture before this suite creates its own rows.
+    if (externalDatabaseUrl) await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
     svc = companySearchService(db);
     await db.execute(sql.raw("CREATE EXTENSION IF NOT EXISTS pg_trgm"));
   }, 20_000);
@@ -100,6 +105,7 @@ describeEmbeddedPostgres("companySearchService", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
