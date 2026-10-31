@@ -14,6 +14,7 @@ import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifec
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { beginWorkspaceSnapshot, loadWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
 import { notifyRemoteWorkspaceSnapshots } from "./remote-workspace-snapshot-retention.js";
+import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 
 const SCHEMA = "paperclip.remote-workspace-migration.v1";
 type Workspace = typeof executionWorkspaces.$inferSelect;
@@ -199,6 +200,6 @@ export async function migrateRemoteWorkspace(input: {
       });
       if (publication) publishActivity(publication);
       return { ...await inventoryRemoteWorkspaceMigration(input.db, input), applied: true, replayed: false };
-    } finally { await fs.rm(scratch, { recursive: true, force: true }); }
+    } finally { await removeTaskDirectoryTree(scratch); }
   });
 }

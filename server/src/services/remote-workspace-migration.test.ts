@@ -16,6 +16,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { inventoryRemoteWorkspaceMigration, migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive } from "./remote-workspace-snapshot-storage.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
+import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 
 const execute = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-C", cwd, ...args], { env: { ...process.env,
@@ -69,6 +70,35 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect(await migrateRemoteWorkspace({ db, storage, ...f, apply: true })).toMatchObject({ replayed: true });
     expect(await db.select().from(executionWorkspaceSnapshots)).toHaveLength(1);
     expect(await db.select().from(activityLog)).toHaveLength(1);
+  });
+  it.each([false, true])("removes plaintext verification files with read-only folders after import (source changed: %s)", async sourceChanged => {
+    const f = await seed(), protectedDir = path.join(f.cwd, "protected"), scratchRoot = path.join(root, "scratch");
+    await fs.mkdir(protectedDir); await fs.mkdir(scratchRoot);
+    await fs.writeFile(path.join(protectedDir, "saved.txt"), "read-only saved work\n", { mode: 0o444 });
+    await fs.chmod(protectedDir, 0o555);
+    vi.stubEnv("TMPDIR", scratchRoot);
+    const get = storage.getObject.bind(storage); let reads = 0;
+    if (sourceChanged) storage.getObject = async (...args) => {
+      if (++reads === 2) await fs.writeFile(path.join(f.cwd, "saved.txt"), "new local work\n");
+      return get(...args);
+    };
+    try {
+      const migration = migrateRemoteWorkspace({ db, storage, ...f, apply: true });
+      if (sourceChanged) {
+        await expect(migration).rejects.toThrow("remote_workspace_migration_source_changed");
+        expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+      } else {
+        await expect(migration).resolves.toMatchObject({ applied: true, alreadyMigrated: true });
+        expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)?.snapshotId).toBeTruthy();
+      }
+      expect(await fs.readdir(scratchRoot)).toEqual([]);
+      expect((await fs.stat(protectedDir)).mode & 0o777).toBe(0o555);
+      expect((await fs.stat(path.join(protectedDir, "saved.txt"))).mode & 0o777).toBe(0o444);
+      expect(await fs.readFile(path.join(protectedDir, "saved.txt"), "utf8")).toBe("read-only saved work\n");
+    } finally {
+      await fs.chmod(protectedDir, 0o755);
+      await removeTaskDirectoryTree(scratchRoot);
+    }
   });
   it("resumes an interrupted upload with the original operation identity", async () => {
     const f = await seed(), put = storage.putFile.bind(storage); let fail = true;
