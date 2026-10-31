@@ -13624,6 +13624,204 @@ describeEmbeddedPostgres("tool access service", () => {
     },
   );
 
+  describe("per-server OAuth redirect override", () => {
+    const publicRedirect = "https://paperclip.example/api/tools/oauth/callback";
+    const localRedirect = "http://localhost:3100/api/tools/oauth/callback";
+
+    async function runMiroFlow() {
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MIRO_CLIENT_ID", "");
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MIRO_CLIENT_SECRET", "");
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+      const company = await createCompany(db);
+      await grantBoardUser(db, company.id, "board", ["tools:manage_connections"]);
+      const service = createTestToolAccessService(db);
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "miro",
+        connectionMethodKey: "mcp-oauth",
+        name: "Miro redirect",
+      });
+      const seen: { registered?: unknown; token?: string | null } = {};
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        const href = String(url);
+        if (href === "https://mcp.miro.com/.well-known/oauth-protected-resource") {
+          return mcpHttpResponse({
+            resource: "https://mcp.miro.com/",
+            authorization_servers: ["https://mcp.miro.com/"],
+          });
+        }
+        if (href === "https://mcp.miro.com/.well-known/oauth-authorization-server") {
+          return mcpHttpResponse({
+            issuer: "https://mcp.miro.com/",
+            authorization_endpoint: "https://mcp.miro.com/authorize",
+            token_endpoint: "https://mcp.miro.com/token",
+            registration_endpoint: "https://mcp.miro.com/register",
+            grant_types_supported: ["authorization_code", "refresh_token"],
+            code_challenge_methods_supported: ["S256"],
+            token_endpoint_auth_methods_supported: ["client_secret_post"],
+          });
+        }
+        if (href === "https://mcp.miro.com/register") {
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          seen.registered = body.redirect_uris;
+          return mcpHttpResponse({
+            client_id: "miro-dcr-client",
+            client_secret: "miro-dcr-secret",
+            redirect_uris: body.redirect_uris,
+            grant_types: ["authorization_code", "refresh_token"],
+            response_types: ["code"],
+            token_endpoint_auth_method: "client_secret_post",
+          });
+        }
+        if (href === "https://mcp.miro.com/token") {
+          seen.token = (init?.body as URLSearchParams).get("redirect_uri");
+          return mcpHttpResponse({
+            access_token: "miro-access-token",
+            refresh_token: "miro-refresh-token",
+            expires_in: 3600,
+            token_type: "Bearer",
+          });
+        }
+        if (href === "https://mcp.miro.com/") {
+          return mcpHttpResponse(catalogResponse([{ name: "whoami", annotations: { readOnlyHint: true } }]));
+        }
+        throw new Error(`unexpected fetch ${href}`);
+      });
+      const actor = { actorType: "user" as const, actorId: "board" };
+      const started = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: publicRedirect,
+        actor,
+      });
+      const authorize = new URL(started.authorizationUrl);
+      const state = authorize.searchParams.get("state");
+      const completed = await service.completeOAuthCallback({
+        state: state!,
+        code: "miro-code",
+        redirectUri: publicRedirect,
+        actor,
+      });
+      expect(completed.actions.readOnly).toHaveLength(1);
+      const [connection] = await db
+        .select()
+        .from(toolConnections)
+        .where(eq(toolConnections.id, connected.connectionId));
+      return {
+        seen,
+        authorizeRedirect: authorize.searchParams.get("redirect_uri"),
+        storedRedirect: (connection.config as { oauth?: { clientRedirectUri?: string } }).oauth
+          ?.clientRedirectUri,
+      };
+    }
+
+    it("uses the configured redirect URI for registration, authorize and token exchange", async () => {
+      vi.stubEnv(
+        "PAPERCLIP_OAUTH_REDIRECT_OVERRIDES",
+        JSON.stringify({ "https://mcp.miro.com": localRedirect }),
+      );
+      const result = await runMiroFlow();
+      expect(result.seen.registered).toEqual([localRedirect]);
+      expect(result.authorizeRedirect).toBe(localRedirect);
+      expect(result.storedRedirect).toBe(localRedirect);
+      expect(result.seen.token).toBe(localRedirect);
+    });
+
+    it("keeps the public redirect URI for servers without an override", async () => {
+      vi.stubEnv(
+        "PAPERCLIP_OAUTH_REDIRECT_OVERRIDES",
+        JSON.stringify({ "https://mcp.other.example": localRedirect }),
+      );
+      const result = await runMiroFlow();
+      expect(result.seen.registered).toEqual([publicRedirect]);
+      expect(result.authorizeRedirect).toBe(publicRedirect);
+      expect(result.storedRedirect).toBe(publicRedirect);
+      expect(result.seen.token).toBe(publicRedirect);
+    });
+
+    it("uses dynamic registration, not a metadata document, for an overridden callback", async () => {
+      vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MIRO_CLIENT_ID", "");
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MIRO_CLIENT_SECRET", "");
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+      vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+      const httpsOverride = "https://callback.example/api/tools/oauth/callback";
+      const company = await createCompany(db);
+      await grantBoardUser(db, company.id, "board", ["tools:manage_connections"]);
+      const service = createTestToolAccessService(db, {
+        oauthClientMetadataLookup: async () => [{ address: "93.184.216.34", family: 4 }],
+      });
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "miro",
+        connectionMethodKey: "mcp-oauth",
+        name: "Miro CIMD redirect",
+      });
+      const registered: unknown[] = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        const href = String(url);
+        if (href === "https://mcp.miro.com/.well-known/oauth-protected-resource") {
+          return mcpHttpResponse({
+            resource: "https://mcp.miro.com/",
+            authorization_servers: ["https://mcp.miro.com/"],
+          });
+        }
+        if (href === "https://mcp.miro.com/.well-known/oauth-authorization-server") {
+          return mcpHttpResponse({
+            issuer: "https://mcp.miro.com/",
+            authorization_endpoint: "https://mcp.miro.com/authorize",
+            token_endpoint: "https://mcp.miro.com/token",
+            registration_endpoint: "https://mcp.miro.com/register",
+            client_id_metadata_document_supported: true,
+            code_challenge_methods_supported: ["S256"],
+            token_endpoint_auth_methods_supported: ["none"],
+          });
+        }
+        if (href === "https://mcp.miro.com/register") {
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          registered.push(body.redirect_uris);
+          return mcpHttpResponse({
+            client_id: "miro-override-dcr-client",
+            redirect_uris: body.redirect_uris,
+            grant_types: ["authorization_code", "refresh_token"],
+            response_types: ["code"],
+            token_endpoint_auth_method: "none",
+          });
+        }
+        throw new Error(`unexpected fetch ${href}`);
+      });
+      const actor = { actorType: "user" as const, actorId: "board" };
+
+      // Control: without an override this server gets a metadata document client id.
+      vi.stubEnv("PAPERCLIP_OAUTH_REDIRECT_OVERRIDES", "");
+      const cimdStart = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: publicRedirect,
+        actor,
+      });
+      expect(cimdStart.registrationSource).toBe("cimd");
+      expect(registered).toHaveLength(0);
+
+      vi.stubEnv(
+        "PAPERCLIP_OAUTH_REDIRECT_OVERRIDES",
+        JSON.stringify({ "https://mcp.miro.com": httpsOverride }),
+      );
+      const started = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: publicRedirect,
+        actor,
+      });
+      const authorize = new URL(started.authorizationUrl);
+      expect(started.registrationSource).toBe("dcr");
+      expect(registered).toEqual([[httpsOverride]]);
+      expect(authorize.searchParams.get("client_id")).toBe("miro-override-dcr-client");
+      expect(authorize.searchParams.get("redirect_uri")).toBe(httpsOverride);
+    });
+
+    it("behaves as before when the setting is empty or invalid", async () => {
+      vi.stubEnv("PAPERCLIP_OAUTH_REDIRECT_OVERRIDES", "{not json");
+      const result = await runMiroFlow();
+      expect(result.seen.registered).toEqual([publicRedirect]);
+      expect(result.seen.token).toBe(publicRedirect);
+    });
+  });
+
+
   it("accepts provider-added DCR grants without adopting them", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_HUGGING_FACE_CLIENT_ID", "");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_HUGGING_FACE_CLIENT_SECRET", "");
