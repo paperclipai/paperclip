@@ -5,7 +5,10 @@ only company, agents and project context through public APIs. Both agents use
 production role instructions; evaluator outcomes are never injected. Real browser
 submission, task audits, worker document provenance, completion delivery and
 reload readback establish the outcome. The existing fixture registry, subscription
-credential staging and whole-company cleanup own setup and teardown.
+credential staging and whole-company cleanup own setup and teardown. The explicit
+OpenCode backlog cell instead uses an encrypted OpenRouter profile secret
+reference. It preserves the same fixture and oracle without registering
+OpenCode delegation or changing the other suites' model.
 
 [Deployment-targeted journeys](PRODUCT-JOURNEYS.md) resolve only their requested
 fixture graph through `FixtureRegistry.setupAll(requested)`. Omitting the

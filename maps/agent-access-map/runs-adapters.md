@@ -55,7 +55,14 @@ Policy: Company model discovery requires company access; account-backed discover
 also enforces its account/pool and target-agent rules. Instance adapter inventory
 and installation retain board/admin gates. Delegated managed
 AI-account login operations are enumerated under `model-accounts`; they do not
-grant raw host administration or execution-session reset.
+grant raw host administration or execution-session reset. On Cloud-managed
+instances, external adapter install, reinstall, reload, removal and override
+operations return `403` with `adapter_install_platform_managed`, including for
+instance admins. Built-in metadata remains available to board users. Startup
+and UI parser reads do not consume saved external registrations or package code.
+[Local fixture controls](../../server/src/adapters/cloud-external-adapters.test.ts)
+and [route controls](../../server/src/__tests__/adapter-routes-authz.test.ts)
+cover this boundary; they do not establish live agent or provider qualification.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L6608) at
 the reviewed commit above.

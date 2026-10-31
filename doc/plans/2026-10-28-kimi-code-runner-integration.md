@@ -9,6 +9,17 @@ must compile and group cohesive behavior for review.
 Merge, publication, and production deployment
 are separate from this handoff. The user confirmed local plus Daytona acceptance.
 
+## Merge integration — 2026-10-30
+
+The master integration keeps the existing released Kimi revision 17 and adopts
+master's upstream-only release attestation. The old source-bound revision 17
+fixture remains immutable historical evidence with no current launch authority.
+The pinned Kimi 2.3.3 distribution and platform closure pins are unchanged.
+Generated profiles, current digest admission, and shared remote installation
+must pass again on the integrated source. Earlier native acceptance and public
+packages retain their original source and digest; they do not establish fresh
+live or ordinary UI acceptance for this integrated identity.
+
 ## Release contract
 
 An operator selects Kimi Code in native Runner, saves and reopens its exact

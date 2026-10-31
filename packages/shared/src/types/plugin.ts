@@ -198,6 +198,7 @@ export interface PluginEnvironmentDriverDeclaration {
   /** Provides Runner execution, resource preparation, and PRP connections via environmentTask. */
   supportsTasks?: boolean;
   freshWorkspaceVersion?: 1;
+  creationOperationVersion?: 1;
   /** Codex task retention and authorized run attachment, version 1. */
   warmTaskVersion?: 1;
   /** Stable driver key, unique within the plugin. Namespaced by plugin ID at runtime. */
@@ -499,15 +500,16 @@ export interface PluginUiSlotDeclaration {
    * Required for `detailTab`, `taskDetailView`, and `contextMenuItem`.
    */
   entityTypes?: PluginUiSlotEntityType[];
-  /** Also offer this agent detail tab beside a task while its agent is running.
-   * The run must record the declared runtime activity before a task panel appears.
+  /** Also offer this agent detail tab for manual selection beside a task.
+   * It uses the running agent, or the assigned agent while idle.
+   * Matching run activity and readiness also open the panel automatically.
    * GET this plugin-relative path with :entityId replaced by the agent ID,
    * and runId/issueId query parameters for the active task.
-   * The board/agent-scoped route returns { available: boolean }.
+   * The board-only, agent-scoped route returns { available: boolean }.
    */
   taskSidePanel?: {
     availabilityPath: string;
-    /** Opaque runtime activity mapped to this view. Absent mappings add no task panel. */
+    /** Runtime activity that requests automatic opening; manual selection needs no mapping. */
     activation?: { namespace: string; activityKey: string };
   };
 

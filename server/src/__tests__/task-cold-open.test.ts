@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues, issueWorkProducts } from "@paperclipai/db";
+import { activityLog, agents, applyPendingMigrations, closeRegisteredClients, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues, issueWorkProducts } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
@@ -11,16 +11,25 @@ import { createHeartbeatRunState } from "../services/heartbeat/run-state.js";
 import { activityService } from "../services/activity.js";
 import { documentService } from "../services/documents.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalDatabase = process.env.PAPERCLIP_TASK_COLD_OPEN_DATABASE_URL;
+if (externalDatabase) {
+  const target = new URL(externalDatabase);
+  if (!["localhost", "127.0.0.1", "[::1]"].includes(target.hostname) || !target.pathname.endsWith("_test"))
+    throw new Error("PAPERCLIP_TASK_COLD_OPEN_DATABASE_URL must name a disposable loopback database ending in _test");
+}
+const support = externalDatabase ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("task cold-open reads", () => {
-  let fixture: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let fixture: Pick<Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>, "connectionString" | "cleanup">;
   let db: ReturnType<typeof createDb>;
   const companyId = randomUUID();
   const issueId = randomUUID();
   const agentId = randomUUID();
   const runId = randomUUID();
   beforeAll(async () => {
-    fixture = await startEmbeddedPostgresTestDatabase("task-cold-open-");
+    if (externalDatabase) {
+      await applyPendingMigrations(externalDatabase);
+      fixture = { connectionString: externalDatabase, cleanup: () => closeRegisteredClients(externalDatabase) };
+    } else fixture = await startEmbeddedPostgresTestDatabase("task-cold-open-");
     db = createDb(fixture.connectionString);
     await db.insert(companies).values({ id: companyId, name: "Cold open", issuePrefix: `T${companyId.slice(0, 6)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Writer", role: "engineer", adapterType: "codex_local" });
@@ -78,6 +87,39 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(response.body.comments.map((c: { body: string }) => c.body)).toEqual(["Human direction", "Reply 19", "Reply 18", "Reply 17", "Reply 16"]);
     expect(response.body.latestCommentId).toBe(response.body.comments[1].id);
     expect([403, 404]).toContain((await request(app(randomUUID())).get(`/api/issues/${issueId}/recent-comments`)).status);
+  });
+  it("opens long chats with a contiguous recent window and pages every older message", async () => {
+    const chatId = randomUUID();
+    await db.insert(issues).values({ id: chatId, companyId, title: "Persistent chat", conversationAgentId: agentId, conversationUserId: "local-board", assigneeAgentId: agentId, conversationState: "waiting" });
+    const rows = Array.from({ length: 123 }, (_, i) => ({ id: randomUUID(), companyId, issueId: chatId,
+      authorType: "user" as const, authorUserId: "local-board", body: `Chat ${i}`, createdAt: new Date(1000 + Math.floor(i / 3)) }));
+    await db.insert(issueComments).values(rows);
+    const ordered = [...rows].sort((a, b) => +b.createdAt - +a.createdAt || b.id.localeCompare(a.id));
+    const response = await request(app()).get(`/api/issues/${chatId}/recent-comments`);
+    expect(response.status).toBe(200);
+    expect(response.body.comments.map((row: { id: string }) => row.id)).toEqual(ordered.slice(0, 20).map(row => row.id));
+    expect(response.body.oldestCommentId).toBe(ordered[19].id);
+    expect(response.body.hasMore).toBe(true);
+    const seen = response.body.comments.map((row: { id: string }) => row.id);
+    let cursor = response.body.oldestCommentId;
+    while (cursor) {
+      const page = await request(app()).get(`/api/issues/${chatId}/comments`).query({ order: "desc", limit: 50, after: cursor });
+      expect(page.status).toBe(200);
+      seen.push(...page.body.map((row: { id: string }) => row.id));
+      cursor = page.body.at(-1)?.id;
+    }
+    expect(seen).toEqual(ordered.map(row => row.id));
+    expect(new Set(seen).size).toBe(123);
+    expect([403, 404]).toContain((await request(app(randomUUID())).get(`/api/issues/${chatId}/recent-comments`)).status);
+  });
+  it("hydrates only requested runs linked to the company and issue", async () => {
+    const otherIssue = randomUUID(), otherRun = randomUUID();
+    await db.insert(issues).values({ id: otherIssue, companyId, title: "Other task" });
+    await db.insert(heartbeatRuns).values({ id: otherRun, companyId, agentId, issueId: otherIssue, status: "succeeded" });
+    const activity = activityService(db);
+    expect((await activity.runsForIssue(companyId, issueId, null, undefined, [runId, otherRun])).map(run => run.runId)).toEqual([runId]);
+    expect(await activity.runsForIssue(randomUUID(), issueId, null, undefined, [runId])).toEqual([]);
+    expect(await activity.runsForIssue(companyId, issueId, null, undefined, [])).toEqual([]);
   });
   it.each(["user", null] as const)("preserves initial and latest human instructions without a description (authorType=%s)", async (authorType) => {
     const bareIssueId = randomUUID();

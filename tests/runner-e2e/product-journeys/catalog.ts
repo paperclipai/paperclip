@@ -1,15 +1,19 @@
 import { agentJourneyRuns } from "./success-contract.js";
-export { agentJourneyRuns } from "./success-contract.js";
+export { agentJourneyRuns, agentJourneyRunCountValid } from "./success-contract.js";
 import type { JourneyId, TargetConfig } from "./types.js";
 export const productJourneys = [
   { id: "task-create", label: "Create a task for yourself and reopen it", requires: ["company", "board-user", "task-write"], capabilities: ["tasks/create"], paid: false },
+  { id: "project-task-context", label: "Create a project and reopen its self-assigned task", requires: ["company", "board-user", "task-write"], capabilities: ["projects/lifecycle", "projects/task-context", "tasks/create"], paid: false },
   { id: "ask-question", label: "Ask an agent a question and read its answer", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["questions-and-approvals/questions"], paid: true },
+  { id: "question-answer-resume", label: "Answer agent questions and verify the saved result", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["questions-and-approvals/questions"], paid: true },
   { id: "task-properties", label: "Assign a task to the signed-in user", requires: ["company", "board-user", "task-write", "backlog-task"], capabilities: ["tasks/properties"], paid: false },
+  { id: "task-search-filter", label: "Search and filter tasks, then reopen the exact saved result", requires: ["company", "board-user", "task-write"], capabilities: ["tasks/organize"], paid: false },
   { id: "plan-revise-accept", label: "Revise and approve a saved Plan, then complete the task", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["questions-and-approvals/plan-review"], paid: true },
   { id: "build-revise", label: "Download and independently verify both artifact versions", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["documents-artifacts/attachments"], paid: true },
   { id: "protected-actions", label: "Approve and decline protected service actions", requires: ["company", "board-user", "task-write", "agent", "review-service"], capabilities: ["questions-and-approvals/tool-review"], paid: true },
   { id: "create-skill-studio", label: "Create a company skill and persist a Skill Studio edit", requires: ["company", "board-user", "task-write", "agent", "skill-write"], capabilities: ["skills/authoring"], paid: true },
   { id: "stop-redirect", label: "Stop active work and send a new direction once", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["steering/stop-and-pause"], paid: true },
+  { id: "followup-while-running", label: "Send a follow-up during active work and verify its saved result", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["steering/queue"], paid: true },
   { id: "cloud-onboarding", label: "Create a Cloud workspace and complete a first task", requires: ["cloud-account", "fresh-workspace", "provider-key"], capabilities: ["onboarding/first-task"], paid: true },
 ] as const;
 

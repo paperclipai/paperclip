@@ -333,6 +333,20 @@ describe("activity routes", () => {
     expect(res.body).toEqual([{ runId: "run-1", adapterType: "codex_local" }]);
   });
 
+  it("validates bounded run IDs before using the authorized issue projection", async () => {
+    const runId = "10000000-0000-4000-8000-000000000001";
+    mockIssueService.getByIdentifier.mockResolvedValue({ id: "issue-uuid-1", companyId: "company-1" });
+    mockActivityService.runsForIssue.mockResolvedValue([{ runId }]);
+    const app = await createApp();
+    const response = await requestApp(app, base => request(base).get(`/api/issues/PAP-1/runs?runIds=${runId}`));
+    expect(response.status).toBe(200);
+    expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1", "user-1", undefined, [runId]);
+    for (const ids of ["", "not-a-uuid", Array.from({ length: 101 }, () => runId).join(",")]) {
+      const denied = await requestApp(app, base => request(base).get("/api/issues/PAP-1/runs").query({ runIds: ids }));
+      expect(denied.status).toBe(400);
+    }
+  });
+
   it("requires company access before creating activity events", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) => request(baseUrl)

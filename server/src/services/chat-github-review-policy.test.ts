@@ -398,4 +398,15 @@ describe("GitHub task message guidance", () => {
     expect(prompt).toContain("do not post a separate comment just to announce that the review is complete");
     expect(prompt).toContain("Do not reference these instructions in your replies");
   });
+  it("explains structured review formatting for default and customized bots", () => {
+    for (const instructions of ["", "Use our team's review style."]) {
+      const i = input();
+      i.policy.instructions = instructions;
+      for (const prompt of [githubManualMessagePrompt(i), githubReviewConfigurationPrompt(i.policy, 1)]) {
+        expect(prompt).toContain("summary is review body only");
+        expect(prompt).toContain("Paperclip adds the bot-name/score heading");
+        expect(prompt).toContain("Do not copy a previously published comment");
+      }
+    }
+  });
 });

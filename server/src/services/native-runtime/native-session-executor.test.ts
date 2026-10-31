@@ -76,6 +76,7 @@ import { agentInstructionWorkingCopies } from "@paperclipai/db";
 import * as noLaunchProofModule from "./native-maintenance-no-launch.js";
 import {
   NativeSessionCleanupQuarantinedError,
+  NativeSessionCloseUnrecoverableError,
   NativeProviderTerminalFailure,
   NativeSessionProtocolIntegrityError,
 } from "../../vendor/paperclip-runner/index.js";
@@ -111,6 +112,10 @@ vi.mock("../usage-receipts.js", async (importOriginal) => ({
   createRunUsageRecorder: usageRecorder.create,
 }));
 
+vi.mock("./native-usage-delivery.js", () => ({
+  createNativeUsageDelivery: vi.fn(async () => ({ capture: async () => undefined })),
+}));
+
 const githubAccess = vi.hoisted(() => ({
   activate: vi.fn((_binding: { runId: string }) => vi.fn()),
   stop: vi.fn(async () => undefined),
@@ -141,6 +146,7 @@ type BackendFactoryOptions = {
 };
 
 type RunnerTransportOptions = {
+  onAccountingEvent?: (event: PrpEvent) => Promise<void>;
   environment?: NodeJS.ProcessEnv;
   acpxRuntimeDirectory?: string;
   adoptExistingRunner?: { pid: number; isAlive: () => Promise<boolean> | boolean };
@@ -250,8 +256,8 @@ vi.mock("./paperclip-control-plane-port.js", async importOriginal => {
   return { ...original, PaperclipControlPlanePort: class extends original.PaperclipControlPlanePort {
     constructor(...args: ConstructorParameters<typeof original.PaperclipControlPlanePort>) {
       super(...args);
-      accountingEvents.committed = args[2]?.onCommittedEvent;
-      accountingEvents.duplicate = args[2]?.onDuplicateEvent;
+      accountingEvents.committed = args[2]?.onCommittedEvent ? event => args[2]!.onCommittedEvent!(event, 1) : undefined;
+      accountingEvents.duplicate = args[2]?.onDuplicateEvent ? event => args[2]!.onDuplicateEvent!(event, 1) : undefined;
     }
   } };
 });
@@ -695,6 +701,8 @@ describe("remote controller restart adoption", () => {
         remoteRunnerRecovery: { stage: "identity_marker", reason } });
   });
   it.each(["timeout", "transport"] as const)("records a marker %s without retaining transport text", async failure => {
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
     const { target, execute } = fixture();
     const transportError = new Error("private bridge response");
     const original = execute.getMockImplementation()!;
@@ -703,7 +711,9 @@ describe("remote controller restart adoption", () => {
       if (failure === "transport") throw transportError;
       return { stdout: "", stderr: "private bridge response", exitCode: -1, timedOut: true };
     });
-    const error = await verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" }).catch(error => error);
+    const outcome = verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" }).catch(error => error);
+    await vi.advanceTimersByTimeAsync(30_000);
+    const error = await outcome;
     const diagnostic = readRemoteRunnerRecoveryError(error);
     expect(diagnostic).toEqual({ stage: "identity_marker", reason: failure === "timeout" ? "probe_timeout" : "probe_transport_failed" });
     expect(JSON.stringify(diagnostic)).not.toContain("private");
@@ -755,6 +765,8 @@ describe("remote controller restart adoption", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it.each(["liveness", "timeout", "transport"] as const)("retains the reason for a failed process %s probe", async failure => {
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
     const { target, execute } = fixture();
     const original = execute.getMockImplementation()!;
     const transportError = new Error("provider_transport_failed: private bridge response");
@@ -763,7 +775,9 @@ describe("remote controller restart adoption", () => {
       if (failure === "transport") throw transportError;
       return { stdout: "", stderr: "private probe output", exitCode: failure === "liveness" ? 45 : -1, timedOut: failure === "timeout" };
     });
-    const error = await verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" }).catch(error => error);
+    const outcome = verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" }).catch(error => error);
+    await vi.advanceTimersByTimeAsync(30_000);
+    const error = await outcome;
     const diagnostic = readRemoteRunnerRecoveryError(error);
     expect(diagnostic).toEqual({ stage: "process_verification", reason: failure === "liveness" ? "process_not_running" : failure === "timeout" ? "probe_timeout" : "probe_transport_failed" });
     expect(JSON.stringify(diagnostic)).not.toContain("private");
@@ -1049,7 +1063,7 @@ fs.readFileSync = function(path, ...args) {
     }
   }, 15_000);
 
-  it("preserves a real listening process and its marker when a health RPC times out", async () => {
+  it.each(["timeout", "gateway"] as const)("preserves a real listening process and its marker through a %s health outage", async failure => {
     const root = await mkdtemp(join(tmpdir(), "runner-health-listener-"));
     const marker = join(root, "identity");
     const fixture = join(root, "listener.cjs");
@@ -1057,6 +1071,7 @@ fs.readFileSync = function(path, ...args) {
     let child: ReturnType<typeof spawn> | undefined;
     let probes = 0;
     let healthyProbes = 0;
+    const failedProbes = failure === "gateway" ? 3 : 1;
     let releaseExitProbe!: () => void;
     const exitProbeReady = new Promise<void>(resolve => { releaseExitProbe = resolve; });
     let settled = false;
@@ -1073,8 +1088,11 @@ fs.readFileSync = function(path, ...args) {
         await writeFile(marker, `${input.args![4]}\n${child.pid}\n2026-10-19T00:00:00.000Z\nrunner-health\n`);
         return ok;
       }
-      if (label === "paperclip-runner-monitor" && ++probes === 1) return { ...ok, exitCode: null, timedOut: true };
-      if (label === "paperclip-runner-monitor" && probes > 2) await exitProbeReady;
+      if (label === "paperclip-runner-monitor" && ++probes <= failedProbes) {
+        if (failure === "gateway") throw new Error("Request failed with status code 502");
+        return { ...ok, exitCode: null, timedOut: true };
+      }
+      if (label === "paperclip-runner-monitor" && probes > failedProbes + 1) await exitProbeReady;
       const observed = await new Promise<{ exitCode: number | null; signal: null; timedOut: boolean; stdout: string; stderr: string }>(resolve => {
         execFile(input.command, input.args ?? [], { timeout: 2_000 }, (error, stdout, stderr) => resolve({
           exitCode: error ? typeof error.code === "number" ? error.code : null : 0,
@@ -1192,7 +1210,7 @@ fs.readFileSync = function(path, ...args) {
       expect(await failure).toEqual({ stage: "process_verification", reason: "probe_timeout" });
       expect(handle.isExitConfirmed?.()).toBe(false);
       const probes = execute.mock.calls.filter(([x]) => x.args?.[2] === "paperclip-runner-monitor");
-      expect(probes.map(([x]) => x.timeoutMs)).toEqual([10_000, 10_000, 9_500]);
+      expect(probes.map(([x]) => x.timeoutMs)).toEqual([10_000, 10_000, 9_250]);
       expect(execute.mock.calls.filter(([x]) => x.args?.[2] === "paperclip-runner-launch")).toHaveLength(1);
     } finally { vi.useRealTimers(); }
   });
@@ -7251,6 +7269,36 @@ describe("native terminal-turn accounting", () => {
     expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ complete: true }));
     expect(usageRecorder.create).not.toHaveBeenCalled();
   });
+  it("binds retained warm transport usage to the successor run authority", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "native-warm-usage-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = directory;
+    const first = { ...execution, binding: { ...execution.binding, runId: "first-warm-usage", executionWorkspaceId: "warm-usage-workspace" },
+      session: { ...execution.session, normalizedSessionId: "warm-usage-session", lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60000 } } } as NativeExecutionInputV1;
+    const second = { ...first, binding: { ...first.binding, runId: "second-warm-usage" } };
+    const firstCapture = vi.fn(async (_event: PrpEvent) => {}), secondCapture = vi.fn(async (_event: PrpEvent) => {});
+    try {
+      await createRunnerdBackend({ db: leaseDb(first), execution: first, runnerInstanceId: "warm-producer", onAccountingEvent: firstCapture });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const retainedHook = state.createTransport.mock.calls.at(-1)![0].onAccountingEvent!;
+      const firstReport = { eventType: "usage.reported", runId: first.binding.runId, sourceInstanceId: "warm-producer" } as PrpEvent;
+      await retainedHook(firstReport);
+      expect(firstCapture).toHaveBeenCalledExactlyOnceWith(firstReport);
+      await rm(state.createTransport.mock.calls.at(-1)![0].stateDirectory!, { recursive: true, force: true });
+      await createRunnerdBackend({ db: leaseDb(second), execution: second, runnerInstanceId: "warm-producer", onAccountingEvent: secondCapture });
+      await expect(retainedHook({ ...firstReport, eventType: "run.attached" })).resolves.toBeUndefined();
+      expect(secondCapture).not.toHaveBeenCalled();
+      const secondReport = { ...firstReport, runId: second.binding.runId };
+      await retainedHook(secondReport);
+      expect(secondCapture).toHaveBeenCalledExactlyOnceWith(secondReport);
+      expect(firstCapture).toHaveBeenCalledTimes(1);
+      await expect(retainedHook(firstReport)).rejects.toThrow("native_usage_run_binding_mismatch");
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("uses the canonical recorder for partial and completed usage when no onUsage callback is supplied", async () => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     state.execute.mockReset().mockImplementationOnce(async () => {
@@ -9262,6 +9310,102 @@ describe("native warm session supervision", () => {
       finish(); await active;
       await closeIdleWarmNativeSessionsForRestart();
     });
+
+    it.each(["retired", "unconfirmed", "other-error", "collection-failed", "same-session", "same-id-provider", "unbound", "pending-semantic"] as const)(
+      "handles a permanently rejected plugin close during reset (%s)", async mode => {
+        const { base, next, run } = fixture(`identity-poisoned-close-${mode}`);
+        const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: base.binding.runId,
+          normalizedSessionId: base.session.normalizedSessionId!, turnId: "turn", itemId: "item" };
+        let stopped = false;
+        const task = vi.fn(async (operation: any) => {
+          if (operation.kind === "describe") return { kind: "description", taskId: "old-task", launchPreparationVersion: 1,
+            projectAuthCheckVersion: 1, runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+          if (operation.kind === "stop") stopped = true;
+          if (operation.kind === "status") return { kind: "status", taskId: "old-task", phase: stopped ? "cancelled" : "running", executionStopped: stopped };
+          if (operation.kind === "complete" && mode === "unconfirmed") throw new Error("handoff unconfirmed");
+          return { kind: "accepted", taskId: "old-task" };
+        });
+        const createOwner = pluginTaskRuntime.createPluginRunnerTaskOwner;
+        let owner!: ReturnType<typeof createOwner>;
+        const ownerFactory = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockImplementation(input => {
+          owner = createOwner({ ...input, adoptIdentity: identity });
+          return owner;
+        });
+        onTestFinished(() => ownerFactory.mockRestore());
+        // Bind through the production backend so the receipt belongs to this
+        // exact session object. The task boundary supplies the stop proof.
+        const backend = await createRunnerdBackend({ db: leaseDb(base),
+          execution: { ...base, session: { ...base.session, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } } },
+          runnerInstanceId: "runner", runnerIngressAuthorized: true,
+          runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "lease", runnerTask: task } });
+        const registration = await owner.registration({} as never, base.binding.runId);
+        const failure = mode === "other-error" ? new Error("controller retirement unconfirmed") : new NativeSessionCloseUnrecoverableError(undefined, mode !== "pending-semantic");
+        let closePromise: Promise<void> | undefined;
+        const close = vi.fn(() => closePromise ??= (async () => {
+          await registration.release();
+          await registration.checkpoint("unsettled").catch(() => undefined);
+          throw failure;
+        })());
+        const session = { close };
+        if (mode !== "unbound") backend.bindManagedSession(session as never);
+        const collectStopped = vi.fn(async () => {
+          expect(owner.isRetired()).toBe(true);
+          if (mode === "collection-failed") throw new Error("file collection failed");
+        });
+        const retirementFailed = vi.fn(async () => {});
+        state.execute.mockReset().mockImplementationOnce(async options => {
+          await options.onSession?.(session); return result;
+        }).mockImplementationOnce(async options => {
+          expect(options.existingSession).toBeUndefined();
+          expect(collectStopped).toHaveBeenCalled();
+          return result;
+        });
+        try {
+          await executePaperclipNativeSession({ db: leaseDb(base), execution: base, runnerInstanceId: "runner",
+            instructionWorkingCopy: { hasChanges: async () => false, collectStopped, retirementFailed } });
+          // First poison the retained owner through the real configuration
+          // retirement path. An explicit reset must not need a process restart.
+          const changed = { ...base, binding: { ...base.binding, runId: `${base.binding.runId}-changed` } };
+          await expect(executePaperclipNativeSession({ db: leaseDb(changed), execution: changed,
+            runnerInstanceId: "runner", refreshTools: true })).rejects.toThrow(failure.message);
+          expect(close).toHaveBeenCalledOnce();
+          expect(collectStopped).not.toHaveBeenCalled();
+          expect(retirementFailed).toHaveBeenCalledOnce();
+          retirementFailed.mockClear();
+          const replacement = mode === "same-session" ? { ...next, session: base.session }
+            : mode === "same-id-provider" ? { ...next, session: base.session,
+                provider: { kind: "opencode" as const, model: "openai/test", permissionMode: "allow" as const } } : next;
+          const attempt = () => mode === "same-session"
+            ? executePaperclipNativeSession({ db: leaseDb(replacement), execution: replacement, runnerInstanceId: "runner", refreshTools: true })
+            : run(replacement);
+          if (mode === "retired") {
+            await attempt();
+            expect(state.execute).toHaveBeenCalledTimes(2);
+            expect(retirementFailed).not.toHaveBeenCalled();
+          } else {
+            // Both attempts see the same rejected promise, just as the real
+            // transport does; no mock succeeds on the second close.
+            const expected = mode === "collection-failed" ? "file collection failed" : failure.message;
+            await expect(attempt()).rejects.toThrow(expected);
+            await expect(attempt()).rejects.toThrow(expected);
+            expect(state.execute).toHaveBeenCalledTimes(1);
+            if (mode !== "collection-failed") expect(collectStopped).not.toHaveBeenCalled();
+            else {
+              collectStopped.mockResolvedValue(undefined);
+              await attempt();
+              expect(state.execute).toHaveBeenCalledTimes(2);
+            }
+          }
+          expect(task.mock.calls.filter(([operation]) => operation.kind === "stop")).toHaveLength(1);
+          expect(task.mock.calls.some(([operation]) => operation.kind === "read_state")).toBe(false);
+        } finally {
+          collectStopped.mockResolvedValue(undefined);
+          close.mockResolvedValue(undefined);
+          await closeIdleWarmNativeSessionsForRestart();
+          ownerFactory.mockRestore();
+        }
+      },
+    );
 
     it("retains failed retirement for retry and never launches over an uncontained owner", async () => {
       const { base, next, run } = fixture("identity-close-failure");
@@ -12438,7 +12582,14 @@ describe("runnerd provider runtime wiring", () => {
     }
   });
 
-  it.each(["github", "assigned"] as const)("cleans run-owned access after overlapping executor failure: %s", async failure => {
+  it.each((["codex", "opencode"] as const).flatMap(provider =>
+    (["github", "assigned"] as const).map(failure => ({ provider, failure })),
+  ))("cleans run-owned access after overlapping $provider executor failure: $failure", async ({ provider, failure }) => {
+    const current = {
+      ...execution,
+      provider: provider === "codex" ? execution.provider : { kind: "opencode", model: null },
+      session: { ...execution.session, driverKind: provider === "codex" ? "codex_app_server" : "opencode_server" },
+    } as NativeExecutionInputV1;
     const issueService = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({
       update: vi.fn(async () => ({ status: "blocked", statusVersion: 1 })),
     } as unknown as ReturnType<typeof issueServiceModule.issueService>);
@@ -12464,7 +12615,7 @@ describe("runnerd provider runtime wiring", () => {
     state.createBackend.mockClear();
     let settled = false;
     const running = executePaperclipNativeSession({
-      db: leaseDb(execution), execution, runnerInstanceId: "runner-overlap-cleanup",
+      db: leaseDb(current), execution: current, runnerInstanceId: "runner-overlap-cleanup",
       useRunnerd: true, managedGitHub: true,
       runnerEnvironment: {
         PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
@@ -12490,7 +12641,7 @@ describe("runnerd provider runtime wiring", () => {
       expect(state.execute).not.toHaveBeenCalled();
       expect(state.createBackend).not.toHaveBeenCalled();
       if (failure === "assigned") {
-        expect(activate).toHaveBeenCalledWith(execution.binding);
+        expect(activate).toHaveBeenCalledWith(current.binding);
         expect(deactivate).toHaveBeenCalledOnce();
         expect(stop).toHaveBeenCalledOnce();
       }
@@ -12730,7 +12881,7 @@ describe("runnerd provider runtime wiring", () => {
     const driver = { prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
     state.toolAuthorityDefinitions.mockImplementation(async binding => binding.readRemoteTaskFile ? [{ name: "register_deliverable" }] as never : []);
     const readWorkspaceFile = vi.fn(async () => Buffer.from("proof"));
-    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, rebind:vi.fn() });
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, isRetired: () => false, rebind:vi.fn() });
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
       return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, ...(kind === "codex" ? { workspaceFileReadVersion: 1 } : {}), taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };

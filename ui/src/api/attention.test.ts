@@ -42,4 +42,14 @@ describe("attentionApi.list", () => {
 
     expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/attention");
   });
+
+  it("requests the complete task membership without decision card bodies", async () => {
+    await attentionApi.taskIndex("company-1");
+    expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/attention/tasks");
+  });
+
+  it("requests canonical counts without requesting decision cards", async () => {
+    await attentionApi.summary("company-1");
+    expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/attention/summary");
+  });
 });
