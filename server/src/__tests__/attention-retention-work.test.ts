@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { subscribeDatabaseWork, authUsers, companyMemberships, agents, approvals, budgetIncidents, budgetPolicies, companies, createDb, applyPendingMigrations, decisionArchiveNotificationOutbox,
   decisionRetention, decisions, costEvents, heartbeatRunEvents, heartbeatRuns, issueApprovals, issueRecoveryActions,
@@ -425,6 +426,106 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
   });
 
+  it("bounds high-fanin ordinary issue writes to one coalescible hint", async () => {
+    const service = attentionRetentionService(db), original = service.load, load = vi.spyOn(service, "load");
+    await start(service); await settle(); load.mockClear();
+    const leaf = await insertIssue("in_review", { updatedAt: new Date(), assigneeUserId: "board" });
+    await db.execute(sql`with parents as (
+      insert into issues (id, company_id, title, status)
+      select gen_random_uuid(), ${companyId}::uuid, 'fan-in-' || n, 'todo'
+      from generate_series(1, 2100) n returning id)
+      insert into issue_relations (company_id, issue_id, related_issue_id, type)
+      select ${companyId}::uuid, ${leaf.id}::uuid, id, 'blocks' from parents`);
+    const hints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.attentionRetention, (event, values) => {
+      if (event === "settled") hints.push(...values ?? []);
+    });
+    let release!: () => void, entered = false;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    load.mockImplementationOnce(async (...args) => { const page = await original(...args); entered = true; await gate; return page; });
+    statements.length = 0;
+    try {
+      await issueService(db).update(leaf.id, { title: "High fan-in ordinary edit 0" });
+      await vi.waitFor(() => expect(entered).toBe(true), { timeout: 15_000 });
+      for (let n = 1; n < 8; n++) await issueService(db).update(leaf.id, { title: `High fan-in ordinary edit ${n}` });
+    } finally { release(); unsubscribe(); }
+    expect(statements.filter(query => query.includes("with recursive affected"))).toHaveLength(8);
+    expect(hints).toHaveLength(8);
+    expect(new Set(hints)).toEqual(new Set([JSON.stringify({ companyId })]));
+    await settle();
+    expect(load.mock.calls.length).toBeLessThanOrEqual(3);
+    expect(load.mock.calls.every(([scope]) => scope?.companyId === companyId && !scope.issueId && !scope.issueIds)).toBe(true);
+    let query!: Parameters<typeof db.execute>[0], returned = 0;
+    await db.transaction(async tx => {
+      const execute = tx.execute.bind(tx);
+      vi.spyOn(tx, "execute").mockImplementation(async statement => {
+        const result = await execute(statement);
+        if (new PgDialect().sqlToQuery(statement as SQL).sql.includes("with recursive affected")) {
+          query = statement; returned = result.length;
+        }
+        return result;
+      });
+      await notifyIssueAttentionRetentionWork(tx, { companyId, issueId: leaf.id });
+    });
+    expect(returned).toBe(101);
+    const plans = await db.execute(sql`explain (analyze, format json) ${query as SQL}`);
+    const plan = (plans[0]["QUERY PLAN"] as any)[0].Plan;
+    expect(plan["Node Type"]).toBe("Limit");
+    expect(plan["Actual Rows"]).toBe(101);
+    const nodes: any[] = [], collect = (node: any) => { nodes.push(node); for (const child of node.Plans ?? []) collect(child); };
+    collect(plan);
+    const recursive = nodes.filter(node => node["Node Type"] === "Recursive Union");
+    const relations = nodes.filter(node => node["Relation Name"] === "issue_relations");
+    expect(recursive).toHaveLength(1);
+    expect(recursive[0]["Actual Rows"]).toBe(101);
+    expect(relations.length).toBeGreaterThan(0);
+    expect(relations.every(node => node["Actual Rows"] * node["Actual Loops"] <= 101)).toBe(true);
+    process.stdout.write(JSON.stringify({ reverseFanInPlan: plan }) + "\n");
+  });
+
+  it("retains far ancestor deadlines when a cyclic chain exceeds the precise hint budget", async () => {
+    const service = attentionRetentionService(db), load = vi.spyOn(service, "load");
+    await start(service); await settle(); load.mockClear();
+    await db.execute(sql`insert into issues (id, company_id, title, status, updated_at, assignee_user_id)
+      select gen_random_uuid(), ${companyId}::uuid, 'chain-' || n,
+        case when n = 150 then 'in_review' else 'todo' end,
+        case when n = 150 then ${new Date(Date.now() - delay + 15_000).toISOString()}::timestamptz else now() end,
+        case when n = 150 then 'board' else null end
+      from generate_series(0, 150) n`);
+    await db.execute(sql`update issues child set parent_id = parent.id from issues parent
+      where child.company_id = ${companyId}::uuid and parent.company_id = child.company_id
+        and parent.title = 'chain-' || ((substring(child.title from 7)::integer + 1) % 151)`);
+    const [leaf, far] = await Promise.all([db.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.title, "chain-0"))).then(rows => rows[0]),
+      db.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.title, "chain-150"))).then(rows => rows[0])]);
+    await issueService(db).update(leaf.id, { title: "Ordinary deep chain edit" });
+    await settle();
+    expect(load.mock.calls.some(([scope]) => scope?.companyId === companyId && !scope.issueId && !scope.issueIds)).toBe(true);
+    expect(await state("review", far.id)).toBeNull();
+    expect(coordinator!.nextWakeAt()).not.toBeNull();
+    await archived("review", far.id);
+    await quiet();
+  });
+
+  it("canonicalizes a complete cyclic affected set into one bounded batch hint", async () => {
+    const a = await insertIssue(), b = await insertIssue(), c = await insertIssue();
+    await db.update(issues).set({ parentId: b.id }).where(eq(issues.id, a.id));
+    await db.update(issues).set({ parentId: c.id }).where(eq(issues.id, b.id));
+    await db.update(issues).set({ parentId: a.id }).where(eq(issues.id, c.id));
+    const hints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.attentionRetention, (event, values) => {
+      if (event === "settled") hints.push(...values ?? []);
+    });
+    try {
+      await db.transaction(tx => notifyIssueAttentionRetentionWork(tx, { companyId, issueId: a.id }));
+      await db.transaction(tx => notifyIssueAttentionRetentionWork(tx, { companyId, issueId: c.id }));
+      const wide = { companyId, issueIds: [b.id, a.id, c.id, a.id], ignored: {} as unknown };
+      wide.ignored = wide;
+      await db.transaction(tx => notifyAttentionRetentionWork(tx, wide));
+    } finally { unsubscribe(); }
+    expect(hints).toHaveLength(3);
+    expect(new Set(hints)).toEqual(new Set([JSON.stringify({ companyId, issueIds: [a.id, b.id, c.id].sort() })]));
+  });
+
   it("canonicalizes wide circular notification variables to the supported identity fields", async () => {
     const sourceId = randomUUID(), issueId = randomUUID(), hints: string[] = [];
     const wide = { companyId, sourceKind: "review" as const, sourceId, issueId, ignored: {} as unknown };
@@ -487,14 +588,14 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     const terminal = await insertIssue("backlog", { parentId: oldParent.id, hiddenAt: old(), assigneeAgentId: agentId, responsibleUserId: "board" });
     const service = attentionRetentionService(db), load = vi.spyOn(service, "load"); await start(service); await settle(); load.mockClear();
     await issueService(db).update(terminal.id, { parentId: newParent.id }); await settle();
-    const ids = load.mock.calls.map(([scope]) => scope?.issueId);
+    const ids = load.mock.calls.flatMap(([scope]) => scope?.issueIds ?? (scope?.issueId ? [scope.issueId] : []));
     expect(ids).toEqual(expect.arrayContaining([oldParent.id, newParent.id, terminal.id]));
     load.mockClear();
     await issueService(db).update(terminal.id, { hiddenAt: null }); await settle();
     expect(await state("blocker_attention", terminal.id)).toBeNull();
     const visible = await service.load({ companyId, issueId: newParent.id });
     expect(visible.rows!.some(entry => entry.sourceId === terminal.id && entry.dueAt > Date.now())).toBe(true);
-    expect(load.mock.calls.some(([scope]) => scope?.issueId === newParent.id)).toBe(true);
+    expect(load.mock.calls.some(([scope]) => scope?.issueId === newParent.id || scope?.issueIds?.includes(newParent.id))).toBe(true);
     const next = await insertIssue("backlog", { assigneeAgentId: agentId });
     await issueService(db).update(oldParent.id, { blockedByIssueIds: [next.id] }); await archived("blocker_attention", next.id);
   });
