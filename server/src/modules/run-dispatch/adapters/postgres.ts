@@ -23,6 +23,7 @@ import {
   heartbeatRuns,
   issueRecoveryActions,
   issueComments,
+  issueThreadInteractions,
   issues,
   nativeRunFinalizations,
   projects,
@@ -56,6 +57,7 @@ import {
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
 import { decideQueuedRunStaleness, decideScheduledRetryGate } from "../domain/policy.js";
 import type {
+  InteractionAddresseeFacts,
   QueuedRunFacts,
   ReviewParticipantFacts,
   RetryReasonKind,
@@ -144,6 +146,35 @@ async function readNativeReviewParticipantFacts(db: Db, input: {
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * An interaction_pending wake names the interaction it asks the run's agent
+ * to answer. Re-read that row alongside the issue so a card that was resolved,
+ * withdrawn, or addressed to someone else does not admit the run.
+ */
+async function readInteractionAddresseeFacts(db: Db, input: {
+  companyId: string; issueId: string; agentId: string; contextSnapshot: Record<string, unknown>;
+}): Promise<InteractionAddresseeFacts | null> {
+  if (readNonEmptyString(input.contextSnapshot.wakeReason) !== "interaction_pending") return null;
+  const interactionId = readNonEmptyString(input.contextSnapshot.interactionId);
+  const isPendingAddressee = interactionId !== null && UUID_PATTERN.test(interactionId)
+    ? await db
+        .select({ id: issueThreadInteractions.id })
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, input.companyId),
+          eq(issueThreadInteractions.issueId, input.issueId),
+          eq(issueThreadInteractions.addresseeAgentId, input.agentId),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .limit(1)
+        .then((rows) => rows.length > 0)
+    : false;
+  return { interactionId, isPendingAddressee };
 }
 
 function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
@@ -597,6 +628,12 @@ export function createPostgresRunDispatchAdapter(
       continuationParksExecutor = continuationSummaryParksExecutor(continuationSummaryBody);
     }
 
+    const interactionAddressee = issue
+      ? await readInteractionAddresseeFacts(dbOrTx, {
+          companyId: input.companyId, issueId: issue.id, agentId: input.agentId, contextSnapshot: context,
+        })
+      : null;
+
     const recoveryActionId = readNonEmptyString(context.recoveryActionId);
     const isAuthorizedSourceScopedRecovery =
       issue && wakeReason === "source_scoped_recovery_action" && recoveryActionId
@@ -643,6 +680,7 @@ export function createPostgresRunDispatchAdapter(
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
       isInteractionWake,
+      interactionAddressee,
       isAuthorizedSourceScopedRecovery,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,
@@ -1226,7 +1264,10 @@ export function createPostgresRunDispatchAdapter(
       if (run.status !== input.expectedStatus) return { outcome: "lost_race" as const };
       const { issueId, facts, decision, executionBlocker } = await decideCurrentRunStaleness(tx, run, input.now, publications);
       if (!decision.stale || !issueId) {
-        if (input.expectedStatus === "queued" && facts?.isInteractionWake) {
+        if (
+          input.expectedStatus === "queued" &&
+          (facts?.isInteractionWake || facts?.interactionAddressee?.isPendingAddressee)
+        ) {
           // Preserve the authority accepted under the issue/run locks. Later
           // preflight reads can observe a reassignment; they must not turn an
           // assignee comment into a non-assignee subscription-wait exception.
