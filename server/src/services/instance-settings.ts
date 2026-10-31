@@ -16,6 +16,7 @@ import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
 import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import type { Db } from "@paperclipai/db";
 import { companies, instanceSettings } from "@paperclipai/db";
@@ -247,6 +248,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableAiConnectionRouters: parsed.data.enableAiConnectionRouters ?? false,
       enableManagedSandboxOnly: parsed.data.enableManagedSandboxOnly ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
+      remoteWorkspaceStorageEnabled: parsed.data.remoteWorkspaceStorageEnabled ?? true,
       enableIsolatedWorkspacesByDefault: parsed.data.enableIsolatedWorkspacesByDefault ?? false,
       enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? true,
       enableStreamlinedUi: parsed.data.enableStreamlinedUi ?? true,
@@ -301,6 +303,11 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableAiConnectionRouters: false,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
+    // An unrelated malformed field must not erase an explicit enrollment opt-out.
+    remoteWorkspaceStorageEnabled: !(
+      raw !== null && typeof raw === "object" && !Array.isArray(raw)
+      && "remoteWorkspaceStorageEnabled" in raw && raw.remoteWorkspaceStorageEnabled === false
+    ),
     enableIsolatedWorkspacesByDefault: false,
     enableStreamlinedLeftNavigation: true,
     enableStreamlinedUi: true,
@@ -635,6 +642,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.grokDispatch);
+        if (patch.enableExternalObjects !== undefined) await notifyExternalObjectRefresh(tx);
         if (chatBecameEnabled) await notifyDeliveryWork(tx, DELIVERY_QUEUES.strandedAssignments, "*");
         if (patch.enableWorktreeRunExecution !== undefined) await notifyScheduledRetryCancellation(tx);
         if (patch.enableWorktreeRunExecution !== undefined) {

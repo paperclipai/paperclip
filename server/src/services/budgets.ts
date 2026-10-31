@@ -1,3 +1,4 @@
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
@@ -326,6 +327,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     await notifyRunDispatch(db, { companyId: policy.companyId });
     await notifyDeferredExecutionEligibility(db, { companyId: policy.companyId });
     await notifyCompanyRetentionWork(db, policy.companyId);
+    await notifyExternalObjectRefresh(db, policy.companyId);
     await notifyStatusCardIssueChange(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);
@@ -391,6 +393,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     await notifyRunDispatch(db, { companyId: policy.companyId });
     await notifyDeferredExecutionEligibility(db, { companyId: policy.companyId });
     await notifyCompanyRetentionWork(db, policy.companyId);
+    await notifyExternalObjectRefresh(db, policy.companyId);
     await notifyStatusCardIssueChange(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.routineSchedules);

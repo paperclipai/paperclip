@@ -215,7 +215,8 @@ const {
   };
   const executionWorkspaceServiceFactoryMock = vi.fn(() => executionWorkspaceServiceMock);
   const externalObjectsServiceMock = {
-    refreshDueObjectsForActiveCompanies: vi.fn(async () => ({ companies: 0, checked: 0, refreshed: 0 })),
+    registerRefreshWork: vi.fn((coordinator: { register: typeof deliveryWorkRegisterMock }, _canRun: () => boolean) =>
+      coordinator.register("external-object-refresh", { run: async () => undefined, hasPending: async () => false })),
   };
   const externalObjectsServiceFactoryMock = vi.fn(() => externalObjectsServiceMock);
   const routineServiceMock = {
@@ -591,6 +592,8 @@ vi.mock("../services/native-runtime/native-harness-backup-expiration.js", () => 
     tick: vi.fn(async () => ({ checked: 0, candidates: 0, evidenceCandidates: 0, failed: 0, truncated: false })),
     noteEvidence: vi.fn(), nextEvidenceAt: vi.fn(() => null),
     tickCheckpoints: vi.fn(), registerCheckpointExpiration: vi.fn(),
+    backupScopes: vi.fn(async () => ({ names: [], complete: true })),
+    reconcileBackup: vi.fn(async () => null), expireBackup: vi.fn(),
   })),
 }));
 
@@ -766,9 +769,12 @@ describe("startServer feedback export wiring", () => {
     loadConfigMock.mockReturnValue(buildTestConfig({ nativeHarnessBackupExpirationEnabled: enabled }));
     await startServer(); await settleStartupHousekeeping();
     expect(deliveryWorkRegisterMock.mock.calls.filter(([queue]) => queue === DELIVERY_QUEUES.nativeRunnerEvidenceRetention)).toHaveLength(enabled ? 1 : 0);
-    expect(vi.mocked(nativeHarnessBackupExpirationService).mock.calls.map(([, options]) => options?.duty)).toEqual(enabled ? ["backups", "evidence"] : ["backups"]);
+    expect(vi.mocked(nativeHarnessBackupExpirationService).mock.calls.map(([, options]) => options?.duty)).toEqual(enabled ? ["backups", "backups", "evidence"] : ["backups"]);
     const backups = vi.mocked(nativeHarnessBackupExpirationService).mock.results[0]!.value;
     expect(backups.registerCheckpointExpiration).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(deliveryWorkRegisterMock.mock.calls.filter(([queue]) => queue === DELIVERY_QUEUES.nativeHarnessBackupExpiration)).toHaveLength(enabled ? 1 : 0);
+    expect(backups.tick).not.toHaveBeenCalled();
+    expect(deliveryWorkErrors.filter(error => error.queue === DELIVERY_QUEUES.nativeHarnessBackupExpiration)).toEqual([]);
   });
 
   it("tracks held evidence reconstruction after HTTP readiness", async () => {
@@ -776,6 +782,9 @@ describe("startServer feedback export wiring", () => {
     const pending = Promise.withResolvers<{ truncated: boolean }>();
     vi.mocked(nativeHarnessBackupExpirationService).mockReturnValueOnce({ tick: vi.fn(), noteEvidence: vi.fn(), nextEvidenceAt: () => null,
       tickCheckpoints: vi.fn(), registerCheckpointExpiration: vi.fn() } as never);
+    vi.mocked(nativeHarnessBackupExpirationService).mockReturnValueOnce({
+      backupScopes: vi.fn(async () => ({ names: [], complete: true })), reconcileBackup: vi.fn(), expireBackup: vi.fn(),
+    } as never);
     vi.mocked(nativeHarnessBackupExpirationService).mockReturnValueOnce({ tick: vi.fn(() => pending.promise), noteEvidence: vi.fn(), nextEvidenceAt: () => null,
       tickCheckpoints: vi.fn(), registerCheckpointExpiration: vi.fn() } as never);
     try {
@@ -1489,7 +1498,9 @@ describe("startServer feedback export wiring", () => {
       await Promise.resolve();
 
       expect(heartbeatServiceMock.tickAgentTimers).toHaveBeenCalledTimes(1);
-      expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).toHaveBeenCalledTimes(1);
+      expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledTimes(1);
+      expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledWith(expect.any(Object), expect.any(Function));
+      expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.externalObjectRefresh)).toBe(true);
       expect(issueThreadInteractionServiceMock.mergedPullRequestConfirmationPage).toHaveBeenCalledTimes(1);
       expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).not.toHaveBeenCalled();
       expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.mergedPullRequestConfirmations)).toBe(true);
@@ -1512,6 +1523,15 @@ describe("startServer feedback export wiring", () => {
     } finally {
       setIntervalSpy.mockRestore();
     }
+  });
+
+  it.each([true, false])("does not wait for external-object provider work before readiness (scheduler=%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    externalObjectsServiceMock.registerRefreshWork.mockReturnValueOnce({
+      ready: new Promise<void>(() => {}), wake: vi.fn(), stop: vi.fn(async () => {}),
+    });
+    await startServer();
+    expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledOnce();
   });
 
   it("keeps external object refresh active when heartbeat scheduling is disabled", async () => {
@@ -1541,7 +1561,9 @@ describe("startServer feedback export wiring", () => {
       await Promise.resolve();
       await Promise.resolve();
 
-      expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).toHaveBeenCalledTimes(1);
+      expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledTimes(1);
+      expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledWith(expect.any(Object), expect.any(Function));
+      expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.externalObjectRefresh)).toBe(true);
       expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();

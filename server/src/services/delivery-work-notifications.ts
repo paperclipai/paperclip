@@ -18,6 +18,7 @@ export const DELIVERY_QUEUES = {
   providerTraceRetention: "provider-trace-retention",
   nativeRunnerEvidenceRetention: "native-runner-evidence-retention",
   skillVersionRetention: "skill-version-retention",
+  externalObjectRefresh: "external-object-refresh",
   databaseBackups: "database-backups",
   importSpoolCleanup: "import-spool-cleanup",
   externalConversationSettlement: "external-conversation-settlement",
@@ -122,6 +123,7 @@ export const DELIVERY_QUEUES = {
   chatCompletion: "chat-completions",
   connection: "connection-continuations",
   gitRestorePoints: "git-restore-points",
+  remoteWorkspaceSnapshots: "remote-workspace-snapshots",
   nativeWorkspaceSyncRetention: "native-workspace-sync-retention",
   question: "question-responses",
   pluginSchedules: "plugin-schedules",
@@ -133,6 +135,7 @@ export const DELIVERY_QUEUES = {
   issueMonitors: "issue-monitors",
   agentTimers: "agent-timers",
   caseHandoffs: "case-handoffs",
+  nativeHarnessBackupExpiration: "native-harness-backup-expiration",
   nativeCheckpointExpiration: "native-checkpoint-expiration",
 } as const;
 export type DeliveryQueue = typeof DELIVERY_QUEUES[keyof typeof DELIVERY_QUEUES];

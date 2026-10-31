@@ -1629,6 +1629,84 @@ that the whole web server is disposable or that all execution and recovery paths
 survive web-server replacement. Run-log/trace storage and producer retention are
 separate changes.
 
+### Experimental native remote workspace storage
+
+`experimental.remoteWorkspaceStorageEnabled` is a managed feature, on by default
+for Cloud and self-hosted instances. New Paperclip Runner sandbox workspaces
+enroll automatically when durable storage is configured and the fresh source is
+supported. Existing host workspaces and configured local folders retain their
+legacy behavior until explicitly imported; the default does not convert them.
+The local, SSH, and plugin environment drivers, legacy adapters, and Dot keep
+their existing paths.
+An explicit stored `false` disables new enrollment, and a managed setting takes
+precedence over the stored choice. Enrolled workspaces retain remote authority
+when enrollment is disabled; losing a storage prerequisite fails their admission
+instead of falling back to a controller checkout.
+
+After enrollment, roll back only to binaries that understand the same remote
+workspace authority and saved-version format. Older local-only binaries are
+unsupported rollback targets.
+
+This mode requires an external PostgreSQL `DATABASE_URL`, configured S3 storage,
+and the same encryption master key on every replacement server. The managed
+profile requires `PAPERCLIP_SECRETS_MASTER_KEY` as described above. Self-hosted
+instances may instead preserve their existing configured
+`PAPERCLIP_SECRETS_MASTER_KEY_FILE` across replacements. An embedded database,
+local-disk object storage, or a newly generated replacement key cannot provide
+this durability contract. New workspaces continue through the legacy path when
+these prerequisites are absent. Validate S3 put/read/delete and database access
+with the deployment credentials before enrollment.
+Snapshot expiry also needs `s3:ListBucketVersions` on the bucket and
+`s3:DeleteObjectVersion` on the snapshot object prefix. S3-compatible endpoints
+must support version listing. Retention verifies that every version and delete
+marker is gone. Denied permissions and object locks keep a retry obligation.
+
+The sandbox holds current working files. PostgreSQL records its location,
+writer epoch, and committed snapshot; encrypted immutable snapshots live in S3.
+Preparation creates a saved baseline, and native finalization saves the stopped
+writer's files before releasing its persistence obligation. Replacing a
+webserver reconnects to the recorded allocation without copying files back to
+a controller checkout. Saved versions restore in a new sandbox without the old
+host, sandbox, or Git remote. Files changed since the last save still depend on
+the live sandbox: losing that allocation can lose those edits. There is no
+periodic workspace backup in this release.
+
+Existing local task workspaces require an explicit import. Run from a source
+checkout with the deployment's database, S3, and key configuration loaded:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/migrate-remote-workspaces.ts \
+  --company-id <company-uuid> --workspace-id <workspace-uuid> --dry-run
+pnpm --filter @paperclipai/server exec tsx scripts/migrate-remote-workspaces.ts \
+  --company-id <company-uuid> --workspace-id <workspace-uuid> --apply
+```
+
+Dry-run is the default and reports eligibility and blocking reasons without
+importing. Apply retains the source folder, uploads an encrypted snapshot,
+independently restores it for verification, rechecks source/writer state, and
+atomically activates remote authority. Active execution, unresolved operations
+or recovery, unsafe paths, and explicitly concurrent shared writers block
+import. An interrupted apply retains its journal and admission hold; retry the
+same command to reconcile it before starting another writer.
+
+Supported sources include empty task folders, repository URLs, and managed
+mutable repositories from the same project. Configured local folders use the
+legacy path until imported. V1 rejects read-only cross-project referenced folders
+and custom cleanup/teardown commands on remote close. Automatic Core services, manual workspace jobs, services,
+and runtime commands are also rejected before any local directory access; run
+those commands through an agent task. One writer owns each logical
+workspace; separate workspaces can run concurrently. The Files panel identifies
+**Live workspace** and **Saved copy** with its save time. An unavailable dirty
+allocation is not silently replaced with an older saved copy.
+
+Use the focused `remote-workspace-*` and `remote-workspaces.integration` suites
+for storage, import, retention, and lifecycle regression checks. These checks do
+not qualify a deployed Runner/provider or a zero-outage webserver deploy. Keep
+the existing persistent volume until the other instance data paths and deploy
+handoff are separately qualified. See the
+[implementation contract](SPEC-implementation.md#experimental-native-remote-workspace-authority-2026-10-30)
+and [snapshot storage contract](DATABASE.md#experimental-remote-workspace-snapshots).
+
 ## Agent Artifact Uploads
 
 When an agent generates a file that a board user or reviewer should inspect as
