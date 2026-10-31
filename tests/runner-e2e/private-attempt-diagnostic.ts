@@ -26,6 +26,8 @@ export function privateAttemptDiagnostic(input: PrivateAttemptDiagnosticInput) {
     failureClass: member(result.failureClass, ["candidate_failure", "transient_infrastructure", "permanent_infrastructure", "secret_leak", "cleanup_failure"]),
     finalization: failures.get(message) ?? "unclassified",
     phase: phases.find(([label]) => productError.includes(label!) || message.includes(label!))?.[1] ?? "unclassified",
+    runStatusCounts: Object.fromEntries(["queued", "running", "succeeded", "failed", "cancelled", "timed_out"].map(label =>
+      [label, Math.min(runs.filter(run => run.status === label).length, 1000)])),
     runs: Math.min(runs.length || (Array.isArray(result.runIds) ? result.runIds.length : 0), 1000),
     checks: Array.isArray(result.matcherResults) ? Math.min(result.matcherResults.length, 1000) : 0,
     source: status(runs.find(run => typeof observation.leadId === "string" && run.agentId === observation.leadId)),

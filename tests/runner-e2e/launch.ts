@@ -978,6 +978,10 @@ async function runAttempt(input: {
       const casePrivateDir = path.join(privateDir, "cases", candidate.task.id);
       const fallback = syntheticResult(candidate, attempt, startedAtMs, "Attempt terminated before a worker result was retained");
       const original = await readResult(path.join(casePrivateDir, "result.json"), fallback);
+      if (manualPrivateHandoff) {
+        manualDiagnostic ??= { stage: "execution", result: original, observation: await readPrivateAttemptObservation(casePrivateDir) };
+        manualDiagnostic.error ??= error;
+      }
       const result = abnormalFinalizationResult(original, error);
       if (databaseLane === "owned-docker-postgres") result.databaseIdentity = dockerDatabase ? publicDockerDatabaseIdentity(dockerDatabase.receipt) : (await dockerDatabaseLaunchState(databaseLane, temporaryRoot)).identity;
       const uploadDir = path.join(resultsRoot, campaignId, candidate.suite.id, candidate.profile.id, candidate.environment.id, candidate.task.id, `attempt-${attempt}`);

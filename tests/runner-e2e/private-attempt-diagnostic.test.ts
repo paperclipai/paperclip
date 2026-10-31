@@ -7,7 +7,7 @@ it("projects only fixed outcomes from private result, run and carrier evidence",
   const diagnostic = privateAttemptDiagnostic({ stage: "seal-original", result: { status: "failed", error: "Actual new native task reads inherited project context: private-value", runIds: ["private-id"] },
     error: new Error("Credential-contaminated original evidence cannot be retained"), evidence: { leaks: [{ file: "private-path", reason: "zip inspection exceeded its expanded-byte bound" }] },
     observation: { observation: { leadId: "lead", state: { futureWorker: { id: "future" }, activeRunId: "held" }, runs: [{ agentId: "lead", status: "succeeded" }, { agentId: "future", status: "running" }, { id: "held", status: "timed_out" }], reply: "private-value" } } });
-  expect(diagnostic).toMatchObject({ finalization: "credential-contamination", phase: "future-work-timeout", runs: 3, source: "succeeded", future: "running", held: "timed_out", carrier: "zip-byte-bound" });
+  expect(diagnostic).toMatchObject({ finalization: "credential-contamination", phase: "future-work-timeout", runs: 3, source: "succeeded", future: "running", held: "timed_out", carrier: "zip-byte-bound", runStatusCounts: expect.objectContaining({ succeeded: 1, running: 1, timed_out: 1 }) });
   expect(JSON.stringify(diagnostic)).not.toMatch(/private-value|private-id|private-path/);
 });
 it("never copies unknown error, stage, failure or status text", () => {
