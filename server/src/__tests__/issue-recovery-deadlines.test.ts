@@ -1,12 +1,16 @@
+import { createServer } from "node:http";
 import { setImmediate as immediate } from "node:timers/promises";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueRecoveryActions, issueRelations, issues, issueWatchdogs } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueRecoveryActions, issueRelations, issues, issueWatchdogs, issueComments } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { undeliveredConversationComments } from "../services/agent-conversations.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { issueService } from "../services/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { registerIssueRecoveryWork } from "../services/recovery/work.js";
@@ -102,9 +106,14 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
     expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.status} in ('queued', 'running')`)).toHaveLength(0);
     const reads = vi.spyOn(db, "select"); const executes = vi.spyOn(db, "execute");
     const selected = reads.mock.calls.length, executed = executes.mock.calls.length;
+    const statements: string[] = [], priorDebug = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query) => { statements.push(query); };
     if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    try { await vi.advanceTimersByTimeAsync(20 * 60_000); expect(reads).toHaveBeenCalledTimes(selected); expect(executes).toHaveBeenCalledTimes(executed); }
-    finally { vi.useRealTimers(); reads.mockRestore(); executes.mockRestore(); }
+    try {
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      expect(reads).toHaveBeenCalledTimes(selected); expect(executes).toHaveBeenCalledTimes(executed);
+      expect(statements).toEqual([]);
+    } finally { vi.useRealTimers(); db.$client.options.debug = priorDebug; reads.mockRestore(); executes.mockRestore(); }
   }
   async function finish(issueId: string) {
     await issueService(db).update(issueId, { status: "done" });
@@ -160,6 +169,93 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
     expect(run.stdoutExcerpt).toContain("recovery-proof");
     return run;
   }
+  async function savedConversation(withMessage = true) {
+    const f = await fixture(), settings = instanceSettingsService(db);
+    await settings.updateExperimental({ enableAgentChat: true, enableConferenceRoomChat: false });
+    const replies: string[] = [], failures: unknown[] = [];
+    const listener = createServer(async (request, response) => {
+      try {
+        let body = "";
+        for await (const chunk of request) body += chunk;
+        const { runId } = JSON.parse(body) as { runId: string };
+        const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId),
+          eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.agentId, f.agentId)));
+        if (!run) throw new Error("Unknown controlled conversation run");
+        await issueService(db).addComment(String(run.contextSnapshot?.issueId), "Saved chat delivered", {
+          agentId: f.agentId, runId: run.id,
+        });
+        replies.push(run.id); response.end("ok");
+      } catch (error) { failures.push(error); response.statusCode = 500; response.end("controlled reply failed"); }
+    });
+    await new Promise<void>(resolve => listener.listen(0, "127.0.0.1", resolve));
+    extraStops.push(async () => { listener.closeAllConnections(); await new Promise<void>(resolve => listener.close(() => resolve())); });
+    const port = (listener.address() as { port: number }).port;
+    const script = `fetch("http://127.0.0.1:${port}/reply", {method:"POST", body:JSON.stringify({runId:process.env.PAPERCLIP_RUN_ID})}).then(async response=>{if(!response.ok)throw new Error(await response.text());console.log("recovery-proof")}).catch(error=>{console.error(error);process.exitCode=1})`;
+    await db.update(agents).set({ adapterConfig: { command: process.execPath, args: ["-e", script], cwd: process.cwd() } })
+      .where(eq(agents.id, f.agentId));
+    const chat = await issueService(db).create(f.companyId, { title: "Saved conversation", status: "in_review",
+      conversationAgentId: f.agentId, conversationUserId: "recovery-user", assigneeAgentId: f.agentId,
+      conversationState: "waiting" });
+    const message = withMessage ? await issueService(db).addComment(chat.id, "Keep this message", { userId: "recovery-user" }, { clientRequestId: randomUUID() }) : null;
+    await settings.updateExperimental({ enableAgentChat: false });
+    await start(); await quiet();
+    expect(replies).toEqual([]);
+    return { ...f, settings, chat, message, replies, failures };
+  }
+  it("dispatches a saved conversation only from the committed Agent Chat enable transition", async () => {
+    const f = await savedConversation();
+    expect(await undeliveredConversationComments(db, f.companyId, f.chat.id)).toHaveLength(1);
+    await f.settings.updateExperimental({ enableAgentChat: true });
+    expect(coordinator.nextWakeAt()).not.toBeNull();
+    await vi.waitFor(async () => expect(await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1), { timeout: 40_000 });
+    const run = await completed(f.chat.id);
+    expect(f.replies).toEqual([run.id]); expect(f.failures).toEqual([]);
+    expect(await undeliveredConversationComments(db, f.companyId, f.chat.id)).toEqual([]);
+    expect((await db.select().from(issues).where(eq(issues.id, f.chat.id)))[0])
+      .toMatchObject({ conversationState: "waiting", executionRunId: null });
+    expect(await db.select().from(issueComments).where(and(eq(issueComments.createdByRunId, run.id),
+      eq(issueComments.authorAgentId, f.agentId)))).toHaveLength(1);
+    await quiet();
+    let hints = 0;
+    const stop = subscribeDeliveryWork(db, DELIVERY_QUEUES.strandedAssignments, () => { hints++; });
+    try { await f.settings.updateExperimental({ enableAgentChat: true }); expect(hints).toBe(0); await quiet(); }
+    finally { stop(); }
+    expect(f.replies).toEqual([run.id]);
+  });
+  it("keeps disabled saved conversations parked after rollback, unrelated flags and unchanged values", async () => {
+    const f = await savedConversation();
+    await expect(db.transaction(async tx => {
+      await instanceSettingsService(tx as unknown as typeof db).updateExperimental({ enableAgentChat: true });
+      throw new Error("chat flag rollback");
+    })).rejects.toThrow("chat flag rollback");
+    await quiet();
+    expect((await f.settings.getExperimental()).enableAgentChat).toBe(false);
+    let hints = 0;
+    const stop = subscribeDeliveryWork(db, DELIVERY_QUEUES.strandedAssignments, () => { hints++; });
+    try {
+      await f.settings.updateExperimental({ enableConferenceRoomChat: true });
+      await f.settings.updateExperimental({ enableAgentChat: false });
+      expect(hints).toBe(0); await quiet();
+    } finally { stop(); }
+    expect(f.replies).toEqual([]); expect(f.failures).toEqual([]);
+    expect(await db.select().from(heartbeatRuns)).toEqual([]);
+    expect(await undeliveredConversationComments(db, f.companyId, f.chat.id)).toHaveLength(1);
+  });
+  it("does not dispatch an accepted saved message after Agent Chat is disabled", async () => {
+    const f = await savedConversation(false);
+    await f.settings.updateExperimental({ enableAgentChat: true }); await quiet();
+    draining = true;
+    await issueService(db).addComment(f.chat.id, "Retain while disabled", { userId: "recovery-user" }, { clientRequestId: randomUUID() });
+    let hints = 0;
+    const stop = subscribeDeliveryWork(db, DELIVERY_QUEUES.strandedAssignments, () => { hints++; });
+    try { await f.settings.updateExperimental({ enableAgentChat: false }); expect(hints).toBe(0); }
+    finally { stop(); }
+    draining = false; await quiet();
+    expect(f.replies).toEqual([]); expect(f.failures).toEqual([]);
+    expect(await db.select().from(heartbeatRuns)).toEqual([]);
+    expect(await undeliveredConversationComments(db, f.companyId, f.chat.id)).toHaveLength(1);
+  });
   it("keeps empty, configured idle, and terminal history quiet", async () => {
     await fixture(); await start(); await quiet();
   });

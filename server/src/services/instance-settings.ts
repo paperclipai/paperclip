@@ -624,11 +624,14 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
           }
         }
       }
+      const chatBecameEnabled = !toExperimentalView(current.experimental).enableAgentChat
+        && toExperimentalView(nextExperimental).enableAgentChat;
       const now = new Date();
       const [updated] = await db.transaction(async tx => {
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.grokDispatch);
+        if (chatBecameEnabled) await notifyDeliveryWork(tx, DELIVERY_QUEUES.strandedAssignments, "*");
         if (patch.enableWorktreeRunExecution !== undefined) await notifyScheduledRetryCancellation(tx);
         if (patch.enableWorktreeRunExecution !== undefined) {
           await notifyRunDispatch(tx);
