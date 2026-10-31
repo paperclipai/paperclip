@@ -58,7 +58,7 @@ export function projectMarkdownToText(markdown: string): DocumentTextProjection 
   const builder = new ProjectionBuilder(markdown);
   const lines = markdown.match(/[^\n]*(?:\n|$)/g) ?? [markdown];
   let offset = 0;
-  let inFence = false;
+  let fence = "";
 
   for (const rawLine of lines) {
     if (rawLine === "") continue;
@@ -66,14 +66,19 @@ export function projectMarkdownToText(markdown: string): DocumentTextProjection 
     const line = hasNewline ? rawLine.slice(0, -1) : rawLine;
     const fenceMatch = line.match(/^\s*(```+|~~~+)/);
 
-    if (fenceMatch) {
-      inFence = !inFence;
+    if (fenceMatch && (
+      !fence
+      || (fenceMatch[1][0] === fence[0]
+        && fenceMatch[1].length >= fence.length
+        && /^\s*$/.test(line.slice(fenceMatch[0].length)))
+    )) {
+      fence = fence ? "" : fenceMatch[1];
       offset += rawLine.length;
       builder.addSeparator(offset - (hasNewline ? 1 : 0));
       continue;
     }
 
-    if (inFence) {
+    if (fence) {
       builder.addText(line, offset);
       builder.addSeparator(offset + line.length);
       offset += rawLine.length;
