@@ -334,13 +334,15 @@ export async function requestTaskRetry(input: {
       details: { requestId: active?.id ?? id, sourceRunId: latest.id, attachedToExistingWork: Boolean(active || busy) } });
     return { requestId: active?.id ?? id, accepted: true, stale: false, observedRunId: latest.id,
       chatActionId: intent.chatActionId };
-  });
+  }, { companyId: input.companyId });
 }
 
 /** Chat owns admission and authorization. The task receipt follows that
  * durable outcome; it never launches a parallel generic board execution. */
-export async function reconcileTaskChatRetryReceipts(db: Db) {
+export async function reconcileTaskChatRetryReceipts(db: Db, scope: { companyId?: string; requestId?: string; settleOnly?: boolean } = {}) {
   const pending = await db.select().from(agentWakeupRequests).where(and(
+    scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
+    scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
     eq(agentWakeupRequests.reason, "task_retry"), eq(agentWakeupRequests.status, "deferred_issue_execution"),
     sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}' is not null`,
   )).orderBy(agentWakeupRequests.updatedAt).limit(50);
@@ -356,7 +358,7 @@ export async function reconcileTaskChatRetryReceipts(db: Db) {
     // A deferred chat receipt is admitted input, not a completed dispatch.
     // Re-stage that exact action through chat's owner; it rechecks authority
     // and normal queue policy before updating the existing receipt.
-    if (chat?.status === "processed" && chat.payload.taskRetryIntentId === wake.id &&
+    if (!scope.settleOnly && chat?.status === "processed" && chat.payload.taskRetryIntentId === wake.id &&
         chat.payload.failedRunId === intent.sourceRunId && receipt?.status === "deferred_issue_execution" &&
         !receipt.runId && receipt.payload?.taskRetryRequestId === wake.id) {
       await db.transaction(async tx => {

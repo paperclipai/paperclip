@@ -1,3 +1,7 @@
+import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
+import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
+import { registerIssueRecoveryWork } from "./recovery/work.js";
+import { registerRunDispatchWork } from "./heartbeat/dispatch-work.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "./native-runtime/native-controller-recovery.js";
 import { externalConversationSettlementWork } from "./external-conversation-settlement-work.js";
 import { nativeRecoveryNoticeWork } from "./native-runtime/native-recovery-notice-work.js";
@@ -1003,6 +1007,7 @@ export function heartbeatService(
     finalizeAiConnectionBusyDeferral,
     finalizeWorkspaceBusyDeferral,
     promoteDueScheduledRetries,
+    nextScheduledRetryAt,
     retryScheduledRetryNow,
     scheduleBoundedRetry,
   } = createHeartbeatRetries(db, {
@@ -1337,11 +1342,11 @@ export function heartbeatService(
     return heartbeatQueue.dispatchPendingNativeStatusWakeups(...args);
   }
 
-  function resumeQueuedRunsAfterDrain() {
+  function resumeQueuedRunsAfterDrain(...args: Parameters<typeof heartbeatQueue.resumeQueuedRunsAfterDrain>) {
     for (const pending of nativeRecoveryDeadlines.values()) {
       pending.rearm();
     }
-    const promise = heartbeatQueue.resumeQueuedRunsAfterDrain();
+    const promise = heartbeatQueue.resumeQueuedRunsAfterDrain(...args);
     activeWakeupPromises.add(promise);
     void promise.then(
       () => { activeWakeupPromises.delete(promise); },
@@ -1616,15 +1621,15 @@ export function heartbeatService(
     void reportRunFailure(db, updated, failureReport);
   }
 
-  async function reconcileStrandedAssignedIssues(opts?: { skipExternalConversationSettlement?: boolean }) {
+  async function reconcileStrandedAssignedIssues(opts?: Parameters<typeof recovery.reconcileStrandedAssignedIssues>[0]) {
     return recovery.reconcileStrandedAssignedIssues({
-      skipExternalConversationSettlement: opts?.skipExternalConversationSettlement,
+      ...opts,
       issueCreatedAtGte: await getWorktreeExecutionCutoff(),
     });
   }
 
-  async function sweepStaleIssueLocks() {
-    return recovery.sweepStaleIssueLocks();
+  async function sweepStaleIssueLocks(opts?: Parameters<typeof recovery.sweepStaleIssueLocks>[0]) {
+    return recovery.sweepStaleIssueLocks(opts);
   }
 
   function issueIdFromRunContext(contextSnapshot: unknown) {
@@ -1654,10 +1659,7 @@ export function heartbeatService(
     });
   }
 
-  async function reconcileTaskWatchdogs(opts?: {
-    companyId?: string | null;
-    runId?: string | null;
-  }) {
+  async function reconcileTaskWatchdogs(opts?: Parameters<typeof taskWatchdogs.reconcileTaskWatchdogs>[0]) {
     return taskWatchdogs.reconcileTaskWatchdogs({
       ...opts,
       issueCreatedAtGte: await getWorktreeExecutionCutoff(),
@@ -1682,10 +1684,7 @@ export function heartbeatService(
     return recovery.buildRunOutputSilence(run, now);
   }
 
-  async function reconcileResolvedDependencyWakes(opts?: {
-    runId?: string | null;
-    companyId?: string | null;
-  }) {
+  async function reconcileResolvedDependencyWakes(opts?: Parameters<typeof recovery.reconcileResolvedDependencyWakeBackstop>[0]) {
     return recovery.reconcileResolvedDependencyWakeBackstop(opts);
   }
 
@@ -3712,7 +3711,7 @@ export function heartbeatService(
           await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx
             .update(heartbeatRuns)
             .set({ executionControlDeadlineAt: null })
-            .where(eq(heartbeatRuns.id, run.id)));
+            .where(eq(heartbeatRuns.id, run.id)), { companyId: run.companyId });
         }
         nativeOwnershipHeld =
           nativeOwnershipHeld ||
@@ -4234,6 +4233,30 @@ export function heartbeatService(
     computeTaskDrain,
     applyTaskDrain,
 
+    registerDeferredReceiptWork: (coordinator: Parameters<typeof registerDeferredReceiptWork>[1], canRun: () => boolean) =>
+      registerDeferredReceiptWork(db, coordinator, {
+        resume: scope => heartbeatQueue.resumeDeferredExecutionReceipts(scope),
+        settleTaskChat: scope => reconcileTaskChatRetryReceipts(db, { ...scope, settleOnly: true }),
+        createNativeBatch: heartbeatQueue.createNativeStatusWakeBatch,
+        schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
+      }, () => canRun() && readTaskDrain(new Date()) === null),
+    registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean) =>
+      registerIssueRecoveryWork(db, coordinator, {
+        stranded: scope => reconcileStrandedAssignedIssues({ ...scope, skipExternalConversationSettlement: true, skipRelatedRecovery: true }),
+        orphanBlockers: recovery.reconcileUnassignedBlockingIssues,
+        recoveryActions: recovery.reconcileActiveRecoveryActions,
+        dependencies: reconcileResolvedDependencyWakes,
+        locks: sweepStaleIssueLocks,
+        watchdogs: reconcileTaskWatchdogs,
+        schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
+      }, () => canRun() && readTaskDrain(new Date()) === null),
+    registerRunDispatchWork: (coordinator: Parameters<typeof registerRunDispatchWork>[0], canRun: () => boolean) =>
+      registerRunDispatchWork(coordinator, {
+        promoteDueScheduledRetries,
+        nextScheduledRetryAt,
+        resumeQueuedRunsAfterDrain,
+        schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
+      }, () => canRun() && readTaskDrain(new Date()) === null),
     promoteDueScheduledRetries,
     retryScheduledRetryNow,
 
