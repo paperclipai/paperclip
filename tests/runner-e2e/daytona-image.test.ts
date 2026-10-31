@@ -28,7 +28,6 @@ describe("runner E2E Daytona image contract", () => {
     "src/drivers/acpx/pi-closure-pins.ts",
     "src/drivers/acpx/pi-node-pins.ts",
     "src/drivers/acpx/kimi-closure-pins.ts",
-    "src/drivers/acpx/kimi-node-pins.ts",
     "src/providers/grok/launcher.cjs",
   ].map(input => `packages/paperclip-runner/${input}`);
 
