@@ -222,8 +222,9 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
 // returns this list as written and the model dropdown keeps its order.
 export const models = [
   { id: "gpt-6.1-sol", label: "gpt-6.1-sol" },
-  // Same 6.1 version, second by capability: the bundled Codex 0.166.0 catalog orders it behind
-  // GPT-6.1 Sol and it sits beside GPT-6 Astra, matching where GPT-5.6 Terra already sits.
+  // Same 6.1 version, second inside the group. The bundled Codex 0.166.0 catalog ranks it below
+  // GPT-6 Astra and GPT-6 Sol; this list orders by version first instead, so Terra stays in the 6.1
+  // group ahead of those older-version entries, next to where GPT-5.6 Terra sits behind GPT-5.6 Sol.
   { id: "gpt-6.1-terra", label: "gpt-6.1-terra" },
   { id: "gpt-6-astra", label: "gpt-6-astra" },
   { id: "gpt-6-sol", label: "gpt-6-sol" },

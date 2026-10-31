@@ -18,12 +18,15 @@ Codex catalog stopped at `gpt-6.1-sol`, so the picker had no entry to show.
 | Codex | Add `gpt-6.1-terra` to the model list, the Fast mode list, and the Ultra effort set. Record the CLI floor. Update the adapter documentation text. |
 | Everything else | No change. OpenCode uses its own `openai/`-qualified catalog, and the other adapters' providers had no verified new IDs. |
 
-Ordering follows the rule used at runtime (`#14878`/`#14918`): newest model
-version first, then decreasing capability inside a version. GPT-6.1 Terra sits
-directly behind GPT-6.1 Sol, which is where GPT-5.6 Terra already sits behind
-GPT-5.6 Sol. The bundled Codex catalog lists it with a lower priority than
-GPT-6.1 Sol, GPT-6 Astra, GPT-6 Sol, GPT-6 Luna, and GPT-5.6 Sol, so it is not
-promoted ahead of them.
+Paperclip orders the list by version first, then by decreasing capability
+inside a version (`#14878`/`#14918`). GPT-6.1 Terra sits directly behind
+GPT-6.1 Sol, which is where GPT-5.6 Terra already sits behind GPT-5.6 Sol.
+
+The bundled Codex catalog ranks Terra differently. It puts GPT-6.1 Sol,
+GPT-6 Astra, GPT-6 Sol, GPT-6 Luna, and GPT-5.6 Sol above Terra. Paperclip
+keeps its own version-first order, so Terra appears ahead of those
+older-version models. Do not copy the bundled ranking into this list without
+also changing the ordering rule.
 
 Reasoning efforts and Fast mode come from the bundled metadata: the same six
 levels as GPT-6.1 Sol (`low` through `ultra`) and a `priority` service tier
