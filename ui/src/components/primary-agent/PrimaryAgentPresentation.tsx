@@ -62,6 +62,8 @@ export function PrimaryAgentCrownButton({ agent }: {
   const [pop, setPop] = useState<CrownPop | null>(null);
   const filledRef = useRef<HTMLSpanElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+  const quietTooltip = useRef(false);
   if (!primary || agent.status === "terminated" || agent.status === "pending_approval") return null;
   const selected = primary.primaryAgentId === agent.id;
   const previous = primary.primaryAgent?.id === primary.primaryAgentId ? primary.primaryAgent : null;
@@ -76,11 +78,17 @@ export function PrimaryAgentCrownButton({ agent }: {
     setReplacing(previous);
     setConfirming(true);
   };
+  const tooltip = {
+    open: tooltipOpen,
+    onOpenChange: (open: boolean) => setTooltipOpen(open && !quietTooltip.current),
+  };
+  const wakeTooltip = () => { quietTooltip.current = false; };
 
   const control = primary.error ? (
-    <Tooltip>
+    <Tooltip {...tooltip}>
       <TooltipTrigger asChild>
         <Button type="button" variant="ghost" size="icon-sm" aria-label="Retry loading primary agent" onClick={primary.onRetry}
+          onPointerMove={wakeTooltip} onBlur={wakeTooltip}
           className={cn(crownClass, "text-destructive")}>
           <Crown aria-hidden="true" className="size-5" />
         </Button>
@@ -88,9 +96,10 @@ export function PrimaryAgentCrownButton({ agent }: {
       <TooltipContent>Couldn't load your primary agent. Select to retry.</TooltipContent>
     </Tooltip>
   ) : selected && !loading ? (
-    <Tooltip>
+    <Tooltip {...tooltip}>
       <TooltipTrigger asChild>
         <span ref={filledRef} role="img" aria-label="My primary agent" tabIndex={-1} data-pop={pop?.timing}
+          onPointerMove={wakeTooltip} onBlur={wakeTooltip}
           onAnimationEnd={(event) => { if (event.animationName === "primary-crown-pop") setPop(null); }}
           className={cn(crownClass, "inline-flex size-9 shrink-0 items-center justify-center rounded-md text-primary outline-none focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3)")}>
           <Crown aria-hidden="true" className="size-5 fill-current" />
@@ -103,9 +112,10 @@ export function PrimaryAgentCrownButton({ agent }: {
       <TooltipContent>My primary agent</TooltipContent>
     </Tooltip>
   ) : (
-    <Tooltip>
+    <Tooltip {...tooltip}>
       <TooltipTrigger asChild>
         <Button ref={buttonRef} type="button" variant="ghost" size="icon-sm" aria-label="Set as my primary" disabled={busy} onClick={request}
+          onPointerMove={wakeTooltip} onBlur={wakeTooltip}
           className={cn(crownClass, "text-muted-foreground/50 hover:text-foreground")}>
           <Crown aria-hidden="true" className="size-5" />
         </Button>
@@ -119,6 +129,8 @@ export function PrimaryAgentCrownButton({ agent }: {
     {replacing ? <AlertDialog open={confirming} onOpenChange={setConfirming}>
       <AlertDialogContent onCloseAutoFocus={(event) => {
         event.preventDefault();
+        quietTooltip.current = true;
+        setTooltipOpen(false);
         (filledRef.current ?? buttonRef.current)?.focus();
       }}>
         <div className="flex items-start justify-center gap-5 pt-2">

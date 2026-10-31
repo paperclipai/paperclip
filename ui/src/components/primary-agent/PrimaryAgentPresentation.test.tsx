@@ -97,6 +97,7 @@ describe("PrimaryAgentCrownButton", () => {
     expect(crown()?.dataset.pop).toBe("after-dialog");
     await nextTick();
     expect(document.activeElement).toBe(crown());
+    expect(document.body.querySelector("[data-slot=tooltip-content]")).toBeNull();
   });
 
   it("keeps the current primary agent when the dialog is cancelled", async () => {
@@ -111,6 +112,7 @@ describe("PrimaryAgentCrownButton", () => {
     expect(crown()?.getAttribute("aria-label")).toBe("Set as my primary");
     await nextTick();
     expect(document.activeElement).toBe(crown());
+    expect(document.body.querySelector("[data-slot=tooltip-content]")).toBeNull();
   });
 
   it("shows a still, filled crown on the primary agent", async () => {
