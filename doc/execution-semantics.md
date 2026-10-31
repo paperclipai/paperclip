@@ -1401,6 +1401,9 @@ Subtree pause and cancel record the authenticated board actor on each run they
 interrupt. A verified native stop must not become an unexplained failure simply
 because it came from a subtree action. The explicit pause hold still prevents
 future execution until Resume, and missing stop proof still blocks continuation.
+A legacy run that is cancelled before its executor enters the adapter starts no
+process. The executor that settles the run records `legacyAdapterNotEnteredAt`,
+and pause and terminate accept this receipt as stop proof.
 
 ### Provider continuity and bounded finalization
 

@@ -431,6 +431,24 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await current(agent.id)).lifecycleState).toBe("terminated");
   });
 
+  it("completes pause after a legacy run cancelled before its adapter was entered", async () => {
+    const agent = await hire();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id,
+      status: "cancelled", invocationSource: "on_demand", runtimeMode: "legacy", executionStage: "settled",
+      runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" } },
+      startedAt: new Date(), finishedAt: new Date(),
+      resultJson: { executionCancellation: { state: "requested" } } }).returning();
+    const work = worker(createLifecycleDriver(db, {} as never).runHost);
+    await createAgentLifecycle(db).pauseAgent(agent.id);
+    await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("pausing");
+    await db.update(heartbeatRuns).set({ resultJson: { executionCancellation: { state: "requested" },
+      legacyAdapterNotEnteredAt: new Date().toISOString() } }).where(eq(heartbeatRuns.id, run.id));
+    await createAgentLifecycle(db).retry(agent.id);
+    await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("paused");
+  });
+
   it("does not cancel a reporting agent when its manager pauses", async () => {
     const parent = await hire();
     const [child] = await db.insert(agents).values({ companyId, name: "Report", reportsTo: parent.id,

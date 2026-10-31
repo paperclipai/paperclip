@@ -3891,6 +3891,18 @@ export function heartbeatService(
               ${JSON.stringify({ startupPreparationSettledAt: new Date().toISOString() })}::jsonb`,
           }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled")));
         }
+        if (latestRun?.status === "cancelled" && latestRun.runtimeMode === "legacy" &&
+            !legacyAdapterEntered && !nativeDispatchStarted && !nativeOwnershipHeld) {
+          // This executor settled without entering the adapter, so no provider
+          // process exists to acknowledge Stop. Agent stop checks accept this
+          // receipt instead of waiting forever for an acknowledgement.
+          await db.update(heartbeatRuns).set({
+            resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
+              ${JSON.stringify({ legacyAdapterNotEnteredAt: new Date().toISOString() })}::jsonb`,
+          }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled"),
+            eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
+            isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId)));
+        }
         if (latestRun?.runtimeMode === "native" && isHeartbeatRunTerminalStatus(latestRun.status) &&
             !nativeSessionResumeScheduled && !nativeWorkspaceFinalizeScheduled && !nativeOwnershipHeld) {
           await settleNativeRunProcess(db, run.id).catch(error => {
