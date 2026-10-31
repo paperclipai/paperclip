@@ -14893,8 +14893,8 @@ export function issueRoutes(
               commentId: transactionalComment.id, source: "patch",
               previous: decisionExisting, updated,
             })
-          : {};
-        const changes = decisionDetails.changes ?? updated.changes ?? {};
+          : null;
+        const changes = decisionDetails?.changes ?? updated.changes ?? {};
         const previous = Object.fromEntries(
           Object.entries(changes).map(([key, change]) => [key, change.from]),
         );
