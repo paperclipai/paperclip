@@ -766,6 +766,16 @@ export function aiConnectionService(db: Db) {
           ),
         );
       if (!app) throw unprocessable("Could not find the provider application");
+      if (app.status !== "active" || app.archivedAt !== null) {
+        await tx
+          .update(toolApplications)
+          .set({
+            status: "active",
+            archivedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(toolApplications.id, app.id));
+      }
       if (reconnect)
         await tx
           .update(toolConnections)
