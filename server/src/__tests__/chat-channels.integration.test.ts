@@ -36026,6 +36026,215 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
+  describe("Slack publication commit lock order", () => {
+    async function commitWhileWakeupAuthorizationHoldsEndpoint(input: {
+      conversationId: string;
+      endpointId: string;
+      service: ChatChannelService;
+      setProviderHook: (hook: () => Promise<void>) => void;
+    }) {
+      let held!: (pid: number) => void;
+      const endpointHeld = new Promise<number>((resolve) => {
+        held = resolve;
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let authorization: Promise<void> | undefined;
+      input.setProviderHook(async () => {
+        authorization = db.transaction(async (tx) => {
+          await tx.execute(
+            sql`select id from chat_endpoints where id = ${input.endpointId} for no key update`,
+          );
+          const [row] = (await tx.execute(
+            sql`select pg_backend_pid() as pid`,
+          )) as unknown as Array<{ pid: number }>;
+          held(row!.pid);
+          await gate;
+          await tx.execute(
+            sql`select id from chat_conversations where id = ${input.conversationId} for update`,
+          );
+        });
+        await endpointHeld;
+      });
+      const publishing = input.service.processPendingPublications();
+      try {
+        const pid = await endpointHeld;
+        await vi.waitFor(async () => {
+          const rows = (await db.execute(sql`
+            select query from pg_stat_activity
+            where datname = current_database()
+              and ${pid} = any(pg_blocking_pids(pid))
+              and query like 'update "chat_endpoints"%'
+          `)) as unknown as Array<{ query: string }>;
+          expect(rows).toHaveLength(1);
+        });
+        release();
+        await Promise.all([authorization, publishing]);
+      } finally {
+        release();
+        await Promise.allSettled([authorization, publishing]);
+      }
+    }
+
+    it("commits a run progress message while inbound wakeup authorization holds the endpoint", async () => {
+      const fixture = await seedCompany();
+      const { callbacks, endpoint, runtime, service } =
+        await configuredSlackEndpoint(fixture);
+      const thread = makeThread({
+        channelId: "C-LOCK-ORDER",
+        id: "slack:C-LOCK-ORDER:4061.1",
+        name: "lock-order",
+      });
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        thread: thread.thread,
+        message: makeMessage({
+          id: "4061.1",
+          text: "@maya start a run",
+          mentioned: true,
+        }),
+        trigger: "mention",
+      });
+      const [conversation] = await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id));
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: fixture.companyId,
+        agentId: fixture.assignedAgentId,
+        status: "running",
+        contextSnapshot: await chatWakeContext({
+          endpointId: endpoint.id,
+          issueId: conversation.issueId,
+          provider: "slack",
+          providerMessageId: "4061.1",
+        }),
+      });
+      const [working] = await db
+        .insert(chatPublications)
+        .values({
+          companyId: fixture.companyId,
+          endpointId: endpoint.id,
+          conversationId: conversation.id,
+          issueId: conversation.issueId,
+          idempotencyKey: `run:${runId}:working:${endpoint.id}`,
+          payload: { text: "Maya is working…", progressState: "working" },
+          state: "pending",
+        })
+        .returning();
+      const providerRuntime = runtime.endpoints.get(endpoint.id);
+      if (!providerRuntime) throw new Error("Expected Slack provider runtime");
+      await commitWhileWakeupAuthorizationHoldsEndpoint({
+        conversationId: conversation.id,
+        endpointId: endpoint.id,
+        service,
+        setProviderHook: (hook) => {
+          providerRuntime.postHook = async () => {
+            providerRuntime.postHook = undefined;
+            await hook();
+          };
+        },
+      });
+      await expect(
+        db
+          .select({ state: chatPublications.state })
+          .from(chatPublications)
+          .where(eq(chatPublications.id, working!.id)),
+      ).resolves.toEqual([{ state: "published" }]);
+    });
+
+    it("commits a Slack file while inbound wakeup authorization holds the endpoint", async () => {
+      const fixture = await seedCompany();
+      const storage = createStorageService();
+      const { callbacks, endpoint, runtime, service } =
+        await configuredSlackEndpoint(fixture, { storage: storage.storage });
+      try {
+        const channel = makeThread({
+          channelId: "C-LOCK-ORDER-FILE",
+          id: "slack:C-LOCK-ORDER-FILE:4062.1",
+          name: "lock-order-file",
+        });
+        await deliverMessage({
+          callbacks,
+          endpointId: endpoint.id,
+          thread: channel.thread,
+          message: makeMessage({
+            id: "4062.1",
+            text: "@maya send the file",
+            mentioned: true,
+          }),
+          trigger: "mention",
+        });
+        await qualifySetupRoundTrip(service, endpoint.id);
+        await service.test(endpoint.id, "owner-user");
+        const [conversation] = await service.listConversations(endpoint.id);
+        if (!conversation) throw new Error("Expected Slack file conversation");
+        const comment = await issueService(db).addComment(
+          conversation.issueId,
+          "Slack file lock order fixture",
+          { userId: "owner-user" },
+        );
+        const stored = await storage.storage.putFile({
+          companyId: fixture.companyId,
+          namespace: `issues/${conversation.issueId}`,
+          originalFilename: "lock-order.txt",
+          contentType: "text/plain",
+          body: Buffer.from("lock order", "utf8"),
+        });
+        const attachment = await issueService(db).createAttachment({
+          issueId: conversation.issueId,
+          issueCommentId: comment.id,
+          provider: stored.provider,
+          objectKey: stored.objectKey,
+          contentType: stored.contentType,
+          byteSize: stored.byteSize,
+          sha256: stored.sha256,
+          originalFilename: stored.originalFilename,
+          createdByUserId: "owner-user",
+        });
+        const [publication] = await db
+          .insert(chatPublications)
+          .values({
+            companyId: fixture.companyId,
+            endpointId: endpoint.id,
+            conversationId: conversation.id,
+            issueId: conversation.issueId,
+            commentId: comment.id,
+            idempotencyKey: `slack-file-lock-order:${randomUUID()}`,
+            payload: { text: "", attachmentIds: [attachment.id] },
+            state: "pending",
+          })
+          .returning();
+        const providerRuntime = runtime.endpoints.get(endpoint.id);
+        if (!providerRuntime) throw new Error("Expected Slack provider runtime");
+        await commitWhileWakeupAuthorizationHoldsEndpoint({
+          conversationId: conversation.id,
+          endpointId: endpoint.id,
+          service,
+          setProviderHook: (hook) => {
+            providerRuntime.slackFilePostAcceptanceHook = async () => {
+              providerRuntime.slackFilePostAcceptanceHook = undefined;
+              await hook();
+            };
+          },
+        });
+        await expect(
+          db
+            .select({ state: chatPublications.state })
+            .from(chatPublications)
+            .where(eq(chatPublications.id, publication!.id)),
+        ).resolves.toEqual([{ state: "published" }]);
+      } finally {
+        await retirePublicationFixture(service, endpoint.id);
+      }
+    });
+  });
+
   it("coalesces one Slack run's lifecycle and final response despite an interleaved task control", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
