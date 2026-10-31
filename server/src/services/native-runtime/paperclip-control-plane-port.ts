@@ -88,8 +88,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   readonly #assertRunAdmissionActive?: () => void;
   readonly #onResultCommitted?: () => Promise<void>;
   readonly #onEventPersistence?: (event: PrpEvent, startedAtMs: number, endedAtMs: number) => Promise<void>;
-  readonly #onCommittedEvent?: (event: PrpEvent) => Promise<void>;
-  readonly #onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
+  readonly #onCommittedEvent?: (event: PrpEvent, cursor: number) => Promise<void>;
+  readonly #onDuplicateEvent?: (event: PrpEvent, cursor: number) => Promise<void>;
 
   constructor(
     db: Db,
@@ -103,8 +103,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       assertRunAdmissionActive?: () => void;
       onResultCommitted?: () => Promise<void>;
       onEventPersistence?: (event: PrpEvent, startedAtMs: number, endedAtMs: number) => Promise<void>;
-      onCommittedEvent?: (event: PrpEvent) => Promise<void>;
-      onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
+      onCommittedEvent?: (event: PrpEvent, cursor: number) => Promise<void>;
+      onDuplicateEvent?: (event: PrpEvent, cursor: number) => Promise<void>;
     } = {},
   ) {
     this.#db = db;
@@ -313,13 +313,13 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         });
       } catch {
       }
-      await this.#onCommittedEvent?.(event);
+      await this.#onCommittedEvent?.(event, persisted.row.seq);
     } else {
       // A recovered runner may replay the event whose durable side effects
       // parked the prior attempt. Do not repeat those effects, but let the
       // embedding runtime refresh observational state before appendEvent
       // returns to its synchronous governed-wait boundary.
-      await this.#onDuplicateEvent?.(event);
+      await this.#onDuplicateEvent?.(event, persisted.row.seq);
     }
     return {
       cursor: persisted.row.seq,

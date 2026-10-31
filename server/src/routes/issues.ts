@@ -16449,12 +16449,23 @@ export function issueRoutes(
   router.get("/issues/:id/recent-comments", async (req, res) => {
     const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    if (issue.conversationAgentId) {
+      const recent = await svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 21 });
+      const comments = recent.slice(0, 20);
+      res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, {
+        comments,
+        latestCommentId: comments[0]?.id ?? null,
+        oldestCommentId: comments.at(-1)?.id ?? null,
+        hasMore: recent.length > 20,
+      }));
+      return;
+    }
     const [recent, human, firstInstruction] = await Promise.all([
-      svc.listComments(issue.id, { order: "desc", limit: 5 }),
-      svc.listComments(issue.id, { order: "desc", limit: 1, humanOnly: true }),
+      svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 5 }),
+      svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 1, humanOnly: true }),
       issue.description?.trim()
         ? Promise.resolve([])
-        : svc.listComments(issue.id, { order: "asc", limit: 1, humanOnly: true }),
+        : svc.listComments(issue.id, { companyId: issue.companyId, order: "asc", limit: 1, humanOnly: true }),
     ]);
     const comments = [...new Map([...firstInstruction, ...human, ...recent.slice(0, 4)].map((comment) => [comment.id, comment])).values()];
     res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, {
@@ -16494,7 +16505,8 @@ export function issueRoutes(
       limitRaw && Number.isFinite(limitRaw) && limitRaw > 0
         ? Math.min(Math.floor(limitRaw), MAX_ISSUE_COMMENT_LIMIT)
         : null;
-    const comments = await svc.listComments(id, {
+    const comments = await svc.listComments(issue.id, {
+      companyId: issue.companyId,
       afterCommentId,
       order,
       limit,

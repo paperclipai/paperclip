@@ -322,7 +322,9 @@ export type DurableWakeAdmissionReceipt = {
   requestedAt: Date;
 };
 
-export type CoalescedDeferredAdmissionReceipt = DurableWakeAdmissionReceipt & {
+export type CoalescedDeferredAdmissionReceipt =
+  Omit<DurableWakeAdmissionReceipt, "id" | "requestedAt"> &
+  Partial<Pick<DurableWakeAdmissionReceipt, "id" | "requestedAt">> & {
   agentId: string;
   source: string;
   triggerDetail: string | null;

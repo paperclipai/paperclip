@@ -15,39 +15,39 @@
       "qualificationStatus": "pending"
     },
     "grok": {
-      "agentProfileVersion": 19,
+      "agentProfileVersion": 20,
       "agentServerPackage": "builtin:grok-acp",
       "agentServerVersion": "1",
       "agentRuntimePackage": "native:grok",
       "agentRuntimeVersion": "1.0.13",
-      "commandDigest": "sha256:5205c2197b94cfbd3e62fbeea027f2e80d092f736ca52656dda2f7044ba9a5ca",
+      "commandDigest": "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
       "requiresProviderPolicy": false
     },
     "pi": {
-      "agentProfileVersion": 36,
+      "agentProfileVersion": 37,
       "agentServerPackage": "pi-acp",
       "agentServerVersion": "0.0.33",
       "agentRuntimePackage": "@earendil-works/pi-coding-agent",
       "agentRuntimeVersion": "1.0.0",
-      "commandDigest": "sha256:faafb66c09c1efc7eb4eda6baaa5813c975e8a992f9cd333687695aa5522d7dc",
+      "commandDigest": "sha256:42e186b921f36accf3087cf64986a88346dcdb0bdf78c2ef44a2c4f8abd3453a",
       "requiresProviderPolicy": true
     },
     "cursor": {
-      "agentProfileVersion": 16,
+      "agentProfileVersion": 17,
       "agentServerPackage": "cursor-agent",
       "agentServerVersion": "2026.09.26-dd393fe",
       "agentRuntimePackage": null,
       "agentRuntimeVersion": null,
-      "commandDigest": "sha256:759e7415fea8ed2b6b0e6f362b57652b8768835f9d1fdae4a94c1b5eb3669301",
+      "commandDigest": "sha256:c2e39f931fdb89eb226ddee17bdcd16ad14c80fe4d311a41df89f2947d72103d",
       "requiresProviderPolicy": true
     },
     "copilot": {
-      "agentProfileVersion": 91,
+      "agentProfileVersion": 92,
       "agentServerPackage": "@github/copilot",
       "agentServerVersion": "1.0.88",
       "agentRuntimePackage": null,
       "agentRuntimeVersion": null,
-      "commandDigest": "sha256:e4383c48ad21898dfe38609fdc8c0fa9a76dfcb8582a64b5415f107846904aa9",
+      "commandDigest": "sha256:4ec9c9d399e0f97d3addd9ac3333a69588a8103d5e534e206c02604432d89f9b",
       "requiresProviderPolicy": true
     },
     "claude": {

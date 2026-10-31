@@ -11,6 +11,31 @@ const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 describe("managed GitHub launchers", () => {
+
+  it("uses a private interpreter without selecting Node from PATH", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-interpreter-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const managed = path.join(root, "managed"), real = path.join(root, "real");
+    await mkdir(managed); await mkdir(real);
+    const source = githubLauncherSource({ interpreterPath: process.execPath });
+    const defaultSource = githubLauncherSource();
+    expect(defaultSource.split("\n")[0]).toBe("#!/usr/bin/env node");
+    expect(source.split("\n")[0]).toBe(`#!${process.execPath}`);
+    expect(source.slice(source.indexOf("\n"))).toBe(defaultSource.slice(defaultSource.indexOf("\n")));
+    const launcher = path.join(managed, "git");
+    await writeFile(launcher, source, { mode: 0o700 });
+    await writeFile(path.join(real, "node"), "#!/bin/sh\nexit 126\n", { mode: 0o700 });
+    await writeFile(path.join(real, "git"), "#!/bin/sh\nprintf 'private interpreter works'\n", { mode: 0o700 });
+    const env = { ...githubBrokerEnvironment({}, { url: "", token: "" }), HOME: root,
+      GH_CONFIG_DIR: path.join(root, "config"), PATH: `${managed}${path.delimiter}${real}` };
+    expect((await exec(launcher, ["--version"], { env })).stdout).toBe("private interpreter works");
+  });
+
+  it.each(["", "relative/node", "/runtime/node --flag", "/runtime/node\nexit 1", "/runtime/node\0"])(
+    "rejects an invalid interpreter path %j", interpreterPath => {
+      expect(() => githubLauncherSource({ interpreterPath })).toThrow("absolute path without whitespace");
+    },
+  );
   it.each([false, true])("rejects a PATH shim that re-enters the same helper before it can recurse (broker file: %s)", async brokerFile => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-recursion-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));

@@ -43,7 +43,10 @@ two natural-language task scenarios into local native Codex subscription and
 OpenCode Product E2E cells. They
 verify saving an unstarted task and delegating a saved announcement back to chat,
 using ordinary production instructions, real browser messages and independent
-state/provenance checks. The broader YAML catalog remains planning inventory.
+state/provenance checks. A separately selected native OpenCode/DeepSeek1017
+backlog cell measures TestOps integration acceptance with the same oracle and
+original bounds. Its source registration is not an AWS or TestOps pass. The
+broader YAML catalog remains planning inventory.
 
 The explicit-only [Daytona restart continuity journey](../tests/runner-e2e/README.md)
 extends the existing native restart oracle to a 125-second controller outage,
@@ -58,11 +61,26 @@ self-hosted/Cloud targets and separately selected local/Daytona agents. Account
 and credential bindings stay in the private eval repo; registration and oracle
 tests do not establish a completed live pass or unattended CI qualification.
 
+The deployment-targeted `question-answer-resume` journey reuses the classic
+two-question scenario and native continuation oracle on an attached target.
+It checks the actual board answers, one to three bound work runs, an agent-authored
+task document and browser readback after reload. It accepts provider questions and
+durable questions proven by an applied semantic receipt or an immutable completed
+native API mutation receipt. It does not qualify named-tool selection. Its provider owns target setup,
+usage and cleanup. Registration and local calibration do not establish a fresh
+Cloud pass or inclusion in a recurring selection.
+
 The explicit-only [necessary free-text question journey](../tests/runner-e2e/README.md#necessary-free-text-question)
 checks one essential input, the rendered prompt and context, the real answer,
 one bound continuation, and an exact saved confirmation. Its four development
 cells use the recorded Codex and Claude models. Registration and calibration do
 not establish Slack, staging authentication, warm lifecycle, or live qualification.
+
+The explicit `followup-while-running` [Product journey](../tests/runner-e2e/PRODUCT-JOURNEYS.md#active-follow-up)
+checks a saved message during independently observed native work, one attributed
+reply with the late requirement, and persistence after reload. Its attached and
+managed targets share the same story and permit one steered run or one normal
+successor. Registration and calibration are separate from a live staging pass.
 
 [Reusable Product journeys](../tests/runner-e2e/PRODUCT-JOURNEYS.md) add explicit
 deployment targets and starting-state recipes. The shared task-properties
@@ -544,7 +562,7 @@ any qualification claim; catalog presence alone is not a pass.
 
 The explicit-only [native question/resume qualification](../tests/runner-e2e/README.md#task-continuation)
 separates a completed two-answer user journey from semantic-tool documentation
-qualification. It verifies the exact provider-pause or semantic-response-wake
+qualification. It verifies the exact provider-pause or native response-wake
 binding for each answer and preserves prior grades when the definition changes.
 
 ## Lifecycle behavior baseline

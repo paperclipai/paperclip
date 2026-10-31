@@ -1,3 +1,5 @@
+import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
+import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { agents, agentWakeupRequests, caseHandoffs, cases, companies, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
@@ -156,6 +158,57 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.setWakeupStatus).toHaveBeenCalledWith(f.wake.id, "completed", expect.any(Object));
     expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledOnce();
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, "succeeded", null, expect.any(Object));
+  });
+
+  it("settles the accepted native exact rate-card price without replacing it with zero", async () => {
+    const f = await fixture({ runtimeMode: "native" });
+    const runnerInstanceId = randomUUID();
+    const delivery = await createNativeUsageDelivery(db, { companyId: f.run.companyId, runId: f.run.id, runnerInstanceId,
+      provider: { kind: "codex", model: "gpt-6.1-sol" }, billing: { provider: "openai", biller: "openai", billingType: "metered_api" } });
+    const event = (sourceSeq: number, eventType: string, payload: Record<string, unknown>): PrpEvent => ({
+      sourceKind: "runner", sourceInstanceId: runnerInstanceId, runId: f.run.id, sourceSeq, sourceEventId: `rate-card-${sourceSeq}`,
+      turnId: "price-turn", eventType, emittedAt: new Date().toISOString(), payload,
+    } as PrpEvent);
+    await delivery.capture(event(1, "usage.reported", { runDeltaBasis: "run", runDeltaAvailable: true,
+      runDelta: { inputTokens: 1000, outputTokens: 100000, providerCostUsd: 0 } }));
+    await delivery.capture(event(2, "turn.completed", {}));
+    const accepted = await usageReceipts.readAcceptedRunUsageCheckpoint(db, { companyId: f.run.companyId, runId: f.run.id });
+    expect(accepted?.costStatus).toBe("estimated");
+    const exact = accepted!.costUsdExact;
+    f.input.adapterResult = { exitCode: 0, signal: null, timedOut: false, ...accepted, usageComplete: accepted!.complete };
+    await f.completion.completeRun(f.input);
+    const saved = await read(f.run.id);
+    expect(saved).toMatchObject({ status: "succeeded", costAccountingPending: false, costAccountedAt: expect.any(Date),
+      usageJson: { costUsdExact: exact, costStatus: "estimated" } });
+    const ledger = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.run.id));
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0].costCents).toBe(100.2);
+  });
+
+  it("retains newer accepted native usage when completion consumed an older receipt", async () => {
+    const f = await fixture({ runtimeMode: "native", usageJson: { sessionRotated: true, configFreshness: { version: 0 } } });
+    const runnerInstanceId = randomUUID();
+    const delivery = await createNativeUsageDelivery(db, { companyId: f.run.companyId, runId: f.run.id, runnerInstanceId,
+      provider: { kind: "codex", model: "test-model" }, billing: { provider: "openai", biller: "openai", billingType: "metered_api" } });
+    const event = (sourceSeq: number, eventType: string, inputTokens = 100): PrpEvent => ({
+      sourceInstanceId: runnerInstanceId, runId: f.run.id, sourceSeq, sourceEventId: `racing-${sourceSeq}`, turnId: "turn-1",
+      emittedAt: new Date().toISOString(), eventType, payload: eventType === "usage.reported"
+        ? { runDeltaBasis: "run", runDeltaAvailable: true, runDelta: { inputTokens, outputTokens: 10, providerCostUsd: inputTokens / 1000 } } : {},
+    } as PrpEvent);
+    await delivery.capture(event(1, "usage.reported"));
+    await delivery.capture(event(2, "turn.completed"));
+    const acceptedA = await usageReceipts.readAcceptedRunUsageCheckpoint(db, { companyId: f.run.companyId, runId: f.run.id });
+    await delivery.capture(event(3, "usage.reported", 120));
+    f.input.adapterResult = { exitCode: 0, signal: null, timedOut: false, ...acceptedA, usageComplete: acceptedA!.complete };
+    await f.completion.completeRun(f.input);
+    expect(await read(f.run.id)).toMatchObject({ status: "succeeded", costAccountingPending: true, costAccountedAt: null,
+      usageJson: { inputTokens: 120, costUsd: 0.12, accountingReceiptSequence: 3, accountingReceiptReady: false, sessionRotated: false, configFreshness: { version: 1 } } });
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.run.id))).toHaveLength(0);
+    await delivery.capture(event(4, "turn.completed", 120));
+    expect(await (await import("../run-cost-accounting.js")).accountRunCost(db, f.run.id)).toBe(true);
+    const ledger = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.run.id));
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0].costCents).toBe(12);
   });
 
   it.each([

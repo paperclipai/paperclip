@@ -59,7 +59,7 @@ describe("runner E2E catalog", () => {
   });
 
   it("exports deployment journeys separately from the model matrix and default selection", () => {
-    expect(productJourneys.map(journey => journey.id)).toEqual(["task-create", "ask-question", "task-properties", "plan-revise-accept", "build-revise", "protected-actions", "create-skill-studio", "stop-redirect", "cloud-onboarding"]);
+    expect(productJourneys.map(journey => journey.id)).toEqual(["task-create", "project-task-context", "ask-question", "question-answer-resume", "task-properties", "task-search-filter", "plan-revise-accept", "build-revise", "protected-actions", "create-skill-studio", "stop-redirect", "followup-while-running", "cloud-onboarding"]);
     expect(runnerSuites.some(suite => suite.id === "product-journeys")).toBe(false);
     expect(runnerMatrix.some(execution => execution.suite.id === "product-journeys")).toBe(false);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(execution => execution.suite.id === "product-journeys")).toBe(false);
@@ -219,10 +219,10 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      2, 1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 2, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 4, 28, 18, 2, 6, 6, 13, 10, 4, 48, 16, 10, 2, 1, 1, 4, 116, 2, 1, 2,
+      2, 1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 2, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 5, 28, 18, 2, 6, 6, 13, 10, 4, 48, 16, 10, 2, 1, 1, 4, 116, 2, 1, 2,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(774);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(774);
+    expect(validateRunnerCatalog()).toHaveLength(775);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(775);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(48);

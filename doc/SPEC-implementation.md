@@ -2375,6 +2375,15 @@ unavailable. Preserve current ownership and newer-work fences. See
   is automatic and bounded. Unused Git caches can expire and reacquire the recorded
   commit after current authorization and hash checks; authored/unproven legacy bytes
   remain durable. See [skill package storage](skill-package-storage.md).
+- Paperclip ownership is `managed`, with a null source locator and an immutable
+  current version. Content mutations prepare durable bytes before a short,
+  authorization-checked compare-and-swap publication. Acknowledged changes do not
+  depend on an installed web-server directory. Repository installations use the
+  same committed-version read and execution boundary; linked-local sources are
+  explicitly outside the empty-disk guarantee. Execution selections, including
+  empty selections, persist before delivery; recovery reconstructs exact admitted
+  digests and active/recovering pins prevent deletion. See
+  [conversion and compatible upgrades](skill-ephemeral-web-servers.md).
 - Refresh is serialized per source, checks saved selection revisions, and publishes
   valid skills plus per-entry outcomes with required activity records in one transaction.
   Failed packages retain prior versions; access/scan/download failures retain all content.
@@ -2382,7 +2391,7 @@ unavailable. Preserve current ownership and newer-work fences. See
 - Match by repository identity and exact path. Preserve IDs, keys, assignments, folders,
   and history. New key collisions cannot overwrite unrelated skills. Only changed package
   bytes or executable modes create versions. Library reads, tests, and subsequent unpinned
-  runs use local installed snapshots; pinned/active runs retain their versions.
+  runs use immutable installed snapshots; pinned/active runs retain their versions.
 - Runtime version directories are disposable caches. An hourly, bounded sweep may
   evict non-current copies unused for one hour, preserving active and unresolved
   execution pins. Selection, materialization, and pin persistence serialize with
