@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { expect, test, type APIRequestContext, type APIResponse, type Locator, type Page } from "@playwright/test";
 import { expectTaskPanelTab } from "./helpers/task-panel-tabs";
 
@@ -52,18 +53,26 @@ async function assertStillPaused(request: APIRequestContext, issueId: string) {
 for (const mobile of [false, true]) {
   test(`upload documents and files while a task remains paused (mobile=${mobile})`, async ({ page, request }, testInfo) => {
     const { issue, panel } = await setup(page, request, mobile);
+    const markdown = "# Engineering handoff\n\nStart with the loop inventory and preserve current task ownership.";
+    const csv = "path,pattern\ndelivery,event-driven\nroutines,clock-driven";
     await chooseFiles(page, panel, [
-      { name: "core-handoff.md", mimeType: "text/markdown", buffer: Buffer.from("# Engineering handoff\n\nStart with the loop inventory and preserve current task ownership.") },
-      { name: "loop-inventory.csv", mimeType: "text/csv", buffer: Buffer.from("path,pattern\ndelivery,event-driven\nroutines,clock-driven") },
+      { name: "core-handoff.md", mimeType: "text/markdown", buffer: Buffer.from(markdown) },
+      { name: "loop-inventory.csv", mimeType: "text/csv", buffer: Buffer.from(csv) },
     ]);
-    await expect(panel.getByRole("button", { name: "Read document", exact: true })).toBeVisible();
+    const document = panel.locator("#document-core-handoff");
+    await expect(document.getByRole("heading", { name: "Engineering handoff", exact: true })).toBeVisible();
+    await expect(document.getByText("Start with the loop inventory and preserve current task ownership.", { exact: true })).toBeVisible();
     await expect(panel.getByRole("link", { name: "Download file", exact: true })).toBeVisible();
     await expectTaskPanelTab(panel, mobile, "Artifacts");
     const download = page.waitForEvent("download");
     await panel.getByRole("link", { name: "Download file", exact: true }).click();
-    expect((await download).suggestedFilename()).toBe("loop-inventory.csv");
-    await panel.getByRole("button", { name: "Read document", exact: true }).click();
-    await expect(panel.getByText("Start with the loop inventory and preserve current task ownership.", { exact: true })).toBeVisible();
+    const downloaded = await download;
+    expect(downloaded.suggestedFilename()).toBe("loop-inventory.csv");
+    expect(await readFile((await downloaded.path())!, "utf8")).toBe(csv);
+    await document.getByRole("button", { name: "Collapse core-handoff document", exact: true }).click();
+    await expect(document.getByText("Start with the loop inventory and preserve current task ownership.", { exact: true })).toBeHidden();
+    await document.getByRole("button", { name: "Expand core-handoff document", exact: true }).click();
+    await expect(document.getByText("Start with the loop inventory and preserve current task ownership.", { exact: true })).toBeVisible();
     await assertStillPaused(request, issue.id);
     await page.reload();
     await expect(page.getByRole("heading", { name: issue.title, exact: true })).toBeVisible();
@@ -71,8 +80,15 @@ for (const mobile of [false, true]) {
     const attachments = await json(await request.get(`/api/issues/${issue.id}/attachments`));
     expect(documents).toHaveLength(1);
     expect(documents[0].key).toBe("core-handoff");
+    expect(documents[0].body).toBe(markdown);
     expect(attachments).toHaveLength(1);
     expect(attachments[0].originalFilename).toBe("loop-inventory.csv");
+    if (mobile) {
+      await page.getByRole("button", { name: "More actions", exact: true }).click();
+      await page.getByRole("button", { name: "Properties", exact: true }).click();
+    }
+    await expect(document.getByRole("heading", { name: "Engineering handoff", exact: true })).toBeVisible();
+    await expect(document.getByText("Start with the loop inventory and preserve current task ownership.", { exact: true })).toBeVisible();
     await assertStillPaused(request, issue.id);
     await page.screenshot({ path: testInfo.outputPath("uploaded-handoff-persisted.png"), fullPage: true });
   });
@@ -80,8 +96,11 @@ for (const mobile of [false, true]) {
 
 test("the entire populated panel accepts a drop and preserves an existing document", async ({ page, request }, testInfo) => {
   const { issue, panel } = await setup(page, request);
-  await chooseFiles(page, panel, [{ name: "handoff.md", mimeType: "text/markdown", buffer: Buffer.from("# Original handoff\n\nPreserve this version.") }]);
-  await expect(panel.getByRole("button", { name: "Read document", exact: true })).toBeVisible();
+  const original = "# Original handoff\n\nPreserve this version.";
+  await chooseFiles(page, panel, [{ name: "handoff.md", mimeType: "text/markdown", buffer: Buffer.from(original) }]);
+  const document = panel.locator("#document-handoff");
+  await expect(document.getByRole("heading", { name: "Original handoff", exact: true })).toBeVisible();
+  const originalDocument = await json(await request.get(`/api/issues/${issue.id}/documents/handoff`));
   const transfer = await page.evaluateHandle(() => {
     const data = new DataTransfer();
     data.items.add(new File(["# Additional handoff\n\nNew reference, separate document."], "handoff.md", { type: "text/markdown" }));
@@ -99,12 +118,17 @@ test("the entire populated panel accepts a drop and preserves an existing docume
   await header.dispatchEvent("dragleave", { dataTransfer: transfer });
   await expect(overlay).toBeHidden();
   await header.dispatchEvent("dragenter", { dataTransfer: transfer });
-  await panel.locator("article").first().dispatchEvent("drop", { dataTransfer: transfer });
-  await expect(panel.getByRole("button", { name: "Read document", exact: true })).toHaveCount(2);
+  await document.dispatchEvent("drop", { dataTransfer: transfer });
+  await expect(panel.locator("#document-handoff, #document-handoff-2")).toHaveCount(2);
+  await expect(document.getByText("Preserve this version.", { exact: true })).toBeVisible();
+  await expect(panel.locator("#document-handoff-2").getByText("New reference, separate document.", { exact: true })).toBeVisible();
   await expect(panel.getByText("verification.txt", { exact: true }).first()).toBeVisible();
   const documents = await json(await request.get(`/api/issues/${issue.id}/documents`));
   expect(documents.map((row: { key: string }) => row.key).sort()).toEqual(["handoff", "handoff-2"]);
-  expect(documents.find((row: { key: string }) => row.key === "handoff").body).toContain("Preserve this version.");
+  const preserved = documents.find((row: { key: string }) => row.key === "handoff");
+  expect(preserved.body).toBe(original);
+  expect(preserved.latestRevisionId).toBe(originalDocument.latestRevisionId);
+  expect(documents.find((row: { key: string }) => row.key === "handoff-2").body).toBe("# Additional handoff\n\nNew reference, separate document.");
   await assertStillPaused(request, issue.id);
 });
 
@@ -138,7 +162,12 @@ test("reserved filenames create visible documents without replacing internal rev
     originals.set(key, document.latestRevisionId);
   }
   await chooseFiles(page, panel, reserved.map(key => ({ name: `${key}.md`, mimeType: "text/markdown", buffer: Buffer.from(`# Uploaded ${key}\n\nThis reference must stay visible.`) })));
-  await expect(panel.getByRole("button", { name: "Read document", exact: true })).toHaveCount(3);
+  await expect(panel.locator('[id^="document-upload-"]')).toHaveCount(3);
+  for (const key of reserved) {
+    const document = panel.locator(`#document-upload-${key}`);
+    await expect(document.getByRole("heading", { name: `Uploaded ${key}`, exact: true })).toBeVisible();
+    await expect(document.getByText("This reference must stay visible.", { exact: true })).toBeVisible();
+  }
   const documents = await json(await request.get(`/api/issues/${issue.id}/documents`));
   expect(documents.filter((row: { key: string }) => row.key.startsWith("upload-")).map((row: { key: string }) => row.key).sort()).toEqual(reserved.map(key => `upload-${key}`).sort());
   for (const key of reserved) {

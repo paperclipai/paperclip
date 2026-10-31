@@ -20,7 +20,7 @@ import type {
 import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
 import { pendingConnectionIntentInteraction } from "@/fixtures/issueThreadInteractionFixtures";
-import { TaskChatScrollNavigation } from "./task-chat/scroll-navigation";
+import { TaskChatScrollNavigation, useTaskChatScrollNavigation } from "./task-chat/scroll-navigation";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 
 const transcriptState = vi.hoisted(() => ({
@@ -388,6 +388,16 @@ it.each([true, false])("coordinates compact cards before first reveal and retain
   render(<TaskChatThread {...props} initialHistoryPending />);
   expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+});
+
+it("keeps revealed history scrollable while metadata for another page is pending", async () => {
+  function Readiness() { return <span data-testid="history-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
+  const props = { issueId: "paged-chat", compactHistory: true, comments: createLongThreadComments(), onAdd: async () => {}, threadHeader: <Readiness /> };
+  render(<TaskChatThread {...props} />);
+  await settleThreadLayout();
+  expect(container.querySelector('[data-testid="history-scroll-ready"]')?.textContent).toBe("true");
+  render(<TaskChatThread {...props} initialHistoryPending />);
+  expect(container.querySelector('[data-testid="history-scroll-ready"]')?.textContent).toBe("true");
 });
 
 it.each([0, 32_000, 100_000])("offers earlier output only when a single legacy run exceeds the compact window (%s bytes)", (logBytes) => {

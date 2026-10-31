@@ -3750,6 +3750,13 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   border-block: var(--task-row-rule-width) solid var(--task-row-rule-color);
 }
 .task-row-group + .task-row-group { border-top: 0; }
+.task-row-deferred {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto var(--task-row-height-comfortable);
+}
+.task-row-deferred[data-density="compact"] {
+  contain-intrinsic-block-size: auto var(--task-row-height-compact);
+}
 
 .task-row-stable, .task-row-skeleton {
   height: var(--task-row-height-comfortable);

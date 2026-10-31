@@ -1,3 +1,4 @@
+import { kimiCandidateAdmissionForExecution } from "./server-restart-request.js";
 import { runPlanRevisionAcceptance, isPendingPlanConfirmation, normalizePlanMarkdown, expectPlanStageVisible } from "./plan-revision-flow.js";
 import { createWorkerTiming } from "./worker-timing.js";
 import { captureTaskChat, type TaskChatEvidence } from "./task-chat.js";
@@ -17,6 +18,7 @@ import { runNativeActiveStopFlow as runCopilotActiveStopFlow } from "./copilot-a
 import { nativeActiveStopTasks as copilotActiveStopTasks } from "./copilot-active-stop-tasks.js";
 import type { RestartRunnerIdentity } from "./process-tree-owner.js";
 import { runNativeActiveStopFlow } from "./native-active-stop-flow.js";
+import { runKimiLifecycleFlow } from "./kimi-lifecycle.js";
 import { runPiControlsFlow } from "./pi-controls-flow.js";
 import { runCursorNativeFlow } from "./cursor-native-flow.js";
 import { createRemoteNativeBootstrap, createRemoteFixtureClient } from "./remote-native-bootstrap.js";
@@ -65,14 +67,14 @@ import { expect, test, type Page } from "@playwright/test";
 import { RunnerApi, pollUntil } from "./api.js";
 import { buildRuntimeUsage, summarizeExecutionBilling } from "./billing.js";
 import { collectAttemptFeedback, emptyFeedbackSummary } from "./feedback.js";
-import { finishBudgetedEvalSetup } from "./budgeted-setup.js";
+import { createKimiLifecycleTiming, finishBudgetedEvalSetup, waitForEvalAgentReady } from "./budgeted-setup.js";
 import { establishPublicMcpSession, runPublicMcpFlow } from "./public-mcp-flow.js";
 import { assistantUsage } from "./public-mcp-model.js";
 import { runnerExecutionById } from "./catalog.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { runnerE2EServerControlPaths } from "./harness-env.js";
 import { setupConnectionReview } from "./connection-reviews.js";
-import { setupLiveFixtures, selectFixtureRuntimeLeases, fixtureRuntimeCostCoverage, type LiveFixtureValues } from "./live-fixtures.js";
+import { setupLiveFixtures, selectFixtureRuntimeLeases, fixtureRuntimeCostCoverage, waitForFixtureDaytonaProvider, type LiveFixtureValues } from "./live-fixtures.js";
 import { evaluateMatcher, persistedFinalRunMessage, type MatcherResult } from "./matchers.js";
 import { readRegisteredArtifacts } from "./registered-artifact.js";
 import {
@@ -264,6 +266,7 @@ function sortRunsChronologically(runs: readonly RunRecord[]): RunRecord[] {
 async function restartIsolatedPaperclipServer(input: {
   api: RunnerApi;
   requestId: string;
+  kimiCandidateAdmission?: import("../../packages/paperclip-runner/src/drivers/acpx/candidate-admission.js").AcpxCandidateAdmission;
   deadlineAt: number;
   preserveRunner?: RestartRunnerIdentity;
   discardControllerCache?: boolean;
@@ -282,7 +285,7 @@ async function restartIsolatedPaperclipServer(input: {
   const temporaryRequestPath = `${requestPath}.${process.pid}.${input.requestId}.tmp`;
   await writeFile(
     temporaryRequestPath,
-    JSON.stringify({ requestId: input.requestId, ...(input.controllerDowntimeMs !== undefined && !input.controllerOutage ? { controllerDowntimeMs: input.controllerDowntimeMs } : {}), discardControllerCache: input.discardControllerCache === true,
+    JSON.stringify({ requestId: input.requestId, ...(input.kimiCandidateAdmission ? { kimiCandidateAdmission: input.kimiCandidateAdmission } : {}), ...(input.controllerDowntimeMs !== undefined && !input.controllerOutage ? { controllerDowntimeMs: input.controllerDowntimeMs } : {}), discardControllerCache: input.discardControllerCache === true,
       ...(input.controllerOutage ? { controllerOutage: input.controllerOutage } : {}),
       ...(input.recoveryBinding ? { recoveryBinding: input.recoveryBinding } : {}),
       ...(input.preserveRunner ? { preserveRunner: input.preserveRunner } : {}),
@@ -567,10 +570,12 @@ for (const execution of executions) {
     test.skip(execution.suite.id === "first-task" && execution.profile.id === "runner-acpx-claude"
       && (process.platform !== "darwin" || process.arch !== "arm64"),
     "Ordinary native Claude onboarding is qualified on Apple Silicon only in this delivery.");
+    const kimiLifecycleTiming = execution.task.flow === "kimi_native_lifecycle"
+      ? createKimiLifecycleTiming({ startedAt: Date.now(), deadlineMs }) : undefined;
     test.setTimeout(
-      execution.task.flow === "warm_three_turn"
+      kimiLifecycleTiming?.playwrightTimeoutMs ?? (execution.task.flow === "warm_three_turn"
         ? deadlineMs
-        : deadlineMs + 90_000,
+        : deadlineMs + 90_000),
     );
     // Remote allocation uncertainty survives a worker crash before publication.
     if (mayAllocateRemoteResources(execution.environment.id)) {
@@ -607,10 +612,18 @@ for (const execution of executions) {
     }) : undefined;
     const saveTrace = async () => { if (trace) await writeSanitizedJson(snapshotsDir, "braintrust-trace.json", trace.snapshot(), secrets); };
     const onCompanyCreated = async (id: string) => {
+      const admission = kimiCandidateAdmissionForExecution(execution, id);
+      if (admission) {
+        await restartIsolatedPaperclipServer({ api, requestId: `kimi-startup-${nonce}`,
+          kimiCandidateAdmission: admission, deadlineAt: startedAtMs + deadlineMs });
+        if (execution.environment.id === "daytona") {
+          await waitForFixtureDaytonaProvider(api, { companyId: id, deadlineAt: startedAtMs + deadlineMs });
+        }
+      }
       if (trace) { try { await trace.configureCompany(api, id); } finally { await saveTrace(); } }
     };
     const api = new RunnerApi(request);
-    const companyRunFlow = execution.suite.id === "task-titles" || ["plan_task_guidance", "blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "repository_skills", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "pi_native", "pi_controls", "copilot_protection", "cursor_native", "native_active_stop", "native_provider_loss", "public_mcp", "case_handoff"].includes(execution.task.flow);
+    const companyRunFlow = execution.suite.id === "task-titles" || ["plan_task_guidance", "blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "repository_skills", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "pi_native", "pi_controls", "copilot_protection", "cursor_native", "native_active_stop", "native_provider_loss", "kimi_native_lifecycle", "public_mcp", "case_handoff"].includes(execution.task.flow);
     const publicMcpUsage = execution.task.flow === "public_mcp" ? assistantUsage(execution.profile.provider === "claude" ? "anthropic" : "openai", execution.profile.model) : undefined;
     let publicMcpUserId = "";
     const consoleDiagnostics: Array<Record<string, unknown>> = [];
@@ -931,11 +944,21 @@ for (const execution of executions) {
         workspacePath,
         credentials,
         daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE,
+        cleanupDeadlineAt: kimiLifecycleTiming?.cleanupDeadlineAt,
         onCompanyCreated,
       });
       await finishBudgetedEvalSetup({ executionId: execution.id, environmentId: execution.environment.id, agentId: fixtures.agent.id,
         companyId: fixtures.company.id, deadlineAt: startedAtMs + deadlineMs, api,
         observe: observations => writeSanitizedJson(snapshotsDir, "budgeted-setup.json", { observations }, secrets) });
+      const kimiWorkDeadlineAt = kimiLifecycleTiming ? await (async () => {
+        await waitForEvalAgentReady({ environmentId: execution.environment.id, agentId: fixtures.agent.id, companyId: fixtures.company.id,
+          deadlineAt: kimiLifecycleTiming.setupDeadlineAt, api,
+          observe: observations => writeSanitizedJson(snapshotsDir, "kimi-lifecycle-setup.json", { observations }, secrets) });
+        const readyAt = Date.now(), workDeadlineAt = kimiLifecycleTiming.beginWork(readyAt);
+        await writeSanitizedJson(snapshotsDir, "kimi-lifecycle-timing.json", { setupDeadlineAt: kimiLifecycleTiming.setupDeadlineAt,
+          readyAt, workDeadlineAt, setupBudgetMs: deadlineMs, workBudgetMs: deadlineMs, playwrightTimeoutMs: kimiLifecycleTiming.playwrightTimeoutMs }, secrets);
+        return workDeadlineAt;
+      })() : undefined;
       await workerTiming.enter("execution");
       trace?.phase("execution");
 
@@ -951,14 +974,14 @@ for (const execution of executions) {
         nativeInitial = { issueIds: issues.map(value => value.id), agentIds: agents.map(value => value.id), workspaceDigest };
       }
       const remoteBootstrap = execution.environment.id === "daytona"
-        && ["pi_native", "pi_controls", "copilot_protection", "cursor_native", "native_active_stop", "native_provider_loss"].includes(execution.task.flow)
+        && ["pi_native", "pi_controls", "copilot_protection", "cursor_native", "native_active_stop", "native_provider_loss", "kimi_native_lifecycle"].includes(execution.task.flow)
         ? createRemoteNativeBootstrap({
           api, daytona: await createRemoteFixtureClient(credentials.DAYTONA_API_KEY ?? ""),
           companyId: fixtures.company.id, environmentId: fixtures.environment.id, agentId: fixtures.agent.id,
           image: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE ?? "",
           nodeSha256: process.env.PAPERCLIP_E2E_DAYTONA_NODE_SHA256 ?? "",
           runnerdSha256: process.env.PAPERCLIP_E2E_DAYTONA_RUNNERD_SHA256 ?? "",
-          deadlineAt: startedAtMs + deadlineMs,
+          deadlineAt: kimiWorkDeadlineAt ?? startedAtMs + deadlineMs,
           requireCopilotTaskContext: execution.profile.qualificationCandidate === "copilot",
           evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
         }) : undefined;
@@ -1144,6 +1167,15 @@ for (const execution of executions) {
         });
         issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
         matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `piControls.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "kimi_native_lifecycle") {
+        const story = await runKimiLifecycleFlow({
+          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: kimiWorkDeadlineAt!,
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot, evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          remoteBootstrap, registerCleanupAssertion, registerBeforeEnvironmentTeardownAssertion,
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `kimiNativeLifecycle.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
       } else if (execution.task.flow === "native_provider_loss") {
         const story = await runNativeProviderLossFlow({
           page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
@@ -1264,6 +1296,7 @@ for (const execution of executions) {
       } else if (execution.task.flow === "agent_chat") {
         const chat = await runChatFlow({
           page, api, fixtures, execution, nonce, workspacePath,
+          deadlineAt: startedAtMs + deadlineMs,
           restart: () => restartChatServer(page, () => restartIsolatedPaperclipServer({ api, requestId: `chat-${nonce}`, deadlineAt: startedAtMs + deadlineMs })),
           observe: (chatIssue, chatRuns) => { issue = chatIssue; selectedRuns = chatRuns; },
           capture: captureScreenshot,
@@ -2729,6 +2762,7 @@ for (const execution of executions) {
         {
           issue,
           run,
+          runs: selectedRuns,
           comments: terminal.comments,
           interactions: terminal.interactions,
           planLifecycleEvidence,

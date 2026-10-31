@@ -1,8 +1,9 @@
 # Runner E2E security for a public repository
 
 The explicit [chat feature evals](CHAT-FEATURES.md) use synthetic project briefs
-and a privately supplied Codex subscription login through the existing isolated
-company staging helper. Only source-chat screenshots are captured. Task, document
+and either a privately supplied Codex subscription login through the existing
+isolated company staging helper or the OpenCode profile's encrypted OpenRouter
+secret reference. Only source-chat screenshots are captured. Task, document
 and run evidence stays behind the existing sanitizer and publication allowlist;
 the YAML catalog contains no credentials. The suite's accounted-work budgets do
 not cover production setup probes or imply zero subscription cost.
@@ -154,6 +155,15 @@ new immutable SHA before upgrading an action. The credential-free security test
 rejects mutable tag or branch references.
 
 ## Secrets and protected environments
+
+Kimi's explicit-only `kimi-qualification` cells use `KIMI_API_KEY`, delivered
+through the launcher's normal encrypted company-secret fixture path. All ambient
+`KIMI_*` values, including legacy model keys and login-home aliases, are removed
+from the product server environment. Neither the catalog nor evidence stores
+the key. The maintained Code profile does not borrow an ambient OAuth cache or
+fall back to `KIMI_MODEL_API_KEY`. This registration does not add a hosted paid
+workflow credential grant; hosted authorization and secret delivery remain a
+separate change.
 
 Explicit Grok subscription campaigns may select `GROK_AUTH_JSON` from the same
 protected paid environment. Deliver it only to that subscription profile's paid

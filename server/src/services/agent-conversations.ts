@@ -526,6 +526,9 @@ export async function undeliveredConversationComments(
         eq(issueComments.companyId, companyId),
         eq(issueComments.issueId, issueId),
         isNull(issueComments.deletedAt),
+        sql`${issueComments.authorUserId} is not null`,
+        isNull(issueComments.authorAgentId),
+        eq(issueComments.origin, "comment"),
         sql`${issueComments.clientRequestId} is not null`,
         sql`not exists (select 1 from ${agentWakeupRequests} where ${agentWakeupRequests.companyId} = ${companyId}
       and ${agentWakeupRequests.idempotencyKey} = 'conversation-comment:' || ${issueComments.id}::text)`,

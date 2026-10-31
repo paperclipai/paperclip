@@ -67,6 +67,7 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueService } from "../issues.js";
 import { publishChatPublicationCommitSignal } from "../chat-publication-reconciliation.js";
 import { nativeSha256 } from "./canonical.js";
+import { beginRunPhase, measureRunPhase, withRunResponsePresentationTiming } from "../execution-preparation-timing.js";
 import {
   readNativeBoardResponseWaitOrigin,
   readNativeBoardResponseWaitSource,
@@ -737,10 +738,19 @@ export async function recoverCommittedNativeChatResponse(
   db: Db,
   input: { companyId: string; issueId: string; runId: string; onlyWhenDue?: boolean },
 ): Promise<boolean> {
+  return withRunResponsePresentationTiming(input.runId, () => recoverCommittedNativeChatResponseInScope(db, input));
+}
+
+async function recoverCommittedNativeChatResponseInScope(
+  db: Db,
+  input: { companyId: string; issueId: string; runId: string; onlyWhenDue?: boolean },
+): Promise<boolean> {
   let agentId: string | null = null;
   let materialized = false;
+  const entered = beginRunPhase("response.transaction.entry");
   try {
-    materialized = await db.transaction(async (transaction) => {
+    materialized = await measureRunPhase("response.transaction", () => db.transaction(async (transaction) => {
+      entered();
       const tx = transaction as unknown as Db;
 
 
@@ -1022,10 +1032,12 @@ export async function recoverCommittedNativeChatResponse(
       await projectCommittedRun({ db: tx, run, coordinator });
       agentId = run.agentId;
       return true;
-    });
+    }));
   } catch (error) {
     if (error instanceof CommittedChatResponseAuthorizationError) return false;
     throw error;
+  } finally {
+    entered();
   }
   if (materialized && agentId)
     publishChatPublicationCommitSignal({
