@@ -2471,6 +2471,61 @@ rl.on("line", (line) => {
     }
   });
 
+  it("rejects remote MCP calls when a required header credential has no grant ref", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const secret = await secretService(db).create(company.id, {
+      name: `Missing grant ref ${randomUUID()}`,
+      key: `missing_grant_ref_${randomUUID().replace(/-/g, "")}`,
+      provider: "local_encrypted",
+      value: "unused-test-credential",
+    });
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => ({
+      body: {
+        jsonrpc: "2.0",
+        id: fakeRequest.body?.id,
+        result: { content: [{ type: "text", text: "unauthenticated request reached server" }] },
+      },
+    }));
+
+    try {
+      const { connection } = await createRemoteMcpTool(db, company.id, {
+        url: fake.url,
+        credentialRefs: [{
+          name: "authorization",
+          secretId: secret.id,
+          version: "latest",
+          placement: "header",
+          key: "Authorization",
+          prefix: "Bearer ",
+        }],
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.providerType === "mcp_remote_http");
+      expect(connectedTool).toBeTruthy();
+
+      await expect(gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: {},
+      })).rejects.toMatchObject({
+        status: 422,
+        reasonCode: "mcp_remote_missing_secret",
+        details: { connectionId: connection.id, credential: "authorization" },
+      });
+      expect(fake.requests).toHaveLength(0);
+      await expect(db.select({ healthStatus: toolConnections.healthStatus }).from(toolConnections)
+        .where(eq(toolConnections.id, connection.id)))
+        .resolves.toEqual([{ healthStatus: "missing_secret" }]);
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("starts with another user's personal app and requests authorization only when used", async () => {
     const originalApiUrl = process.env.PAPERCLIP_API_URL;
     process.env.PAPERCLIP_API_URL = "http://paperclip.example.test";

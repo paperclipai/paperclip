@@ -4396,7 +4396,14 @@ export function createToolGatewayService(
     for (const ref of connection.credentialRefs ?? []) {
       if (ref.placement !== "header") continue;
       const grantRef = grantRefForCredential(grant, ref);
-      if (!grantRef) continue;
+      if (!grantRef) {
+        const message = "A required MCP credential is not configured for this grant.";
+        await markRemoteConnectionHealth(connection, "missing_secret", message);
+        throw new ToolGatewayHttpError(422, message, "mcp_remote_missing_secret", {
+          connectionId: connection.id,
+          credential: ref.name,
+        });
+      }
       try {
         const value = await resolveGrantSecretValue(
           session,
