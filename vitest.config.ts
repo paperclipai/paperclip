@@ -2,9 +2,9 @@ import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    ...(process.env.PAPERCLIP_CI_PROFILE === "true"
-      ? { reporters: [...configDefaults.reporters, "./scripts/ci-profile/vitest-reporter.mjs"] }
-      : {}),
+    reporters: [...configDefaults.reporters,
+      ...(process.env.GITHUB_ACTIONS === "true" ? ["./scripts/ci/test-timing-reporter.mjs"] : []),
+      ...(process.env.PAPERCLIP_CI_PROFILE === "true" ? ["./scripts/ci-profile/vitest-reporter.mjs"] : [])],
     projects: [
       "packages/shared",
       "packages/skills-catalog",
