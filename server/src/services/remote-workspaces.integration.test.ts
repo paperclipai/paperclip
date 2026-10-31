@@ -29,6 +29,8 @@ import { preserveOrphanedNativeWorkspace } from "./native-runtime/native-failed-
 import { terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { legacyControllerClaim, renewLegacyControllerLease } from "./legacy-controller-lease.js";
+import { registerRemoteWorkspaceSnapshotRetentionWork, remoteWorkspaceSnapshotRetentionService } from "./remote-workspace-snapshot-retention.js";
+import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 
 const exec = promisify(execFile);
 const databaseUrl = process.env.PAPERCLIP_REMOTE_WORKSPACE_TEST_DATABASE_URL;
@@ -383,7 +385,10 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     if (boundary === "initial") await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null,
       issueId: null, contextSnapshot: { issueId: ids.issue } }).where(eq(heartbeatRuns.id, ids.run));
     const reserved = await reserve({ kind: "empty" }), first = await target("failed-boundary");
-    const failing: StorageService = { ...storage, putFile: async () => { throw new Error("boundary storage offline"); } };
+    const failing: StorageService = { ...storage, putFile: async upload => {
+      await storage.putFile(upload);
+      throw new Error("boundary storage offline");
+    } };
     if (boundary === "initial") {
       await expect(prepareRemoteWorkspace({ db, storage: failing, workspace: reserved, runId: ids.run,
         lease: await lease(), target: first, assertOwned: async () => undefined,
@@ -409,6 +414,27 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)).toMatchObject({
       dirty: false, writerRunId: null, snapshotId: saved.snapshotId,
     });
+    const [retired] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, pending!.sourceOperationId));
+    expect(retired).toMatchObject({ status: "failed", metadata: { generation: pending!.generation,
+      exportCleanup: { state: "cleaned" } } });
+    expect(await fs.readdir(path.join(authority.location!.remoteCwd, ".paperclip-runtime", "workspace-snapshots"))).toEqual([]);
+    const upload = vi.spyOn(storage, "putFile"), execute = vi.spyOn((first as Extract<AdapterExecutionTarget, { transport: "sandbox" }>).runner!, "execute");
+    try {
+      await expect(saveRemoteWorkspace({ db, storage, workspace: before, runId: ids.run,
+        lease: await lease(), target: first, boundary, assertOwned: async () => undefined })).rejects.toThrow("remote_workspace_snapshot_retired");
+      expect(upload).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled();
+    } finally { upload.mockRestore(); execute.mockRestore(); }
+    expect(await fs.readdir(path.join(authority.location!.remoteCwd, ".paperclip-runtime", "workspace-snapshots"))).toEqual([]);
+    const abandonedUploads = pending!.metadata!.uploads as Array<{ objectKey: string }>;
+    expect(abandonedUploads).toHaveLength(1);
+    expect((await storage.headObject(ids.company, abandonedUploads[0]!.objectKey)).exists).toBe(true);
+    const retention = remoteWorkspaceSnapshotRetentionService(db, { storage,
+      now: () => new Date(Date.now() + 8 * 86_400_000) });
+    await retention.tick();
+    expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, pending!.id)))[0]?.status)
+      .toBe("deleted");
+    expect((await storage.headObject(ids.company, abandonedUploads[0]!.objectKey)).exists).toBe(false);
+    expect((await storage.headObject(ids.company, committed!.objectKey!)).exists).toBe(true);
     const extracted = await createSavedWorkspaceLoader(db, storage)({ companyId: ids.company, workspaceId: reserved.id, snapshotId: saved.snapshotId });
     try {
       expect(await fs.readFile(path.join(extracted.root, "prepared.txt"), "utf8")).toBe("one preparation effect\n");
@@ -501,6 +527,103 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     await expect(saveRemoteWorkspace({ ...input, boundary: boundaries[1 - winning]! }))
       .rejects.toThrow("remote_workspace_publication_fenced");
     expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)?.snapshotId).toBe(replay.snapshotId);
+  }, 60_000);
+
+  it.each(["failed", "succeeded"])("protects an active duplicate after its peer %s and cleans it only after the last invocation settles", async peer => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("active-duplicate");
+    const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    let release!: () => void, entered!: () => void, releaseOwnership!: () => void, postUpload!: () => void, uploads = 0, checks = 0;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const ownershipGate = new Promise<void>(resolve => { releaseOwnership = resolve; });
+    const afterUpload = new Promise<void>(resolve => { postUpload = resolve; });
+    const delayed: StorageService = { ...storage, putFile: async upload => {
+      if (++uploads === 1) { entered(); await blocked; }
+      else if (uploads === 2 && peer === "failed") throw new Error("duplicate upload failed");
+      return storage.putFile(upload);
+    } };
+    const input = { db, storage: delayed, workspace: prepared.workspace, runId: ids.run, lease: prepared.lease,
+      target: first, assertOwned: async () => undefined, boundary: "repository:shared" };
+    const late = saveRemoteWorkspace({ ...input, assertOwned: async () => {
+      if (++checks === 3) { postUpload(); await ownershipGate; }
+    } }).then(value => ({ value, error: null }), error => ({ value: null, error }));
+    let worker: ReturnType<typeof registerRemoteWorkspaceSnapshotRetentionWork> | undefined;
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    try {
+      await Promise.race([started, late.then(result => { throw result.error ?? new Error("Upload did not reach its barrier"); })]);
+      if (peer === "failed") await expect(saveRemoteWorkspace(input)).rejects.toThrow("duplicate upload failed");
+      else await saveRemoteWorkspace(input);
+      const [older] = await db.select().from(executionWorkspaceSnapshots).where(and(
+        eq(executionWorkspaceSnapshots.executionWorkspaceId, reserved.id), eq(executionWorkspaceSnapshots.generation, 2)));
+      const [olderOperation] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, older!.sourceOperationId));
+      await fs.writeFile(path.join(prepared.remoteRoot, "after-duplicate.txt"), "the final save contains newer work\n");
+      const final = await saveRemoteWorkspace({ ...input, workspace: await workspace(reserved.id), boundary: "final" });
+      expect(final.generation).toBe(3);
+      const staging = path.join(prepared.remoteRoot, ".paperclip-runtime", "workspace-snapshots");
+      expect(await fs.readdir(staging)).toContain(olderOperation!.id);
+      const retention = remoteWorkspaceSnapshotRetentionService(db, { storage,
+        now: () => new Date(Date.now() + 8 * 86_400_000) });
+      const tick = vi.spyOn(retention, "tick");
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      worker = registerRemoteWorkspaceSnapshotRetentionWork(coordinator, retention, () => {});
+      await vi.waitFor(() => expect(tick).toHaveBeenCalled(), { timeout: 4000, interval: 20 });
+      await vi.waitFor(async () => expect(await retention.nextDeadlineAt()).toBeNull(), { timeout: 4000, interval: 20 });
+      expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, older!.id)))[0]?.status)
+        .toBe(peer === "failed" ? "pending" : "superseded");
+      expect(await fs.readdir(staging)).toContain(olderOperation!.id);
+      const heldTicks = tick.mock.calls.length;
+      release();
+      await Promise.race([afterUpload, late.then(result => { throw result.error ?? new Error("Upload did not reach ownership check"); })]);
+      // Consume the upload's own notification while its invocation still pins
+      // the row. Only the last-token settlement can wake the quiet worker next.
+      await vi.waitFor(() => expect(tick.mock.calls.length).toBeGreaterThan(heldTicks), { timeout: 4000, interval: 20 });
+      await vi.waitFor(async () => expect(await retention.nextDeadlineAt()).toBeNull(), { timeout: 4000, interval: 20 });
+      const postUploadTicks = tick.mock.calls.length;
+      releaseOwnership();
+      expect((await late).error).toMatchObject({ message: "remote_workspace_publication_fenced" });
+      await vi.waitFor(async () => expect((await db.select().from(executionWorkspaceSnapshots)
+        .where(eq(executionWorkspaceSnapshots.id, older!.id)))[0]?.status).toBe("deleted"), { timeout: 4000, interval: 20 });
+      expect(tick.mock.calls.length).toBeGreaterThan(postUploadTicks);
+      const [settled] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, olderOperation!.id));
+      expect(settled!.status).toBe(peer === "failed" ? "failed" : "succeeded");
+      expect(settled!.metadata?.exportCleanup).toMatchObject({ state: "cleaned" });
+      expect(await fs.readdir(staging)).toEqual([]);
+      const keys = older!.metadata!.uploads as Array<{ objectKey: string }>;
+      for (const item of keys) expect((await storage.headObject(ids.company, item.objectKey)).exists).toBe(false);
+      expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)?.snapshotId).toBe(final.snapshotId);
+      const saved = await createSavedWorkspaceLoader(db, storage)({ companyId: ids.company, workspaceId: reserved.id, snapshotId: final.snapshotId });
+      try { expect(await fs.readFile(path.join(saved.root, "after-duplicate.txt"), "utf8")).toBe("the final save contains newer work\n"); }
+      finally { await saved.cleanup(); }
+    } finally { release(); releaseOwnership(); await late; await worker?.stop(); await coordinator?.stop(); }
+  }, 60_000);
+
+  it.each(["untracked", "malformed-owner", "malformed-active"])("keeps adopted %s work pinned after a newer final save", async marker => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("unknown-save-work");
+    const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    const input = { db, storage, workspace: prepared.workspace, runId: ids.run, lease: prepared.lease,
+      target: first, assertOwned: async () => undefined, boundary: "repository:legacy" };
+    const failed: StorageService = { ...storage, putFile: async () => { throw new Error("old upload failed"); } };
+    await expect(saveRemoteWorkspace({ ...input, storage: failed })).rejects.toThrow("old upload failed");
+    const [old] = await db.select().from(executionWorkspaceSnapshots).where(and(
+      eq(executionWorkspaceSnapshots.executionWorkspaceId, reserved.id), eq(executionWorkspaceSnapshots.generation, 2)));
+    // Older/crashed callers supplied no per-invocation completion evidence.
+    await db.update(workspaceOperations).set({ metadata: sql`${workspaceOperations.metadata} - 'saveWork'` })
+      .where(eq(workspaceOperations.id, old!.sourceOperationId));
+    await saveRemoteWorkspace(input);
+    if (marker === "malformed-owner") await db.update(workspaceOperations).set({ metadata: sql`jsonb_set(${workspaceOperations.metadata},
+      '{saveWork,unknown}', '"false"'::jsonb)` }).where(eq(workspaceOperations.id, old!.sourceOperationId));
+    if (marker === "malformed-active") await db.update(workspaceOperations).set({ metadata: sql`jsonb_set(jsonb_set(${workspaceOperations.metadata},
+      '{saveWork,unknown}', 'false'::jsonb), '{saveWork,activeIds}', '{"unfinished":"unknown"}'::jsonb)` })
+      .where(eq(workspaceOperations.id, old!.sourceOperationId));
+    const final = await saveRemoteWorkspace({ ...input, workspace: await workspace(reserved.id), boundary: "final" });
+    const [held] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, old!.sourceOperationId));
+    expect(held).toMatchObject({ status: "succeeded", metadata: { exportCleanup: { state: "pending" } } });
+    if (marker === "untracked") expect(held!.metadata?.saveWork).toMatchObject({ activeIds: [], unknown: true });
+    const retention = remoteWorkspaceSnapshotRetentionService(db, { storage, now: () => new Date(Date.now() + 8 * 86_400_000) });
+    await retention.tick();
+    expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, old!.id)))[0]?.status).toBe("superseded");
+    expect(await fs.readdir(path.join(prepared.remoteRoot, ".paperclip-runtime", "workspace-snapshots"))).toContain(old!.sourceOperationId);
+    expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)?.snapshotId).toBe(final.snapshotId);
   }, 60_000);
 
   it.each(["issue_column", "context_only"])("retains pre-native preparation files and the exact repair obligation when the first upload fails: %s", async identity => {

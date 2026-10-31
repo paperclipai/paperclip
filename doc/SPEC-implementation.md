@@ -2622,6 +2622,10 @@ dirty Git state and unpushed commits. Changes after the last save still depend
 on the live allocation; this release provides no periodic backup of those edits.
 Failed saving retains the source and recovery obligation before destructive
 cleanup. File browsing distinguishes live bytes from a saved copy and its time.
+After a final save, older failed copies can expire when all their save attempts
+have stopped. Cleanup retains copies whose upload completion is unknown. This
+includes operations from older builds without save-attempt records. A final
+save alone does not prove that an older upload has stopped.
 
 V1 supports plain task folders, Git sources, and managed mutable repositories
 from the same project. It rejects read-only cross-project referenced folders,
@@ -2631,6 +2635,19 @@ unsupported in V1 and must fail before local filesystem work. Agent tasks remain
 the supported command path. Disabling new enrollment preserves existing authority
 and recovery. An enrolled workspace whose persistence prerequisites are lost
 must fail admission rather than fall back to a controller checkout.
+
+Saved-copy browsing restores and verifies the complete archive for each request.
+V1 has no shared extraction cache. Large saved workspaces can therefore need
+substantial transfer time and temporary disk space for each browse request.
+Each managed repository preparation also saves a complete workspace archive.
+These saves preserve each preparation boundary; V1 does not combine them or use
+incremental uploads.
+
+Ordinary sandbox Runner tasks retain the existing API upload restriction:
+`call_api` cannot read a workspace file through `files[].path`. Use
+`register_deliverable` to register the file, then pass its `artifactId` to
+`call_api`. Plugin task providers keep their existing file-read capability.
+
 This feature does not remove the instance volume or qualify HTTP traffic drain,
 active provider handoff, or other instance data paths. See
 [setup/import](DEVELOPING.md#experimental-native-remote-workspace-storage) and the

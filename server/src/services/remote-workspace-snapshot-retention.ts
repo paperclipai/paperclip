@@ -23,7 +23,11 @@ async function pinned(db: ReadDb, row: Snapshot) {
   if ((workspace?.metadata?.remoteWorkspace as { snapshotId?: unknown } | undefined)?.snapshotId === row.id) return true;
   const [operation] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, row.companyId), eq(workspaceOperations.executionWorkspaceId, row.executionWorkspaceId),
-    inArray(workspaceOperations.status, ["running", "pending"]),
+    or(inArray(workspaceOperations.status, ["running", "pending"]),
+      sql`(${workspaceOperations.metadata}->'saveWork'->>'schema' = 'paperclip.remote-workspace-save-work.v1'
+        and (${workspaceOperations.metadata}#>'{saveWork,unknown}' is distinct from 'false'::jsonb
+          or case when jsonb_typeof(${workspaceOperations.metadata}#>'{saveWork,activeIds}') = 'array'
+            then jsonb_array_length(${workspaceOperations.metadata}#>'{saveWork,activeIds}') <> 0 else true end))`),
     sql`(${workspaceOperations.id} = ${row.sourceOperationId}::uuid
       or ${workspaceOperations.metadata}->>'snapshotId' = ${row.id}
       or ${workspaceOperations.metadata}->>'parentSnapshotId' = ${row.id})`,
