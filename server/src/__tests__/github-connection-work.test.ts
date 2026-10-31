@@ -6,9 +6,9 @@ import { createServer, type Server } from "node:http";
 import { once } from "node:events";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { applyPendingMigrations, companies, activityLog, companySecrets, connectionGrants, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, toolApplications, toolConnections } from "@paperclipai/db";
+import { applyPendingMigrations, companies, activityLog, companySecrets, connectionEventDeliveries, connectionGrants, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, toolApplications, toolConnections } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
-import { createGitHubGrantContinuity, githubGrantContinuityDeadline } from "../services/tool-access/github-grant-continuity.js";
+import { createGitHubGrantContinuity, githubGrantContinuityDeadline, githubContinuityRevision } from "../services/tool-access/github-grant-continuity.js";
 import { createPaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 import { githubConnectionEventService } from "../services/github-connection-events.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -36,6 +36,7 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
   const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
   let releaseRefresh: (() => void) | undefined, refreshArrived: (() => void) | undefined;
   let refreshGate: Promise<void> | undefined;
+  let discoveryFailureGate: Promise<void> | undefined, discoveryArrived: (() => void) | undefined;
   let heldBindingCompany: string | undefined, bindingGate: Promise<void> | undefined;
   let bindingArrived: (() => void) | undefined, bindingClosed: (() => void) | undefined;
   const realFetch = globalThis.fetch;
@@ -86,6 +87,10 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
         res.writeHead(failBindings ? 503 : 200, { "content-type": "application/json" }).end("{}"); return;
       }
       githubRequests++;
+      if (req.url === "/user" && discoveryFailureGate) {
+        discoveryArrived?.(); await discoveryFailureGate;
+        res.writeHead(503, { "content-type": "application/json", "retry-after": "86400" }).end("{}"); return;
+      }
       const body = req.url === "/user" ? { id: 42, login: "octocat" }
         : req.url!.startsWith("/user/installations?") ? { installations: [{ id: 101, repository_selection: "all", account: { login: "octocat" } }] }
         : { total_count: 1, repositories: [{ id: 999, full_name: "octocat/repo" }] };
@@ -185,6 +190,108 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
     await db.update(toolConnections).set({ enabled: true }).where(eq(toolConnections.id, f.connection.id));
     await db.update(companies).set({ status: "archived" }).where(eq(companies.id, f.company.id));
     expect(await restarted.nextGitHubConnectionContinuityAt()).toBeNull();
+  });
+
+  it.each(["credential", "installation"])("does not attach a withheld provider failure to newer %s work", async change => {
+    const f = await fixture(["101"]);
+    vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => String(url).startsWith("https://api.github.com")
+      ? realFetch(`${origin}${new URL(String(url)).pathname}${new URL(String(url)).search}`, init) : realFetch(url, init));
+    await db.update(connectionGrants).set({ providerTenant: { ...f.grant.providerTenant,
+      oauth: { ...f.grant.providerTenant!.oauth, accessTokenExpiresAt: new Date(Date.now() + 30 * 60_000).toISOString() } } }).where(eq(connectionGrants.id, f.grant.id));
+    let release!: () => void;
+    const arrived = new Promise<void>(resolve => { discoveryArrived = resolve; });
+    discoveryFailureGate = new Promise<void>(resolve => { release = resolve; });
+    const pending = f.service.sweepGitHubConnectionContinuity(f.company.id);
+    const finished = Promise.allSettled([pending]);
+    try {
+      await Promise.race([arrived, pending.then(() => { throw new Error("Expected held provider request"); })]);
+      const revision = randomUUID();
+      const expiry = new Date(Date.now() + 10 * 60_000).toISOString();
+      await db.transaction(async tx => {
+        await notifyGitHubCredentialChange(tx, f.connection);
+        await tx.update(connectionGrants).set({ providerTenant: change === "credential"
+          ? sql`jsonb_set(${connectionGrants.providerTenant}, '{oauth,accessTokenExpiresAt}', ${JSON.stringify(expiry)}::jsonb)`
+          : sql`jsonb_set(${connectionGrants.providerTenant}, '{github,bindingSync}', ${JSON.stringify({ id: revision, removeInstallationIds: ["202"] })}::jsonb)`,
+          updatedAt: new Date() }).where(eq(connectionGrants.id, f.grant.id));
+      });
+      release();
+      expect(await pending).toMatchObject({ due: 1, failed: 1 });
+      const [saved] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id));
+      expect(saved!.providerTenant!.github!.continuityRetry).toBeUndefined();
+      if (change === "credential") expect(saved!.providerTenant!.oauth!.accessTokenExpiresAt).toBe(expiry);
+      else expect(saved!.providerTenant!.github!.bindingSync!.id).toBe(revision);
+      expect(githubGrantContinuityDeadline(f.connection, saved!)).toBeLessThanOrEqual(Date.now());
+      discoveryFailureGate = undefined;
+      const restarted = createGitHubGrantContinuity(db, f.dependencies);
+      expect(await restarted.sweepGitHubConnectionContinuity(f.company.id)).toMatchObject({ due: 1, refreshed: 1, failed: 0 });
+      expect(bindings).toContainEqual(expect.objectContaining({ installationId: "101", active: true }));
+      if (change === "installation") expect(bindings).toContainEqual(expect.objectContaining({ installationId: "202", active: false }));
+      const [settled] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id));
+      expect(settled!.providerTenant!.github!.bindingSync).toBeUndefined();
+      const next = await restarted.nextGitHubConnectionContinuityAt(f.company.id);
+      expect(next).toBeLessThan(Date.now() + 24 * 60 * 60_000);
+    } finally { release(); await finished; discoveryFailureGate = undefined; discoveryArrived = undefined; }
+  });
+
+  it("retains provider backoff for the actual attempted revision after its own credential rotation", async () => {
+    const f = await fixture(["101"]);
+    await db.update(connectionGrants).set({ providerTenant: { ...f.grant.providerTenant,
+      oauth: { ...f.grant.providerTenant!.oauth, accessTokenExpiresAt: new Date(Date.now() + 30 * 60_000).toISOString() } } }).where(eq(connectionGrants.id, f.grant.id));
+    vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => String(url).startsWith("https://api.github.com")
+      ? realFetch(`${origin}${new URL(String(url)).pathname}${new URL(String(url)).search}`, init) : realFetch(url, init));
+    const owner = createGitHubGrantContinuity(db, { ...f.dependencies, refreshOAuthGrantCredentials: async () => {
+      const [rotated] = await db.update(connectionGrants).set({ providerTenant: sql`jsonb_set(${connectionGrants.providerTenant}, '{oauth}', ${JSON.stringify({
+        accessTokenExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), refreshedAt: new Date().toISOString(),
+      })}::jsonb)` }).where(eq(connectionGrants.id, f.grant.id)).returning();
+      return rotated!;
+    } });
+    discoveryFailureGate = Promise.resolve();
+    try {
+      expect(await owner.sweepGitHubConnectionContinuity(f.company.id)).toMatchObject({ due: 1, failed: 1 });
+      const [saved] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id));
+      expect(saved!.providerTenant!.github!.continuityRetry!.revision).toBe(githubContinuityRevision(saved!));
+      expect(await owner.nextGitHubConnectionContinuityAt(f.company.id)).toBeGreaterThan(Date.now() + 23 * 60 * 60_000);
+      const calls = githubRequests;
+      expect(await createGitHubGrantContinuity(db, f.dependencies).sweepGitHubConnectionContinuity(f.company.id)).toMatchObject({ due: 0 });
+      expect(githubRequests).toBe(calls);
+    } finally { discoveryFailureGate = undefined; }
+  });
+
+  it.each([["suspend", "unsuspend"], ["unsuspend", "suspend"]])("reconciles same-batch installation order %s then %s and duplicate replay", async (first, last) => {
+    const f = await fixture(["101"]);
+    await db.update(connectionGrants).set({ providerTenant: { ...f.grant.providerTenant,
+      github: { ...f.grant.providerTenant!.github!, bindingSync: { id: randomUUID(), removeInstallationIds: ["202"] } } } }).where(eq(connectionGrants.id, f.grant.id));
+    const events = [first, last].map(action => ({ id: randomUUID(), provider: "github" as const, event: "installation", action,
+      installationId: "101", repositoryId: null, createdAt: new Date(Date.now() + 1000).toISOString(), bindingIds: [`${f.grant.id}_101`], payload: { installationId: "101" } }));
+    const acknowledge = vi.fn(async () => events.length);
+    const ingress = githubConnectionEventService(db, { connector: { ...f.connector, leaseEvents: async () => ({ leaseId: "installation-batch", events }), acknowledgeEvents: acknowledge } });
+    expect(await ingress.pollOnce({ forDelivery: true })).toMatchObject({ processed: 2, failed: 0 });
+    const [saved] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id));
+    const active = last === "unsuspend";
+    expect(saved!.providerTenant!.github!.installationIds).toEqual(active ? ["101"] : []);
+    expect(saved!.providerTenant!.github!.bindingSync!.removeInstallationIds.sort()).toEqual(active ? ["202"] : ["101", "202"]);
+    expect(githubGrantContinuityDeadline(f.connection, saved!)).toBe(0);
+    await f.service.syncGitHubGrantBindings(f.connection, saved!);
+    expect(bindings.filter(binding => binding.installationId === "101")).toEqual([expect.objectContaining({ active })]);
+    expect(bindings.filter(binding => binding.installationId === "202")).toEqual([expect.objectContaining({ active: false })]);
+    const [settled] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id));
+    expect(settled!.providerTenant!.github!.bindingSync).toBeUndefined();
+    // Batch duplicates must retain terminal receipts and emit no registration changes.
+    expect(await ingress.pollOnce({ forDelivery: true })).toMatchObject({ processed: 0, duplicate: active ? 2 : 0, ignored: active ? 0 : 2, failed: 0 });
+    await f.service.syncGitHubGrantBindings(f.connection, saved!);
+    expect(bindings).toHaveLength(2);
+    expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id)))[0]!.providerTenant).toEqual(settled!.providerTenant);
+    expect((await db.select().from(connectionEventDeliveries).where(eq(connectionEventDeliveries.companyId, f.company.id))).map(receipt => receipt.status)).toEqual(["processed", "processed"]);
+    expect(acknowledge).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retire active installations from a legacy conflicting binding intent", async () => {
+    const f = await fixture(["101"]);
+    const [saved] = await db.update(connectionGrants).set({ providerTenant: { ...f.grant.providerTenant,
+      github: { ...f.grant.providerTenant!.github!, bindingSync: { id: randomUUID(), removeInstallationIds: ["101", "202"] } } } }).where(eq(connectionGrants.id, f.grant.id)).returning();
+    await f.service.syncGitHubGrantBindings(f.connection, saved!);
+    expect(bindings.filter(binding => binding.installationId === "101")).toEqual([expect.objectContaining({ active: true })]);
+    expect(bindings.filter(binding => binding.installationId === "202")).toEqual([expect.objectContaining({ active: false })]);
   });
 
   it("preserves webhook removal debt across an actual signed, held Cloud token rotation and lease cleanup", async () => {
@@ -327,6 +434,11 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
       expect(leases).toBeLessThanOrEqual(3); expect(load.mock.calls.length).toBeLessThanOrEqual(2);
       if (loadTimes.length === 2) expect(loadTimes[1]! - loadTimes[0]!).toBeGreaterThanOrEqual(5_000);
       if (leaseTimes.length === 3) expect(leaseTimes[2]! - leaseTimes[1]!).toBeGreaterThanOrEqual(5_000);
+      // A hint arriving during the first SQL pass retains one spaced generation.
+      // Start the empty-window assertion after that concrete work has settled.
+      await vi.advanceTimersByTimeAsync(31_000); await settled(coordinator);
+      expect(leases).toBeLessThanOrEqual(3); expect(load.mock.calls.length).toBeLessThanOrEqual(2);
+      if (loadTimes.length === 2) expect(loadTimes[1]! - loadTimes[0]!).toBeGreaterThanOrEqual(5_000);
       const quiet = { leases, loads: load.mock.calls.length };
       await vi.advanceTimersByTimeAsync(60_000);
       expect({ leases, loads: load.mock.calls.length }).toEqual(quiet);
