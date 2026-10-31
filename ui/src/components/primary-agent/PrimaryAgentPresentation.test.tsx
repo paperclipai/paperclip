@@ -44,9 +44,11 @@ async function render(props: Parameters<typeof Harness>[0]) {
 }
 
 const crown = () => container.querySelector<HTMLElement>(".primary-crown");
+const nextTick = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 const dialog = () => document.body.querySelector<HTMLElement>("[role=alertdialog]");
 
 beforeEach(() => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -55,6 +57,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  vi.unstubAllGlobals();
 });
 
 describe("PrimaryAgentCrownButton", () => {
@@ -86,6 +89,8 @@ describe("PrimaryAgentCrownButton", () => {
     expect(onChange).toHaveBeenCalledWith("ceo");
     expect(crown()?.getAttribute("aria-label")).toBe("My primary agent");
     expect(crown()?.dataset.pop).toBe("after-dialog");
+    await nextTick();
+    expect(document.activeElement).toBe(crown());
   });
 
   it("keeps the current primary agent when the dialog is cancelled", async () => {
@@ -98,6 +103,8 @@ describe("PrimaryAgentCrownButton", () => {
 
     expect(onChange).not.toHaveBeenCalled();
     expect(crown()?.getAttribute("aria-label")).toBe("Set as my primary");
+    await nextTick();
+    expect(document.activeElement).toBe(crown());
   });
 
   it("shows a still, filled crown on the primary agent", async () => {

@@ -50,6 +50,7 @@ export function PrimaryAgentCrownButton({ agent }: {
   const [replacing, setReplacing] = useState<Agent | null>(null);
   const [pop, setPop] = useState<"now" | "after-dialog" | null>(null);
   const filledRef = useRef<HTMLSpanElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   if (!primary || agent.status === "terminated" || agent.status === "pending_approval") return null;
   const selected = primary.primaryAgentId === agent.id;
   const previous = primary.primaryAgent?.id === primary.primaryAgentId ? primary.primaryAgent : null;
@@ -89,7 +90,7 @@ export function PrimaryAgentCrownButton({ agent }: {
   ) : (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button type="button" variant="ghost" size="icon-sm" aria-label="Set as my primary" disabled={busy} onClick={request}
+        <Button ref={buttonRef} type="button" variant="ghost" size="icon-sm" aria-label="Set as my primary" disabled={busy} onClick={request}
           className={cn(crownClass, "text-muted-foreground/50 hover:text-foreground")}>
           <Crown aria-hidden="true" className="size-5" />
         </Button>
@@ -102,9 +103,8 @@ export function PrimaryAgentCrownButton({ agent }: {
     {control}
     {replacing ? <AlertDialog open={confirming} onOpenChange={setConfirming}>
       <AlertDialogContent onCloseAutoFocus={(event) => {
-        if (!filledRef.current) return;
         event.preventDefault();
-        filledRef.current.focus();
+        (filledRef.current ?? buttonRef.current)?.focus();
       }}>
         <div className="flex items-start justify-center gap-5 pt-2">
           <div className="flex min-w-0 flex-1 flex-col items-center gap-2 text-center">
