@@ -164,6 +164,7 @@ import {
   isStrandedIssueRecoveryOriginKind,
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
+import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "../successful-run-handoff-state.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import {
   collectDispositionRepairSourceState,
@@ -3887,6 +3888,24 @@ export function recoveryService(
     return reconcileDispositionRepair(issue, run, { legacyEpisode: legacyDispositionEpisode(run) });
   }
 
+  // Legacy runs never reach handleSuccessfulRunHandoff, so a run that leaves a
+  // durable path must confirm an earlier required handoff here.
+  async function resolveRequiredHandoffOnDurablePath(
+    issue: typeof issues.$inferSelect,
+    run: NonNullable<LatestIssueRun>,
+    reason: string,
+  ) {
+    if (issue.status !== "in_progress" || issue.assigneeAgentId !== run.agentId) return;
+    await resolveRequiredSuccessfulRunHandoffOnValidPath(db, {
+      companyId: issue.companyId,
+      issueId: issue.id,
+      issueIdentifier: issue.identifier,
+      agentId: run.agentId,
+      runId: run.id,
+      skipReason: `durable path: ${reason}`,
+    });
+  }
+
   async function reconcileDispositionRepair(
     issue: Pick<RecoveryIssue, "id" | "companyId">,
     latestRun: LatestIssueRun,
@@ -3920,6 +3939,9 @@ export function recoveryService(
     const state = await collectDispositionRepairSourceState(db, {
       issue: current,
     });
+    if (latestRun && state.durablePathReason) {
+      await resolveRequiredHandoffOnDurablePath(current, latestRun, state.durablePathReason);
+    }
     if (episode) {
       if (!latestRun) return "skipped";
       const decision = await decidePersistedLegacyContinuation(current, latestRun.id, state, episode);
