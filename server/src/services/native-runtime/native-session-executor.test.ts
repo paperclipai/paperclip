@@ -85,6 +85,7 @@ import {
 import * as issueServiceModule from "../issues.js";
 import * as runEventWriter from "../heartbeat-run-events.js";
 import { NativePermissionDeclinedError } from "./native-permission-decline.js";
+import { NativeExecutionContext } from "./native-execution-context.js";
 import { resolvePaperclipRunnerNativeProviderInput } from "./provider-profile.js";
 import {
   createNativeHarnessBackupStamp,
@@ -6600,6 +6601,43 @@ function cancellationDb(options?: {
 }
 
 describe("native startup cancellation fence", () => {
+  it("uses the common startup context and durable Stop fence for a retained local session", async () => {
+    const first: NativeExecutionInputV1 = { ...execution,
+      binding: { ...execution.binding, runId: "local-context-first", executionWorkspaceId: "local-context-workspace" },
+      session: { ...execution.session, normalizedSessionId: "local-context-session", lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } } };
+    const second = { ...first, binding: { ...first.binding, runId: "local-context-second" } };
+    const stopped: Record<string, unknown> = {};
+    const cancel = vi.fn(() => ({ cleanup: Promise.resolve() }));
+    const session = { cancel, close: vi.fn(async () => undefined) };
+    const submit = vi.fn();
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      expect(options.startup).toBeUndefined();
+      await options.onSession(session);
+      return { result: { summary: "done" }, terminal: { runTerminalState: "succeeded" }, turnId: "first",
+        normalizedSessionId: first.session.normalizedSessionId, providerSessionId: "retained-local", driverKind: "test", driverVersion: "1",
+        nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    }).mockImplementationOnce(async options => {
+      expect(options.existingSession).toBe(session);
+      expect(options.startup).toMatchObject({ deadlineAtMs: expect.any(Number), signal: expect.any(AbortSignal) });
+      expect(options.startup.execution).toBe(second);
+      expect(Number.isSafeInteger(options.startup.deadlineAtMs)).toBe(true);
+      expect(options.startup.deadlineAtMs - Date.now()).toBeLessThanOrEqual(1_000);
+      stopped.startupCancellation = { requestedAt: new Date().toISOString() };
+      try { await options.onSession(session); submit(); }
+      finally { await options.onSession(null); }
+      throw new Error("unexpected provider dispatch");
+    });
+    await executePaperclipNativeSession({ db: leaseDb(first), execution: first, runnerInstanceId: "local-context" });
+    const createRenewal = nativeLeaseRenewal.startNativeSessionExecutionLeaseRenewal;
+    const renewal = vi.spyOn(nativeLeaseRenewal, "startNativeSessionExecutionLeaseRenewal").mockImplementation(input => ({
+      ...createRenewal(input), remainingMs: () => 1_000.75,
+    }));
+    onTestFinished(() => renewal.mockRestore());
+    await expect(executePaperclipNativeSession({ db: leaseDb(second, {}, stopped), execution: second, runnerInstanceId: "local-context" }))
+      .rejects.toThrow("native_cancellation_pending_recovery");
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(submit).not.toHaveBeenCalled();
+  });
   it.each(["startupCancellation", "nativeCancellation"])("does not submit a turn when %s arrives during session opening", async (marker) => {
     const resultJson: Record<string, unknown> = {};
     const cancel = vi.fn(() => ({ cleanup: Promise.resolve() }));
@@ -11954,8 +11992,8 @@ describe("runnerd provider runtime wiring", () => {
     };
   }
 
-  it("admits a warm follow-up after resuming a suspended plugin session", async () => {
-    const first = { ...scopedNativeExecution("plugin-cold-then-warm"),
+  it.each(["reuse", "unsettled-describe"])("admits a warm follow-up after resuming a suspended plugin session (%s)", async mode => {
+    const first = { ...scopedNativeExecution(`plugin-cold-then-warm-${mode}`),
       schema: "paperclip.native-execution-input.v5" as const, executionMode: "default" as const,
       provider: { kind: "codex" as const, model: null, approvalPolicy: "never" as const },
       planningContext: null, runtimeContext: nativeRuntimeContextFixture(),
@@ -11975,11 +12013,18 @@ describe("runnerd provider runtime wiring", () => {
     const home = join(isolatedStateDirectory, "plugin-account");
     await mkdir(home);
     await writeFile(join(home, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "synthetic-fixture" }), { mode: 0o600 });
-    const task = vi.fn(async (operation: any) => operation.kind === "read_state"
+    let finishWorker = () => {};
+    const task = vi.fn(async (operation: any, options?: { executionContext?: NativeExecutionContext }) => {
+      if (mode === "unsettled-describe" && operation.kind === "describe" && options?.executionContext) {
+        finishWorker = options.executionContext.trackWorker();
+        throw new Error("worker caller timeout");
+      }
+      return operation.kind === "read_state"
       ? { kind: "state", taskId: "replacement-task", state: { ...durableRunnerState(identity, "suspended"),
           outbox: [], pendingTerminalDelivery: null } }
       : { kind: "description", taskId: "replacement-task", launchPreparationVersion: 1,
-          projectAuthCheckVersion: 1, warmTaskVersion: 1, runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } });
+          projectAuthCheckVersion: 1, warmTaskVersion: 1, runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+    });
     const resumed = { ...first, binding: { ...first.binding, runId: `${first.binding.runId}-resumed` } };
     const followup = { ...first, binding: { ...first.binding, runId: `${first.binding.runId}-followup` } };
     const session = { close: vi.fn(async () => undefined) };
@@ -12010,9 +12055,21 @@ describe("runnerd provider runtime wiring", () => {
     const target = { kind: "remote" as const, transport: "sandbox" as const, environmentId: "plugin-environment",
       remoteCwd: ".", leaseId: "replacement-lease", runnerTask: task,
       sandboxLeaseAcquisition: { outcome: "replacement" as const, providerLeaseId: "replacement-task" } };
+    let budget: ReturnType<typeof vi.spyOn> | undefined;
     try {
       await expect(executePaperclipNativeSession({ ...options, execution: resumed, db: dbFor(resumed, first),
         runnerExecutionTarget: target as never })).resolves.toMatchObject({ exitCode: 0 });
+      if (mode === "unsettled-describe") {
+        const runtime = await import("../../vendor/paperclip-runner/index.js");
+        budget = vi.spyOn(runtime, "coldAdmissionTimeoutMs").mockReturnValue(10);
+        await expect(executePaperclipNativeSession({ ...options, execution: followup, db: dbFor(followup, resumed),
+          runnerExecutionTarget: { ...target, leaseId: "followup-lease", sandboxLeaseAcquisition: {
+            outcome: "resumed", providerLeaseId: "replacement-task" } } as never }))
+          .rejects.toMatchObject({ message: "native_startup_cleanup_pending", requiresPreparationStop: false });
+        expect(state.execute).toHaveBeenCalledOnce();
+        expect(rebind).not.toHaveBeenCalled();
+        return;
+      }
       const checkpointReads = task.mock.calls.filter(([operation]) => operation.kind === "read_state").length;
       await expect(executePaperclipNativeSession({ ...options, execution: followup, db: dbFor(followup, resumed),
         runnerExecutionTarget: { ...target, leaseId: "followup-lease", sandboxLeaseAcquisition: {
@@ -12023,6 +12080,8 @@ describe("runnerd provider runtime wiring", () => {
       expect(task.mock.calls.filter(([operation]) => operation.kind === "read_state")).toHaveLength(checkpointReads);
       expect(existsSync(receiptPath)).toBe(false);
     } finally {
+      finishWorker();
+      budget?.mockRestore();
       owner.mockRestore();
       resume.mockRestore();
     }
@@ -12047,6 +12106,35 @@ describe("runnerd provider runtime wiring", () => {
     state.createBackend.mock.calls[0]![1].codexTransportFactory!();
     return state.createTransport.mock.calls[0]![0].stateDirectory!;
   }
+
+  it("rejects a late backend factory after its startup context has finished", async () => {
+    const current = scopedNativeExecution("late-context-factory");
+    state.createBackend.mockClear();
+    const db = leaseDb(current), select = db.select.bind(db);
+    let release!: (value: unknown[]) => void, entered!: () => void;
+    const held = new Promise<unknown[]>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    db.select = ((fields?: Record<string, unknown>) => {
+      if (fields?.contextSnapshot !== heartbeatRuns.contextSnapshot) return select(fields as never);
+      const query = { from: () => query, where: () => query, limit: () => { entered(); return held; } };
+      return query;
+    }) as Db["select"];
+    const context = new NativeExecutionContext(current, 1_000), task = vi.fn();
+    let factory!: ReturnType<typeof createRunnerdBackend>;
+    const opening = context.wait(() => factory = createRunnerdBackend({ db, execution: current, runnerInstanceId: "late-context-runner",
+      executionContext: context, runnerIngressAuthorized: true, runnerExecutionTarget: {
+        kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "lease", runnerTask: task,
+      } }));
+    await Promise.race([started, opening]);
+    const rejected = expect(opening).rejects.toThrow("operator Stop");
+    context.abort(new Error("operator Stop"));
+    await rejected;
+    context.finish();
+    release([{ contextSnapshot: {} }]);
+    await expect(factory).rejects.toThrow("operator Stop");
+    expect(task).not.toHaveBeenCalled();
+    expect(state.createBackend).not.toHaveBeenCalled();
+  });
 
   async function writeRunnerAuthority(root: string, identity: Record<string, unknown>, lifecycle: string) {
     await mkdir(join(root, "control-plane"), { recursive: true });

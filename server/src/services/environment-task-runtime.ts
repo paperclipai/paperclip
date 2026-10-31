@@ -6,10 +6,13 @@ import { readWorkspaceProviderBinding } from "@paperclipai/shared";
 import { settlePluginTaskCredentialHandoff } from "./plugin-task-credential-writeback.js";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { environmentLeases, executionWorkspaces, environments, heartbeatRuns, issues, projects, type Db } from "@paperclipai/db";
-import { freshWorkspaceSchema, environmentTaskOperationSchema, parseEnvironmentTaskResult, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
+import { freshWorkspaceSchema, environmentTaskOperationSchema, parseEnvironmentTaskResult,
+  type HostToWorkerMethodName, type HostToWorkerMethods, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminationReceipt } from "./remote-execution-termination.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { NativeExecutionContext } from "./native-runtime/native-execution-context.js";
+import { pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
 
 export async function pluginEnvironmentSupportsTasks(db: Db, workers: PluginWorkerManager, lease: { companyId: string; metadata: Record<string, unknown> | null }) {
   const metadata = lease.metadata ?? {};
@@ -31,6 +34,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   companyId: string;
   leaseId: string;
   operation: PluginEnvironmentTaskOperation;
+  executionContext?: unknown;
 }) {
   const operation = environmentTaskOperationSchema.parse(input.operation);
   const [row] = await db.select({ lease: environmentLeases, environment: environments, run: heartbeatRuns })
@@ -40,6 +44,13 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     .where(and(eq(environmentLeases.id, input.leaseId), eq(environmentLeases.companyId, input.companyId))).limit(1);
   if (!row || !row.lease.providerLeaseId) throw new Error("Plugin-provided Runner execution lease unavailable");
   const { lease, environment, run } = row;
+  const context = input.executionContext;
+  if (context !== undefined) {
+    if (!(context instanceof NativeExecutionContext) || !run) {
+      throw new Error("native_execution_context_unavailable");
+    }
+    context.assertScope({ companyId: input.companyId, agentId: run.agentId, runId: run.id });
+  }
   const taskId = row.lease.providerLeaseId;
   const metadata = lease.metadata ?? {};
   const probe = metadata.runnerTaskProbe as { runId?: unknown; sessionId?: unknown; expiresAtMs?: unknown } | undefined;
@@ -128,6 +139,19 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       !workers.getWorker(plugin.id)?.supportedMethods.includes("environmentTask")) {
     throw new Error("Plugin-provided Runner execution provider unavailable");
   }
+  const callWorker = async <M extends HostToWorkerMethodName>(method: M, params: HostToWorkerMethods[M][0], timeout?: number): Promise<HostToWorkerMethods[M][1]> => {
+    if (!context) {
+      const cleanup = metadata.runnerTaskStartupCleanup as { contextId?: unknown; requiresPreparationStop?: unknown } | undefined;
+      if (["stop", "status", "complete", "credentials"].includes(operation.kind) && typeof cleanup?.contextId === "string" && typeof cleanup.requiresPreparationStop === "boolean") {
+        return workers.call(plugin.id, method, params, timeout, undefined, undefined, cleanup.contextId);
+      }
+      return timeout === undefined ? workers.call(plugin.id, method, params) : workers.call(plugin.id, method, params, timeout);
+    }
+    const settled = context.trackWorker();
+    const result = await workers.call(plugin.id, method, params, Math.max(1, Math.min(timeout ?? 15_000, context.deadlineAtMs - Date.now())), undefined, settled, context.id);
+    context.assertOpen();
+    return result;
+  };
   const issue = scopesProjects && lease.issueId ? await db.select({ id: issues.id }).from(issues)
     .where(and(eq(issues.id, lease.issueId), eq(issues.companyId, input.companyId))).limit(1).then(rows => rows[0]) : null;
   if (scopesProjects && lease.issueId && !issue) throw new Error("Plugin-provided Runner execution issue unavailable");
@@ -207,11 +231,13 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   }
   if (warmAttachment && operation.kind === "prepare") {
     const i = operation.requirements.identity;
+    const startup = context?.pluginSupported ? { contextId: context.id, deadlineAtMs: context.deadlineAtMs, runId: i.runId } : undefined;
     const marked = await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
       runnerTaskPriorIdentity: { runnerId: prior!.runnerInstanceId, leaseId: prior!.environmentLeaseId, runId: prior!.runId,
         sessionId: prior!.normalizedSessionId, turnId: prior!.turnId, itemId: prior!.itemId },
       runnerTaskIdentity: { runnerId: i.runnerInstanceId, leaseId: i.environmentLeaseId, runId: i.runId,
         sessionId: i.normalizedSessionId, turnId: i.turnId, itemId: i.itemId },
+      ...(startup ? { runnerTaskStartup: startup } : {}),
     })}::jsonb` }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.status, "active"),
       sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`,
       sql`${environmentLeases.metadata}->'runnerTaskIdentity' = ${JSON.stringify(savedIdentity)}::jsonb`)).returning({id:environmentLeases.id});
@@ -219,7 +245,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   }
   try {
     if (operation.kind === "describe" && metadata.runnerTaskReused === true) {
-      const state = parseEnvironmentTaskResult({kind:"status"}, taskId, await workers.call(plugin.id, "environmentTask", {
+      const state = parseEnvironmentTaskResult({kind:"status"}, taskId, await callWorker("environmentTask", {
         driverKey: metadata.driverKey, companyId: input.companyId, environmentId: environment?.id ?? null,
         issueId: lease.issueId, config: driverConfig, taskId, runId: run?.id ?? null, agentId: run?.agentId ?? null,
         projectIds, lease: {providerLeaseId: taskId, metadata}, operation:{kind:"status"},
@@ -238,7 +264,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
           issueId: lease.issueId, executionWorkspaceId: lease.executionWorkspaceId, provider: lease.provider!,
           pluginId: plugin.id, driverKey: metadata.driverKey, config: {}, requestKey: taskId,
           metadata: { driver: "plugin", pluginId: plugin.id, pluginKey: plugin.pluginKey, driverKey: metadata.driverKey, runnerTaskLease: true },
-        }, identity => workers.call(plugin.id, "environmentAcquireLease", {driverKey:replacementDriverKey,
+        }, identity => callWorker("environmentAcquireLease", {driverKey:replacementDriverKey,
           companyId:input.companyId,environmentId:environment!.id,issueId:lease.issueId,config:driverConfig,
           runId:identity.runId,creationOperationId:identity.id,agentId:run!.agentId,adapterType:"paperclip_runner",
           ...(typeof metadata.runnerTaskRequestedExpiresAt === "string" ? {requestedExpiresAt:metadata.runnerTaskRequestedExpiresAt} : {})}));
@@ -275,14 +301,31 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
         return snapshot.credential;
       });
     }
-    const result = await workers.call(plugin.id, "environmentTask", {
+    const executionContext = context?.pluginSupported && ["describe", "prepare", "check_project_auth", "connection"].includes(operation.kind) ? await context.projection({ pluginId: plugin.id,
+      leaseId: lease.id, taskId, environmentId: environment!.id }, async () => {
+      try {
+        const [identity, configuration] = await Promise.all([
+          pluginAgentRuntimeIdentity(db, plugin.id, input.companyId, run!.agentId),
+          pluginRegistryService(db).getConfig(plugin.id, input.companyId),
+        ]);
+        if (!identity) throw new Error("Missing transport binding");
+        return { instanceSecrets: identity.instanceSecrets, configuration: configuration?.configJson ?? {} };
+      } catch { throw new Error("Plugin task transport unavailable"); }
+    }) : undefined;
+    const params = {
       driverKey: metadata.driverKey, companyId: input.companyId, environmentId: environment?.id ?? null,
       issueId: lease.issueId, config: driverConfig,
       taskId, runId: run?.id ?? (activeProbe ? String(probe.runId) : null), agentId: run?.agentId ?? null, projectIds,
       lease: { providerLeaseId: lease.providerLeaseId, metadata: lease.metadata ?? undefined },
       ...(workspaceBinding ? { workspace: workspaceBinding } : {}),
       ...(freshWorkspace && scopesProjects ? { fresh: freshWorkspace } : {}), operation,
-    }, operation.kind === "copilot_metadata" ? Math.max(1, Math.min(40_000, Number(probe?.expiresAtMs) - Date.now())) : 15_000);
+      executionContextSupported: 1 as const,
+      ...(executionContext ? { executionContext } : {}),
+    };
+    const timeout = operation.kind === "copilot_metadata" ? Math.max(1, Math.min(40_000, Number(probe?.expiresAtMs) - Date.now()))
+      : executionContext ? Math.max(1, context!.deadlineAtMs - Date.now()) : 15_000;
+    const result = await callWorker("environmentTask", params, timeout);
+    if (executionContext) context!.assertOpen();
     const parsed = parseEnvironmentTaskResult(operation, taskId, result);
     if (operation.kind === "read_file") {
       const [current] = await db.select({ lease: environmentLeases, run: heartbeatRuns }).from(environmentLeases)
@@ -316,7 +359,9 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     }
     if ((parsed.kind === "status" || parsed.kind === "copilot_metadata") && parsed.executionStopped === true) {
       await db.update(environmentLeases).set({
-        metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskExecutionStopped: true, runnerTaskSessionRetained: parsed.kind === "status" && parsed.sessionStateAvailable === true })}::jsonb`,
+        metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskExecutionStopped: true,
+          runnerTaskSessionRetained: parsed.kind === "status" && parsed.sessionStateAvailable === true,
+          ...(parsed.kind === "status" && parsed.preparationStopped === true ? { runnerTaskPreparationStopped: true } : {}) })}::jsonb`,
       }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId)));
     }
     if (operation.kind === "complete") {
@@ -353,16 +398,22 @@ export async function settleDispatchedEnvironmentTask(db: Db, workers: PluginWor
     metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"runnerTaskRetiring":true}'::jsonb`,
   }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId)))
     .returning({ metadata: environmentLeases.metadata, heartbeatRunId: environmentLeases.heartbeatRunId });
-  if (current?.metadata?.runnerTaskDispatched !== true) {
+  const startup = current?.metadata?.runnerTaskStartup;
+  const startupCleanup = current?.metadata?.runnerTaskStartupCleanup as { requiresPreparationStop?: boolean } | undefined;
+  if (current?.metadata?.runnerTaskDispatched !== true && !startup && !startupCleanup) {
     if (current?.metadata) await settlePluginTaskCredentialHandoff(db, { companyId: lease.companyId, leaseId: lease.id }, current.metadata,
       async () => { throw new Error("Undispatched task must not request credentials"); });
     return current?.metadata?.runnerTaskExecutionStopped === true;
   }
   const scope = { companyId: lease.companyId, leaseId: lease.id };
   try {
+    const contextId = (startupCleanup as { contextId?: unknown } | undefined)?.contextId ?? (startup as { contextId?: unknown } | undefined)?.contextId;
+    const draining = typeof contextId === "string" ? workers.drainStartup?.(contextId) : undefined;
+    void draining?.catch(() => undefined);
     await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "stop" } });
     const state = await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "status" } });
-    if (state.kind !== "status" || state.executionStopped !== true) throw new Error("Plugin Runner termination is unconfirmed");
+    if (state.kind !== "status" || state.executionStopped !== true || ((startup || startupCleanup?.requiresPreparationStop) && state.preparationStopped !== true)) throw new Error("Plugin Runner termination is unconfirmed");
+    await draining;
     await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "complete" } });
     return true;
   } catch {
