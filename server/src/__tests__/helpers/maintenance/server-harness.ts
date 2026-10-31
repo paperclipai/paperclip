@@ -1,4 +1,5 @@
 import { fork } from "node:child_process";
+import type { Server as HttpServer } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { writeFile } from "node:fs/promises";
@@ -14,6 +15,31 @@ async function withDeadline<T>(promise: Promise<T>, ms: number, message: () => s
   try {
     return await Promise.race([promise, delay(ms, undefined, { signal: controller.signal }).then(() => { throw new Error(message()); })]);
   } finally { controller.abort(); }
+}
+
+export async function withMaintenanceProvider<T>(provider: HttpServer, run: (origin: string) => Promise<T>): Promise<T> {
+  let failure: { error: unknown } | undefined;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      provider.once("error", reject);
+      provider.listen(0, "127.0.0.1", () => { provider.off("error", reject); resolve(); });
+    });
+    const address = provider.address();
+    if (!address || typeof address === "string") throw new Error("Maintenance provider failed to bind");
+    return await run(`http://127.0.0.1:${address.port}`);
+  } catch (error) {
+    failure = { error };
+    throw error;
+  } finally {
+    try {
+      const closing = provider.listening ? new Promise<void>((resolve, reject) => provider.close(error => error ? reject(error) : resolve())) : Promise.resolve();
+      provider.closeAllConnections();
+      await closing;
+    } catch (error) {
+      if (failure) throw new AggregateError([failure.error, error], "Maintenance provider work and cleanup failed");
+      throw error;
+    }
+  }
 }
 
 type Snapshot = { idle: { active: number; generation: number }; startup: { phase: string }; outgoingHttpRequests: number; network: { nonDatabaseConnections: number; databaseConnections: number; nonDatabaseBytesWritten: number }; now: number };

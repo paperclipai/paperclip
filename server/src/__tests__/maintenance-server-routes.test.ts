@@ -12,7 +12,7 @@ import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database
 import { maintenanceDatabaseSupport } from "./helpers/maintenance/environment.js";
 import { CLOUD_RUNTIME_IDENTITY_AUDIENCE, CLOUD_RUNTIME_IDENTITY_ISSUER, CLOUD_RUNTIME_IDENTITY_JWS_TYPE } from "../services/cloud-runtime-identity.js";
 import { prepareMaintenanceRuntime } from "./helpers/maintenance/runtime-build.js";
-import { startMaintenanceServer } from "./helpers/maintenance/server-harness.js";
+import { startMaintenanceServer, withMaintenanceProvider } from "./helpers/maintenance/server-harness.js";
 
 let databaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_MAINTENANCE_BOOT_TEST_DATABASE_URL");
 let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
@@ -399,42 +399,41 @@ describeDatabase("assembled maintenance server production wiring", () => {
       res.end(JSON.stringify({ id: 8, number: 8, state: "closed", merged: true, merged_at: new Date().toISOString(),
         title: "Recovered object", html_url: "https://github.com/maintenance/example/pull/8", user: { login: "fixture" } }));
     });
-    await new Promise<void>(resolve => provider.listen(0, "127.0.0.1", resolve));
-    const address = provider.address();
-    if (!address || typeof address === "string") throw new Error("Simulated GitHub failed to bind");
-    const options = { enabled: false, clock: true, githubOrigin: `http://127.0.0.1:${address.port}` };
-    let server: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined = await startMaintenanceServer(databaseUrl!, options);
-    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
-    try {
-      await server.settled();
-      const company = await server.api<{ id: string }>("POST", "/companies", { name: "Shutdown recovery" });
-      await server.api("PATCH", "/instance/settings/experimental", { enableExternalObjects: true });
-      const issue = await server.api<{ id: string }>("POST", `/companies/${company.id}/issues`, {
-        title: "Object survives shutdown", status: "done", description: "https://github.com/maintenance/example/pull/8",
-      });
-      await server.advance(1_000);
-      await Promise.race([firstRequest, delay(10_000).then(() => { throw new Error("Provider claim did not arrive"); })]);
-      const [claimed] = await fixture.$client`select is_terminal, refresh_started_at is not null as claimed from external_objects
-        where company_id=${company.id}`;
-      expect(claimed).toMatchObject({ is_terminal: false, claimed: true });
-      await server.stop(); server = undefined;
-      expect(cancelled).toBe(true);
-      const [stopped] = await fixture.$client`select is_terminal, refresh_started_at, refresh_token from external_objects where company_id=${company.id}`;
-      expect(stopped).toMatchObject({ is_terminal: false, refresh_started_at: null, refresh_token: null });
-      server = await startMaintenanceServer(databaseUrl!, options);
-      await settleClock(server);
-      const [recovered] = await fixture.$client`select is_terminal, status_key from external_objects where company_id=${company.id}`;
-      expect(recovered).toMatchObject({ is_terminal: true, status_key: "merged" });
-      expect(providerRequests).toEqual(["/repos/maintenance/example/pulls/8", "/repos/maintenance/example/pulls/8"]);
-      await writeFile(path.join(server.directory, "shutdown-measurement.json"), JSON.stringify({ phase: "actual-shutdown-inflight-and-restart",
-        companyId: company.id, issueId: issue.id, claimed, cancelled, stopped, recovered, providerRequests,
-        boundary: "first simulated HTTP response deliberately withheld; actual shutdown abort/settlement and real restart reconstruction",
-        frames: server.proxy.frames,
-      }, null, 2));
-    } finally {
-      await server?.stop(); await fixture.$client.end(); provider.closeAllConnections();
-      await new Promise<void>(resolve => provider.close(() => resolve()));
-    }
+    await withMaintenanceProvider(provider, async origin => {
+      const options = { enabled: false, clock: true, githubOrigin: origin };
+      const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+      let server: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
+      try {
+        server = await startMaintenanceServer(databaseUrl!, options);
+        await server.settled();
+        const company = await server.api<{ id: string }>("POST", "/companies", { name: "Shutdown recovery" });
+        await server.api("PATCH", "/instance/settings/experimental", { enableExternalObjects: true });
+        const issue = await server.api<{ id: string }>("POST", `/companies/${company.id}/issues`, {
+          title: "Object survives shutdown", status: "done", description: "https://github.com/maintenance/example/pull/8",
+        });
+        await server.advance(1_000);
+        await Promise.race([firstRequest, delay(10_000).then(() => { throw new Error("Provider claim did not arrive"); })]);
+        const [claimed] = await fixture.$client`select is_terminal, refresh_started_at is not null as claimed from external_objects
+          where company_id=${company.id}`;
+        expect(claimed).toMatchObject({ is_terminal: false, claimed: true });
+        await server.stop(); server = undefined;
+        expect(cancelled).toBe(true);
+        const [stopped] = await fixture.$client`select is_terminal, refresh_started_at, refresh_token from external_objects where company_id=${company.id}`;
+        expect(stopped).toMatchObject({ is_terminal: false, refresh_started_at: null, refresh_token: null });
+        server = await startMaintenanceServer(databaseUrl!, options);
+        await settleClock(server);
+        const [recovered] = await fixture.$client`select is_terminal, status_key from external_objects where company_id=${company.id}`;
+        expect(recovered).toMatchObject({ is_terminal: true, status_key: "merged" });
+        expect(providerRequests).toEqual(["/repos/maintenance/example/pulls/8", "/repos/maintenance/example/pulls/8"]);
+        await writeFile(path.join(server.directory, "shutdown-measurement.json"), JSON.stringify({ phase: "actual-shutdown-inflight-and-restart",
+          companyId: company.id, issueId: issue.id, claimed, cancelled, stopped, recovered, providerRequests,
+          boundary: "first simulated HTTP response deliberately withheld; actual shutdown abort/settlement and real restart reconstruction",
+          frames: server.proxy.frames,
+        }, null, 2));
+      } finally {
+        try { await server?.stop(); } finally { await fixture.$client.end(); }
+      }
+    });
   }, 150_000);
 
   it("processes the first ordinary external-object producer committed during idle drain and becomes quiet again", async () => {
@@ -451,93 +450,92 @@ describeDatabase("assembled maintenance server production wiring", () => {
       res.end(JSON.stringify({ id: number, number, state: "closed", merged: true, merged_at: new Date().toISOString(),
         title: "Controlled merged pull request", html_url: `https://github.com/maintenance/example/pull/${number}`, user: { login: "fixture" } }));
     });
-    await new Promise<void>(resolve => provider.listen(0, "127.0.0.1", resolve));
-    const providerAddress = provider.address();
-    if (!providerAddress || typeof providerAddress === "string") throw new Error("Simulated GitHub failed to bind");
-    const server = await startMaintenanceServer(databaseUrl!, { enabled: false, clock: true,
-      githubOrigin: `http://127.0.0.1:${providerAddress.port}` });
-    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
-    let reserved: Awaited<ReturnType<typeof fixture.$client.reserve>> | undefined;
-    let pendingIssue: Promise<{ id: string }> | undefined;
-    try {
-      await server.settled();
-      const company = await server.api<{ id: string }>("POST", "/companies", { name: "Drain activation" });
-      await server.api("PATCH", "/instance/settings/experimental", { enableExternalObjects: true });
-      await server.advance(30_000); await server.settled();
-      await fixture.$client.unsafe(`create or replace function maintenance_hold_issue() returns trigger language plpgsql as $$begin
-        if new.title = 'First write during idle drain' then perform pg_advisory_xact_lock(913701); end if;
-        return new; end$$`);
-      await fixture.$client.unsafe(`create trigger maintenance_hold_issue before insert on issues for each row execute function maintenance_hold_issue()`);
-      reserved = await fixture.$client.reserve();
-      await reserved`select pg_advisory_lock(913701)`;
-      const before = server.proxy.queries.length;
-      pendingIssue = server.api<{ id: string }>("POST", `/companies/${company.id}/issues`, {
-        title: "First write during idle drain", description: "https://github.com/maintenance/example/pull/1", status: "done",
-      });
-      void pendingIssue.catch(() => {});
-      await expect.poll(() => server.proxy.queries.slice(before).some(query => /insert into "issues"/.test(query.sql)), { timeout: 10_000 }).toBe(true);
-      await server.drain();
-      await reserved`select pg_advisory_unlock(913701)`; reserved.release(); reserved = undefined;
-      const issue = await pendingIssue;
-      await server.settled();
-      expect(providerRequests).toEqual([]);
-      const [waiting] = await fixture.$client`select eo.company_id, eo.is_terminal, eo.last_resolved_at from external_objects eo
-        join external_object_mentions em on em.object_id=eo.id where em.source_issue_id=${issue.id}`;
-      expect(waiting).toMatchObject({ company_id: company.id, is_terminal: false, last_resolved_at: null });
-      const draining = server.proxy.queries.length;
-      for (let step = 0; step < 4; step++) { await server.advance(30_000); await server.settled(10); }
-      expect(server.proxy.queries.length).toBe(draining);
-      await server.resume(); await server.advance(30_000); await server.settled();
-      const [resolved] = await fixture.$client`select eo.company_id, eo.is_terminal, eo.status_key, floor(extract(epoch from eo.last_resolved_at) * 1000)::float8 as resolved_ms from external_objects eo
-        join external_object_mentions em on em.object_id=eo.id where em.source_issue_id=${issue.id}`;
-      expect(resolved).toMatchObject({ company_id: company.id, is_terminal: true, status_key: "merged", resolved_ms: expect.any(Number) });
-      expect(resolved!.resolved_ms).toBeGreaterThan(0);
-      expect(resolved!.resolved_ms).toBeLessThanOrEqual((await server.snapshot()).now);
-      expect(providerRequests).toEqual(["/repos/maintenance/example/pulls/1"]);
-      const settledQueries = server.proxy.queries.length, network = await server.snapshot();
-      for (let step = 0; step < 240; step++) { await server.advance(30_000); await server.settled(10); }
-      expect(server.proxy.queries.length).toBe(settledQueries);
-      expect(providerRequests).toHaveLength(1);
-      expect((await server.snapshot()).outgoingHttpRequests).toBe(network.outgoingHttpRequests);
-      await writeFile(path.join(server.directory, "external-object-measurement.json"), JSON.stringify({
-        phase: "ordinary-issue-producer-commit-during-drain", providerBoundary: "simulated GitHub HTTP; real application/database/transactions",
-        companyId: company.id, issueId: issue.id, resolved, drainedClockMs: 120_000, drainedQueries: 0,
-        postResolveClockMs: 7_200_000, postResolveQueries: 0, providerRequests, frames: server.proxy.frames, network,
-      }, null, 2));
+    await withMaintenanceProvider(provider, async origin => {
+      const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+      let reserved: Awaited<ReturnType<typeof fixture.$client.reserve>> | undefined;
+      let pendingIssue: Promise<{ id: string }> | undefined;
+      let runtime: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
+      try {
+        const server = runtime = await startMaintenanceServer(databaseUrl!, { enabled: false, clock: true,
+        githubOrigin: origin });
+        await server.settled();
+        const company = await server.api<{ id: string }>("POST", "/companies", { name: "Drain activation" });
+        await server.api("PATCH", "/instance/settings/experimental", { enableExternalObjects: true });
+        await server.advance(30_000); await server.settled();
+        await fixture.$client.unsafe(`create or replace function maintenance_hold_issue() returns trigger language plpgsql as $$begin
+          if new.title = 'First write during idle drain' then perform pg_advisory_xact_lock(913701); end if;
+          return new; end$$`);
+        await fixture.$client.unsafe(`create trigger maintenance_hold_issue before insert on issues for each row execute function maintenance_hold_issue()`);
+        reserved = await fixture.$client.reserve();
+        await reserved`select pg_advisory_lock(913701)`;
+        const before = server.proxy.queries.length;
+        pendingIssue = server.api<{ id: string }>("POST", `/companies/${company.id}/issues`, {
+          title: "First write during idle drain", description: "https://github.com/maintenance/example/pull/1", status: "done",
+        });
+        void pendingIssue.catch(() => {});
+        await expect.poll(() => server.proxy.queries.slice(before).some(query => /insert into "issues"/.test(query.sql)), { timeout: 10_000 }).toBe(true);
+        await server.drain();
+        await reserved`select pg_advisory_unlock(913701)`; reserved.release(); reserved = undefined;
+        const issue = await pendingIssue;
+        await server.settled();
+        expect(providerRequests).toEqual([]);
+        const [waiting] = await fixture.$client`select eo.company_id, eo.is_terminal, eo.last_resolved_at from external_objects eo
+          join external_object_mentions em on em.object_id=eo.id where em.source_issue_id=${issue.id}`;
+        expect(waiting).toMatchObject({ company_id: company.id, is_terminal: false, last_resolved_at: null });
+        const draining = server.proxy.queries.length;
+        for (let step = 0; step < 4; step++) { await server.advance(30_000); await server.settled(10); }
+        expect(server.proxy.queries.length).toBe(draining);
+        await server.resume(); await server.advance(30_000); await server.settled();
+        const [resolved] = await fixture.$client`select eo.company_id, eo.is_terminal, eo.status_key, floor(extract(epoch from eo.last_resolved_at) * 1000)::float8 as resolved_ms from external_objects eo
+          join external_object_mentions em on em.object_id=eo.id where em.source_issue_id=${issue.id}`;
+        expect(resolved).toMatchObject({ company_id: company.id, is_terminal: true, status_key: "merged", resolved_ms: expect.any(Number) });
+        expect(resolved!.resolved_ms).toBeGreaterThan(0);
+        expect(resolved!.resolved_ms).toBeLessThanOrEqual((await server.snapshot()).now);
+        expect(providerRequests).toEqual(["/repos/maintenance/example/pulls/1"]);
+        const settledQueries = server.proxy.queries.length, network = await server.snapshot();
+        for (let step = 0; step < 240; step++) { await server.advance(30_000); await server.settled(10); }
+        expect(server.proxy.queries.length).toBe(settledQueries);
+        expect(providerRequests).toHaveLength(1);
+        expect((await server.snapshot()).outgoingHttpRequests).toBe(network.outgoingHttpRequests);
+        await writeFile(path.join(server.directory, "external-object-measurement.json"), JSON.stringify({
+          phase: "ordinary-issue-producer-commit-during-drain", providerBoundary: "simulated GitHub HTTP; real application/database/transactions",
+          companyId: company.id, issueId: issue.id, resolved, drainedClockMs: 120_000, drainedQueries: 0,
+          postResolveClockMs: 7_200_000, postResolveQueries: 0, providerRequests, frames: server.proxy.frames, network,
+        }, null, 2));
 
-      const retryIssue = await server.api<{ id: string }>("POST", `/companies/${company.id}/issues`, {
-        title: "Retry after idle drain", description: "https://github.com/maintenance/example/pull/2", status: "done",
-      });
-      await server.advance(1_000); await server.settled(100);
-      const [failed] = await fixture.$client`select eo.last_error_code, floor(extract(epoch from eo.next_refresh_at) * 1000)::float8 as next_ms
-        from external_objects eo join external_object_mentions em on em.object_id=eo.id where em.source_issue_id=${retryIssue.id}`;
-      expect(failed!.last_error_code).toBe("github_unreachable");
-      expect(failed!.next_ms).toBeGreaterThan((await server.snapshot()).now);
-      await server.drain(); await server.settled();
-      const retryDrainQueries = server.proxy.queries.length;
-      for (let step = 0; step < 4; step++) { await server.advance(30_000); await server.settled(10); }
-      expect(server.proxy.queries.length).toBe(retryDrainQueries);
-      expect(providerRequests.filter(url => url.endsWith("/2"))).toHaveLength(1);
-      await server.resume(); await server.advance(30_000); await server.settled();
-      const [retried] = await fixture.$client`select eo.is_terminal, eo.status_key, eo.last_error_code from external_objects eo
-        join external_object_mentions em on em.object_id=eo.id where em.source_issue_id=${retryIssue.id}`;
-      expect(retried).toMatchObject({ is_terminal: true, status_key: "merged", last_error_code: null });
-      expect(providerRequests.filter(url => url.endsWith("/2"))).toHaveLength(2);
-      const retrySettled = server.proxy.queries.length;
-      for (let step = 0; step < 20; step++) { await server.advance(30_000); await server.settled(10); }
-      expect(server.proxy.queries.length).toBe(retrySettled);
-      await writeFile(path.join(server.directory, "retry-measurement.json"), JSON.stringify({ phase: "provider-failure-retry-across-drain",
-        providerBoundary: "simulated GitHub HTTP 503 then merged", retryIssueId: retryIssue.id, failed, retried,
-        drainedClockMs: 120_000, drainedQueries: 0, quietAfterRetryMs: 600_000, quietAfterRetryQueries: 0,
-        providerRequests, frames: server.proxy.frames }, null, 2));
-    } finally {
-      if (reserved) { await reserved`select pg_advisory_unlock(913701)`.catch(() => {}); reserved.release(); }
-      await pendingIssue?.catch(() => {});
-      await fixture.$client.unsafe("drop trigger if exists maintenance_hold_issue on issues").catch(() => {});
-      await fixture.$client.unsafe("drop function if exists maintenance_hold_issue()").catch(() => {});
-      await fixture.$client.end(); await server.stop();
-      provider.closeAllConnections(); await new Promise<void>(resolve => provider.close(() => resolve()));
-    }
+        const retryIssue = await server.api<{ id: string }>("POST", `/companies/${company.id}/issues`, {
+          title: "Retry after idle drain", description: "https://github.com/maintenance/example/pull/2", status: "done",
+        });
+        await server.advance(1_000); await server.settled(100);
+        const [failed] = await fixture.$client`select eo.last_error_code, floor(extract(epoch from eo.next_refresh_at) * 1000)::float8 as next_ms
+          from external_objects eo join external_object_mentions em on em.object_id=eo.id where em.source_issue_id=${retryIssue.id}`;
+        expect(failed!.last_error_code).toBe("github_unreachable");
+        expect(failed!.next_ms).toBeGreaterThan((await server.snapshot()).now);
+        await server.drain(); await server.settled();
+        const retryDrainQueries = server.proxy.queries.length;
+        for (let step = 0; step < 4; step++) { await server.advance(30_000); await server.settled(10); }
+        expect(server.proxy.queries.length).toBe(retryDrainQueries);
+        expect(providerRequests.filter(url => url.endsWith("/2"))).toHaveLength(1);
+        await server.resume(); await server.advance(30_000); await server.settled();
+        const [retried] = await fixture.$client`select eo.is_terminal, eo.status_key, eo.last_error_code from external_objects eo
+          join external_object_mentions em on em.object_id=eo.id where em.source_issue_id=${retryIssue.id}`;
+        expect(retried).toMatchObject({ is_terminal: true, status_key: "merged", last_error_code: null });
+        expect(providerRequests.filter(url => url.endsWith("/2"))).toHaveLength(2);
+        const retrySettled = server.proxy.queries.length;
+        for (let step = 0; step < 20; step++) { await server.advance(30_000); await server.settled(10); }
+        expect(server.proxy.queries.length).toBe(retrySettled);
+        await writeFile(path.join(server.directory, "retry-measurement.json"), JSON.stringify({ phase: "provider-failure-retry-across-drain",
+          providerBoundary: "simulated GitHub HTTP 503 then merged", retryIssueId: retryIssue.id, failed, retried,
+          drainedClockMs: 120_000, drainedQueries: 0, quietAfterRetryMs: 600_000, quietAfterRetryQueries: 0,
+          providerRequests, frames: server.proxy.frames }, null, 2));
+      } finally {
+        if (reserved) { await reserved`select pg_advisory_unlock(913701)`.catch(() => {}); reserved.release(); }
+        await pendingIssue?.catch(() => {});
+        await fixture.$client.unsafe("drop trigger if exists maintenance_hold_issue on issues").catch(() => {});
+        await fixture.$client.unsafe("drop function if exists maintenance_hold_issue()").catch(() => {});
+        try { await fixture.$client.end(); } finally { await runtime?.stop(); }
+      }
+    });
   }, 150_000);
 
   it("discovers and acknowledges a sealed GitHub event after the first ordinary connection activation", async () => {
@@ -568,51 +566,50 @@ describeDatabase("assembled maintenance server production wiring", () => {
       res.end(JSON.stringify({ leaseId: "maintenance-lease", eventWakeVersion: 1, sealed: { v: 1, alg: algorithm,
         purpose: "events", provider: "github", profile: "github.code", epk: epk.toString("base64url"), iv: iv.toString("base64url"), ct: ct.toString("base64url") } }));
     });
-    await new Promise<void>(resolve => broker.listen(0, "127.0.0.1", resolve));
-    const address = broker.address();
-    if (!address || typeof address === "string") throw new Error("Simulated Cloud broker failed to bind");
-    const server = await startMaintenanceServer(databaseUrl!, { enabled: false, clock: true,
-      githubOrigin: `http://127.0.0.1:${address.port}`, connector: {
-      origin: `http://127.0.0.1:${address.port}`, signPrivateKey: signing.privateKey.export({ format: "jwk" }).d!,
-      sealPrivateKey: sealing.privateKey.export({ format: "jwk" }).d!,
-    } });
-    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
-    try {
-      await server.settled(); expect(requests).toEqual([]);
-      const company = await server.api<{ id: string }>("POST", "/companies", { name: "GitHub event ingress" });
-      const [application] = await fixture.insert(toolApplications).values({ companyId: company.id, applicationKey: randomUUID(), name: "GitHub", type: "mcp_http", status: "active" }).returning();
-      const [connection] = await fixture.insert(toolConnections).values({ companyId: company.id, applicationId: application!.id,
-        uid: randomUUID(), name: "GitHub", status: "active", enabled: false, transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user",
-        config: { url: "https://api.github.com/mcp", sourceTemplateKey: "github", oauth: { connectorProfile: "github.code" } }, transportConfig: {} }).returning();
-      const now = (await server.snapshot()).now;
-      const [grant] = await fixture.insert(connectionGrants).values({ companyId: company.id, connectionId: connection!.id,
-        kind: "user", subjectUserId: "maintenance-owner", status: "active", providerTenant: {
-          oauth: { accessTokenExpiresAt: new Date(now + 8 * 3_600_000).toISOString(), refreshedAt: new Date(now).toISOString() },
-          github: { userId: "42", login: "fixture", installationIds: ["101"], installationCount: 1, repositoryCount: 1,
-            repositorySelection: "all", installationOwnerLogins: ["fixture"], accessRevision: randomUUID(), lastAccessRefreshAt: new Date(now).toISOString(), webhookHealth: "healthy" },
-        } }).returning();
-      event = { id: "maintenance-delivery", provider: "github", event: "pull_request", action: "closed", installationId: "101", repositoryId: "99",
-        createdAt: new Date(now).toISOString(), bindingIds: [`${grant!.id}_101`], payload: { repository: "maintenance/example", number: 7,
-          url: "https://github.com/maintenance/example/pull/7", state: "closed", merged: true, mergedAt: new Date(now).toISOString() } };
-      await server.api("PATCH", `/tool-connections/${connection!.id}`, { enabled: true });
-      await server.advance(5_000); await settleClock(server);
-      const [delivery] = await fixture.$client`select company_id, status, attempts, processed_at is not null as processed, normalized_payload
-        from connection_event_deliveries where provider_delivery_id='maintenance-delivery'`;
-      expect(delivery).toMatchObject({ company_id: company.id, status: "processed", attempts: 1, processed: true,
-        normalized_payload: expect.objectContaining({ repository: "maintenance/example", number: 7, merged: true }) });
-      expect(acknowledgements).toHaveLength(1);
-      const baseline = server.proxy.queries.length, requestCount = requests.length;
-      for (let step = 0; step < 4; step++) { await server.advance(30_000); await server.settled(10); }
-      expect(server.proxy.queries.length).toBe(baseline); expect(requests).toHaveLength(requestCount);
-      await writeFile(path.join(server.directory, "github-measurement.json"), JSON.stringify({ phase: "ordinary-connection-activation-sealed-event",
-        companyId: company.id, connectionId: connection!.id, grantId: grant!.id, delivery, requests, acknowledgements,
-        quietClockMs: 120_000, quietQueries: 0, frames: server.proxy.frames,
-        providerBoundary: "simulated Cloud HTTP validates real Ed25519 request and seals X25519/AES-GCM event; actual runtime decrypts/persists/acks",
-      }, null, 2));
-    } finally {
-      await fixture.$client.end(); await server.stop(); broker.closeAllConnections();
-      await new Promise<void>(resolve => broker.close(() => resolve()));
-    }
+    await withMaintenanceProvider(broker, async origin => {
+      const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+      let runtime: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
+      try {
+        const server = runtime = await startMaintenanceServer(databaseUrl!, { enabled: false, clock: true,
+        githubOrigin: origin, connector: {
+        origin: origin, signPrivateKey: signing.privateKey.export({ format: "jwk" }).d!,
+        sealPrivateKey: sealing.privateKey.export({ format: "jwk" }).d!,
+      } });
+        await server.settled(); expect(requests).toEqual([]);
+        const company = await server.api<{ id: string }>("POST", "/companies", { name: "GitHub event ingress" });
+        const [application] = await fixture.insert(toolApplications).values({ companyId: company.id, applicationKey: randomUUID(), name: "GitHub", type: "mcp_http", status: "active" }).returning();
+        const [connection] = await fixture.insert(toolConnections).values({ companyId: company.id, applicationId: application!.id,
+          uid: randomUUID(), name: "GitHub", status: "active", enabled: false, transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user",
+          config: { url: "https://api.github.com/mcp", sourceTemplateKey: "github", oauth: { connectorProfile: "github.code" } }, transportConfig: {} }).returning();
+        const now = (await server.snapshot()).now;
+        const [grant] = await fixture.insert(connectionGrants).values({ companyId: company.id, connectionId: connection!.id,
+          kind: "user", subjectUserId: "maintenance-owner", status: "active", providerTenant: {
+            oauth: { accessTokenExpiresAt: new Date(now + 8 * 3_600_000).toISOString(), refreshedAt: new Date(now).toISOString() },
+            github: { userId: "42", login: "fixture", installationIds: ["101"], installationCount: 1, repositoryCount: 1,
+              repositorySelection: "all", installationOwnerLogins: ["fixture"], accessRevision: randomUUID(), lastAccessRefreshAt: new Date(now).toISOString(), webhookHealth: "healthy" },
+          } }).returning();
+        event = { id: "maintenance-delivery", provider: "github", event: "pull_request", action: "closed", installationId: "101", repositoryId: "99",
+          createdAt: new Date(now).toISOString(), bindingIds: [`${grant!.id}_101`], payload: { repository: "maintenance/example", number: 7,
+            url: "https://github.com/maintenance/example/pull/7", state: "closed", merged: true, mergedAt: new Date(now).toISOString() } };
+        await server.api("PATCH", `/tool-connections/${connection!.id}`, { enabled: true });
+        await server.advance(5_000); await settleClock(server);
+        const [delivery] = await fixture.$client`select company_id, status, attempts, processed_at is not null as processed, normalized_payload
+          from connection_event_deliveries where provider_delivery_id='maintenance-delivery'`;
+        expect(delivery).toMatchObject({ company_id: company.id, status: "processed", attempts: 1, processed: true,
+          normalized_payload: expect.objectContaining({ repository: "maintenance/example", number: 7, merged: true }) });
+        expect(acknowledgements).toHaveLength(1);
+        const baseline = server.proxy.queries.length, requestCount = requests.length;
+        for (let step = 0; step < 4; step++) { await server.advance(30_000); await server.settled(10); }
+        expect(server.proxy.queries.length).toBe(baseline); expect(requests).toHaveLength(requestCount);
+        await writeFile(path.join(server.directory, "github-measurement.json"), JSON.stringify({ phase: "ordinary-connection-activation-sealed-event",
+          companyId: company.id, connectionId: connection!.id, grantId: grant!.id, delivery, requests, acknowledgements,
+          quietClockMs: 120_000, quietQueries: 0, frames: server.proxy.frames,
+          providerBoundary: "simulated Cloud HTTP validates real Ed25519 request and seals X25519/AES-GCM event; actual runtime decrypts/persists/acks",
+        }, null, 2));
+      } finally {
+        try { await fixture.$client.end(); } finally { await runtime?.stop(); }
+      }
+    });
   }, 150_000);
 
   it("reacts to the first ordinary status-card source write and accepts authorized controlled summarizer output", async () => {
@@ -765,115 +762,113 @@ describeDatabase("assembled maintenance server production wiring", () => {
       res.end(JSON.stringify({ id: 39, number: 39, state: "closed", merged: true, merged_at: new Date().toISOString(),
         title: "Controlled merged confirmation", html_url: "https://github.com/maintenance/example/pull/39", user: { login: "fixture" } }));
     });
-    await new Promise<void>(resolve => provider.listen(0, "127.0.0.1", resolve));
-    const address = provider.address();
-    if (!address || typeof address === "string") throw new Error("Simulated GitHub failed to bind");
-    const server = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true,
-      githubOrigin: `http://127.0.0.1:${address.port}` });
-    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
-    try {
-      await server.settled();
-      const company = await server.api<{ id: string }>("POST", "/companies", { name: "Merge ingress" });
-      const issue = await server.api<{ id: string }>("POST", `/companies/${company.id}/issues`, { title: "Merge task", status: "todo" });
-      const card = await server.api<{ id: string }>("POST", `/issues/${issue.id}/interactions`, {
-        kind: "request_confirmation", title: "Merge maintenance/example#39?", resolverPolicy: "human_only",
-        continuationPolicy: "none", payload: { version: 1, prompt: "Merge the PR?" },
-      });
-      await server.advance(30_000); await settleClock(server);
-      const [accepted] = await fixture.$client`select company_id, status, resolved_at is not null as resolved
-        from issue_thread_interactions where id=${card.id}`;
-      expect(accepted).toMatchObject({ company_id: company.id, status: "accepted", resolved: true });
-      const audit = await fixture.$client`select actor_id, details from activity_log where company_id=${company.id}
-        and action='issue.thread_interaction_accepted'`;
-      expect(audit).toEqual([expect.objectContaining({ actor_id: "system:pr-merged", details: expect.objectContaining({ interactionId: card.id }) })]);
-      expect(providerRequests).toEqual(["/repos/maintenance/example/pulls/39"]);
-      await writeFile(path.join(server.directory, "confirmation-measurement.json"), JSON.stringify({
-        phase: "ordinary-merge-confirmation", companyId: company.id, issueId: issue.id, interactionId: card.id,
-        accepted, audit, providerRequests, frames: server.proxy.frames,
-        providerBoundary: "simulated GitHub HTTP; actual production worker and interaction acceptance",
-      }, null, 2));
-    } finally {
-      await fixture.$client.end(); await server.stop(); provider.closeAllConnections();
-      await new Promise<void>(resolve => provider.close(() => resolve()));
-    }
+    await withMaintenanceProvider(provider, async origin => {
+      const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+      let runtime: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
+      try {
+        const server = runtime = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true,
+        githubOrigin: origin });
+        await server.settled();
+        const company = await server.api<{ id: string }>("POST", "/companies", { name: "Merge ingress" });
+        const issue = await server.api<{ id: string }>("POST", `/companies/${company.id}/issues`, { title: "Merge task", status: "todo" });
+        const card = await server.api<{ id: string }>("POST", `/issues/${issue.id}/interactions`, {
+          kind: "request_confirmation", title: "Merge maintenance/example#39?", resolverPolicy: "human_only",
+          continuationPolicy: "none", payload: { version: 1, prompt: "Merge the PR?" },
+        });
+        await server.advance(30_000); await settleClock(server);
+        const [accepted] = await fixture.$client`select company_id, status, resolved_at is not null as resolved
+          from issue_thread_interactions where id=${card.id}`;
+        expect(accepted).toMatchObject({ company_id: company.id, status: "accepted", resolved: true });
+        const audit = await fixture.$client`select actor_id, details from activity_log where company_id=${company.id}
+          and action='issue.thread_interaction_accepted'`;
+        expect(audit).toEqual([expect.objectContaining({ actor_id: "system:pr-merged", details: expect.objectContaining({ interactionId: card.id }) })]);
+        expect(providerRequests).toEqual(["/repos/maintenance/example/pulls/39"]);
+        await writeFile(path.join(server.directory, "confirmation-measurement.json"), JSON.stringify({
+          phase: "ordinary-merge-confirmation", companyId: company.id, issueId: issue.id, interactionId: card.id,
+          accepted, audit, providerRequests, frames: server.proxy.frames,
+          providerBoundary: "simulated GitHub HTTP; actual production worker and interaction acceptance",
+        }, null, 2));
+      } finally {
+        try { await fixture.$client.end(); } finally { await runtime?.stop(); }
+      }
+    });
   }, 150_000);
 
   it("projects the first ordinary routine completion in the actual suppressed Cloud runtime", async () => {
     await clearDatabase();
-    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
     const companyId = randomUUID(), agentId = randomUUID();
-    await fixture.insert(companies).values({ id: companyId, name: "Routine ingress", issuePrefix: "MRT",
-      defaultResponsibleUserId: "maintenance-board", requireBoardApprovalForNewAgents: false });
-    await fixture.insert(agents).values({ id: agentId, companyId, name: "Suppressed routine worker", status: "active",
-      lifecycleState: "ready", adapterType: "process", adapterConfig: { command: "/usr/bin/false" } });
     const pair = generateKeyPairSync("ed25519");
     const publicJwk = { ...pair.publicKey.export({ format: "jwk" }), kid: "maintenance-routine-key", use: "sig", alg: "EdDSA" };
     const storageRequests: string[] = [];
     const storage = createServer((req, res) => { storageRequests.push(req.url!); res.statusCode = 500; res.end("Unexpected S3 request in routine fixture"); });
-    await new Promise<void>(resolve => storage.listen(0, "127.0.0.1", resolve));
-    const address = storage.address();
-    if (!address || typeof address === "string") throw new Error("Simulated S3 failed to bind");
-    const server = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true,
-      cloud: { jwks: JSON.stringify({ keys: [publicJwk] }), s3Origin: `http://127.0.0.1:${address.port}`, standby: false } });
-    try {
-      await server.settled();
-      const routine = await server.api<{ id: string }>("POST", `/companies/${companyId}/routines`, {
-        title: "Ordinary projected routine", assigneeAgentId: agentId, concurrencyPolicy: "always_enqueue",
-      });
-      const run = await server.api<{ id: string; linkedIssueId: string; status: string }>("POST", `/routines/${routine.id}/run`, {
-        source: "manual", idempotencyKey: randomUUID(),
-      });
-      expect(run.status).toBe("issue_created");
-      const [before] = await fixture.$client`select status, completed_at from routine_runs where id=${run.id}`;
-      expect(before).toMatchObject({ status: "issue_created", completed_at: null });
-      await fixture.$client.unsafe(`create or replace function maintenance_hold_completion() returns trigger language plpgsql as $$begin
-        if new.id = '${run.linkedIssueId}'::uuid and new.status = 'done' then perform pg_advisory_xact_lock(913702); end if;
-        return new; end$$`);
-      await fixture.$client.unsafe(`create trigger maintenance_hold_completion before update on issues for each row execute function maintenance_hold_completion()`);
-      const reserved = await fixture.$client.reserve();
-      await reserved`select pg_advisory_lock(913702)`;
-      const writesBefore = server.proxy.queries.length;
-      const completing = server.updateIssue({ id: run.linkedIssueId, status: "done" });
-      void completing.catch(() => {});
+    await withMaintenanceProvider(storage, async origin => {
+      const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+      let runtime: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
       try {
-        await expect.poll(() => server.proxy.queries.slice(writesBefore).some(query => /update "issues"/.test(query.sql)), { timeout: 10_000 }).toBe(true);
-        await server.drain();
-      } finally { await reserved`select pg_advisory_unlock(913702)`; reserved.release(); }
-      await completing; await server.advance(30_000); await settleClock(server);
-      const [drained] = await fixture.$client`select status, completed_at from routine_runs where id=${run.id}`;
-      expect(drained).toMatchObject({ status: "issue_created", completed_at: null });
-      await server.resume(); await server.advance(30_000); await settleClock(server);
-      const [projected] = await fixture.$client`select rr.company_id, rr.status, rr.completed_at is not null as completed,
-        i.status as issue_status from routine_runs rr join issues i on i.id=rr.linked_issue_id where rr.id=${run.id}`;
-      expect(projected).toMatchObject({ company_id: companyId, status: "completed", completed: true, issue_status: "done" });
-      const restoredRun = await server.api<{ id: string; linkedIssueId: string }>("POST", `/routines/${routine.id}/run`, {
-        source: "manual", idempotencyKey: randomUUID(),
-      });
-      const cancel = await server.api<{ hold: { id: string } }>("POST", `/issues/${restoredRun.linkedIssueId}/tree-holds`, { mode: "cancel", reason: "Ordinary cancel before restore" });
-      await server.advance(1_000); await settleClock(server);
-      const [cancelled] = await fixture.$client`select status from routine_runs where id=${restoredRun.id}`;
-      expect(cancelled!.status).toBe("failed");
-      await server.api("POST", `/issues/${restoredRun.linkedIssueId}/tree-holds`, { mode: "restore", reason: "Ordinary restore" });
-      await server.advance(1_000); await settleClock(server);
-      const [restored] = await fixture.$client`select rr.status, rr.completed_at, rr.failure_reason, i.status as issue_status
-        from routine_runs rr join issues i on i.id=rr.linked_issue_id where rr.id=${restoredRun.id}`;
-      expect(restored).toMatchObject({ status: "issue_created", completed_at: null, failure_reason: null, issue_status: "todo" });
-      const [cancelHold] = await fixture.$client`select status from issue_tree_holds where id=${cancel.hold.id}`;
-      expect(cancelHold!.status).toBe("released");
-      const [executions] = await fixture.$client`select count(*)::integer as count from heartbeat_runs where company_id=${companyId}`;
-      expect(executions!.count).toBe(0);
-      expect(storageRequests).toEqual([]);
-      await writeFile(path.join(server.directory, "routine-measurement.json"), JSON.stringify({
-        phase: "ordinary-routine-service-completion-during-drain", completionBoundary: "actual issueService.update with runtime-owned DB; excludes redundant route projection hook", companyId, routineId: routine.id, runId: run.id,
-        before, drained, projected, restoredRun, cancelled, restored, cancelHold, executions: executions!.count, storageRequests,
-        suppression: "PAPERCLIP_IN_WORKTREE; actual production policy", frames: server.proxy.frames,
-      }, null, 2));
-    } finally {
-      await fixture.$client.unsafe("drop trigger if exists maintenance_hold_completion on issues").catch(() => {});
-      await fixture.$client.unsafe("drop function if exists maintenance_hold_completion()").catch(() => {});
-      await server.stop(); await fixture.$client.end(); storage.closeAllConnections();
-      await new Promise<void>(resolve => storage.close(() => resolve()));
-    }
+        await fixture.insert(companies).values({ id: companyId, name: "Routine ingress", issuePrefix: "MRT",
+          defaultResponsibleUserId: "maintenance-board", requireBoardApprovalForNewAgents: false });
+        await fixture.insert(agents).values({ id: agentId, companyId, name: "Suppressed routine worker", status: "active",
+          lifecycleState: "ready", adapterType: "process", adapterConfig: { command: "/usr/bin/false" } });
+        const server = runtime = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true,
+        cloud: { jwks: JSON.stringify({ keys: [publicJwk] }), s3Origin: origin, standby: false } });
+        await server.settled();
+        const routine = await server.api<{ id: string }>("POST", `/companies/${companyId}/routines`, {
+          title: "Ordinary projected routine", assigneeAgentId: agentId, concurrencyPolicy: "always_enqueue",
+        });
+        const run = await server.api<{ id: string; linkedIssueId: string; status: string }>("POST", `/routines/${routine.id}/run`, {
+          source: "manual", idempotencyKey: randomUUID(),
+        });
+        expect(run.status).toBe("issue_created");
+        const [before] = await fixture.$client`select status, completed_at from routine_runs where id=${run.id}`;
+        expect(before).toMatchObject({ status: "issue_created", completed_at: null });
+        await fixture.$client.unsafe(`create or replace function maintenance_hold_completion() returns trigger language plpgsql as $$begin
+          if new.id = '${run.linkedIssueId}'::uuid and new.status = 'done' then perform pg_advisory_xact_lock(913702); end if;
+          return new; end$$`);
+        await fixture.$client.unsafe(`create trigger maintenance_hold_completion before update on issues for each row execute function maintenance_hold_completion()`);
+        const reserved = await fixture.$client.reserve();
+        await reserved`select pg_advisory_lock(913702)`;
+        const writesBefore = server.proxy.queries.length;
+        const completing = server.updateIssue({ id: run.linkedIssueId, status: "done" });
+        void completing.catch(() => {});
+        try {
+          await expect.poll(() => server.proxy.queries.slice(writesBefore).some(query => /update "issues"/.test(query.sql)), { timeout: 10_000 }).toBe(true);
+          await server.drain();
+        } finally { await reserved`select pg_advisory_unlock(913702)`; reserved.release(); }
+        await completing; await server.advance(30_000); await settleClock(server);
+        const [drained] = await fixture.$client`select status, completed_at from routine_runs where id=${run.id}`;
+        expect(drained).toMatchObject({ status: "issue_created", completed_at: null });
+        await server.resume(); await server.advance(30_000); await settleClock(server);
+        const [projected] = await fixture.$client`select rr.company_id, rr.status, rr.completed_at is not null as completed,
+          i.status as issue_status from routine_runs rr join issues i on i.id=rr.linked_issue_id where rr.id=${run.id}`;
+        expect(projected).toMatchObject({ company_id: companyId, status: "completed", completed: true, issue_status: "done" });
+        const restoredRun = await server.api<{ id: string; linkedIssueId: string }>("POST", `/routines/${routine.id}/run`, {
+          source: "manual", idempotencyKey: randomUUID(),
+        });
+        const cancel = await server.api<{ hold: { id: string } }>("POST", `/issues/${restoredRun.linkedIssueId}/tree-holds`, { mode: "cancel", reason: "Ordinary cancel before restore" });
+        await server.advance(1_000); await settleClock(server);
+        const [cancelled] = await fixture.$client`select status from routine_runs where id=${restoredRun.id}`;
+        expect(cancelled!.status).toBe("failed");
+        await server.api("POST", `/issues/${restoredRun.linkedIssueId}/tree-holds`, { mode: "restore", reason: "Ordinary restore" });
+        await server.advance(1_000); await settleClock(server);
+        const [restored] = await fixture.$client`select rr.status, rr.completed_at, rr.failure_reason, i.status as issue_status
+          from routine_runs rr join issues i on i.id=rr.linked_issue_id where rr.id=${restoredRun.id}`;
+        expect(restored).toMatchObject({ status: "issue_created", completed_at: null, failure_reason: null, issue_status: "todo" });
+        const [cancelHold] = await fixture.$client`select status from issue_tree_holds where id=${cancel.hold.id}`;
+        expect(cancelHold!.status).toBe("released");
+        const [executions] = await fixture.$client`select count(*)::integer as count from heartbeat_runs where company_id=${companyId}`;
+        expect(executions!.count).toBe(0);
+        expect(storageRequests).toEqual([]);
+        await writeFile(path.join(server.directory, "routine-measurement.json"), JSON.stringify({
+          phase: "ordinary-routine-service-completion-during-drain", completionBoundary: "actual issueService.update with runtime-owned DB; excludes redundant route projection hook", companyId, routineId: routine.id, runId: run.id,
+          before, drained, projected, restoredRun, cancelled, restored, cancelHold, executions: executions!.count, storageRequests,
+          suppression: "PAPERCLIP_IN_WORKTREE; actual production policy", frames: server.proxy.frames,
+        }, null, 2));
+      } finally {
+        await fixture.$client.unsafe("drop trigger if exists maintenance_hold_completion on issues").catch(() => {});
+        await fixture.$client.unsafe("drop function if exists maintenance_hold_completion()").catch(() => {});
+        try { await runtime?.stop(); } finally { await fixture.$client.end(); }
+      }
+    });
   }, 150_000);
 
   it("keeps an actual Cloud warm standby quiet and activates after a normally signed durable claim", async () => {
@@ -882,51 +877,50 @@ describeDatabase("assembled maintenance server production wiring", () => {
     const publicJwk = { ...pair.publicKey.export({ format: "jwk" }), kid: "maintenance-test-key", use: "sig", alg: "EdDSA" };
     const storageRequests: string[] = [];
     const storage = createServer((req, res) => { storageRequests.push(req.url!); res.statusCode = 500; res.end("Unexpected S3 request in empty standby fixture"); });
-    await new Promise<void>(resolve => storage.listen(0, "127.0.0.1", resolve));
-    const address = storage.address();
-    if (!address || typeof address === "string") throw new Error("Simulated S3 failed to bind");
-    const server = await startMaintenanceServer(databaseUrl!, { clock: true,
-      cloud: { jwks: JSON.stringify({ keys: [publicJwk] }), s3Origin: `http://127.0.0.1:${address.port}`, standby: true } })
-      .catch(async error => { storage.closeAllConnections(); await new Promise<void>(resolve => storage.close(() => resolve())); throw error; });
-    try {
-      const standby = await server.settled(500, 1); await server.freeze();
-      expect(standby.idle.active).toBe(1);
-      const before = server.proxy.queries.length;
-      for (let step = 0; step < 240; step++) { await server.advance(30_000); await server.settled(10, 1); }
-      const health = await fetch(`http://127.0.0.1:${server.port}/api/health`, { signal: AbortSignal.timeout(10_000) });
-      expect(health.status).toBe(200); expect(await health.json()).toMatchObject({ warmStandby: true });
-      expect(server.proxy.queries.length).toBe(before);
-      expect(storageRequests).toEqual([]);
-      expect((await server.snapshot()).network.nonDatabaseConnections).toBe(0);
-      const now = Math.floor((await server.snapshot()).now / 1000);
-      const header = Buffer.from(JSON.stringify({ alg: "EdDSA", typ: CLOUD_RUNTIME_IDENTITY_JWS_TYPE, kid: publicJwk.kid })).toString("base64url");
-      const payload = Buffer.from(JSON.stringify({ v: 1, iss: CLOUD_RUNTIME_IDENTITY_ISSUER, aud: CLOUD_RUNTIME_IDENTITY_AUDIENCE,
-        sub: "maintenance-stack", claimId: "maintenance-claim", previousOrigin: "https://pool-maintenance.staging.paperclip.app",
-        canonicalOrigin: "https://claimed-maintenance.staging.paperclip.app", stackSlug: "claimed-maintenance", iat: now, exp: now + 300 })).toString("base64url");
-      const assertion = `${header}.${payload}.${sign(null, Buffer.from(`${header}.${payload}`, "ascii"), pair.privateKey).toString("base64url")}`;
-      const claimed = await fetch(`http://127.0.0.1:${server.port}/api/health`, {
-        headers: { "x-paperclip-cloud-runtime-identity": assertion }, signal: AbortSignal.timeout(10_000),
-      });
-      expect(claimed.status).toBe(200); expect((await claimed.json()).warmStandby).toBeUndefined();
-      await server.advance(30_000); const afterClaim = await server.settled();
-      expect(afterClaim.idle.active).toBe(0);
-      expect(server.proxy.queries.length).toBeGreaterThan(before);
-      const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+    await withMaintenanceProvider(storage, async origin => {
+      let runtime: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
       try {
-        const [transfers] = await fixture.$client`select count(*)::integer as count from company_transfer_runs`;
-        expect(transfers!.count).toBe(0);
-        const [identity] = await fixture.$client`select general from instance_settings where singleton_key='cloud-runtime-identity/v1'`;
-        expect(identity!.general).toMatchObject({ stackId: "maintenance-stack", claimId: "maintenance-claim", canonicalOrigin: "https://claimed-maintenance.staging.paperclip.app" });
-      } finally { await fixture.$client.end(); }
-      await writeFile(path.join(server.directory, "standby-measurement.json"), JSON.stringify({ phase: "real-cloud-standby-signed-claim",
-        cloudBoundary: "actual managed configuration, local S3 HTTP guard, generated Ed25519 trust root; no production Cloud claim",
-        clockMs: 7_200_000, standbyQueries: 0,
-        deferredStartupIntent: { count: 1, queue: "import-spool-cleanup", producer: "companyTransferRunService.recoverStrandedApplyingRuns",
-          reason: "Cloud standby disables both reconciliation and dispatch", releasedAfterSignedClaim: true, boundedResumeMs: 30_000, sleepEligibleWhileHeld: false }, storageRequests, beforeClaimQueries: before, afterClaimQueries: server.proxy.queries.length,
-        frames: server.proxy.frames, network: await server.snapshot() }, null, 2));
-    } finally {
-      await server.stop(); storage.closeAllConnections(); await new Promise<void>(resolve => storage.close(() => resolve()));
-    }
+        const server = runtime = await startMaintenanceServer(databaseUrl!, { clock: true,
+        cloud: { jwks: JSON.stringify({ keys: [publicJwk] }), s3Origin: origin, standby: true } });
+        const standby = await server.settled(500, 1); await server.freeze();
+        expect(standby.idle.active).toBe(1);
+        const before = server.proxy.queries.length;
+        for (let step = 0; step < 240; step++) { await server.advance(30_000); await server.settled(10, 1); }
+        const health = await fetch(`http://127.0.0.1:${server.port}/api/health`, { signal: AbortSignal.timeout(10_000) });
+        expect(health.status).toBe(200); expect(await health.json()).toMatchObject({ warmStandby: true });
+        expect(server.proxy.queries.length).toBe(before);
+        expect(storageRequests).toEqual([]);
+        expect((await server.snapshot()).network.nonDatabaseConnections).toBe(0);
+        const now = Math.floor((await server.snapshot()).now / 1000);
+        const header = Buffer.from(JSON.stringify({ alg: "EdDSA", typ: CLOUD_RUNTIME_IDENTITY_JWS_TYPE, kid: publicJwk.kid })).toString("base64url");
+        const payload = Buffer.from(JSON.stringify({ v: 1, iss: CLOUD_RUNTIME_IDENTITY_ISSUER, aud: CLOUD_RUNTIME_IDENTITY_AUDIENCE,
+          sub: "maintenance-stack", claimId: "maintenance-claim", previousOrigin: "https://pool-maintenance.staging.paperclip.app",
+          canonicalOrigin: "https://claimed-maintenance.staging.paperclip.app", stackSlug: "claimed-maintenance", iat: now, exp: now + 300 })).toString("base64url");
+        const assertion = `${header}.${payload}.${sign(null, Buffer.from(`${header}.${payload}`, "ascii"), pair.privateKey).toString("base64url")}`;
+        const claimed = await fetch(`http://127.0.0.1:${server.port}/api/health`, {
+          headers: { "x-paperclip-cloud-runtime-identity": assertion }, signal: AbortSignal.timeout(10_000),
+        });
+        expect(claimed.status).toBe(200); expect((await claimed.json()).warmStandby).toBeUndefined();
+        await server.advance(30_000); const afterClaim = await server.settled();
+        expect(afterClaim.idle.active).toBe(0);
+        expect(server.proxy.queries.length).toBeGreaterThan(before);
+        const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+        try {
+          const [transfers] = await fixture.$client`select count(*)::integer as count from company_transfer_runs`;
+          expect(transfers!.count).toBe(0);
+          const [identity] = await fixture.$client`select general from instance_settings where singleton_key='cloud-runtime-identity/v1'`;
+          expect(identity!.general).toMatchObject({ stackId: "maintenance-stack", claimId: "maintenance-claim", canonicalOrigin: "https://claimed-maintenance.staging.paperclip.app" });
+        } finally { await fixture.$client.end(); }
+        await writeFile(path.join(server.directory, "standby-measurement.json"), JSON.stringify({ phase: "real-cloud-standby-signed-claim",
+          cloudBoundary: "actual managed configuration, local S3 HTTP guard, generated Ed25519 trust root; no production Cloud claim",
+          clockMs: 7_200_000, standbyQueries: 0,
+          deferredStartupIntent: { count: 1, queue: "import-spool-cleanup", producer: "companyTransferRunService.recoverStrandedApplyingRuns",
+            reason: "Cloud standby disables both reconciliation and dispatch", releasedAfterSignedClaim: true, boundedResumeMs: 30_000, sleepEligibleWhileHeld: false }, storageRequests, beforeClaimQueries: before, afterClaimQueries: server.proxy.queries.length,
+          frames: server.proxy.frames, network: await server.snapshot() }, null, 2));
+      } finally {
+        await runtime?.stop();
+      }
+    });
   }, 150_000);
 
 });
