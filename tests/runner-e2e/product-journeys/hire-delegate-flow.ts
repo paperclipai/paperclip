@@ -46,6 +46,7 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
   await page.goto(chatUrl, { waitUntil: "domcontentloaded" });
   await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
   let scope: HireScope | undefined, hiredId: string | undefined;
+  let hiredConnectionBinding: unknown;
   const known = new Set<string>();
   const taskNames = [names.checklist, names.review];
   const readObserved = async <T>(route: string): Promise<T> => {
@@ -114,9 +115,12 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
     const owned = observedHireResources(scope, { agents, tasks, activity, leadRuns });
     if (scopeMismatch || owned.scopeMismatch) throw new JourneyError("failed", "hire_resource_scope_mismatch");
     if (owned.agents.length) {
-      await readHireConnectionChoice(api, { companyId: context.company.id, responsibleUserId: context.user.id,
+      await readHireConnectionChoice({ get: readObserved }, { companyId: context.company.id, responsibleUserId: context.user.id,
         binding: lead.runtimeConfig.aiConnection, hiredId: owned.agents[0]!.id });
-      hiredId = assertHireBinding(scope, owned.agents, hiredId).id;
+      const verified = assertHireBinding(scope, owned.agents, hiredId);
+      if (hiredConnectionBinding === undefined) hiredConnectionBinding = Object.freeze(structuredClone(verified.runtimeConfig.aiConnection));
+      else if (!isDeepStrictEqual(verified.runtimeConfig.aiConnection, hiredConnectionBinding)) throw new JourneyError("failed", "hire_native_binding_mismatch");
+      hiredId = verified.id;
     }
     const projectedRuns = [...leadProjection, ...(await Promise.all(owned.tasks.map(task => readRuns(task.id)))).flat()];
     const canonical = new Map<string, Run>();
@@ -192,9 +196,13 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
   check("review-authored-by-same-hired-run");
   check("original-checklist-preserved", isDeepStrictEqual(await api.get(`/api/issues/${first!.id}/documents/${encodeURIComponent(firstOutput.key)}`), firstOutput)
     && isDeepStrictEqual(mutableIssueSnapshot(await api.get<Task>(`/api/issues/${first!.id}`)), originalTask));
-  const binding = lead.runtimeConfig.aiConnection;
+  if (hiredConnectionBinding === undefined || !isDeepStrictEqual(
+    state.agents.find(row => row.id === hired.id)?.runtimeConfig?.aiConnection, hiredConnectionBinding)) {
+    throw new JourneyError("failed", "hire_native_binding_mismatch");
+  }
   assertChatHire({ agents: state.allAgents, leadId: agent.id, hireName: names.hire, hiredId: hired.id,
-    connectionId: binding.connectionId, binding, taskIds: [first!.id, second!.id], tasks: state.tasks, runs: state.runs });
+    connectionId: connectionChoice?.connectionId ?? lead.runtimeConfig.aiConnection.connectionId, binding: hiredConnectionBinding,
+    taskIds: [first!.id, second!.id], tasks: state.tasks, runs: state.runs });
   assertHireRuns(scope!, hired.id, state.tasks, state.runs, 7, state.requestIds, state.comments);
   await page.goto(chatUrl, { waitUntil: "domcontentloaded" }); await page.reload();
   const comments = await api.get<Row[]>(`/api/issues/${state.chat.id}/comments?order=asc`);

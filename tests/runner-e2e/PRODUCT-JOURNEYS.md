@@ -70,6 +70,10 @@ different or ambiguous authority fails closed; no credential, default or grant i
 changed. Every successful native run must also retain the approved connection,
 grant and responsible-user attribution in its canonical execution metadata.
 Those references are compared privately and omitted from observation evidence.
+The first independently approved child binding becomes an immutable expected
+snapshot for the final shared hiring oracle; later binding changes fail. Only
+typed transient observation GET failures may poll again within the original
+deadline. Approval, authentication and ownership failures are never replayed.
 The checklist and review each require one successful child run and a current
 document revision authored by that run. The lead uses three requested turns and
 two separate server completion callbacks,

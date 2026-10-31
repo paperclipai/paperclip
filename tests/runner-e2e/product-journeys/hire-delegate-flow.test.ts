@@ -16,7 +16,7 @@ type Row = Record<string, any>;
 const directories: string[] = [];
 afterEach(async () => { vi.mocked(sendChatMessage).mockReset(); await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
-async function fixture(options: { readError?: Error; mutate?(agents: Row[], tasks: Row[]): void; ownError?: Error; firstSendError?: Error; connectionList?: Row } = {}) {
+async function fixture(options: { readError?: Error; mutate?(agents: Row[], tasks: Row[]): void; ownError?: Error; firstSendError?: Error; connectionList?: Row; connectionReadError?: Error } = {}) {
   const campaignId = "journey-1-deadbeef", names = hireDelegateNames(campaignId), owned: Row[] = [], comments: Row[] = [];
   const binding = { connectionId: "approved" }, lead = { id: "lead", companyId: "company", name: `Lead ${campaignId}`, permissions: { canCreateAgents: true }, runtimeConfig: { aiConnection: binding } };
   const hire = { id: "hired", companyId: "company", name: names.hire, reportsTo: lead.id, adapterType: "paperclip_runner",
@@ -31,7 +31,7 @@ async function fixture(options: { readError?: Error; mutate?(agents: Row[], task
     { aiConnection: { ...lead.runtimeConfig.aiConnection, responsibleUserId: "user" } });
   const audit = (action: string, entityId: string) => ({ companyId: "company", actorType: "agent", actorId: lead.id, agentId: lead.id, runId: run.id, action, entityId, entityType: action.startsWith("agent.") ? "agent" : "issue" });
   const activity = [audit("agent.hire_created", hire.id), ...tasks.map(task => audit("issue.created", task.id))];
-  let sent = false, failedRead = false, runReads = 0;
+  let sent = false, failedRead = false, failedConnectionRead = false, runReads = 0;
   const stop = new JourneyError("failed", "test_stop_before_delegation");
   vi.mocked(sendChatMessage).mockImplementation(async (_page, text) => {
     if (sent) throw stop;
@@ -41,7 +41,10 @@ async function fixture(options: { readError?: Error; mutate?(agents: Row[], task
     if (route === "/api/instance/settings/experimental") return { enableAgentChat: true };
     if (route === "/api/companies/company") return { requireBoardApprovalForNewAgents: false };
     if (route === "/api/agents/lead") return lead;
-    if (route === "/api/companies/company/ai-connections") return options.connectionList ?? { currentUserId: "user", connections: [] };
+    if (route === "/api/companies/company/ai-connections") {
+      if (sent && options.connectionReadError && !failedConnectionRead) { failedConnectionRead = true; throw options.connectionReadError; }
+      return options.connectionList ?? { currentUserId: "user", connections: [] };
+    }
     if (route.endsWith("/installs")) return { connectionId: "approved", installs: [{ companyId: "company", targetType: "agent", targetId: "hired" }] };
     if (route === "/api/companies/company/chats/lead") return sent ? chat : null;
     if (route === "/api/issues/chat/runs") {
@@ -126,6 +129,29 @@ it("validates the real-user fallback without retaining raw credential-choice ref
   expect(observed).not.toMatch(/connectionId|grantId|responsibleUserId|approved/);
 });
 
+it.each(["api_status_503", "api_request_failed"])("retries a transient %s credential observation without replaying hire or ownership", async code => {
+  const f = await fixture({ connectionReadError: new ConnectionFailure(code), mutate(agents) {
+    agents[0]!.runtimeConfig.aiConnection = { provider: "openrouter", method: "api_key", mode: "delegated", connectionId: "approved", grantId: "grant" };
+    agents[1]!.runtimeConfig.aiConnection = { provider: "openrouter", method: "api_key", mode: "responsible_user" };
+  }, connectionList: { currentUserId: "user", connections: [{ companyId: "company", id: "approved", grantId: "grant", provider: "openrouter", method: "api_key",
+    ownership: "personal", ownerUserId: "user", isDefault: true, status: "connected" }] } });
+  await expect(f.run()).rejects.toBe(f.stop);
+  expect(f.runReads()).toBe(2); expect(f.owned.filter(row => row.id === "hired")).toHaveLength(1);
+  expect(vi.mocked(sendChatMessage).mock.calls.filter(([, text]) => text.startsWith("Hire exactly one"))).toHaveLength(1);
+});
+
+it.each([new ConnectionFailure("api_status_403"), new JourneyError("failed", "hire_connection_choice_mismatch")])(
+  "never retries authentication or approval failure in credential observation: %s", async connectionReadError => {
+    const f = await fixture({ connectionReadError, mutate(agents) {
+      agents[0]!.runtimeConfig.aiConnection = { provider: "openrouter", method: "api_key", mode: "delegated", connectionId: "approved", grantId: "grant" };
+      agents[1]!.runtimeConfig.aiConnection = { provider: "openrouter", method: "api_key", mode: "responsible_user" };
+    }, connectionList: { currentUserId: "user", connections: [{ companyId: "company", id: "approved", grantId: "grant", provider: "openrouter", method: "api_key",
+      ownership: "personal", ownerUserId: "user", isDefault: true, status: "connected" }] } });
+    await expect(f.run()).rejects.toBe(connectionReadError);
+    expect(f.runReads()).toBe(1); expect(sendChatMessage).toHaveBeenCalledTimes(1);
+  },
+);
+
 it("waits for reloaded replies and links, then clicks and reloads the exact saved child", async () => {
   let visibleReads = 0, linkReads = 0, clicks = 0, reloads = 0;
   const href = "/QA/issues/QA-2";
@@ -147,11 +173,14 @@ it("ends a missing saved result at the original deadline without a click or repl
     { id: "review", identifier: "QA-2", title: "Saved review" }, Date.now() + 10)).toBe(false);
 });
 
-it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activity-linked", "foreign-run", "contradictory-run", "extra-run"])("re-reads %s callback task state while preserving strict scope and seven-run accounting", async snapshot => {
-  const campaignId = "journey-1-deadbeef", names = hireDelegateNames(campaignId), binding = { connectionId: "approved" };
+it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activity-linked", "foreign-run", "contradictory-run", "extra-run", "fallback", "fallback-changed"])("re-reads %s callback task state while preserving strict scope and seven-run accounting", async snapshot => {
+  const fallback = snapshot.startsWith("fallback");
+  const campaignId = "journey-1-deadbeef", names = hireDelegateNames(campaignId), binding = fallback
+    ? { provider: "openrouter", method: "api_key", mode: "delegated", connectionId: "approved", grantId: "grant" } : { connectionId: "approved" };
   const lead = { id: "lead", companyId: "company", name: `Lead ${campaignId}`, permissions: { canCreateAgents: true },
     adapterConfig: { model: "fixed-model" }, runtimeConfig: { aiConnection: binding } };
   const hired = { ...lead, id: "hired", name: names.hire, reportsTo: "lead", adapterType: "paperclip_runner" };
+  if (fallback) Object.assign(hired, { runtimeConfig: { aiConnection: { provider: "openrouter", method: "api_key", mode: "responsible_user" } } });
   const chat = { id: "chat", companyId: "company", title: `Chat with ${lead.name}`, assigneeAgentId: "lead", conversationAgentId: "lead",
     conversationUserId: "user", createdByUserId: "user", status: "in_review", conversationState: "waiting" };
   const runs: Row[] = [], tasks: Row[] = [], comments: Row[] = [], activity: Row[] = [], stages: number[] = [];
@@ -159,7 +188,8 @@ it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activit
   const replyPolls = new Map<string, number>(), nativeReads = new Map<string, number>();
   const run = (id: string, issueId: string, agentId: string, metadata: Row = {}) => {
     const value = { id, companyId: "company", agentId, issueId, status: "succeeded", runtimeMode: "native",
-      contextSnapshot: { issueId, paperclipEnvironment: { id: "environment" }, aiConnection: binding, ...metadata },
+      contextSnapshot: { issueId, paperclipEnvironment: { id: "environment" }, aiConnection: fallback
+        ? { ...binding, mode: agentId === "lead" ? "delegated" : "responsible_user", responsibleUserId: "user" } : binding, ...metadata },
       runnerProfileJson: { nativeExecutionInput: { provider: { kind: "opencode", model: "fixed-model" } } } };
     runs.push(value); return value;
   };
@@ -179,12 +209,18 @@ it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activit
   const marker = `HIRE${campaignId.replace(/[^a-z0-9]/gi, "")}`;
   const document = (taskId: string) => ({ id: `doc-${taskId}`, issueId: taskId, companyId: "company", key: "result", updatedAt: "2020-01-01T00:00:00Z", latestRevisionId: `revision-${taskId}`,
     body: `Reference: ${taskId === "task-2" ? marker : `REVIEW${marker}`}` });
-  vi.mocked(readChatOutputDocument).mockImplementation(async (_api, taskId) => document(taskId));
+  vi.mocked(readChatOutputDocument).mockImplementation(async (_api, taskId) => {
+    if (snapshot === "fallback-changed" && taskId === "task-3") Object.assign(hired, { runtimeConfig: { aiConnection: binding } });
+    return document(taskId);
+  });
   const api = { origin: "https://qa.example.test", async get(route: string) {
     if (route === "/api/instance/settings/experimental") return { enableAgentChat: true };
     if (route === "/api/companies/company") return { requireBoardApprovalForNewAgents: false };
     if (route === "/api/agents/lead") return lead;
     if (route === "/api/companies/company/chats/lead") return sent ? chat : null;
+    if (route === "/api/companies/company/ai-connections") return { currentUserId: "user", connections: [{ companyId: "company", id: "approved", grantId: "grant",
+      provider: "openrouter", method: "api_key", ownership: "personal", ownerUserId: "user", isDefault: true, status: "connected" }] };
+    if (route.endsWith("/installs")) return { connectionId: "approved", installs: [{ companyId: "company", targetType: "agent", targetId: "hired" }] };
     if (route === "/api/agents/hired") return hired;
     if (route === "/api/companies/company/agents") return sent ? [lead, hired] : [lead];
     if (route === "/api/companies/company/issues" && snapshot === "truncated") return Array.from({ length: 500 }, (_, i) => ({ id: `old-${i}`, companyId: "company", title: "Higher priority existing work", projectId: "other", status: "backlog" }));
@@ -235,11 +271,12 @@ it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activit
   const directory = await mkdtemp(path.join(os.tmpdir(), "hire-completion-")); directories.push(directory);
   const execution = hireDelegateReuse(context, { async own(row: Row) { owned.push(row); } } as unknown as TargetSession, campaignId, evidence,
     { deadlineAt: Date.now() + 10_000, directory, capture: async () => {} });
-  if (["foreign", "wrong-author", "foreign-run", "contradictory-run", "extra-run"].includes(snapshot)) {
+  if (["foreign", "wrong-author", "foreign-run", "contradictory-run", "extra-run", "fallback-changed"].includes(snapshot)) {
     const code = snapshot === "foreign" ? "hire_resource_scope_mismatch" : snapshot === "wrong-author" ? "hire_completion_reply_mismatch"
-      : snapshot === "extra-run" ? "hire_requested_turn_mismatch" : "hire_run_scope_mismatch";
+      : snapshot === "extra-run" ? "hire_requested_turn_mismatch" : snapshot === "fallback-changed" ? "hire_native_binding_mismatch" : "hire_run_scope_mismatch";
     await expect(execution).rejects.toMatchObject({ code });
-    expect(sendChatMessage).toHaveBeenCalledTimes(snapshot === "extra-run" ? 3 : 2);
+    expect(sendChatMessage).toHaveBeenCalledTimes(["extra-run", "fallback-changed"].includes(snapshot) ? 3 : 2);
+    if (snapshot === "fallback-changed") { expect(stages).toEqual([0, 1, 4]); expect(runs).toHaveLength(7); }
     return;
   }
   await execution;
