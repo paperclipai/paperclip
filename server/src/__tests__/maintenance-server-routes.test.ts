@@ -65,6 +65,57 @@ describe("assembled maintenance server production wiring", () => {
         repeatedQueries: repeated.length, repeated: receipt(repeated), initialFrames, finalFrames: server.proxy.frames, outgoingHttpRequests: 0 }, null, 2));
     } finally { await server.stop(); }
   }, 150_000);
+  it("releases an ordinary held task Retry into one real process execution", async () => {
+    await clearDatabase();
+    const server = await startMaintenanceServer(databaseUrl!, { clock: true });
+    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+    try {
+      await settleClock(server);
+      const company = await server.api<{ id: string }>("POST", "/companies", { name: "Receipt ingress" });
+      await fixture.insert(authUsers).values({ id: "local-board", name: "Local operator", email: "maintenance-local@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+      await fixture.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: "local-board", status: "active", membershipRole: "owner" }).onConflictDoNothing();
+      const [agent] = await fixture.insert(agents).values({ companyId: company.id, name: "Receipt process", adapterType: "process", status: "idle", lifecycleState: "ready",
+        adapterConfig: { command: process.execPath, args: ["-e", "console.log('assembled-receipt-proof')"], cwd: process.cwd() },
+        runtimeConfig: { heartbeat: { enabled: true, intervalSec: 0, wakeOnDemand: true } } }).returning();
+      const [issue] = await fixture.insert(issues).values({ companyId: company.id, title: "Resume saved task", status: "todo", assigneeAgentId: agent!.id, responsibleUserId: "local-board" }).returning();
+      const [source] = await fixture.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent!.id, issueId: issue!.id, status: "failed", finishedAt: new Date(), responsibleUserId: "local-board", errorCode: "process_failed",
+        contextSnapshot: { issueId: issue!.id }, resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } }).returning();
+      const hold = await server.api<{ hold: { id: string } }>("POST", `/issues/${issue!.id}/tree-holds`, { mode: "pause", reason: "Retain ordinary Retry" });
+      const retry = await server.api<{ accepted: boolean; requestId: string }>("POST", `/issues/${issue!.id}/retry`, { observedRunId: source!.id, idempotencyKey: randomUUID() });
+      expect(retry.accepted).toBe(true);
+      await settleClock(server);
+      const [waiting] = await fixture.$client`select status, run_id, payload->'executionWait'->>'reason' as reason from agent_wakeup_requests where id=${retry.requestId}`;
+      expect(waiting).toMatchObject({ status: "deferred_issue_execution", run_id: null, reason: "issue_tree_hold_active" });
+      const beforeGrace = server.proxy.queries.length;
+      await server.realtime(); await delay(31_000); await server.freeze(); await settleClock(server);
+      const grace = receipt(server.proxy.queries.slice(beforeGrace));
+      const [parked] = await fixture.$client`select status, run_id, payload->'executionWait'->>'reason' as reason from agent_wakeup_requests where id=${retry.requestId}`;
+      expect(parked).toEqual(waiting);
+      const baseline = server.proxy.queries.length;
+      await server.realtime(); await delay(30_000); await server.freeze(); await settleClock(server);
+      expect(server.proxy.queries.length).toBe(baseline);
+      await server.api("POST", `/issues/${issue!.id}/tree-holds/${hold.hold.id}/release`, { reason: "Resume accepted Retry", metadata: { wakeAgents: false } });
+      await server.realtime();
+      let executed: Record<string, unknown> | undefined;
+      for (let step = 0; step < 300; step++) {
+        await delay(100);
+        [executed] = await fixture.$client`select status, stdout_excerpt, error, error_code from heartbeat_runs where context_snapshot->>'taskRetryRequestId'=${retry.requestId}`;
+        if (executed?.status === "succeeded") break;
+      }
+      await server.freeze();
+      expect(executed, JSON.stringify(executed)).toMatchObject({ status: "succeeded", stdout_excerpt: expect.stringContaining("assembled-receipt-proof") });
+      const [count] = await fixture.$client`select count(*)::integer as count from heartbeat_runs where context_snapshot->>'taskRetryRequestId'=${retry.requestId}`;
+      expect(count!.count).toBe(1);
+      await server.updateIssue({ id: issue!.id, status: "done" }); await settleClock(server);
+      const quiet = server.proxy.queries.length;
+      for (let step = 0; step < 4; step++) { await server.advance(30_000); await settleClock(server); }
+      expect(server.proxy.queries.length).toBe(quiet);
+      await writeFile(path.join(server.directory, "receipt-measurement.json"), JSON.stringify({ phase: "ordinary-held-task-retry", companyId: company.id, issueId: issue!.id,
+        requestId: retry.requestId, waiting, grace, parked, executed, count: count!.count, parkedRealMs: 30_000, parkedQueries: 0, settledClockMs: 120_000, settledQueries: 0,
+        boundary: "actual Retry and subtree release HTTP, wakeAgents false, real clock through process/controller authority, real local process, no outcome seeded", frames: server.proxy.frames }, null, 2));
+    } finally { await server.stop(); await fixture.$client.end(); }
+  }, 150_000);
+
   it("reconstructs residual work from a normal scheduler-admission change after suppression", async () => {
     await clearDatabase();
     const server = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true });

@@ -167,3 +167,11 @@ its terminal projection, and retains zero agent executions while suppression
 remains active. The passive PostgreSQL observer records connection opens, closes
 and byte counts separately from SQL frames so final quiet receipts can expose
 connection housekeeping without hiding it in a zero-query total.
+
+The saved-execution receipt case uses ordinary task Retry and subtree release
+HTTP endpoints. A pause retains the accepted receipt without a run; the saved
+wait reason receives its existing one-time 30-second grace, then remains quiet
+for 30 real seconds. Releasing the hold with `wakeAgents: false` launches exactly
+one actual local process with the expected stdout. This phase uses real elapsed
+time through PostgreSQL controller-lease ownership. Clock acceleration begins
+only after the process is terminal and its task is closed.

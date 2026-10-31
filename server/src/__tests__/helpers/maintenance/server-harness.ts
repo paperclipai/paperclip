@@ -137,6 +137,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: { ena
       publishBackup: (publication: { companyId: string; scopeDigest: string; backupRoot: string; pendingRoot: string }) => request("publishBackup", { publication }),
       snapshot: () => request<Snapshot>("snapshot"),
       drain: () => request<Snapshot>("drain"), resume: () => request<Snapshot>("resume"),
+      realtime: () => request<Snapshot>("realtime"),
       advance: (ms: number) => request<Snapshot>("advance", { ms }), freeze: () => request<Snapshot>("freeze"),
       get output() { return output; },
       async settled(quietMs = 500, deferredStartupHolds = 0) {
