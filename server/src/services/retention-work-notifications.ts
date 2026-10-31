@@ -5,9 +5,16 @@ import type { Db } from "@paperclipai/db";
 import type { AttentionSourceKind } from "@paperclipai/shared";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
-export async function notifyAttentionRetentionWork(transaction: object, scope: { companyId?: string; sourceKind?: AttentionSourceKind; issueId?: string; sourceId?: string } = {}) {
+export const ATTENTION_RETENTION_MAX_ISSUE_IDS = 100;
+export type AttentionRetentionScope = { companyId?: string; sourceKind?: AttentionSourceKind;
+  issueId?: string; issueIds?: string[]; sourceId?: string };
+
+export async function notifyAttentionRetentionWork(transaction: object, scope: AttentionRetentionScope = {}) {
+  const issueIds = [...new Set([...(scope.issueIds ?? []), ...(scope.issueId ? [scope.issueId] : [])])].sort();
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.attentionRetention, JSON.stringify({
-    companyId: scope.companyId, sourceKind: scope.sourceKind, sourceId: scope.sourceId, issueId: scope.issueId,
+    companyId: scope.companyId, sourceKind: scope.sourceKind, sourceId: scope.sourceId,
+    issueId: issueIds.length === 1 ? issueIds[0] : undefined,
+    issueIds: issueIds.length > 1 && issueIds.length <= ATTENTION_RETENTION_MAX_ISSUE_IDS ? issueIds : undefined,
   }));
 }
 
@@ -47,18 +54,24 @@ export async function notifyIssueAttentionRetentionWork(transaction: object,
         and id::text in (${sql.join([...new Set(references)].map(id => sql`${id}`), sql`, `)})`);
     for (const row of trusted) seeds.push(row.id as string);
   }
+  // UNION deduplicates visited UUIDs (including cycles). Each relation edge is
+  // unique by schema, so 101 neighbours guarantee overflow of a 100-ID scope.
+  // Bound that adjacency before materialization and stream at most 101 unique
+  // IDs to the caller; an inner UNION DISTINCT would consume the full fan-in.
   const affected = await database.execute(sql`with recursive affected(id) as (
     select unnest(array[${sql.join([...new Set(seeds)].map(id => sql`${id}::uuid`), sql`, `)}])
     union
     select parent.id from affected current cross join lateral (
-      select related_issue_id as id from issue_relations where company_id = ${scope.companyId}::uuid
-        and issue_id = current.id and type = 'blocks'
-      union select parent_id from issues where company_id = ${scope.companyId}::uuid
+      (select related_issue_id as id from issue_relations where company_id = ${scope.companyId}::uuid
+        and issue_id = current.id and type = 'blocks' limit ${ATTENTION_RETENTION_MAX_ISSUE_IDS + 1})
+      union all select parent_id from issues where company_id = ${scope.companyId}::uuid
         and id = current.id and parent_id is not null
     ) parent
-  ) select id::text as "issueId" from affected`);
-  for (const row of affected) await notifyAttentionRetentionWork(transaction, {
-    companyId: scope.companyId, issueId: row.issueId as string,
+  ) select id::text as "issueId" from affected limit ${ATTENTION_RETENTION_MAX_ISSUE_IDS + 1}`);
+  // The sentinel means the affected set is incomplete. Reconstruct the whole
+  // company through the existing paged authority instead of dropping ancestors.
+  await notifyAttentionRetentionWork(transaction, { companyId: scope.companyId,
+    issueIds: affected.length <= ATTENTION_RETENTION_MAX_ISSUE_IDS ? affected.map(row => row.issueId as string) : undefined,
   });
 }
 

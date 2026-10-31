@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Db, agents, agentTaskSessions, heartbeatRuns, issueComments } from "@paperclipai/db";
+import type { Db, agents, agentTaskSessions, heartbeatRuns } from "@paperclipai/db";
 import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody } from "@paperclipai/shared";
 import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
 import { parseObject } from "../../adapters/utils.js";
@@ -15,8 +15,9 @@ import { getTaskPlanContext } from "../task-plan-context.js";
 import { caseExecutionMarkdown, getCaseExecutionContext } from "../case-context.js";
 import type { TrustPresetResolution } from "../trust-preset-resolver.js";
 import { liveVoiceExecutionGuidance } from "../voice/voice-execution-guidance.js";
-import { buildPaperclipWakePayload, ConfigurationIncompleteFailure, PAPERCLIP_WAKE_PAYLOAD_KEY, type createHeartbeatRunPreparation } from "./run-preparation.js";
+import { buildPaperclipWakePayload, ConfigurationIncompleteFailure, readHeartbeatWakeComments, PAPERCLIP_WAKE_PAYLOAD_KEY, type createHeartbeatRunPreparation } from "./run-preparation.js";
 import { buildPaperclipTaskMarkdown } from "./task-markdown.js";
+import { deriveCommentId, extractWakeCommentIds } from "../../modules/run-dispatch/index.js";
 import { workspacePreferenceService } from "../workspace-preferences.js";
 
 type RunPreparation = ReturnType<typeof createHeartbeatRunPreparation>;
@@ -30,8 +31,6 @@ export interface HeartbeatTaskContextInput {
       "id" | "identifier" | "title" | "status" | "priority" | "workMode" |
       "conversationAgentId" | "description" | "projectId"> | null;
     issueContext: IssueContext | null;
-    wakeCommentContext: Pick<typeof issueComments.$inferSelect,
-      "id" | "body" | "sourceTrust" | "presentation" | "metadata"> | null;
     context: Record<string, unknown>;
     taskSession: Pick<typeof agentTaskSessions.$inferSelect, "lastRunId"> | null;
   };
@@ -53,35 +52,9 @@ function readNonEmptyString(value: unknown): string | null {
 /** Rebuilds task prompt fields on the run's context; acquires no execution resources. */
 export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskContextInput) {
   const { run, agent } = input;
-  const { issueRef, issueContext, wakeCommentContext, context, taskSession } = input.task;
+  const { issueRef, issueContext, context, taskSession } = input.task;
   const { trustPreset, experimentalInstanceSettings } = input.policy;
   const { issuesSvc, getPinnedSkillTestContext } = input.services;
-  const continuationSummary = issueRef && !isConversation(issueContext)
-    ? await getIssueContinuationSummaryDocument(db, issueRef.id)
-    : null;
-  const exposeLowTrustRaw = trustPreset.kind === "low_trust_review";
-  const safeContinuationSummary =
-    continuationSummary && !exposeLowTrustRaw
-      ? redactQuarantinedBodyForHigherTrust(continuationSummary)
-      : continuationSummary;
-  const safeWakeCommentContext =
-    wakeCommentContext && !exposeLowTrustRaw
-      ? sanitizeQuarantinedCommentForHigherTrust(wakeCommentContext)
-      : wakeCommentContext;
-  const issueAncestors = issueRef
-    ? await issuesSvc.getAncestors(issueRef.id)
-    : [];
-  if (continuationSummary) {
-    context.paperclipContinuationSummary = {
-      key: safeContinuationSummary!.key,
-      title: safeContinuationSummary!.title,
-      body: safeContinuationSummary!.body,
-      sourceTrust: safeContinuationSummary!.sourceTrust ?? null,
-      updatedAt: safeContinuationSummary!.updatedAt.toISOString(),
-    };
-  } else {
-    delete context.paperclipContinuationSummary;
-  }
   const admittedScope = parseObject(context.paperclipAgentJwtScope);
   if (!input.policy.recovering || (admittedScope.kind !== "standard" && admittedScope.kind !== "skill_test")) {
     const savedIssue = parseObject(context.paperclipIssue);
@@ -93,10 +66,58 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
       : { kind: "standard" };
   }
   const isSkillTest = parseObject(context.paperclipAgentJwtScope).kind === "skill_test";
-  const pinnedSkillTestContext =
-    isSkillTest && issueRef
-      ? await getPinnedSkillTestContext(agent.companyId, issueRef.id)
-      : null;
+  const wakeCommentId = deriveCommentId(context, null);
+  const commentIds = [...new Set([...extractWakeCommentIds(context), ...(wakeCommentId ? [wakeCommentId] : [])])];
+  const [summary, ancestors, pinnedSkillTestRead, wakeComments] = await Promise.allSettled([
+    issueRef && !isConversation(issueContext) ? getIssueContinuationSummaryDocument(db, issueRef.id) : Promise.resolve(null),
+    issueRef ? issuesSvc.getAncestors(issueRef.id) : Promise.resolve([]),
+    isSkillTest && issueRef ? getPinnedSkillTestContext(agent.companyId, issueRef.id) : Promise.resolve(null),
+    readHeartbeatWakeComments(db, agent.companyId, readNonEmptyString(context.issueId), commentIds),
+  ]);
+  if (summary.status === "rejected") throw summary.reason;
+  if (ancestors.status === "rejected") throw ancestors.reason;
+  if (pinnedSkillTestRead.status === "rejected") throw pinnedSkillTestRead.reason;
+  if (wakeComments.status === "rejected") throw wakeComments.reason;
+  const wakeCommentRows = wakeComments.value;
+  const selectedWakeComment = issueRef && wakeCommentId ? wakeCommentRows.find(comment => comment.id === wakeCommentId && comment.issueId === issueRef.id) ?? null : null;
+  const wakeCommentContext = selectedWakeComment ? {
+    id: selectedWakeComment.id,
+    body: selectedWakeComment.deletedAt ? "" : selectedWakeComment.body,
+    authorType: selectedWakeComment.authorType,
+    authorAgentId: selectedWakeComment.authorAgentId,
+    authorUserId: selectedWakeComment.authorUserId,
+    presentation: selectedWakeComment.deletedAt ? null : selectedWakeComment.presentation,
+    metadata: selectedWakeComment.deletedAt ? null : selectedWakeComment.metadata,
+    deletedAt: selectedWakeComment.deletedAt,
+    deletedByType: selectedWakeComment.deletedByType,
+    deletedByAgentId: selectedWakeComment.deletedByAgentId,
+    deletedByUserId: selectedWakeComment.deletedByUserId,
+    deletedByRunId: selectedWakeComment.deletedByRunId,
+    sourceTrust: selectedWakeComment.sourceTrust,
+  } : null;
+  const continuationSummary = summary.value;
+  const issueAncestors = ancestors.value;
+  const pinnedSkillTestContext = pinnedSkillTestRead.value;
+  const exposeLowTrustRaw = trustPreset.kind === "low_trust_review";
+  const safeContinuationSummary =
+    continuationSummary && !exposeLowTrustRaw
+      ? redactQuarantinedBodyForHigherTrust(continuationSummary)
+      : continuationSummary;
+  const safeWakeCommentContext =
+    wakeCommentContext && !exposeLowTrustRaw
+      ? sanitizeQuarantinedCommentForHigherTrust(wakeCommentContext)
+      : wakeCommentContext;
+  if (continuationSummary) {
+    context.paperclipContinuationSummary = {
+      key: safeContinuationSummary!.key,
+      title: safeContinuationSummary!.title,
+      body: safeContinuationSummary!.body,
+      sourceTrust: safeContinuationSummary!.sourceTrust ?? null,
+      updatedAt: safeContinuationSummary!.updatedAt.toISOString(),
+    };
+  } else {
+    delete context.paperclipContinuationSummary;
+  }
   if (isSkillTest && !pinnedSkillTestContext) {
     throw new ConfigurationIncompleteFailure("The skill test's saved version is unavailable.", {
       configurationIncomplete: { reason: "skill_unavailable", actionUrl: "/skills" },
@@ -132,6 +153,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     agentId: agent.id,
     runId: run.id,
     contextSnapshot: context,
+    wakeCommentRows,
     continuationSummary,
     issueSummary: issueRef
       ? {
