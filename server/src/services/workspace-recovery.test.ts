@@ -1572,7 +1572,7 @@ describe("automatic retained workspace recovery", () => {
     return { ...t, queued: current, wake: claimedWake, followup, expectedIds: ids, latestAuthor: kind === "deferred-different" ? "third-user" : kind === "active" ? "second-user" : "operator" };
   }
 
-  async function exerciseQueuedReset(nativeDescriptor: boolean, coalesced = false, ordinary?: "active" | "deferred" | "deferred-different" | "system-deferred") {
+  async function exerciseQueuedReset(nativeDescriptor: boolean, coalesced = false, ordinary?: "active" | "deferred" | "deferred-different" | "system-deferred", earlierCandidates = false) {
     const mixed = ordinary ? await ordinaryMixedQueuedFixture(ordinary) : null;
     const t = mixed ?? await queuedResetFixture(nativeDescriptor);
     const { f, original, reset, wake, queued, deps, control, execution, queueDeps, queue } = t;
@@ -1595,12 +1595,43 @@ describe("automatic retained workspace recovery", () => {
       deps.activeRunExecutions.delete(f.runId); execution.finish(); adapterExecutionControls.delete(f.runId);
       await control.resumeRemoteStopComments(await run(f.runId));
       expect(readSystemRecovery((await action(f.actionId)).evidence)!.nextAttemptAt!).toBeLessThanOrEqual(Date.now());
+      const earlier: Awaited<ReturnType<typeof seed>>[] = [];
+      if (earlierCandidates) for (let index = 1; index <= 2; index++) {
+        const candidate = await seed("native", false, "keep_running");
+        const id = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+        await db.update(issueRecoveryActions).set({ id }).where(and(eq(issueRecoveryActions.id, candidate.actionId), eq(issueRecoveryActions.companyId, candidate.companyId)));
+        candidate.actionId = id; candidate.input.actionId = id;
+        await db.update(environmentLeases).set({ status: "active", releasedAt: null, cleanupStatus: null, metadata: candidate.lease.metadata }).where(eq(environmentLeases.id, candidate.lease.id));
+        await requestWorkspaceRecovery({ ...candidate.input, idempotencyKey: `earlier-${index}`, actorId: "board" });
+        earlier.push(candidate);
+      }
+      const ownedCompanies = [f.companyId, ...earlier.map(candidate => candidate.companyId)];
+      const seededRuns = earlierCandidates ? await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(inArray(heartbeatRuns.companyId, ownedCompanies)) : [];
+      if (earlierCandidates) {
+        await adoptHistoricalWorkspaceRecoveries(db);
+        expect((await retainedWorkspaceCandidates(db, undefined, true)).slice(0, 2).map(row => row.action.id)).toEqual(earlier.map(candidate => candidate.actionId));
+      }
+      let ownedRecoveryObserved = false;
       const onRecovered = vi.fn(async (current: Awaited<ReturnType<typeof run>>) => {
+        if (current.id !== f.runId) return;
         if (nativeDescriptor) expect(await inspectWorkspaceSource(db, { companyId: f.companyId, issueId: f.issueId,
           runId: f.runId, actionId: f.actionId })).toMatchObject({ status: "verified", scope: "recorded_source_identity" });
         await Promise.all([control.resumeRemoteStopComments(current), control.resumeRemoteStopComments(current)]);
+        ownedRecoveryObserved = true;
       });
-      const repair = async () => { await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, onRecovered) ?? []); };
+      const sweepSizes: number[] = [];
+      let firstSweepOwned: boolean | undefined;
+      const repair = async () => {
+        await vi.waitFor(async () => {
+          const work = await reconcileRetainedWorkspaces(db, f.environmentRuntime, onRecovered) ?? [];
+          sweepSizes.push(work.length);
+          await Promise.all(work);
+          firstSweepOwned ??= ownedRecoveryObserved;
+          expect(ownedRecoveryObserved).toBe(true);
+          expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+        }, { timeout: 10_000, interval: 10 });
+        expect(sweepSizes.every(size => size <= 2)).toBe(true);
+      };
       if (!nativeDescriptor) await repair();
       expect(await queue.startNextQueuedRunForAgent(original.agentId)).toEqual([]);
       expect(await queue.claimQueuedRun(await run(queued.id))).toBeNull();
@@ -1629,9 +1660,16 @@ describe("automatic retained workspace recovery", () => {
       }
       expect(queueDeps.executeRun).not.toHaveBeenCalled();
       if (nativeDescriptor) await repair();
-      expect(onRecovered).toHaveBeenCalled();
+      expect(onRecovered).toHaveBeenCalledWith(expect.objectContaining({ id: f.runId, companyId: f.companyId }));
       expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
       if (nativeDescriptor) expect(await readFile(path.join(f.host, "saved.txt"), "utf8")).toBe("finished work\n");
+      if (earlierCandidates) {
+        expect(sweepSizes[0]).toBe(2);
+        expect(firstSweepOwned).toBe(false);
+        expect(sweepSizes.length).toBeGreaterThan(1);
+        expect((await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(inArray(heartbeatRuns.companyId, ownedCompanies))).map(row => row.id).sort()).toEqual(seededRuns.map(row => row.id).sort());
+        for (const candidate of [f, ...earlier]) expect(await readFile(path.join(candidate.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+      }
       await Promise.all([control.resumeRemoteStopComments(await run(f.runId)),
         control.resumeRemoteStopComments(await run(f.runId))]);
       const [afterWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
@@ -1663,6 +1701,13 @@ describe("automatic retained workspace recovery", () => {
     { nativeDescriptor: true, title: "preserves an already queued reset until real native copyback replays its saved wake" },
     { nativeDescriptor: false, title: "does not replay a snapshot-only source without a verified native baseline" },
   ])("$title", async ({ nativeDescriptor }) => exerciseQueuedReset(nativeDescriptor), 30_000);
+
+  it("reaches its queued snapshot-only reset after earlier recovery candidates without starting agent work", async () => {
+    const previous = db;
+    db = createDb(connectionString);
+    try { await exerciseQueuedReset(false, false, undefined, true); }
+    finally { await db.$client.end(); db = previous; }
+  }, 30_000);
 
   it("preserves coalesced queued user comments until real native copyback replays the original wake", async () => {
     await exerciseQueuedReset(true, true);

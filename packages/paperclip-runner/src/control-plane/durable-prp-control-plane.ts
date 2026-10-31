@@ -54,6 +54,7 @@ const protocolVersion = RUNNER_PRP_PROTOCOL_MAX;
 const secureFrameSchema = "paperclip.runner.secure-frame.v1";
 const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const coreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
+const stagedCoreStateSchema = "paperclip.runner.durable.control-plane-state.staged-attachment.v1";
 const externalCoreStateSchema = "paperclip.runner.external-control-plane-state.v1";
 const transitionCoreStateSchema =
   "paperclip.runner.durable.control-plane-state.warm-transition.v1";
@@ -140,8 +141,17 @@ interface ConnectionLeaseRecord {
   revokedAt: string | null;
 }
 
+export interface StagedRunAttachment {
+  readonly sourceIdentity: DurableRecoveryIdentity;
+  readonly targetIdentity: DurableRecoveryIdentity;
+  readonly runAttachTemplate: Record<string, unknown>;
+  readonly templateDigest: string;
+  readonly commandId: string | null;
+}
+
 interface StoredCoreState {
-  schema: typeof coreStateSchema | typeof transitionCoreStateSchema;
+  schema: typeof coreStateSchema | typeof transitionCoreStateSchema | typeof stagedCoreStateSchema;
+  stagedRunAttachment?: Omit<StagedRunAttachment, "runAttachTemplate"> & { runAttachTemplate?: Record<string, unknown> };
   identity: DurableRecoveryIdentity;
   /** External checkpoints contain control state, not a duplicate output log. */
   checkpointEventPolicy?: "control-v1";
@@ -311,10 +321,12 @@ type CheckpointHeader = {
   schema: "paperclip.runner.controller-checkpoint.v2";
   runnerVersion: string;
   runnerDigest: string;
-  state: Omit<StoredCoreState, "commands" | "committedEvents" | "ackedSourceSeq" | "replayDeliveries">;
+  state: Omit<StoredCoreState, "commands" | "committedEvents" | "ackedSourceSeq" | "replayDeliveries" | "stagedRunAttachment">
+    & { stagedRunAttachment?: Omit<StagedRunAttachment, "runAttachTemplate"> };
 };
 
 function checkpointRunId(state: StoredCoreState): string {
+  if (state.stagedRunAttachment) return state.stagedRunAttachment.targetIdentity.runId;
   if (state.warmTransition) return state.warmTransition.receipt.newIdentity.runId;
   const attachment = state.commands.findLast(command => command.type === "run.attach");
   const next = attachment?.payload.paperclipNextAuthority as { identity?: { runId?: string } } | undefined;
@@ -347,17 +359,19 @@ function checkpointChanges(records: ReadonlyMap<string, string>, runId: string, 
 function captureCheckpoint(state: StoredCoreState, runnerVersion: string, runnerDigest: string): DurablePrpCheckpoint {
   const runId = checkpointRunId(state);
   const records = new Map<string, string>();
-  const { commands, committedEvents, ackedSourceSeq: _cursor, replayDeliveries: _replays, ...metadata } = state;
+  const { commands, committedEvents, ackedSourceSeq: _cursor, replayDeliveries: _replays, stagedRunAttachment, ...metadata } = state;
+  const stagedDescriptor = stagedRunAttachment ? (({ runAttachTemplate: _template, ...descriptor }) => descriptor)(stagedRunAttachment) : undefined;
+  if (stagedRunAttachment?.commandId === null) records.set("staged-attachment-template", JSON.stringify(stagedRunAttachment.runAttachTemplate));
   const latestUsage = committedEvents.findLast(event => event.eventType === "usage.reported");
   const recoveryEvents = committedEvents.filter(event => !isStreamingEvent(event) || event === latestUsage);
   for (const command of commands) records.set(`command:${command.controllerSeq}`, JSON.stringify(command));
   for (const event of recoveryEvents) records.set(`event:${event.sourceSeq}`, JSON.stringify(event));
   const header: CheckpointHeader = { schema: "paperclip.runner.controller-checkpoint.v2",
-    runnerVersion, runnerDigest, state: { ...metadata, checkpointEventPolicy: "control-v1" } };
+    runnerVersion, runnerDigest, state: { ...metadata, ...(stagedDescriptor ? { stagedRunAttachment: stagedDescriptor } : {}), checkpointEventPolicy: "control-v1" } };
   records.set("header", JSON.stringify(header));
   records.set("cursor", JSON.stringify({ ackedSourceSeq: state.ackedSourceSeq, replayDeliveries: state.replayDeliveries,
     commandCount: commands.length, eventCount: recoveryEvents.length }));
-  const maintenance = new Set(["runner.drain", "runner.suspend", "session.snapshot", "session.close"]);
+  const maintenance = new Set(["turn.stop", "runner.drain", "runner.suspend", "session.snapshot", "session.close"]);
   return {
     runnerVersion, runnerDigest, runId, records, ...checkpointChanges(records, runId),
     recoveryEvidence: { runnerInstanceId: state.identity.runnerInstanceId, normalizedSessionId: state.identity.normalizedSessionId,
@@ -397,8 +411,40 @@ export function inspectDurablePrpCheckpointHeader(contents: string): DurableReco
     const header = parseCheckpointHeader(contents);
     if (header.schema !== "paperclip.runner.controller-checkpoint.v2"
       || header.state.checkpointEventPolicy !== "control-v1"
-      || ![coreStateSchema, transitionCoreStateSchema].includes(String(header.state.schema))) return null;
+      || ![coreStateSchema, transitionCoreStateSchema, stagedCoreStateSchema].includes(String(header.state.schema))
+      || (header.state.schema === stagedCoreStateSchema && !validStagedRunAttachment(header.state as unknown as StoredCoreState, true))) return null;
     return { ...header.state.identity };
+  } catch { return null; }
+}
+
+/** Bounded checkpoint metadata inspection; never itself grants recovery authority. */
+export function inspectStagedRunAttachmentHeader(contents: string): {
+  attachment: Omit<StagedRunAttachment, "runAttachTemplate">; runnerVersion: string; runnerDigest: string;
+  protocolIdentity: DurableRecoveryIdentity;
+  phase: "source_bootstrap" | "attachment_queued" | "awaiting_result" | "prepared" | "activated" | "completed";
+  receipt: DurableWarmRunTransition | null;
+} | null {
+  try {
+    if (Buffer.byteLength(contents) > maxStateBytes) return null;
+    const header = parseCheckpointHeader(contents), state = header.state as unknown as StoredCoreState;
+    if (header.schema !== "paperclip.runner.controller-checkpoint.v2"
+      || state.checkpointEventPolicy !== "control-v1" || !validStagedRunAttachment(state, true)
+      || !state.stagedRunAttachment) return null;
+    const transition = state.warmTransition;
+    const completed = stagedTargetActivated(state) ? state.completedWarmTransition : undefined;
+    const bound = transition ?? completed;
+    if (bound) {
+      const receipt = bound.receipt;
+      const result = transition?.phase === "awaiting_result" ? transition.expectedResult : bound.command.result;
+      const expected = warmTransitionReceipt(receipt.oldIdentity, bound.command, result!, receipt.oldAckedSourceSeq,
+        { leaseId: receipt.leaseId, expiresAtUnixMs: receipt.leaseExpiresAtUnixMs, revocationEpoch: receipt.leaseRevocationEpoch },
+        header.runnerVersion, header.runnerDigest);
+      if (canonicalJson(expected) !== canonicalJson(receipt)) return null;
+    }
+    return { attachment: structuredClone(state.stagedRunAttachment), protocolIdentity: structuredClone(state.identity),
+      phase: transition?.phase ?? (completed ? "completed" : state.stagedRunAttachment.commandId ? "attachment_queued" : "source_bootstrap"),
+      receipt: bound ? structuredClone(bound.receipt) : null,
+      runnerVersion: header.runnerVersion, runnerDigest: header.runnerDigest };
   } catch { return null; }
 }
 
@@ -423,9 +469,14 @@ function checkpointState(records: ReadonlyMap<string, string>) {
   }
   const cursor = v2 ? read("cursor") : header.state;
   if (!isRecord(cursor) || (v2 && (cursor.commandCount !== commandKeys.length || cursor.eventCount !== eventKeys.length
-    || records.size !== commandKeys.length + eventKeys.length + 2))) throw new Error("native_runner_checkpoint_incomplete");
+    || records.size !== commandKeys.length + eventKeys.length + 2 + (isRecord(header.state.stagedRunAttachment) && header.state.stagedRunAttachment.commandId === null ? 1 : 0)))) throw new Error("native_runner_checkpoint_incomplete");
   const state = { ...header.state, ackedSourceSeq: cursor.ackedSourceSeq, replayDeliveries: cursor.replayDeliveries,
-    commands: commandKeys.map(read), committedEvents: eventKeys.map(read) };
+    commands: commandKeys.map(read), committedEvents: eventKeys.map(read) } as unknown as StoredCoreState;
+  if (state.stagedRunAttachment?.commandId === null) {
+    const template = read("staged-attachment-template");
+    if (!isRecord(template)) throw new Error("native_runner_checkpoint_invalid");
+    state.stagedRunAttachment = { ...state.stagedRunAttachment, runAttachTemplate: template };
+  }
   if (!isStoredCoreState(state, header.state.identity)) throw new Error("native_runner_checkpoint_invalid");
   if (state.commands.some((command, index) => commandKeys[index] !== `command:${command.controllerSeq}`)
     || state.committedEvents.some((event, index) => eventKeys[index] !== `event:${event.sourceSeq}`)) {
@@ -683,9 +734,9 @@ function warmTransitionReceipt(
 
 function validStoredWarmTransition(state: StoredCoreState): boolean {
   const transition = state.warmTransition;
-  if (!transition) return state.schema === coreStateSchema;
+  if (!transition) return state.schema === coreStateSchema || (state.schema === stagedCoreStateSchema && validStagedRunAttachment(state));
   if (
-    state.schema !== transitionCoreStateSchema ||
+    (state.schema !== transitionCoreStateSchema && state.schema !== stagedCoreStateSchema) ||
     !["awaiting_result", "prepared", "activated"].includes(transition.phase) ||
     !isRecord(transition.receipt) ||
     !isRecord(transition.command) ||
@@ -802,6 +853,76 @@ function unsettledSemanticInput(
   }
 }
 
+function stagedCommandMatches(staged: Pick<StagedRunAttachment, "targetIdentity" | "templateDigest" | "commandId">, command: DurableRecoveryCoreCommand): boolean {
+  if (command.type !== "run.attach" || command.commandId !== staged.commandId) return false;
+  const { paperclipNextAuthority, ...template } = command.payload;
+  return isRecord(paperclipNextAuthority)
+    && canonicalJson(paperclipNextAuthority.identity) === canonicalJson(staged.targetIdentity)
+    && `sha256:${canonicalDigest(template)}` === staged.templateDigest;
+}
+
+function stagedAttachmentTemplate(state: StoredCoreState): Record<string, unknown> | null {
+  const staged = state.stagedRunAttachment;
+  if (!staged) return null;
+  if (staged.commandId === null) return staged.runAttachTemplate ?? null;
+  const command = state.commands?.find(command => command.commandId === staged.commandId)
+    ?? state.warmTransition?.command ?? state.completedWarmTransition?.command;
+  if (!command || !stagedCommandMatches(staged, command)) return null;
+  const { paperclipNextAuthority: _authority, ...template } = command.payload;
+  return template;
+}
+
+function stagedTargetActivated(state: StoredCoreState): boolean {
+  const staged = state.stagedRunAttachment, completed = state.completedWarmTransition;
+  return !!staged && !state.warmTransition && !!completed
+    && canonicalJson(state.identity) === canonicalJson(staged.targetIdentity)
+    && completed.receipt.commandId === staged.commandId
+    && canonicalJson(completed.receipt.oldIdentity) === canonicalJson(staged.sourceIdentity)
+    && canonicalJson(completed.receipt.newIdentity) === canonicalJson(staged.targetIdentity)
+    && stagedCommandMatches(staged, completed.command);
+}
+
+function validStagedRunAttachment(state: StoredCoreState, headerOnly = false): boolean {
+  const staged = state.stagedRunAttachment;
+  if (staged === undefined) return state.schema !== stagedCoreStateSchema;
+  if (!(state.schema === stagedCoreStateSchema && isRecord(staged)
+    && Object.keys(staged).sort().join(",") === (headerOnly || staged.commandId !== null ? "commandId,sourceIdentity,targetIdentity,templateDigest" : "commandId,runAttachTemplate,sourceIdentity,targetIdentity,templateDigest")
+    && exactIdentity(staged.sourceIdentity) && exactIdentity(staged.targetIdentity)
+    && staged.sourceIdentity.runId !== staged.targetIdentity.runId
+    && ["runnerInstanceId", "environmentLeaseId", "normalizedSessionId"].every(key =>
+      staged.sourceIdentity[key as keyof DurableRecoveryIdentity] === staged.targetIdentity[key as keyof DurableRecoveryIdentity])
+    && /^sha256:[0-9a-f]{64}$/.test(staged.templateDigest)
+    && (headerOnly || staged.commandId !== null || (isRecord(staged.runAttachTemplate) && isRecord(staged.runAttachTemplate.provider)
+      && staged.runAttachTemplate.paperclipNextAuthority === undefined
+      && `sha256:${canonicalDigest(staged.runAttachTemplate)}` === staged.templateDigest
+      && Buffer.byteLength(JSON.stringify(staged.runAttachTemplate)) <= maxCommandBytes))
+    && (staged.commandId === null || (typeof staged.commandId === "string" && stableIdPattern.test(staged.commandId))))) return false;
+  const sourceCurrent = canonicalJson(state.identity) === canonicalJson(staged.sourceIdentity);
+  if (!sourceCurrent && canonicalJson(state.identity) !== canonicalJson(staged.targetIdentity)) return false;
+  if (state.warmTransition) {
+    const transition = state.warmTransition;
+    return staged.commandId !== null && stagedCommandMatches(staged, transition.command)
+      && canonicalJson(transition.receipt.oldIdentity) === canonicalJson(staged.sourceIdentity)
+      && canonicalJson(transition.receipt.newIdentity) === canonicalJson(staged.targetIdentity)
+      && (sourceCurrent ? transition.phase !== "activated" : transition.phase === "activated");
+  }
+  if (!sourceCurrent) return stagedTargetActivated(state);
+  if (staged.commandId === null) return true;
+  // Header-only inspection cannot certify the separate command record. Full
+  // restoration below requires its exact tuple, payload and command ID.
+  return !Array.isArray(state.commands) || state.commands.some(command => stagedCommandMatches(staged, command));
+}
+
+/** Inspection is evidence only; the caller still owns recovery authorization. */
+export function inspectStagedRunAttachment(state: unknown, expectedTarget?: DurableRecoveryIdentity): StagedRunAttachment | null {
+  try {
+    if (!isRecord(state) || !exactIdentity(state.identity) || !isStoredCoreState(state, state.identity)
+      || !state.stagedRunAttachment || (expectedTarget && canonicalJson(state.stagedRunAttachment.targetIdentity) !== canonicalJson(expectedTarget))) return null;
+    const template = stagedAttachmentTemplate(state);
+    return template ? { ...structuredClone(state.stagedRunAttachment), runAttachTemplate: structuredClone(template) } : null;
+  } catch { return null; }
+}
+
 function isStoredCoreState(
   value: unknown,
   identity: DurableRecoveryIdentity,
@@ -811,7 +932,7 @@ function isStoredCoreState(
   const events = value.committedEvents;
   if (
     (value.schema !== coreStateSchema &&
-      value.schema !== transitionCoreStateSchema) ||
+      value.schema !== transitionCoreStateSchema && value.schema !== stagedCoreStateSchema) ||
     canonicalJson(value.identity) !== canonicalJson(identity) ||
     (value.checkpointEventPolicy !== undefined && value.checkpointEventPolicy !== "control-v1") ||
     !isRecord(value.tickets) ||
@@ -828,6 +949,7 @@ function isStoredCoreState(
   ) {
     return false;
   }
+  if (!validStagedRunAttachment(value as unknown as StoredCoreState)) return false;
   if (!validStoredWarmTransition(value as unknown as StoredCoreState))
     return false;
   if (value.completedWarmTransition !== undefined) {
@@ -1758,6 +1880,7 @@ class AuthorityConnection {
 /** Authenticated, replay-safe PRP transport authority. Business operations are caller supplied. */
 export class DurablePrpControlPlane {
   #identity: DurableRecoveryIdentity;
+  #stagedTargetCheckpointPublished: string | null = null;
   readonly #store: DurableCoreStore;
   #expectedRunnerVersion: string;
   #expectedRunnerDigest: string;
@@ -1854,7 +1977,12 @@ export class DurablePrpControlPlane {
       cached.set(part, prior?.record === record ? prior : { record, command: JSON.parse(record) });
     }
     this.#publicationCommands = cached;
-    return { ...header.state, ...cursor, commands: [...cached.values()].map(value => value.command),
+    const descriptor = header.state.stagedRunAttachment;
+    const workingStage = this.#store.state.stagedRunAttachment;
+    const staged = descriptor?.commandId === null ? { ...descriptor,
+      runAttachTemplate: workingStage?.templateDigest === descriptor.templateDigest && workingStage.runAttachTemplate
+        ? workingStage.runAttachTemplate : JSON.parse(snapshot.records.get("staged-attachment-template")!) as Record<string, unknown> } : descriptor;
+    return { ...header.state, ...(staged ? { stagedRunAttachment: staged } : {}), ...cursor, commands: [...cached.values()].map(value => value.command),
       // Event records are immutable after insertion. Retain their array, not
       // another deep copy of the streaming payload window.
       committedEvents: this.#store.state.committedEvents };
@@ -2323,6 +2451,23 @@ export class DurablePrpControlPlane {
     return ticket;
   }
 
+  /** Import exact durable handoff evidence for a caller-verified surviving participant; issues no credential. */
+  prepareWarmTransitionAdoption(input: { transitionId: string; runnerState: Record<string, unknown> }): void {
+    this.#store.assertWritable();
+    const pending = input.runnerState.warmTransition;
+    const proof = warmTransitionRecoveryProof({ controlPlaneState: this.#store.state, runnerState: input.runnerState,
+      expectedNewIdentity: (isRecord(pending) && isRecord(pending.receipt) ? pending.receipt.newIdentity : null) as DurableRecoveryIdentity,
+      expectedRunnerVersion: this.#expectedRunnerVersion, expectedRunnerDigest: this.#expectedRunnerDigest });
+    if (!proof || proof.transition.receipt.transitionId !== input.transitionId || !this.#store.state.stagedRunAttachment) {
+      throw new Error("Warm transition adoption snapshot proof is not authorized.");
+    }
+    if (this.#store.state.warmTransition && canonicalJson(this.#store.state.warmTransition) === canonicalJson(proof.transition)) return;
+    const candidate = structuredClone(this.#store.state);
+    candidate.schema = stagedCoreStateSchema;
+    candidate.warmTransition = structuredClone(proof.transition);
+    this.#store.commit(candidate);
+  }
+
   /** Caller-owned recovery admission is required; a receipt is not a credential. */
   issueWarmTransitionBootstrapTicket(
     input: {
@@ -2361,7 +2506,7 @@ export class DurablePrpControlPlane {
       original.expiresAtUnixMs,
     );
     const candidate = structuredClone(this.#store.state);
-    candidate.schema = transitionCoreStateSchema;
+    candidate.schema = candidate.stagedRunAttachment ? stagedCoreStateSchema : transitionCoreStateSchema;
     candidate.warmTransition = structuredClone(transition);
     candidate.tickets[material.credentialId] = {
       recordId: `bootstrap_ticket_${randomUUID()}`,
@@ -2380,6 +2525,36 @@ export class DurablePrpControlPlane {
     return ticket;
   }
 
+  /** Caller confirms its existing session-checkpoint transaction committed. No journal write. */
+  markStagedTargetCheckpointPublished(identity: DurableRecoveryIdentity): boolean {
+    if (!stagedTargetActivated(this.#store.state) || canonicalJson(identity) !== canonicalJson(this.#store.state.identity)) return false;
+    this.#stagedTargetCheckpointPublished = canonicalJson(identity);
+    return true;
+  }
+
+  /** Durable intent precedes source restoration; it is never a dispatched command. */
+  stageRunAttachment(targetIdentity: DurableRecoveryIdentity, runAttachTemplate: Record<string, unknown>): void {
+    this.#store.assertWritable();
+    const existing = this.#store.state.stagedRunAttachment;
+    if (existing && !(stagedTargetActivated(this.#store.state)
+      && this.#stagedTargetCheckpointPublished === canonicalJson(this.#store.state.identity)
+      && targetIdentity.runId !== existing.targetIdentity.runId)) {
+      if (!validStagedRunAttachment(this.#store.state)
+        || canonicalJson(existing.targetIdentity) !== canonicalJson(targetIdentity)
+        || canonicalJson(stagedAttachmentTemplate(this.#store.state)) !== canonicalJson(runAttachTemplate)) {
+        throw new Error("Staged run attachment conflicts with its durable intent.");
+      }
+      return;
+    }
+    const candidate = structuredClone(this.#store.state);
+    candidate.schema = stagedCoreStateSchema;
+    candidate.stagedRunAttachment = { sourceIdentity: structuredClone(candidate.identity),
+      targetIdentity: structuredClone(targetIdentity), runAttachTemplate: structuredClone(runAttachTemplate),
+      templateDigest: `sha256:${canonicalDigest(runAttachTemplate)}`, commandId: null };
+    if (!validStagedRunAttachment(candidate)) throw new Error("Staged run attachment binding is invalid.");
+    this.#store.commit(candidate);
+  }
+
   queueCommand(
     type: string,
     payload: Record<string, unknown> = {},
@@ -2387,6 +2562,21 @@ export class DurablePrpControlPlane {
     deliverImmediately = false,
   ): DurableRecoveryCoreCommand {
     this.#store.assertWritable();
+    const staged = this.#store.state.stagedRunAttachment;
+    const retireStaged = stagedTargetActivated(this.#store.state) && (type === "turn.start"
+      || (this.#stagedTargetCheckpointPublished === canonicalJson(this.#store.state.identity)
+        && !["runner.drain", "session.snapshot", "turn.stop", "runner.suspend", "session.close"].includes(type)));
+    if (staged && !retireStaged) {
+      if (type === "run.attach") {
+        const { paperclipNextAuthority, ...template } = payload;
+        if (!isRecord(paperclipNextAuthority)
+          || canonicalJson(paperclipNextAuthority.identity) !== canonicalJson(staged.targetIdentity)
+          || `sha256:${canonicalDigest(template)}` !== staged.templateDigest
+          || (staged.commandId !== null && staged.commandId !== commandId)) throw new Error("Staged run attachment command conflicts.");
+      } else if (!stagedTargetActivated(this.#store.state) && !["runner.drain", "session.open", "session.snapshot", "turn.stop", "runner.suspend", "session.close", "semantic_tool.result"].includes(type)) {
+        throw new Error("Staged run attachment permits recovery maintenance only.");
+      }
+    }
     const transition = this.#store.state.warmTransition;
     if (transition && transition.phase !== "activated") {
       if (
@@ -2461,6 +2651,16 @@ export class DurablePrpControlPlane {
     if (Buffer.byteLength(JSON.stringify(command)) > maxCommandBytes)
       throw new CommandJournalLimitError("command_payload_too_large");
     this.#store.state.commands.push(command);
+    if (staged && !retireStaged && type === "run.attach") {
+      const { runAttachTemplate: _template, ...descriptor } = staged;
+      this.#store.state.stagedRunAttachment = { ...descriptor, commandId: command.commandId };
+    } else if (retireStaged) {
+      // Native runtime persists the recovered session before its first turn.
+      // Read/goal controls during opening must not retire startup evidence.
+      delete this.#store.state.stagedRunAttachment;
+      this.#store.state.schema = coreStateSchema;
+      this.#stagedTargetCheckpointPublished = null;
+    }
     this.#store.save();
     void this.flushCheckpoint().catch(() => undefined);
     if (deliverImmediately) {
@@ -2677,7 +2877,7 @@ export class DurablePrpControlPlane {
       }
       if (transition) {
         const candidate = structuredClone(this.#store.state);
-        candidate.schema = coreStateSchema;
+        candidate.schema = candidate.stagedRunAttachment ? stagedCoreStateSchema : coreStateSchema;
         candidate.leases[transition.credentialId]!.identity = structuredClone(
           receipt.newIdentity,
         );
@@ -3205,8 +3405,9 @@ export class DurablePrpControlPlane {
       }
       if (transition.phase === "prepared") {
         const candidate = initialCoreState(transition.receipt.newIdentity);
+        candidate.stagedRunAttachment = structuredClone(this.#store.state.stagedRunAttachment);
         candidate.preparedLaunchConfigurations = structuredClone(this.#store.state.preparedLaunchConfigurations);
-        candidate.schema = transitionCoreStateSchema;
+        candidate.schema = candidate.stagedRunAttachment ? stagedCoreStateSchema : transitionCoreStateSchema;
         candidate.warmTransition = {
           ...structuredClone(transition),
           phase: "activated",
@@ -3507,7 +3708,7 @@ export class DurablePrpControlPlane {
       )!;
       completed.status = "completed";
       completed.result = structuredClone(result);
-      candidate.schema = transitionCoreStateSchema;
+      candidate.schema = candidate.stagedRunAttachment ? stagedCoreStateSchema : transitionCoreStateSchema;
       candidate.warmTransition = {
         receipt,
         phase: "prepared",

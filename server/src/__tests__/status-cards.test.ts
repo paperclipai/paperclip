@@ -2,7 +2,7 @@ import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   activityLog,
@@ -636,6 +636,71 @@ describeEmbeddedPostgres("status card routes", () => {
 
     const refreshIssue = await db.select().from(issues).where(eq(issues.title, "Rebuild status card: Recently updated launch tasks")).then((rows) => rows[0]!);
     expect(refreshIssue).toMatchObject({ status: "cancelled" });
+  });
+
+  it("keeps the current refresh writable after an older revision loses its claim", async () => {
+    const company = await seedCompany();
+    const summarizer = await seedSummarizer(company.id);
+    const service = statusCardService(db);
+    const realIssues = issueService(db);
+    await realIssues.create(company.id, { title: "Watched blocker", status: "blocked", priority: "medium" });
+    const card = await service.create(company.id, {
+      interestPrompt: "Revision race", titlePinned: false,
+      refreshPolicy: { ...defaultStatusCardRefreshPolicy, mode: "interval", intervalMinutes: 15 },
+    }, { agentId: null, userId: "board-user" });
+    await db.update(statusCards).set({
+      state: "active", fingerprint: {},
+      queries: [{ scope: "issues", status: ["blocked"], sort: "updated", limit: 20, offset: 0 }] as typeof card.queries,
+    }).where(eq(statusCards.id, card.id));
+
+    const oldGate = Promise.withResolvers<void>();
+    const currentGate = Promise.withResolvers<void>();
+    let oldIssueId: string | undefined;
+    let currentIssueId: string | undefined;
+    const blockedIssues = (which: "old" | "current") => ({
+      ...realIssues,
+      update: async (...args: Parameters<typeof realIssues.update>) => {
+        const result = await realIssues.update(...args);
+        if (args[1].description) {
+          if (which === "old") { oldIssueId = args[0]; await oldGate.promise; }
+          else { currentIssueId = args[0]; await currentGate.promise; }
+        }
+        return result;
+      },
+    });
+    const oldRefresh = statusCardService(db, { issuesSvc: blockedIssues("old") })
+      .requestRefresh(card.id, { trigger: "interval" });
+    let currentRefresh: ReturnType<typeof service.requestRefresh> | undefined;
+    try {
+      await vi.waitFor(() => expect(oldIssueId).toBeTruthy());
+      // Ordinary policy editing changes the card revision without changing the
+      // watched fingerprint. Both refreshes have created their task before the
+      // old loser cleans up; the current refresh has not yet claimed the card.
+      await service.update((await service.getById(card.id))!, {
+        refreshPolicy: defaultStatusCardRefreshPolicy,
+      }, { agentId: null, userId: "board-user" });
+      currentRefresh = statusCardService(db, { issuesSvc: blockedIssues("current") })
+        .requestRefresh(card.id, { trigger: "manual" });
+      await vi.waitFor(() => expect(currentIssueId).toBeTruthy());
+      oldGate.resolve();
+      await oldRefresh;
+      currentGate.resolve();
+      const current = await currentRefresh;
+      const savedIssue = await realIssues.getById(current.generatingIssue!.id);
+      expect(savedIssue).toMatchObject({ status: "todo" });
+      expect(current.generatingIssue!.id).not.toBe(oldIssueId);
+      const run = await seedRun(company.id, summarizer.id);
+      await db.update(issues).set({ checkoutRunId: run.id }).where(eq(issues.id, savedIssue!.id));
+      await service.writeSummary(card.id, {
+        generationIssueId: savedIssue!.id, markdown: "Current revision summary",
+        changeSummary: "Summarized the current revision", model: "test",
+      }, { agentId: summarizer.id, runId: run.id });
+      expect(await service.getById(card.id)).toMatchObject({ generatingIssueId: null });
+      expect(await realIssues.getById(oldIssueId!)).toMatchObject({ status: "cancelled" });
+    } finally {
+      oldGate.resolve(); currentGate.resolve();
+      await Promise.allSettled([oldRefresh, ...(currentRefresh ? [currentRefresh] : [])]);
+    }
   });
 
   it("finalizes cancelled generation tasks as failed ledger entries", async () => {

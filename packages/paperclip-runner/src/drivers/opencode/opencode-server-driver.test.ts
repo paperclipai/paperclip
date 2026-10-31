@@ -1799,7 +1799,7 @@ describe("OpenCodeServerDriver", () => {
     await recovered!.session!.close({ reason: "recovery-test" });
   });
 
-  it("normalizes native question.asked events and replies with ordered OpenCode answer arrays", async () => {
+  it("preserves omitted native custom defaults and replies with ordered OpenCode answer arrays", async () => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-question-"));
     const workspace = await mkdtemp(
