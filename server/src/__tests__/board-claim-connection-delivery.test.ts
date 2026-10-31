@@ -160,7 +160,9 @@ describePostgres("board claim wakes connection delivery", () => {
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     let hold = false;
-    delivery = await startConnectionDelivery(db, { beforeSweep: async () => {
+    const observed: string[] = [];
+    delivery = await startConnectionDelivery(db, { afterSweep: async () => {
+      if (delivery) observed.push((await card()).status);
       if (hold) { entered.resolve(); await release.promise; }
     } });
     const baseline = delivery.sweeps;
@@ -175,13 +177,16 @@ describePostgres("board claim wakes connection delivery", () => {
       await initializeBoardClaimChallenge(db, { deploymentMode: "authenticated" });
       const next = new URL(getBoardClaimWarningUrl("127.0.0.1", 3197)!);
       await claimBoardOwnership(db, { ...f.claim, token: next.pathname.split("/").pop()!, code: next.searchParams.get("code")! });
+      expect(delivery.sweeps).toBe(baseline + 1);
+      await pending();
     } finally {
       hold = false;
       release.resolve();
     }
-    await delivery.settle(baseline + 2);
+    await delivery.settle(baseline + 3);
     await retired(f.connection.id);
-    expect(delivery.sweeps).toBe(baseline + 2);
+    expect(delivery.sweeps).toBe(baseline + 3);
+    expect(observed).toEqual(["pending", "expired", "expired"]);
   });
 
   it("keeps a committed claim pending during drain and retires after reopen", async () => {
@@ -190,9 +195,14 @@ describePostgres("board claim wakes connection delivery", () => {
     delivery = await startConnectionDelivery(db, { canRun: () => admitted });
     const baseline = delivery.sweeps;
     admitted = false;
-    await claimBoardOwnership(db, f.claim);
+    await db.transaction(async tx => {
+      await claimBoardOwnership(tx as unknown as typeof db, f.claim);
+      expect(databaseWorkPending(db, DELIVERY_QUEUES.connection)).toBe(true);
+      await pending();
+    });
     await delivery.settle();
     expect(delivery.sweeps).toBe(baseline);
+    expect(databaseWorkPending(db, DELIVERY_QUEUES.connection)).toBe(false);
     await pending();
     admitted = true;
     delivery.wake();
