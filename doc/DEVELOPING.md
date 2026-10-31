@@ -1234,9 +1234,11 @@ the managed runner default, consistent with execution's template selection.
 ### Local Linux runner qualification
 
 Before serving requests, the server reads `getconf GNU_LIBC_VERSION` once with
-an asynchronous subprocess, a one-second timeout, and a 1 KiB output limit.
-Runner discovery reuses those immutable platform facts. This check does not
-generate a Node diagnostic report or resolve socket hostnames.
+a synchronous subprocess, a one-second timeout, and a 1 KiB output limit. The
+command usually finishes in a few milliseconds. The timeout counts only the
+subprocess time, so slow module loading cannot discard the result. Runner
+discovery reuses those immutable platform facts. This check does not generate a
+Node diagnostic report or resolve socket hostnames.
 
 If `getconf` is missing, fails, times out, or returns an unrecognized version,
 the local libc remains unknown and automatic GNU/Linux runner selection stays
