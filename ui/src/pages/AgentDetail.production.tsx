@@ -1032,13 +1032,15 @@ export function AgentDetail() {
   });
 
   const budgetMutation = useMutation({
-    mutationFn: (amount: number) =>
-      budgetsApi.upsertPolicy(resolvedCompanyId!, {
+    mutationFn: (changes: Partial<Pick<BudgetPolicySummary, "amount" | "warnPercent" | "hardStopEnabled" | "notifyEnabled">> | number) => {
+      const payload = typeof changes === "number" ? { amount: changes } : changes;
+      return budgetsApi.upsertPolicy(resolvedCompanyId!, {
         scopeType: "agent",
         scopeId: agent?.id ?? routeAgentRef,
-        amount,
         windowKind: "calendar_month_utc",
-      }),
+        ...payload,
+      });
+    },
     onSuccess: () => {
       if (!resolvedCompanyId) return;
       queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
@@ -1578,7 +1580,10 @@ export function AgentDetail() {
           <BudgetPolicyCard
             summary={agentBudgetSummary}
             isSaving={budgetMutation.isPending}
-            onSave={(amount) => budgetMutation.mutate(amount)}
+            onSave={(amount) => budgetMutation.mutate({ amount })}
+            onHardStopEnabledChange={(hardStopEnabled) => budgetMutation.mutate({ hardStopEnabled })}
+            onWarnPercentChange={(warnPercent) => budgetMutation.mutate({ warnPercent })}
+            onNotifyEnabledChange={(notifyEnabled) => budgetMutation.mutate({ notifyEnabled })}
             variant="plain"
           />
         </div>
