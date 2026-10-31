@@ -6150,9 +6150,14 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       if (!versionId || (selectedKeys && !selectedKeys.has(key))) continue;
       const [version] = await db.select({ skillId: companySkillVersions.companySkillId }).from(companySkillVersions)
         .where(and(eq(companySkillVersions.companyId, companyId), eq(companySkillVersions.id, versionId)));
-      skills = skills.filter(skill => skill.key !== key);
+      // A saved JSONB selection map has a different key order from the fresh
+      // name/key query. Replace existing rows in place so pinning versions does
+      // not reorder the server-produced preference (and its session fingerprint).
+      const index = skills.findIndex(skill => skill.key === key);
+      if (index !== -1) skills.splice(index, 1);
       const owner = version ? await getById(companyId, version.skillId) : null;
-      if (owner) skills.push({ ...owner, key, slug: owner.key === key ? owner.slug : key.split("/").at(-1)! });
+      if (owner) skills.splice(index === -1 ? skills.length : index, 0,
+        { ...owner, key, slug: owner.key === key ? owner.slug : key.split("/").at(-1)! });
     }
     await packages.prefetch(companyId, skills.flatMap(skill => {
       const id = options.versionSelections?.get(skill.key) ?? skill.currentVersionId;
