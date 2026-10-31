@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events";
+import { createServer, request } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import {
   closeHttpListenerForShutdown,
@@ -294,6 +296,40 @@ describe("closeHttpListenerForShutdown", () => {
       );
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("closes a real listener that a streaming client holds open after a startup failure", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write("data: open\n\n");
+    });
+    let client: ReturnType<typeof request> | undefined;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+      });
+      const { port } = server.address() as AddressInfo;
+      await new Promise<void>((resolve, reject) => {
+        client = request({ host: "127.0.0.1", port, path: "/stream" }, (res) => {
+          res.once("data", () => resolve());
+          res.once("error", reject);
+        });
+        client.once("error", reject);
+        client.end();
+      });
+
+      const started = Date.now();
+      await expect(
+        closeHttpListenerForShutdown({ server, signal: "startup_failure", timeoutMs: 200, log: stubLogger() }),
+      ).resolves.toBe("timed_out");
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(server.listening).toBe(false);
+    } finally {
+      client?.destroy();
+      server.closeAllConnections();
+      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 
