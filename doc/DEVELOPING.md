@@ -110,8 +110,9 @@ and the [agent case reference](../skills/paperclip/references/cases.md).
 Task detail, heartbeat context, and closed-workspace admission guards read stored
 workspace metadata. They do not inspect Git or refresh live runtime health.
 Task context includes persisted runtime service state; delivery state is unknown
-until an explicit workspace read or lifecycle inspection computes it. Use the
-workspace detail and close-readiness APIs for current Git safety checks.
+until an explicit close-readiness or lifecycle inspection computes it. Workspace
+detail reads also return unknown delivery state without running Git or contacting
+a storage provider. Use close-readiness for current Git safety checks.
 
 ## Deployment Modes
 
@@ -3493,12 +3494,13 @@ Every delivery and request still checks current permissions. Grant revocation,
 deleted tasks, missing runs, and cross-company run IDs remain fail-closed.
 The developer-server health poll also stops in hidden tabs.
 
-Workspace detail responses share concurrent Git inspections and reuse their
-results for up to thirty seconds after completion. Workspace identity and metadata
-changes invalidate the cached result. The cache holds at most 256
-entries. Close-readiness checks and final cleanup validation request separate
-Git scans that cannot join an older in-flight scan. A display result never
-authorizes worktree removal.
+Workspace detail responses return stored metadata and runtime service information
+without inspecting Git, resolving delivery PRs, or reconciling remote storage.
+This also keeps operation-history reads, login handoffs, runtime controls and
+metadata updates from inspecting storage through their common workspace lookup.
+Delivery state stays `unknown` on these reads. Explicit close-readiness and final
+cleanup validation still inspect current Git state; neither uses a display result
+to authorize removal.
 
 The terminal-workspace reaper uses the database work coordinator. Startup scans
 recover existing workspace rows in bounded pages. Issue status and tree changes,
@@ -3507,7 +3509,13 @@ their transaction before writing. The coordinator wakes after the outer
 transaction settles and holds idle admission while writes or cleanup are active.
 Empty and nonterminal-only lanes have no recurring timer or query. Terminal trees
 schedule their actual cooldown deadline; unresolved delivery or cleanup eligibility
-is checked again after five minutes. Nonterminal trees, cooldowns, and active runs
+is checked again after five minutes. Providers that explicitly declare
+`supportsMergeAncestry: false` are inspected for automatic cleanup only when a
+matching merged PR can provide delivery evidence. With no matching PR work
+product, the unchanged workspace has no delivery-inspection deadline; existing
+work-product notifications and startup recovery reconsider it. Open or unknown
+remote PRs and unfinished cleanup retain their retries. Missing declarations keep
+the previous ancestry-inspection behavior. Nonterminal trees, cooldowns, and active runs
 are checked before Git. The worker shares Git readiness across compatible rows
 that point at one directory within a bounded page. Company, branch, base ref,
 and runtime ownership must match. Each row keeps its own task and delivery
