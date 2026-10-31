@@ -4037,13 +4037,52 @@ async function listIssueBlockerAttentionMap(
     .filter((node) => node.status !== "done")
     .map((node) => node.id);
   const explicitWaitingIssueIds = new Set<string>();
+  const agentRows: IssueBlockerAttentionAgentRow[] =
+    agentIds.size > 0
+      ? await dbOrTx
+          .select({
+            id: agents.id,
+            companyId: agents.companyId,
+            status: agents.status,
+          })
+          .from(agents)
+          .where(
+            and(
+              eq(agents.companyId, companyId),
+              inArray(agents.id, [...agentIds]),
+            ),
+          )
+      : [];
+  const agentsById = new Map(agentRows.map((agent) => [agent.id, agent]));
+  const canResumeAfterResponse = (issueId: string) => {
+    const host = nodesById.get(issueId);
+    if (
+      !host ||
+      !host.assigneeAgentId ||
+      host.status === "done" ||
+      host.status === "cancelled"
+    )
+      return false;
+    const assignee = agentsById.get(host.assigneeAgentId);
+    return Boolean(
+      assignee &&
+        assignee.companyId === companyId &&
+        BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES.has(assignee.status),
+    );
+  };
   if (explicitWaitCandidateIds.length > 0) {
     for (const chunk of chunkList(
       explicitWaitCandidateIds,
       ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE,
     )) {
-      const interactionRows: Array<{ issueId: string }> = await dbOrTx
-        .select({ issueId: issueThreadInteractions.issueId })
+      const interactionRows: Array<{
+        issueId: string;
+        continuationPolicy: string;
+      }> = await dbOrTx
+        .select({
+          issueId: issueThreadInteractions.issueId,
+          continuationPolicy: issueThreadInteractions.continuationPolicy,
+        })
         .from(issueThreadInteractions)
         .where(
           and(
@@ -4055,8 +4094,14 @@ async function listIssueBlockerAttentionMap(
             inArray(issueThreadInteractions.issueId, chunk),
           ),
         );
-      for (const row of interactionRows)
+      for (const row of interactionRows) {
+        if (
+          row.continuationPolicy === "none" ||
+          !canResumeAfterResponse(row.issueId)
+        )
+          continue;
         explicitWaitingIssueIds.add(row.issueId);
+      }
 
       const approvalRows: Array<{ issueId: string }> = await dbOrTx
         .select({ issueId: issueApprovals.issueId })
@@ -4186,24 +4231,6 @@ async function listIssueBlockerAttentionMap(
       if (healthy) explicitWaitingIssueIds.add(row.sourceIssueId);
     }
   }
-
-  const agentRows: IssueBlockerAttentionAgentRow[] =
-    agentIds.size > 0
-      ? await dbOrTx
-          .select({
-            id: agents.id,
-            companyId: agents.companyId,
-            status: agents.status,
-          })
-          .from(agents)
-          .where(
-            and(
-              eq(agents.companyId, companyId),
-              inArray(agents.id, [...agentIds]),
-            ),
-          )
-      : [];
-  const agentsById = new Map(agentRows.map((agent) => [agent.id, agent]));
 
   type PathClassification = {
     covered: boolean;
@@ -4427,12 +4454,14 @@ async function listIssueBlockerAttentionMap(
       );
     });
     if (topLevelEdges.length === 0) {
+      const hasLiveContinuation =
+        activeIssueIds.has(root.id) || explicitWaitingIssueIds.has(root.id);
       attentionMap.set(
         root.id,
         createIssueBlockerAttention({
-          state: "needs_attention",
-          reason: "attention_required",
-          terminalBlockerIssueId: root.id,
+          state: hasLiveContinuation ? "covered" : "needs_attention",
+          reason: hasLiveContinuation ? "active_work" : "attention_required",
+          terminalBlockerIssueId: hasLiveContinuation ? null : root.id,
         }),
       );
       continue;

@@ -456,6 +456,7 @@ export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs
 export type IssueBlockerAttentionReason =
   | "active_child"
   | "active_dependency"
+  | "active_work"
   | "stalled_review"
   | "attention_required"
   | null;

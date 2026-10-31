@@ -154,6 +154,129 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     return runId;
   }
 
+  it("classifies a blocked issue as covered while its own queued continuation runs after dependencies complete", async () => {
+    const { companyId, agentId } = await createCompany("PBW");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "PBW-1",
+      title: "Resumed blocked issue",
+      status: "blocked",
+    });
+    const completedDependencyId = await insertIssue({
+      companyId,
+      identifier: "PBW-2",
+      title: "Completed dependency",
+      status: "done",
+    });
+    await block({ companyId, blockerIssueId: completedDependencyId, blockedIssueId: issueId });
+    await activeRun({ companyId, agentId, issueId, status: "queued" });
+
+    const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+    expect(issue?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_work",
+      unresolvedBlockerCount: 0,
+      terminalBlockerIssueId: null,
+    });
+  });
+
+  it("keeps a blocked issue out of blocker attention while its own human-only question is pending", async () => {
+    const { companyId, agentId } = await createCompany("PBQ");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "PBQ-1",
+      title: "Waiting for a human answer",
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, questions: [] },
+    });
+
+    const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+    expect(issue?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_work",
+    });
+  });
+
+  it("does not treat an unassigned blocker question as a wake path", async () => {
+    const { companyId } = await createCompany("PBU");
+    const blockedIssueId = await insertIssue({
+      companyId,
+      identifier: "PBU-1",
+      title: "Blocked by an ownerless question",
+      status: "blocked",
+    });
+    const blockerIssueId = await insertIssue({
+      companyId,
+      identifier: "PBU-2",
+      title: "Question has no assignee to wake",
+      status: "todo",
+    });
+    await block({ companyId, blockerIssueId, blockedIssueId });
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: blockerIssueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, questions: [] },
+    });
+
+    const issue = (await svc.list(companyId, { status: "blocked" })).find(
+      (row) => row.id === blockedIssueId,
+    );
+
+    expect(issue?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      terminalBlockerIssueId: blockerIssueId,
+    });
+  });
+
+  it.each(["queued", "running"] as const)(
+    "does not let a blocked issue's own %s continuation mask an exceptional unresolved dependency",
+    async (runStatus) => {
+      const { companyId, agentId } = await createCompany("PBW");
+      const issueId = await insertIssue({
+        companyId,
+        identifier: "PBW-3",
+        title: "Blocked issue with a live continuation",
+        status: "blocked",
+      });
+      const dependencyId = await insertIssue({
+        companyId,
+        identifier: "PBW-4",
+        title: "Unassigned dependency",
+        status: "todo",
+      });
+      await block({ companyId, blockerIssueId: dependencyId, blockedIssueId: issueId });
+      await activeRun({ companyId, agentId, issueId, status: runStatus });
+
+      const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+      expect(issue?.blockerAttention).toMatchObject({
+        state: "needs_attention",
+        reason: "attention_required",
+        unresolvedBlockerCount: 1,
+        attentionBlockerCount: 1,
+        terminalBlockerIssueId: dependencyId,
+      });
+    },
+  );
+
   it("classifies a blocked parent as covered when its child has a running execution path", async () => {
     const { companyId, agentId } = await createCompany("PBC");
     const parentId = await insertIssue({ companyId, identifier: "PBC-1", title: "Parent", status: "blocked" });

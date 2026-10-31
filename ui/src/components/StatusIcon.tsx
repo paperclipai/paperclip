@@ -45,6 +45,10 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
     return `Blocked · covered by ${count} active dependencies`;
   }
 
+  if (blockerAttention.reason === "active_work") {
+    return "Blocked · covered by a live continuation or waiting action";
+  }
+
   if (blockerAttention.reason === "stalled_review") {
     const count = blockerAttention.stalledBlockerCount;
     const leaf = blockerAttention.sampleStalledBlockerIdentifier ?? blockerAttention.sampleBlockerIdentifier;

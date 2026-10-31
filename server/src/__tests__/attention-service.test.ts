@@ -1643,18 +1643,56 @@ describeEmbeddedPostgres("attention service", () => {
     expect(row?.dismissalKey).toBe(`attention:blocker:${issueId}`);
   });
 
+  it("suppresses blocked rows while their own current run is queued or running, even after dependencies complete", async () => {
+    const { companyId, workerId } = await seedCompany("ATW");
+
+    for (const status of ["queued", "running"] as const) {
+      const suffix = status === "queued" ? "1" : "2";
+      const blockedId = await insertIssue({
+        companyId,
+        identifier: `ATW-${suffix}`,
+        title: `Blocked task with ${status} wake`,
+        status: "blocked",
+      });
+      const completedBlockerId = await insertIssue({
+        companyId,
+        identifier: `ATW-${status === "queued" ? "3" : "4"}`,
+        title: "Completed dependency",
+        status: "done",
+      });
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: completedBlockerId,
+        relatedIssueId: blockedId,
+        type: "blocks",
+      });
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId: workerId,
+        status,
+        contextSnapshot: { issueId: blockedId },
+      });
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, blockedId));
+    }
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    expect(feed.items.filter((item) => item.sourceKind === "blocker_attention")).toEqual([]);
+  });
+
   it("suppresses a blocked dependency row while its blocker is actively progressing", async () => {
-    const { companyId } = await seedCompany("ATW");
+    const { companyId } = await seedCompany("ATX");
     const blockedId = await insertIssue({
       companyId,
-      identifier: "ATW-1",
+      identifier: "ATX-1",
       title: "Blocked parent",
       status: "blocked",
       blockedTransitionAt: new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() - 1),
     });
     const blockerId = await insertIssue({
       companyId,
-      identifier: "ATW-2",
+      identifier: "ATX-2",
       title: "The actual blocker",
       status: "in_progress",
     });
