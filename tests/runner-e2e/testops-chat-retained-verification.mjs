@@ -147,7 +147,7 @@ export async function extractArchive(file, destination, kind) {
 }
 
 export async function run(env = process.env) {
-  let output, executor, stage = 'executor_admission';
+  let output, executor, apiFailure, stage = 'executor_admission';
   try {
     if (!env.RUNNER_TEMP || !path.isAbsolute(env.RUNNER_TEMP)) reject('output_rejected');
     if (!/^[1-9][0-9]{0,19}$/.test(env.GITHUB_RUN_ID ?? '')) reject('executor_rejected');
@@ -179,22 +179,27 @@ export async function run(env = process.env) {
     const exported = { status: bound.result.status === 'passed' && bound.result.cleanup === 'passed' ? 'passed' : 'failed',
       cleanup: bound.result.cleanup, caseId: origin.caseId, campaignId: bound.binding.campaignId,
       count: 1, attachmentMetadata: expectedAttachments };
+    stage = 'protected_authentication';
+    const api = await testopsClient(env.ALLURE_TOKEN).catch(error => {
+      apiFailure = failureProjection(error, 'authentication'); throw error;
+    });
     stage = 'protected_snapshot';
-    const api = await testopsClient(env.ALLURE_TOKEN);
     const result = await snapshotAndReplay(async (route, method) => {
       if (method !== 'GET' || !routes.includes(route)) reject('network_route_rejected');
-      return api(route, 'GET');
+      try { return await api(route, 'GET'); }
+      catch (error) { apiFailure = failureProjection(error, 'upload_verification'); throw error; }
     }, selected, exported);
     const record = { schema: 'paperclip.chat-feature-testops-retained-verification/v1', executor, origin,
       observedAt: new Date().toISOString(), authentication: 'existing protected reporting ALLURE_TOKEN',
       historicalFailureCause: 'not established by this later snapshot', originalGradeUnchanged: true,
       selectionSha256: selectionHash, bindingSha256: bindingHash, ...result };
+    stage = 'receipt';
     await writeFile(path.join(output, 'retained-verification.json'), JSON.stringify(record, null, 2), { flag: 'wx', mode: 0o600 });
     return result.verification ? 0 : 1;
   } catch (error) {
     if (output) await writeFile(path.join(output, 'failure.json'), JSON.stringify({ schema: 'paperclip.chat-feature-testops-retained-failure/v1',
       executor, origin, stage, code: codes.has(error.message) ? error.message : 'retained_verification_failed',
-      apiFailure: failureProjection(error, 'upload_verification') }, null, 2), { flag: 'wx', mode: 0o600 });
+      ...(apiFailure ? { apiFailure } : {}) }, null, 2), { flag: 'wx', mode: 0o600 });
     return 1;
   }
 }
