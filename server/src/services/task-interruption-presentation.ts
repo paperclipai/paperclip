@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { agents, agentWakeupRequests, approvals, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issues, issueTreeHoldMembers, issueTreeHolds, projects, type Db } from "@paperclipai/db";
 import { unionAll } from "drizzle-orm/pg-core";
@@ -8,11 +8,12 @@ import { readSystemRecovery } from "./system-recovery-state.js";
 import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
 import { authorizationService } from "./authorization.js";
 import { taskWorkspaceProjectRequirements } from "./task-workspace-access.js";
+import { isAcknowledgedNativeStop } from "./acknowledged-native-stop.js";
 
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "status" | "scheduledRetryAt" | "errorCode" | "livenessState" | "resultJson"> &
-  Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error">>;
+  Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error" | "companyId" | "nativeIssueId" | "runtimeMode">>;
 type ProjectionState = {
   run?: ProjectionRun;
   action?: typeof issueRecoveryActions.$inferSelect;
@@ -26,6 +27,10 @@ type ProjectionState = {
   paused: boolean;
   approval: boolean;
 };
+
+function boundedJsonString(value: SQL, limit: number) {
+  return sql`case when jsonb_typeof(${value}) = 'string' then left(${value} #>> '{}', ${limit}) else null end`;
+}
 
 /** Recognize old persisted failures without displaying arbitrary run error text. */
 function deniedProjectId(issue: ProjectionIssue, run?: ProjectionRun): string | null | undefined {
@@ -53,6 +58,10 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
       : [agent?.pauseReason, project?.pauseReason, company?.pauseReason].some(reason => reason === "budget" || reason === "budget_exceeded")
         ? "budget" : input.paused || project?.pausedAt || agent?.status === "paused" || company?.status === "paused" ? "resume" : null;
   if (userAction) return { ...base, responsibility: "user", state: "waiting_for_user", userAction };
+  // Intentional Stop is not an unsuccessful attempt. This is presentation only;
+  // physical containment and pending cleanup keep their execution-side gates.
+  if (!wait && run.runtimeMode === "native" && run.companyId === issue.companyId && run.nativeIssueId === issue.id
+      && isAcknowledgedNativeStop({ ...run, companyId: run.companyId, nativeIssueId: run.nativeIssueId })) return base;
   if (["running", "queued"].includes(run.status)) return { ...base, state: "working" };
   const deniedProject = deniedProjectId(issue, run);
   let projectAccess: TaskInterruptionPresentation["projectAccess"];
@@ -104,12 +113,26 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const projectIds = selected.flatMap(issue => issue.projectId ? [issue.projectId] : []);
   const [runs, waits, agentRows, projectRows, pauseRows, approvalRows, companyRows] = await Promise.all([
     db.select({ issueId: requestedIssueId, id: heartbeatRuns.id, status: heartbeatRuns.status,
-      agentId: heartbeatRuns.agentId,
+      agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId,
+      nativeIssueId: heartbeatRuns.nativeIssueId, runtimeMode: heartbeatRuns.runtimeMode,
       error: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'setup_failed'
         and ${heartbeatRuns.error} = 'Project is outside this low-trust boundary.' then ${heartbeatRuns.error} else null end`,
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
       resultJson: sql<Record<string, unknown>>`jsonb_build_object('configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete',
-        'projectAccessDenied', ${heartbeatRuns.resultJson}->'projectAccessDenied')`,
+        'projectAccessDenied', ${heartbeatRuns.resultJson}->'projectAccessDenied',
+        'cancelledByActorType', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'cancelledByActorType'`, 32)},
+        'cancelledByUserId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'cancelledByUserId'`, 160)},
+        'nativeCancellation', jsonb_build_object(
+          'schema', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'schema'`, 64)},
+          'runId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'runId'`, 160)},
+          'companyId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'companyId'`, 160)},
+          'issueId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'issueId'`, 160)},
+          'scope', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'scope'`, 32)},
+          'reasonCode', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'reasonCode'`, 64)},
+          'dispatchState', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'dispatchState'`, 32)},
+          'dispatched', coalesce(${heartbeatRuns.resultJson}->'nativeCancellation'->'dispatched' = 'true'::jsonb, false),
+          'intentAuditId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'intentAuditId'`, 160)},
+          'acknowledgementAuditId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'acknowledgementAuditId'`, 160)}))`,
     }).from(requested).innerJoinLateral(latestRuns, sql`true`).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, latestRuns.id)))
       .orderBy(requestedIssueId),
     db.selectDistinctOn([wakeIssue], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt })

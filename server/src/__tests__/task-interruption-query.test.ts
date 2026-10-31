@@ -1,15 +1,49 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { agents, companies, createDb, applyPendingMigrations, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
-import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { captureInterruptionQuery, seedInterruptionFixture } from "./helpers/task-interruption-fixture.js";
 
-describe("task interruption latest run query", () => {
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TASK_INTERRUPTION_TEST_DATABASE_URL");
+const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
+describe.skipIf(!support.supported)("task interruption latest run query", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
-  beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("interruption-query-"); db = createDb(database.connectionString); }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+  beforeAll(async () => {
+    if (externalDatabaseUrl) await applyPendingMigrations(externalDatabaseUrl);
+    database = externalDatabaseUrl ? { connectionString: externalDatabaseUrl, cleanup: async () => {} }
+      : await startEmbeddedPostgresTestDatabase("interruption-query-");
+    db = createDb(database.connectionString);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
+
+  it.each(["valid", "numeric_user", "numeric_audit"] as const)("retains bounded typed Stop evidence in the real batched projection (%s)", async variant => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Stopped task", issuePrefix: `S${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Stopped agent", adapterType: "paperclip_runner" });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Keep this task in progress",
+      status: "in_progress", assigneeAgentId: agentId }).returning();
+    const nativeCancellation = { schema: "paperclip.native-cancellation.v1", companyId, runId, issueId: issue.id,
+      scope: "run", reasonCode: "cancellation_run_only", dispatchState: "acknowledged", dispatched: true,
+      intentAuditId: variant === "numeric_audit" ? 123 : randomUUID(), acknowledgementAuditId: randomUUID() };
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issue.id,
+      scopeKind: "issue", status: "cancelled", runtimeMode: "native", driverKind: "cursor_cloud_api",
+      resultJson: { cancelledByActorType: "user", cancelledByUserId: variant === "numeric_user" ? 123 : "board", nativeCancellation,
+        executionCancellation: { state: "requested" }, unrelatedPayload: "x".repeat(128_000) } });
+    const result = await taskInterruptionPresentations(db, companyId, [issue]);
+    expect(result.get(issue.id)).toMatchObject(variant === "valid"
+      ? { state: "resolved", canRetry: false } : { state: "failed", canRetry: true });
+    const query = await captureInterruptionQuery(db, taskInterruptionPresentations, companyId, [issue]);
+    const [projected] = await db.$client.unsafe(query.sql, query.params as never[]);
+    expect(projected.jsonb_build_object.nativeCancellation).toEqual({ ...nativeCancellation,
+      intentAuditId: variant === "numeric_audit" ? null : nativeCancellation.intentAuditId });
+    expect(projected.jsonb_build_object.cancelledByUserId).toBe(variant === "numeric_user" ? null : "board");
+    expect(projected).toMatchObject({ company_id: companyId, native_issue_id: issue.id, runtime_mode: "native" });
+    expect(projected.jsonb_build_object).not.toHaveProperty("unrelatedPayload");
+    expect(JSON.stringify(projected.jsonb_build_object).length).toBeLessThan(4000);
+  });
 
   it("does not inspect unrelated company history for a small issue page", async () => {
     const f = await seedInterruptionFixture(db, { selected: 2, history: 3, unrelated: 1500, payloadBytes: 4096 });
