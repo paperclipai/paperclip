@@ -186,6 +186,38 @@ describe("TaskMessageScroller", () => {
     expect(scroller().scrollTop).toBe(1000);
   });
 
+  it("retains the reading anchor when a resize scroll event precedes the next width reflow", async () => {
+    const resize: (() => void)[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { resize.push(() => callback([], this as unknown as ResizeObserver)); }
+      observe() {}
+      disconnect() {}
+    });
+    let width = 400, rowTop = 100;
+    flushSync(() => root.render(<TaskMessageScroller contentKey="width-transition">
+      <div ref={node => {
+        if (!node) return;
+        const viewport = node.parentElement!;
+        fakeGeometry(viewport, { clamp: true });
+        Object.defineProperty(viewport, "clientWidth", { get: () => width, configurable: true });
+        viewport.getBoundingClientRect = () => ({ top: 0, bottom: 400 } as DOMRect);
+      }}>
+        <div data-thread-anchor="reading-row" ref={node => {
+          if (node) node.getBoundingClientRect = () => ({ top: rowTop - scroller().scrollTop, bottom: rowTop + 100 - scroller().scrollTop, height: 100 } as DOMRect);
+        }}>Saved reply</div>
+      </div>
+    </TaskMessageScroller>));
+    await scrollTo(scroller(), 150);
+    width = 500; rowTop = 80;
+    for (const callback of resize) callback();
+    expect(scroller().scrollTop).toBe(130);
+    width = 600; rowTop = 60;
+    await dispatch(scroller(), new Event("scroll", { bubbles: true }));
+    for (const callback of resize) callback();
+    expect(rowTop - scroller().scrollTop).toBe(-50);
+    expect(pill()).not.toBeNull();
+  });
+
   it("retains upward intent when content reconciles before the scroll event", async () => {
     const load = vi.fn();
     const update = (tick: number) => flushSync(() => root.render(

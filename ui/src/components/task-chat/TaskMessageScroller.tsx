@@ -62,6 +62,7 @@ export function TaskMessageScroller({ children, contentKey, className, scrolling
   const pinnedRef = useRef(true);
   const easingRef = useRef(false);
   const clientHeightRef = useRef<number | null>(null);
+  const clientWidthRef = useRef<number | null>(null);
   const scrollbarIdleTimerRef = useRef<number | null>(null);
   const scrollbarIdleDelayRef = useRef<number | null>(null);
   const [pillPhase, setPillPhase] = useState<PillPhase>("hidden");
@@ -130,8 +131,15 @@ export function TaskMessageScroller({ children, contentKey, className, scrolling
     const el = ref.current;
     if (!el) return false;
     const previousClientHeight = clientHeightRef.current;
+    const previousClientWidth = clientWidthRef.current;
     const nextClientHeight = el.clientHeight;
     clientHeightRef.current = nextClientHeight;
+    clientWidthRef.current = el.clientWidth;
+    if (previousClientWidth != null && previousClientWidth !== el.clientWidth && !pinnedRef.current) {
+      const delta = threadScrollAnchorDelta(el, anchorRef.current, el.getBoundingClientRect().top);
+      if (delta) el.scrollTop += delta;
+      return true;
+    }
     if (
       previousClientHeight == null ||
       previousClientHeight <= 0 ||
@@ -192,7 +200,7 @@ export function TaskMessageScroller({ children, contentKey, className, scrolling
     // scroll away from the bottom.
     if (followViewportResize()) {
       rememberAnchor(false);
-      hidePill();
+      if (pinnedRef.current) hidePill();
       return;
     }
     const pinned = requestingHistory.current ? false : isPinned();
@@ -271,9 +279,10 @@ export function TaskMessageScroller({ children, contentKey, className, scrolling
     const el = ref.current;
     if (!el) return;
     clientHeightRef.current = el.clientHeight;
+    clientWidthRef.current = el.clientWidth;
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
-      if (followViewportResize()) hidePill();
+      if (followViewportResize() && pinnedRef.current) hidePill();
       reconcileContent();
     });
     observer.observe(el);
