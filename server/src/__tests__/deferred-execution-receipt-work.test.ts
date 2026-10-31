@@ -264,7 +264,7 @@ describe("deferred receipt durable dispatch", () => {
     for (const gate of ["budget", "agent"] as const) {
       deps.budgets.getInvocationBlock.mockResolvedValue(gate === "budget"
         ? { scopeType: "agent", scopeId: f.agent.id, scopeName: f.agent.name, reason: "Budget blocked" } : null);
-      deps.getAgentInvokability.mockResolvedValue({ invokable: false, message: "Paused", reason: "paused", invalidOrgChain: false });
+      deps.getAgentInvokability.mockResolvedValue({ invokable: false, message: "Paused", reason: "paused", details: {}, invalidOrgChain: false });
       const error = await queue.enqueueWakeup(f.agent.id, { source: "on_demand", reason: "task_retry",
         requestedByActorType: "user", requestedByActorId: f.actorId, payload: { issueId: f.issue.id },
         contextSnapshot: { issueId: f.issue.id, responsibleUserId: f.actorId } }, requestId).catch(cause => cause);
@@ -703,7 +703,7 @@ describe("deferred receipt durable dispatch", () => {
   it("retains a moved interrupt grace deadline after an ordinary saved queue reorder", async () => {
     const f = await fixture(), initialAt = new Date();
     const comments = await db.insert(issueComments).values(["first", "second"].map(body => ({
-      companyId: f.companyId, issueId: f.issue.id, body, authorType: "user", authorUserId: f.actorId,
+      companyId: f.companyId, issueId: f.issue.id, body, authorType: "user" as const, authorUserId: f.actorId,
     }))).returning();
     const payload = { issueId: f.issue.id, queuedCommentInterrupt: { actorId: f.actorId },
       _paperclipWakeContext: { wakeCommentIds: comments.map(row => row.id) } };
@@ -799,7 +799,7 @@ describe("deferred receipt durable dispatch", () => {
     }
     expect(resume).toHaveBeenCalledTimes(2);
   });
-  it("reactivates a saved Retry through ordinary restore cancelled task", async () => {
+  it.each([false, true])("reactivates a saved Retry through ordinary restore cancelled task (held unrelated Retry: %s)", async heldFollowup => {
     const f = await fixture(), actor = { actorType: "user" as const, actorId: f.actorId, userId: f.actorId };
     const request = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issue.id, actorId: f.actorId,
       observedRunId: f.source.id, idempotencyKey: randomUUID() });
@@ -813,20 +813,71 @@ describe("deferred receipt durable dispatch", () => {
     await heartbeat.registerScheduledRetryCancellationWork(coordinator, () => !drain).ready;
     await waitForReal(() => { expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); }, { timeout: 5_000 });
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!)))[0].runId).toBeNull();
-    await commitEligibility();
-    let runId: string | null = null;
-    await waitForReal(async () => {
-      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!));
-      expect(wake.runId, JSON.stringify(wake)).toBeTruthy(); runId = wake.runId;
-    }, { timeout: 15_000 });
-    await waitForReal(async () => {
-      await heartbeat.drainActiveRunExecutions();
-      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
-      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
-      expect(run.stdoutExcerpt).toContain("receipt-proof");
-    }, { timeout: 15_000 });
-    expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${request.requestId}`)).toHaveLength(1);
-    await finish(f.issue.id); await quiet();
+    let releaseFollowup: (() => void) | undefined;
+    let draining: Promise<void> | undefined;
+    let drained = false;
+    const providerErrors: unknown[] = [];
+    try {
+      if (heldFollowup) {
+        const other = await fixture();
+        const release = new Promise<void>(resolve => { releaseFollowup = resolve; });
+        let admitted = false;
+        const listener = createServer(async (incoming, response) => {
+          try {
+            let body = "";
+            for await (const chunk of incoming) body += chunk;
+            const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, body));
+            expect(run).toMatchObject({ companyId: other.companyId, agentId: other.agent.id, status: "running" });
+            admitted = true;
+            await release;
+            await issueService(db).update(other.issue.id, { status: "done" });
+            response.end("ok");
+          } catch (error) { providerErrors.push(error); response.statusCode = 500; response.end("failed"); }
+        });
+        extraStops.push(async () => {
+          const closed = new Promise<void>(resolve => listener.close(() => resolve()));
+          listener.closeAllConnections(); await closed;
+        });
+        await new Promise<void>(resolve => listener.listen(0, "127.0.0.1", resolve));
+        const port = (listener.address() as { port: number }).port;
+        const script = `fetch("http://127.0.0.1:${port}", {method:"POST",body:process.env.PAPERCLIP_RUN_ID}).then(async response=>{if(!response.ok)throw new Error(await response.text());console.log("held-retry-proof")}).catch(error=>{console.error(error);process.exitCode=1})`;
+        await db.update(agents).set({ adapterConfig: { command: process.execPath, args: ["-e", script], cwd: process.cwd() } }).where(eq(agents.id, other.agent.id));
+        await requestTaskRetry({ db, companyId: other.companyId, issueId: other.issue.id, actorId: other.actorId,
+          observedRunId: other.source.id, idempotencyKey: randomUUID() });
+        await waitForReal(() => expect(admitted).toBe(true), { timeout: 15_000 });
+      }
+      await commitEligibility();
+      let runId: string | null = null;
+      await waitForReal(async () => {
+        const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!));
+        expect(wake.runId, JSON.stringify(wake)).toBeTruthy(); runId = wake.runId;
+      }, { timeout: 15_000 });
+      if (heldFollowup) {
+        await waitForReal(async () => {
+          const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
+          expect(run.status).toBe("succeeded"); expect(run.stdoutExcerpt).toContain("receipt-proof");
+        }, { timeout: 15_000 });
+        draining = heartbeat.drainActiveRunExecutions().then(() => { drained = true; });
+        await immediate();
+        expect(drained).toBe(false);
+      }
+      // Observe this Retry before closing the task and draining unrelated runs.
+      await waitForReal(async () => {
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
+        expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
+        expect(run.stdoutExcerpt).toContain("receipt-proof");
+      }, { timeout: 15_000 });
+      expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${request.requestId}`)).toHaveLength(1);
+      if (heldFollowup) expect(drained).toBe(false);
+      releaseFollowup?.();
+      await finish(f.issue.id);
+      await draining;
+      expect(providerErrors).toEqual([]);
+      await quiet();
+    } finally {
+      releaseFollowup?.();
+      await draining;
+    }
   });
   it("member archive publishes committed eligibility while preserving a cancelled Retry tombstone", async () => {
     const f = await fixture(), departing = `departing-${randomUUID()}`;
