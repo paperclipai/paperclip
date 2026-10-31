@@ -23,8 +23,8 @@ const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>>
   issue_document_updated: "issue.document.updated",
   issue_document_deleted: "issue.document.deleted",
   issue_blockers_updated: "issue.relations.updated",
-  approval_approved: "approval.decided",
-  approval_rejected: "approval.decided",
+  approval_approved: "approval.approved",
+  approval_rejected: "approval.rejected",
   approval_revision_requested: "approval.decided",
   budget_soft_threshold_crossed: "budget.incident.opened",
   budget_hard_threshold_crossed: "budget.incident.opened",
@@ -148,6 +148,22 @@ export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActi
   return readNonEmptyString(company?.defaultResponsibleUserId);
 }
 
+// approval.approved / approval.rejected historically reached plugins as the
+// catch-all approval.decided: the specific constants were missing from
+// PLUGIN_EVENT_TYPES, so the dot-form route actions fell through to the
+// underscore map. Now that the specific events exist, keep emitting the legacy
+// approval.decided alongside them so existing subscribers continue to receive
+// approval decisions.
+function legacyCompanionEvent(event: PluginEvent): PluginEvent | null {
+  switch (event.eventType) {
+    case "approval.approved":
+    case "approval.rejected":
+      return { ...event, eventId: randomUUID(), eventType: "approval.decided" };
+    default:
+      return null;
+  }
+}
+
 export function publishActivity(publication: ActivityPublication) {
   const finish = beginRunPhase("execution.realtime");
   try {
@@ -156,7 +172,11 @@ export function publishActivity(publication: ActivityPublication) {
     type: "activity.logged",
     payload: publication.payload,
   });
-  if (publication.pluginEvent) publishPluginDomainEvent(publication.pluginEvent);
+  if (publication.pluginEvent) {
+    publishPluginDomainEvent(publication.pluginEvent);
+    const legacy = legacyCompanionEvent(publication.pluginEvent);
+    if (legacy) publishPluginDomainEvent(legacy);
+  }
   } catch (error) {
     finish(true);
     throw error;
