@@ -237,14 +237,14 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: ${{ needs.qualification_daemons.outputs.runner_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-runner-inputs
           merge-multiple: true
       - name: Download target-owned Linux provider-pack identities
         if: needs.qualification_daemons.outputs.provider_pack_artifact_prefix != ''
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: ${{ needs.qualification_daemons.outputs.provider_pack_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-provider-pack-inputs
@@ -314,7 +314,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: ${{ inputs.artifact_name }}-public-packages
           path: ${{ runner.temp }}/public-runner-packs
