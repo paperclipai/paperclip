@@ -33,6 +33,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { runGitIsolated } from "./helpers/git.js";
 import {
   EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY,
   EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY,
@@ -173,7 +174,7 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 async function runGit(cwd: string, args: string[]) {
-  await execFileAsync("git", ["-C", cwd, ...args], { cwd });
+  await runGitIsolated(cwd, args);
 }
 
 async function readGit(cwd: string, args: string[]) {
