@@ -272,6 +272,53 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await quiet(); expect(errors).toEqual([]);
   }, 30_000);
 
+  it("bounds active-hours conversion work across twenty cards and repeated ordinary company writes", async () => {
+    vi.setSystemTime(new Date("2026-11-02T18:00:00Z"));
+    const hoursPolicy = { ...policy(), activeHours: { start: "09:00", end: "17:00", timezone: "UTC" } };
+    const cards = [];
+    for (let i = 0; i < 20; i++) cards.push(await card("reactive", hoursPolicy));
+    await start(); await quiet();
+    const RealFormatter = Intl.DateTimeFormat;
+    const actualParts = RealFormatter.prototype.formatToParts;
+    let constructions = 0, conversions = 0;
+    const constructor = vi.spyOn(Intl, "DateTimeFormat").mockImplementation(function (...args: ConstructorParameters<typeof Intl.DateTimeFormat>) {
+      if (args[0] === "en-GB" && args[1]?.hourCycle === "h23") constructions++;
+      return new RealFormatter(...args);
+    } as unknown as typeof Intl.DateTimeFormat);
+    const parts = vi.spyOn(RealFormatter.prototype, "formatToParts").mockImplementation(function (this: Intl.DateTimeFormat, date) {
+      if (this.resolvedOptions().locale === "en-GB" && this.resolvedOptions().hourCycle === "h23") conversions++;
+      return actualParts.call(this, date);
+    });
+    const target = await issueService(db).create(companyId, { title: "Closed-hours blocker", status: "blocked", priority: "medium" });
+    await settled();
+    expect(constructions).toBeLessThanOrEqual(1);
+    expect(conversions).toBeLessThanOrEqual(1000);
+    const cold = { constructions, conversions };
+    constructions = 0; conversions = 0;
+    for (let i = 0; i < 10; i++) {
+      await issueService(db).addComment(target.id, `Closed-hours human update ${i}`, { userId: "board-user" });
+      await settled();
+    }
+    expect(constructions).toBe(0);
+    expect(conversions).toBeGreaterThanOrEqual(200);
+    expect(conversions).toBeLessThanOrEqual(800);
+    expect(wakeup).not.toHaveBeenCalled();
+    const opening = new Date("2026-11-03T09:00:00Z");
+    for (const created of cards) expect((await statusCardService(db).getById(created.id)))
+      .toMatchObject({ state: "paused_hours", pendingChangeCount: 1, nextEvalAt: opening });
+    process.stdout.write(JSON.stringify({ measurement: "status-card company active-hours workload", cards: 20,
+      sourceWrites: 11, cold, warm: { constructions, conversions } }) + "\n");
+    constructor.mockRestore(); parts.mockRestore();
+    await vi.advanceTimersByTimeAsync(opening.getTime() - Date.now()); await settled();
+    expect(wakeup).toHaveBeenCalledTimes(20);
+    for (const created of cards) {
+      const generated = (await statusCardService(db).getById(created.id))!;
+      expect(generated.generatingIssueId).toBeTruthy();
+      await writeback(created.id, generated.generatingIssueId!);
+    }
+    await quiet(); expect(errors).toEqual([]);
+  }, 60_000);
+
   it("cancels archived or disabled future work and replaces an earlier interval deadline", async () => {
     await start(); let created = await card("interval"); await settled();
     const old = coordinator!.nextWakeAt();
