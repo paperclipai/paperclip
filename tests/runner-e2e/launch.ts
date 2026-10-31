@@ -50,6 +50,7 @@ import { packageEvidence } from "./evidence.js";
 import { privateCellEvidenceOwner } from "./manual-private-report-assets.js";
 import { readManualPrivateHandoff, sealManualResultEvidence, preserveOriginalFrameworkResult, sealStandardOriginalEvidence, type ManualPrivateHandoff } from "./manual-private-handoff.js";
 import { requiresPrivateManualEvidence } from "./manual-private-retention.js";
+import { appendPrivateAttemptDiagnostic } from "./private-attempt-diagnostic.js";
 import { copySharedEvidence } from "./shared-evidence.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { mustPreserveRecoveryState, shouldKeepFailedDiagnostics } from "./cleanup-verification.js";
@@ -929,6 +930,7 @@ async function runAttempt(input: {
       await copyHealthHelloDetail(temporaryRoot, candidate.id, uploadDir, credentials);
       await copyRetainedSourceSdk(temporaryRoot, candidate.id, result.source?.sha ?? null, uploadDir, credentials);
       evidenceStage = "seal-original";
+      if (manualPrivateHandoff) await appendPrivateAttemptDiagnostic({ stage: evidenceStage, result }).catch(() => {});
       if (manualPrivateHandoff) await sealStandardOriginalEvidence({ context: manualPrivateHandoff,
         executionId: candidate.id, source: casePrivateDir, evidence: originalEvidence, secrets: credentials, expectPassScreenshot: originalFeaturePassed });
       console.log(
@@ -952,6 +954,7 @@ async function runAttempt(input: {
       const fallback = syntheticResult(candidate, attempt, startedAtMs, "Attempt terminated before a worker result was retained");
       const original = await readResult(path.join(casePrivateDir, "result.json"), fallback);
       const result = abnormalFinalizationResult(original, error);
+      if (manualPrivateHandoff) await appendPrivateAttemptDiagnostic({ stage: evidenceStage, result: original, error }).catch(() => {});
       console.error(`Attempt finalization stopped at ${evidenceStage}; original status=${original.status}; failureClass=${original.failureClass ?? "none"}`);
       if (databaseLane === "owned-docker-postgres") result.databaseIdentity = dockerDatabase ? publicDockerDatabaseIdentity(dockerDatabase.receipt) : (await dockerDatabaseLaunchState(databaseLane, temporaryRoot)).identity;
       const uploadDir = path.join(resultsRoot, campaignId, candidate.suite.id, candidate.profile.id, candidate.environment.id, candidate.task.id, `attempt-${attempt}`);
