@@ -10,6 +10,7 @@ import { badRequest, conflict, notFound, unprocessable } from "../../../errors.j
 import type { ActorInfo, ToolAccessMutationDb } from "../types.js";
 import { lockProfileEntryReferences, lockToolAssignmentAgents } from "../assignment-locks.js";
 import { normalizeKey } from "../identifiers.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import { toProfile, toProfileEntry, toProfileBinding, profileCatalogColumns, profileReviewCatalogColumns, pendingNewToolsForProfile, buildProfileDetails } from "./projection.js";
 
 export function createToolProfileService(db: Db, now: () => Date) {
@@ -192,20 +193,23 @@ export function createToolProfileService(db: Db, now: () => Date) {
     const nowAt = now();
     let createdEntries: ToolProfileEntry[] = [];
     if (allowTools.length > 0) {
-      const rows = await db
-        .insert(toolProfileEntries)
-        .values(
-          allowTools.map((tool) => ({
-            companyId: profile.companyId,
-            profileId: profile.id,
-            selectorType: "catalog_entry" as const,
-            effect: "include" as const,
-            applicationId: tool.applicationId,
-            connectionId: tool.connectionId,
-            catalogEntryId: tool.catalogEntryId,
-          })),
-        )
-        .returning();
+      const rows = await db.transaction(async (tx) => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+        return tx
+          .insert(toolProfileEntries)
+          .values(
+            allowTools.map((tool) => ({
+              companyId: profile.companyId,
+              profileId: profile.id,
+              selectorType: "catalog_entry" as const,
+              effect: "include" as const,
+              applicationId: tool.applicationId,
+              connectionId: tool.connectionId,
+              catalogEntryId: tool.catalogEntryId,
+            })),
+          )
+          .returning();
+      });
       createdEntries = rows.map(toProfileEntry);
     }
 
@@ -467,19 +471,23 @@ export function createToolProfileService(db: Db, now: () => Date) {
     ): Promise<ToolProfileWithDetails> => {
       await managementContext?.reauthorize();
       await assertProfileEntryInputs(db, companyId, input.entries ?? []);
-      const [row] = await db
-        .insert(toolProfiles)
-        .values({
-          companyId,
-          profileKey: input.profileKey,
-          name: input.name,
-          description: input.description ?? null,
-          status: input.status ?? "active",
-          defaultAction: input.defaultAction ?? "deny",
-          metadata: input.metadata ?? {},
-        })
-        .returning();
-      await createProfileEntries(companyId, row.id, input.entries ?? []);
+      const row = await db.transaction(async (tx) => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+        const [row] = await tx
+          .insert(toolProfiles)
+          .values({
+            companyId,
+            profileKey: input.profileKey,
+            name: input.name,
+            description: input.description ?? null,
+            status: input.status ?? "active",
+            defaultAction: input.defaultAction ?? "deny",
+            metadata: input.metadata ?? {},
+          })
+          .returning();
+        await createProfileEntries(companyId, row.id, input.entries ?? [], tx);
+        return row;
+      });
       return profileDetails(row.id, companyId);
     },
 
@@ -572,49 +580,53 @@ export function createToolProfileService(db: Db, now: () => Date) {
             asc(toolProfileBindings.createdAt),
           ),
       ]);
-      const [created] = await db
-        .insert(toolProfiles)
-        .values({
-          companyId: existing.companyId,
-          profileKey: normalizeKey(`${input.name}-${randomUUID().slice(0, 8)}`),
-          name: input.name,
-          description: existing.description,
-          status: "active",
-          defaultAction: existing.defaultAction,
-          newToolsReviewedAt: existing.newToolsReviewedAt,
-          metadata: existing.metadata ?? {},
-        })
-        .returning();
-      if (entries.length > 0) {
-        await db.insert(toolProfileEntries).values(
-          entries.map((entry) => ({
-            companyId: entry.companyId,
-            profileId: created.id,
-            selectorType: entry.selectorType,
-            effect: entry.effect,
-            applicationId: entry.applicationId,
-            connectionId: entry.connectionId,
-            catalogEntryId: entry.catalogEntryId,
-            toolName: entry.toolName,
-            riskLevel: entry.riskLevel,
-            conditions: entry.conditions,
-          })),
-        );
-      }
-      if (input.includeAssignments && bindings.length > 0) {
-        await db.insert(toolProfileBindings).values(
-          bindings.map((binding) => ({
-            companyId: binding.companyId,
-            profileId: created.id,
-            targetType: binding.targetType,
-            targetId: binding.targetId,
-            priority: binding.priority,
-            metadata: binding.metadata ?? {},
-            createdByAgentId: binding.createdByAgentId,
-            createdByUserId: binding.createdByUserId,
-          })),
-        );
-      }
+      const created = await db.transaction(async (tx) => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+        const [created] = await tx
+          .insert(toolProfiles)
+          .values({
+            companyId: existing.companyId,
+            profileKey: normalizeKey(`${input.name}-${randomUUID().slice(0, 8)}`),
+            name: input.name,
+            description: existing.description,
+            status: "active",
+            defaultAction: existing.defaultAction,
+            newToolsReviewedAt: existing.newToolsReviewedAt,
+            metadata: existing.metadata ?? {},
+          })
+          .returning();
+        if (entries.length > 0) {
+          await tx.insert(toolProfileEntries).values(
+            entries.map((entry) => ({
+              companyId: entry.companyId,
+              profileId: created.id,
+              selectorType: entry.selectorType,
+              effect: entry.effect,
+              applicationId: entry.applicationId,
+              connectionId: entry.connectionId,
+              catalogEntryId: entry.catalogEntryId,
+              toolName: entry.toolName,
+              riskLevel: entry.riskLevel,
+              conditions: entry.conditions,
+            })),
+          );
+        }
+        if (input.includeAssignments && bindings.length > 0) {
+          await tx.insert(toolProfileBindings).values(
+            bindings.map((binding) => ({
+              companyId: binding.companyId,
+              profileId: created.id,
+              targetType: binding.targetType,
+              targetId: binding.targetId,
+              priority: binding.priority,
+              metadata: binding.metadata ?? {},
+              createdByAgentId: binding.createdByAgentId,
+              createdByUserId: binding.createdByUserId,
+            })),
+          );
+        }
+        return created;
+      });
       return profileDetails(created.id, existing.companyId);
     },
 
