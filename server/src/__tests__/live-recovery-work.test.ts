@@ -29,6 +29,8 @@ import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent
 import { issueTreeControlService } from "../services/issue-tree-control.js";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { issueService } from "../services/issues.js";
+import { nativeRetryCancellationEligible, pendingFailedNativeRetryCancellationCondition } from "../services/native-runtime/native-cancellation-request.js";
+import { requestNativeQuestionRunCancellation } from "../services/native-runtime/native-question-bridge.js";
 import { readNativeLocalProcessStop } from "../services/native-local-process-stop.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { logger } from "../middleware/logger.js";
@@ -159,6 +161,78 @@ describe("residual recovery production matrix", () => {
     await start(); await issueService(db).update(f.issue.id, { status: "done" });
     await vi.waitFor(async () => expect((await getRun(run.id)).status).toBe("cancelled"), { timeout: 15_000 });
     expect((await getRun(run.id)).resultJson).toMatchObject({ cancelledByIssueStatus: "done", cancelledIssueId: f.issue.id });
+    await quiet();
+  });
+  it.each([false, true])("finishes a question cancellation whose run fails into a pending native retry before consumption (partial Stop fault: %s)", async partialStopFault => {
+    const f = await fixture();
+    let stopReceipt: Record<string, unknown> | undefined;
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      status: "running", runtimeMode: "native", nativeIssueId: f.issue.id, nativePhase: "awaiting_input",
+      contextSnapshot: { issueId: f.issue.id } }).returning();
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issue.id,
+      runId: run.id, phase: "observed", recoveryState: "awaiting_evidence" });
+    if (partialStopFault) {
+      await db.execute(sql`create sequence question_cancel_failure_once`);
+      await db.execute(sql.raw(`create function question_cancel_failure_once() returns trigger language plpgsql as $$
+        begin if new.id = '${run.id}'::uuid and new.status = 'cancelled' and nextval('question_cancel_failure_once') = 1
+          then raise exception 'fixture question cancellation commit unavailable'; end if; return new; end $$`));
+      await db.execute(sql`create trigger question_cancel_failure_once before update on heartbeat_runs for each row execute function question_cancel_failure_once()`);
+      extraStops.push(async () => {
+        await db.execute(sql`drop trigger if exists question_cancel_failure_once on heartbeat_runs`);
+        await db.execute(sql`drop function if exists question_cancel_failure_once()`);
+        await db.execute(sql`drop sequence if exists question_cancel_failure_once`);
+      });
+    }
+    const marker = { version: 1, issueId: f.issue.id, kind: "issue_terminal", issueStatus: "done" };
+    const history = await db.insert(heartbeatRuns).values(Array.from({ length: 25 }, () => ({
+      companyId: f.companyId, agentId: f.agent.id, runtimeMode: "native", nativeIssueId: f.issue.id,
+      status: "failed", finishedAt: new Date(), nativePhase: "terminal_failure",
+      contextSnapshot: { nativeQuestionCancellation: marker }, resultJson: { nativeCancellation: {
+        schema: "paperclip.native-cancellation.v1", runId: randomUUID(), companyId: f.companyId, issueId: f.issue.id,
+        scope: "run", intentId: randomUUID(), intentAuditId: randomUUID(), dispatched: false, dispatchState: "pending",
+      } },
+    }))).returning();
+    await db.insert(nativeRunFinalizations).values(history.map(row => ({ companyId: f.companyId, issueId: f.issue.id,
+      runId: row.id, phase: "terminal_failure", failureCode: "native_retry_cancelled", recoveryState: "blocked" })));
+    draining = true; await start();
+    expect(await db.transaction(tx => requestNativeQuestionRunCancellation(tx, { companyId: f.companyId,
+      issueId: f.issue.id, sourceRunId: run.id, idempotencyKey: `paperclip-runner-question:${run.id}:raced-question`,
+      payload: { questionSet: {}, runtimeRequestId: "raced-question" },
+    }, { kind: "issue_terminal", issueStatus: "done" }))).toBe(run.id);
+    expect((await getRun(run.id)).contextSnapshot?.nativeQuestionCancellation).toMatchObject(marker);
+    await db.transaction(async tx => {
+      await notifyExecutionRunWork(tx, { companyId: f.companyId, runId: run.id, agentId: f.agent.id });
+      await tx.update(heartbeatRuns).set({ status: "failed", nativePhase: "retryable_failure", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, run.id));
+      await tx.update(nativeRunFinalizations).set({ phase: "retryable_failure", recoveryState: "resuming_session",
+        nextAttemptAt: new Date(), leaseOwner: null, leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, run.id));
+    });
+    draining = false; await advance(1_000);
+    if (partialStopFault) {
+      await vi.waitFor(() => expect(errors).toHaveLength(1));
+      expect(errors.shift()).toBeInstanceOf(AggregateError);
+      expect((await getRun(run.id)).status).toBe("failed");
+      const saved = await getRun(run.id);
+      stopReceipt = saved.resultJson?.nativeCancellation as Record<string, unknown>;
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: "native_retry_cancelled", resultId: null });
+      expect(nativeRetryCancellationEligible({ runId: run.id, companyId: f.companyId, issueId: f.issue.id,
+        resultJson: saved.resultJson }, coordinator)).toBe(true);
+      const [debt] = await db.select({ pending: pendingFailedNativeRetryCancellationCondition() }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run.id));
+      expect(debt.pending).toBe(true);
+    }
+    await advance(30_000);
+    await vi.waitFor(async () => expect((await getRun(run.id)).status).toBe("cancelled"));
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0])
+      .toMatchObject({ phase: "terminal_failure", failureCode: "native_retry_cancelled", nextAttemptAt: null });
+    if (stopReceipt) expect((await getRun(run.id)).resultJson?.nativeCancellation).toMatchObject({
+      intentId: stopReceipt.intentId, intentAuditId: stopReceipt.intentAuditId,
+      acknowledgementAuditId: stopReceipt.acknowledgementAuditId,
+    });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(26);
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.eventType, "native.process_start_requested"))).toEqual([]);
+    expect((await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.id} <> ${run.id}`)).every(row => row.status === "failed")).toBe(true);
     await quiet();
   });
   it("preserves a fresh foreign controller until exact expiry and admits one process retry across two owners", async () => {
@@ -339,6 +413,30 @@ describe("residual recovery production matrix", () => {
       await tx.update(agents).set({ status: "running", updatedAt: old }).where(eq(agents.id, f.agent.id));
     });
     await start(); await vi.waitFor(async () => expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0].status).toBe("idle"));
+    await quiet();
+  });
+  it("retains only skipped agent lock work until a lock-only transaction releases it", async () => {
+    const f = await fixture(), old = new Date(Date.now() - 6 * 60_000);
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "succeeded", finishedAt: old });
+    await db.update(agents).set({ status: "running", updatedAt: old }).where(eq(agents.id, f.agent.id));
+    let release!: () => void, locked!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { locked = resolve; });
+    const lock = db.transaction(async tx => {
+      await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, f.agent.id)).for("update");
+      locked(); await held;
+    });
+    try {
+      await ready; await start();
+      expect(deadlines.get("stranded-agent-status")!()).toBe(Date.now() + 30_000);
+      expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0].status).toBe("running");
+    } finally { release(); await lock; }
+    await advance(29_999);
+    expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0].status).toBe("running");
+    await advance(1);
+    await vi.waitFor(async () => expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0].status).toBe("idle"));
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.agent.id),
+      eq(activityLog.action, "agent.status_reconciled")))).toHaveLength(1);
     await quiet();
   });
   it("moves the silence threshold on actual output and folds same-run completion only at strict snooze expiry", async () => {
