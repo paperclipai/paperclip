@@ -14,9 +14,13 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
+  CONSENT_VALUE_DIGEST_VERSION,
   changeConsentGateService,
+  consentValueDigest,
   skillChangeTargetKey,
 } from "../services/change-consent-gate.js";
+
+const PROPOSED_VALUES = { instructions: "Tighten the workflow." };
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -94,6 +98,8 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
       actorAgentId: coachId,
       actorRunId: randomUUID(),
       targetKeys: [targetKey],
+      expectedValueDigest: consentValueDigest(targetKey, PROPOSED_VALUES),
+      requiresHumanResolver: false,
     })).rejects.toMatchObject({
       status: 403,
       details: { code: "reflection_coach_mutation_gate_required" },
@@ -115,7 +121,14 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
         version: 1,
         prompt: "Apply this Reflection Coach skill diff?",
         detailsMarkdown: "```diff\n+Tighten the workflow.\n```",
-        target: { type: "custom", key: targetKey, revisionId: "proposal-v1" },
+        target: {
+          type: "custom",
+          key: targetKey,
+          revisionId: "proposal-v1",
+          proposedValues: PROPOSED_VALUES,
+          valueDigest: consentValueDigest(targetKey, PROPOSED_VALUES),
+          digestVersion: CONSENT_VALUE_DIGEST_VERSION,
+        },
       },
       result: { version: 1, outcome: "accepted" },
       resolvedByUserId: "board-user",
@@ -127,6 +140,8 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
       actorAgentId: coachId,
       actorRunId: sourceRunId,
       targetKeys: [targetKey],
+      expectedValueDigest: consentValueDigest(targetKey, PROPOSED_VALUES),
+      requiresHumanResolver: false,
     })).rejects.toMatchObject({
       status: 403,
       details: { code: "reflection_coach_mutation_gate_required" },
@@ -149,7 +164,14 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
         version: 1,
         prompt: "Apply this Reflection Coach skill diff?",
         detailsMarkdown: "```diff\n+Tighten the workflow.\n```",
-        target: { type: "custom", key: targetKey, revisionId: "proposal-v1" },
+        target: {
+          type: "custom",
+          key: targetKey,
+          revisionId: "proposal-v1",
+          proposedValues: PROPOSED_VALUES,
+          valueDigest: consentValueDigest(targetKey, PROPOSED_VALUES),
+          digestVersion: CONSENT_VALUE_DIGEST_VERSION,
+        },
       },
       result: { version: 1, outcome: "accepted" },
       resolvedByUserId: "board-user",
@@ -162,6 +184,8 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
       actorAgentId: coachId,
       actorRunId,
       targetKeys: [targetKey],
+      expectedValueDigest: consentValueDigest(targetKey, PROPOSED_VALUES),
+      requiresHumanResolver: false,
     })).resolves.toBe(true);
 
     const [stored] = await db
@@ -192,7 +216,14 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
         version: 1,
         prompt: "Apply this Reflection Coach skill diff?",
         detailsMarkdown: "```diff\n+Tighten the workflow.\n```",
-        target: { type: "custom", key: targetKey, revisionId: "proposal-v1" },
+        target: {
+          type: "custom",
+          key: targetKey,
+          revisionId: "proposal-v1",
+          proposedValues: PROPOSED_VALUES,
+          valueDigest: consentValueDigest(targetKey, PROPOSED_VALUES),
+          digestVersion: CONSENT_VALUE_DIGEST_VERSION,
+        },
       },
       result: { version: 1, outcome: "accepted" },
       resolvedByUserId: "board-user",
@@ -204,6 +235,8 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
       actorAgentId: coachId,
       actorRunId: randomUUID(),
       targetKeys: [targetKey],
+      expectedValueDigest: consentValueDigest(targetKey, PROPOSED_VALUES),
+      requiresHumanResolver: false,
     })).resolves.toBe(true);
 
     await expect(changeConsentGateService(db).assertConsented({
@@ -211,39 +244,77 @@ describeEmbeddedPostgres("changeConsentGateService", () => {
       actorAgentId: coachId,
       actorRunId: randomUUID(),
       targetKeys: [targetKey],
+      expectedValueDigest: consentValueDigest(targetKey, PROPOSED_VALUES),
+      requiresHumanResolver: false,
     })).rejects.toMatchObject({
       status: 403,
       details: { code: "reflection_coach_mutation_gate_required" },
     });
   });
 
-  it("allows legacy Reflection Coach target keys for durable accepted interactions", async () => {
-    const { companyId, coachId, sourceRunId, proposalIssueId, skillId, targetKey } = await seedGateFixture();
+  async function seedLegacySkillCard(ctx: {
+    companyId: string;
+    coachId: string;
+    sourceRunId: string;
+    proposalIssueId: string;
+    skillId: string;
+  }) {
     await db.insert(issueThreadInteractions).values({
       id: randomUUID(),
-      companyId,
-      issueId: proposalIssueId,
+      companyId: ctx.companyId,
+      issueId: ctx.proposalIssueId,
       kind: "request_confirmation",
       status: "accepted",
       continuationPolicy: "wake_assignee_on_accept",
-      sourceRunId,
-      createdByAgentId: coachId,
+      sourceRunId: ctx.sourceRunId,
+      createdByAgentId: ctx.coachId,
       payload: {
         version: 1,
         prompt: "Apply this Reflection Coach skill diff?",
         detailsMarkdown: "```diff\n+Tighten the workflow.\n```",
-        target: { type: "custom", key: `reflection-coach:company-skill:${skillId}`, revisionId: "proposal-v1" },
+        target: { type: "custom", key: `reflection-coach:company-skill:${ctx.skillId}`, revisionId: "proposal-v1" },
       },
       result: { version: 1, outcome: "accepted" },
       resolvedByUserId: "board-user",
       resolvedAt: new Date(),
     });
+  }
+
+  it("still resolves legacy Reflection Coach target keys, and fails them closed without a digest", async () => {
+    const ctx = await seedGateFixture();
+    await seedLegacySkillCard(ctx);
 
     await expect(changeConsentGateService(db).assertConsented({
-      companyId,
-      actorAgentId: coachId,
+      companyId: ctx.companyId,
+      actorAgentId: ctx.coachId,
       actorRunId: randomUUID(),
-      targetKeys: [targetKey],
-    })).resolves.toBe(true);
+      targetKeys: [ctx.targetKey],
+      expectedValueDigest: consentValueDigest(ctx.targetKey, PROPOSED_VALUES),
+      requiresHumanResolver: false,
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "consent_value_digest_absent" },
+    });
+  });
+
+  it("redeems a legacy digest-less card under the warn kill switch", async () => {
+    const ctx = await seedGateFixture();
+    await seedLegacySkillCard(ctx);
+
+    const previous = process.env.PAPERCLIP_CONSENT_VALUE_DIGEST;
+    process.env.PAPERCLIP_CONSENT_VALUE_DIGEST = "warn";
+    try {
+      await expect(changeConsentGateService(db).assertConsented({
+        companyId: ctx.companyId,
+        actorAgentId: ctx.coachId,
+        actorRunId: randomUUID(),
+        targetKeys: [ctx.targetKey],
+        expectedValueDigest: consentValueDigest(ctx.targetKey, PROPOSED_VALUES),
+        requiresHumanResolver: false,
+      })).resolves.toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_CONSENT_VALUE_DIGEST;
+      else process.env.PAPERCLIP_CONSENT_VALUE_DIGEST = previous;
+    }
   });
 });

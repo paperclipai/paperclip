@@ -120,6 +120,13 @@ import {
   type ActivityPublication,
 } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
+import {
+  CONSENT_VALUE_DIGEST_VERSION,
+  consentValueDigest,
+  consentValuesTouchAuthorityField,
+  isConsentValueDigestTargetKey,
+  renderConsentValuesMarkdown,
+} from "./change-consent-gate.js";
 import { getNativeReviewAssignment } from "./native-runtime/native-review-participant.js";
 import {
   assertIssueReviewVerdictActorAllowed,
@@ -424,6 +431,7 @@ export function resolveInteractionPolicy(args: {
   governance: InteractionResolverGovernance;
   hasToolAction: boolean;
   hasSecretProposal?: boolean;
+  hasAuthorityFieldProposal?: boolean;
 }) {
   const kindGovernance = args.governance[args.kind];
   const requestedPolicyInput =
@@ -438,7 +446,7 @@ export function resolveInteractionPolicy(args: {
   let effectiveResolverPolicy = requestedResolverPolicy;
   let effectiveResolverPolicySource: IssueThreadInteractionEffectiveResolverPolicySource =
     "requested";
-  if (args.hasToolAction || args.hasSecretProposal) {
+  if (args.hasToolAction || args.hasSecretProposal || args.hasAuthorityFieldProposal) {
     effectiveResolverPolicy = "human_only";
     effectiveResolverPolicySource = "governed_action";
   } else if (kindGovernance?.cap) {
@@ -925,6 +933,76 @@ function normalizeCreateInteractionInput(
     default:
       return input;
   }
+}
+
+const CONSENT_DETAILS_MARKDOWN_LIMIT = 20_000;
+
+function stampConsentValueDigest(
+  input: CreateIssueThreadInteraction,
+): CreateIssueThreadInteraction {
+  if (input.kind !== "request_confirmation") return input;
+  const target = input.payload.target;
+  if (!target || target.type !== "custom") return input;
+
+  if (target.valueDigest !== undefined || target.digestVersion !== undefined) {
+    throw unprocessable(
+      "payload.target.valueDigest and payload.target.digestVersion are server-owned metadata "
+        + "and cannot be supplied when creating an interaction",
+    );
+  }
+
+  const proposedValues = target.proposedValues ?? null;
+  if (!proposedValues) {
+    if (isConsentValueDigestTargetKey(target.key)) {
+      throw unprocessable(
+        `A request_confirmation for target '${target.key}' must supply payload.target.proposedValues `
+          + "so the approval records exactly which values it authorizes",
+      );
+    }
+    return input;
+  }
+
+  if (!isConsentValueDigestTargetKey(target.key)) {
+    throw unprocessable(
+      `payload.target.proposedValues is only meaningful for change-consent targets, not '${target.key}'`,
+    );
+  }
+
+  const valueDigest = consentValueDigest(target.key, proposedValues);
+  const authorizedBlock = renderConsentValuesMarkdown({
+    targetKey: target.key,
+    values: proposedValues,
+    valueDigest,
+  });
+  if (authorizedBlock.length + 2 > CONSENT_DETAILS_MARKDOWN_LIMIT) {
+    throw unprocessable(
+      `The rendered authorized-values block is ${authorizedBlock.length} characters, which exceeds the `
+        + `${CONSENT_DETAILS_MARKDOWN_LIMIT}-character limit for payload.detailsMarkdown. `
+        + "Supply a smaller projection in payload.target.proposedValues, such as a content hash "
+        + "instead of the content.",
+    );
+  }
+  const proposerDetails = input.payload.detailsMarkdown?.trim() ?? "";
+  const headroom = CONSENT_DETAILS_MARKDOWN_LIMIT - authorizedBlock.length - 2;
+  const trimmedProposerDetails = proposerDetails.length > headroom
+    ? `${proposerDetails.slice(0, Math.max(headroom - 4, 0))}\n…`
+    : proposerDetails;
+
+  return {
+    ...input,
+    payload: {
+      ...input.payload,
+      detailsMarkdown: trimmedProposerDetails
+        ? `${authorizedBlock}\n\n${trimmedProposerDetails}`
+        : authorizedBlock,
+      target: {
+        ...target,
+        proposedValues,
+        valueDigest,
+        digestVersion: CONSENT_VALUE_DIGEST_VERSION,
+      },
+    },
+  };
 }
 
 function buildSupersededByCommentResult(
@@ -3522,8 +3600,10 @@ export function issueThreadInteractionService(
       actor: InteractionActor,
       options: CreateInteractionOptions = {},
     ) => {
-      const data = normalizeCreateInteractionInput(
-        createIssueThreadInteractionSchema.parse(input),
+      const data = stampConsentValueDigest(
+        normalizeCreateInteractionInput(
+          createIssueThreadInteractionSchema.parse(input),
+        ),
       );
       const qualityItems = data.kind === "request_confirmation" && data.payload.qualityReview
         ? [data.payload] : data.kind === "request_item_verdicts"
@@ -3576,6 +3656,13 @@ export function issueThreadInteractionService(
         hasSecretProposal:
           data.kind === "request_confirmation" &&
           data.payload.secretProposal !== undefined,
+        hasAuthorityFieldProposal:
+          data.kind === "request_confirmation" &&
+          data.payload.target?.type === "custom" &&
+          consentValuesTouchAuthorityField(
+            data.payload.target.key,
+            data.payload.target.proposedValues ?? null,
+          ),
       });
       const normalizedData = {
         ...data,

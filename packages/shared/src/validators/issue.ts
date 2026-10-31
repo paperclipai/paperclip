@@ -1607,6 +1607,9 @@ export const requestConfirmationCustomTargetSchema =
     key: z.string().trim().min(1).max(120),
     revisionId: z.string().trim().min(1).max(255).nullable().optional(),
     revisionNumber: z.number().int().positive().nullable().optional(),
+    proposedValues: z.record(z.string(), z.unknown()).nullable().optional(),
+    valueDigest: z.string().trim().length(64).nullable().optional(),
+    digestVersion: z.number().int().positive().nullable().optional(),
   });
 
 export const requestConfirmationIssueAttachmentTargetSchema =
