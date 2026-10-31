@@ -81,8 +81,13 @@ except Exception:
  print(json.dumps({'error':'local_process_inspection_failed'}));sys.exit(1)
 `;
 
+/** The local observer and sealed fault closure are qualified on this host only. */
+export function supportsKimiLocalProviderFault(host: Pick<NodeJS.Process, "platform" | "arch"> = process): boolean {
+  return host.platform === "darwin" && host.arch === "arm64";
+}
+
 export function readKimiLocalProcesses(pids: readonly number[]): KimiLocalProcess[] {
-  demand(process.platform === "darwin" && process.arch === "arm64", "supported_platform");
+  demand(supportsKimiLocalProviderFault(), "supported_platform");
   let output: string;
   try {
     output = execFileSync("/usr/bin/python3", ["-I", "-B", "-c", KIMI_MAC_PROCESS_OBSERVER, JSON.stringify(pids)], {
@@ -148,7 +153,7 @@ function sealedFile(path: string, maximum: number) {
 }
 
 export function terminateKimiLocalProvider(input: { authority: RunProcessAuthority; journal: readonly JournalIdentity[]; workspacePath: string }) {
-  demand(process.platform === "darwin" && process.arch === "arm64", "supported_platform");
+  demand(supportsKimiLocalProviderFault(), "supported_platform");
   const contract = kimiFaultRuntimeContract("darwin-arm64");
   const pids = input.journal.map(row => row.pid);
   const before = selectKimiLocalTarget({ ...input, processes: readKimiLocalProcesses(pids), guardLoaderSha256: contract.guardLoaderSha256 });

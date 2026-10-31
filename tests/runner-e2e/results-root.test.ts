@@ -132,13 +132,16 @@ it("allows a normal retry in the same physical campaign", async () => {
   expect(JSON.parse(await readFile(path.join(f.uploadDir, "result.json"), "utf8"))).toMatchObject({ status: "failed", error: "startup failed" });
 });
 
-async function shadowLauncher(dotenv: string) {
+async function shadowLauncher(dotenv: string, host?: { platform: NodeJS.Platform; arch: string }) {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "runner-dotenv-output-")));
   roots.push(root);
   const repository = path.join(root, "checkout"), directory = path.join(repository, "tests/runner-e2e");
   await mkdir(directory, { recursive: true });
   await writeFile(path.join(repository, "package.json"), '{"type":"module"}');
-  await writeFile(path.join(directory, "launch.ts"), await readFile(path.join(import.meta.dirname, "launch.ts")));
+  let source = await readFile(path.join(import.meta.dirname, "launch.ts"), "utf8");
+  if (host) source = source.replaceAll("assertRunnerE2EPrerequisites(executions);",
+    `assertRunnerE2EPrerequisites(executions, ${JSON.stringify(host)});`);
+  await writeFile(path.join(directory, "launch.ts"), source);
   for (const entry of await readdir(import.meta.dirname, { withFileTypes: true })) {
     if (["launch.ts", "results"].includes(entry.name)) continue;
     await symlink(path.join(import.meta.dirname, entry.name), path.join(directory, entry.name), entry.isDirectory() ? "dir" : "file");
@@ -158,6 +161,33 @@ async function shadowLauncher(dotenv: string) {
   }
   return { root, repository, output, launch };
 }
+
+it("rejects unsupported local Kimi provider loss before the actual launcher reads dotenv or creates resources", async () => {
+  const f = await shadowLauncher("KIMI_API_KEY=synthetic-never-read\n", { platform: "linux", arch: "x64" });
+  const probe = path.join(f.root, "deny-dotenv-read.mjs"), marker = path.join(f.root, "dotenv-read-attempted");
+  await writeFile(probe, `import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const original = fs.promises.readFile;
+fs.promises.readFile = async (...args) => {
+  if (String(args[0]) === process.env.TEST_DOTENV_PATH) {
+    await fs.promises.writeFile(process.env.TEST_DOTENV_MARKER, "read attempted\\n");
+    throw new Error("forbidden dotenv credential read");
+  }
+  return original(...args);
+};
+syncBuiltinESMExports();
+`);
+  const result = await f.launch(["--id", "kimi-qualification.runner-acpx-kimi.local.native-write-provider-loss"], {
+    NODE_OPTIONS: `--import=${probe}`, TEST_DOTENV_PATH: path.join(f.repository, ".env.runner-e2e.local"), TEST_DOTENV_MARKER: marker,
+  });
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain("Local native Kimi provider-loss");
+  expect(result.stderr).toContain("No provider credentials were loaded or sent");
+  expect(result.stderr).not.toContain("forbidden dotenv credential read");
+  await expect(stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(stat(f.output)).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(stat(path.join(f.repository, "tests/runner-e2e/results"))).rejects.toMatchObject({ code: "ENOENT" });
+});
 
 it("uses the actual dotenv output root before a normal native campaign fails credential admission", async () => {
   const f = await shadowLauncher("export PAPERCLIP_RUNNER_E2E_RESULTS_ROOT='OUTPUT_ROOT'\n");

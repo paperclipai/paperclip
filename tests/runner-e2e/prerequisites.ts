@@ -1,4 +1,5 @@
 import type { MatrixExecution } from "./types.js";
+import { supportsKimiLocalProviderFault } from "./kimi-local-provider-fault.js";
 
 /** Explicit-only profiles blocked until complete identity/auth/session/billing qualification. */
 export const PENDING_PROFILE_PREREQUISITES = {
@@ -25,7 +26,16 @@ export function assertRemoteNativeEvidencePrerequisites(
 
 export function assertRunnerE2EPrerequisites(
   executions: readonly MatrixExecution[],
+  host: Pick<NodeJS.Process, "platform" | "arch"> = process,
 ): void {
+  if (!supportsKimiLocalProviderFault(host) && executions.some(execution =>
+    execution.environment.id === "local" && execution.profile.qualificationCandidate === "kimi"
+    && execution.task.id === "native-write-provider-loss")) {
+    throw new Error(
+      `Local native Kimi provider-loss qualification requires darwin-arm64; selected host is ${host.platform}-${host.arch}. `
+      + "Use its qualified local host or the Linux Daytona cell. No provider credentials were loaded or sent, and no execution resources were acquired.",
+    );
+  }
   const blocked = [...new Set(
     executions
       .map((execution) => execution.profile.id)

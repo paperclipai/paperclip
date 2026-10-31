@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { runnerMatrix, runnerSuites } from "./catalog.js";
 import { buildPaperclipServerEnvironment, buildRunnerE2EProcessEnvironment } from "./harness-env.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
+import { assertRunnerE2EPrerequisites } from "./prerequisites.js";
 
 const suiteId = "kimi-qualification";
 const cells = runnerMatrix.filter(cell => cell.suite.id === suiteId);
@@ -23,6 +24,25 @@ describe("Kimi Code explicit Product qualification", () => {
       qualification: "qualified", scheduling: "explicit-only", modelDiscovery: "exact-model-authenticated-observed",
       nativeQuestions: "not-claimed", nativePlans: "not-claimed", accounting: "usage-and-cost-unavailable",
     });
+  });
+
+  it.each([
+    { platform: "linux" as const, arch: "x64" as const },
+    { platform: "darwin" as const, arch: "x64" as const },
+    { platform: "win32" as const, arch: "x64" as const },
+  ])("rejects the local provider-loss cell before admission on $platform-$arch", host => {
+    const cell = cells.find(cell => cell.environment.id === "local" && cell.task.id === "native-write-provider-loss")!;
+    expect(() => assertRunnerE2EPrerequisites([cell], host)).toThrow(/Local native Kimi provider-loss.*No provider credentials were loaded or sent/);
+  });
+
+  it("keeps the twenty logical cells and qualified Mac-local/Linux-Daytona paths available", () => {
+    for (const cell of cells) {
+      expect(() => assertRunnerE2EPrerequisites([cell], { platform: "darwin", arch: "arm64" })).not.toThrow();
+      if (cell.environment.id === "daytona" || cell.task.id !== "native-write-provider-loss") {
+        expect(() => assertRunnerE2EPrerequisites([cell], { platform: "linux", arch: "x64" })).not.toThrow();
+      }
+    }
+    expect(cells).toHaveLength(20);
   });
 
   it("binds only the selected encrypted Code credential and marks each attempt single-shot", () => {
