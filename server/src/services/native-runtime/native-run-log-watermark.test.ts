@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { eq, sql } from "drizzle-orm";
-import { closeRegisteredClients, createDb, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { closeRegisteredClients, createDb, heartbeatRunEvents, heartbeatRuns, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { createNativeRunLogTestTables } from "../../__tests__/helpers/native-run-log-database.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import type { StorageProvider } from "../../storage/types.js";
 import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { createHeartbeatRunOutput } from "../heartbeat/run-output.js";
@@ -14,8 +15,9 @@ import { nativeSha256 } from "./canonical.js";
 import { formatNativeRunLogEvent } from "./native-run-log-export.js";
 import { readRecoverableRunLog, recoverSettledNativeRunLog } from "./native-run-log-recovery.js";
 
-// Explicit opt-in only: never connect to an instance or an implicit local DB.
-const url = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_LOG_WATERMARK_DATABASE_URL");
+// Use an explicit guarded test database or a new owned embedded fixture.
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_LOG_WATERMARK_DATABASE_URL");
+const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 
 function memoryProvider(): StorageProvider {
   const objects = new Map<string, Buffer>();
@@ -46,11 +48,14 @@ function memoryProvider(): StorageProvider {
   };
 }
 
-describe.skipIf(!url)("native run log source watermarks", () => {
+describe.skipIf(!support.supported)("native run log source watermarks", () => {
   const schema = `native_watermark_${randomUUID().replaceAll("-", "")}`;
   let db: Db;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   beforeAll(async () => {
-    db = createDb(url!, { maxConnections: 1, idleTimeoutSeconds: 0 });
+    database = externalUrl ? { connectionString: externalUrl, cleanup: async () => {} }
+      : await startEmbeddedPostgresTestDatabase("native-log-watermark-");
+    db = createDb(database.connectionString, { maxConnections: 1, idleTimeoutSeconds: 0 });
     await db.execute(sql.raw(`create schema ${schema}`));
     await db.execute(sql.raw(`set search_path=${schema}`));
     await createNativeRunLogTestTables(db);
@@ -60,12 +65,15 @@ describe.skipIf(!url)("native run log source watermarks", () => {
       created_at timestamptz default now(), updated_at timestamptz default now())`);
     // Match the production queued-run default instead of the older native fixture default.
     await db.execute(sql`alter table heartbeat_runs alter column runtime_mode set default 'legacy'`);
-  });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {
     try {
       if (db) await db.execute(sql.raw(`drop schema ${schema} cascade`));
     } finally {
-      await closeRegisteredClients(url!, { scope: "database" });
+      if (database) {
+        await closeRegisteredClients(database.connectionString, { scope: "database" });
+        await database.cleanup();
+      }
     }
   });
 
