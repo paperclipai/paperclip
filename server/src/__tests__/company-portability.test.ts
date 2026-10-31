@@ -765,6 +765,37 @@ describe("company portability", () => {
     expect(asTextFile(exported.files[".paperclip.yaml"])).toContain("requireBoardApprovalForNewAgents: true");
   });
 
+  it("exports disabled timer heartbeats with an explicit enabled: false", async () => {
+    const portability = companyPortabilityService({} as any);
+    const [claudecoder, cmo] = await agentSvc.list("company-1");
+    agentSvc.list.mockResolvedValue([
+      { ...claudecoder, runtimeConfig: { heartbeat: { enabled: false, intervalSec: 14400, cooldownSec: 600 } } },
+      { ...cmo, runtimeConfig: { heartbeat: { enabled: true, intervalSec: 43200 } } },
+    ]);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+    });
+
+    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    expect(extension).toContain([
+      "      heartbeat:",
+      "        cooldownSec: 600",
+      "        enabled: false",
+      "        intervalSec: 14400",
+    ].join("\n"));
+    expect(extension).toContain([
+      "      heartbeat:",
+      "        enabled: true",
+      "        intervalSec: 43200",
+    ].join("\n"));
+  });
+
   it("exports legacy inline sensitive env values as declarations without values", async () => {
     const portability = companyPortabilityService({} as any);
     agentSvc.list.mockResolvedValue([
