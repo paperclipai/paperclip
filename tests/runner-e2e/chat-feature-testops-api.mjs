@@ -379,9 +379,13 @@ export async function verifyChatUpload(api, env, selected, exported, { wait = ms
       const result = await get(`/api/testresult/${row.id}`);
       if (result.id !== row.id || result.projectId !== 1 || result.launchId !== selected.launchId || result.testCaseId !== selected.caseId
         || result.fullName !== selected.fullName || result.jobRun?.id !== Number(selected.allureJobRunId)
-        || result.jobRun?.job?.id !== selected.jobId || result.jobRun?.launchId !== selected.launchId || result.jobRun?.url !== runUrl
-        || !Array.isArray(result.links) || !result.links.some(link => link.url === runUrl)
-        || !result.links.some(link => link.url === sourceUrl)) fail('chat_testops_upload_mismatch');
+        || result.jobRun?.launchId !== selected.launchId || result.jobRun?.url !== runUrl
+        || result.jobRun.job != null && (result.jobRun.job.id !== run.job.id
+          || result.jobRun.job.type != null && result.jobRun.job.type !== run.job.type
+          || result.jobRun.job.url != null && !publicJobUrl(result.jobRun.job.url, env))
+        || !Array.isArray(result.links) || result.links.some(link => typeof link.url === 'string'
+          && (link.url.startsWith('https://github.com/paperclipai/paperclip/actions/runs/') && link.url !== runUrl
+            || link.url.startsWith('https://github.com/paperclipai/paperclip/commit/') && link.url !== sourceUrl))) fail('chat_testops_upload_mismatch');
       if (!['passed', 'failed', 'broken', 'skipped', 'unknown'].includes(result.status)) fail('chat_testops_upload_mismatch');
       if (result.status !== 'unknown' && result.status !== exported.status) fail('chat_testops_upload_mismatch');
       const attached = await get(`/api/testresult/attachment?${new URLSearchParams({ testResultId: String(row.id), page: '0', size: '100' })}`);

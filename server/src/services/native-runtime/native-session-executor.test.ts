@@ -99,6 +99,7 @@ import { buildNativeHeartbeatPreparationSpans, createNativeRunTrace } from "./na
 import { NativeRunnerOwnershipUnverifiedError } from "./native-runner-ownership.js";
 import type { AdapterRuntimeEvent } from "../../adapters/index.js";
 import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
+import { acknowledgedNativeStopExecutionHasStopped, isAcknowledgedNativeStop } from "../acknowledged-native-stop.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -7863,6 +7864,27 @@ describe("native session cancellation", () => {
     expect(state.persistActivity).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { companyId: "another-company" }, { runId: "another-run" }, { issueId: "another-issue" },
+    { scope: "issue" }, { effects: ["cancel_issue"] }, { intentAuditId: null },
+  ])("does not fence a failed retry for a foreign or stale Stop receipt %j", async changed => {
+    const intent = { schema: "paperclip.native-cancellation.v1", intentId: "native-cancellation:earlier-stop",
+      ...execution.binding, scope: "run", reasonCode: "cancellation_run_only", effects: ["release_run_resources"],
+      dispatchState: "acknowledged", dispatched: true, intentAuditId: "earlier-intent-audit",
+      acknowledgementAuditId: "earlier-ack-audit", ...changed };
+    const coordinator = { runId: execution.binding.runId, assessmentId: null, phase: "retryable_failure" };
+    const persistence = cancellationDb({ status: "failed", coordinator, resultJson: { nativeCancellation: intent } });
+    const before = structuredClone(persistence.getResultJson());
+    state.cancel.mockClear();
+    state.persistActivity.mockClear();
+    await expect(cancelNativeSession(execution.binding.runId, "retry Stop", { db: persistence.db, scope: "run" })).rejects.toThrow();
+    expect(persistence.updates).toEqual([]);
+    expect(coordinator.phase).toBe("retryable_failure");
+    expect(persistence.getResultJson()).toEqual(before);
+    expect(state.cancel).not.toHaveBeenCalled();
+    expect(state.persistActivity).not.toHaveBeenCalled();
+  });
+
   it("does not mistake a recovered running attempt for the failed retry that reserved Stop", async () => {
     const id = "11111111-1111-4111-8111-111111111111";
     const persistence = cancellationDb({ status: "running",
@@ -7886,6 +7908,39 @@ describe("native session cancellation", () => {
     await expect(cancelNativeSession(execution.binding.runId, "retry Stop", { db: persistence.db,
       scope: "run", cancellationRequestId: id })).resolves.toMatchObject({ auditId: first.auditId });
     expect(persistence.getResultJsonUpdateCount()).toBe(writes);
+  });
+
+  it("fences a failed retry whose earlier Stop is already acknowledged without changing its receipts", async () => {
+    const intent = { schema: "paperclip.native-cancellation.v1", intentId: "native-cancellation:earlier-stop",
+      ...execution.binding, scope: "run", reasonCode: "cancellation_run_only",
+      effects: ["release_run_resources"], dispatchState: "acknowledged", dispatched: true,
+      intentAuditId: "earlier-intent-audit", acknowledgementAuditId: "earlier-ack-audit",
+      acknowledgedAt: "2026-01-01T00:00:00.000Z", decisionId: null, priorCoordinatorDecisionId: null };
+    const coordinator = { runId: execution.binding.runId, assessmentId: null, phase: "retryable_failure",
+      nextAttemptAt: new Date(Date.now() + 30_000) };
+    const persistence = cancellationDb({ status: "failed", coordinator,
+      resultJson: { nativeCancellation: intent, executionCancellation: { state: "requested", requestedAt: "later-stop" } } });
+    const before = structuredClone(persistence.getResultJson());
+    state.cancel.mockClear();
+    state.persistActivity.mockClear();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(cancelNativeSession(execution.binding.runId, "retry Stop", { db: persistence.db, scope: "run" }))
+        .resolves.toMatchObject({ dispatched: true, auditId: intent.intentAuditId });
+      expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: "native_retry_cancelled", nextAttemptAt: null });
+      expect(persistence.getResultJson()).toEqual(before);
+    }
+    expect(persistence.updates.filter(update => update.table === nativeRunFinalizations)).toHaveLength(1);
+    expect(persistence.getResultJsonUpdateCount()).toBe(0);
+    expect(state.cancel).not.toHaveBeenCalled();
+    expect(state.persistActivity).not.toHaveBeenCalled();
+    const stopped = { id: execution.binding.runId, companyId: execution.binding.companyId,
+      nativeIssueId: execution.binding.issueId, status: "cancelled", processPid: null, processGroupId: null,
+      resultJson: { ...persistence.getResultJson(), cancelledByActorType: "user", cancelledByUserId: "operator" } };
+    const lease = { provider: "daytona", providerLeaseId: "unconfirmed-provider-resource", status: "active",
+      releasedAt: null, cleanupStatus: null, metadata: {} };
+    const leaseDb = { select: () => ({ from: () => ({ where: async () => [lease] }) }) } as unknown as Db;
+    expect(isAcknowledgedNativeStop(stopped)).toBe(true);
+    await expect(acknowledgedNativeStopExecutionHasStopped(leaseDb, stopped)).resolves.toBe(false);
   });
 
   it("uses the reserved caller UUID and permits same-intent and default retries", async () => {

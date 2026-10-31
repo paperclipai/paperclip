@@ -753,7 +753,11 @@ export function statusCardService(
       createdByAgentId: input.actor?.agentId ?? null,
       createdByUserId: input.actor?.userId ?? null,
       hiddenAt: now,
-      idempotencyKey: `status-card-update:${card.id}:${fingerprintHash}`,
+      // Claim ownership is revision-scoped too. A superseded refresh may cancel
+      // its unclaimed task; it must not share that task with a newer revision
+      // which has the same watched fingerprint but has not claimed the card yet.
+      // Concurrent refreshes of this revision still deduplicate normally.
+      idempotencyKey: `status-card-update:${card.id}:${revision}:${fingerprintHash}`,
       onDeduplicated: (reason) => { deduplicated = reason === "idempotency_key"; },
     });
     const reopened = deduplicated && TERMINAL_ISSUE_STATUSES.has(created.status)
