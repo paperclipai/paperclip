@@ -12,6 +12,7 @@ import { journeyFixtures } from "./fixtures.js";
 import { taskProperties } from "./task-properties.js";
 import { taskSearchFilter } from "./task-search-filter.js";
 import { askQuestion, taskCreate } from "./basic-flows.js";
+import { taskDocumentPersistence } from "./task-document-flow.js";
 import { projectTaskContext } from "./project-context-flow.js";
 import { runAgentJourney } from "./agent-flows.js";
 import { runActiveFollowup } from "./active-followup-flow.js";
@@ -107,7 +108,7 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
   try { sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { /* Packaged harnesses may not include Git metadata. */ }
   const source = resolveRunnerE2ESource({ sha, ref: null, workflowRunUrl: null });
   const definitionHash = createHash("sha256").update(JSON.stringify(productJourneys));
-  for (const name of ["catalog.ts", "task-properties.ts", "task-search-filter.ts", "task-search-evidence.ts", "basic-flows.ts", "basic-evidence.ts", "project-context-flow.ts", "project-context-readback.ts", "project-context-evidence.ts", "agent-flows.ts", "hire-delegate-flow.ts", "hire-delegate-evidence.ts", "active-followup-flow.ts", "active-followup-evidence.ts", "clarification-flow.ts", "clarification-evidence.ts", "../question-resume-ui.ts", "../question-resume-scoring.ts", "../runtime-question-readiness.ts", "../chat-flow.ts", "../continuation-readiness.ts", "../continuation-cases.ts", "success-contract.ts", "product-screenshot.ts", "cloud-onboarding.ts", "onboarding-connect.ts", "onboarding-first-task.ts", "workspace-deferral.ts", "onboarding-pre-acceptance.ts", "artifact-evidence.ts", "fixtures.ts", "launch.ts", "types.ts", "collection.ts", "local-target.ts"]) definitionHash.update(await readFile(path.join(import.meta.dirname, name)));
+  for (const name of ["catalog.ts", "task-properties.ts", "task-search-filter.ts", "task-search-evidence.ts", "basic-flows.ts", "basic-evidence.ts", "task-document-flow.ts", "task-document-evidence.ts", "project-context-flow.ts", "project-context-readback.ts", "project-context-evidence.ts", "agent-flows.ts", "hire-delegate-flow.ts", "hire-delegate-evidence.ts", "active-followup-flow.ts", "active-followup-evidence.ts", "clarification-flow.ts", "clarification-evidence.ts", "../question-resume-ui.ts", "../question-resume-scoring.ts", "../runtime-question-readiness.ts", "../chat-flow.ts", "../continuation-readiness.ts", "../continuation-cases.ts", "success-contract.ts", "product-screenshot.ts", "cloud-onboarding.ts", "onboarding-connect.ts", "onboarding-first-task.ts", "workspace-deferral.ts", "onboarding-pre-acceptance.ts", "artifact-evidence.ts", "fixtures.ts", "launch.ts", "types.ts", "collection.ts", "local-target.ts"]) definitionHash.update(await readFile(path.join(import.meta.dirname, name)));
   for (const file of ["catalog.ts", "api.ts", "run-observations.ts", "native-task-reply.ts", "native-event-envelope.ts", "user-actions.ts", "plan-revision-flow.ts", "skill-studio-flow.ts", "protected-action-flow.ts", "story-artifact.ts", "stop-redirect-flow.ts", "everyday-cases.ts", "everyday-delivery.ts", "chat-hardening.ts", "everyday-decisions.ts", "connection-guidance-evidence.ts", "everyday-artifact.py"]) definitionHash.update(await readFile(path.join(import.meta.dirname, "..", file)));
   definitionHash.update(runnerSuites.flatMap(suite => suite.tasks).find(task => task.id === "ask-question")!.buildPrompt("definition"));
   const suiteDefinitionHash = definitionHash.digest("hex");
@@ -221,6 +222,7 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
                 await captureProductScreenshot(ready!.page, ready!.api.origin, path.join(directory, file), deadlineAt);
               } });
           } else if (id === "task-create") await taskCreate(ready, session!, campaignId, evidence);
+          else if (id === "task-document-persistence") await taskDocumentPersistence(ready, session!, campaignId, evidence);
           else if (id === "project-task-context") await projectTaskContext(ready, session!, campaignId, evidence);
           else if (id === "task-search-filter") await taskSearchFilter(ready, session!, campaignId, evidence);
           else await taskProperties(ready, session!, campaignId, evidence);

@@ -10,6 +10,7 @@ import type { MatrixExecution } from "./types.js";
 const DATABASE_KEYS = ["DATABASE_URL", "DATABASE_MIGRATION_URL"] as const;
 const AMBIENT_PAPERCLIP_CREDENTIAL_KEYS = [
   "PAPERCLIP_API_KEY",
+  "PAPERCLIP_ACPX_CANDIDATE_ADMISSION",
   "PAPERCLIP_AGENT_API_KEY",
   "PAPERCLIP_TASK_BRIDGE_TOKEN",
   "PAPERCLIP_E2E_GATEWAY_TOKEN",
@@ -33,7 +34,7 @@ const AMBIENT_EXTERNAL_STATE_KEYS = [
   "PAPERCLIP_STORAGE_S3_PREFIX",
   "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE",
 ] as const;
-const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|BRAINTRUST|DAYTONA|XAI|GROK|CURSOR|COPILOT|GITHUB|GH)(?:_|$)/;
+const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|BRAINTRUST|DAYTONA|XAI|GROK|KIMI|CURSOR|COPILOT|GITHUB|GH)(?:_|$)/;
 
 export function applyEvalGatewayEnvironment(env: NodeJS.ProcessEnv, credential: string, gateway: {
   token: string; baseUrl: string; phasePath: string; observability?: { token: string; baseUrl: string };
@@ -148,11 +149,14 @@ export function buildRunnerE2EProcessEnvironment(
   // Discard ambient admission. Only explicit candidate cells authorize the
   // exact model in their isolated server; credentials still use company secrets.
   delete result.PAPERCLIP_RUNNER_ACPX_QUALIFICATION;
+  delete result.PAPERCLIP_ACPX_CANDIDATE_ADMISSION;
   const candidates = new Map<string, string>();
   for (const execution of executions) {
     const agent = execution.profile.qualificationCandidate;
     if (!agent) continue;
-    const admittedSuite = execution.suite.id === "extended-harnesses"
+    const admittedSuite = agent === "kimi"
+      ? execution.suite.id === "kimi-qualification" && execution.profile.id === "runner-acpx-kimi"
+      : execution.suite.id === "extended-harnesses"
       || execution.suite.id === "rich-acp-warm-continuity"
       || (execution.suite.id === "pi-native" && agent === "pi")
       || (execution.suite.id === "pi-controls" && agent === "pi")
@@ -165,6 +169,7 @@ export function buildRunnerE2EProcessEnvironment(
     if (QUALIFIED_ACPX_PROFILES[agent].qualificationStatus !== "pending") {
       continue;
     }
+    if (agent === "kimi") continue;
     const prior = candidates.get(agent);
     if (prior !== undefined && prior !== execution.profile.model) throw new Error("Conflicting candidate models");
     candidates.set(agent, execution.profile.model);

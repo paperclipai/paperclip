@@ -61038,7 +61038,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const beforeComments = await db
           .select({ id: issueComments.id })
           .from(issueComments)
-          .where(eq(issueComments.issueId, conversation.issueId));
+          .where(eq(issueComments.issueId, conversation.issueId))
+          .orderBy(issueComments.id);
         const beforeWakes = wakeup.mock.calls.length;
         const providerRuntime = runtime.endpoints.get(endpoint.id)!;
         const beforeProvider = {
@@ -61195,7 +61196,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           db
             .select({ id: issueComments.id })
             .from(issueComments)
-            .where(eq(issueComments.issueId, conversation.issueId)),
+            .where(eq(issueComments.issueId, conversation.issueId))
+            .orderBy(issueComments.id),
         ).resolves.toEqual(beforeComments);
         expect(wakeup.mock.calls.length).toBe(beforeWakes);
         expect({

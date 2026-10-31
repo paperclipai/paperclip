@@ -15,6 +15,7 @@ import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, s
 import { JsonRpcCallError, readEnvironmentAcquisitionDiagnostic, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
 import { preserveEnvironmentSyncOutErrorDiagnostic } from "./environment-sync-out-error.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
+import { inspectCloudSandboxCleanupAbsence } from "./sandbox-absence-proof.js";
 import { hasNativeWorkspaceExportResume, releaseCompletedNativeWorkspaceExportRetention } from "./native-runtime/native-workspace-export-resume.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
@@ -4021,7 +4022,12 @@ export function environmentRuntimeService(
       const lease = await environmentsSvc.getLeaseById(leaseId);
       if (!lease || lease.status !== "failed" || lease.leasePolicy !== "ephemeral" || !lease.providerLeaseId) return undefined;
       const environment = lease.environmentId ? await environmentsSvc.getById(lease.environmentId) : null;
-      return await getDriver(getLeaseDriverKey(lease, environment))?.inspectLeaseResource?.({ environment, lease });
+      // Legacy Cloud leases can lack a credential version that permits a
+      // provider-local observation. Cloud's manager verifies the historical
+      // organization and signs only exact absence; no replacement key or
+      // cleanup label is treated as proof. Explicit provider answers win.
+      return await getDriver(getLeaseDriverKey(lease, environment))?.inspectLeaseResource?.({ environment, lease })
+        ?? await inspectCloudSandboxCleanupAbsence(lease);
     },
 
     async retryPendingSandboxTeardown(input: {

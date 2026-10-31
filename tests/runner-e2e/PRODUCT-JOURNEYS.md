@@ -28,6 +28,7 @@ never start a server or depend on a tenant filesystem.
 | `ask-question` | Company, configured agent capability, positive model allowance and exactly one permitted work run | Reuse the existing cross-model Ask question prompt; require one successful run with matching company/task/agent/model/environment, one saved exact answer, and visible readback after reload |
 | `question-answer-resume` | Native agent; up to three work runs | Reuse the classic two-question story: answer a choice and a free-text question through the browser, verify each native continuation, then read the exact saved answers in an agent-authored task document after reload |
 | `task-properties` | Company, signed-in board user, task-write capability, prepared run-owned backlog task | Open its properties, assign it to the signed-in user, reload, check both UI and saved assignment; verify no agent run |
+| `task-document-persistence` | Company, signed-in board user, task-write capability, prepared run-owned backlog task; no model allowance or runs | Create a general document through Artifacts, edit its title and body, reopen and reload it; independently verify exact canonical content, preserved original and latest revisions, board-user authorship, and no agent work |
 | `task-search-filter` | Company, signed-in board user, task-write capability; zero model runs | Search three owned target/control tasks through the task list, require exact matching identities, filter Backlog to exclude the completed control, reload and return from the exact saved task with search/filter context intact |
 | `plan-revise-accept` | Native agent; three work runs | Reuse the classic Plan story: canonical draft, browser revision request, new revision-bound confirmation, approval and exact saved final response |
 | `build-revise` | Native agent; two work runs; qualified Docker artifact oracle | Browser-download both ZIP versions, independently exercise source/CLI behavior, verify different hashes and preserve the original download |
@@ -102,6 +103,16 @@ lookup can fail. Observation retries are limited to typed transient GET transpor
 the existing deadline. Ownership callbacks and grading failures are never
 retried. Audited same-company children are recorded before manager/project
 checks fail; foreign or malformed rows remain unowned and fail the journey.
+
+The task-document journey uses the normal default-chat Artifacts pane and the
+shared document editor. Classic mode retains its editor in the task body. The
+general editor excludes Plans, which retain their conversation and approval
+flow. Setup creates only an owned backlog task, never the document or its
+revisions. The oracle accepts additional autosave revisions, but requires both
+measured versions to remain exact and independently readable. Shared coverage
+does not establish a live pass or admit the journey to a target's daily plan.
+The reopen step selects Backlog explicitly and searches the owned title. A
+user's saved task view cannot route that check to Done or a personal inbox.
 
 The project/task journey records durable project and task ownership before each
 creation and immediately saves the response IDs. Its project must retain its

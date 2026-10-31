@@ -42,7 +42,7 @@ export const DAYTONA_IMAGE_INPUT_PATHS = [...new Set([
   "packages/paperclip-runner/scripts/candidate-provider-pack.mjs",
   "packages/paperclip-runner/scripts/build-copilot-distribution.mjs",
   "packages/paperclip-runner/scripts/copilot-inner-distribution.mjs",
-  // ACPX generation recomputes the Copilot, Grok and Pi release attestations.
+  // ACPX generation recomputes the Copilot, Grok, Pi and Kimi release attestations.
   "packages/paperclip-runner/scripts/acpx-release-attestations.mjs",
   "packages/paperclip-runner/scripts/generate-acpx-profiles.mjs",
   "packages/paperclip-runner/scripts/materialize-copilot-binary.mjs",
@@ -50,11 +50,22 @@ export const DAYTONA_IMAGE_INPUT_PATHS = [...new Set([
   "packages/paperclip-runner/scripts/materialize-cursor-distribution.mjs",
   "packages/paperclip-runner/scripts/cursor-runtime-patch.mjs",
   "packages/paperclip-runner/scripts/build-verified-provider-entrypoints.mjs",
+  "packages/paperclip-runner/antigravity-distributions.json",
+  "packages/paperclip-runner/scripts/provision-antigravity.mjs",
+  "packages/paperclip-runner/scripts/antigravity-provisioner-layout.mjs",
+  "packages/paperclip-runner/scripts/materialize-antigravity-distribution.mjs",
+  "packages/paperclip-runner/scripts/patch-antigravity-runtime.mjs",
+  "packages/paperclip-runner/scripts/patch-antigravity-runtime.admission.py",
   "packages/paperclip-runner/scripts/provider-pack-runtime-tree.mjs",
   "packages/paperclip-runner/scripts/generate-acpx-sidecar-contract.mjs",
   "packages/paperclip-runner/scripts/generate-protocol-schema-module.mjs",
   "packages/paperclip-runner/scripts/materialize-pi-distribution.mjs",
   "packages/paperclip-runner/scripts/pi-distribution",
+  "packages/paperclip-runner/scripts/materialize-kimi-distribution.mjs",
+  "packages/paperclip-runner/scripts/patch-kimi-runtime.mjs",
+  "packages/paperclip-runner/scripts/kimi-instructions-runtime.mjs",
+  "packages/paperclip-runner/scripts/provision-kimi.mjs",
+  "packages/paperclip-runner/scripts/kimi-distribution",
   "packages/paperclip-runner/scripts/cursor-native-usage.mjs",
   "packages/paperclip-runner/scripts/cursor-native-usage-source.json",
   "packages/paperclip-runner/scripts/provision-cursor.mjs",
@@ -95,7 +106,7 @@ export interface DaytonaImageContentOptions {
 
 export function normalizedDaytonaCandidateProviders(values: readonly string[]): string[] {
   const selected = [...values].sort();
-  if (selected.some(value => !["cursor", "copilot", "pi"].includes(value))
+  if (selected.some(value => !["cursor", "copilot", "pi", "kimi"].includes(value))
     || new Set(selected).size !== selected.length) {
     throw new Error("Daytona candidate providers must be distinct known ACP profiles");
   }
@@ -311,7 +322,7 @@ if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
   const arguments_ = process.argv.slice(2);
   const candidateFlag = arguments_[0];
   if (arguments_.length > 1 || (candidateFlag !== undefined && !candidateFlag.startsWith("--candidate-providers="))) {
-    throw new Error("Expected only --candidate-providers=cursor,copilot,pi");
+    throw new Error("Expected only --candidate-providers=cursor,copilot,pi,kimi");
   }
   const candidateProviders = candidateFlag?.slice("--candidate-providers=".length).split(",").filter(Boolean) ?? [];
   computeDaytonaImageContentId({ candidateProviders })
