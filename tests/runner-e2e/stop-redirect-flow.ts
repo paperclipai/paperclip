@@ -26,10 +26,12 @@ export function activeNativeTurnStarted(run: Row | undefined, events: Row[]): bo
 /** Shared story order; target adapters supply authoritative retirement observations. */
 export async function stopAndRedirectThroughUi(input: {
   page: Page; nonce: string;
+  beforeStop?(): Promise<void>;
   awaitRetirement(): Promise<void>;
   beforeRedirect(): Promise<void>;
   reply(message: string): Promise<unknown>;
 }) {
+  await input.beforeStop?.();
   await input.page.getByTestId("task-chat-composer-stop").last().click();
   await input.awaitRetirement();
   await input.beforeRedirect();
