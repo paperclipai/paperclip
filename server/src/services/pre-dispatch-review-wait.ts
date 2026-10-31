@@ -35,11 +35,29 @@ export function isPreDispatchReviewWait(
     (finalResponseWait || (run.controllerBootId === null && run.controllerLeaseExpiresAt === null && run.executionStage === null));
 }
 
+/** Any queued-run gate cancellation of a run that never reached dispatch is a
+ * pre-dispatch candidate, not only a review or connection response wait. Use
+ * this only for reconciliation decisions; `isPreDispatchReviewWait` keeps its
+ * narrower meaning for review-wait notices and native startup checks. */
+export function isPreDispatchStaleCancel(
+  run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, DispatchFields>>,
+): boolean {
+  if (isPreDispatchReviewWait(run)) return true;
+  return run.runtimeMode === "legacy" && run.status === "cancelled" &&
+    typeof run.errorCode === "string" && run.resultJson?.stopReason === run.errorCode &&
+    run.resultJson?.timeoutSource === "stale_queued_run_gate" &&
+    run.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive" &&
+    run.startedAt === null && run.runtimeModeResolvedAt === null &&
+    run.processPid === null && run.processGroupId === null && run.processStartedAt === null &&
+    run.nativeIssueId === null && run.nativeSessionId === null && run.sessionIdAfter === null &&
+    run.controllerBootId === null && run.controllerLeaseExpiresAt === null && run.executionStage === null;
+}
+
 /** The row receipt is a candidate, not permission to discard conflicting
  * retained execution or cleanup evidence. Historical false holds must be
  * checked against the same evidence that gates explicit user admission. */
 export async function isPreDispatchReviewWaitVerified(db: Db, run: Run): Promise<boolean> {
-  if (!isPreDispatchReviewWait(run)) return false;
+  if (!isPreDispatchStaleCancel(run)) return false;
   const [coordinator] = await db.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
     eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
   )).limit(1);
