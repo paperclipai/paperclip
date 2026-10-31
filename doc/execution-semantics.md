@@ -302,6 +302,16 @@ Once all current gates clear, startup and periodic queue recovery reconsider the
 saved input through normal admission. The cancelled admission is not replayed,
 and the user need not certify infrastructure state in a reconciliation form.
 
+A legacy disposition repair that the final dispatch check suppresses is also not
+a provider attempt. The same terminal write that cancels it records server-owned
+proof: the run id, the controller boot id, the suppression reason, and that
+provider dispatch did not start. The write is fenced on the dispatching stage,
+the live controller lease, and the absence of process identity. Only that exact
+proof exempts the run from an unknown-outcome incident. Recovery and bounded
+retry leave the run settled; they do not wake a new repair, refund the budget,
+or reset attempts. An unsafe workspace archive or a required workspace recovery
+still holds the task.
+
 Repeated automatic signals for an unchanged gate share one durable skipped-wake diagnostic, scoped to company, agent, issue, gate code, and condition identity. The diagnostic retains the first request and counts later observations. This applies to execution reconciliation, dependencies, pause holds, company and agent availability, budget blocks, and disabled heartbeats. These diagnostics do not consume provider attempts and are never proof that a future wake was delivered. All current gates are checked again on the next wake, including the periodic dependency reconciliation sweep. Clearing one gate does not bypass another.
 
 New comments received during an execution hold retain their individual deferred receipts and ordered comment ids. Release cannot drain those receipts while replay remains blocked; the next eligible wake can adopt them. Authorized external-chat requests also remain deferred with their exact durable receipt. They must use normal promotion and current authorization; a generic wake cannot adopt only their comment ids and discard their actor or session contract. A wait does not authorize replay, reset an incident retry budget, or bypass an interaction's delivery rules.

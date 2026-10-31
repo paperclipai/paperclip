@@ -38,7 +38,7 @@ import {
   rethrowNativeCancellationLockConflict,
 } from "../native-runtime/native-cancellation-request.js";
 import { cancellationResultJson } from "../run-cancellation.js";
-import { CONTROLLER_LEASE_LOST_FAILURE_CODE } from "../legacy-controller-lease.js";
+import { CONTROLLER_LEASE_LOST_FAILURE_CODE, legacyControllerBootId } from "../legacy-controller-lease.js";
 import { isWaitingConversation } from "../agent-conversations.js";
 import { PROCESS_IDENTITY_RECORDED } from "../native-local-process-stop.js";
 import {
@@ -50,7 +50,11 @@ import {
   CONVERSATION_CONTINUATION_POLICY,
   isConversationAdapter,
 } from "../conversation-continuation.js";
-import { terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
+import {
+  LEGACY_DISPOSITION_SUPPRESSION_KEY,
+  isSuppressedLegacyDispositionDispatch,
+  terminalizeLegacyExecution,
+} from "../legacy-execution-recovery.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
 import { randomUUID } from "node:crypto";
@@ -58,6 +62,7 @@ import {
   and,
   desc,
   eq,
+  gt,
   inArray,
   isNull,
   ne,
@@ -1157,6 +1162,35 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       .then((rows) => rows[0] ?? null);
     const previousStatus = previous?.run ?? null;
 
+    let suppressionProof = patch?.runnerProfileJson?.[LEGACY_DISPOSITION_SUPPRESSION_KEY];
+    if (suppressionProof && previousStatus?.runtimeMode !== "legacy") {
+      const { runnerProfileJson: _legacyOnlyProof, ...nativePatch } = patch!;
+      patch = nativePatch;
+      suppressionProof = undefined;
+    }
+    if (suppressionProof) {
+      patch = { ...patch, runnerProfileJson: {
+        ...previousStatus?.runnerProfileJson,
+        [LEGACY_DISPOSITION_SUPPRESSION_KEY]: suppressionProof,
+      } };
+      if (!previousStatus || previousStatus.controllerBootId !== legacyControllerBootId
+        || fromStatuses.length !== 1 || fromStatuses[0] !== "running"
+        || !isSuppressedLegacyDispositionDispatch({ ...previousStatus, status, ...patch })) {
+        return { run: previousStatus, updated: false as const };
+      }
+    }
+    const suppressionWrite = suppressionProof ? {
+      runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) ||
+        ${JSON.stringify({ [LEGACY_DISPOSITION_SUPPRESSION_KEY]: suppressionProof })}::jsonb` as unknown as Record<string, unknown>,
+    } : {};
+    const suppressionConditions = suppressionProof ? [
+      eq(heartbeatRuns.runtimeMode, "legacy"),
+      eq(heartbeatRuns.executionStage, "dispatching"),
+      eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
+      gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`),
+      isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId),
+    ] : [];
+
     if (previousStatus && (status === "cancelled" || status === "interrupted")) {
       patch = { ...patch, resultJson: cancellationResultJson(previousStatus, status, patch?.resultJson, patch?.errorCode, patch?.error) };
     }
@@ -1193,10 +1227,10 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             db: writer,
             run: previousStatus,
             status,
-            patch,
+            patch: { ...patch, ...suppressionWrite },
             fromStatuses,
             reconcileIfNeeded: true,
-            writeConditions: [nativeRunnerOwnershipNotHeldCondition(), ...(cancellationCondition ? [cancellationCondition] : [])],
+            writeConditions: [nativeRunnerOwnershipNotHeldCondition(), ...(cancellationCondition ? [cancellationCondition] : []), ...suppressionConditions],
           })
         : writer
             .update(heartbeatRuns)

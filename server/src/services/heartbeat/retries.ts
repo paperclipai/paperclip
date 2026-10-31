@@ -10,7 +10,10 @@ import {
   CONVERSATION_CONTINUATION_POLICY,
   hasConversationContinuationPolicy,
 } from "../conversation-continuation.js";
-import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
+import {
+  isSuppressedLegacyDispositionDispatch,
+  legacyExecutionNeedsReconciliationWithEvidence,
+} from "../legacy-execution-recovery.js";
 import {
   executionFailureRetryCount,
   executionRetryAttemptCount,
@@ -416,6 +419,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       return { outcome: "not_scheduled" as const,
         reason: "Repair the invalid tool definitions before starting a new attempt.",
         issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
+    }
+    if (isSuppressedLegacyDispositionDispatch(run)) {
+      return { outcome: "not_scheduled" as const, reason: "This disposition repair was intentionally suppressed before provider dispatch; a new genuine event must use normal admission.",
+        errorCode: "legacy_disposition_repair_suppressed" as const, issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     }
     if (Array.isArray(run.contextSnapshot?.chatCompletionDeliveryIds) &&
         run.contextSnapshot.chatCompletionDeliveryIds.some(id => typeof id === "string")) {
