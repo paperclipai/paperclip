@@ -1355,8 +1355,12 @@ enforces all reply, session, actor and digest checks. A saved reply acknowledges
 the outbox once and permits normal conversation settlement. If publication keeps
 declining or cannot finish within the window, the existing retry, exhaustion and
 daily-limit checks resume. Retry takes the same child-task-first lock held by
-reply insertion and acknowledgment. It rechecks the task version, pending state,
-target, attempt and exact delivery lease before advancing. A delivered reply,
+reply insertion and acknowledgment. Reply authority reloads the delivery after
+acquiring that lock. Retry checks that the locked task is still Done. It then
+matches the delivery's recorded completion-event version, pending state, target,
+attempt and exact lease.
+Reassigning a Done task can change its current task version without invalidating
+that completion event; a real status change keeps its existing supersession. A delivered reply,
 newer target or newer claim prevents that retry. Wake admission runs only after
 the winning retry transaction commits and releases its locks. The original
 accepted result and child work remain unchanged. Failed or cancelled execution,

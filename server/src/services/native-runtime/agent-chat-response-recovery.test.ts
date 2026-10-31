@@ -10,8 +10,9 @@ import { finalizeNativeRun, recoverCommittedNativeChatResponse } from "./native-
 import { nativeResponsePresentationWork } from "./native-response-presentation-work.js";
 import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "../task-admission.js";
-import { chatCompletionDeliveryService } from "../chat-completion-delivery.js";
+import { chatCompletionDeliveryService, existingChatCompletionReply } from "../chat-completion-delivery.js";
 import { instanceSettingsService } from "../instance-settings.js";
+import { issueService } from "../issues.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_CHAT_RESPONSE_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -181,12 +182,13 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     },
   );
 
-  it.each(["reset-source", "new-task-version"])("keeps %s delivery supersession", async fault => {
+  it.each(["reset-source", "reopened-task"])("keeps %s delivery supersession", async fault => {
     const f = await fixture(), outbox = await completion(f);
     if (fault === "reset-source") await db.update(issues).set({ conversationSessionGeneration: 1 }).where(eq(issues.id, f.issueId));
     else {
-      await db.update(issues).set({ statusVersion: 3 }).where(eq(issues.id, outbox.taskId));
-      await db.update(chatCompletionDeliveries).set({ status: "superseded" }).where(eq(chatCompletionDeliveries.id, outbox.deliveryId));
+      await issueService(db).update(outbox.taskId, { status: "todo" });
+      await issueService(db).update(outbox.taskId, { status: "done" });
+      expect(await issue(outbox.taskId)).toMatchObject({ status: "done", statusVersion: 4 });
     }
     await outbox.service.deliver(outbox.deliveryId);
     expect(await outbox.delivery()).toMatchObject({ status: "superseded", attempts: 0, responseCommentId: null });
@@ -348,6 +350,112 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
       release?.(); await Promise.allSettled([blocker, first, second].filter((value): value is Promise<unknown> => Boolean(value)));
       vi.useRealTimers();
     }
+  });
+
+  it("rechecks the fresh delivery when retry holds the child lock before presentation reads", async () => {
+    const started = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(started);
+    const f = await fixture(), outbox = await completion(f);
+    const suffix = randomUUID().replaceAll("-", ""), lockId = Number.parseInt(suffix.slice(0, 6), 16) + 1;
+    const trigger = `completion_retry_hold_${suffix}`;
+    let release!: () => void, acquired!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const locked = new Promise<void>(resolve => { acquired = resolve; });
+    let blocker: Promise<unknown> | undefined, presentation: Promise<unknown> | undefined, expiry: Promise<unknown> | undefined;
+    try {
+      await db.execute(sql.raw(`create function ${trigger}() returns trigger language plpgsql as $$
+        begin
+          if OLD.id = '${outbox.deliveryId}'::uuid and NEW.target_run_id is null then perform pg_advisory_xact_lock(${lockId}); end if;
+          return NEW;
+        end $$`));
+      await db.execute(sql.raw(`create trigger ${trigger} before update of target_run_id on chat_completion_deliveries for each row execute function ${trigger}()`));
+      blocker = db.transaction(async tx => { await tx.execute(sql`select pg_advisory_xact_lock(${lockId}::bigint)`); acquired(); await hold; });
+      await Promise.race([locked, blocker]);
+      const work = nativeResponsePresentationWork(db), [entry] = await work.load(f.input);
+      vi.setSystemTime(started + 300_000);
+      expiry = outbox.service.deliver(outbox.deliveryId); void expiry.catch(() => undefined);
+      // The retry transaction now owns the child lock and has reached its real
+      // retarget write. Presentation must read the old row, then wait for it.
+      await vi.waitFor(async () => {
+        const [row] = await db.execute(sql`select exists (select 1 from pg_locks
+          where locktype = 'advisory' and classid = 0 and objid = ${lockId}::oid and not granted
+            and database = (select oid from pg_database where datname = current_database())) as waiting`);
+        expect(row.waiting).toBe(true);
+      }, { timeout: 5000 });
+      presentation = work.check(entry); void presentation.catch(() => undefined);
+      await vi.waitFor(async () => {
+        const [row] = await db.execute(sql`select exists (select 1 from pg_stat_activity
+          where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock'
+            and query like '%from "issues"%' and query like '%for update%') as waiting`);
+        expect(row.waiting).toBe(true);
+      }, { timeout: 5000 });
+      release(); await blocker; await expiry;
+      const [outcome] = await Promise.allSettled([presentation]);
+      expect(outcome.status).toBe("rejected");
+      if (outcome.status === "rejected") expect(outcome.reason.message).toBe("chat_completion_superseded");
+      expect(await comments(f.runId)).toEqual([]);
+      expect(await outbox.delivery()).toMatchObject({ status: "pending", targetRunId: null, attempts: 1, responseCommentId: null });
+      expect(outbox.wakeup).toHaveBeenCalledTimes(1);
+    } finally {
+      release?.(); await Promise.allSettled([blocker, presentation, expiry].filter((value): value is Promise<unknown> => Boolean(value)));
+      await db.execute(sql.raw(`drop trigger if exists ${trigger} on chat_completion_deliveries`));
+      await db.execute(sql.raw(`drop function if exists ${trigger}()`));
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["within-grace", "at-expiry"])("preserves a Done reassignment's completion event %s and still retries at expiry", async when => {
+    const started = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(started);
+    try {
+      const f = await fixture(), outbox = await completion(f), reassignedAgent = randomUUID();
+      await db.insert(agents).values({ id: reassignedAgent, companyId: f.companyId, name: "New task owner", adapterType: "paperclip_runner" });
+      await db.update(nativeRunResults).set({ canonicalSha256: "invalid-digest" }).where(eq(nativeRunResults.runId, f.runId));
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(started + 120_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
+      const updated = await issueService(db).update(outbox.taskId, { assigneeAgentId: reassignedAgent });
+      expect(updated).toMatchObject({ status: "done", statusVersion: 3, assigneeAgentId: reassignedAgent });
+      expect(await outbox.delivery()).toMatchObject({ status: "queued", statusVersion: 2, targetRunId: f.runId, attempts: 0 });
+      if (when === "within-grace") {
+        await outbox.service.deliver(outbox.deliveryId);
+        expect(await outbox.delivery()).toMatchObject({ status: "queued", targetRunId: f.runId, attempts: 0,
+          nextAttemptAt: new Date(started + 120_000) });
+        expect(outbox.wakeup).not.toHaveBeenCalled();
+      }
+      vi.setSystemTime(started + 300_000);
+      await outbox.service.deliver(outbox.deliveryId);
+      expect(await outbox.delivery()).toMatchObject({ status: "pending", targetRunId: null, attempts: 1, statusVersion: 2 });
+      expect(await comments(f.runId)).toEqual([]);
+      expect(outbox.wakeup).toHaveBeenCalledTimes(1);
+      expect(await issue(outbox.taskId)).toMatchObject({ status: "done", statusVersion: 3, assigneeAgentId: reassignedAgent });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("returns the fresh saved reply receipt after waiting for the child lock", async () => {
+    const f = await fixture(), outbox = await completion(f);
+    const [saved] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorAgentId: f.agentId, createdByRunId: f.runId, body: f.reply }).returning();
+    let release!: () => void, acquired!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const locked = new Promise<void>(resolve => { acquired = resolve; });
+    const blocker = db.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, outbox.taskId)).for("update"); acquired(); await hold;
+      await tx.update(chatCompletionDeliveries).set({ status: "delivered", responseCommentId: saved.id })
+        .where(eq(chatCompletionDeliveries.id, outbox.deliveryId));
+    });
+    let reader: Promise<Awaited<ReturnType<typeof existingChatCompletionReply>>> | undefined;
+    try {
+      await Promise.race([locked, blocker]);
+      reader = db.transaction(tx => existingChatCompletionReply(tx, f.runId, f.issueId)); void reader.catch(() => undefined);
+      await vi.waitFor(async () => {
+        const [row] = await db.execute(sql`select exists (select 1 from pg_stat_activity
+          where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock'
+            and query like '%from "issues"%' and query like '%for update%') as waiting`);
+        expect(row.waiting).toBe(true);
+      }, { timeout: 5000 });
+      release(); await blocker;
+      expect(await reader).toMatchObject({ id: saved.id, body: f.reply, createdByRunId: f.runId });
+      expect(await comments(f.runId)).toHaveLength(1);
+    } finally { release?.(); await Promise.allSettled([blocker, reader].filter((value): value is Promise<unknown> => Boolean(value))); }
   });
 
   it("saves a legitimate delayed reply before the fixed limit without another model run", async () => {

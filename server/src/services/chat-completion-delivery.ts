@@ -197,11 +197,11 @@ export async function existingChatCompletionReply(tx: Connection, runId: string,
     await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.id, delivery.taskId), eq(issues.companyId, run.companyId))).for("update");
     const row = await loadAudience(tx, delivery.id);
     if (!row || row.source?.id !== issueId || row.handoff.agentId !== run.agentId || !current(row)) throw new Error("chat_completion_superseded");
-    if (delivery.responseCommentId) {
-      const [comment] = await tx.select().from(issueComments).where(and(eq(issueComments.id, delivery.responseCommentId), eq(issueComments.issueId, issueId)));
+    if (row.delivery.responseCommentId) {
+      const [comment] = await tx.select().from(issueComments).where(and(eq(issueComments.id, row.delivery.responseCommentId), eq(issueComments.issueId, issueId)));
       if (comment) return comment;
     }
-    if (delivery.status !== "queued" || delivery.targetRunId !== runId) throw new Error("chat_completion_superseded");
+    if (row.delivery.status !== "queued" || row.delivery.targetRunId !== runId) throw new Error("chat_completion_superseded");
   }
   if (rows.length !== ids(run).length) throw new Error("chat_completion_superseded");
   return null;
@@ -252,7 +252,7 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
               claimed.nextAttemptAt.getTime(), response.nextAttemptAt?.getTime() ?? 0,
             ))) }).where(and(eq(deliveries.id, id), eq(deliveries.companyId, claimed.companyId),
               eq(deliveries.status, "queued"), eq(deliveries.targetRunId, run.id),
-              eq(deliveries.statusVersion, row.task.statusVersion))).returning({ id: deliveries.id });
+              eq(deliveries.statusVersion, claimed.statusVersion))).returning({ id: deliveries.id });
             return updated.length > 0;
           });
           if (deferred) return;
@@ -260,11 +260,12 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
         const advanced = await db.transaction(async tx => {
           // Reply authority holds this same task lock through comment insertion
           // and outbox acknowledgment. Let that winner finish before retrying.
-          const [task] = await tx.select({ status: issues.status, statusVersion: issues.statusVersion }).from(issues)
+          const [task] = await tx.select({ status: issues.status }).from(issues)
             .where(and(eq(issues.id, claimed.taskId), eq(issues.companyId, claimed.companyId))).for("update");
-          if (task?.status !== "done" || task.statusVersion !== claimed.statusVersion) return false;
+          if (task?.status !== "done") return false;
           const sameClaim = and(eq(deliveries.id, id), eq(deliveries.companyId, claimed.companyId),
-            inArray(deliveries.status, [...pending]), eq(deliveries.attempts, claimed.attempts),
+            inArray(deliveries.status, [...pending]), eq(deliveries.statusVersion, claimed.statusVersion),
+            eq(deliveries.attempts, claimed.attempts),
             eq(deliveries.nextAttemptAt, claimed.nextAttemptAt),
             claimed.targetRunId ? eq(deliveries.targetRunId, claimed.targetRunId) : isNull(deliveries.targetRunId));
           const [latest] = await tx.select({ id: deliveries.id }).from(deliveries).where(sameClaim).for("update");
