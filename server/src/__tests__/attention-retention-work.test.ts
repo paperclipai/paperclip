@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { authUsers, companyMemberships, agents, approvals, budgetIncidents, budgetPolicies, companies, createDb, applyPendingMigrations, decisionArchiveNotificationOutbox,
+import { subscribeDatabaseWork, authUsers, companyMemberships, agents, approvals, budgetIncidents, budgetPolicies, companies, createDb, applyPendingMigrations, decisionArchiveNotificationOutbox,
   decisionRetention, decisions, costEvents, heartbeatRunEvents, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issueRelations, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { attentionRetentionService, registerAttentionRetentionWork } from "../services/attention-retention.js";
@@ -13,6 +13,7 @@ import { companyService } from "../services/companies.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { decisionRetentionService, DEFAULT_DECISION_ARCHIVE_DAYS } from "../services/decision-retention.js";
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
+import { buildIssueGraphLivenessIncidentKey, RECOVERY_ORIGIN_KINDS } from "../services/recovery/origins.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { BLOCKER_ATTENTION_MAX_DEPTH, BLOCKER_ATTENTION_MAX_NODES, issueService } from "../services/issues.js";
@@ -32,12 +33,13 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   const errors: unknown[] = [];
   const statements: string[] = [];
+  const parameterCounts: number[] = [];
   beforeAll(async () => {
     if (externalUrl) await applyPendingMigrations(externalUrl);
     else temporary = await startEmbeddedPostgresTestDatabase("attention-retention-");
     db = createDb(externalUrl ?? temporary!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     db.$client.options.onnotice = () => {};
-    db.$client.options.debug = (_connection, query) => statements.push(query);
+    db.$client.options.debug = (_connection, query, parameters) => { statements.push(query); parameterCounts.push(parameters.length); };
   }, 30_000);
   beforeEach(async () => {
     companyId = randomUUID(); agentId = randomUUID(); draining = false; errors.length = 0;
@@ -309,6 +311,111 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
       const batch = await owner.listBlockerAttention(companyId, input);
       for (const item of roots) expect(batch.get(item.id)).toEqual(singles.get(item.id));
     }
+  });
+
+  it("bounds every graph query when independent root trees contain over 65535 unfinished nodes", async () => {
+    await db.execute(sql`insert into issues (id, company_id, title, status, updated_at)
+      select gen_random_uuid(), ${companyId}::uuid, 'parameter-root-' || n, 'blocked', ${old().toISOString()}::timestamptz
+      from generate_series(1, 70) n`);
+    await db.execute(sql`insert into issues (id, company_id, parent_id, title, status, assignee_agent_id, updated_at)
+      select gen_random_uuid(), ${companyId}::uuid, root.id, 'parameter-leaf-' || n, 'backlog', ${agentId}::uuid, ${old().toISOString()}::timestamptz
+      from issues root cross join generate_series(1, 999) n
+      where root.company_id = ${companyId}::uuid and root.status = 'blocked'`);
+    const roots = await db.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.status, "blocked")));
+    parameterCounts.length = 0;
+    const result = await issueService(db).listBlockerAttention(companyId, roots).catch(error => {
+      throw new Error(`Large graph failed: ${String(error.cause?.message ?? error.message).slice(0, 300)}`);
+    });
+    expect(result.size).toBe(70);
+    expect([...result.values()].every(item => item.state === "needs_attention" && item.terminalBlockerIssueId)).toBe(true);
+    expect(Math.max(...parameterCounts)).toBeLessThanOrEqual(1100);
+  }, 120_000);
+
+  it("canonicalizes wide circular notification variables to the supported identity fields", async () => {
+    const sourceId = randomUUID(), issueId = randomUUID(), hints: string[] = [];
+    const wide = { companyId, sourceKind: "review" as const, sourceId, issueId, ignored: {} as unknown };
+    wide.ignored = wide;
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.attentionRetention, (event, values) => {
+      if (event === "settled") hints.push(...values ?? []);
+    });
+    try { await db.transaction(tx => notifyAttentionRetentionWork(tx, wide)); } finally { unsubscribe(); }
+    expect(hints).toEqual([JSON.stringify({ companyId, sourceKind: "review", sourceId, issueId })]);
+  });
+
+  it("keeps held, burst and sustained ordinary issue writes scoped while an unrelated deadline fires", async () => {
+    const row = await issueService(db).create(companyId, { title: "Active review", status: "in_review", assigneeUserId: "board", createdByAgentId: agentId });
+    const urgent = await insertIssue("in_review", { assigneeUserId: "board", updatedAt: new Date(Date.now() - delay + 10_000) });
+    const otherCompany = randomUUID();
+    await db.insert(companies).values({ id: otherCompany, name: "Unrelated", issuePrefix: "BURST" });
+    const foreign = await db.insert(issues).values(Array.from({ length: 125 }, () => ({ companyId: otherCompany,
+      title: randomUUID(), status: "in_review", assigneeUserId: "board", updatedAt: old() }))).returning();
+    await db.insert(decisionRetention).values(foreign.map(issue => ({ companyId: otherCompany, sourceKind: "review", sourceId: issue.id, sourceActivityAt: issue.updatedAt, keep: true })));
+    const service = attentionRetentionService(db), original = service.load, load = vi.spyOn(service, "load");
+    await start(service); await settle(); load.mockClear();
+    let release!: () => void, entered = false;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    load.mockImplementationOnce(async (...args) => { const page = await original(...args); entered = true; await gate; return page; });
+    statements.length = 0;
+    await issueService(db).update(row.id, { title: "Held mutation" });
+    await vi.waitFor(() => expect(entered).toBe(true), { timeout: 15_000 });
+    await Promise.all(Array.from({ length: 5 }, (_, index) => issueService(db).update(row.id, { title: `Burst ${index}` })));
+    release(); await settle();
+    for (let index = 0; index < 8; index++) {
+      await issueService(db).update(row.id, { title: `Steady ${index}` }); await vi.advanceTimersByTimeAsync(1000); await settle();
+    }
+    await archived("review", urgent.id);
+    const routine = load.mock.calls.map(([scope]) => scope).filter(scope => !scope?.sourceId);
+    expect(routine.length).toBeGreaterThan(0);
+    expect(routine.every(scope => scope?.companyId === companyId && scope.issueId === row.id)).toBe(true);
+    const scans = statements.filter(query => query.includes("with source_candidates"));
+    expect(scans.length).toBeGreaterThan(0);
+    expect(scans.every(query => !query.includes("budget_incidents") && !query.includes("agent_error_alert"))).toBe(true);
+    expect(await state("review", row.id)).toBeNull();
+  });
+
+  it("wakes all linked issue sources when an ordinary visibility mutation reveals their origin", async () => {
+    const origin = await insertIssue("in_review", { hiddenAt: old(), assigneeUserId: "board", responsibleUserId: "board" });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed", contextSnapshot: { issueId: origin.id }, createdAt: old(), finishedAt: old() }).returning();
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId: run.id, seq: 1, eventType: "lifecycle", message: "Bounded retry exhausted: visibility" });
+    const [decision] = await db.insert(decisions).values({ companyId, originAgentId: agentId, originIssueId: origin.id, originRunId: run.id,
+      title: "Decision", body: "Choose", options: [], signedSpec: "fixture", targetSnapshots: {}, expiresAt: new Date(Date.now() + 86_400_000), updatedAt: old() }).returning();
+    const [recovery] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: origin.id, kind: "execution", ownerType: "board", cause: "fixture", fingerprint: "fixture", nextAction: "Choose", updatedAt: old() }).returning();
+    const [interaction] = await db.insert(issueThreadInteractions).values({ companyId, issueId: origin.id, kind: "ask_user_questions", payload: { questions: [] }, updatedAt: old() }).returning();
+    await start(); await quiet();
+    await issueService(db).update(origin.id, { hiddenAt: null });
+    for (const [kind, id] of [["decision", decision.id], ["recovery_action", recovery.id], ["failed_run", run.id], ["issue_thread_interaction", interaction.id]]) await archived(kind, id);
+    await settle(); expect(await state("review", origin.id)).toBeNull(); expect(coordinator!.nextWakeAt()).not.toBeNull();
+  });
+
+  it("invalidates old and new parents, terminal visibility and repointed blocker relations", async () => {
+    const oldParent = await insertIssue("blocked", { updatedAt: new Date(), responsibleUserId: "board" });
+    const newParent = await insertIssue("blocked", { updatedAt: new Date(), responsibleUserId: "board" });
+    const terminal = await insertIssue("backlog", { parentId: oldParent.id, hiddenAt: old(), assigneeAgentId: agentId, responsibleUserId: "board" });
+    const service = attentionRetentionService(db), load = vi.spyOn(service, "load"); await start(service); await settle(); load.mockClear();
+    await issueService(db).update(terminal.id, { parentId: newParent.id }); await settle();
+    const ids = load.mock.calls.map(([scope]) => scope?.issueId);
+    expect(ids).toEqual(expect.arrayContaining([oldParent.id, newParent.id, terminal.id]));
+    load.mockClear();
+    await issueService(db).update(terminal.id, { hiddenAt: null }); await settle();
+    expect(await state("blocker_attention", terminal.id)).toBeNull();
+    const visible = await service.load({ companyId, issueId: newParent.id });
+    expect(visible.rows!.some(entry => entry.sourceId === terminal.id && entry.dueAt > Date.now())).toBe(true);
+    expect(load.mock.calls.some(([scope]) => scope?.issueId === newParent.id)).toBe(true);
+    const next = await insertIssue("backlog", { assigneeAgentId: agentId });
+    await issueService(db).update(oldParent.id, { blockedByIssueIds: [next.id] }); await archived("blocker_attention", next.id);
+  });
+
+  it("cancels and reactivates a blocker deadline through ordinary liveness incident creation and hiding", async () => {
+    const root = await insertIssue("blocked");
+    const terminal = await insertIssue("backlog", { assigneeAgentId: agentId, updatedAt: new Date(Date.now() - delay + 10_000) });
+    await db.insert(issueRelations).values({ companyId, issueId: terminal.id, relatedIssueId: root.id, type: "blocks" });
+    await start(); await settle(); expect(coordinator!.nextWakeAt()).not.toBeNull();
+    const incident = await issueService(db).create(companyId, { title: "Resolve liveness", status: "todo", assigneeUserId: "board",
+      createdByUserId: "board", originKind: RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+      originId: buildIssueGraphLivenessIncidentKey({ companyId, issueId: root.id, state: "needs_attention", blockerIssueId: terminal.id }) });
+    await quiet(); expect(await state("blocker_attention", terminal.id)).toBeNull();
+    await issueService(db).update(incident.id, { hiddenAt: new Date() });
+    await archived("blocker_attention", terminal.id); await quiet();
   });
 
   it("scopes ordinary execution-control writes to their company", async () => {

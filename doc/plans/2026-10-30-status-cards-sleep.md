@@ -135,3 +135,9 @@ scheduled work after settlement. Real issue/comment producer acceptance measures
 due/next queries and actual searches under 100 writes, preserves both companies'
 hints, dispatches another company's saved deadline inside the batching window,
 and checks SQL quietness after authorized results.
+
+Card deletion resolves the card's owning company and emits only that company's
+deadline-reconstruction hint. Every card mutation requires a company ID; only
+instance-level settings retain wildcard ingress. Deleting an already-missing
+card emits no hint. The real two-company regression proves deletion does not
+re-run unchanged reactive searches or wake either summarizer, then stays quiet.
