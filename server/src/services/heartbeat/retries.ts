@@ -1,6 +1,6 @@
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
-import { notifyRunDispatch } from "../run-dispatch-notifications.js";
+import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
 import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
 import {
@@ -1001,7 +1001,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         }
 
         await notifyAttentionRetentionWork(tx, { companyId: run.companyId });
-        await notifyRunDispatch(tx, { companyId: run.companyId });
+        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId });
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -1760,7 +1760,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     };
 
     const updated = await db.transaction(async (tx) => {
-      await notifyRunDispatch(tx, { companyId: scheduled.run.companyId });
+      await notifyScheduledRetryDispatch(tx, { companyId: scheduled.run.companyId });
       const row = await tx
         .update(heartbeatRuns)
         .set({
