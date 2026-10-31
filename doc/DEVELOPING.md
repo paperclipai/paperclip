@@ -360,6 +360,8 @@ This starts:
 
 `pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.
 
+The dev runner loads a repo-root `.env` into the server, migration-status, and migration processes. A key in the repo-root `.env` is applied only when the shell and the instance `.env` do not already set it, so the precedence is shell > instance `.env` > repo-root `.env`. The runner re-reads both files on each server start and restart, and prints the names of the keys it applied from the repo-root `.env`. A missing repo-root `.env` is ignored; a repo-root `.env` that exists but cannot be read stops the runner.
+
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
 
 To run against a separate local state root, pass `--data-dir`. The dev runner
