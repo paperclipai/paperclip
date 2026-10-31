@@ -56,7 +56,7 @@ function esbuildFixture(t) {
   return { directory, graph, esbuild, producerBinary, publish, writePackage };
 }
 const codexTargets = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64", "win32-arm64"];
-const codexOptional = Object.fromEntries(codexTargets.map(target => [`@openai/codex-${target}`, `npm:@openai/codex@0.160.0-${target}`]));
+const codexOptional = Object.fromEntries(codexTargets.map(target => [`@openai/codex-${target}`, `npm:@openai/codex@0.166.0-${target}`]));
 const claudeTargets = [...codexTargets, "linux-x64-musl", "linux-arm64-musl"];
 const claudeOptional = Object.fromEntries(claudeTargets.map(target => [`@anthropic-ai/claude-agent-sdk-${target}`, "0.3.286"]));
 function claudeFixture(t) {
@@ -91,14 +91,14 @@ function codexFixture(t) {
   const writePackage = (location, metadata) => {
     mkdirSync(location, { recursive: true }); writeFileSync(join(location, "package.json"), JSON.stringify(metadata)); return location;
   };
-  const bridge = writePackage(join(graph, "@agentclientprotocol/codex-acp"), { name: "@agentclientprotocol/codex-acp", version: "1.6.2", dependencies: { "@openai/codex": "0.160.0" } });
+  const bridge = writePackage(join(graph, "@agentclientprotocol/codex-acp"), { name: "@agentclientprotocol/codex-acp", version: "1.6.2", dependencies: { "@openai/codex": "0.166.0" } });
   writeFileSync(join(bridge, "index.js"), "export {};\n");
-  const runtime = writePackage(join(graph, "@openai/codex"), { name: "@openai/codex", version: "0.160.0", bin: { codex: "bin/codex.js" }, optionalDependencies: codexOptional });
+  const runtime = writePackage(join(graph, "@openai/codex"), { name: "@openai/codex", version: "0.166.0", bin: { codex: "bin/codex.js" }, optionalDependencies: codexOptional });
   mkdirSync(join(runtime, "bin")); writeFileSync(join(runtime, "bin/codex.js"), "// official JavaScript fixture, never executed\n");
   mkdirSync(join(runtime, "vendor")); writeFileSync(join(runtime, "vendor/codex"), "producer fallback binary fixture, never executed");
-  const producer = writePackage(join(graph, "@openai/codex-linux-x64"), { name: "@openai/codex", version: "0.160.0-linux-x64", os: ["linux"], cpu: ["x64"] });
+  const producer = writePackage(join(graph, "@openai/codex-linux-x64"), { name: "@openai/codex", version: "0.166.0-linux-x64", os: ["linux"], cpu: ["x64"] });
   mkdirSync(join(producer, "vendor")); writeFileSync(join(producer, "vendor/codex"), "producer optional binary fixture, never executed");
-  const nested = writePackage(join(bridge, "node_modules/@openai/codex-darwin-arm64"), { name: "@openai/codex", version: "0.160.0-darwin-arm64", os: ["darwin"], cpu: ["arm64"] });
+  const nested = writePackage(join(bridge, "node_modules/@openai/codex-darwin-arm64"), { name: "@openai/codex", version: "0.166.0-darwin-arm64", os: ["darwin"], cpu: ["arm64"] });
   writePackage(join(graph, "unrelated-linux-x64"), { name: "unrelated-linux-x64", version: "1.0.0" });
   const profiles = [{ agent: "codex", ...profileData.profiles.codex }];
   const publish = { name: "paperclip-codex-pack-fixture", version: "1.0.0", dependencies: { "@agentclientprotocol/codex-acp": "1.6.2" }, bundleDependencies: ["@agentclientprotocol/codex-acp"] };
@@ -327,7 +327,7 @@ test("Codex bundle validation fails before deleting producer binaries for altere
   const file = join(runtime, "package.json"), original = JSON.parse(readFileSync(file, "utf8"));
   writeFileSync(file, JSON.stringify({ ...original, version: "0.156.1" }));
   assert.throws(() => stageBundledProviderOptionalDependencies(directory, publish, profiles), /runtime version mismatch/);
-  writeFileSync(file, JSON.stringify({ ...original, optionalDependencies: { ...codexOptional, "@openai/codex-untrusted": "0.160.0" } }));
+  writeFileSync(file, JSON.stringify({ ...original, optionalDependencies: { ...codexOptional, "@openai/codex-untrusted": "0.166.0" } }));
   assert.throws(() => stageBundledProviderOptionalDependencies(directory, publish, profiles), /not qualified/);
   writeFileSync(file, JSON.stringify(original));
   const missing = { ...original }; delete missing.optionalDependencies;
@@ -343,7 +343,7 @@ test("Codex bundle validation fails before deleting producer binaries for altere
 
 test("Codex stripping rejects linked native payloads and wrapper fallback directories without touching external files", (t) => {
   const { directory, runtime, producer, profiles, publish, writePackage } = codexFixture(t);
-  const outside = writePackage(join(directory, "outside"), { name: "@openai/codex", version: "0.160.0-linux-x64", os: ["linux"], cpu: ["x64"] });
+  const outside = writePackage(join(directory, "outside"), { name: "@openai/codex", version: "0.166.0-linux-x64", os: ["linux"], cpu: ["x64"] });
   rmSync(producer, { recursive: true }); symlinkSync(outside, producer, "dir");
   assert.throws(() => stageBundledProviderOptionalDependencies(directory, publish, profiles), /escapes its producer graph/);
   rmSync(producer); rmSync(join(runtime, "vendor"), { recursive: true }); symlinkSync(outside, join(runtime, "vendor"), "dir");
@@ -593,7 +593,7 @@ test("server package staging applies every bundled runtime patch and preserves t
   mkdirSync(fixtureArtifacts);
   const nativePackage = join(fixtureArtifacts, "@openai/codex-linux-x64");
   mkdirSync(join(nativePackage, "vendor"), { recursive: true });
-  writeFileSync(join(nativePackage, "package.json"), JSON.stringify({ name: "@openai/codex", version: "0.160.0-linux-x64", os: ["linux"], cpu: ["x64"] }));
+  writeFileSync(join(nativePackage, "package.json"), JSON.stringify({ name: "@openai/codex", version: "0.166.0-linux-x64", os: ["linux"], cpu: ["x64"] }));
   writeFileSync(join(nativePackage, "vendor/codex"), "producer host fixture; never executed");
   mkdirSync(join(fixtureSourceRoot, "packages/paperclip-runner/src/drivers/acpx"), { recursive: true });
   writeFileSync(join(fixtureSourceRoot, "package.json"), JSON.stringify(rootPackage));

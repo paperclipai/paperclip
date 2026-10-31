@@ -1097,12 +1097,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const version = await runAdapterExecutionTargetProcess(`${runId}-observability-version`, executionTarget, command, ["--version"], {
           cwd, env: runtimeEnv, timeoutSec: 5, graceSec: 1, onLog: async () => {},
         });
-        qualified = version.exitCode === 0 && /^codex-cli 0\.160\.0\s*$/.test(version.stdout.trim());
+        qualified = version.exitCode === 0 && /^codex-cli 0\.(?:160|166)\.0\s*$/.test(version.stdout.trim());
       } catch { /* Export qualification must not block baseline work. */ }
       if (!qualified) {
         await observabilityProfile.cleanup();
         observabilityProfile = null;
-        await onLog("stderr", "[paperclip] Company observability was not applied: this Codex executable is not the qualified 0.160.0 release.\n");
+        await onLog("stderr", "[paperclip] Company observability was not applied: this Codex executable is not a qualified release (0.160.0 or 0.166.0).\n");
       }
     }
     const loggedEnv = buildInvocationEnvForLogs(env, {

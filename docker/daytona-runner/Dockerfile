@@ -149,7 +149,7 @@ RUN /bin/sh -lc 'set -eu; \
     for command_name in acpx claude-agent-acp codex-acp; do \
       command -v "$command_name" >/dev/null || { echo "FATAL: $command_name not on PATH for daytona user" >&2; exit 1; }; \
     done; \
-    test "$(codex --version)" = "codex-cli 0.160.0"; \
+    test "$(codex --version)" = "codex-cli 0.166.0"; \
     test "$(claude --version)" = "2.1.286 (Claude Code)"; \
     test "$(opencode --version)" = "1.18.34"; \
     test "$(acpx --version)" = "0.13.1"; \

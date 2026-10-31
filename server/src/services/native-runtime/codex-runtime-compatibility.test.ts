@@ -15,13 +15,13 @@ describe("remote Codex compatibility window", () => {
       vi.useRealTimers();
     }
   });
-  it.each(["0.149.0", "0.149.1", "0.150.0", "0.150.1", "0.151.0", "0.152.1", "0.153.4", "0.154.0", "0.155.1", "0.156.0", "0.156.99", "0.157.0", "0.158.0", "0.159.3", "0.160.0", "0.160.99"])(
+  it.each(["0.149.0", "0.149.1", "0.150.0", "0.150.1", "0.151.0", "0.152.1", "0.153.4", "0.154.0", "0.155.1", "0.156.0", "0.156.99", "0.157.0", "0.158.0", "0.159.3", "0.160.0", "0.160.99", "0.161.0", "0.164.0", "0.165.0", "0.166.0", "0.166.99"])(
     "accepts stable supported version %s", (version) => {
       expect(isSupportedRemoteCodexVersion(version)).toBe(true);
       expect(parseCodexCliVersion(`codex-cli ${version}\n`)).toBe(version);
     },
   );
-  it.each(["0.148.99", "0.100.0", "0.161.0", "0.162.0", "0.999.0", "1.0.0", "0.160.0-alpha.1", "0.149.0-dev", "0.160.0+custom", "00.149.0", "0.149", "0.149.9007199254740992", ""])(
+  it.each(["0.148.99", "0.100.0", "0.167.0", "0.168.0", "0.999.0", "1.0.0", "0.166.0-alpha.1", "0.149.0-dev", "0.160.0+custom", "00.149.0", "0.149", "0.149.9007199254740992", ""])(
     "rejects unsupported or ambiguous version %s", (version) => {
       expect(isSupportedRemoteCodexVersion(version)).toBe(false);
     },

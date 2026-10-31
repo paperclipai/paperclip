@@ -46,9 +46,11 @@ would hide the runtime that executed the task.
 
 ## Remote Codex version window
 
-Remote native Codex runs accept stable CLI versions **`>=0.149.0 <0.161.0`**.
-The install pin is `0.160.0`. A sandbox image can therefore use an older
-compatible Codex without failing startup or installing another copy.
+Remote native Codex runs accept stable CLI versions **`>=0.149.0 <0.167.0`**.
+The install pin is `0.166.0`. A sandbox image can therefore use an older
+compatible Codex without failing startup or installing another copy. The
+window covers the `0.166.0` pin, which is the first pin that ships
+`gpt-6.1-terra`.
 
 The minimum is fixed at **`0.149.0`** until maintainers deliberately change it.
 It is not a rolling one-month support window. The official
@@ -65,7 +67,7 @@ release follows a backward-compatible protocol.
 - The same check applies to discovered, explicitly staged, and npm-installed
   remote Codex executables, including the final executable after linking.
 - For an incompatible image, the existing
-  `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@0.160.0` configuration
+  `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@0.166.0` configuration
   allows installation of the pinned runtime. Without that configuration,
   startup reports the supported range and the remediation.
 - Runner binary contracts, required runner capabilities, artifact digests,
@@ -91,6 +93,15 @@ the installed ACP package contract. Codex `0.157.0` through `0.160.0` add the
 GPT-6.1 Sol catalog entry and app-server pagination without a documented
 app-server protocol break; the Linux CI qualification workflow covers the real
 startup and session-resume probes for the new pin.
+
+The 2026-10-31 refresh moved the install pin and the upper bound to `0.166.0`
+and `0.167.0`. The Linux x64 `0.166.0` executable digest is
+`sha256:b8a11fedf24b2dfb59a70c9e52b030f9a508dcd49cd2dd0d41956f4c785156b8`,
+computed from the `@openai/codex@0.166.0-linux-x64` archive. Codex `0.161.0`
+through `0.166.0` add the GPT-6.1 Terra catalog entry, a Vertex AI provider,
+and model-not-found handling that stops retries. The `0.165.0` release notes
+record the catalog addition. The ACP package contract stays at
+`codex-acp` 1.6.2, so the ACPX profile version stays at 1.
 Version-boundary and remote artifact-preparation regressions are covered by
 `codex-runtime-compatibility.test.ts` and `native-session-executor.test.ts`.
 

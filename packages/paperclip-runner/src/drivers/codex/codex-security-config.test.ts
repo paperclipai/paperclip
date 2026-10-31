@@ -18,7 +18,7 @@ describe("Codex security configuration", () => {
     const command = resolvePinnedCodexCommand();
     expect(evalProviderTransportOptions("codex").codexCommand).toBe(command);
     expect(execFileSync(command, ["--version"], { env: { PATH: dirname(process.execPath) },
-      encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 }).trim()).toBe("codex-cli 0.160.0");
+      encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 }).trim()).toBe("codex-cli 0.166.0");
   });
 
   it("resolves usable installed Codex commands and an absent-package PATH fallback while rejecting malformed or escaped dependencies", () => {
@@ -46,8 +46,8 @@ describe("Codex security configuration", () => {
       const executable = join(codex, "bin/codex.js");
       const platformName = "@openai/codex-" + process.platform + "-" + process.arch;
       const platform = join(root, "node_modules", platformName), vendor = join(platform, "vendor");
-      const metadata = { name: "@openai/codex", version: "0.160.0", bin: { codex: "bin/codex.js" },
-        optionalDependencies: { [platformName]: "npm:@openai/codex@0.160.0-" + process.platform + "-" + process.arch } };
+      const metadata = { name: "@openai/codex", version: "0.166.0", bin: { codex: "bin/codex.js" },
+        optionalDependencies: { [platformName]: "npm:@openai/codex@0.166.0-" + process.platform + "-" + process.arch } };
       try {
         mkdirSync(pathDirectory);
         writeFileSync(pathCommand, "#!" + process.execPath + "\\nif (process.argv.slice(2).join(' ') !== '--version') process.exit(9); console.log('codex-cli 0.141.0');\\n", { mode: 0o755 });
@@ -107,17 +107,17 @@ describe("Codex security configuration", () => {
         writeFileSync(join(bridge, "package.json"), JSON.stringify({ name: "@agentclientprotocol/codex-acp", version: "1.6.2" }));
         writeFileSync(join(codex, "package.json"), JSON.stringify(metadata));
         mkdirSync(vendor, { recursive: true });
-        const platformMetadata = { name: "@openai/codex", version: "0.160.0-" + process.platform + "-" + process.arch,
+        const platformMetadata = { name: "@openai/codex", version: "0.166.0-" + process.platform + "-" + process.arch,
           os: [process.platform], cpu: [process.arch] };
         writeFileSync(join(platform, "package.json"), JSON.stringify(platformMetadata));
-        writeFileSync(executable, "#!" + process.execPath + "\\nif (process.argv.slice(2).join(' ') !== '--version') process.exit(9); console.log('codex-cli 0.160.0');\\n", { mode: 0o755 });
+        writeFileSync(executable, "#!" + process.execPath + "\\nif (process.argv.slice(2).join(' ') !== '--version') process.exit(9); console.log('codex-cli 0.166.0');\\n", { mode: 0o755 });
         assert.equal(resolveCodexCommand(issuer, commandEnvironment), executable, "The selected installed bridge closure takes precedence over PATH");
         assert.equal(resolvePinnedCodexCommand(issuer, commandEnvironment), executable, "The published compatibility alias keeps ordinary command semantics");
         const roots = codexExecutableReadOnlyRoots({ PATH: "/missing-codex-command" }, executable);
         assert.ok(roots.includes(vendor), "The npm-hoisted native vendor directory remains readable");
         assert.ok(!roots.includes(platform) && !roots.includes(root), "Hoisting must not expose npm ancestry");
         assert.equal(execFileSync(resolveCodexCommand(issuer, commandEnvironment), ["--version"], { env: { PATH: "/missing-codex-command" },
-          encoding: "utf8", timeout: 5_000 }).trim(), "codex-cli 0.160.0");
+          encoding: "utf8", timeout: 5_000 }).trim(), "codex-cli 0.166.0");
 
         for (const bin of ["../../escaped-codex", "/usr/bin/codex", {}, ""]) {
           writeFileSync(join(codex, "package.json"), JSON.stringify({ ...metadata, bin }));
@@ -204,9 +204,9 @@ describe("Codex security configuration", () => {
         for (const [path, changed] of [
           [serverManifest, { ...serverMetadata, optionalDependencies: {} }],
           [serverManifest, { ...serverMetadata, name: "unowned-server" }],
-          [serverManifest, { ...serverMetadata, optionalDependencies: { [platformName]: "npm:unowned/codex@0.160.0-" + process.platform + "-" + process.arch } }],
+          [serverManifest, { ...serverMetadata, optionalDependencies: { [platformName]: "npm:unowned/codex@0.166.0-" + process.platform + "-" + process.arch } }],
           [serverManifest, { ...serverMetadata, optionalDependencies: { [platformName]: "file:/unowned/native" } }],
-          [serverManifest, { ...serverMetadata, optionalDependencies: { [platformName]: "npm:@openai/codex@0.160.0-unsupported-os-" + process.arch } }],
+          [serverManifest, { ...serverMetadata, optionalDependencies: { [platformName]: "npm:@openai/codex@0.166.0-unsupported-os-" + process.arch } }],
           [serverManifest, { ...serverMetadata, dependencies: {} }],
           [serverManifest, { ...serverMetadata, dependencies: { "@agentclientprotocol/codex-acp": "" } }],
           [publishedBridgeManifest, { ...publishedBridgeMetadata, name: "unqualified-bridge" }],
