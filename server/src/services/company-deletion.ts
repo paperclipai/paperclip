@@ -1,5 +1,5 @@
-import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";

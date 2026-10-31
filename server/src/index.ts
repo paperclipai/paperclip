@@ -1,9 +1,9 @@
-import { registerGitHubConnectionEventWork, registerGitHubConnectionContinuityWork } from "./services/github-connection-work.js";
-import { registerNativeHarnessBackupExpirationWork } from "./services/native-runtime/native-harness-backup-expiration-work.js";
-import { registerMergeConfirmationWork } from "./services/merged-pr-confirmation-work.js";
+import { attentionRetentionService, registerAttentionRetentionWork } from "./services/attention-retention.js";
 import { registerRoutineExecutionStatusWork } from "./services/routine-execution-status-work.js";
 import { routineExecutionStatusService } from "./services/routine-run-status.js";
-import { attentionRetentionService, registerAttentionRetentionWork } from "./services/attention-retention.js";
+import { registerMergeConfirmationWork } from "./services/merged-pr-confirmation-work.js";
+import { registerNativeHarnessBackupExpirationWork } from "./services/native-runtime/native-harness-backup-expiration-work.js";
+import { registerGitHubConnectionEventWork, registerGitHubConnectionContinuityWork } from "./services/github-connection-work.js";
 import { registerProviderTraceRetentionWork } from "./services/provider-trace-retention-work.js";
 import { registerRunEvidenceMigrationWork } from "./services/run-evidence-migration-work.js";
 import { registerSkillVersionRetentionWork } from "./services/skill-version-retention-work.js";

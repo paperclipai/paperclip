@@ -1,5 +1,5 @@
-import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
 import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
+import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { dispatchGitHubBotCloudEvent } from "./chat-github-cloud-ingress.js";
 import { chatEndpoints } from "@paperclipai/db";
@@ -282,7 +282,7 @@ export function githubConnectionEventService(
           owner: snapshot.owner,
           repo: snapshot.repo,
           number: snapshot.number,
-        }], { deferConfirmationCommitEffects: effect => effects.push(effect) });
+        }], { companyId }, undefined, { deferConfirmationCommitEffects: effect => effects.push(effect) });
     }
   }
 

@@ -1,6 +1,6 @@
-import { routineExecutionStatusService } from "../services/routine-run-status.js";
-import { attentionRetentionService } from "../services/attention-retention.js";
 import { statusCardEvaluationService, registerStatusCardEvaluationWork } from "../services/status-card-evaluation.js";
+import { attentionRetentionService } from "../services/attention-retention.js";
+import { routineExecutionStatusService } from "../services/routine-run-status.js";
 import { nativeHarnessBackupExpirationService } from "../services/native-runtime/native-harness-backup-expiration.js";
 import { skillVersionRetentionService } from "../services/skill-version-retention.js";
 import { approvalQueueSeedingService } from "../services/approval-queue-seeding-work.js";
@@ -1534,12 +1534,12 @@ describe("startServer feedback export wiring", () => {
       await Promise.resolve();
 
       expect(heartbeatServiceMock.tickAgentTimers).toHaveBeenCalledTimes(1);
-      expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledTimes(1);
-      expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledWith(expect.any(Object), expect.any(Function));
-      expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.externalObjectRefresh)).toBe(true);
       expect(issueThreadInteractionServiceMock.mergedPullRequestConfirmationPage).toHaveBeenCalledTimes(1);
       expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).not.toHaveBeenCalled();
       expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.mergedPullRequestConfirmations)).toBe(true);
+      expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledTimes(1);
+      expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledWith(expect.any(Object), expect.any(Function));
+      expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.externalObjectRefresh)).toBe(true);
       expect(executionWorkspaceServiceMock.sweepTerminalWorkspaces).toHaveBeenCalledTimes(1);
       expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
       const routineWorkerIndex = deliveryWorkRegisterMock.mock.calls.findIndex(([queue]) => queue === DELIVERY_QUEUES.routineSchedules);

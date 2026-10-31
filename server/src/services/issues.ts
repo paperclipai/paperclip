@@ -1,12 +1,12 @@
-import { notifyNativeHarnessBackupExpiration } from "./native-harness-backup-expiration-notifications.js";
-import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
-import { notifyMergeConfirmationWork } from "./merged-pr-confirmation-notifications.js";
-import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
-import { notifyIssueAttentionRetentionWork } from "./retention-work-notifications.js";
-import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyIssueAttentionRetentionWork } from "./retention-work-notifications.js";
+import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
+import { notifyMergeConfirmationWork } from "./merged-pr-confirmation-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
+import { notifyNativeHarnessBackupExpiration } from "./native-harness-backup-expiration-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notifications.js";
 import { notifyNativeRunProjection } from "./native-run-projection-notifications.js";
@@ -10660,8 +10660,8 @@ export function issueService(db: Db) {
         await notifyDeferredExecutionEligibility(tx, { companyId: values.companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
         values.id ??= randomUUID();
-        await notifyIssueAttentionRetentionWork(tx, { companyId, issueId: values.id, parentId: values.parentId, originKind: values.originKind, originId: values.originId });
         await notifyStatusCardIssueChange(tx, companyId);
+        await notifyIssueAttentionRetentionWork(tx, { companyId, issueId: values.id, parentId: values.parentId, originKind: values.originKind, originId: values.originId });
         if (values.originKind === "routine_execution") await notifyRoutineExecutionStatus(tx, values.id, companyId);
         const [issue] = await tx.insert(issues).values(values).returning();
         await attachOwnedDraftImages(tx, issue, issue.description, { userId: issueData.createdByUserId, agentId: issueData.createdByAgentId });
@@ -11545,19 +11545,19 @@ export function issueService(db: Db) {
                 (blockedByIssueIds !== undefined || issueData.unblockDescriptor !== undefined)))) {
           patch.statusVersion = sql`${issues.statusVersion} + 1` as unknown as number;
         }
+        await notifyStatusCardIssueChange(tx, receiptExisting.companyId);
         if (patch.status !== undefined || patch.completedAt !== undefined || patch.cancelledAt !== undefined) {
           await notifyNativeHarnessBackupExpiration(tx, { companyId: receiptExisting.companyId, issueId: id });
         }
-        await notifyStatusCardIssueChange(tx, receiptExisting.companyId);
         if ((patch.status !== undefined && patch.status !== receiptExisting.status)
           || patch.completedAt !== undefined || patch.cancelledAt !== undefined
           || issueData.parentId !== undefined || issueData.executionWorkspaceId !== undefined) {
           await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
         }
+        await notifyIssueAttentionRetentionWork(tx, { companyId: receiptExisting.companyId, issueId: id, parentId: patch.parentId, originKind: patch.originKind, originId: patch.originId });
         if (patch.status !== undefined || patch.hiddenAt !== undefined) {
           await notifyMergeConfirmationWork(tx, { companyId: receiptExisting.companyId, issueId: id });
         }
-        await notifyIssueAttentionRetentionWork(tx, { companyId: receiptExisting.companyId, issueId: id, parentId: patch.parentId, originKind: patch.originKind, originId: patch.originId });
         if (patch.status !== undefined || patch.assigneeAgentId !== undefined || patch.assigneeUserId !== undefined
           || patch.hiddenAt !== undefined || patch.conversationAgentId !== undefined || patch.parentId !== undefined
           || patch.executionState !== undefined || patch.executionRunId !== undefined || patch.checkoutRunId !== undefined
@@ -12168,8 +12168,8 @@ export function issueService(db: Db) {
           )
         : isNull(issues.executionRunId);
       const updated = await db.transaction(async tx => {
-        await notifyIssueAttentionRetentionWork(tx, { companyId: issueCompany.companyId, issueId: id });
         await notifyStatusCardIssueChange(tx, issueCompany.companyId);
+        await notifyIssueAttentionRetentionWork(tx, { companyId: issueCompany.companyId, issueId: id });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyRunDispatch(tx, { companyId: issueCompany.companyId });
         await notifyDeferredExecutionEligibility(tx, { companyId: issueCompany.companyId });
@@ -12305,8 +12305,8 @@ export function issueService(db: Db) {
           }
           const staleExecutionRunId = current.executionRunId;
           const adopted = await db.transaction(async tx => {
-            await notifyIssueAttentionRetentionWork(tx, { companyId: issueCompany.companyId, issueId: id });
             await notifyStatusCardIssueChange(tx, issueCompany.companyId);
+            await notifyIssueAttentionRetentionWork(tx, { companyId: issueCompany.companyId, issueId: id });
             await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
             await notifyRunDispatch(tx, { companyId: issueCompany.companyId });
             await notifyDeferredExecutionEligibility(tx, { companyId: issueCompany.companyId });
@@ -12621,8 +12621,8 @@ export function issueService(db: Db) {
           patch.assigneeAgentId = null;
         }
 
-        await notifyIssueAttentionRetentionWork(tx, { companyId: existing.companyId, issueId: id });
         await notifyStatusCardIssueChange(tx, existing.companyId);
+        await notifyIssueAttentionRetentionWork(tx, { companyId: existing.companyId, issueId: id });
         await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
         if (existing.checkoutRunId || existing.executionRunId || options.clearAssignee) {
           await notifyExternalConversationSettlement(tx, { companyId: existing.companyId, issueId: id });

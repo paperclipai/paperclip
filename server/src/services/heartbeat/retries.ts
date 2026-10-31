@@ -1,6 +1,6 @@
-import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
-import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyRunDispatch } from "../run-dispatch-notifications.js";
+import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
+import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
 import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
 import {
@@ -1000,8 +1000,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           retryContextSnapshot.previousRunId = continuation.previousRunId;
         }
 
-        await notifyAttentionRetentionWork(tx, { companyId: run.companyId });
         await notifyRunDispatch(tx, { companyId: run.companyId });
+        await notifyAttentionRetentionWork(tx, { companyId: run.companyId });
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({

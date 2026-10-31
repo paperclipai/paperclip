@@ -1,5 +1,5 @@
-import { notifyMergeConfirmationWork, type MergeConfirmationScope } from "./merged-pr-confirmation-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyMergeConfirmationWork, type MergeConfirmationScope } from "./merged-pr-confirmation-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyIssueReviewState } from "./issue-review-state-notifications.js";
 import { notifyChatConfirmationResolution } from "./chat-confirmation-notifications.js";

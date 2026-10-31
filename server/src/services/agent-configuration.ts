@@ -1,6 +1,6 @@
-import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifySkillVersionPinChange } from "./skill-version-retention-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
