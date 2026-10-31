@@ -9,6 +9,9 @@ import { isSupportedAcpxProfileVersion } from "./profile-compatibility.js";
 // at 1. Update this table, with the reason, only for a deliberate reset.
 const PROFILE_VERSIONS: Readonly<Record<string, number>> = {
   antigravity: 1, claude: 1, codex: 1, copilot: 92, cursor: 17, grok: 20, pi: 37,
+  // Released Kimi uses revision 17 to refuse saved pending-candidate sessions.
+  // The upstream-only attestation migration retains that existing revision.
+  kimi: 17,
 };
 
 describe("ACPX profile versions", () => {
@@ -22,6 +25,36 @@ describe("ACPX profile versions", () => {
 });
 
 describe("historical ACPX profile decoding", () => {
+  it("keeps both reconciled historical lineages immutable and decode-only", () => {
+    const lineage = JSON.parse(readFileSync(new URL("../../../test/fixtures/profile-history-lineage.json", import.meta.url), "utf8")) as {
+      schema: string; historicalDecodeOnly: boolean; executionRequiresExactCurrentProfile: boolean;
+      records: Array<{ path: string; originRevision: string; sha256: string; agent: keyof typeof QUALIFIED_ACPX_PROFILE_DATA;
+        version: number; commandDigest: string; launchAuthority: boolean }>;
+    };
+    expect(lineage.schema).toBe("paperclip.acpx-profile-history-lineage.v1");
+    expect(lineage.historicalDecodeOnly).toBe(true);
+    expect(lineage.executionRequiresExactCurrentProfile).toBe(true);
+    const reconciled = lineage.records.filter(record => [
+      "42e9d3d710a2ef5b387f9bb29bf615973b4adba9", "59da15066acd2077b1161b06217acfbd11f8da04",
+    ].includes(record.originRevision));
+    expect(reconciled).toHaveLength(6);
+    const paths = new Set<string>();
+    for (const record of reconciled) {
+      expect(paths.has(record.path), record.path).toBe(false);
+      paths.add(record.path);
+      expect(record.originRevision, record.path).toMatch(/^[a-f0-9]{40}$/u);
+      expect(record.launchAuthority, record.path).toBe(false);
+      const bytes = readFileSync(new URL(`../../../../../${record.path}`, import.meta.url));
+      expect(createHash("sha256").update(bytes).digest("hex"), record.path).toBe(record.sha256);
+      const identity = JSON.parse(bytes.toString("utf8"));
+      expect(identity.declaration.agent, record.path).toBe(record.agent);
+      expect(identity.declaration.agentProfileVersion, record.path).toBe(record.version);
+      expect(identity.commandDigest, record.path).toBe(record.commandDigest);
+      expect(isSupportedAcpxProfileVersion(record.agent, record.version), record.path).toBe(true);
+      expect(identity.commandDigest, record.path).not.toBe(QUALIFIED_ACPX_PROFILE_DATA[record.agent].commandDigest);
+    }
+  });
+
   it.each([
     ["copilot", "copilot-profile-v88-identity.json", "81e5fbccf057c04e012f638dc7a02c5758bf6ca67f7c4ed0045f3f61525401c2", "published cd5"],
     ["copilot", "copilot-profile-v88-cursor-cloud-qualification-historical-identity.json", "6010dc772d914afec7dd31f35f953ce74b65ab3a648ce54aaee559f908b492f9", "private Cloud qualification"],
@@ -69,7 +102,7 @@ describe("historical ACPX profile decoding", () => {
     }
   });
   it("does not decode a revision newer than the current one", () => {
-    for (const agent of ["copilot", "grok", "pi", "cursor", "antigravity"] as const) {
+    for (const agent of ["copilot", "grok", "pi", "cursor", "antigravity", "kimi"] as const) {
       expect(isSupportedAcpxProfileVersion(agent, QUALIFIED_ACPX_PROFILE_DATA[agent].agentProfileVersion + 1)).toBe(false);
     }
   });

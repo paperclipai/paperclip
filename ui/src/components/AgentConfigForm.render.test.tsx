@@ -1367,6 +1367,16 @@ describe("AgentConfigForm environment selector", () => {
     }));
   });
 
+  it("requests the native Kimi model catalog while preserving an explicit saved model", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    const result = await renderForm([], {
+      adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "kimi", model: "explicit-kimi-model" },
+    });
+    roots.push(result.root);
+    await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ provider: "acpx", acpxAgent: "kimi" })));
+    expect(result.container.textContent).toContain("explicit-kimi-model");
+  });
+
   it.each(["api_key", "subscription"] as const)("loads saved Antigravity %s models through its selected connection without a Claude fallback", async method => {
     const binding = { provider: "google", method, mode: "responsible_user" } as const;
     const accounts = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({ currentUserId: "you", canManageConnections: true, connections: [{

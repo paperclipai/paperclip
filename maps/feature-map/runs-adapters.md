@@ -385,3 +385,21 @@ cleanup before hire and retains its unconfirmed recovery state.
 ### `delegated-configuration`
 
 See the canonical [delegated configuration guidance and acceptance evidence](connection-setup.md#delegated-configuration).
+
+### Kimi Code verification
+
+The qualified native Kimi profile uses `paperclipai runtime setup kimi` on Mac
+ARM64 or Linux x64, an exact typed model, and a `KIMI_API_KEY` company secret.
+Ordinary setup, hiring and Runtime Test require no candidate grant. Runtime Test
+queries the authenticated Code model catalog without inference. Existing legacy
+Kimi agents keep their saved runtime. Future pending profiles retain protected
+startup admission; saved agent configuration and public requests cannot grant it.
+
+Use the explicit `kimi-qualification` Product E2E suite for local and Daytona
+reply, semantic question/plan, file/download, Stop, and continuation cases.
+Verify the actual task result, persisted state and process cleanup. Run the
+ordinary New Agent draft → model/secret → Test → save/reopen → task journey
+through ordinary released selection. Native filesystem/shell tools are denied in read-only
+Kimi work; scoped Paperclip tools retain control-plane authorization. This recipe
+is a test path, not a statement that live acceptance passed. Current evidence:
+[Kimi release ledger](../../doc/plans/2026-10-28-kimi-code-runner-integration.md).

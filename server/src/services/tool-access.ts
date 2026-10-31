@@ -2112,6 +2112,9 @@ export function toolAccessService(
           sourceTemplateKey: galleryEntry.slug,
           connectionMethodKey: method?.key,
           methodConfig: normalizedMethodConfig?.values ?? {},
+          ...(galleryEntry.slug === "google-workspace" && retainedConnection?.status === "draft"
+            ? { workspaceSetup: retainedConnection.config.workspaceSetup }
+            : {}),
           ...(method?.defaults?.mcpSessionRequired === true
             ? { mcpSessionRequired: true }
             : {}),
