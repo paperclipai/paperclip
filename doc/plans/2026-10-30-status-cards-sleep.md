@@ -155,3 +155,8 @@ closed-range evaluations perform one conversion, not another minute walk.
 Both caches use bounded LRU retention and hold no company/card data. Tests prove
 eviction, skipped/repeated hours, half-hour DST, date-line changes, rollback,
 strict boundaries, and actual twenty-card source delivery followed by quiet.
+
+
+Refresh decisions use the card's PostgreSQL row revision as a private compare-and-swap fence. If a card changes during watched-source reads, the owner rereads it and reconsiders the current policy, for at most three attempts. A replacement future interval deadline remains unchanged; a replacement manual policy does not run automatically. The same fence protects no-change, paused-policy and generation claims. Existing issue idempotency, generation ownership and losing-claim cancellation still apply. The row revision is not exposed through card APIs or shared scheduling contracts.
+
+Company source hints do not preempt a future deadline owned by a failed evaluation (`retry`). Membership and policy deadlines remain eligible for source-driven rechecks, and actual due retries still run. An explicit policy edit can replace the retry through the existing card mutation path. Real PostgreSQL regressions hold the actual search while committing an ordinary policy edit, then verify the saved interval still fires. Persistent search failures stay quiet through issue hints and restart, retry at their saved deadline, and recover through an ordinary policy edit.

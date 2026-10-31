@@ -588,6 +588,88 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(wakeup).toHaveBeenCalledOnce();
   });
 
+  it.each([false, true])("rechecks current policy after a committed edit during held search (changes=%s)", async changed => {
+    const created = await card();
+    if (changed) await issueService(db).create(companyId, { title: "Policy race blocker", status: "blocked", priority: "medium" });
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const factory = companySearch.companySearchService;
+    let hold = true;
+    const searches = vi.fn();
+    vi.spyOn(companySearch, "companySearchService").mockImplementation(owner => {
+      const service = factory(owner), actual = service.search;
+      service.search = async (...args) => {
+        searches();
+        const result = await actual(...args);
+        if (hold) { hold = false; entered.resolve(); await release.promise; }
+        return result;
+      };
+      return service;
+    });
+    const service = statusCardEvaluationService(db, { wakeup });
+    const pass = service.run(new AbortController().signal);
+    await entered.promise;
+    const cards = statusCardService(db);
+    let scheduled!: Date;
+    try {
+      scheduled = (await cards.update((await cards.getById(created.id))!, { refreshPolicy: policy("interval") }, actor)).nextEvalAt!;
+    } finally { release.resolve(); }
+    await pass;
+    const current = (await cards.getById(created.id))!;
+    expect(current.refreshPolicy.mode).toBe("interval");
+    expect(current.nextEvalAt!.getTime()).toBe(scheduled.getTime());
+    expect(current.nextEvalReason).toBe("refresh");
+    expect(searches).toHaveBeenCalledOnce();
+    expect(wakeup).not.toHaveBeenCalled();
+    const intervalCard = (await cards.getById(created.id))!;
+    await issueService(db).create(companyId, { title: "Next interval blocker", status: "blocked", priority: "medium" });
+    vi.setSystemTime(intervalCard.nextEvalAt!);
+    await service.run(new AbortController().signal);
+    expect(wakeup).toHaveBeenCalledOnce();
+  });
+
+  it("keeps future failure retries fenced from ordinary company hints and permits explicit policy recovery", async () => {
+    const created = await card();
+    const factory = companySearch.companySearchService;
+    let failing = true;
+    const searches = vi.fn();
+    vi.spyOn(companySearch, "companySearchService").mockImplementation(owner => {
+      const service = factory(owner), actual = service.search;
+      service.search = async (...args) => { searches(); if (failing) throw new Error("Controlled search unavailable"); return actual(...args); };
+      return service;
+    });
+    const service = statusCardEvaluationService(db, { wakeup });
+    await service.run(new AbortController().signal);
+    const failed = (await statusCardService(db).getById(created.id))!;
+    expect(failed.nextEvalReason).toBe("retry");
+    const retryAt = failed.nextEvalAt!.getTime();
+    expect(searches).toHaveBeenCalledOnce();
+    for (let index = 0; index < 5; index++) {
+      await issueService(db).create(companyId, { title: `Retry blocker ${index}`, status: "blocked", priority: "medium" });
+      service.changed(new Set([`changes:${companyId}`]));
+      await service.run(new AbortController().signal);
+    }
+    expect(searches).toHaveBeenCalledOnce();
+    expect((await statusCardService(db).getById(created.id))!.nextEvalAt!.getTime()).toBe(retryAt);
+    const restarted = statusCardEvaluationService(db, { wakeup });
+    restarted.changed(new Set([`changes:${companyId}`]));
+    await restarted.run(new AbortController().signal);
+    expect(searches).toHaveBeenCalledOnce();
+    expect(await restarted.next()).toBe(retryAt);
+    vi.setSystemTime(retryAt);
+    await restarted.run(new AbortController().signal);
+    expect(searches).toHaveBeenCalledTimes(2);
+    const cards = statusCardService(db);
+    failing = false;
+    await cards.update((await cards.getById(created.id))!, { refreshPolicy: { ...policy(), debounceSeconds: 1 } }, actor);
+    await restarted.run(new AbortController().signal);
+    expect(searches).toHaveBeenCalledTimes(3);
+    const pending = (await cards.getById(created.id))!;
+    expect(pending.nextEvalReason).toBe("policy");
+    vi.setSystemTime(pending.nextEvalAt!);
+    await restarted.run(new AbortController().signal);
+    expect(wakeup).toHaveBeenCalledOnce();
+  });
+
   it("retains the durable five-minute retry after evaluation failure across restart and drain", async () => {
     const created = await card();
     await db.update(statusCards).set({ queries: [{ scope: "invalid" } as never], nextEvalAt: new Date() }).where(eq(statusCards.id, created.id));
