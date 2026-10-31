@@ -571,6 +571,21 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     }
   });
 
+  it("accepts a released SSH lease without a receipt once the run's local process is gone", async () => {
+    const agent = await hire();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id,
+      status: "cancelled", invocationSource: "on_demand", runtimeMode: "native",
+      startedAt: new Date(), finishedAt: new Date(), processPid: process.pid }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId, heartbeatRunId: run.id,
+      provider: "ssh", providerLeaseId: "ssh://user@host:22/home/user", status: "expired",
+      releasedAt: new Date() }).returning();
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    await db.update(heartbeatRuns).set({ processPid: 2_000_000_000 }).where(eq(heartbeatRuns.id, run.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+    await db.update(environmentLeases).set({ cleanupStatus: "failed" }).where(eq(environmentLeases.id, lease.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+  });
+
   it("requires cleanup proof after a remote run is already cancelled", async () => {
     const agent = await hire();
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id,
