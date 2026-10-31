@@ -314,6 +314,7 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
+  parseStatusFilter,
   type IssuePostCommitAction,
 } from "../services/issues.js";
 import {
@@ -8616,7 +8617,7 @@ export function issueRoutes(
       listProjection: view === "index" || view === "rows" ? view : undefined,
       readCondition: await issueReadSqlCondition(db, req.actor),
       attention: attention === "blocked" ? "blocked" : undefined,
-      status: req.query.status as string | string[] | undefined,
+      status: parseStatusFilter(req.query.status as string | string[] | undefined),
       assigneeAgentId,
       participantAgentId: uuidFilters.participantAgentId,
       assigneeUserId,
@@ -8866,7 +8867,7 @@ export function issueRoutes(
     const blockedCountFilters = {
       readCondition: await issueReadSqlCondition(db, req.actor),
       attention: "blocked",
-      status: req.query.status as string | string[] | undefined,
+      status: parseStatusFilter(req.query.status as string | string[] | undefined),
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: countUuidFilters.participantAgentId,
       assigneeUserId: req.query.assigneeUserId as string | undefined,
