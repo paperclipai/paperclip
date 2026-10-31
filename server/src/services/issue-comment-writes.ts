@@ -7,7 +7,8 @@ type WriteDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 export function insertIssueComment(db: WriteDb, input: PgInsertValue<typeof issueComments> & { companyId: string }) {
   return db.transaction(async tx => {
-    await notifyIssueRecovery(tx, { companyId: input.companyId });
+    await notifyIssueRecovery(tx, { companyId: input.companyId,
+      issueId: typeof input.issueId === "string" ? input.issueId : undefined });
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, `company:${input.companyId}`);
     return tx.insert(issueComments).values(input).returning();
   });
