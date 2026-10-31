@@ -97,12 +97,20 @@ function defaults(): ChatCatalogCase {
       await ctx.input.api.post(`${root}/budgets/policies`, { ...scope, amount: 500, hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
     const holdDeadlineAt = ctx.observationDeadlineAt!;
     gate = await startNativeRunBriefGate(worker.id, holdDeadlineAt, ctx.input.privateSecrets);
-    const t = await task(ctx, "Active launch research", p.id, { status: "todo", assigneeAgentId: worker.id, description: `Read the pending Website Brief by running this native shell command with a ${Math.max(1, holdDeadlineAt - Date.now())} ms tool timeout. Wait for its actual result before proceeding. Do not change this brief or other tasks. Command: ${gate.command}` });
-    const held = await pollUntil({ label: "Real prior active Launch checkout", deadlineAt: Date.now() + 150000,
-      load: async () => ({ task: await ctx.input.api.get<Entity & { executionRunId?: string }>(`/api/issues/${t.id}`), runs: await ctx.allRuns() }),
-      accept: row => gate!.calls.length > 0 && row.runs.length === 1 && row.runs[0]?.status === "running" && row.task.executionRunId === row.runs[0]?.id });
-    await ctx.input.evidence("chat-catalog-project-defaults-prerequisite-timeout.json", { heldWorkerId: worker.id, heldWorkerTimeoutSec: CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, holdDeadlineAt, remainingHoldBudgetMs: Math.max(0, holdDeadlineAt - Date.now()), canonicalTimeoutSec: CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, futureWorkerTimeoutSec: CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, authoredLegacyCanonicalStageMs: 150000, authoredLegacyFutureProbeStageMs: 180000, attemptBoundMs: 660000 });
-    return { project: p, goal: g, checklist, task: held.task, worker, futureWorker, activeRunId: held.runs[0]!.id, originalEnv: (p as Entity & { env?: unknown }).env ?? null };
+    try {
+      const t = await task(ctx, "Active launch research", p.id, { status: "todo", assigneeAgentId: worker.id, description: `Read the pending Website Brief by running this native shell command with a ${Math.max(1, holdDeadlineAt - Date.now())} ms tool timeout. Wait for its actual result before proceeding. Do not change this brief or other tasks. Command: ${gate.command}` });
+      const held = await pollUntil({ label: "Real prior active Launch checkout", deadlineAt: Date.now() + 150000,
+        load: async () => ({ task: await ctx.input.api.get<Entity & { executionRunId?: string }>(`/api/issues/${t.id}`), runs: await ctx.allRuns() }),
+        accept: row => gate!.calls.length > 0 && row.runs.length === 1 && row.runs[0]?.status === "running" && row.task.executionRunId === row.runs[0]?.id });
+      await ctx.input.evidence("chat-catalog-project-defaults-prerequisite-timeout.json", { heldWorkerId: worker.id, heldWorkerTimeoutSec: CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, holdDeadlineAt, remainingHoldBudgetMs: Math.max(0, holdDeadlineAt - Date.now()), canonicalTimeoutSec: CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, futureWorkerTimeoutSec: CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, authoredLegacyCanonicalStageMs: 150000, authoredLegacyFutureProbeStageMs: 180000, attemptBoundMs: 660000 });
+      return { project: p, goal: g, checklist, task: held.task, worker, futureWorker, activeRunId: held.runs[0]!.id, originalEnv: (p as Entity & { env?: unknown }).env ?? null };
+    } catch (error) {
+      // The flow has no state yet, so its ordinary case cleanup cannot run.
+      try { await gate.close(); }
+      catch (cleanupError) { throw new AggregateError([error, cleanupError], "Native brief setup and cleanup failed"); }
+      finally { gate = undefined; }
+      throw error;
+    }
   }, gradeProjectDefaults);
   return { ...base, oracleVersion: "paperclip.chat-catalog.project-defaults.v2", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 660000, runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
     setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "future-worker-ready", "existing-work-actively-owned"] },
