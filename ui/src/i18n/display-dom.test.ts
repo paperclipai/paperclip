@@ -59,6 +59,26 @@ describe("startDomTranslation", () => {
     stop();
   });
 
+  it("keeps attributes inside markdown, editors and opted-out zones as written", async () => {
+    document.body.innerHTML = `
+      <div class="paperclip-markdown"><img alt="New Agent" src="data:,"></div>
+      <div data-no-translate><button title="Search agents" aria-label="New Agent">x</button></div>
+      <div class="ProseMirror"><input placeholder="Search agents"></div>
+      <form><textarea placeholder="Search agents"></textarea></form>`;
+    const stop = startDomTranslation(document.body, createDomTranslator(catalog));
+    expect(document.querySelector("img")?.getAttribute("alt")).toBe("New Agent");
+    expect(document.querySelector("[data-no-translate] button")?.getAttribute("title")).toBe("Search agents");
+    expect(document.querySelector("[data-no-translate] button")?.getAttribute("aria-label")).toBe("New Agent");
+    expect(document.querySelector(".ProseMirror input")?.getAttribute("placeholder")).toBe("Search agents");
+    expect(document.querySelector("form textarea")?.getAttribute("placeholder")).toBe("Rechercher des agents");
+    const later = document.createElement("img");
+    later.setAttribute("alt", "New Agent");
+    document.querySelector(".paperclip-markdown")?.append(later);
+    await tick();
+    expect(later.getAttribute("alt")).toBe("New Agent");
+    stop();
+  });
+
   it("follows later text updates and insertions", async () => {
     document.body.innerHTML = '<span id="label">Mine</span>';
     const stop = startDomTranslation(document.body, createDomTranslator(catalog));

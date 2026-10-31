@@ -118,7 +118,13 @@ export function startDomTranslation(root: Node, translate: DomTextTranslator): (
     }
   };
 
+  const isAttributeSkipped = (element: Element) => {
+    const formField = element.tagName === "INPUT" || element.tagName === "TEXTAREA";
+    return isSkipped(formField ? element.parentElement ?? element.ownerDocument.documentElement : element);
+  };
+
   const translateAttributes = (element: Element) => {
+    if (isAttributeSkipped(element)) return;
     for (const attribute of DISPLAY_ATTRIBUTES) {
       const value = element.getAttribute(attribute);
       if (!value) continue;
