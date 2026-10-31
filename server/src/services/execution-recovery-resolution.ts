@@ -33,6 +33,44 @@ import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { alias } from "drizzle-orm/pg-core";
 
+export function isVerifiedPreStartCancelledReviewerRun(input: {
+  task: { status: string; assigneeAgentId: string | null; executionState: unknown };
+  run: Pick<
+    typeof heartbeatRuns.$inferSelect,
+    "status" | "agentId" | "startedAt" | "processPid" | "processGroupId"
+  >;
+  returnOwnerAgentId: string | null;
+  decision: ExecutionReconciliation;
+}): boolean {
+  const state = parseIssueExecutionState(input.task.executionState);
+  const participant = state?.currentParticipant;
+  return (
+    input.task.status === "in_review" &&
+    state?.status === "pending" &&
+    state.currentStageType === "review" &&
+    participant?.type === "agent" &&
+    participant.agentId === input.run.agentId &&
+    input.task.assigneeAgentId === input.run.agentId &&
+    input.returnOwnerAgentId === input.run.agentId &&
+    input.run.status === "cancelled" &&
+    input.run.startedAt == null &&
+    input.run.processPid == null &&
+    input.run.processGroupId == null &&
+    input.decision.actionOutcome === "not_performed"
+  );
+}
+
+export function blocksSafeHandBackForPendingStage(input: {
+  executionState: unknown;
+  allowPendingReviewStage: boolean;
+}): boolean {
+  const state = parseIssueExecutionState(input.executionState);
+  return (
+    state?.status === "pending" &&
+    !(input.allowPendingReviewStage && state.currentStageType === "review")
+  );
+}
+
 /** An operator records observed outcomes; this is not permission to blindly retry. */
 export async function validateExecutionReconciliation(input: {
   db: Db;
