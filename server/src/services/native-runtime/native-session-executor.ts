@@ -7541,6 +7541,27 @@ export async function cancelNativeSession(
         runId, companyId: cancellationContext.companyId, issueId: cancellationContext.issueId,
         resultJson, requestId: requestedId, scope: options.scope ?? "run",
       }, coordinator)) throw conflict("Native retry is no longer cancellable");
+      const fenceRetryCancellation = async () => {
+        if (coordinator.phase !== "retryable_failure") return;
+        await tx
+          .update(nativeRunFinalizations)
+          .set({
+            phase: "terminal_failure",
+            nextAttemptAt: null,
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            recoveryState: "blocked",
+            failureCode: "native_retry_cancelled",
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(nativeRunFinalizations.runId, runId),
+              eq(nativeRunFinalizations.companyId, cancellationContext.companyId),
+              eq(nativeRunFinalizations.phase, "retryable_failure"),
+            ),
+          );
+      };
       const existing = record(resultJson.nativeCancellation);
       const existingIntentId =
         typeof existing.intentId === "string" && existing.intentId.length > 0
@@ -7564,6 +7585,10 @@ export async function cancelNativeSession(
             : null;
         if (!existingAuditId)
           throw new Error("native_cancellation_intent_audit_missing");
+        if (retryCancellation && coordinator.phase === "retryable_failure") {
+          await notifyNativeResultCommit(tx, { companyId: cancellationContext.companyId, runId });
+          await fenceRetryCancellation();
+        }
         return {
           intentId: existingIntentId,
           auditId: existingAuditId,
@@ -7643,24 +7668,7 @@ export async function cancelNativeSession(
       // Cancellation is also an authority fence for a durable retry whose
       // preceding provider has already failed. No in-memory session is needed.
       await notifyNativeResultCommit(tx, { companyId: cancellationContext.companyId, runId });
-      await tx
-        .update(nativeRunFinalizations)
-        .set({
-          phase: "terminal_failure",
-          nextAttemptAt: null,
-          leaseOwner: null,
-          leaseExpiresAt: null,
-          recoveryState: "blocked",
-          failureCode: "native_retry_cancelled",
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(nativeRunFinalizations.runId, runId),
-            eq(nativeRunFinalizations.companyId, cancellationContext.companyId),
-            eq(nativeRunFinalizations.phase, "retryable_failure"),
-          ),
-        );
+      await fenceRetryCancellation();
       intentPublication = activity.publication;
       return {
         intentId,
