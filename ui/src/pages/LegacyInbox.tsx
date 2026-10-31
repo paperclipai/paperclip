@@ -1,4 +1,5 @@
 import { describeError } from "../api/errors";
+import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -2252,6 +2253,7 @@ export function Inbox() {
     !isTouchedIssuesLoading &&
     !isRunsLoading;
 
+  useWarmTaskDetailCode(allLoaded && tab !== "blocked" && showWorkItemsSection);
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
   const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)
     .filter((issue) => issue.isUnreadForMe && !fadingOutIssues.has(issue.id) && !archivingIssueIds.has(issue.id));

@@ -1,6 +1,7 @@
 import { runInNewContext } from "node:vm";
 import { expect, it } from "vitest";
 import { preloadIssueDetail } from "./vite-issue-detail-preload";
+import { TASK_COLLECTION_PAINTED_EVENT } from "./issue-detail-preload-events";
 
 function bootstrap(pathname: string) {
   const hook = preloadIssueDetail().transformIndexHtml;
@@ -13,14 +14,15 @@ function bootstrap(pathname: string) {
   const listeners = new Map<string, (event: unknown) => void>();
   runInNewContext(tags[0].children, {
     location: { pathname, origin: "https://board.example" },
-    fetch: (...args: unknown[]) => { fetches.push(args); return Promise.resolve(); },
+    fetch: (...args: unknown[]) => { fetches.push(args); return Promise.resolve({ arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)) }); },
+    window: { addEventListener: (name: string, listener: (event: unknown) => void) => listeners.set(name, listener) },
     document: {
       createElement: () => ({}),
       head: { appendChild: (link: typeof links[number]) => links.push(link) },
       addEventListener: (name: string, listener: (event: unknown) => void) => listeners.set(name, listener),
     },
   });
-  return { links, fetches, intent: (type: string, pathname: string, origin = "https://board.example") => {
+  return { links, fetches, painted: () => listeners.get(TASK_COLLECTION_PAINTED_EVENT)!({}), intent: (type: string, pathname: string, origin = "https://board.example") => {
     listeners.get(type)!({ target: { closest: () => ({ pathname, origin }) } });
   } };
 }
@@ -49,4 +51,13 @@ it("does not add a preload when the build has no task-detail chunk", () => {
   const hook = preloadIssueDetail().transformIndexHtml;
   if (typeof hook !== "function") throw new Error("Missing HTML transform");
   expect(hook.call({} as never, "", { bundle: {} } as never)).toEqual([]);
+});
+
+it("warms code after a collection paints without executing it or repeating the fetch", () => {
+  const page = bootstrap("/PAP/issues");
+  expect(page.fetches).toEqual([]);
+  page.painted();
+  page.intent("focusin", "/PAP/issues/PAP-1");
+  expect(page.links).toEqual([]);
+  expect(page.fetches).toHaveLength(1);
 });

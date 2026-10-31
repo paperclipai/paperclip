@@ -1,4 +1,5 @@
 import type { Plugin } from "vite";
+import { TASK_COLLECTION_PAINTED_EVENT } from "./issue-detail-preload-events";
 
 export function preloadIssueDetail(): Plugin {
   return {
@@ -23,7 +24,7 @@ export function preloadIssueDetail(): Plugin {
             if (requested) return;
             requested = true;
             if (speculative) {
-              void fetch(${JSON.stringify(`/${issueDetail.fileName}`)}, { credentials: "same-origin", cache: "force-cache", priority: "low" }).catch(() => {});
+              void fetch(${JSON.stringify(`/${issueDetail.fileName}`)}, { credentials: "same-origin", cache: "force-cache", priority: "low" }).then(response => response.arrayBuffer()).catch(() => {});
               return;
             }
             const link = document.createElement("link");
@@ -33,6 +34,7 @@ export function preloadIssueDetail(): Plugin {
             document.head.appendChild(link);
           };
           if (isDetail(location.pathname)) preload();
+          window.addEventListener(${JSON.stringify(TASK_COLLECTION_PAINTED_EVENT)}, () => preload(true), { once: true });
           const onIntent = event => {
             const link = event.target.closest?.("a[href]");
             if (link?.origin === location.origin && isDetail(link.pathname)) preload(true);

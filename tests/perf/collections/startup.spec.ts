@@ -19,14 +19,28 @@ for (const route of ["issues", "inbox/mine"]) test(`${route} leaves task-detail 
     const companyId = new URL(request.url()).pathname.match(/^\/api\/companies\/([^/]+)\//)?.[1];
     if (companyId) companyReads.push(companyId);
   });
-  await page.goto(`/${fixture.company.issuePrefix}/${route}`);
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const isIndex = (url: URL) => url.pathname === `/api/companies/${fixture.company.id}/issues` && url.searchParams.get("view") === "index";
+  await page.route(isIndex, async request => { await held; await request.continue(); });
+  const indexRequest = page.waitForRequest(request => isIndex(new URL(request.url())));
+  const warmed = page.waitForResponse(response => /\/assets\/issue-detail-[^/]+\.js$/.test(response.url()));
+  try {
+    await page.goto(`/${fixture.company.issuePrefix}/${route}`);
+    await indexRequest;
+    expect(detailReads).toEqual([]);
+  } finally { release(); }
   const first = page.getByRole("main").locator("[data-inbox-issue-link]").first();
   await expect(first).toBeVisible();
-  expect(detailReads).toEqual([]);
+  const node = await first.elementHandle();
+  const before = await first.boundingBox();
+  await (await warmed).finished();
+  const after = await first.boundingBox();
+  expect(await node!.evaluate(element => element.isConnected)).toBe(true);
+  expect(Math.abs(before!.y - after!.y)).toBeLessThan(1);
+  expect(Math.abs(before!.height - after!.height)).toBeLessThan(1);
   expect(new Set(companyReads)).toEqual(new Set([fixture.company.id]));
-  const detailRequest = page.waitForRequest(request => /\/assets\/issue-detail-[^/]+\.js$/.test(request.url()));
   await first.focus();
-  await detailRequest;
   await first.press("Enter");
   await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible();
   await expect(page.getByTestId("issue-detail-header")).toBeVisible();
@@ -60,12 +74,12 @@ test("a failed speculative preload keeps the collection usable and permits task 
   await coordinatorPreference(page);
   let navigations = 0;
   page.on("request", request => { if (request.isNavigationRequest() && request.frame() === page.mainFrame()) navigations++; });
-  await page.goto(`/${fixture.company.issuePrefix}/issues`);
-  const first = page.getByRole("main").locator("[data-inbox-issue-link]").first();
-  await expect(first).toBeVisible();
   const pattern = /\/assets\/issue-detail-[^/]+\.js$/;
   await page.route(pattern, route => route.abort("failed"));
   const failure = page.waitForEvent("requestfailed", request => pattern.test(request.url()));
+  await page.goto(`/${fixture.company.issuePrefix}/issues`);
+  const first = page.getByRole("main").locator("[data-inbox-issue-link]").first();
+  await expect(first).toBeVisible();
   await first.focus();
   await failure;
   await expect(page.getByRole("textbox", { name: "Search tasks", exact: true })).toBeEditable();
