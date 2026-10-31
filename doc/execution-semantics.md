@@ -1354,8 +1354,13 @@ The selector only defers a new execution attempt; the presentation owner still
 enforces all reply, session, actor and digest checks. A saved reply acknowledges
 the outbox once and permits normal conversation settlement. If publication keeps
 declining or cannot finish within the window, the existing retry, exhaustion and
-daily-limit checks resume. The original accepted result and child work remain
-unchanged. Failed or cancelled execution, missing accepted output and superseded
+daily-limit checks resume. Retry takes the same child-task-first lock held by
+reply insertion and acknowledgment. It rechecks the task version, pending state,
+target, attempt and exact delivery lease before advancing. A delivered reply,
+newer target or newer claim prevents that retry. Wake admission runs only after
+the winning retry transaction commits and releases its locks. The original
+accepted result and child work remain unchanged. Failed or cancelled execution,
+missing accepted output and superseded
 handoffs retain their existing retry or supersession paths. Daily limits do not
 need to admit another model run to save an already accepted answer.
 

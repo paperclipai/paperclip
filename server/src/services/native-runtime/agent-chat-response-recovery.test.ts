@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, completionContracts, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues,
   nativeRunFinalizations, nativeRunResults, chatTaskHandoffs, chatCompletionDeliveries, agentWakeupRequests, type Db } from "@paperclipai/db";
@@ -81,6 +81,8 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
         status: "skipped", reason: "heartbeat.daily_run_limit", idempotencyKey: options.idempotencyKey });
       return null;
     });
+    await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+      status: "completed", reason: "chat_task_completed", idempotencyKey: `chat-completion:${deliveryId}:0`, runId: f.runId });
     const delivery = async () => (await db.select().from(chatCompletionDeliveries).where(eq(chatCompletionDeliveries.id, deliveryId)))[0];
     return { taskId, deliveryId, wakeup, delivery, service: chatCompletionDeliveryService(db, { wakeup }) };
   }
@@ -190,6 +192,162 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     expect(await outbox.delivery()).toMatchObject({ status: "superseded", attempts: 0, responseCommentId: null });
     expect(outbox.wakeup).not.toHaveBeenCalled();
     expect(await comments(f.runId)).toEqual([]);
+  });
+
+  it("lets an in-flight presentation acknowledge before expiry can retarget the delivery", async () => {
+    const started = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(started);
+    const f = await fixture(), outbox = await completion(f);
+    const suffix = randomUUID().replaceAll("-", ""), lockId = Number.parseInt(suffix.slice(0, 6), 16) + 1;
+    const trigger = `completion_reply_hold_${suffix}`;
+    let release!: () => void, acquired!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const locked = new Promise<void>(resolve => { acquired = resolve; });
+    let blocker: Promise<unknown> | undefined, presentation: Promise<unknown> | undefined, expiry: Promise<unknown> | undefined;
+    try {
+      await db.execute(sql.raw(`create function ${trigger}() returns trigger language plpgsql as $$
+        begin
+          if NEW.created_by_run_id = '${f.runId}'::uuid then perform pg_advisory_xact_lock(${lockId}); end if;
+          return NEW;
+        end $$`));
+      await db.execute(sql.raw(`create trigger ${trigger} before insert on issue_comments for each row execute function ${trigger}()`));
+      blocker = db.transaction(async tx => { await tx.execute(sql`select pg_advisory_xact_lock(${lockId}::bigint)`); acquired(); await hold; });
+      await Promise.race([locked, blocker]);
+      const work = nativeResponsePresentationWork(db), [entry] = await work.load(f.input);
+      presentation = work.check(entry); void presentation.catch(() => undefined);
+      // The real insert is paused after existingChatCompletionReply validated
+      // authority, while its child-task lock is still held until acknowledgment.
+      await vi.waitFor(async () => {
+        const [row] = await db.execute(sql`select exists (select 1 from pg_locks
+          where locktype = 'advisory' and classid = 0 and objid = ${lockId}::oid and not granted
+            and database = (select oid from pg_database where datname = current_database())) as waiting`);
+        expect(row.waiting).toBe(true);
+      }, { timeout: 5000 });
+      vi.setSystemTime(started + 300_000);
+      let expirySettled = false;
+      expiry = outbox.service.deliver(outbox.deliveryId).then(() => { expirySettled = true; });
+      void expiry.catch(() => undefined);
+      await vi.waitFor(async () => {
+        const [row] = await db.execute(sql`select exists (select 1 from pg_stat_activity
+          where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock'
+            and query like '%from "issues"%' and query like '%for update%') as waiting`);
+        expect(expirySettled || row.waiting).toBe(true);
+      }, { timeout: 5000 });
+      expect(expirySettled).toBe(false);
+      expect(await outbox.delivery()).toMatchObject({ status: "queued", targetRunId: f.runId, attempts: 0, responseCommentId: null });
+      release(); await blocker; await presentation; await expiry;
+      const [comment] = await comments(f.runId);
+      expect(comment).toMatchObject({ body: f.reply, authorAgentId: f.agentId, createdByRunId: f.runId });
+      expect(await comments(f.runId)).toHaveLength(1);
+      expect(await outbox.delivery()).toMatchObject({ status: "delivered", targetRunId: f.runId, attempts: 0, responseCommentId: comment.id });
+      expect(outbox.wakeup).not.toHaveBeenCalled();
+      expect(await issue(f.issueId)).toMatchObject({ status: "in_review", conversationState: "waiting" });
+    } finally {
+      release?.(); await Promise.allSettled([blocker, presentation, expiry].filter((value): value is Promise<unknown> => Boolean(value)));
+      await db.execute(sql.raw(`drop trigger if exists ${trigger} on issue_comments`));
+      await db.execute(sql.raw(`drop function if exists ${trigger}()`));
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets expiry win before presentation and releases the child lock before wake admission", async () => {
+    const started = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(started);
+    try {
+      const f = await fixture(), outbox = await completion(f), lockErrors: unknown[] = [];
+      const work = nativeResponsePresentationWork(db), [entry] = await work.load(f.input);
+      vi.setSystemTime(started + 300_000);
+      const wakeup = vi.fn(async (agentId: string, options: { idempotencyKey: string }) => {
+        try {
+          await db.transaction(async tx => {
+            await tx.execute(sql`set local lock_timeout = '500ms'`);
+            await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, f.issueId)).for("update");
+            await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, outbox.taskId)).for("update");
+          });
+        } catch (error) { lockErrors.push(error); throw error; }
+        return outbox.wakeup(agentId, options);
+      });
+      await chatCompletionDeliveryService(db, { wakeup }).deliver(outbox.deliveryId);
+      expect(lockErrors).toEqual([]);
+      expect(wakeup).toHaveBeenCalledTimes(1);
+      expect(await outbox.delivery()).toMatchObject({ status: "pending", targetRunId: null, attempts: 1, responseCommentId: null });
+      await expect(work.check(entry)).rejects.toThrow("chat_completion_superseded");
+      expect(await comments(f.runId)).toEqual([]);
+      expect(await issue(outbox.taskId)).toMatchObject({ status: "done", statusVersion: 2 });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("rolls back an expiry transition without waking or losing the original target", async () => {
+    const started = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(started);
+    try {
+      const f = await fixture(), outbox = await completion(f);
+      vi.setSystemTime(started + 300_000);
+      const rollback = new Error("fixture-expiry-rollback");
+      const connection = new Proxy(db, { get(target, key) {
+        return key === "transaction" ? async (callback: Parameters<Db["transaction"]>[0]) => target.transaction(async tx => {
+          await callback(tx); throw rollback;
+        }) : Reflect.get(target, key);
+      } });
+      await chatCompletionDeliveryService(connection, { wakeup: outbox.wakeup }).deliver(outbox.deliveryId);
+      expect(await outbox.delivery()).toMatchObject({ status: "queued", targetRunId: f.runId, attempts: 0, responseCommentId: null,
+        error: rollback.message });
+      expect(outbox.wakeup).not.toHaveBeenCalled();
+      expect(await comments(f.runId)).toEqual([]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["new-claim", "delivered", "retargeted", "superseded"])("respects a %s winner while expiry waits for the child lock", async winner => {
+    const started = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(started);
+    const f = await fixture(), outbox = await completion(f);
+    const replacementId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: replacementId, companyId: f.companyId, agentId: f.agentId, status: "queued" });
+    let release!: () => void, acquired!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const locked = new Promise<void>(resolve => { acquired = resolve; });
+    let first: Promise<unknown> | undefined, second: Promise<unknown> | undefined;
+    const blocker = db.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, outbox.taskId)).for("update"); acquired(); await hold;
+      if (winner === "delivered") await tx.update(chatCompletionDeliveries).set({ status: "delivered" }).where(eq(chatCompletionDeliveries.id, outbox.deliveryId));
+      if (winner === "retargeted") await tx.update(chatCompletionDeliveries).set({ targetRunId: replacementId, attempts: 1 })
+        .where(eq(chatCompletionDeliveries.id, outbox.deliveryId));
+      if (winner === "superseded") {
+        await tx.update(issues).set({ status: "todo", statusVersion: 3 }).where(eq(issues.id, outbox.taskId));
+        await tx.update(chatCompletionDeliveries).set({ status: "superseded" }).where(eq(chatCompletionDeliveries.id, outbox.deliveryId));
+      }
+    });
+    const waiting = async (count: number) => vi.waitFor(async () => {
+      const [row] = await db.execute(sql`select count(*)::int as waiting from pg_stat_activity
+        where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock'
+          and query like '%from "issues"%' and query like '%for update%'`);
+      expect(row.waiting).toBeGreaterThanOrEqual(count);
+    }, { timeout: 5000 });
+    try {
+      await Promise.race([locked, blocker]);
+      vi.setSystemTime(started + 300_000);
+      first = outbox.service.deliver(outbox.deliveryId); void first.catch(() => undefined);
+      await waiting(1);
+      if (winner === "new-claim") {
+        vi.setSystemTime(started + 360_000);
+        second = outbox.service.deliver(outbox.deliveryId); void second.catch(() => undefined);
+        await waiting(2);
+      }
+      release(); await blocker; await first; await second;
+      if (winner === "new-claim") {
+        expect(outbox.wakeup).toHaveBeenCalledTimes(1);
+        expect(await outbox.delivery()).toMatchObject({ status: "pending", targetRunId: null, attempts: 1 });
+      } else {
+        expect(outbox.wakeup).not.toHaveBeenCalled();
+        if (winner === "delivered") expect((await outbox.delivery()).status).toBe("delivered");
+        if (winner === "retargeted") expect(await outbox.delivery()).toMatchObject({ status: "queued", targetRunId: replacementId, attempts: 1 });
+        if (winner === "superseded") expect((await outbox.delivery()).status).toBe("superseded");
+      }
+      expect(await comments(f.runId)).toEqual([]);
+    } finally {
+      release?.(); await Promise.allSettled([blocker, first, second].filter((value): value is Promise<unknown> => Boolean(value)));
+      vi.useRealTimers();
+    }
   });
 
   it("saves a legitimate delayed reply before the fixed limit without another model run", async () => {
