@@ -411,10 +411,17 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     await processCancellation?.settled;
     let outcome: RunSessionOutcome;
     const latestRun = await getRun(run.id);
+    // The native finalizer, not the transport terminal, owns this unresolved
+    // work observation. Preserve its saved problem through live settlement.
+    const unresolvedNativeWork = Boolean(adapterResult.nativeFinalization &&
+      latestRun?.runtimeMode === "native" && latestRun.nativePhase === "terminal_failure" &&
+      latestRun.errorCode === "native_textless_completion_unresolved");
     if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
       outcome = latestRun.status;
     } else if (signal.aborted) {
       outcome = "cancelled";
+    } else if (unresolvedNativeWork) {
+      outcome = "failed";
     } else if (adapterResult.nativeFinalization) {
       const nativeTerminal =
         adapterResult.nativeFinalization.terminal.runTerminalState;
@@ -461,7 +468,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const runErrorMessage =
       outcome === "cancelled"
         ? redactCurrentUserText(latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled", currentUserRedactionOptions)
-        : outcome === "succeeded"
+        : unresolvedNativeWork
+          ? latestRun!.error
+          : outcome === "succeeded"
           ? null
           : redactCurrentUserText(
               adapterResult.errorMessage ??
@@ -476,7 +485,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         : outcome === "cancelled"
           ? (latestRun?.errorCode ?? "cancelled")
           : outcome === "failed"
-            ? (adapterResult.errorCode ??
+            ? (unresolvedNativeWork ? latestRun!.errorCode : adapterResult.errorCode ??
               recordedResponsibleUserDenialCode ??
               "adapter_failed")
             : null;
@@ -929,6 +938,14 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           "stderr",
           `[paperclip] Failed to resolve run presentation: ${err instanceof Error ? err.message : String(err)}\n`,
         );
+      }
+      if (unresolvedNativeWork) {
+        // The finalizer already saved a manual recovery action. Generic empty
+        // response, infrastructure and issue-release recovery must not rerun it.
+        await releaseIssueExecutionAndPromote(livenessRun, { suppressImmediateRecovery: true });
+        await persistSessionState(livenessRun);
+        await settleAgent();
+        return;
       }
       if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
         const policy = parseMaxTurnContinuationPolicy(agent);

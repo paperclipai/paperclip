@@ -54,6 +54,27 @@ through `set_dependencies`. Parentage alone is not a dependency. Other blockers,
 ordinary task delegation and replay of previously admitted creation retain their
 existing behavior.
 
+### Native transport completion and work results
+
+A successful OpenCode transport turn does not prove that its work is complete.
+If the turn has no accepted semantic result and no nonblank cached assistant text,
+Runner reports the work outcome as `needs_review`, with unknown completion
+criteria and no invented agent-message evidence. The transport outcome remains
+successful. The summary states that task completion is unverified; it does not
+invent a reviewer, approval, retry, or another executor. Existing task and review
+ownership remain authoritative. The native producer records the closed
+`missing_semantic_result_and_assistant_text` observation in the existing additive
+terminal contract. This is an engine observation, not a universal schema enum. After checking the
+native OpenCode execution binding, terminal and assessment, the server preserves
+task state and records a terminal finalization problem with a manual recovery
+action. It does not schedule another executor or automatic finalization retry.
+The persisted transport terminal remains successful; the user-facing run exposes
+the unresolved outcome as a failed finalization with its saved result intact.
+
+Accepted semantic receipts and existing nonblank cached assistant text retain
+their completion behavior. This change does not select a final channel or alter
+which provider messages enter that cache.
+
 ## 2. Assignee Semantics
 
 An issue has at most one assignee.

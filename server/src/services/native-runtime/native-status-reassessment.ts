@@ -213,6 +213,7 @@ export async function reassessNativeStatusFromSource(
       ? resolveNativeFinalizerStatus({
           hasPendingChildCompletion,
           requiredQualityReviewSatisfied: qualityReview?.satisfied,
+          nativeTerminal: currentRun ? { run: currentRun, terminal: record(resultRow.resultJson).terminal } : undefined,
           assessment: reassessment, terminalState: "succeeded", workspaceFinalizeStatus: "succeeded",
           governanceGate,
           completionClaimPolicyAccepted: contractRow.risk === "low" && contractRow.completionAuthority === "agent_claim_policy",
@@ -225,7 +226,8 @@ export async function reassessNativeStatusFromSource(
           priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus, agentId: row.agentId,
         });
     if (decision.statusAction === "done" && qualityReview?.satisfied === false) {
-      decision = resolveNativeFinalizerStatus({ assessment: reassessment, terminalState: "succeeded", workspaceFinalizeStatus: "succeeded",
+      decision = resolveNativeFinalizerStatus({ nativeTerminal: currentRun ? { run: currentRun, terminal: record(resultRow.resultJson).terminal } : undefined,
+        assessment: reassessment, terminalState: "succeeded", workspaceFinalizeStatus: "succeeded",
         requiredQualityReviewSatisfied: false, priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus, agentId: row.agentId });
     }
     let committed: Awaited<ReturnType<typeof commitNativeStatusDecision>>;

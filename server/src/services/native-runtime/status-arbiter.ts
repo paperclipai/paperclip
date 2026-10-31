@@ -48,6 +48,8 @@ export type NativeStatusEffect =
   | { kind: "schedule_retry"; cause: string; summary: string; agentId: string }
   | {
       kind: "record_finalization_error";
+      /** An observed unresolved outcome requires manual recovery, not automatic finalizer retries. */
+      terminal?: boolean;
       cause: string;
       nextAction: string;
       agentId: string;

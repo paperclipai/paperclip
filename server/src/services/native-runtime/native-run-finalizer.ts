@@ -52,6 +52,7 @@ import {
 } from "@paperclipai/db";
 import { classifyNativeEvidence } from "./evidence-classifier.js";
 import type { PrpIgnoredAttentionRequest, PrpTerminalState } from "@paperclipai/paperclip-runner";
+import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import {
   arbitrateNativeStatus,
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -144,11 +145,57 @@ function isCommittedAuditOnlyRouting(value: unknown) {
 
 export { projectNativeTerminalRunStatus } from "./native-run-projection.js";
 
+type NativeTextlessWorkObservation = "missing_semantic_result_and_assistant_text";
+
+/** An additive engine observation, not a model-authored work or review claim. */
+function readTextlessOpenCodeObservation(value: unknown): NativeTextlessWorkObservation | null {
+  const terminal = record(value);
+  return terminal.schema === "paperclip.prp.terminal.v1" && terminal.provider === "opencode" &&
+    terminal.workOutcomeReason === "missing_semantic_result_and_assistant_text" &&
+    terminal.turnTerminalState === "completed" && terminal.runTerminalState === "succeeded" &&
+    terminal.reportedWorkDisposition === "needs_review"
+    ? "missing_semantic_result_and_assistant_text" : null;
+}
+
+type NativeTerminalContext = {
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "runtimeMode" |
+    "nativeIssueId" | "nativeSessionId" | "completionContractId" | "completionContractSha256" | "runnerProfileJson">;
+  terminal: unknown;
+};
+
 /** Fact-based arbitration at the production finalization authority seam. */
 export function resolveNativeFinalizerStatus(
-  input: Parameters<typeof arbitrateNativeStatus>[0],
+  input: Parameters<typeof arbitrateNativeStatus>[0] & { nativeTerminal?: NativeTerminalContext },
 ) {
-  return arbitrateNativeStatus(input);
+  const run = input.nativeTerminal?.run;
+  const observation = readTextlessOpenCodeObservation(input.nativeTerminal?.terminal);
+  let execution: ReturnType<typeof parseNativeExecutionInput> | null = null;
+  try { execution = parseNativeExecutionInput(record(run?.runnerProfileJson).nativeExecutionInput); }
+  catch { /* Invalid or historical execution input cannot authorize this observation. */ }
+  const binding = record(execution?.binding);
+  const session = record(execution?.session);
+  const contract = record(execution?.completionContract);
+  const assessment = input.assessment;
+  const textlessObservation = run?.runtimeMode === "native" &&
+    record(execution?.provider).kind === "opencode" && session.driverKind === "opencode_server" &&
+    binding.runId === run.id && binding.companyId === run.companyId && binding.agentId === run.agentId && run.agentId === input.agentId &&
+    binding.issueId === run.nativeIssueId && typeof run.nativeSessionId === "string" &&
+    session.normalizedSessionId === run.nativeSessionId && typeof run.completionContractId === "string" &&
+    contract.id === run.completionContractId && contract.sha256 === run.completionContractSha256 &&
+    observation !== null && input.terminalState === "succeeded" &&
+    assessment.reportedDisposition === "needs_review" && assessment.contractRevisionMatches &&
+    !assessment.objectiveClaimSatisfied && !assessment.objectiveSatisfied && !assessment.allCriteriaSatisfied &&
+    assessment.hasBlockingRemainingWork && assessment.acceptedEvidenceRefs.length === 0 &&
+    assessment.criterionAssessments.every(criterion => criterion.claimStatus === "unknown") &&
+    assessment.verificationAssessments.length === 0 && assessment.attentionRequests.length === 0 &&
+    assessment.blocker === null && assessment.continuation === null;
+  const decision = arbitrateNativeStatus({ ...input,
+    ...(textlessObservation ? { allowIncompleteContinuation: false } : {}) });
+  if (!textlessObservation || decision.reasonCode !== "prior_status_preserved_no_live_path") return decision;
+  return { ...decision, effects: decision.effects.map(effect => effect.kind === "record_finalization_error"
+    ? { ...effect, cause: "native_textless_completion_unresolved", terminal: true,
+        nextAction: "Inspect the saved run and work outcome before manually resuming the task." }
+    : effect) };
 }
 
 export { pendingNativeGovernance } from "./native-governance.js";
@@ -1411,6 +1458,7 @@ export async function finalizeNativeRun(input: {
         ? nativeReview.interaction.status === "pending" ? "pending" as const : "resolved" as const
         : "stale" as const } : {}),
       assessment,
+      nativeTerminal: { run, terminal },
       terminalState: terminalState as "succeeded" | "failed" | "cancelled",
       workspaceFinalizeStatus: input.workspaceFinalizeStatus,
       governanceGate,
@@ -1551,12 +1599,10 @@ export async function finalizeNativeRun(input: {
         failpoint: input.failpoint,
       });
       const now = new Date();
-      const finalizationFailed = decision.effects.some(
-        (effect) => effect.kind === "record_finalization_error",
-      );
-      const finalizationPhase = finalizationFailed
-        ? "retryable_failure"
-        : "committed";
+      const finalizationError = decision.effects.find(effect => effect.kind === "record_finalization_error");
+      const terminalFinalizationError = finalizationError?.terminal === true ? finalizationError : null;
+      const finalizationPhase = terminalFinalizationError ? "terminal_failure"
+        : finalizationError ? "retryable_failure" : "committed";
       // commitNativeStatusDecision() already committed its own transaction above.
       // Its "cancel_continuations" effect (status-decision-committer.ts) writes a
       // terminal status to this same run and emits for it. Skip the emit here in
@@ -1570,6 +1616,8 @@ export async function finalizeNativeRun(input: {
         ...(turnFailure ? { nativeTurnFailure: turnFailure } : {}),
         finalizationPhase,
         ...(finalizationPhase === "committed" ? { failureCode: null, originalFailureCode: null, nextAttemptAt: null } : {}),
+        ...(terminalFinalizationError ? { failureCode: terminalFinalizationError.cause,
+          originalFailureCode: terminalFinalizationError.cause, nextAttemptAt: null } : {}),
         assessmentId: assessmentRow.id,
         decisionId: committed.decision.id,
         authoritativeDecision: decision.toStatus,
@@ -1600,14 +1648,14 @@ export async function finalizeNativeRun(input: {
         statusVersionAfter: Number(committed.issue.statusVersion),
         workspaceFinalizeStatus: input.workspaceFinalizeStatus,
       };
-      const projectedStatus = terminalState === "succeeded" ? "succeeded" as const
+      const projectedStatus = terminalFinalizationError ? "failed" as const : terminalState === "succeeded" ? "succeeded" as const
         : terminalState === "cancelled" ? "cancelled" as const : "failed" as const;
       const projectedResult = sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
         || ${JSON.stringify(finalizationMetadata)}::jsonb
         || ${clearExecutionFailure ? recoveredExecutionFailureMetadata() : sql`'{}'::jsonb`}`;
-      const projectedError = providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
+      const projectedError = terminalFinalizationError ? sql`${assessment.summary}` : providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
         : clearExecutionFailure ? sql`null` : heartbeatRuns.error;
-      const projectedErrorCode = providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
+      const projectedErrorCode = terminalFinalizationError ? sql`${terminalFinalizationError.cause}` : providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
         : clearExecutionFailure ? sql`null` : heartbeatRuns.errorCode;
       const projectionChanged = or(
         sql`${heartbeatRuns.nativePhase} is distinct from ${finalizationPhase}`,
@@ -1634,7 +1682,7 @@ export async function finalizeNativeRun(input: {
           nativePhase: finalizationPhase,
           nativePhaseUpdatedAt: now,
           ...(clearExecutionFailure ? { error: null, errorCode: null } : {}),
-          ...(providerFailure ? { error: projectedError, errorCode: projectedErrorCode } : {}),
+          ...(providerFailure || terminalFinalizationError ? { error: projectedError, errorCode: projectedErrorCode } : {}),
           resultJson: projectedResult,
           updatedAt: now,
         })

@@ -322,6 +322,28 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.updateRuntimeState).toHaveBeenCalledOnce();
   });
 
+  it.each(["running", "failed"] as const)("keeps a textless native finalization problem through live %s settlement without recovery work", async status => {
+    const f = await fixture({ runtimeMode: "native", status, nativePhase: "terminal_failure",
+      errorCode: "native_textless_completion_unresolved", error: "Task completion is unverified.",
+      resultJson: { finalizationPhase: "terminal_failure", failureCode: "native_textless_completion_unresolved", nextAttemptAt: null } });
+    f.input.adapterResult.nativeFinalization = { schema: "paperclip.native-finalization.v1", runtimeMode: "native", runId: f.run.id,
+      companyId: f.run.companyId, issueId: "unused", result: {},
+      terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed", runTerminalState: "succeeded", reportedWorkDisposition: "needs_review" },
+      turnId: null, sourceInstanceId: "test", normalizedSessionId: "native-session", providerSessionId: null, driverKind: "opencode_server",
+      driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, workspaceFinalizeStatus: "succeeded" };
+    await f.completion.completeRun(f.input);
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", nativePhase: "terminal_failure", sessionIdAfter: "provider-session",
+      errorCode: "native_textless_completion_unresolved", error: "Task completion is unverified.",
+      resultJson: { finalizationPhase: "terminal_failure", failureCode: "native_textless_completion_unresolved", nextAttemptAt: null } });
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.any(Object), { suppressImmediateRecovery: true });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+    expect(f.deps.handleRunLivenessContinuation).not.toHaveBeenCalled();
+    expect(f.deps.handleSuccessfulRunHandoff).not.toHaveBeenCalled();
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+    expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, "failed", "Task completion is unverified.", expect.any(Object));
+  });
+
   it("reports trace completion before a later write throws and reads output after log finalization", async () => {
     const f = await fixture();
     let excerpt = "before finalize";
