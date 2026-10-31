@@ -234,6 +234,11 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
     // Serialize external binding changes with grant/connection lifecycle writes.
     // Requests occur only for saved debt; no idle lock or connection is retained.
     return db.transaction(async tx => {
+      // Company deletion locks its parent before cascading to grants/connections.
+      // Keep that order while retaining admission through the external handoff.
+      const [company] = await tx.select({ status: companies.status }).from(companies)
+        .where(eq(companies.id, connection.companyId)).for("share").limit(1);
+      if (!company) return grant;
       const [current] = await tx.select().from(connectionGrants).where(and(
         eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, connection.companyId),
         eq(connectionGrants.connectionId, connection.id),
@@ -243,9 +248,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
         eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId),
       )).for("update").limit(1);
       if (!liveConnection || liveConnection.status !== "active" || !liveConnection.enabled) return current;
-      const [company] = await tx.select({ status: companies.status }).from(companies)
-        .where(eq(companies.id, connection.companyId)).for("share").limit(1);
-      if (company?.status !== "active") return current;
+      if (company.status !== "active") return current;
       const github = current.providerTenant?.github;
       if (!github?.bindingSync || github.bindingSync.id !== grant.providerTenant?.github?.bindingSync?.id) return current;
       const subject = current.kind === "agent" && current.subjectAgentId ? `agent:${current.subjectAgentId}`

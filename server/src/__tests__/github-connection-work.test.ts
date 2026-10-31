@@ -1,4 +1,5 @@
 import { notifyChatEndpointConfiguration } from "../services/chat-channels/configuration-work-notifications.js";
+import { deleteCompany } from "../services/company-deletion.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { randomUUID, generateKeyPairSync, verify, createHash, diffieHellman, hkdfSync, randomBytes, createCipheriv } from "node:crypto";
@@ -374,6 +375,146 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
       expect(await restarted.sweepGitHubConnectionContinuity(f.company.id)).toMatchObject({ due: 1, refreshed: 1, failed: 0 });
       expect((await latest(f.grant.id)).providerTenant!.github!.bindingSync).toBeUndefined();
     } finally { heldBindingCompany = undefined; release(); await outcome; bindingGate = undefined; bindingArrived = undefined; bindingClosed = undefined; }
+  });
+
+  it("serializes binding handoff behind canonical company deletion without a child lock cycle", async () => {
+    const f = await fixture([]);
+    const [pending] = await db.update(connectionGrants).set({ providerTenant: {
+      ...f.grant.providerTenant, github: { ...f.grant.providerTenant!.github!,
+        bindingSync: { id: randomUUID(), removeInstallationIds: ["101"] } },
+    } }).where(eq(connectionGrants.id, f.grant.id)).returning();
+    let release!: () => void, entered!: (pid: number) => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const companyLocked = new Promise<number>(resolve => { entered = resolve; });
+    const transaction = db.transaction.bind(db);
+    // Pause after the canonical deletion's actual company lock, before its child writes.
+    const spy = vi.spyOn(db, "transaction").mockImplementation(((callback: (tx: unknown) => Promise<unknown>) =>
+      transaction(async tx => {
+        const select = tx.select.bind(tx);
+        tx.select = ((...args: Parameters<typeof select>) => {
+          const query = select(...args), from = query.from.bind(query);
+          query.from = ((table: unknown) => {
+            const builder = from(table as typeof companies);
+            if (table === companies) {
+              const lock = builder.for.bind(builder);
+              builder.for = ((strength: Parameters<typeof lock>[0]) => {
+                const locked = lock(strength);
+                if (strength === "no key update") {
+                  const then = locked.then.bind(locked);
+                  locked.then = ((resolve: (rows: unknown) => unknown, reject: (error: unknown) => unknown) => then(async rows => {
+                    const [owner] = await tx.execute(sql`select pg_backend_pid() as pid`);
+                    entered(Number(owner!.pid)); await gate; return resolve(rows);
+                  }, reject)) as typeof locked.then;
+                }
+                return locked;
+              }) as typeof builder.for;
+            }
+            return builder;
+          }) as typeof query.from;
+          return query;
+        }) as typeof tx.select;
+        return callback(tx);
+      })) as typeof db.transaction);
+    const deletion = deleteCompany(db, f.company.id);
+    const deleted = Promise.allSettled([deletion]);
+    let handoff: Promise<unknown> | undefined;
+    try {
+      const deletionPid = await companyLocked;
+      handoff = f.service.syncGitHubGrantBindings(f.connection, pending!);
+      const completed = Promise.allSettled([deletion, handoff]);
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select pid from pg_stat_activity
+          where datname = current_database() and query like '%"companies"%' and query like '%for share%'
+            and ${deletionPid} = any(pg_blocking_pids(pid))`);
+        expect(waiting).toHaveLength(1);
+      }, { timeout: 5_000, interval: 20 });
+      release();
+      const results = await completed;
+      expect(results.map(row => row.status), JSON.stringify(results)).toEqual(["fulfilled", "fulfilled"]);
+      expect(await db.select().from(companies).where(eq(companies.id, f.company.id))).toHaveLength(0);
+      expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id))).toHaveLength(0);
+      expect(bindings).toHaveLength(0);
+    } finally { release(); await deleted; await handoff?.catch(() => {}); spy.mockRestore(); }
+  });
+
+  it("lets an admitted binding finish before canonical company deletion", async () => {
+    const f = await fixture([]);
+    const [pending] = await db.update(connectionGrants).set({ providerTenant: {
+      ...f.grant.providerTenant, github: { ...f.grant.providerTenant!.github!,
+        bindingSync: { id: randomUUID(), removeInstallationIds: ["101"] } },
+    } }).where(eq(connectionGrants.id, f.grant.id)).returning();
+    heldBindingCompany = f.company.id;
+    let release!: () => void;
+    bindingGate = new Promise<void>(resolve => { release = resolve; });
+    const arrived = new Promise<void>(resolve => { bindingArrived = resolve; });
+    const handoff = f.service.syncGitHubGrantBindings(f.connection, pending!);
+    const handedOff = Promise.allSettled([handoff]);
+    let deletion: Promise<unknown> | undefined;
+    try {
+      await arrived;
+      deletion = deleteCompany(db, f.company.id);
+      const deleted = Promise.allSettled([deletion]);
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select pid from pg_stat_activity
+          where datname = current_database() and query like '%"companies"%' and query like '%for no key update%'
+            and cardinality(pg_blocking_pids(pid)) > 0`);
+        expect(waiting).toHaveLength(1);
+      }, { timeout: 5_000, interval: 20 });
+      release();
+      expect((await handedOff)[0]!.status).toBe("fulfilled");
+      expect((await deleted)[0]!.status).toBe("fulfilled");
+      expect(bindings).toEqual([expect.objectContaining({ grantId: f.grant.id, connectionId: f.connection.id, installationId: "101", active: false })]);
+      expect(await db.select().from(companies).where(eq(companies.id, f.company.id))).toHaveLength(0);
+      expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id))).toHaveLength(0);
+    } finally { release(); await handedOff; await deletion?.catch(() => {}); heldBindingCompany = undefined;
+      bindingGate = undefined; bindingArrived = undefined; }
+  });
+
+  it.each(["revocation", "revision", "rollback"] as const)("revalidates a late %s after waiting for company admission", async change => {
+    const f = await fixture([]), revision = randomUUID();
+    const [pending] = await db.update(connectionGrants).set({ providerTenant: {
+      ...f.grant.providerTenant, github: { ...f.grant.providerTenant!.github!,
+        bindingSync: { id: randomUUID(), removeInstallationIds: ["101"] } },
+    } }).where(eq(connectionGrants.id, f.grant.id)).returning();
+    let entered!: (pid: number) => void, release!: () => void;
+    const locked = new Promise<number>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const mutation = db.transaction(async tx => {
+      await tx.select().from(companies).where(eq(companies.id, f.company.id)).for("no key update");
+      const [owner] = await tx.execute(sql`select pg_backend_pid() as pid`);
+      entered(Number(owner!.pid)); await gate;
+      if (change === "revision") await tx.update(connectionGrants).set({ providerTenant: {
+        ...pending!.providerTenant, github: { ...pending!.providerTenant!.github!,
+          bindingSync: { id: revision, removeInstallationIds: ["202"] } },
+      } }).where(eq(connectionGrants.id, f.grant.id));
+      else await tx.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, f.grant.id));
+      if (change === "rollback") throw new Error("rollback late revocation");
+    });
+    const mutated = Promise.allSettled([mutation]);
+    let handoff: Promise<unknown> | undefined;
+    try {
+      const ownerPid = await locked;
+      handoff = f.service.syncGitHubGrantBindings(f.connection, pending!);
+      const handedOff = Promise.allSettled([handoff]);
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select pid from pg_stat_activity
+          where datname = current_database() and query like '%"companies"%' and query like '%for share%'
+            and ${ownerPid} = any(pg_blocking_pids(pid))`);
+        expect(waiting).toHaveLength(1);
+      }, { timeout: 5_000, interval: 20 });
+      release();
+      expect((await mutated)[0]!.status).toBe(change === "rollback" ? "rejected" : "fulfilled");
+      expect((await handedOff)[0]!.status).toBe("fulfilled");
+      const [saved] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id));
+      if (change === "rollback") {
+        expect(bindings).toEqual([expect.objectContaining({ grantId: f.grant.id, installationId: "101", active: false })]);
+        expect(saved!.status).toBe("active"); expect(saved!.providerTenant!.github!.bindingSync).toBeUndefined();
+      } else {
+        expect(bindings).toHaveLength(0);
+        if (change === "revocation") expect(saved!.status).toBe("revoked");
+        else expect(saved!.providerTenant!.github!.bindingSync).toEqual({ id: revision, removeInstallationIds: ["202"] });
+      }
+    } finally { release(); await mutated; await handoff?.catch(() => {}); }
   });
 
   it("renews an installation created without metadata using the saved connection expiry", async () => {
