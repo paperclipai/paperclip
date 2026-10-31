@@ -5,6 +5,7 @@ import {
   ISSUE_REWAKE_NO_PROGRESS_THRESHOLD,
   computeIssueRewakeCooldownMs,
   evaluateIssueRewakeThrottle,
+  isRoutineRunCompletionComment,
   isThrottleCandidateIssueRewake,
 } from "../services/issue-rewake-throttle.ts";
 
@@ -205,5 +206,14 @@ describe("evaluateIssueRewakeThrottle", () => {
       hasNewIssueInputSinceLastRun: true,
     });
     expect(decision).toEqual({ blocked: false, noProgressStreak: 0 });
+  });
+});
+
+describe("isRoutineRunCompletionComment", () => {
+  it("filters only the server-materialized completion response", () => {
+    expect(isRoutineRunCompletionComment({ completionReply: true })).toBe(true);
+    expect(isRoutineRunCompletionComment({ source: "run_presentation_resolver" })).toBe(true);
+    expect(isRoutineRunCompletionComment({ source: "agent_comment" })).toBe(false);
+    expect(isRoutineRunCompletionComment(null)).toBe(false);
   });
 });
