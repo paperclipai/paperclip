@@ -34,6 +34,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   agentWakeupRequests,
+  chatCompletionDeliveries,
   executionWorkspaces,
   heartbeatRuns,
   issues,
@@ -186,31 +187,48 @@ export interface ExecutionWorkspaceHolder extends SharedWorkspaceHolder {
 // concurrently.
 export class WorkspaceBusyDeferral extends Error {
   code = WORKSPACE_BUSY_ERROR_CODE;
-  holder: SharedWorkspaceHolder;
+  holder: SharedWorkspaceHolder | null;
+  capacityEnvironmentId: string | null;
   projectWorkspaceId: string | null;
   executionWorkspaceId: string | null;
   deferralAttempt: number;
   wasIssueAssignee: boolean;
 
-  constructor(input: {
-    holder: SharedWorkspaceHolder;
+  constructor(input: ({ holder: SharedWorkspaceHolder; capacityEnvironmentId?: null } |
+    { holder: null; capacityEnvironmentId: string }) & {
     projectWorkspaceId?: string | null;
     executionWorkspaceId?: string | null;
     deferralAttempt: number;
     wasIssueAssignee: boolean;
   }) {
-    super(
-      `Shared ${input.executionWorkspaceId ? "execution" : "project"} workspace is busy: run ${input.holder.runId} (issue ${
+    super(input.holder
+      ? `Shared ${input.executionWorkspaceId ? "execution" : "project"} workspace is busy: run ${input.holder.runId} (issue ${
         input.holder.issueIdentifier ?? input.holder.issueId
-      }) is still running`,
+      }) is still running`
+      : `Environment ${input.capacityEnvironmentId} has no free run slot`,
     );
     this.name = "WorkspaceBusyDeferral";
     this.holder = input.holder;
+    this.capacityEnvironmentId = input.capacityEnvironmentId ?? null;
     this.projectWorkspaceId = input.projectWorkspaceId ?? null;
     this.executionWorkspaceId = input.executionWorkspaceId ?? null;
     this.deferralAttempt = input.deferralAttempt;
     this.wasIssueAssignee = input.wasIssueAssignee;
   }
+}
+
+export function environmentCapacityDeferral(input: {
+  run: Pick<typeof heartbeatRuns.$inferSelect, "scheduledRetryReason" | "scheduledRetryAttempt">;
+  environmentId: string;
+  wasIssueAssignee: boolean;
+}): WorkspaceBusyDeferral {
+  return new WorkspaceBusyDeferral({
+    holder: null,
+    capacityEnvironmentId: input.environmentId,
+    deferralAttempt:
+      input.run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON ? (input.run.scheduledRetryAttempt ?? 0) : 0,
+    wasIssueAssignee: input.wasIssueAssignee,
+  });
 }
 
 export function isWorkspaceBusyDeferral(
@@ -417,7 +435,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         reason: "Repair the invalid tool definitions before starting a new attempt.",
         issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     }
-    if (Array.isArray(run.contextSnapshot?.chatCompletionDeliveryIds) &&
+    if (opts?.retryReason !== WORKSPACE_BUSY_RETRY_REASON && Array.isArray(run.contextSnapshot?.chatCompletionDeliveryIds) &&
         run.contextSnapshot.chatCompletionDeliveryIds.some(id => typeof id === "string")) {
       return { outcome: "not_scheduled" as const, reason: "The completion outbox owns this reply's retry budget and publication identity.",
         errorCode: "chat_completion_outbox_owns_retry" as const, issueId: readNonEmptyString(run.contextSnapshot.issueId) };
@@ -1080,6 +1098,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             updatedAt: now,
           })
           .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+        if (retryReason === WORKSPACE_BUSY_RETRY_REASON) {
+          await tx.update(chatCompletionDeliveries).set({ targetRunId: scheduledRun.id })
+            .where(and(eq(chatCompletionDeliveries.companyId, run.companyId), eq(chatCompletionDeliveries.targetRunId, run.id)));
+        }
 
         let detachWorkspaceFromIssue = false;
         if (issueId && shouldQuarantineWorkspaceForRetry) {
@@ -1513,14 +1535,17 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           source: "control_plane",
           expected: true,
           initiator: { type: "system" },
-          reason: `Waiting for the shared ${deferral.executionWorkspaceId ? "execution" : "project"} workspace`,
+          reason: deferral.capacityEnvironmentId
+            ? "Waiting for a free environment run slot"
+            : `Waiting for the shared ${deferral.executionWorkspaceId ? "execution" : "project"} workspace`,
           recordedAt: now.toISOString(),
         },
         workspaceBusy: {
           projectWorkspaceId: deferral.projectWorkspaceId,
           executionWorkspaceId: deferral.executionWorkspaceId,
-          holderRunId: deferral.holder.runId,
-          holderIssueId: deferral.holder.issueId,
+          holderRunId: deferral.holder?.runId ?? null,
+          holderIssueId: deferral.holder?.issueId ?? null,
+          capacityEnvironmentId: deferral.capacityEnvironmentId,
           deferralAttempt: deferral.deferralAttempt,
         },
       },
@@ -1583,8 +1608,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         payload: {
           projectWorkspaceId: deferral.projectWorkspaceId,
           executionWorkspaceId: deferral.executionWorkspaceId,
-          holderRunId: deferral.holder.runId,
-          holderIssueId: deferral.holder.issueId,
+          holderRunId: deferral.holder?.runId ?? null,
+          holderIssueId: deferral.holder?.issueId ?? null,
+          capacityEnvironmentId: deferral.capacityEnvironmentId,
           deferralAttempt: deferral.deferralAttempt,
           retryScheduled: scheduleOutcome === "scheduled",
         },

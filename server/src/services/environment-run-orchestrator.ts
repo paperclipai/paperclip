@@ -29,7 +29,7 @@ import type {
   IssueExecutionWorkspaceSettings,
 } from "@paperclipai/shared";
 import { resolveRunnerEnvironmentForRun } from "./runner-environment-lifecycle.js";
-import { environmentService } from "./environments.js";
+import { EnvironmentCapacityExhaustedError, environmentService } from "./environments.js";
 import {
   environmentRuntimeService,
   buildEnvironmentLeaseContext,
@@ -220,6 +220,7 @@ export function environmentRunOrchestrator(
     try {
       return await environmentRuntime.acquireRunLease(input);
     } catch (err) {
+      if (err instanceof EnvironmentCapacityExhaustedError) throw err;
       throw new EnvironmentRunError(
         "lease_acquire_failed",
         `Failed to acquire lease for environment "${input.environment.name}" (${input.environment.driver}): ${err instanceof Error ? err.message : String(err)}`,

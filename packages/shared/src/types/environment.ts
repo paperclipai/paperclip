@@ -7,7 +7,13 @@ import type {
 } from "../constants.js";
 import type { AgentEnvConfig, EnvSecretRefBinding } from "./secrets.js";
 
+export interface EnvironmentCapacity {
+  maxConcurrentRuns?: number;
+  admissionCommand?: string[];
+}
+
 export interface LocalEnvironmentConfig {
+  capacity?: EnvironmentCapacity;
   [key: string]: unknown;
 }
 
@@ -16,6 +22,7 @@ export interface SshEnvironmentConfig {
   port: number;
   username: string;
   remoteWorkspacePath: string;
+  capacity?: EnvironmentCapacity;
   privateKey: string | null;
   privateKeySecretRef: EnvSecretRefBinding | null;
   knownHosts: string | null;

@@ -3,6 +3,14 @@ import { HttpError } from "../errors.js";
 import { normalizeEnvironmentConfig, parseEnvironmentDriverConfig } from "../services/environment-config.ts";
 
 describe("environment config helpers", () => {
+  it.each(["local", "ssh"] as const)("validates %s overflow capacity", (driver) => {
+    const config = driver === "ssh" ? { host: "worker", username: "alice", remoteWorkspacePath: "/work" } : {};
+    const capacity = { maxConcurrentRuns: 1, admissionCommand: ["probe", "--ready"] };
+    expect(normalizeEnvironmentConfig({ driver, config: { ...config, capacity } })).toMatchObject({ capacity });
+    for (const invalid of [{ maxConcurrentRuns: 0 }, { admissionCommand: [] }, { admissionCommand: "probe" }, { unknown: true }]) {
+      expect(() => normalizeEnvironmentConfig({ driver, config: { ...config, capacity: invalid } })).toThrow();
+    }
+  });
   it("normalizes SSH config into its canonical stored shape", () => {
     const config = normalizeEnvironmentConfig({
       driver: "ssh",

@@ -216,6 +216,17 @@ import { heartbeatService, shouldQueueFollowupForRunningIssueWake } from "../ser
     expect(f.wakeup).toHaveBeenCalledTimes(2);
     expect((await f.rows())[0].attempts).toBe(1);
   });
+  it("keeps the delivery attempt and moves the target when a workspace-busy run is cancelled before its retry is linked", async () => {
+    const f = await seed(); await f.finish(); const [delivery] = await f.rows();
+    await f.service.deliver(delivery.id);
+    const [queued] = await f.rows();
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "workspace_busy", finishedAt: new Date() }).where(eq(heartbeatRuns.id, queued.targetRunId!));
+    await f.due(); await f.service.deliver(delivery.id);
+    expect(await f.rows()).toMatchObject([{ attempts: 0, targetRunId: queued.targetRunId }]);
+    const [retry] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "scheduled_retry", retryOfRunId: queued.targetRunId }).returning();
+    await f.due(); await f.service.deliver(delivery.id);
+    expect(await f.rows()).toMatchObject([{ attempts: 0, targetRunId: retry.id }]);
+  });
   async function interruptedBootstrap() {
     const f = await seed(); await f.finish(); const run = await f.run();
     const interrupted = await terminalizeLegacyExecution({ db, run, status: "interrupted", patch: {

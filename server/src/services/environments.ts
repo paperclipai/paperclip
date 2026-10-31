@@ -374,6 +374,14 @@ function preserveInvalidatedSnapshotProofs(replacement: SQL): SQL {
     else coalesce(${replacement}, '{}'::jsonb) || jsonb_build_object(${SANDBOX_PLATFORM_PROBE_METADATA_KEY}::text, ${proofs}) end`;
 }
 
+export class EnvironmentCapacityExhaustedError extends Error {
+  code = "environment_capacity_exhausted" as const;
+  constructor(readonly environmentId: string) {
+    super(`Environment ${environmentId} has no free run slot`);
+    this.name = "EnvironmentCapacityExhaustedError";
+  }
+}
+
 export function environmentService(db: Db) {
   /**
    * Idempotently ensure THE Paperclip-managed sandbox environment for this
@@ -1503,6 +1511,7 @@ export function environmentService(db: Db) {
        * member. All other callers keep the plain, non-transactional insert.
        */
       assertCompanyBinding?: boolean;
+      maxConcurrentRuns?: number;
     }): Promise<EnvironmentLease> => {
       if (input.creationOperationId) {
         const { creationOperationId, ...leaseInput } = input;
@@ -1553,11 +1562,29 @@ export function environmentService(db: Db) {
       const row =
         input.assertCompanyBinding ||
         input.replacesReusableLeaseId ||
-        input.reusesReusableLeaseId
+        input.reusesReusableLeaseId ||
+        input.maxConcurrentRuns !== undefined
           ? await db.transaction(async (tx) => {
               if (input.heartbeatRunId) await notifyNativeEnvironmentSettlement(tx, {
                 companyId: input.companyId, runId: input.heartbeatRunId,
               });
+              if (input.maxConcurrentRuns !== undefined) {
+                await tx
+                  .select({ id: environments.id })
+                  .from(environments)
+                  .where(eq(environments.id, input.environmentId))
+                  .for("update");
+                const active = await tx
+                  .select({ count: sql<number>`count(*)::int` })
+                  .from(environmentLeases)
+                  .where(and(
+                    eq(environmentLeases.environmentId, input.environmentId),
+                    eq(environmentLeases.status, "active"),
+                  ));
+                if (countFromRows(active) >= input.maxConcurrentRuns) {
+                  throw new EnvironmentCapacityExhaustedError(input.environmentId);
+                }
+              }
               if (input.assertCompanyBinding) {
                 await assertEnvironmentCompanyBinding(tx as unknown as Db, input.environmentId, input.companyId);
               }

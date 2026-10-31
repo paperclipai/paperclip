@@ -233,13 +233,24 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
       if (runId) {
         const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
         if (run && activeRuns.includes(run.status)) return;
+        if (run?.errorCode === "workspace_busy") {
+          const [retry] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+            .where(eq(heartbeatRuns.retryOfRunId, run.id)).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
+          if (retry) {
+            await db.update(deliveries).set({ targetRunId: retry.id })
+              .where(and(eq(deliveries.id, id), eq(deliveries.targetRunId, run.id)));
+            return;
+          }
+          if (Date.now() - (run.finishedAt?.getTime() ?? 0) < LEASE_MS) return;
+        }
         // A published reply is acknowledged in its own transaction, independent of run outcome.
         const [latest] = await db.select().from(deliveries).where(eq(deliveries.id, id));
         if (!latest || !pending.includes(latest.status as typeof pending[number])) return;
         await db.update(deliveries).set({ status: claimed.attempts + 1 >= MAX_ATTEMPTS ? "exhausted" : "pending",
           attempts: claimed.attempts + 1, targetRunId: null, nextAttemptAt: new Date(),
           error: run?.error ?? "Completion turn ended without a reply" })
-          .where(and(eq(deliveries.id, id), inArray(deliveries.status, [...pending])));
+          .where(and(eq(deliveries.id, id), inArray(deliveries.status, [...pending]),
+            claimed.targetRunId ? eq(deliveries.targetRunId, claimed.targetRunId) : sql`${deliveries.targetRunId} is null`));
         // The failed run is already terminal. Reclaim the advanced attempt now;
         // a second lease interval would only delay restart recovery. The atomic
         // claim and fresh wake key still serialize competing sweepers.

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { environmentCapacitySchema } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import type {
@@ -37,7 +38,11 @@ const secretRefSchema = z.object({
   version: z.union([z.literal("latest"), z.number().int().positive()]).optional().default("latest"),
 }).strict();
 
+const hostCapacityFields = { capacity: environmentCapacitySchema.optional() };
+const localEnvironmentConfigSchema = z.object(hostCapacityFields).passthrough();
+
 const sshEnvironmentConfigSchema = z.object({
+  ...hostCapacityFields,
   host: z.string({ error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
   port: z.coerce.number().int().min(1).max(65535).default(22),
   username: z.string({ error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
@@ -436,7 +441,13 @@ export function normalizeEnvironmentConfig(input: {
   config: Record<string, unknown> | null | undefined;
 }): Record<string, unknown> {
   if (input.driver === "local") {
-    return { ...parseObject(input.config) };
+    const parsed = localEnvironmentConfigSchema.safeParse(parseObject(input.config));
+    if (!parsed.success) {
+      throw unprocessable(toErrorMessage(parsed.error), {
+        issues: parsed.error.issues,
+      });
+    }
+    return parsed.data;
   }
 
   if (input.driver === "ssh") {
@@ -793,7 +804,7 @@ export function parseEnvironmentDriverConfig(
   if (environment.driver === "local") {
     return {
       driver: "local",
-      config: { ...parseObject(environment.config) },
+      config: localEnvironmentConfigSchema.parse(parseObject(environment.config)),
     };
   }
 
