@@ -50,6 +50,46 @@ async function readOrigin(cwd: string): Promise<string | null> {
   }).catch(() => null);
 }
 
+type RepositoryIdentity = { kind: "https" | "ssh" | "scp"; host: string; port: string; repository: string };
+
+function repositoryIdentity(url: string): RepositoryIdentity | null {
+  const value = url.trim();
+  const scp = /^[A-Za-z0-9._-]+@([A-Za-z0-9.-]+):(?!\/)(.+)$/.exec(value);
+  let kind: RepositoryIdentity["kind"];
+  let host: string;
+  let port = "";
+  let pathname: string;
+  if (scp) {
+    kind = "scp";
+    host = scp[1]!;
+    pathname = scp[2]!;
+  } else {
+    let parsed: URL;
+    try { parsed = new URL(value); } catch { return null; }
+    if (!["https:", "ssh:"].includes(parsed.protocol) || parsed.search || parsed.hash) return null;
+    kind = parsed.protocol === "https:" ? "https" : "ssh";
+    host = parsed.hostname;
+    port = kind === "ssh" && parsed.port === "22" ? "" : parsed.port;
+    pathname = parsed.pathname;
+  }
+  const repository = pathname.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\.git$/, "");
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) || repository.split("/").some(part => part === "." || part === "..")) {
+    return null;
+  }
+  return { kind, host: host.toLowerCase(), port, repository };
+}
+
+export function isSameRepository(origin: string | null, recorded: string): boolean {
+  if (origin === null) return false;
+  if (origin.trim() === recorded.trim()) return true;
+  const left = repositoryIdentity(origin);
+  const right = repositoryIdentity(recorded);
+  if (!left || !right || left.host !== right.host || left.repository !== right.repository) return false;
+  if (left.kind === right.kind) return left.port === right.port;
+  if (left.kind !== "https" && right.kind !== "https") return false;
+  return left.port === "" && right.port === "";
+}
+
 async function gitDirectory(cwd: string, flag: "--absolute-git-dir" | "--git-common-dir"): Promise<string | null> {
   const directory = await exec("git", ["rev-parse", "--path-format=absolute", flag], {
     cwd, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, timeout: 10_000, maxBuffer: 16 * 1024,
@@ -163,7 +203,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
       const inspection = await inspectManagedGitWorktreeBranch({ worktreePath: existing, repoRoot: owner, expectedBranchName: null });
       if (inspection.inspectionDiagnostic) failedInspection ??= inspection.inspectionDiagnostic;
       if (!inspection.valid || !await hasLinkedWorktreeStorage(existing, owner)) continue;
-      if (workspace.repoUrl && await readOrigin(owner) !== workspace.repoUrl.trim()) {
+      if (workspace.repoUrl && !isSameRepository(await readOrigin(owner), workspace.repoUrl)) {
         repositoryMismatch = true;
         continue;
       }
@@ -181,7 +221,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
   // primary is never a fallback for a missing historical worktree.
   let failedInspection: ManagedGitInspectionDiagnostic | null = null;
   for (const candidate of knownRoots) {
-    if (workspace.repoUrl && await readOrigin(candidate) !== workspace.repoUrl.trim()) continue;
+    if (workspace.repoUrl && !isSameRepository(await readOrigin(candidate), workspace.repoUrl)) continue;
     const inspection = await inspectManagedGitWorktreeBranch({ worktreePath: candidate, repoRoot: candidate, expectedBranchName: null });
     if (inspection.valid) return candidate;
     if (inspection.inspectionDiagnostic) failedInspection ??= inspection.inspectionDiagnostic;
@@ -194,7 +234,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
     const materialized = await input.materializeOriginalRepository();
     const owner = await canonicalDirectory(materialized);
     const expectedRoots = await roots();
-    if (owner && expectedRoots.has(owner) && await readOrigin(owner) === workspace.repoUrl.trim()) return owner;
+    if (owner && expectedRoots.has(owner) && isSameRepository(await readOrigin(owner), workspace.repoUrl)) return owner;
   }
   fail(workspace, "source_repository_unavailable");
 }
