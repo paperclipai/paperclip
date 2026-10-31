@@ -318,6 +318,25 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     }
   });
 
+  it("keeps deferred roots visible in the ordinary attention feed above the root cap", async () => {
+    await db.execute(sql`insert into issues (id, company_id, title, status, updated_at)
+      select gen_random_uuid(), ${companyId}::uuid, 'overflow-root-' || n, 'blocked', ${new Date().toISOString()}::timestamptz
+      from generate_series(1, ${BLOCKER_ATTENTION_MAX_NODES + 1}) n`);
+    const roots = await db.select().from(issues).where(eq(issues.companyId, companyId));
+    const batch = await issueService(db).listBlockerAttentionBatch(companyId, roots);
+    expect(batch.deferredRootIds.size).toBeGreaterThan(0);
+    expect(batch.nodeCount).toBeLessThanOrEqual(BLOCKER_ATTENTION_MAX_NODES);
+    for (const rootId of batch.deferredRootIds) expect(batch.attention.get(rootId)).toMatchObject({
+      state: "needs_attention", reason: "attention_required", terminalBlockerIssueId: rootId,
+    });
+    const listed = await issueService(db).list(companyId, { status: "blocked", includeBlockedBy: true });
+    expect(listed).toHaveLength(roots.length);
+    for (const root of listed) expect(root.blockerAttention).toMatchObject({ state: "needs_attention", terminalBlockerIssueId: root.id });
+    const feed = await attentionService(db).list(companyId, { all: true, allowUnscopedAll: true });
+    const visible = new Set(feed.items.filter(item => item.sourceKind === "blocker_attention").map(item => item.subject.id));
+    expect(visible).toEqual(new Set(roots.map(root => root.id)));
+  });
+
   it("bounds every graph query when independent root trees contain over 65535 unfinished nodes", async () => {
     await db.execute(sql`insert into issues (id, company_id, title, status, updated_at)
       select gen_random_uuid(), ${companyId}::uuid, 'parameter-root-' || n, 'blocked', ${old().toISOString()}::timestamptz
