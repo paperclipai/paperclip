@@ -158,7 +158,7 @@ export function statusCardService(
   const issuesSvc = () => deps.issuesSvc ?? issueService(db);
   const searchSvc = companySearchService(db);
   type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
-  function mutate<T>(companyId: string | undefined, write: (tx: Transaction) => Promise<T>) {
+  function mutate<T>(companyId: string, write: (tx: Transaction) => Promise<T>) {
     return db.transaction(async tx => {
       await notifyStatusCardEvaluation(tx, companyId);
       return write(tx);
@@ -335,7 +335,9 @@ export function statusCardService(
   }
 
   async function remove(id: string) {
-    return mutate(undefined, tx => tx.delete(statusCards).where(eq(statusCards.id, id)).returning().then((rows) => rows[0] ?? null));
+    const card = await getById(id);
+    if (!card) return null;
+    return mutate(card.companyId, tx => tx.delete(statusCards).where(eq(statusCards.id, id)).returning().then((rows) => rows[0] ?? null));
   }
 
   async function listUpdates(cardId: string) {

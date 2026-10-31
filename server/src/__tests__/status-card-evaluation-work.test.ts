@@ -144,6 +144,38 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(errors).toEqual([]);
   });
 
+  it("keeps card deletion scoped to its company and a missing deletion quiet", async () => {
+    const removed = await card();
+    await card();
+    const ownCompany = companyId, ownAgent = agentId;
+    companyId = randomUUID(); agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Other", issuePrefix: `O${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Other summarizer", role: "general", status: "idle", adapterType: "process", adapterConfig: {} });
+    const other = await card();
+    companyId = ownCompany; agentId = ownAgent;
+    const factory = companySearch.companySearchService;
+    const searchedCompanies: string[] = [];
+    vi.spyOn(companySearch, "companySearchService").mockImplementation(owner => {
+      const search = factory(owner), actual = search.search;
+      search.search = async (...args) => { searchedCompanies.push(args[0]); return actual(...args); };
+      return search;
+    });
+    await start(); await quiet(); searchedCompanies.length = 0;
+    const cards = statusCardService(db);
+    expect(await cards.remove(removed.id)).toMatchObject({ id: removed.id, companyId: ownCompany });
+    await settled();
+    // Deleting a card only reconstructs deadlines; it is not an issue change
+    // that warrants re-running any unchanged reactive card's saved search.
+    expect(searchedCompanies).toEqual([]);
+    expect(await cards.getById(other.id)).toMatchObject({ nextEvalAt: null, generatingIssueId: null, pendingChangeCount: 0 });
+    expect(wakeup).not.toHaveBeenCalled();
+    searchedCompanies.length = 0;
+    expect(await cards.remove(removed.id)).toBeNull();
+    await quiet();
+    expect(searchedCompanies).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
   it("coalesces one hundred committed source writes without delaying another company's saved deadline", async () => {
     const reactive = await card();
     const originalCompany = companyId, originalAgent = agentId;
