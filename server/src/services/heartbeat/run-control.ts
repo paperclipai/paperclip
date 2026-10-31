@@ -1,3 +1,4 @@
+import { writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { observeStoppedWorkspaceRecovery } from "../workspace-recovery.js";
 import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellation-notifications.js";
@@ -617,12 +618,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           onBlocked: (reason, message) => { wait = { reason, message }; },
         });
         if (!admitted) {
-          await db.update(agentWakeupRequests).set({
-            payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}',
-              coalesce(${agentWakeupRequests.payload}->'executionWait', '{}'::jsonb) || ${JSON.stringify(wait)}::jsonb)`,
-            updatedAt: new Date(),
-          }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, run.companyId),
-            eq(agentWakeupRequests.status, "deferred_issue_execution")));
+          await writeDeferredExecutionWait(db, { companyId: run.companyId, requestId: wake.id }, wait);
           continue;
         }
       }

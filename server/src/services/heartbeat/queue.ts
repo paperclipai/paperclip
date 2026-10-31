@@ -1,3 +1,4 @@
+import { writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
 import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { notifyRunDispatch } from "../run-dispatch-notifications.js";
@@ -2523,17 +2524,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       // its one durable receipt ID on a skipped wake.
       if (caseRequest) return { created: false };
       if (executionWaitRequestId) {
-        await db.update(agentWakeupRequests).set({
-          payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}',
-            coalesce(${agentWakeupRequests.payload}->'executionWait', '{}'::jsonb) || ${JSON.stringify({
-              reason: skipReason, message: patch.error ?? (skipReason === "issue_tree_hold_active"
-                ? "This task is paused. Resume it to send your saved message."
-                : "Waiting for task execution to be enabled. Your message is saved."),
-            })}::jsonb)`,
-          updatedAt: new Date(),
-        }).where(and(eq(agentWakeupRequests.id, executionWaitRequestId),
-          eq(agentWakeupRequests.companyId, agent.companyId), eq(agentWakeupRequests.agentId, agentId),
-          eq(agentWakeupRequests.status, "deferred_issue_execution")));
+        await writeDeferredExecutionWait(db, { companyId: agent.companyId, requestId: executionWaitRequestId }, {
+          reason: skipReason, message: patch.error ?? (skipReason === "issue_tree_hold_active"
+            ? "This task is paused. Resume it to send your saved message."
+            : "Waiting for task execution to be enabled. Your message is saved."),
+        });
         return { created: false };
       }
       const request = {
@@ -3421,10 +3416,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             opts.issueStateGuard?.onExecutionDeferred?.(executionBlocker.cause);
             const condition = { recoveryActionId: executionBlocker.recoveryActionId, ...continuationWait };
             if (executionWaitRequestId) {
-              await tx.update(agentWakeupRequests).set({
-                payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}', ${JSON.stringify(condition)}::jsonb)`,
-                updatedAt: new Date(),
-              }).where(eq(agentWakeupRequests.id, executionWaitRequestId));
+              await writeDeferredExecutionWait(tx as unknown as Db, { companyId: agent.companyId,
+                requestId: executionWaitRequestId }, condition, { replace: true });
               return { kind: "deferred" as const, admitted: true };
             }
             if (durableRequest || wakeCommentId ||
