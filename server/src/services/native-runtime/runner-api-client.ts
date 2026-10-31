@@ -55,7 +55,7 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
   const input = parsed.data;
   const operation = runnerApiOperation(input.operationId);
   if (operation.transport !== "rest") throw unprocessable("This endpoint requires its existing protocol client; call_api supports REST only");
-  if (input.responseText && operation.method !== "GET") throw badRequest("responseText requires a GET operation; read the saved artifact instead of repeating a mutation");
+  if (input.responseText && operation.method !== "GET") throw badRequest("responseText requires a GET operation. This request was not sent. For an otherwise permitted mutation, remove responseText.");
   if (!operation.allowedModes.includes(context.workMode)) throw forbidden("call_api permits only reads in Ask and Plan modes; use the permitted dedicated tools");
   if (input.pathParams?.companyId && input.pathParams.companyId !== context.companyId) throw forbidden("API call belongs to another company");
   const contentType = (input.contentType ?? "application/json").split(";", 1)[0].trim().toLowerCase();

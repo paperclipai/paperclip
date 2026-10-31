@@ -555,6 +555,11 @@ Native `call_api` text windows use `responseText.limitBytes` from 4 through
 Rejected API fallback arguments return the same bounded schema locations as
 monitor calls, with no submitted values. Correct the arguments before retrying;
 validation does not dispatch an HTTP request or relax route permissions.
+`responseText` is GET-only. A mutation rejected for this option has not been
+sent and has no new response artifact. Remove the option before submitting an
+otherwise permitted mutation. Other argument and authority checks still apply.
+An earlier mutation with a returned artifact must still be read from that
+artifact instead of repeated.
 
 This validation feedback applies to every authorized native tool, including
 `paperclip_search_assigned_tools`, `paperclip_call_assigned_tool`, and direct app
