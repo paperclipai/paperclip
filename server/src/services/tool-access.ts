@@ -2523,10 +2523,10 @@ export function toolAccessService(
           .values({
             id: connectionId,
             companyId,
-            applicationId: applicationRow.id,
+            applicationId: applicationRow!.id,
             name,
             uid: connectionUid(
-              applicationRow.applicationKey ?? applicationRow.name,
+              applicationRow!.applicationKey ?? applicationRow!.name,
               name,
               connectionId,
             ),
@@ -2628,7 +2628,7 @@ export function toolAccessService(
               .insert(connectionGrants)
               .values({
                 companyId,
-                connectionId: connectionRow.id,
+                connectionId: connectionRow!.id,
                 kind: "user",
                 subjectUserId: personalIdentityUserId,
                 credentialSecretRefs,
