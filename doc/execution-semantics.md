@@ -1342,6 +1342,18 @@ apply. Stream closure without a turn terminal is not proof of success. Event
 replay uses the existing source receipts and never repeats provider work merely
 to recover recorded output.
 
+A delegated-task completion callback can finish native execution before its
+accepted final reply is saved. The completion outbox must retain that callback's
+queued target and attempt while the existing presentation selector finds pending
+work for the same company, conversation, run and agent. It wakes the presentation
+owner and waits until the later of its current delivery lease or the recorded
+native retry deadline. The selector only defers a new execution attempt; the
+presentation owner still enforces all reply, session, actor and digest checks.
+A saved reply acknowledges the outbox once and permits normal conversation
+settlement. Failed or cancelled execution, missing accepted output and superseded
+handoffs retain their existing retry or supersession paths. Daily limits do not
+need to admit another model run to save an already accepted answer.
+
 Native execution success can precede its durable presentation decision. GitHub
 response maintenance without a confirmed current-run reply holds that request
 until the native phase is committed and a valid presentation decision exists.

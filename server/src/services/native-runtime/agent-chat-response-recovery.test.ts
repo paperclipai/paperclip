@@ -1,13 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, completionContracts, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues,
-  nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+  nativeRunFinalizations, nativeRunResults, chatTaskHandoffs, chatCompletionDeliveries, agentWakeupRequests, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { finalizeNativeRun, recoverCommittedNativeChatResponse } from "./native-run-finalizer.js";
 import { nativeResponsePresentationWork } from "./native-response-presentation-work.js";
+import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import { idleWorkSnapshot } from "../task-admission.js";
+import { chatCompletionDeliveryService } from "../chat-completion-delivery.js";
+import { instanceSettingsService } from "../instance-settings.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_CHAT_RESPONSE_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -20,7 +24,7 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
   }, 60_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
-  async function fixture(conversation = true) {
+  async function fixture(conversation = true, options: { succeed?: boolean } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     const sessionId = randomUUID(), runnerId = randomUUID(), userId = `fixture-${randomUUID()}`, wakeId = randomUUID();
     await db.insert(authUsers).values({ id: userId, name: "Conversation owner", email: `${userId}@example.test`,
@@ -52,13 +56,160 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
         objectiveSatisfied: true, criteria: [], remainingWork: [] }, evidence: [], verification: [], attentionRequests: [], artifacts: [] },
       terminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded", turnTerminalState: "completed", reportedWorkDisposition: "done" }, turnId: "hire-turn" });
     await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: false });
-    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date("2020-01-01T00:02:00Z") }).where(eq(heartbeatRuns.id, runId));
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0].phase).toBe("committed");
+    if (options.succeed !== false) await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date("2020-01-01T00:02:00Z") }).where(eq(heartbeatRuns.id, runId));
     const input = { companyId, issueId, runId };
     return { ...input, input, agentId, userId, wakeId, prpEvent, reply };
   }
   const comments = (runId: string) => db.select().from(issueComments).where(eq(issueComments.createdByRunId, runId));
   const issue = async (issueId: string) => (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
+
+  async function completion(f: Awaited<ReturnType<typeof fixture>>) {
+    const taskId = randomUUID(), deliveryId = randomUUID();
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+    await db.insert(issues).values({ id: taskId, companyId: f.companyId, title: "Completed review", status: "done", statusVersion: 2 });
+    await db.insert(chatTaskHandoffs).values({ companyId: f.companyId, taskId, conversationId: f.issueId,
+      agentId: f.agentId, sessionGeneration: 0 });
+    await db.insert(chatCompletionDeliveries).values({ id: deliveryId, companyId: f.companyId, taskId,
+      statusVersion: 2, status: "queued", targetRunId: f.runId, nextAttemptAt: new Date(0) });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, source: "automation", wakeReason: "chat_task_completed",
+      conversationMode: true, conversationSessionGeneration: 0, chatCompletionDeliveryIds: [deliveryId], chatCompletionUpdates: [{ taskId }] } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const wakeup = vi.fn(async (_agentId: string, options: { idempotencyKey: string }) => {
+      await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+        status: "skipped", reason: "heartbeat.daily_run_limit", idempotencyKey: options.idempotencyKey });
+      return null;
+    });
+    const delivery = async () => (await db.select().from(chatCompletionDeliveries).where(eq(chatCompletionDeliveries.id, deliveryId)))[0];
+    return { taskId, deliveryId, wakeup, delivery, service: chatCompletionDeliveryService(db, { wakeup }) };
+  }
+
+  it("preserves accepted native callback presentation when outbox retry runs first at the daily cap", async () => {
+    const f = await fixture(), outbox = await completion(f);
+    const work = nativeResponsePresentationWork(db);
+    const [entry] = await work.load(f.input);
+    expect(entry).toMatchObject({ id: f.runId });
+    // Deterministically order the real due-outbox handler before presentation;
+    // the already accepted answer must not require another model admission.
+    await outbox.service.deliver(outbox.deliveryId);
+    await expect(work.check(entry)).resolves.toBeNull();
+    const [comment] = await comments(f.runId);
+    expect(comment).toMatchObject({ body: f.reply, authorAgentId: f.agentId, createdByRunId: f.runId });
+    expect(await comments(f.runId)).toHaveLength(1);
+    expect(await issue(f.issueId)).toMatchObject({ status: "in_review", conversationState: "waiting" });
+    expect(await outbox.delivery()).toMatchObject({ status: "delivered", targetRunId: f.runId, attempts: 0, responseCommentId: comment.id });
+    expect(outbox.wakeup).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("wakes the real reply worker only after outer commit, becomes idle and persists once (rollback=%s)", async rollback => {
+    const f = await fixture(true, { succeed: false }), outbox = await completion(f);
+    let queries = 0;
+    const debug = db.$client.options.debug;
+    db.$client.options.debug = () => { queries++; };
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    const quiet = () => vi.waitFor(() => {
+      expect(coordinator.nextWakeAt()).toBeNull();
+      expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: 5000 });
+    const projectAndDefer = async (abort: boolean) => db.transaction(async tx => {
+      await tx.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+      await chatCompletionDeliveryService(tx as unknown as Db, { wakeup: outbox.wakeup }).deliver(outbox.deliveryId);
+      expect(await comments(f.runId)).toEqual([]);
+      if (abort) throw new Error("fixture-outbox-rollback");
+    });
+    try {
+      await worker.ready; await quiet();
+      if (rollback) {
+        await expect(projectAndDefer(true)).rejects.toThrow("fixture-outbox-rollback");
+        await quiet();
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].status).toBe("running");
+        expect(await outbox.delivery()).toMatchObject({ status: "queued", targetRunId: f.runId, attempts: 0, nextAttemptAt: new Date(0) });
+        expect(await comments(f.runId)).toEqual([]);
+      }
+      await projectAndDefer(false);
+      await vi.waitFor(async () => expect(await comments(f.runId)).toHaveLength(1), { timeout: 5000 });
+      const [comment] = await comments(f.runId);
+      expect(comment).toMatchObject({ body: f.reply, authorAgentId: f.agentId, createdByRunId: f.runId });
+      expect(await issue(f.issueId)).toMatchObject({ status: "in_review", conversationState: "waiting" });
+      expect(await outbox.delivery()).toMatchObject({ status: "delivered", targetRunId: f.runId, attempts: 0, responseCommentId: comment.id });
+      await quiet();
+      const settledQueries = queries;
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(queries).toBe(settledQueries);
+      expect(coordinator.nextWakeAt()).toBeNull();
+      vi.useRealTimers();
+      await outbox.service.deliver(outbox.deliveryId);
+      expect(await comments(f.runId)).toHaveLength(1);
+      expect(outbox.wakeup).not.toHaveBeenCalled();
+      expect(errors).toEqual([]);
+    } finally {
+      vi.useRealTimers(); worker.stop(); await coordinator.stop(); db.$client.options.debug = debug;
+    }
+  });
+
+  it.each(["failed", "cancelled", "missing-final", "no-accepted", "old-generation", "foreign-company", "foreign-agent"])(
+    "keeps the existing retry path for %s targets", async fault => {
+      const f = await fixture(), outbox = await completion(f);
+      if (fault === "failed" || fault === "cancelled") await db.update(heartbeatRuns).set({ status: fault }).where(eq(heartbeatRuns.id, f.runId));
+      if (fault === "missing-final") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
+      if (fault === "no-accepted") await db.update(nativeRunResults).set({ schemaStatus: "rejected" }).where(eq(nativeRunResults.runId, f.runId));
+      if (fault === "old-generation") {
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+        await db.update(heartbeatRuns).set({ contextSnapshot: { ...run.contextSnapshot, conversationSessionGeneration: 1 } }).where(eq(heartbeatRuns.id, f.runId));
+      }
+      let foreign: Awaited<ReturnType<typeof fixture>> | undefined;
+      if (fault === "foreign-company") {
+        foreign = await fixture();
+        await db.update(chatCompletionDeliveries).set({ targetRunId: foreign.runId }).where(eq(chatCompletionDeliveries.id, outbox.deliveryId));
+      }
+      if (fault === "foreign-agent") {
+        const otherAgent = randomUUID();
+        await db.insert(agents).values({ id: otherAgent, companyId: f.companyId, name: "Other agent", adapterType: "paperclip_runner" });
+        await db.update(heartbeatRuns).set({ agentId: otherAgent }).where(eq(heartbeatRuns.id, f.runId));
+      }
+      await outbox.service.deliver(outbox.deliveryId);
+      expect(outbox.wakeup).toHaveBeenCalledTimes(1);
+      expect(await outbox.delivery()).toMatchObject({ status: "pending", targetRunId: null, attempts: 1, responseCommentId: null });
+      expect(await comments(f.runId)).toEqual([]);
+      if (foreign) expect(await comments(foreign.runId)).toEqual([]);
+    },
+  );
+
+  it.each(["reset-source", "new-task-version"])("keeps %s delivery supersession", async fault => {
+    const f = await fixture(), outbox = await completion(f);
+    if (fault === "reset-source") await db.update(issues).set({ conversationSessionGeneration: 1 }).where(eq(issues.id, f.issueId));
+    else {
+      await db.update(issues).set({ statusVersion: 3 }).where(eq(issues.id, outbox.taskId));
+      await db.update(chatCompletionDeliveries).set({ status: "superseded" }).where(eq(chatCompletionDeliveries.id, outbox.deliveryId));
+    }
+    await outbox.service.deliver(outbox.deliveryId);
+    expect(await outbox.delivery()).toMatchObject({ status: "superseded", attempts: 0, responseCommentId: null });
+    expect(outbox.wakeup).not.toHaveBeenCalled();
+    expect(await comments(f.runId)).toEqual([]);
+  });
+
+  it("uses the accepted retry deadline without authorizing a reply or a new model run", async () => {
+    const f = await fixture(), outbox = await completion(f), nextAttemptAt = new Date(Date.now() + 300_000);
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt }).where(eq(nativeRunFinalizations.runId, f.runId));
+    await outbox.service.deliver(outbox.deliveryId);
+    expect(await outbox.delivery()).toMatchObject({ status: "queued", targetRunId: f.runId, attempts: 0, nextAttemptAt });
+    expect(outbox.wakeup).not.toHaveBeenCalled();
+    expect(await comments(f.runId)).toEqual([]);
+  });
+
+  it("does not turn candidate deferral into authority for a digest mismatch", async () => {
+    const f = await fixture(), outbox = await completion(f);
+    await db.update(nativeRunResults).set({ canonicalSha256: "invalid-digest" }).where(eq(nativeRunResults.runId, f.runId));
+    await outbox.service.deliver(outbox.deliveryId);
+    const work = nativeResponsePresentationWork(db), [entry] = await work.load(f.input);
+    await expect(work.check(entry)).resolves.toBeNull();
+    expect(await comments(f.runId)).toEqual([]);
+    expect(await outbox.delivery()).toMatchObject({ status: "queued", targetRunId: f.runId, attempts: 0, responseCommentId: null });
+    expect(outbox.wakeup).not.toHaveBeenCalled();
+  });
 
   it("finds a committed final Agent Chat turn, persists the exact reply once and only then settles waiting", async () => {
     const f = await fixture();

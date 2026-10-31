@@ -1,4 +1,6 @@
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import { notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
+import { nativeResponsePresentationCandidates } from "./native-runtime/native-response-presentation-query.js";
 import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import { agents, agentWakeupRequests, chatCompletionDeliveries as deliveries, chatTaskHandoffs as handoffs,
   heartbeatRuns, issueComments, issueDocuments, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
@@ -233,6 +235,25 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
       if (runId) {
         const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
         if (run && activeRuns.includes(run.status)) return;
+        if (run?.runtimeMode === "native" && run.status === "succeeded") {
+          const scope = { companyId: claimed.companyId, issueId: row.handoff.conversationId,
+            runId: run.id, agentId: row.handoff.agentId };
+          const deferred = await db.transaction(async tx => {
+            // This selector defers a retry; only the presentation owner can
+            // authorize and save the accepted reply under its full guards.
+            const candidates = nativeResponsePresentationCandidates(scope).as("pending_native_completion_reply");
+            const [response] = await tx.select().from(candidates);
+            if (!response) return false;
+            await notifyNativeResponsePresentation(tx, scope);
+            const updated = await tx.update(deliveries).set({ nextAttemptAt: new Date(Math.max(
+              claimed.nextAttemptAt.getTime(), response.nextAttemptAt?.getTime() ?? 0,
+            )) }).where(and(eq(deliveries.id, id), eq(deliveries.companyId, claimed.companyId),
+              eq(deliveries.status, "queued"), eq(deliveries.targetRunId, run.id),
+              eq(deliveries.statusVersion, row.task.statusVersion))).returning({ id: deliveries.id });
+            return updated.length > 0;
+          });
+          if (deferred) return;
+        }
         // A published reply is acknowledged in its own transaction, independent of run outcome.
         const [latest] = await db.select().from(deliveries).where(eq(deliveries.id, id));
         if (!latest || !pending.includes(latest.status as typeof pending[number])) return;
