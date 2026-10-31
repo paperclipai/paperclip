@@ -112,6 +112,8 @@ import { caseRoutes } from "./routes/cases.js";
 import { caseHandoffRoutes } from "./routes/case-handoffs.js";
 import { workflowRoutes } from "./routes/workflows.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
+import { createRemoteWorkspaceFiles } from "./services/remote-workspace-files.js";
+import { createSavedWorkspaceLoader } from "./services/remote-workspaces.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
@@ -537,7 +539,10 @@ export async function createApp(
   // A signed claim above commits identity before any normal request can seed
   // company data. Unclaimed probes bypass session resolution as well as SQL.
   app.use(cloudWarmStandbyMiddleware(isWarmStandby, health, staticUi));
-  app.use("/api/customer-success/v1", customerSuccessRoutes(db, opts.storageService));
+  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+  app.use("/api/customer-success/v1", customerSuccessRoutes(db, opts.storageService, {
+    pluginWorkerManager: workerManager,
+  }));
   app.use(museTransportRoutes(db, opts.authPublicBaseUrl));
   app.use(publicMcpIngress);
   // Connection-intent tools carry their own short-lived, run-bound bearer and
@@ -545,7 +550,6 @@ export async function createApp(
   // agent API key. Every request revalidates the active heartbeat row.
   app.use(runtimeConnectionIntentRoutes(db));
   const hostServicesDisposers = new Map<string, () => void>();
-  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
   let lifecyclePluginsReady = false;
   const agentLifecycle = startAgentLifecycle(db, createLifecycleDriver(db, workerManager), () => lifecyclePluginsReady && !isWarmStandby() && !isIdleTaskDrainActive());
   const connectionIntentHeartbeat = heartbeatService(db, {
@@ -772,7 +776,10 @@ export async function createApp(
   api.use(caseHandoffRoutes(db));
   api.use(workflowRoutes(db));
   api.use(issueTreeControlRoutes(db, { pluginWorkerManager: workerManager }));
-  api.use(fileResourceRoutes(db));
+  api.use(fileResourceRoutes(db, { remoteFiles: createRemoteWorkspaceFiles(db, {
+    environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workerManager }),
+    loadSavedWorkspace: createSavedWorkspaceLoader(db, opts.storageService),
+  }) }));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(
     environmentRoutes(db, {

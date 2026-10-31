@@ -1268,6 +1268,7 @@ function createSandboxEnvironmentDriver(
   db: Db,
   options: {
     pluginWorkerManager?: PluginWorkerManager;
+    readOnlyInspection?: boolean;
     pluginWorkerReadyTimeoutMs?: number;
     pluginWorkerReadyPollMs?: number;
     deferredOrphanCleanupBufferLimit?: number;
@@ -1498,7 +1499,7 @@ function createSandboxEnvironmentDriver(
         id: input.environment.id,
         driver: "sandbox",
         config: sandboxConfigForLeaseMetadata(metadataConfig),
-      });
+      }, { readOnlyInspection: options.readOnlyInspection });
       if (parsed.driver === "sandbox") {
         return dropInternalPluginSandboxConfigKeys(parsed.config as unknown as Record<string, unknown>);
       }
@@ -1510,16 +1511,19 @@ function createSandboxEnvironmentDriver(
           db,
           input.lease.companyId,
           input.environment,
+          { readOnlyInspection: options.readOnlyInspection },
         );
         if (parsed.driver === "sandbox" && parsed.config.provider === input.provider) {
           return dropInternalPluginSandboxConfigKeys(parsed.config as unknown as Record<string, unknown>);
         }
-      } catch {
+      } catch (error) {
+        if (options.readOnlyInspection) throw error;
         // Lease metadata below is intentionally kept sufficient for cleanup
         // after the environment config changes or becomes invalid.
       }
     }
 
+    if (options.readOnlyInspection) throw new Error("Inspection requires a validated sandbox configuration.");
     return {
       provider: input.provider,
       ...dropInternalPluginSandboxConfigKeys(input.lease.metadata),
@@ -3586,6 +3590,7 @@ export function environmentRuntimeService(
   options: {
     drivers?: EnvironmentRuntimeDriver[];
     pluginWorkerManager?: PluginWorkerManager;
+    readOnlyInspection?: boolean;
     pluginWorkerReadyTimeoutMs?: number;
     pluginWorkerReadyPollMs?: number;
     deferredOrphanCleanupBufferLimit?: number;
@@ -3602,6 +3607,7 @@ export function environmentRuntimeService(
     createSshEnvironmentDriver(db),
     createSandboxEnvironmentDriver(db, {
       pluginWorkerManager: options.pluginWorkerManager,
+      readOnlyInspection: options.readOnlyInspection,
       pluginWorkerReadyTimeoutMs: options.pluginWorkerReadyTimeoutMs,
       pluginWorkerReadyPollMs: options.pluginWorkerReadyPollMs,
       deferredOrphanCleanupBufferLimit: options.deferredOrphanCleanupBufferLimit,
@@ -3647,6 +3653,7 @@ export function environmentRuntimeService(
     scopeCondition?: ReturnType<typeof and>;
     runId?: string;
     failureReason: string;
+    anyLeasePolicy?: boolean;
   }): Promise<EnvironmentLease | null> {
     if (await nativeWorkspaceExportPendingForLease(db, input.leaseRow)) return null;
     if (!(await allowLegacyShutdownWorkspaceCleanup(db, input.leaseRow))) return null;
@@ -3671,7 +3678,7 @@ export function environmentRuntimeService(
       eq(environmentLeases.companyId, input.leaseRow.companyId),
       eq(environmentLeases.environmentId, input.environment.id),
       input.runId ? eq(environmentLeases.heartbeatRunId, input.runId)
-        : eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+        : input.anyLeasePolicy ? undefined : eq(environmentLeases.leasePolicy, "reuse_by_environment"),
       eq(environmentLeases.status, input.leaseRow.status),
       input.scopeCondition,
       sql`coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') != 'true'`,
@@ -3731,6 +3738,22 @@ export function environmentRuntimeService(
 
   return {
     getDriver,
+
+    async destroyRemoteWorkspaceLease(input: {
+      companyId: string; workspaceId: string; leaseId: string; environmentId: string; providerLeaseId: string;
+    }): Promise<EnvironmentLease | null> {
+      const scope = and(eq(environmentLeases.executionWorkspaceId, input.workspaceId),
+        eq(environmentLeases.providerLeaseId, input.providerLeaseId));
+      const [leaseRow] = await db.select().from(environmentLeases).where(and(
+        eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.id, input.leaseId),
+        eq(environmentLeases.environmentId, input.environmentId), scope,
+      ));
+      if (!leaseRow) throw new Error("remote_workspace_cleanup_lease_changed");
+      const environment = await environmentsSvc.getById(input.environmentId);
+      if (!environment || environment.driver !== "sandbox") throw new Error("remote_workspace_cleanup_environment_unavailable");
+      return destroyClaimedSandboxLease({ environment, leaseRow, scopeCondition: scope, anyLeasePolicy: true,
+        failureReason: "execution_workspace_closed" });
+    },
 
     /**
      * Read the sandbox duplex bridge kill switch for a new run. The host calls it

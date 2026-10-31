@@ -46,7 +46,7 @@ export function controllerOutageForExecution(execution: MatrixExecution, env: No
   const declaredHoldMs = execution.suite.definitionMetadata?.controllerDowntimeMs;
   if (typeof declaredHoldMs !== "number") throw new Error("Controller recovery suite must declare its outage duration");
   const outage = configuredControllerOutage(env, declaredHoldMs);
-  if (execution.suite.id === "daytona-restart-continuity" && outage.holdMs < declaredHoldMs) {
+  if (["daytona-restart-continuity", "remote-workspace-storage"].includes(execution.suite.id) && outage.holdMs < declaredHoldMs) {
     throw new Error("Controller outage is shorter than the dedicated continuity contract");
   }
   return outage;
