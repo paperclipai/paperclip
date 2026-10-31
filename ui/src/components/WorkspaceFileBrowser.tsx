@@ -618,14 +618,22 @@ export function WorkspaceFileBrowser({
     ? { projectId: targetProjectId, workspaceId: targetWorkspaceId }
     : {};
 
+  const browseStateChangeRef = useRef(onBrowseStateChange);
   useEffect(() => {
-    onBrowseStateChange?.({
-      q: searchInput.trim() || null,
+    browseStateChangeRef.current = onBrowseStateChange;
+  }, [onBrowseStateChange]);
+
+  // Persisting browse state can give the parent a new inline callback. Notify
+  // for changed browse values, using the latest committed callback each time.
+  const liveBrowseQuery = searchInput.trim() || null;
+  useEffect(() => {
+    browseStateChangeRef.current?.({
+      q: liveBrowseQuery,
       folderPath,
       projectId: targetProjectId,
       workspaceId: targetWorkspaceId,
     });
-  }, [folderPath, onBrowseStateChange, searchInput, targetProjectId, targetWorkspaceId]);
+  }, [folderPath, liveBrowseQuery, targetProjectId, targetWorkspaceId]);
 
   const listQueryKey = useMemo(() => queryKeys.issues.fileResources(issueId, {
       workspace: effectiveWorkspace,
