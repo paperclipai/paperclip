@@ -99,6 +99,7 @@ test("reading anchor survives late media, composer resizing, older history and b
   await page.goto(`/${prefix}/issues/${issue.identifier}`);
   await ready(page);
   const scroller = page.getByTestId("task-chat-scroller");
+  await page.getByRole("button", { name: "More messages", exact: true }).click();
   await expect(page.getByText("Historical message 10", { exact: true })).toBeAttached();
   await scroller.evaluate((el) => { el.scrollTop = el.scrollHeight / 2; });
   await page.waitForTimeout(100);
@@ -200,10 +201,10 @@ test("a draft survives background task refresh, reload, and one persisted reply"
 });
 
 test("failed initial comments expose retry, then recover without an indefinite skeleton", async ({ page }) => {
-  await page.route("**/api/issues/*/comments?*", (route) => route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"Temporarily unavailable"}' }));
+  await page.route("**/api/issues/*/recent-comments", (route) => route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"Temporarily unavailable"}' }));
   await page.goto(`/${prefix}/issues/${issue.identifier}`);
   await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeVisible({ timeout: 30_000 });
-  await page.unroute("**/api/issues/*/comments?*");
+  await page.unroute("**/api/issues/*/recent-comments");
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await ready(page);
   await expect(page.getByText("Historical message 159", { exact: true })).toBeAttached();
@@ -215,13 +216,15 @@ test("mobile reduced-motion cold open and rapid task switching", async ({ page }
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto(`/${prefix}/issues/${issue.identifier}`);
   await ready(page);
-  await expect.poll(() => page.evaluate(() => document.documentElement.scrollHeight - window.scrollY - window.innerHeight)).toBeLessThan(2);
-  await page.evaluate(() => window.scrollTo(0, 1200));
+  const scroller = page.getByTestId("task-chat-scroller");
+  const distanceToLatest = () => scroller.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight);
+  await expect.poll(distanceToLatest).toBeLessThan(2);
+  await scroller.evaluate(el => { el.scrollTop = 1200; });
   await page.waitForTimeout(100);
-  const saved = await page.evaluate(() => window.scrollY);
+  const saved = await scroller.evaluate(el => el.scrollTop);
   await page.reload();
   await ready(page);
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(1200);
+  await expect.poll(distanceToLatest).toBeLessThan(2);
   // A fresh navigation must show the new task, never retain the previous feed.
   await page.goto(`/${prefix}/issues/${other.identifier}`);
   await ready(page);
@@ -234,34 +237,35 @@ for (const mobile of [false, true]) {
     if (mobile) await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/${prefix}/issues/${issue.identifier}`);
     await ready(page);
+    await page.getByRole("button", { name: "More messages", exact: true }).click();
     await page.getByText("Historical message 10", { exact: true }).waitFor({ state: "attached" });
     await expect(page.locator(`[id="comment-${oldestCommentId}"]`)).toHaveCount(0);
     const originalThread = await page.getByTestId("task-chat-thread").elementHandle();
-    const before = await page.evaluate((mobile) => {
-      const root = document.querySelector(mobile ? '[data-testid="task-chat-thread"]' : '[data-testid="task-chat-scroller"]')!;
-      const top = mobile ? 0 : root.getBoundingClientRect().top;
+    const before = await page.evaluate(() => {
+      const root = document.querySelector('[data-testid="task-chat-scroller"]')!;
+      const top = root.getBoundingClientRect().top;
       const row = [...root.querySelectorAll<HTMLElement>("[data-thread-anchor]")].find((el) => el.getBoundingClientRect().bottom > top)!;
       return { id: row.dataset.threadAnchor!, offset: row.getBoundingClientRect().top - top };
-    }, mobile);
+    });
     await page.getByRole("link", { name: "Read the oldest message", exact: true }).click();
     const target = page.locator(`[id="comment-${oldestCommentId}"]`);
     await expect(target).toBeAttached();
-    const targetOffset = () => target.evaluate((el, mobile) => el.getBoundingClientRect().top - (mobile ? 0 : document.querySelector('[data-testid="task-chat-scroller"]')!.getBoundingClientRect().top), mobile);
+    const targetOffset = () => target.evaluate(el => el.getBoundingClientRect().top - document.querySelector('[data-testid="task-chat-scroller"]')!.getBoundingClientRect().top);
     await expect.poll(async () => Math.abs(await targetOffset())).toBeLessThanOrEqual(2);
     expect(await originalThread!.evaluate((el) => el === document.querySelector('[data-testid="task-chat-thread"]'))).toBe(true);
     await page.goBack();
-    await expect.poll(async () => Math.abs(await page.evaluate(({ mobile, before }) => {
-      const root = document.querySelector(mobile ? '[data-testid="task-chat-thread"]' : '[data-testid="task-chat-scroller"]')!;
+    await expect.poll(async () => Math.abs(await page.evaluate(before => {
+      const root = document.querySelector('[data-testid="task-chat-scroller"]')!;
       const row = [...root.querySelectorAll<HTMLElement>("[data-thread-anchor]")].find((el) => el.dataset.threadAnchor === before.id)!;
-      return row.getBoundingClientRect().top - (mobile ? 0 : root.getBoundingClientRect().top) - before.offset;
-    }, { mobile, before }))).toBeLessThanOrEqual(2);
+      return row.getBoundingClientRect().top - root.getBoundingClientRect().top - before.offset;
+    }, before))).toBeLessThanOrEqual(2);
   });
 }
 
 test("stalled native and log history reveal loaded content with Retry after the request deadline", async ({ page }) => {
   const runId = "20000000-0000-4000-8000-000000000001";
   const at = new Date().toISOString();
-  await page.route("**/api/issues/*/runs", (route) => route.fulfill({ json: [{ runId, runtimeMode: "native", status: "succeeded", agentId: "20000000-0000-4000-8000-000000000002", adapterType: "paperclip_runner", createdAt: at, startedAt: at, finishedAt: at }] }));
+  await page.route(/\/api\/issues\/[^/]+\/runs(?:\?|$)/, (route) => route.fulfill({ json: [{ runId, runtimeMode: "native", status: "succeeded", agentId: "20000000-0000-4000-8000-000000000002", adapterType: "paperclip_runner", createdAt: at, startedAt: at, finishedAt: at }] }));
   let stalled = true;
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
