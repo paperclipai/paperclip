@@ -376,12 +376,25 @@ export async function saveRemoteWorkspace(input: {
       eq(heartbeatRuns.companyId, workspace.companyId), eq(heartbeatRuns.id, input.runId)));
     if (!run) throw new Error("remote_workspace_run_missing");
     const issueId = run.nativeIssueId ?? run.issueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
-    const [parent] = current.snapshotId ? await tx.select({ generation: executionWorkspaceSnapshots.generation }).from(executionWorkspaceSnapshots)
-      .where(and(eq(executionWorkspaceSnapshots.id, current.snapshotId), eq(executionWorkspaceSnapshots.companyId, workspace.companyId),
-        eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id))) : [];
+    // The workspace lock serializes generation reservations. Failed/deleted
+    // snapshots still own their generation, and an operation can be committed
+    // before beginWorkspaceSnapshot creates its ledger row. Count both journals
+    // across epochs while retaining the last committed snapshot as the parent.
+    const [reservation] = await tx.execute(sql`select greatest(
+      coalesce((select max(${executionWorkspaceSnapshots.generation}) from ${executionWorkspaceSnapshots}
+        where ${executionWorkspaceSnapshots.companyId} = ${workspace.companyId}
+          and ${executionWorkspaceSnapshots.executionWorkspaceId} = ${workspace.id}), 0),
+      coalesce((select max(case when ${workspaceOperations.metadata}->>'generation' ~ '^[0-9]+$'
+        then (${workspaceOperations.metadata}->>'generation')::numeric else 0 end) from ${workspaceOperations}
+        where ${workspaceOperations.companyId} = ${workspace.companyId}
+          and ${workspaceOperations.executionWorkspaceId} = ${workspace.id}
+          and ${workspaceOperations.phase} = 'remote_workspace_snapshot'), 0)
+    ) as generation`);
+    const generation = Number(reservation?.generation) + 1;
+    if (!Number.isSafeInteger(generation) || generation < 1) throw new Error("remote_workspace_snapshot_generation_invalid");
     const [created] = await tx.insert(workspaceOperations).values({ companyId: workspace.companyId, executionWorkspaceId: workspace.id,
       heartbeatRunId: input.runId, issueId, phase: "remote_workspace_snapshot", status: "running",
-      metadata: { boundary, epoch: current.epoch, parentSnapshotId: current.snapshotId, generation: (parent?.generation ?? 0) + 1,
+      metadata: { boundary, epoch: current.epoch, parentSnapshotId: current.snapshotId, generation,
         exportCleanup: { ...current.location, state: "pending" } },
     }).returning();
     return created!;

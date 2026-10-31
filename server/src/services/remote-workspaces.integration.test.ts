@@ -379,6 +379,130 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(await fs.readdir(path.join(prepared.remoteRoot, ".paperclip-runtime", "workspace-snapshots"))).toEqual([]);
   }, 60_000);
 
+  it.each(["initial", "repository:additional"])("saves current files through a different repair boundary after a failed %s upload", async boundary => {
+    if (boundary === "initial") await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null,
+      issueId: null, contextSnapshot: { issueId: ids.issue } }).where(eq(heartbeatRuns.id, ids.run));
+    const reserved = await reserve({ kind: "empty" }), first = await target("failed-boundary");
+    const failing: StorageService = { ...storage, putFile: async () => { throw new Error("boundary storage offline"); } };
+    if (boundary === "initial") {
+      await expect(prepareRemoteWorkspace({ db, storage: failing, workspace: reserved, runId: ids.run,
+        lease: await lease(), target: first, assertOwned: async () => undefined,
+        provisionCommand: "printf 'one preparation effect\\n' > prepared.txt" })).rejects.toThrow("boundary storage offline");
+    } else {
+      const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+      await fs.writeFile(path.join(prepared.remoteRoot, "prepared.txt"), "one preparation effect\n");
+      await expect(saveRemoteWorkspace({ db, storage: failing, workspace: prepared.workspace, runId: ids.run,
+        lease: prepared.lease, target: first, boundary, assertOwned: async () => undefined })).rejects.toThrow("boundary storage offline");
+    }
+    const before = await workspace(reserved.id), authority = readRemoteWorkspaceAuthority(before.metadata)!;
+    const [pending] = await db.select().from(executionWorkspaceSnapshots).where(and(
+      eq(executionWorkspaceSnapshots.executionWorkspaceId, reserved.id), eq(executionWorkspaceSnapshots.status, "pending")));
+    expect(pending).toBeTruthy();
+    expect(authority.snapshotId).toBe(pending!.parentSnapshotId);
+    await fs.writeFile(path.join(authority.location!.remoteCwd, "after-failed-save.txt"), "newer live files must survive\n");
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, ids.run));
+    const saved = await saveRemoteWorkspace({ db, storage, workspace: before, runId: ids.run,
+      lease: await lease(), target: first, assertOwned: async () => undefined });
+    expect(saved.generation).toBe(pending!.generation + 1);
+    const [committed] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, saved.snapshotId));
+    expect(committed).toMatchObject({ status: "committed", parentSnapshotId: authority.snapshotId });
+    expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)).toMatchObject({
+      dirty: false, writerRunId: null, snapshotId: saved.snapshotId,
+    });
+    const extracted = await createSavedWorkspaceLoader(db, storage)({ companyId: ids.company, workspaceId: reserved.id, snapshotId: saved.snapshotId });
+    try {
+      expect(await fs.readFile(path.join(extracted.root, "prepared.txt"), "utf8")).toBe("one preparation effect\n");
+      expect(await fs.readFile(path.join(extracted.root, "after-failed-save.txt"), "utf8")).toBe("newer live files must survive\n");
+    } finally { await extracted.cleanup(); }
+  }, 60_000);
+
+  it.each(["journal", "ledger"])("respects historical %s generation reservations without changing the committed parent", async highest => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("reserved-generations");
+    const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    const parent = readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.snapshotId;
+    // A crash after journaling can leave no ledger row; retention can leave a
+    // deleted ledger after the source operation is gone. Both remain reserved.
+    await db.insert(workspaceOperations).values({ companyId: ids.company, executionWorkspaceId: reserved.id,
+      heartbeatRunId: ids.run, issueId: ids.issue, phase: "remote_workspace_snapshot", status: "running",
+      metadata: { boundary: "interrupted-before-ledger", epoch: 0, generation: highest === "journal" ? 5 : 3 } });
+    await db.insert(executionWorkspaceSnapshots).values({ companyId: ids.company, executionWorkspaceId: reserved.id,
+      sourceOperationId: randomUUID(), sourceRunId: ids.run, parentSnapshotId: null,
+      generation: highest === "ledger" ? 5 : 3, epoch: 0, status: "deleted" });
+    const saved = await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId: ids.run,
+      lease: prepared.lease, target: first, assertOwned: async () => undefined });
+    expect(saved.generation).toBe(6);
+    expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, saved.snapshotId)))[0])
+      .toMatchObject({ status: "committed", parentSnapshotId: parent });
+  }, 60_000);
+
+  it("holds an already-poisoned pre-release reservation without rewriting its identity or uploading", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("old-poisoned-reservation");
+    const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    const authority = readRemoteWorkspaceAuthority(prepared.workspace.metadata)!;
+    await fs.writeFile(path.join(prepared.remoteRoot, "held-work.txt"), "retain exact existing files\n");
+    const failing: StorageService = { ...storage, putFile: async () => { throw new Error("old upload failed"); } };
+    await expect(saveRemoteWorkspace({ db, storage: failing, workspace: prepared.workspace, runId: ids.run,
+      lease: prepared.lease, target: first, boundary: "repository:old", assertOwned: async () => undefined }))
+      .rejects.toThrow("old upload failed");
+    const [pending] = await db.select().from(executionWorkspaceSnapshots).where(and(
+      eq(executionWorkspaceSnapshots.executionWorkspaceId, reserved.id), eq(executionWorkspaceSnapshots.status, "pending")));
+    // Old pre-release code could journal a conflicting final operation before
+    // beginWorkspaceSnapshot rejected it. Its identity must not be repurposed.
+    const [poisoned] = await db.insert(workspaceOperations).values({ companyId: ids.company, executionWorkspaceId: reserved.id,
+      heartbeatRunId: ids.run, issueId: ids.issue, phase: "remote_workspace_snapshot", status: "running",
+      metadata: { boundary: "final", epoch: authority.epoch, generation: pending!.generation,
+        parentSnapshotId: authority.snapshotId, exportCleanup: { ...authority.location, state: "pending" } } }).returning();
+    const upload = vi.spyOn(storage, "putFile");
+    await expect(saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId: ids.run,
+      lease: prepared.lease, target: first, assertOwned: async () => undefined }))
+      .rejects.toThrow("remote_workspace_snapshot_operation_binding_changed");
+    expect(upload).not.toHaveBeenCalled();
+    expect((await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, poisoned!.id)))[0]?.metadata)
+      .toEqual(poisoned!.metadata);
+    expect(await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.sourceOperationId, poisoned!.id)))
+      .toHaveLength(0);
+    expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)).toMatchObject({
+      dirty: true, writerRunId: ids.run, snapshotId: authority.snapshotId,
+    });
+    expect(await fs.readFile(path.join(prepared.remoteRoot, "held-work.txt"), "utf8")).toBe("retain exact existing files\n");
+  }, 60_000);
+
+  it("reserves distinct generations for competing boundaries and fences the losing publication", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("competing-boundaries");
+    const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    const parent = readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.snapshotId;
+    let arrivals = 0, release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const timeout = setTimeout(release, 10_000);
+    const competingStorage: StorageService = { ...storage, putFile: async upload => {
+      if (++arrivals === 2) release();
+      await gate;
+      return storage.putFile(upload);
+    } };
+    const input = { db, storage: competingStorage, workspace: prepared.workspace, runId: ids.run, lease: prepared.lease,
+      target: first, assertOwned: async () => undefined };
+    const boundaries = ["repository:one", "repository:two"];
+    const results = await Promise.allSettled(boundaries.map(boundary => saveRemoteWorkspace({ ...input, boundary })))
+      .finally(() => { clearTimeout(timeout); release(); });
+    expect(arrivals).toBe(2);
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    const failed = results.find(result => result.status === "rejected") as PromiseRejectedResult;
+    expect(failed.reason).toMatchObject({ message: "remote_workspace_publication_fenced" });
+    const rows = (await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.executionWorkspaceId, reserved.id)))
+      .filter(row => row.id !== parent).sort((a, b) => a.generation - b.generation);
+    expect(rows.map(row => row.generation)).toEqual([2, 3]);
+    expect(rows.map(row => row.parentSnapshotId)).toEqual([parent, parent]);
+    expect(new Set(rows.map(row => row.objectKey)).size).toBe(2);
+    const winning = results.findIndex(result => result.status === "fulfilled");
+    const upload = vi.spyOn(competingStorage, "putFile");
+    const replay = await saveRemoteWorkspace({ ...input, boundary: boundaries[winning]! });
+    expect(upload).not.toHaveBeenCalled();
+    expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)?.snapshotId).toBe(replay.snapshotId);
+    await expect(saveRemoteWorkspace({ ...input, boundary: boundaries[1 - winning]! }))
+      .rejects.toThrow("remote_workspace_publication_fenced");
+    expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)?.snapshotId).toBe(replay.snapshotId);
+  }, 60_000);
+
   it.each(["issue_column", "context_only"])("retains pre-native preparation files and the exact repair obligation when the first upload fails: %s", async identity => {
     await db.update(heartbeatRuns).set({ ...legacyControllerClaim("legacy"), runtimeMode: "legacy", nativeIssueId: null,
       issueId: identity === "issue_column" ? ids.issue : null, contextSnapshot: { issueId: ids.issue } })
