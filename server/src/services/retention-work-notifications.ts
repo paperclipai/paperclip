@@ -20,9 +20,10 @@ export async function notifyIssueAttentionRetentionWork(transaction: object,
       where company_id = ${scope.companyId}::uuid and id = ${scope.runId}::uuid and issue_id is not null
       union select native_issue_id::text from heartbeat_runs
       where company_id = ${scope.companyId}::uuid and id = ${scope.runId}::uuid and native_issue_id is not null
-      union select coalesce(context_snapshot->>'issueId', context_snapshot->>'taskId') from heartbeat_runs
-      where company_id = ${scope.companyId}::uuid and id = ${scope.runId}::uuid
-        and coalesce(context_snapshot->>'issueId', context_snapshot->>'taskId') is not null`);
+      union select issue.id::text from heartbeat_runs run inner join issues issue
+        on issue.company_id = run.company_id
+          and issue.id::text = coalesce(run.context_snapshot->>'issueId', run.context_snapshot->>'taskId')
+      where run.company_id = ${scope.companyId}::uuid and run.id = ${scope.runId}::uuid`);
     for (const row of rows) seeds.push(row.id as string);
   }
   if (!seeds.length) return notifyAttentionRetentionWork(transaction, { companyId: scope.companyId });
@@ -31,10 +32,20 @@ export async function notifyIssueAttentionRetentionWork(transaction: object,
       and id in (${sql.join([...new Set(seeds)].map(id => sql`${id}::uuid`), sql`, `)})`);
   const current = origins.find(source => source.id === scope.issueId);
   origins.push({ originKind: scope.originKind ?? current?.originKind, originId: scope.originId ?? current?.originId });
+  const references: string[] = [];
   for (const source of origins) {
+    if (source.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery && typeof source.originId === "string") {
+      references.push(source.originId);
+    }
     const incident = source.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation
       ? parseIssueGraphLivenessIncidentKey(source.originId as string | null) : null;
-    if (incident?.companyId === scope.companyId) seeds.push(incident.issueId, incident.leafIssueId);
+    if (incident?.companyId === scope.companyId) references.push(incident.issueId, incident.leafIssueId);
+  }
+  if (references.length) {
+    const trusted = await database.execute(sql`select id::text as id from issues
+      where company_id = ${scope.companyId}::uuid
+        and id::text in (${sql.join([...new Set(references)].map(id => sql`${id}`), sql`, `)})`);
+    for (const row of trusted) seeds.push(row.id as string);
   }
   const affected = await database.execute(sql`with recursive affected(id) as (
     select unnest(array[${sql.join([...new Set(seeds)].map(id => sql`${id}::uuid`), sql`, `)}])

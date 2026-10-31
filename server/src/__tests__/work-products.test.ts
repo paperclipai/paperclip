@@ -1,3 +1,5 @@
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { SQL } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import {
   enrichWorkProductMetadataWithDiff,
@@ -31,6 +33,18 @@ function createWorkProductRow(overrides: Partial<Record<string, unknown>> = {}) 
     updatedAt: now,
     ...overrides,
   };
+}
+
+function retentionReads(insideTransaction: () => boolean) {
+  return vi.fn(async (query: SQL) => {
+    const statement = new PgDialect().sqlToQuery(query);
+    expect(insideTransaction()).toBe(true);
+    expect(statement.params).toContain("company-1");
+    expect(statement.params).toContain("issue-1");
+    if (statement.sql.includes("origin_kind")) return [{ id: "issue-1", originKind: null, originId: null }];
+    if (statement.sql.includes("with recursive affected")) return [{ issueId: "issue-1" }];
+    throw new Error(`Unexpected work-product fixture query: ${statement.sql}`);
+  });
 }
 
 describe("workProductService", () => {
@@ -158,11 +172,16 @@ describe("workProductService", () => {
     const insertValues = vi.fn(() => ({ returning: insertReturning }));
     const txInsert = vi.fn(() => ({ values: insertValues }));
 
+    let transactionOpen = false;
     const tx = {
+      execute: retentionReads(() => transactionOpen),
       update: txUpdate,
       insert: txInsert,
     };
-    const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => await callback(tx));
+    const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => {
+      transactionOpen = true;
+      try { return await callback(tx); } finally { transactionOpen = false; }
+    });
 
     const svc = workProductService({ transaction } as any);
     const result = await svc.createForIssue("issue-1", "company-1", {
@@ -194,11 +213,16 @@ describe("workProductService", () => {
     const updateSet = vi.fn(() => ({ where: updateWhere }));
     const txUpdate = vi.fn(() => ({ set: updateSet }));
 
+    let transactionOpen = false;
     const tx = {
+      execute: retentionReads(() => transactionOpen),
       select: txSelect,
       update: txUpdate,
     };
-    const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => await callback(tx));
+    const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => {
+      transactionOpen = true;
+      try { return await callback(tx); } finally { transactionOpen = false; }
+    });
 
     const svc = workProductService({ transaction } as any);
     const result = await svc.update("work-product-1", {

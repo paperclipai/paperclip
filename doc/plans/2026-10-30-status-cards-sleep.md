@@ -141,3 +141,17 @@ deadline-reconstruction hint. Every card mutation requires a company ID; only
 instance-level settings retain wildcard ingress. Deleting an already-missing
 card emits no hint. The real two-company regression proves deletion does not
 re-run unchanged reactive searches or wake either summarizer, then stays quiet.
+
+Active-hours eligibility keeps the existing exact UTC-minute search across DST
+changes. A bounded 32-entry timezone formatter cache removes repeated ICU
+construction. A bounded 256-entry cache reuses the next opening for the exact
+(timezone,start,end) policy only while the candidate instant stays within its
+previously searched closed range. The precise instant is checked first, so
+historical second-based offsets, the opening itself, and millisecond deadlines
+keep their behavior. Clock rollback and policy changes cannot reuse the wrong
+range. Empty windows return without formatter or search work. A cold nonempty
+policy can still perform at most 2881 conversions including its first check; warm
+closed-range evaluations perform one conversion, not another minute walk.
+Both caches use bounded LRU retention and hold no company/card data. Tests prove
+eviction, skipped/repeated hours, half-hour DST, date-line changes, rollback,
+strict boundaries, and actual twenty-card source delivery followed by quiet.

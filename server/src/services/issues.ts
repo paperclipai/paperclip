@@ -3443,6 +3443,7 @@ type IssueBlockerAttentionEdge = {
   blockerIssueId: string;
 };
 type IssueBlockerAttentionQueryRow = IssueBlockerAttentionNode & {
+  executionWorkspaceId?: string | null;
   issueId: string | null;
   blockerIssueId: string;
 };
@@ -3831,11 +3832,15 @@ async function terminalExplicitBlockersByRoot(
   return terminalByRoot;
 }
 
-async function listIssueBlockerAttentionMap(
+async function listIssueBlockerAttentionMap(dbOrTx: any, companyId: string, issueRows: IssueBlockerAttentionInputNode[]) {
+  return (await readIssueBlockerAttentionBatch(dbOrTx, companyId, issueRows)).attention;
+}
+
+async function readIssueBlockerAttentionBatch(
   dbOrTx: any,
   companyId: string,
   issueRows: IssueBlockerAttentionInputNode[],
-): Promise<Map<string, IssueBlockerAttention>> {
+) {
   const roots = issueRows.filter(
     (row) => row.companyId === companyId && row.status === "blocked",
   );
@@ -3845,37 +3850,38 @@ async function listIssueBlockerAttentionMap(
       attentionMap.set(row.id, createIssueBlockerAttention());
     }
   }
-  if (roots.length === 0) return attentionMap;
+  const deferredRootIds = new Set<string>(roots.slice(BLOCKER_ATTENTION_MAX_NODES).map(root => root.id));
+  let edgeCount = 0, fetchedRows = 0;
+  const result = () => ({ attention: attentionMap, deferredRootIds, nodeCount: nodesById.size, edgeCount, fetchedRows });
+  if (roots.length === 0) return { attention: attentionMap, deferredRootIds, nodeCount: 0, edgeCount, fetchedRows };
 
   const nodesById = new Map<string, IssueBlockerAttentionNode>();
   const edgesByIssueId = new Map<string, IssueBlockerAttentionEdge[]>();
-  for (const root of roots) nodesById.set(root.id, { ...root });
+  const admittedRoots = roots.slice(0, BLOCKER_ATTENTION_MAX_NODES);
+  for (const root of admittedRoots) nodesById.set(root.id, { ...root });
 
-  type Traversal = { nodes: Set<string>; expanded: Set<string>; frontier: string[]; truncated: boolean };
-  const traversals = new Map<string, Traversal>(roots.map(root => [root.id, {
-    nodes: new Set([root.id]), expanded: new Set<string>(), frontier: [root.id], truncated: false,
+  type Traversal = { rootId: string; nodes: Set<string>; expanded: Set<string>; frontier: string[]; truncated: boolean };
+  const traversals = new Map<string, Traversal>(admittedRoots.map(root => [root.id, {
+    rootId: root.id, nodes: new Set([root.id]), expanded: new Set<string>(), frontier: [root.id], truncated: false,
   }]));
   const expanded = new Set<string>();
+  const queried = new Set<string>();
   const pendingFinalizeBlockerIssueIds = new Set<string>();
   for (let depth = 0; depth < BLOCKER_ATTENTION_MAX_DEPTH; depth += 1) {
     const active = [...traversals.values()].filter(traversal => !traversal.truncated && traversal.frontier.length > 0);
     if (active.length === 0) break;
-    const frontier = [...new Set(active.flatMap(traversal => traversal.frontier))].filter(id => !expanded.has(id));
+    const unread = new Set<string>();
+    for (const traversal of active) for (const id of traversal.frontier) if (!expanded.has(id)) unread.add(id);
+    const frontier = [...unread];
 
     for (const chunk of chunkList(
       frontier,
       ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE,
     )) {
-      const readinessByIssueId = await listIssueDependencyReadinessMap(
-        dbOrTx,
-        companyId,
-        chunk,
-      );
-      for (const readiness of readinessByIssueId.values()) {
-        for (const blockerIssueId of readiness.pendingFinalizeBlockerIssueIds) {
-          pendingFinalizeBlockerIssueIds.add(blockerIssueId);
-        }
-      }
+      const remaining = Math.min(BLOCKER_ATTENTION_MAX_NODES - nodesById.size,
+        BLOCKER_ATTENTION_MAX_NODES * 2 - edgeCount);
+      if (remaining <= 0) break;
+      const rowLimit = remaining + 1;
       const explicitBlockerRowsPromise: Promise<
         IssueBlockerAttentionQueryRow[]
       > = dbOrTx
@@ -3889,6 +3895,7 @@ async function listIssueBlockerAttentionMap(
           title: issues.title,
           status: issues.status,
           executionRunId: issues.executionRunId,
+          executionWorkspaceId: issues.executionWorkspaceId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
         })
@@ -3901,7 +3908,7 @@ async function listIssueBlockerAttentionMap(
             inArray(issueRelations.relatedIssueId, chunk),
             eq(issues.companyId, companyId),
           ),
-        );
+        ).limit(rowLimit);
       const childRowsPromise: Promise<IssueBlockerAttentionQueryRow[]> = dbOrTx
         .select({
           issueId: issues.parentId,
@@ -3926,56 +3933,56 @@ async function listIssueBlockerAttentionMap(
               BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES,
             ),
           ),
-        );
+        ).limit(rowLimit);
       const [explicitBlockerRows, childRows] = await Promise.all([
         explicitBlockerRowsPromise,
         childRowsPromise,
       ]);
 
+      for (const id of chunk) queried.add(id);
+      fetchedRows += explicitBlockerRows.length + childRows.length;
+      const pendingFinalize = await listPendingFinalizeBlockerIssueIds(dbOrTx, companyId,
+        explicitBlockerRows.flatMap(row => row.status === "done" && row.executionWorkspaceId
+          ? [{ blockerIssueId: row.blockerIssueId, executionWorkspaceId: row.executionWorkspaceId }] : []));
+      for (const id of pendingFinalize) pendingFinalizeBlockerIssueIds.add(id);
+      let complete = explicitBlockerRows.length < rowLimit && childRows.length < rowLimit;
       const unresolvedExplicitBlockerRows = explicitBlockerRows.filter(
         (row) =>
           row.status !== "done" ||
           pendingFinalizeBlockerIssueIds.has(row.blockerIssueId),
       );
-      appendBlockerAttentionEdges(edgesByIssueId, [
-        ...unresolvedExplicitBlockerRows
-          .filter(
-            (row): row is IssueBlockerAttentionQueryRow & { issueId: string } =>
-              row.issueId !== null,
-          )
-          .map((row) => ({
-            issueId: row.issueId,
-            blockerIssueId: row.blockerIssueId,
-          })),
-        ...childRows
-          .filter(
-            (row): row is IssueBlockerAttentionQueryRow & { issueId: string } =>
-              row.issueId !== null,
-          )
-          .map((row) => ({
-            issueId: row.issueId,
-            blockerIssueId: row.blockerIssueId,
-          })),
-      ]);
-
       for (const row of [...unresolvedExplicitBlockerRows, ...childRows]) {
-        if (!row.issueId || nodesById.has(row.blockerIssueId)) continue;
-        nodesById.set(row.blockerIssueId, {
-          id: row.blockerIssueId,
-          companyId: row.companyId,
-          parentId: row.parentId,
-          identifier: row.identifier,
-          title: row.title,
-          status: row.status,
-          executionRunId: row.executionRunId,
-          assigneeAgentId: row.assigneeAgentId,
-          assigneeUserId: row.assigneeUserId,
-        });
+        if (!row.issueId) continue;
+        if (!nodesById.has(row.blockerIssueId)) {
+          if (nodesById.size >= BLOCKER_ATTENTION_MAX_NODES) { complete = false; continue; }
+          nodesById.set(row.blockerIssueId, {
+            id: row.blockerIssueId, companyId: row.companyId, parentId: row.parentId, identifier: row.identifier,
+            title: row.title, status: row.status, executionRunId: row.executionRunId,
+            assigneeAgentId: row.assigneeAgentId, assigneeUserId: row.assigneeUserId,
+          });
+        }
+        const edges = edgesByIssueId.get(row.issueId) ?? [];
+        if (edges.some(edge => edge.blockerIssueId === row.blockerIssueId)) continue;
+        if (edgeCount >= BLOCKER_ATTENTION_MAX_NODES * 2) { complete = false; continue; }
+        edges.push({ issueId: row.issueId, blockerIssueId: row.blockerIssueId });
+        edgesByIssueId.set(row.issueId, edges);
+        edgeCount++;
       }
-      for (const id of chunk) expanded.add(id);
+      if (complete) for (const id of chunk) expanded.add(id);
+
     }
 
     for (const traversal of active) {
+      if (traversal.frontier.some(id => !expanded.has(id))) {
+        for (const id of traversal.frontier) if (queried.has(id)) {
+          traversal.expanded.add(id);
+          for (const edge of edgesByIssueId.get(id) ?? []) if (nodesById.has(edge.blockerIssueId)) traversal.nodes.add(edge.blockerIssueId);
+        }
+        traversal.truncated = true;
+        traversal.frontier = [];
+        deferredRootIds.add(traversal.rootId);
+        continue;
+      }
       const nextFrontier = new Set<string>();
       for (const id of traversal.frontier) {
         traversal.expanded.add(id);
@@ -4555,7 +4562,7 @@ async function listIssueBlockerAttentionMap(
     );
   }
 
-  return attentionMap;
+  return result();
 }
 
 type IssueReviewAttentionInput = Pick<IssueRow, "id" | "companyId" | "status">;
@@ -9392,6 +9399,9 @@ export function issueService(db: Db) {
     ) => {
       return listIssueDependencyReadinessMap(dbOrTx, companyId, issueIds);
     },
+
+    listBlockerAttentionBatch: async (companyId: string, issueRows: IssueBlockerAttentionInputNode[], dbOrTx: any = db) =>
+      readIssueBlockerAttentionBatch(dbOrTx, companyId, issueRows),
 
     listBlockerAttention: async (
       companyId: string,

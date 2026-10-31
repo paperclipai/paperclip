@@ -8,7 +8,7 @@ export type NativeStatusReassessmentScope = { companyId: string; issueId?: strin
 export async function notifyNativeStatusReassessment(tx: object, scope: NativeStatusReassessmentScope) {
   await notifyStatusCardIssueChange(tx, scope.companyId);
   await notifyIssueAttentionRetentionWork(tx, { companyId: scope.companyId, issueId: scope.issueId, runId: scope.runId });
-  await notifyIssueRecovery(tx, scope);
+  await notifyIssueRecovery(tx, scope ? { companyId: scope.companyId } : undefined);
   return notifyDeliveryWork(tx, DELIVERY_QUEUES.nativeStatusReassessment,
     JSON.stringify({ companyId: scope.companyId, issueId: scope.issueId, runId: scope.runId, agentId: scope.agentId }));
 }

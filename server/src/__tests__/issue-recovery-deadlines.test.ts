@@ -1,3 +1,4 @@
+import { setImmediate as immediate } from "node:timers/promises";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
@@ -8,6 +9,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { heartbeatService } from "../services/heartbeat.js";
 import { issueService } from "../services/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
+import { registerIssueRecoveryWork } from "../services/recovery/work.js";
 import { notifyIssueRecovery } from "../services/issue-recovery-notifications.js";
 import { taskWatchdogService } from "../services/task-watchdogs.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -27,6 +29,7 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
   let draining = false;
   const tasks = new Map<string, { nextRunAt?: () => number | null; hasPending: () => Promise<boolean> }>();
   const errors: unknown[] = [];
+  const passes = new Set<Promise<unknown>>();
   const extraStops: Array<() => Promise<void>> = [];
   const extraDeadlines: Array<() => number | null> = [];
   beforeAll(async () => {
@@ -52,7 +55,14 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
       onError: error => errors.push(error) });
     tasks.clear();
     const register = coordinator.register.bind(coordinator);
-    coordinator.register = (queue, task) => { tasks.set(queue, task); return register(queue, task); };
+    coordinator.register = (queue, task) => {
+      tasks.set(queue, task);
+      return register(queue, { ...task, run: signal => {
+        const work = task.run(signal); passes.add(work);
+        void work.then(() => passes.delete(work), () => passes.delete(work));
+        return work;
+      } });
+    };
     worker = heartbeat.registerIssueStateRecoveryWork(coordinator, () => !draining);
     dispatch = heartbeat.registerRunDispatchWork(coordinator, () => !draining);
     cancellation = heartbeat.registerScheduledRetryCancellationWork(coordinator, () => !draining);
@@ -89,6 +99,7 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
   }
   async function quiet() {
     await settled();
+    expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.status} in ('queued', 'running')`)).toHaveLength(0);
     const reads = vi.spyOn(db, "select"); const executes = vi.spyOn(db, "execute");
     const selected = reads.mock.calls.length, executed = executes.mock.calls.length;
     if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
@@ -97,15 +108,32 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
   }
   async function finish(issueId: string) {
     await issueService(db).update(issueId, { status: "done" });
-    await heartbeat.drainActiveRunExecutions();
+    // Closing one blocker can legitimately start its dependent. Wait for this
+    // task's dispatch and execution; quiet() verifies the whole fixture later.
+    await vi.waitFor(async () => {
+      await Promise.allSettled([...passes]);
+      await heartbeat.drainActiveRunExecutions();
+      expect(await db.select().from(heartbeatRuns).where(and(
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+        sql`${heartbeatRuns.status} in ('queued', 'running')`,
+      ))).toHaveLength(0);
+    }, { timeout: 15_000 });
     const saved = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "scheduled_retry"),
       sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`));
-    expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.status} in ('queued', 'running')`)).toHaveLength(0);
     if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     if (saved.length > 0) {
       const due = Math.max(...saved.map(run => run.scheduledRetryAt!.getTime()));
-      await vi.advanceTimersByTimeAsync(Math.max(0, due - Date.now()) + 1);
+      // Keep PostgreSQL I/O and coordinator settlement ahead of virtual time.
+      // A single leap can otherwise occur before the retry deadline is armed.
+      while (Date.now() <= due) {
+        await vi.advanceTimersByTimeAsync(Math.min(500, due - Date.now() + 1));
+        await Promise.allSettled([...passes]);
+        await immediate();
+      }
       await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+        await Promise.allSettled([...passes]);
+        await heartbeat.drainActiveRunExecutions();
         const remaining = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "scheduled_retry"),
             sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`));
         expect(remaining).toHaveLength(0);
@@ -195,6 +223,52 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
     expect(scans.loads).toBeLessThanOrEqual(before.loads + 4);
     expect((await originalSelect().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, foreignAction.id)))[0].status).toBe("active");
     expect(await originalSelect().from(heartbeatRuns)).toHaveLength(0); await quiet();
+  });
+  it("limits an ordinary comment to its issue among one thousand open assignments", async () => {
+    const f = await fixture();
+    const rows = await db.insert(issues).values(Array.from({ length: 1000 }, (_, index) => ({
+      companyId: f.companyId, title: `Open work ${index}`, status: "todo", assigneeAgentId: f.agentId,
+    }))).returning({ id: issues.id });
+    const checked: string[] = [];
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const register = coordinator.register.bind(coordinator);
+    coordinator.register = (queue, task) => register(queue, { ...task, run: signal => {
+      const pass = task.run(signal); passes.add(pass);
+      void pass.then(() => passes.delete(pass), () => passes.delete(pass));
+      return pass;
+    } });
+    // Observe the actual paged reconstruction boundary without executing one
+    // thousand adapters. The producer, transaction, coordinator and SQL are real;
+    // the other acceptance cases exercise the resulting recovery decisions.
+    worker = registerIssueRecoveryWork(db, coordinator, {
+      stranded: async scope => { checked.push(scope.issueId); },
+      orphanBlockers: async () => {}, recoveryActions: async () => {},
+      dependencies: async () => ({ enqueueFailed: 0 }), locks: async () => {},
+      watchdogs: async () => ({ incomplete: 0 }), schedulingSuppressed: async () => false,
+    }, () => true);
+    await worker.ready;
+    async function settleWork() {
+      for (let step = 0; step < 120; step++) {
+        await vi.advanceTimersByTimeAsync(1000);
+        await Promise.allSettled([...passes]); await immediate();
+        if (coordinator.nextWakeAt() === null && idleWorkSnapshot().active === 0) return;
+      }
+      throw new Error("Recovery did not settle its committed work within two virtual minutes");
+    }
+    await settleWork();
+    expect(new Set(checked).size).toBe(1000);
+    checked.length = 0;
+    await issueService(db).addComment(rows[0].id, "New evidence on this task", { userId: "recovery-user" });
+    await settleWork();
+    expect(checked).toEqual([rows[0].id]);
+    // Company eligibility changes still reconstruct all assignments. Narrowing
+    // comment hints must not hide unrelated work after an operator resumes it.
+    checked.length = 0;
+    await db.transaction(tx => notifyIssueRecovery(tx, { companyId: f.companyId }));
+    await settleWork();
+    expect(new Set(checked).size).toBe(1000);
+    await quiet();
   });
   it("dispatches an ordinary new assignment after commit and returns to quiet after completion", async () => {
     const f = await fixture(); await start(); await quiet();
