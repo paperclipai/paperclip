@@ -939,6 +939,14 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.create.mock.calls.at(-1)?.[1]).toMatchObject({ adapterType: runner === "legacy" ? "opencode_local" : "paperclip_runner", adapterConfig: runner === "legacy" ? { model } : { provider: "opencode", model, opencodePermissionMode: "allow" } });
   });
 
+  it.each([{ provider: "claudeAgent" }, { model: "claude-opus-5-5" }])("rejects a one-sided T3 Code provider/model %j", async (adapterConfig) => {
+    const app = await createApp();
+    const response = await requestApp(app, baseUrl => request(baseUrl).post("/api/companies/company-1/agents").send({ name: "T3", adapterType: "t3code_local", adapterConfig }));
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.error).toContain("provider and model together");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
   it("allows model-free OpenCode only as an inactive setup draft", async () => {
     const selection = await import("../services/agent-runner-selection.js");
     vi.spyOn(selection, "resolveNewAgentRunnerForCompany").mockImplementation(async (_db, _companyId, input) =>

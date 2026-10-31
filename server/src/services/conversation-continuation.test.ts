@@ -3,12 +3,20 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { agents, companies, createDb, heartbeatRuns, issues, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
+import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker, isConversationAdapter } from "./conversation-continuation.js";
 import { deliverExecutionStatuses } from "./execution-status-delivery.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 if (!support.supported) console.warn(`Skipping execution identity regressions: ${support.reason}`);
+
+describe("conversation adapters", () => {
+  it("holds T3 Code runs for reconciliation like the gateways", () => {
+    expect(isConversationAdapter("kimi_local")).toBe(true);
+    expect(isConversationAdapter("hermes_gateway")).toBe(false);
+    expect(isConversationAdapter("t3code_local")).toBe(false);
+  });
+});
 
 describePostgres("execution identity query contracts", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;

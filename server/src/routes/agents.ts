@@ -2398,6 +2398,12 @@ export function agentRoutes(
       await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
       return;
     }
+    if (adapterType === "t3code_local") {
+      if (Boolean(asNonEmptyString(adapterConfig.provider)) !== Boolean(asNonEmptyString(adapterConfig.model))) {
+        throw unprocessable("Invalid t3code_local adapterConfig: set provider and model together, or neither");
+      }
+      return;
+    }
     if (adapterType !== "opencode_local") return;
     try {
       requireOpenCodeModelId(adapterConfig.model);
