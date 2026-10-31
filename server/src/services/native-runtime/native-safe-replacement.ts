@@ -1,3 +1,4 @@
+import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
@@ -410,6 +411,7 @@ export async function reconcileSafeNativeReplacements(
           })
           .returning();
         await notifyExecutionRunWork(tx, { companyId: run.companyId });
+        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId });
         await tx.insert(heartbeatRuns).values({
           id: successorRunId,
           companyId: run.companyId,
