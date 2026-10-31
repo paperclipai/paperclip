@@ -34,10 +34,10 @@ describe("Copilot build-owned installation", () => {
     }
   });
   it("preserves profile 89 while binding generated contract fields in profile 90", async () => {
-    const bytes = readFileSync(new URL("../../../test/fixtures/copilot-profile-v89-identity.json", import.meta.url));
+    const bytes = readFileSync(new URL("../../../test/fixtures/copilot-profile-v89-cursor-cloud-qualification-historical-identity.json", import.meta.url));
     expect(createHash("sha256").update(bytes).digest("hex")).toBe("9990fd9cdd23df111a180984160a11db7a2f972a60787e8ddea9793678cc268e");
     const prior = JSON.parse(bytes.toString("utf8"));
-    const current = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v90-identity.json", import.meta.url), "utf8"));
+    const current = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v90-cursor-cloud-qualification-historical-identity.json", import.meta.url), "utf8"));
     expect(Object.keys(current.declaration).filter(key => current.declaration[key] !== prior.declaration[key]).sort()).toEqual([
       "agentProfileVersion", "nativeRuntimeContextFieldsSourceSha256", "nativeRuntimeContextSourceSha256", "permissionClassifierSourceSha256", "profileCompatibilitySourceSha256", "semanticSidecarSourceSha256",
     ]);
@@ -50,7 +50,7 @@ describe("Copilot build-owned installation", () => {
     const bytes = readFileSync(new URL("../../../test/fixtures/copilot-profile-v88-cursor-cloud-qualification-historical-identity.json", import.meta.url));
     expect(createHash("sha256").update(bytes).digest("hex")).toBe("6010dc772d914afec7dd31f35f953ce74b65ab3a648ce54aaee559f908b492f9");
     const prior = JSON.parse(bytes.toString("utf8"));
-    const current = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v89-identity.json", import.meta.url), "utf8"));
+    const current = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v89-cursor-cloud-qualification-historical-identity.json", import.meta.url), "utf8"));
     expect(Object.keys(current.declaration).filter(key => current.declaration[key] !== prior.declaration[key]).sort()).toEqual([
       "agentProfileVersion", "harnessSessionSourceSha256", "profileCompatibilitySourceSha256", "runtimeRequestBridgeSourceSha256", "runtimeRequestFacadeSourceSha256",
     ]);

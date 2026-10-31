@@ -1035,6 +1035,39 @@ while daemon work might still be running. The socket and its parent must be priv
 canonical paths owned by the same account. Local stdio assignment requires Unix;
 other platforms retain the HTTP path.
 
+## Kimi Code
+
+Kimi Code uses the pinned `@moonshot-ai/kimi-code@2.3.3` distribution through
+ACPX through the qualified native profile. Ordinary selection and Runtime Test
+require no candidate grant.
+The installation targets are macOS ARM64 and Linux x64. Platform startup,
+authenticated driver checks, and product acceptance are separate evidence levels.
+
+Run `paperclipai runtime setup kimi` on the execution host to install its complete
+verified runtime. Setup downloads public pinned dependencies without model calls
+or provider credentials. An invalid existing installation fails without ambient
+Kimi fallback. Bind a company secret as `KIMI_API_KEY` and select an exact model.
+This release uses the global Code endpoint at `https://api.kimi.ai/coding/v1`.
+Model suggestions are empty; a compatible typed model is decided by the provider.
+The account needs Kimi Code entitlement. Runtime Test verifies installation and
+queries the authenticated Code model catalog for the exact selected model. It
+sends no model prompt; an actual task verifies inference and tool execution.
+
+The qualified native profile uses ordinary setup, hiring, metadata Test and task
+startup on these two supported targets without operator admission flags. Protected
+candidate startup records remain reserved for future pending profiles; saved agent
+configuration and public requests cannot supply that authority.
+
+Existing legacy Kimi agents retain their runtime and history. Managed Kimi connections,
+ambient login borrowing, other regions/platforms, steering, native child work,
+and per-run token/dollar accounting are outside this release. Read-only Kimi work
+uses scoped Paperclip tools; native filesystem and shell tools are denied.
+The provider-owned patch binds native instructions, preserves permission arguments,
+and removes provider auth from tool subprocesses. See the
+[protocol dossier](src/providers/kimi/README.md) and
+[release ledger](../../doc/plans/2026-10-28-kimi-code-runner-integration.md) for
+current evidence and limits.
+
 ## ACPX controller replacement regression tests
 
 `src/control-plane/acpx-controller-recovery.test.ts` runs the production Rust
