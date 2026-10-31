@@ -120,6 +120,32 @@ describe("useDurableAutosave", () => {
     expect(store.getSnapshot().pendingWrites).toBe(0);
   });
 
+  it.each(["same-target", "different-target"])("preserves newer completed saves across first identity resolution (%s)", async target => {
+    let server = "Original";
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, enabled: false } } });
+    const oldSave = vi.fn().mockRejectedValueOnce(outage()).mockImplementation(async value => { server = value; });
+    const show = (sourceId: string, targetKey: string, save: (value: string) => Promise<unknown>) => act(() => {
+      root.render(<QueryClientProvider client={client}><ConnectivityProvider store={store}>
+        <Harness sourceId={sourceId} targetKey={targetKey} save={save} />
+      </ConnectivityProvider></QueryClientProvider>);
+    });
+    show("old-startup-editor", "task-a:title", oldSave);
+    await act(async () => { expect(await current.run("Older title")).toEqual({ kind: "waiting" }); });
+    act(() => { root.unmount(); root = createRoot(container); });
+    act(() => client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } }));
+    const newSave = vi.fn(async value => { if (target === "same-target") server = value; });
+    show("new-known-editor", target === "same-target" ? "task-a:title" : "task-b:title", newSave);
+    await act(async () => { expect(await current.run("Newer title")).toEqual({ kind: "saved" }); });
+    expect(newSave).toHaveBeenCalledExactlyOnceWith("Newer title");
+    // The newer save has finished and released its registry entry before the
+    // detached startup job gets its first chance to adopt the account.
+    await advance(30_000);
+    expect(server).toBe(target === "same-target" ? "Newer title" : "Older title");
+    expect(oldSave).toHaveBeenCalledTimes(target === "same-target" ? 1 : 2);
+    expect(store.getSnapshot().pendingWrites).toBe(0);
+    client.clear();
+  });
+
   it("keeps a detached edit when a reopened editor resets only its local state and storage is unavailable", async () => {
     const storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("Storage unavailable"); });
     try {
