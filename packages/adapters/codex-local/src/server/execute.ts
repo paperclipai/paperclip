@@ -5,6 +5,7 @@ import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provid
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, resolveManagedOpenAiBilling, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -781,6 +782,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // here so the outer `finally` can remove it on every exit path (teardown and
   // error), never only the happy path.
   let stagedCodexHomeDir: string | null = null;
+  let stagedWorkspaceLocalDir: string | null = null;
   let observabilityProfile: Awaited<ReturnType<typeof prepareCodexObservabilityProfile>> | null = null;
   let observabilityPreparationFailed = false;
   try {
@@ -856,12 +858,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // large runtime state (`sessions/`, `*.sqlite`, `plugins/`, …) that the
           // 4-name denylist missed and that a sandbox run never needs.
           stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
+          // A remote target must never hand a remote-only path to syncDirectoryToSsh:
+          // `cwd` falls back to the configured remote path when no local project
+          // workspace exists, and `tar -C <remote path>` runs on THIS host. Stage an
+          // empty host temp dir in that case (mirrors the remote environment-test path).
+          const workspaceLocalDirForSync = effectiveWorkspaceCwd
+            ? effectiveWorkspaceCwd
+            : (stagedWorkspaceLocalDir = await fs.mkdtemp(
+                path.join(os.tmpdir(), `paperclip-codex-workspace-${runId}-`),
+              ));
           return await prepareAdapterExecutionTargetRuntime({
             runId,
             target: executionTarget,
             adapterKey: "codex",
             timeoutSec,
-            workspaceLocalDir: cwd,
+            workspaceLocalDir: workspaceLocalDirForSync,
             workspaceRemoteDir:
               targetWorkspaceRealization?.mode === "in_place"
                 ? targetWorkspaceRealization.authoritativeRoot
@@ -1705,6 +1716,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // Remove the staged CODEX_HOME allowlist temp dir on every exit path
     // (teardown AND error), never only the happy path. Cleanup failure is
     // logged, not fatal — a leaked temp dir must not crash the run.
+    if (stagedWorkspaceLocalDir) {
+      await fs.rm(stagedWorkspaceLocalDir, { recursive: true, force: true }).catch(async (error) => {
+        await onLog(
+          "stderr",
+          `[paperclip] Failed to remove staged workspace source "${stagedWorkspaceLocalDir}": ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      });
+    }
     if (stagedCodexHomeDir) {
       await fs.rm(stagedCodexHomeDir, { recursive: true, force: true }).catch(async (error) => {
         await onLog(
