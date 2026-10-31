@@ -77,7 +77,11 @@ describe("assembled maintenance server production wiring", () => {
       expect(real.network.nonDatabaseBytesWritten).toBe(before.network.nonDatabaseBytesWritten);
       const realFrames = server.proxy.frames, realTransport = server.proxy.transport;
       expect(realTransport.connectionsOpened).toBeGreaterThan(0);
+      expect(realTransport.connectionsOpened).toBe(transport.connectionsOpened);
       expect(realTransport.connectionsClosed).toBe(realTransport.connectionsOpened);
+      expect({ ...realFrames, Terminate: frames.Terminate }).toEqual(frames);
+      expect(realTransport.frontendBytes - transport.frontendBytes).toBe((realFrames.Terminate - frames.Terminate) * 5);
+      expect(realTransport.backendBytes).toBe(transport.backendBytes);
       for (let step = 0; step < 240; step++) { await server.advance(30_000); await server.settled(10); }
       const after = await server.snapshot();
       expect(after.now - real.now).toBe(2 * 60 * 60_000);
