@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 
 const { runAdapterExecutionTargetProcess } = vi.hoisted(() => ({
   runAdapterExecutionTargetProcess: vi.fn(),
@@ -29,7 +30,7 @@ import { execute } from "./execute.js";
 const POISONED_TOOL_OUTPUT =
   'execute.ts:1199: : failed && isClaudeModelNotFoundError({ ... ? "model_not_found"';
 
-function buildProcResult(resultEvent: Record<string, unknown>, extraStdout = "") {
+function buildProcResult(resultEvent: Record<string, unknown>, extraStdout = ""): RunProcessResult {
   return {
     exitCode: 1,
     signal: null,
@@ -53,7 +54,7 @@ function buildProcResult(resultEvent: Record<string, unknown>, extraStdout = "")
   };
 }
 
-function mockExecutionResult(result: ReturnType<typeof buildProcResult>) {
+function mockExecutionResult(result: RunProcessResult) {
   runAdapterExecutionTargetProcess.mockImplementation(async (_runId: string, _target: unknown, _command: string, args: string[]) =>
     args.includes("--version")
       ? { ...result, exitCode: 0, stdout: "2.1.284 (Claude Code)" }
@@ -101,5 +102,69 @@ describe("claude_local failure classification precedence", () => {
     const result = await execute(buildContext() as never);
 
     expect(result.errorCode).toBe("model_not_found");
+  });
+
+  const cleanup: NonNullable<RunProcessResult["terminalResultCleanup"]> = {
+    kind: "terminal_result_cleanup",
+    stopped: true,
+    stopReason: "unmanaged_background_task_stopped",
+    reason: "unmanaged background task stopped; no durable live path",
+    terminalResultSeen: true,
+    signal: "SIGTERM",
+    forceKilled: false,
+  };
+
+  it.each([
+    { exitCode: 143, signal: null, forceKilled: false },
+    { exitCode: null, signal: "SIGTERM", forceKilled: false },
+    { exitCode: null, signal: "SIGKILL", forceKilled: true },
+  ] as const)("preserves unfinished background cleanup evidence: %j", async (stop) => {
+    const terminalResultCleanup = { ...cleanup, signal: stop.signal ?? "SIGTERM", forceKilled: stop.forceKilled };
+    mockExecutionResult({
+      ...buildProcResult({ subtype: "success", is_error: false, result: "Snapshot refresh is still running." },
+        "PhoneAuth rejects (unauthorized, reason identity_mismatch) an unexpected OTP identity."),
+      exitCode: stop.exitCode,
+      signal: stop.signal,
+      terminalResultCleanup,
+    });
+
+    const result = await execute(buildContext() as never);
+
+    expect(result).toMatchObject({
+      exitCode: stop.exitCode,
+      signal: stop.signal,
+      errorCode: cleanup.stopReason,
+      errorMessage: cleanup.reason,
+      resultJson: { stopReason: cleanup.stopReason, unmanagedBackgroundTask: terminalResultCleanup },
+    });
+  });
+
+  it("does not infer cleanup from exit 143 without cleanup evidence", async () => {
+    mockExecutionResult({ ...buildProcResult({ subtype: "success", is_error: false }), exitCode: 143 });
+    const result = await execute(buildContext() as never);
+    expect(result.exitCode).toBe(143);
+    expect(result.errorCode).toBeNull();
+    expect(result.resultJson).not.toHaveProperty("stopReason");
+  });
+
+  it("preserves genuine provider authentication failure over background cleanup", async () => {
+    mockExecutionResult({
+      ...buildProcResult({ subtype: "success", is_error: true, api_error_status: 401, result: "Invalid bearer token" }),
+      terminalResultCleanup: cleanup,
+    });
+    const result = await execute(buildContext() as never);
+    expect(result.errorCode).toBe("claude_auth_required");
+    expect(result.resultJson).not.toHaveProperty("stopReason", cleanup.stopReason);
+  });
+
+  it("does not replace an unclassified provider failure with cleanup", async () => {
+    mockExecutionResult({
+      ...buildProcResult({ subtype: "error", is_error: true, result: "Unknown provider failure" }),
+      terminalResultCleanup: cleanup,
+    });
+    const result = await execute(buildContext() as never);
+    expect(result.errorCode).toBeNull();
+    expect(result.errorMessage).toContain("Unknown provider failure");
+    expect(result.resultJson).not.toHaveProperty("stopReason", cleanup.stopReason);
   });
 });

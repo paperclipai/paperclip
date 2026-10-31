@@ -511,6 +511,20 @@ markers. Before dispatch, Paperclip verifies the recovery run's task ownership
 and current conversation, endpoint, and principal access for every message.
 Missing message references or revoked access still prevent execution.
 
+### Claude CLI authentication and cleanup evidence
+
+The Claude CLI adapter classifies authentication from failed terminal result fields
+or an explicit terminal HTTP 401. When no terminal result exists, it accepts plain
+startup login diagnostics and excludes JSON transcript records. Successful answer
+text and ordinary tool or document content are not authentication evidence.
+
+If a successful terminal response leaves an unmanaged background process that
+Paperclip stops, the adapter retains the process exit code, signal, and cleanup
+evidence. It reports `unmanaged_background_task_stopped` and the recorded cleanup
+reason. This remains a failed run; a successful model response does not establish
+that unfinished background work completed. Provider and transport failures retain
+their own classification.
+
 ### Durable external waits and heartbeat finalization
 
 An external wait counts as a live or waiting path only when the next move survives the current heartbeat and is represented in Paperclip's durable control-plane state. Valid external-wait shapes are:
