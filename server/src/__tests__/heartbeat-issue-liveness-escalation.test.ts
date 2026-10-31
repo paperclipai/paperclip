@@ -645,6 +645,37 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     }
   });
 
+  it("holds a finished review repair while its agent is paused and escalates it after resume", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const wakeId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Review Co", issuePrefix: `R${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", role: "engineer", adapterType: "codex_local", status: "paused", runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Repair finished during a pause", status: "in_review", assigneeAgentId: agentId, responsibleUserId: "responsible-user" });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeId, companyId, agentId, source: "automation", status: "completed",
+      reason: "issue_review_path_lost", payload: { issueId, reviewPathRecoveryAttempt: 1 },
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId, issueId, status: "succeeded", wakeupRequestId: wakeId, finishedAt: new Date(),
+      contextSnapshot: { issueId, wakeReason: "issue_review_path_lost", reviewPathRecoveryAttempt: 1 },
+    });
+    const recovery = heartbeatService(db);
+
+    const held = await recovery.reconcileStrandedAssignedIssues();
+    expect(held.escalated).toBe(0);
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(await db.select().from(issueComments)).toHaveLength(0);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("in_review");
+
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, agentId));
+    const resumed = await recovery.reconcileStrandedAssignedIssues();
+    expect(resumed).toMatchObject({ escalated: 1, issueIds: [issueId] });
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(1);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
   it("keeps resolved dependency wake reconciliation active", async () => {
     const { companyId, agentId, blockedIssueId, blockerIssueId } =
       await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
