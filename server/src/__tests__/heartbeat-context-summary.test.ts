@@ -301,6 +301,11 @@ describe("buildPaperclipTaskMarkdown", () => {
         externalChatProvider: "slack", nativeRunner, includeDescription,
       });
       expect(markdown).toContain("Interactive questions in Slack:");
+      expect(markdown).toContain("When you have results, update the user in the originating Slack");
+      expect(markdown).toContain("When the user needs to review a plan, approve an action, or review a result");
+      expect(markdown).toContain("create the required human-input or approval interaction before you yield");
+      expect(markdown).toContain("Saving a plan or setting a task to in_review alone does not ask the user to review it");
+      expect(markdown).toContain("do not continue gated work until the required approval is recorded");
       expect(markdown).toContain("ask_user_questions");
       expect(markdown).toContain("single_select");
       expect(markdown).toContain("resumes this task after the answer");

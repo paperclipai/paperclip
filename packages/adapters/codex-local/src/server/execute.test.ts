@@ -118,7 +118,7 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     );
   }
 
-  async function runTeardown(input: { sandboxAuth: string; hostAuth: string; onProviderStopped?: () => Promise<void>; withIdentity?: boolean }) {
+  async function runTeardown(input: { sandboxAuth: string; hostAuth: string; onProviderStopped?: () => Promise<void>; withIdentity?: boolean; env?: Record<string, string> }) {
     const rootDir = await mkdtemp(
       path.join(os.tmpdir(), "paperclip-codex-copyback-e2e-"),
     );
@@ -159,7 +159,7 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
         engine: "cli",
         // External CODEX_HOME (outside the managed company tree) so no managed
         // seeding rewrites auth.json before teardown; equals the shared host home.
-        env: { CODEX_HOME: sharedHostHome, ...(input.withIdentity ? { MY_SERVICE_TOKEN: "assigned-tool-token" } : {}) },
+        env: { CODEX_HOME: sharedHostHome, ...input.env },
       },
       context: {
         paperclipWorkspace: {
@@ -190,16 +190,19 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     };
   }
 
-  it("keeps identity and scoped API access without exposing configured service tokens to CLI shells", async () => {
+  it.each([true, false])("delivers configured service tokens to CLI shells while isolating host and provider credentials (identity: %s)", async (withIdentity) => {
     vi.stubEnv("DATABASE_URL", "postgres://operator:host-password@host/private");
     vi.stubEnv("HOST_DATABASE_PASSWORD", "host-password");
-    const { commandArgs } = await runTeardown({ sandboxAuth: "{}", hostAuth: "{}", withIdentity: true });
+    const { commandArgs } = await runTeardown({ sandboxAuth: "{}", hostAuth: "{}", withIdentity,
+      env: { SLACK_BOT_TOKEN: "assigned-tool-token", OPENAI_API_KEY: "provider-key-canary" },
+    });
     const policy = commandArgs.find(arg => arg.startsWith("shell_environment_policy.include_only="));
-    const keys = JSON.parse(policy!.slice(policy!.indexOf("=") + 1));
-    expect(keys).toEqual(expect.arrayContaining([
+    const keys = policy ? JSON.parse(policy.slice(policy.indexOf("=") + 1)) : [];
+    expect(keys).toContain("SLACK_BOT_TOKEN");
+    if (withIdentity) expect(keys).toEqual(expect.arrayContaining([
       "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
     ]));
-    expect(keys).not.toContain("MY_SERVICE_TOKEN");
+    expect(keys).not.toContain("OPENAI_API_KEY");
     expect(keys).not.toContain("DATABASE_URL");
     expect(keys).not.toContain("HOST_DATABASE_PASSWORD");
     expect(commandArgs.join(" ")).not.toContain("assigned-run-token");

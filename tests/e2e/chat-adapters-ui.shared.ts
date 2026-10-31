@@ -281,7 +281,7 @@ export function endpointFixture(provider: ProviderCase, seed: Seed) {
       proactiveDirectMessages: false,
     },
     setup: {
-      slackSetupMethod: undefined as "automatic" | "manual" | "existing" | undefined,
+      slackSetupMethod: undefined as "managed" | "automatic" | "manual" | "existing" | undefined,
       slackRegistration: undefined as SlackRegistrationState | undefined,
       slackApp: undefined as SlackAppConfiguration | undefined,
       slackOAuthCallbackUri: "https://paperclip.example.test/api/chat-slack/oauth/callback",
@@ -349,13 +349,15 @@ export async function installChatControlPlaneMock(
   seed: Seed,
   {
     enableChatConnectors,
+    enableGitHubReviewBots = false,
     resourceCount = 2,
     photonShared = false,
     automaticSlack = false,
-  }: { enableChatConnectors: boolean; resourceCount?: number; photonShared?: boolean; automaticSlack?: boolean },
+    managedSlack = false,
+  }: { enableChatConnectors: boolean; enableGitHubReviewBots?: boolean; resourceCount?: number; photonShared?: boolean; automaticSlack?: boolean; managedSlack?: boolean },
 ): Promise<ChatMock> {
   const endpoint = endpointFixture(provider, seed);
-  if (automaticSlack) endpoint.setup.slackSetupMethod = "automatic";
+  if (automaticSlack || managedSlack) endpoint.setup.slackSetupMethod = managedSlack ? "managed" : "automatic";
   let slackIdentityLinked = false;
   let githubAppConnected = false;
   let githubConfiguration = { revision: 0, configuration: {
@@ -445,6 +447,18 @@ export async function installChatControlPlaneMock(
     if (provider.provider === "github" && pathname.startsWith(`/api/chat-endpoints/${endpoint.id}/github/`)) {
       const operation = pathname.split("/github/")[1];
       const body = method === "GET" ? {} : bodyOf(route);
+      if (operation === "setup") {
+        if (!githubAppConnected) { await fulfill(route, { endpointId: endpoint.id, state: "create" }); return; }
+        if (!state.githubIdentityConfirmed) { await fulfill(route, { endpointId: endpoint.id, state: "identity", identityMethod: "existing_connection" }); return; }
+        githubConfiguration.configuration.toolsEnabled = true;
+        resource.enabled = true;
+        Object.assign(endpoint, { status: "active", botExternalId: "123456", resources: [resource], setup: { ...endpoint.setup, step: "complete" } });
+        await fulfill(route, { endpointId: endpoint.id, state: "connected", identityLinked: true, verification: { ready: true, checks: [] } }); return;
+      }
+      if (operation === "draft") {
+        Object.assign(endpoint.setup, { github: { ...endpoint.setup.github, appName: body.name, ownerType: body.ownerType, ownerLogin: body.ownerLogin } });
+        await fulfill(route, { saved: true }); return;
+      }
       if (operation === "configuration") {
         if (method === "PUT") { expect(body.expectedRevision).toBe(githubConfiguration.revision); githubConfiguration = { revision: githubConfiguration.revision + 1, configuration: body.configuration as typeof githubConfiguration.configuration }; }
         await fulfill(route, githubConfiguration); return;
@@ -458,9 +472,17 @@ export async function installChatControlPlaneMock(
         state.configuredCredentialKeys = Object.keys(body).sort();
         if (state.setupAttempts === 1) { await fulfill(route, { error: "GitHub rejected the supplied App credentials." }, 422); return; }
         githubAppConnected = true;
-        Object.assign(endpoint, { status: "attention", botUsername: "maya-paperclip[bot]" });
+        Object.assign(endpoint, { status: "attention", botExternalId: "123456", botUsername: "maya-paperclip[bot]", botLabel: "Maya" });
         Object.assign(endpoint.setup, { github: { stage: "install", appSlug: "maya-paperclip", installationUrl: "https://github.com/apps/maya-paperclip/installations/new", managementUrl: "https://github.com/settings/installations/2468" } });
         await fulfill(route, endpoint); return;
+      }
+      if (operation === "repositories") {
+        const url = new URL(request.url());
+        const offset = Number(url.searchParams.get("offset") ?? 0), limit = Number(url.searchParams.get("limit") ?? 20);
+        const search = (url.searchParams.get("search") ?? "").toLowerCase();
+        const found = resources.filter(row => (row.label ?? row.providerResourceId).toLowerCase().includes(search));
+        await fulfill(route, { items: found.slice(offset, offset + limit), nextOffset: offset + limit < found.length ? offset + limit : null,
+          totalCount: resources.length, enabledCount: resources.filter(row => row.enabled).length, availableCount: resources.length }); return;
       }
       if (operation === "repositories/refresh") { state.githubRepositoryRefreshes++; await fulfill(route, resources); return; }
       if (operation === "verify") {
@@ -489,6 +511,7 @@ export async function installChatControlPlaneMock(
           assignedAgentId: seed.agentId,
         });
         state.createdWithAgentId = String(body.assignedAgentId);
+        if (body.slackSetupMethod) endpoint.setup.slackSetupMethod = body.slackSetupMethod as "managed" | "automatic" | "manual" | "existing";
         if (provider.provider === "slack" && body.slackApp) {
           endpoint.setup.slackApp = body.slackApp as SlackAppConfiguration;
           endpoint.setup.command = endpoint.setup.slackApp.command;
@@ -515,7 +538,7 @@ export async function installChatControlPlaneMock(
       if (method === "PATCH") {
         const body = bodyOf(route);
         if (body.slackApp) endpoint.setup.slackApp = body.slackApp as SlackAppConfiguration;
-        if (body.slackSetupMethod) endpoint.setup.slackSetupMethod = body.slackSetupMethod as "automatic" | "manual" | "existing";
+        if (body.slackSetupMethod) endpoint.setup.slackSetupMethod = body.slackSetupMethod as "managed" | "automatic" | "manual" | "existing";
         if (typeof body.allowDirectMessages === "boolean")
           state.allowDirectMessages = body.allowDirectMessages;
         if (typeof body.allowGroupChats === "boolean")
@@ -536,11 +559,22 @@ export async function installChatControlPlaneMock(
     ) {
       await fulfill(route, {
         enableChatConnectors,
+        enableGitHubReviewBots,
         enableIsolatedWorkspaces: false,
       });
       return;
     }
 
+    if (pathname === `/api/companies/${seed.companyId}/chat-slack/setup-options`) {
+      await fulfill(route, { managedAvailable: managedSlack, defaultMethod: managedSlack ? "managed" : "automatic", workspaces: managedSlack ? [{ grantId: "11111111-1111-4111-8111-111111111111", workspaceId: "TE2E", workspaceName: "Paperclip", userId: "UINSTALLER" }] : [] }); return;
+    }
+    if (pathname === `/api/chat-endpoints/${endpoint.id}/slack/managed/provision`) {
+      const body = bodyOf(route);
+      expect(body.grantId).toBe("11111111-1111-4111-8111-111111111111");
+      expect(body).not.toHaveProperty("credentials");
+      state.slackCreations++; state.slackInstallations++;
+      state.setSlackInstalled(); await fulfill(route, {}); return;
+    }
     if (pathname === `/api/chat-endpoints/${endpoint.id}/slack/registration`) {
       const body = bodyOf(route);
       expect(body.credentials).toEqual({ configurationToken: "fixture-config-token" });

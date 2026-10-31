@@ -6,6 +6,7 @@ export interface LifecycleAgent {
   companyId: string;
   lifecycleState: AgentLifecycleState;
   lifecycleVersion: number;
+  lifecycleHolds?: readonly string[];
   lifecycleRequiredPluginIds: string[] | null;
   lifecycleError: string | null;
   lifecycleOperation: AgentLifecycleOperation | null;
@@ -19,7 +20,7 @@ export interface LifecycleStore {
   setRequiredPlugins(agent: LifecycleAgent, owner: string, pluginIds: string[]): Promise<boolean>;
   completeHost(agent: LifecycleAgent, owner: string): Promise<boolean>;
   completePlugin(agent: LifecycleAgent, owner: string, pluginId: string): Promise<boolean>;
-  defer(agent: LifecycleAgent, owner: string, error: string | null, now: Date): Promise<boolean>;
+  defer(agent: LifecycleAgent, owner: string, error: string | null, now: Date, options?: { retryRequired: boolean; verificationFailures?: number }): Promise<boolean>;
   pending(limit: number, now: Date): Promise<string[]>;
 }
 
@@ -27,15 +28,19 @@ export interface LifecycleDriver {
   requiredPluginIds(agent: LifecycleAgent): Promise<string[]>;
   runHost(agent: LifecycleAgent): Promise<"complete" | "pending">;
   runPlugin(agent: LifecycleAgent, pluginId: string): Promise<"complete" | "pending">;
+  /** Notify the scheduler only after readiness has committed. */
+  onReady?(agent: LifecycleAgent): Promise<void>;
 }
 
 export interface LifecycleFailure {
   stage: "claim" | "renew" | "select_plugins" | "save_plugins" | "host" | "plugin"
-    | "complete_host" | "complete_plugin" | "transition" | "defer" | "scan" | "policy_scan";
+    | "complete_host" | "complete_plugin" | "transition" | "defer" | "scan" | "policy_scan" | "ready";
   agentId?: string;
   companyId?: string;
   phase?: AgentLifecycleState;
   operationId?: string;
   version?: number;
+  attempts?: number;
+  verificationFailures?: number;
   pluginId?: string;
 }

@@ -1,6 +1,6 @@
 # Company decision models
 
-Company Settings → General → **Decision model** configures one shared API connection for optional Paperclip features. New companies remain unconfigured. A connection manager selects or adds an OpenAI or OpenRouter connection, saves, and can run a small billed setup test. Test answers appear only in that session; request metadata and charges appear under Activity → Costs → Decisions.
+Decision model setup remains available in Company Settings → General when fast responses are off. Enabling **Experimental fast responses** in Company Settings → Experimental moves model setup to the Connections page. Company Settings → Connections → **Decision model** configures one shared API connection for optional Paperclip features. New companies remain unconfigured. A connection manager selects or adds an OpenAI or OpenRouter connection, saves, and can run a small billed setup test. Test answers appear only in that session; request metadata and charges appear under Activity → Costs → Decisions.
 
 **Allow company-sponsored background decisions defaults on.** Saving authorizes internal background features to charge the selected connection without a responsible human. An explicit off setting survives later edits, including changing the connection or omitting the field from an update. Deleting the selected connection or grant preserves the setting and blocks calls until a valid replacement is selected. Disabling decisions prevents new calls. It does not cancel or erase calls already dispatched.
 

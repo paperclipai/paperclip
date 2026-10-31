@@ -40,6 +40,7 @@ import type {
   CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
   CompanySkillVersion,
+  CompanySkillVersionSummary,
   CompanySkillVersionCreateRequest,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -79,7 +80,7 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}`,
     ),
   versions: (companyId: string, skillId: string) =>
-    api.get<CompanySkillVersion[]>(
+    api.get<CompanySkillVersionSummary[]>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/versions`,
     ),
   version: (companyId: string, skillId: string, versionId: string) =>
@@ -205,7 +206,7 @@ export const companySkillsApi = {
     api.get<CompanySkillFileDetail>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/files?path=${encodeURIComponent(relativePath)}`,
     ),
-  updateFile: (companyId: string, skillId: string, path: string, content: string, format: Pick<CompanySkillFileDetail, "encoding" | "executable"> = {}) =>
+  updateFile: (companyId: string, skillId: string, path: string, content: string, format: Pick<CompanySkillFileDetail, "encoding" | "executable"> & { expectedVersionId?: string | null } = {}) =>
     api.patch<CompanySkillFileDetail>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/files`,
       { path, content, ...format },

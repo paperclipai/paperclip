@@ -1,7 +1,9 @@
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
+import { enableRunFailureReporting } from "../__tests__/helpers/run-failure-reporting.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, issueRecoveryActions, issueThreadInteractions, nativeRunResults, statusDecisions, workAssessments } from "@paperclipai/db";
+import { agents, companies, completionContracts, createDb, environmentLeases, environments, heartbeatRuns, issues, issueRecoveryActions, issueThreadInteractions, nativeRunFinalizations, nativeRunResults, statusDecisions, workAssessments } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -18,7 +20,8 @@ vi.mock("../sentry.js", async () => {
 
 import { reconcileAbandonedExecutionControl } from "./execution-control-reconciliation.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_EXECUTION_CONTROL_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine failed transition", () => {
@@ -26,11 +29,12 @@ describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine f
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("execution-control-reconciliation-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("execution-control-reconciliation-");
+    db = createDb(external ?? tempDb!.connectionString);
   }, 30_000);
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -96,6 +100,38 @@ describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine f
     });
   });
 
+  it("leaves a run owned by a live legacy controller to that controller", async () => {
+    const { runId } = await seedAbandonedRunFixture();
+    const leaseExpiresAt = new Date(Date.now() + 45_000);
+    await db
+      .update(heartbeatRuns)
+      .set({ runtimeMode: "legacy", controllerBootId: randomUUID(), controllerLeaseExpiresAt: leaseExpiresAt })
+      .where(eq(heartbeatRuns.id, runId));
+    const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
+
+    const result = await reconcileAbandonedExecutionControl(db);
+
+    expect(result.surfaced).toBe(0);
+    const [owned] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(owned?.status).toBe("running");
+    expect(owned?.errorCode).toBeNull();
+    expect(owned?.executionControlDeadlineAt?.getTime()).toBe(leaseExpiresAt.getTime());
+
+    await db
+      .update(heartbeatRuns)
+      .set({ controllerLeaseExpiresAt: new Date(Date.now() - 1_000), executionControlDeadlineAt: new Date(Date.now() - 1_000) })
+      .where(eq(heartbeatRuns.id, runId));
+    const lapsed = await reconcileAbandonedExecutionControl(db);
+
+    expect(lapsed.surfaced).toBe(1);
+    const [failed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(failed?.status).toBe("failed");
+    expect(failed?.errorCode).toBe("execution_finalization_deadline_exceeded");
+    await vi.waitFor(() => {
+      expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(1);
+    }, { timeout: 5_000 });
+  });
+
   it("reports zero events for a repeated sweep over the same already-failed run", async () => {
     const { runId } = await seedAbandonedRunFixture();
     await reconcileAbandonedExecutionControl(db);
@@ -120,16 +156,75 @@ describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine f
     expect(result.surfaced).toBe(1);
     expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(0);
   });
+
+  it.each(["prepared", "finalized", "mismatched", "reassigned", "accepted"] as const)("preserves only an exact unfinished native workspace after its deadline (%s)", async state => {
+    const f = await seedAbandonedRunFixture();
+    const [environment] = await db.insert(environments).values({ name: `Deadline ${f.runId}`, driver: "sandbox" }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId,
+      heartbeatRunId: f.runId, environmentId: environment.id, provider: "daytona", providerLeaseId: randomUUID(),
+      status: "active", leasePolicy: "reuse_by_environment", metadata: { remoteCwd: "/work" },
+    }).returning();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: f.issueId, runnerProfileJson: {
+      nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v3", state: state === "finalized" ? state : "prepared",
+        descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+        workspaceId: f.runId, leaseId: lease.id, providerLeaseId: state === "mismatched" ? randomUUID() : lease.providerLeaseId,
+        remoteCwd: "/work", resourceDisposition: "keep_running" },
+    } }).where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(nativeRunFinalizations).values({ runId: f.runId, companyId: f.companyId, issueId: f.issueId,
+      phase: "observed", leaseOwner: "abandoned-controller", controlDeadlineAt: new Date(Date.now() - 60_000) });
+    if (state === "reassigned") {
+      const nextAgentId = randomUUID();
+      await db.insert(agents).values({ id: nextAgentId, companyId: f.companyId, name: "New owner", adapterType: "codex_local" });
+      await db.update(issues).set({ assigneeAgentId: nextAgentId, executionRunId: null, checkoutRunId: null })
+        .where(eq(issues.id, f.issueId));
+    }
+    if (state === "accepted") {
+      const contractId = randomUUID(), resultId = randomUUID();
+      await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issueId,
+        revision: 1, schemaVersion: "1", policyVersion: "test", risk: "low", completionAuthority: "agent_claim_policy",
+        incompleteCriteriaPolicy: "block", contractJson: {}, canonicalSha256: randomUUID(), createdByActorType: "agent", createdByActorId: f.agentId });
+      await db.update(heartbeatRuns).set({ completionContractId: contractId }).where(eq(heartbeatRuns.id, f.runId));
+      await db.insert(nativeRunResults).values({ id: resultId, companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+        completionContractId: contractId, serverFingerprint: randomUUID(), schemaStatus: "valid", resultJson: {}, canonicalSha256: randomUUID() });
+      await db.update(nativeRunFinalizations).set({ resultId }).where(eq(nativeRunFinalizations.runId, f.runId));
+    }
+
+    await reconcileAbandonedExecutionControl(db);
+    await reconcileAbandonedExecutionControl(db);
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [retained] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id));
+    expect(run).toMatchObject(state === "accepted" ? { status: "running", errorCode: null }
+      : { status: "failed", errorCode: "execution_finalization_deadline_exceeded" });
+    if (state === "prepared" || state === "reassigned") {
+      expect(run.resultJson).toMatchObject({ workspaceRestoreRecovery: { leaseIds: [lease.id] } });
+      expect(retained).toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure",
+        metadata: { sandboxStopAndRetain: { runId: f.runId, providerLeaseId: lease.providerLeaseId } } });
+      const recovery = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+      expect(recovery.filter(action => action.evidence?.workspaceRestoreRecovery)).toMatchObject([
+        { evidence: { runId: f.runId, workspaceRestoreRecovery: { leaseIds: [lease.id] } } },
+      ]);
+    } else {
+      expect(run.resultJson ?? {}).not.toHaveProperty("workspaceRestoreRecovery");
+      expect(retained).toMatchObject({ status: "active", leasePolicy: "reuse_by_environment" });
+    }
+    const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    if (state === "reassigned") {
+      expect(task.assigneeAgentId).not.toBe(f.agentId);
+      expect(task).toMatchObject({ status: "in_progress", executionRunId: null, checkoutRunId: null });
+    }
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+  });
 });
 
 describeEmbeddedPostgres("native review execution reconciliation admission", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("execution-control-review-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("execution-control-review-");
+    db = createDb(external ?? tempDb!.connectionString);
   }, 30_000);
-  afterAll(async () => { await tempDb?.cleanup(); });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await tempDb?.cleanup(); });
 
   it.each([true, false])("only releases the exact admitted review (admitted=%s)", async (admitted) => {
     const companyId = randomUUID();
@@ -187,3 +282,6 @@ describeEmbeddedPostgres("native review execution reconciliation admission", () 
     expect(review?.status).toBe("pending");
   });
 });
+
+
+enableRunFailureReporting();

@@ -53,6 +53,8 @@ export interface InstanceExperimentalSettings {
    */
   enableManagedSandboxOnly: boolean;
   enableIsolatedWorkspaces: boolean;
+  /** Enroll eligible native sandbox workspaces in remote, snapshot-backed storage. */
+  remoteWorkspaceStorageEnabled: boolean;
   /**
    * Move the execution workspace default for a project that carries no policy
    * of its own from the shared project checkout to an isolated per-task
@@ -71,19 +73,26 @@ export interface InstanceExperimentalSettings {
   enableApps: boolean;
   /** Exposes chat connector setup and Board surfaces; existing delivery continues when hidden. */
   enableChatConnectors: boolean;
+  /** Show GitHub review bot setup and management independently of chat connectors. */
+  enableGitHubReviewBots: boolean;
   /** Allow person-authorized assistant tools and task event delivery. */
   enablePublicMcp: boolean;
   /** Enable the standalone Dot choice and dedicated agent MCP connection independently of the general Runner rollout. */
   enableOpenAiDot: boolean;
+  /** Enable experimental Grok Bot agents; requires MCP and the managed/native Runner. */
+  enableGrokBot: boolean;
+  enableMuse: boolean;
   /** @deprecated Compatibility key only. MCP aggregators are always enabled. */
   enableMcpAggregators: boolean;
   /** Show experimental memory connection setup. Existing connections remain usable. */
   enableMemoryConnectors: boolean;
-  enablePipelines: boolean;
+  enablePaperclipNotebook: boolean;
   enableCases: boolean;
   enableAgentChat: boolean;
   /** Reorganized left nav, Inbox-as-Tasks-views, and the chat agent rail + task cards. */
   enableCombinedInboxTasks: boolean;
+  /** The artifact presentation from the artifact directions lab (MVP V1) on the Artifacts page, the panel's Artifacts tab and the task thread. */
+  enableArtifactsV1: boolean;
   enableConferenceRoomChat: boolean;
   enableClassicTaskInterface: boolean;
   enableIssuePlanDecompositions: boolean;
@@ -95,6 +104,8 @@ export interface InstanceExperimentalSettings {
   enableSummaries: boolean;
   enableStatusCards: boolean;
   enableDecisions: boolean;
+  /** Show company connection settings and allow contextual fast-response acknowledgements. */
+  enableFastResponses: boolean;
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
   /** Shows internal Paperclip maintainer tools and observability links. */

@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { createGrokEffortAdmission } from "../drivers/acpx/grok-effort.js";
+import { recordAcpxAdmissionFailure } from "../drivers/acpx/admission-diagnostics.js";
 
 import {
   acpxBootstrapBlockedError,
@@ -8,6 +10,35 @@ import {
 } from "./acpx-sidecar-input.js";
 
 describe("ACPX sidecar input sequencing", () => {
+  it("prefers a known cause to a stage and ignores provider-supplied stage fields", () => {
+    const cause = Object.assign(new Error("private-token-canary"), { code: "AUTH_REQUIRED" });
+    const error = new AggregateError([cause], "private-wrapper");
+    recordAcpxAdmissionFailure(error, "runtime");
+    expect(acpxSidecarErrorCode(error)).toBe("AUTH_REQUIRED");
+    expect(acpxSidecarErrorCode(Object.assign(new Error("private-token-canary"), {
+      acpxAdmissionStage: "credential", code: "ACPX_ADMISSION_CREDENTIAL",
+    }))).toBe("acpx_sidecar_command_failed");
+  });
+  it("retains a closed fallback stage through aggregate cleanup without changing the original error", () => {
+    const error = Object.freeze(new Error("private-token-canary"));
+    expect(recordAcpxAdmissionFailure(error, "credential")).toBe(error);
+    recordAcpxAdmissionFailure(error, "runtime");
+    expect(acpxSidecarErrorCode(new AggregateError([error], "private-wrapper"))).toBe("ACPX_ADMISSION_CREDENTIAL");
+    expect(acpxSidecarErrorCode(new Error("ACPX_ADMISSION_CREDENTIAL private-token-canary"))).toBe("acpx_sidecar_command_failed");
+  });
+  it("preserves a Grok admission rejection without exporting the native payload", () => {
+    const admission = createGrokEffortAdmission("high", "grok-4.7");
+    const guard = admission.createGuard();
+    guard("outbound", { id: 1, method: "session/new", params: {} });
+    let failure: Error | undefined;
+    try {
+      guard("inbound", { id: 1, result: { sessionId: "private-session", _meta: { privateToken: "private-token-canary" } } });
+    } catch (error) { failure = error as Error; }
+    expect(failure).toBeInstanceOf(Error);
+    expect(acpxSidecarErrorCode(failure!)).toBe("GROK_EFFORT_ACKNOWLEDGEMENT_MISSING");
+    expect(failure!.message).not.toContain("private-token-canary");
+    expect(() => admission.assertReady()).toThrow(failure);
+  });
   it("classifies a retired tool callback without copying provider text into its identity", () => {
     const error = Object.assign(new Error("private-token-canary"), { code: "ACPX_TOOL_CALL_STALE" });
     expect(acpxSidecarErrorCode(error)).toBe("ACPX_TOOL_CALL_STALE");
@@ -185,4 +216,10 @@ describe("ACPX sidecar input sequencing", () => {
       "ACPX_SESSION_HANDSHAKE_TIMEOUT",
     );
   });
+});
+
+it("preserves a missing runtime package category across wrapped bootstrap errors", () => {
+  const error = Object.assign(new Error("private resolver stack"), { code: "ACPX_RUNTIME_PACKAGE_MISSING" });
+  expect(acpxSidecarErrorCode(new Error("bootstrap failed", { cause: error }))).toBe("ACPX_RUNTIME_PACKAGE_MISSING");
+  expect(acpxSidecarErrorCode(acpxBootstrapBlockedError(error, "session.read")!)).toBe("ACPX_RUNTIME_PACKAGE_MISSING");
 });

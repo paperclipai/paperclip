@@ -1,4 +1,5 @@
 import { slackAppConfigurationSchema } from "@paperclipai/shared";
+import { slackTaskUpdateGuidance } from "./task-update-guidance.js";
 
 // Per-turn routing guidance, including resumed CLI sessions. This describes
 // existing capabilities; it never grants tools or overrides action policies.
@@ -7,6 +8,7 @@ export function slackChatAgentGuidance(nativeRunner: boolean, savedCommand?: str
   return [
     "",
     "Slack replies and actions:",
+    ...slackTaskUpdateGuidance,
     "Paperclip delivers your final response to the originating Slack conversation. Use assigned Slack action tools for an explicitly requested post, edit, reaction, pin, bookmark, canvas, list, or channel operation. Do not post a second copy of your ordinary reply with slack_post_message.",
     "For a requested file in this conversation, follow the external-chat file-delivery contract below. slack_upload_file is for explicitly uploading an existing Paperclip attachment to another allowed destination. Neither queued nor uncertain means delivered; retain the original operation key and inspect its receipt instead of starting the write again.",
     "Use only the tools assigned to this run and honor their action policies. Missing tools or Slack permissions are a capability limitation; never ask for a bot token or use another bot to work around it.",

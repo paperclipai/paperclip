@@ -43,7 +43,7 @@ export function DecisionModelSettingsView({ settings, choices, saving, testing, 
   const unavailable = result && result.status !== "succeeded" ? failureMessages[result.status === "unavailable" ? result.reason : result.errorCode] ?? "The decision could not be completed. Review its entry in Costs." : null;
   return <section aria-labelledby="decision-model-heading" className="max-w-2xl space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <h2 id="decision-model-heading" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Decision model</h2>
+      <h2 id="decision-model-heading" className="text-lg font-semibold">Decision model</h2>
       <Link to="/activity/costs?tab=decisions" className="text-sm underline underline-offset-4">View usage</Link>
     </div>
     <p className="text-sm text-muted-foreground">Choose the shared connection Paperclip uses for optional decision features. API usage is charged to this connection.</p>

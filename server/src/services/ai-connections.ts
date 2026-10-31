@@ -1,3 +1,5 @@
+import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
+import type { ConnectionManagementContext } from "./connection-management.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
@@ -39,8 +41,10 @@ import {
   type AiConnectionLoginIntent,
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
-import { aiConnectionConfigurationFailure } from "./ai-connection-configuration-failure.js";
+import { aiConnectionConfigurationFailure, aiConnectionCredentialNotSharedFailure } from "./ai-connection-configuration-failure.js";
 import { quotaCredentialRecovery, quotaCredentialHash } from "./quota-credential-recovery.js";
+import { prepareAntigravityCredentialRecovery } from "./native-runtime/antigravity-runner-credentials.js";
+import { assertAiCredentialCleanupSettled, reconcileRetainedAiCleanup } from "./retained-ai-credential-cleanup.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
@@ -349,8 +353,12 @@ export function aiConnectionService(db: Db) {
       ));
     // The existing human-access permission is authoritative for every binding,
     // including old explicit personal selections. Agent delegation cannot bypass it.
-    if (!canUseCredential(grant, userId, audience))
+    if (!canUseCredential(grant, userId, audience)) {
+      // Membership was checked above. A known user's sharing choice is an
+      // operator action; absent identity must remain an unclassified denial.
+      if (userId) throw aiConnectionCredentialNotSharedFailure({ connectionName: connection.name, grantId: grant.id });
       throw forbidden("This credential is not shared with the responsible user");
+    }
     const installs = await db
       .select()
       .from(toolConnectionInstalls)
@@ -415,6 +423,73 @@ export function aiConnectionService(db: Db) {
       ));
       if (!canUseCredential(row.grant, input.userId, audience)) throw forbidden("Connection is not shared with this user");
     } else if (input.userId || input.agentId) throw forbidden("Background sponsorship cannot replace caller permissions");
+    if (input.agentId) {
+      const [install] = await db.select({ id: toolConnectionInstalls.id }).from(toolConnectionInstalls).where(and(
+        eq(toolConnectionInstalls.companyId, input.companyId), eq(toolConnectionInstalls.connectionId, input.connectionId),
+        or(and(eq(toolConnectionInstalls.targetType, "company"), eq(toolConnectionInstalls.targetId, input.companyId)),
+          and(eq(toolConnectionInstalls.targetType, "agent"), eq(toolConnectionInstalls.targetId, input.agentId))),
+      )).limit(1);
+      if (!install) throw forbidden("Connection is not permitted for this agent");
+    }
+    return { ...row, provider };
+  }
+  /** Internal fast-response use has its own capability check, never a pretend CLI harness. */
+  async function selectFastResponse(input: {
+    companyId: string; connectionId: string; grantId: string;
+    userId: string | null; agentId?: string | null; sponsoredBackground?: boolean;
+  }) {
+    const [row] = await db.select({ connection: toolConnections, grant: connectionGrants })
+      .from(toolConnections).innerJoin(connectionGrants, and(
+        eq(connectionGrants.connectionId, toolConnections.id), eq(connectionGrants.companyId, toolConnections.companyId),
+      )).where(and(eq(toolConnections.companyId, input.companyId), eq(toolConnections.id, input.connectionId),
+        eq(connectionGrants.id, input.grantId), eq(toolConnections.connectionPurpose, "ai"))).limit(1);
+    if (!row || row.grant.kind !== "organization") throw unprocessable("Shared AI connection unavailable", { code: "connection_unavailable" });
+    const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
+    const provider = metadata.success && metadata.data.method === "api_key" ? metadata.data.provider : null;
+    if (!provider) throw unprocessable("Connection does not support fast responses", { code: "incompatible_connection" });
+    if (row.grant.status !== "active" || !row.connection.enabled || row.connection.status !== "active" || row.connection.healthStatus !== "ok")
+      throw unprocessable("Reconnect or enable this connection", { code: "connection_unavailable" });
+    // Only internal fast responses may sponsor background use; ordinary AI selection never bypasses an audience.
+    if (!input.sponsoredBackground) {
+      if (!(await membership(input.companyId, input.userId))) throw forbidden("Active responsible user required");
+      const audience = await db.select().from(connectionGrantMembers).where(and(
+        eq(connectionGrantMembers.companyId, input.companyId), eq(connectionGrantMembers.grantId, input.grantId),
+      ));
+      if (!canUseCredential(row.grant, input.userId, audience)) throw forbidden("Connection is not shared with this user");
+    } else if (input.userId) throw forbidden("Background sponsorship cannot replace caller permissions");
+    if (input.agentId) {
+      const [install] = await db.select({ id: toolConnectionInstalls.id }).from(toolConnectionInstalls).where(and(
+        eq(toolConnectionInstalls.companyId, input.companyId), eq(toolConnectionInstalls.connectionId, input.connectionId),
+        or(and(eq(toolConnectionInstalls.targetType, "company"), eq(toolConnectionInstalls.targetId, input.companyId)),
+          and(eq(toolConnectionInstalls.targetType, "agent"), eq(toolConnectionInstalls.targetId, input.agentId))),
+      )).limit(1);
+      if (!install) throw forbidden("Connection is not permitted for this agent");
+    }
+    return { ...row, provider };
+  }
+  async function selectPromptInjectionPrevention(input: {
+    companyId: string; connectionId: string; grantId: string;
+    userId: string | null; agentId?: string | null; sponsoredBackground?: boolean;
+  }) {
+    const [row] = await db.select({ connection: toolConnections, grant: connectionGrants })
+      .from(toolConnections).innerJoin(connectionGrants, and(
+        eq(connectionGrants.connectionId, toolConnections.id), eq(connectionGrants.companyId, toolConnections.companyId),
+      )).where(and(eq(toolConnections.companyId, input.companyId), eq(toolConnections.id, input.connectionId),
+        eq(connectionGrants.id, input.grantId), eq(toolConnections.connectionPurpose, "ai"))).limit(1);
+    if (!row || row.grant.kind !== "organization") throw unprocessable("Shared AI connection unavailable", { code: "connection_unavailable" });
+    const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
+    const provider = metadata.success && decisionProviderForConnection(metadata.data) === "openrouter" ? "openrouter" as const : null;
+    if (!provider) throw unprocessable("Connection does not support prompt injection checks", { code: "incompatible_connection" });
+    if (row.grant.status !== "active" || !row.connection.enabled || row.connection.status !== "active" || row.connection.healthStatus !== "ok")
+      throw unprocessable("Reconnect or enable this connection", { code: "connection_unavailable" });
+    // Only internal prompt injection checks may sponsor background use; ordinary AI selection never bypasses an audience.
+    if (!input.sponsoredBackground) {
+      if (!(await membership(input.companyId, input.userId))) throw forbidden("Active responsible user required");
+      const audience = await db.select().from(connectionGrantMembers).where(and(
+        eq(connectionGrantMembers.companyId, input.companyId), eq(connectionGrantMembers.grantId, input.grantId),
+      ));
+      if (!canUseCredential(row.grant, input.userId, audience)) throw forbidden("Connection is not shared with this user");
+    } else if (input.userId) throw forbidden("Background sponsorship cannot replace caller permissions");
     if (input.agentId) {
       const [install] = await db.select({ id: toolConnectionInstalls.id }).from(toolConnectionInstalls).where(and(
         eq(toolConnectionInstalls.companyId, input.companyId), eq(toolConnectionInstalls.connectionId, input.connectionId),
@@ -498,9 +573,12 @@ export function aiConnectionService(db: Db) {
     userId: string,
     input: CreateAiConnection | AiConnectionLoginIntent,
     verifiedCredential: string,
-    sessionId?: string,
+    loginSession?: { id: string; complete?: (tx: Db) => Promise<void> },
     attemptStartedAt = new Date(),
+    managementContext?: ConnectionManagementContext,
+    verifiedAccountLabel?: string,
   ) {
+    await managementContext?.reauthorize();
     const routing = "routing" in input ? input.routing : undefined;
     if (!(await membership(companyId, userId)))
       throw forbidden("An active company member must own this connection");
@@ -538,16 +616,15 @@ export function aiConnectionService(db: Db) {
     const id = reconnect?.connection.id ?? randomUUID();
     const grantId = reconnect?.grant.id ?? randomUUID();
     const persist = () => withAccountHomeSecretMutationLock(undefined, companyId, () => db.transaction(async (tx) => {
+      await managementContext?.reauthorize();
       const secrets = secretService(tx);
-      if (sessionId) {
+      if (loginSession) {
         const [session] = await tx
           .select()
           .from(adapterAuthSessions)
           .where(
             and(
-              input.provider === "anthropic"
-                ? eq(adapterAuthSessions.publicSessionId, sessionId)
-                : eq(adapterAuthSessions.id, sessionId),
+              eq(adapterAuthSessions.id, loginSession.id),
               eq(adapterAuthSessions.companyId, companyId),
               eq(adapterAuthSessions.startedByUserId, userId),
             ),
@@ -725,7 +802,7 @@ export function aiConnectionService(db: Db) {
             },
             createdByUserId: userId,
           });
-      let accountLabel: string | undefined;
+      let accountLabel: string | undefined = input.provider === "google" ? verifiedAccountLabel : undefined;
       if (input.method === "subscription" && input.provider !== "anthropic") {
         try {
           const credential = JSON.parse(verifiedCredential);
@@ -817,26 +894,22 @@ export function aiConnectionService(db: Db) {
               })),
             );
       }
-      if (sessionId)
+      if (loginSession) await notifyLoginSessionChanged(tx);
+      if (loginSession)
         await tx
           .update(adapterAuthSessions)
           .set({
             connectionId: id,
             connectionGrantId: grantId,
             connectionMethod: input.method,
-            ...(input.provider === "anthropic"
-              ? { status: "stored" as const }
-              : {}),
           })
           .where(
-            input.provider === "anthropic"
-              ? eq(adapterAuthSessions.publicSessionId, sessionId)
-              : eq(adapterAuthSessions.id, sessionId),
+            eq(adapterAuthSessions.id, loginSession.id),
           );
+      await loginSession?.complete?.(tx as unknown as Db);
       await logActivity(tx as unknown as Db, {
         companyId,
-        actorType: "user",
-        actorId: userId,
+        ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }),
         action: reconnect
           ? "ai_connection.reconnected"
           : "ai_connection.connected",
@@ -860,14 +933,29 @@ export function aiConnectionService(db: Db) {
     tx: Db, row: Parameters<typeof credential>[0], current: string, onRecoveryStarted?: () => void,
   ) {
     const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
-    if (!metadata.success || metadata.data.provider !== "openai" || metadata.data.method !== "subscription") return null;
+    if (!metadata.success || !["openai", "google"].includes(metadata.data.provider) || metadata.data.method !== "subscription") return null;
     const recovery = quotaCredentialRecovery(row.connection.companyId, row.grant.id);
     const pending = await recovery.read();
     if (!pending) return null;
     const ref = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential");
-    if (!ref || pending.secretId !== ref.secretId || pending.connectionId !== row.connection.id || pending.baseHash !== quotaCredentialHash(current)) {
+    if (!ref || (pending.provider ?? "openai") !== metadata.data.provider
+      || pending.secretId !== ref.secretId || pending.connectionId !== row.connection.id || pending.baseHash !== quotaCredentialHash(current)) {
       await recovery.clear();
       return null;
+    }
+    if (metadata.data.provider === "google") {
+      const [secret] = await tx.select({ epoch: companySecrets.aiSessionEpoch, version: companySecrets.latestVersion })
+        .from(companySecrets).where(and(eq(companySecrets.companyId, row.connection.companyId), eq(companySecrets.id, ref.secretId))).for("update");
+      if (!pending.google || pending.google.sessionEpoch !== secret?.epoch || pending.google.baseVersion !== secret?.version
+        || pending.google.versionSelector !== (ref.versionSelector ?? "latest")
+        || pending.google.accountEmail.toLowerCase() !== row.grant.providerTenant?.name?.toLowerCase()) {
+        await recovery.clear();
+        return null;
+      }
+      if (!pending.google.verified) {
+        onRecoveryStarted?.();
+        throw new Error("Google credential recovery needs account verification");
+      }
     }
     onRecoveryStarted?.();
     await secretService(tx).rotate(ref.secretId, { value: pending.value, preserveAiSessionEpoch: true }, { userId: row.grant.subjectUserId });
@@ -875,16 +963,48 @@ export function aiConnectionService(db: Db) {
     // used to fence reconnect attempts. Ownership and access are unchanged.
     await logActivity(tx, { companyId: row.connection.companyId, actorType: "system", actorId: "quota_recovery",
       action: "ai_connection.credential_refreshed", entityType: "tool_connection", entityId: row.connection.id,
-      details: { provider: "openai", grantId: row.grant.id } });
+      details: { provider: metadata.data.provider, grantId: row.grant.id } });
     return pending.value;
   }
 
   /** Never hand a consumed token to a new provider while its replacement awaits commit. */
-  async function runtimeCredential(row: Parameters<typeof credential>[0]) {
+  async function runtimeCredential(row: Parameters<typeof credential>[0], ownership?: { credentialLockHeld: true }) {
     const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
-    if (!metadata.success || metadata.data.provider !== "openai" || metadata.data.method !== "subscription") return credential(row);
+    if (!metadata.success || !["openai", "google"].includes(metadata.data.provider) || metadata.data.method !== "subscription") return credential(row);
+    // Retirement callbacks acquire this same mutation lock to persist their
+    // final generation. Join them before taking the lock they need. A caller
+    // already holding it must only check, for both rotated-credential lanes.
+    const scope = { companyId: row.connection.companyId, accountKey: row.grant.id };
+    if (ownership?.credentialLockHeld) assertAiCredentialCleanupSettled(scope);
+    else await reconcileRetainedAiCleanup(scope);
     let savingReplacement = false;
     return withAccountHomeSecretMutationLock(undefined, row.connection.companyId, async () => {
+      // An owner can arrive while lock acquisition waits. Never join under it.
+      assertAiCredentialCleanupSettled(scope);
+      if (metadata.data.provider === "google") {
+        const recovery = quotaCredentialRecovery(row.connection.companyId, row.grant.id);
+        const pending = await recovery.read();
+        if (pending?.provider === "google" && pending.google && !pending.google.verified
+          && pending.connectionId === row.connection.id
+          && pending.google.accountEmail.toLowerCase() === row.grant.providerTenant?.name?.toLowerCase()) {
+          const ref = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential");
+          const [secret] = await db.select({ epoch: companySecrets.aiSessionEpoch, version: companySecrets.latestVersion })
+            .from(companySecrets).where(and(eq(companySecrets.companyId, row.connection.companyId), eq(companySecrets.id, pending.secretId)));
+          const current = await credential(row);
+          if (ref?.secretId === pending.secretId && (ref.versionSelector ?? "latest") === pending.google.versionSelector
+            && secret?.epoch === pending.google.sessionEpoch && secret?.version === pending.google.baseVersion
+            && pending.baseHash === quotaCredentialHash(current)) {
+            savingReplacement = true;
+            // Network verification runs before acquiring database row locks.
+            // The transaction below rechecks the exact saved generation.
+            await prepareAntigravityCredentialRecovery({ originalCredential: current,
+              refreshedCredential: pending.value, accountEmail: pending.google.accountEmail,
+              scope: { companyId: row.connection.companyId, accountKey: row.grant.id },
+              persistVerified: value => recovery.write({ ...pending, value, google: { ...pending.google!, verified: true } }),
+            });
+          }
+        }
+      }
       let recovered = false;
       const value = await db.transaction(async tx => {
         const [grant] = await tx.select().from(connectionGrants).where(and(
@@ -985,7 +1105,7 @@ export function aiConnectionService(db: Db) {
   async function refreshQuotaCredential(row: Parameters<typeof credential>[0], failedValue: string, signal: AbortSignal) {
     return withAccountHomeSecretMutationLock(undefined, row.connection.companyId, async () => {
       const recovery = quotaCredentialRecovery(row.connection.companyId, row.grant.id);
-      let savingReplacement = false;
+      let replacement: { value: string; secretId: string; version: number; epoch: number; base: string; grantUpdatedAt: number; versionSelector: "latest" | number } | undefined;
       const save = () => db.transaction(async (tx) => {
         // Do not wait on a transaction that might itself be waiting for the file
         // lock. All database locks must be available before consuming OAuth tokens.
@@ -997,11 +1117,20 @@ export function aiConnectionService(db: Db) {
         if (!grant || grant.status !== "active") throw new Error("credentials_unavailable");
         const ref = grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential");
         if (!ref) throw new Error("credentials_unavailable");
-        await tx.select({ id: companySecrets.id }).from(companySecrets).where(and(
+        const [secret] = await tx.select({ id: companySecrets.id, version: companySecrets.latestVersion, epoch: companySecrets.aiSessionEpoch }).from(companySecrets).where(and(
           eq(companySecrets.id, ref.secretId), eq(companySecrets.companyId, companyId),
         )).for("update", { noWait: true });
+        if (!secret) throw new Error("credentials_unavailable");
         const current = await aiConnectionService(tx as unknown as Db).credential({ connection: row.connection, grant });
-        signal.throwIfAborted();
+        if (replacement) {
+          // A lost commit response is reconciled from the authoritative secret.
+          // Reconnect, revocation and a competing saved generation always win.
+          if (current === replacement.value) return current;
+          if (ref.secretId !== replacement.secretId || secret.version !== replacement.version
+            || secret.epoch !== replacement.epoch || current !== replacement.base
+            || grant.updatedAt.getTime() !== replacement.grantUpdatedAt
+            || (ref.versionSelector ?? "latest") !== replacement.versionSelector) return current;
+        } else signal.throwIfAborted();
         let pending = await recovery.read();
         if (pending && (pending.secretId !== ref.secretId || pending.connectionId !== row.connection.id || pending.baseHash !== quotaCredentialHash(current))) {
           // Reconnect may reuse this grant. Once the current authorized token
@@ -1021,10 +1150,9 @@ export function aiConnectionService(db: Db) {
           or(sql`${heartbeatRuns.contextSnapshot}->'aiConnection'->>'grantId' = ${grant.id}`,
             sql`${agents.runtimeConfig}->'aiConnection'->>'provider' = 'openai'`, eq(agents.adapterType, "codex_local")),
         )).limit(1);
-        if (active && !pending) throw new Error("provider_unavailable");
-        let refreshed = pending?.value;
+        if (active && !pending && !replacement) throw new Error("provider_unavailable");
+        let refreshed = replacement?.value ?? pending?.value;
         if (!refreshed) {
-          await recovery.prepare();
           const auth = JSON.parse(current);
           const refreshToken = auth.tokens?.refresh_token;
           if (typeof refreshToken !== "string" || !refreshToken) throw new Error("authentication_required");
@@ -1049,12 +1177,12 @@ export function aiConnectionService(db: Db) {
             ...(typeof tokens.refresh_token === "string" && tokens.refresh_token ? { refresh_token: tokens.refresh_token } : {}),
             ...(typeof tokens.id_token === "string" && tokens.id_token ? { id_token: tokens.id_token } : {}),
           }, last_refresh: new Date().toISOString() });
-          // This fsynced encrypted journal survives transaction rollback and host
-          // restart. Never exchange the consumed token again after a failed save.
-          await recovery.write({ companyId, grantId: grant.id, connectionId: row.connection.id,
-            secretId: ref.secretId, baseHash: quotaCredentialHash(current), value: refreshed });
         }
-        savingReplacement = true;
+        // Only this logical refresh owns the replacement. Save retries must not
+        // consume another single-use token. Process loss before commit can require
+        // signing in again in v1; no secondary credential vault is created.
+        replacement ??= { value: refreshed, secretId: ref.secretId, version: secret.version, epoch: secret.epoch, base: current,
+          grantUpdatedAt: grant.updatedAt.getTime(), versionSelector: ref.versionSelector ?? "latest" };
         // Persist the rotated token even if the quota deadline expires after the
         // successful exchange; losing it would strand all subsequent executions.
         await secretService(tx).rotate(ref.secretId, { value: refreshed, preserveAiSessionEpoch: true }, { userId: grant.subjectUserId });
@@ -1071,24 +1199,24 @@ export function aiConnectionService(db: Db) {
           await recovery.clear().catch((error) => logger.warn({ err: error, grantId: row.grant.id }, "Saved quota credential recovery cleanup pending"));
           return value;
         } catch (error) {
-          if (!savingReplacement || attempt >= 2) throw error;
-          // Saving retries have no provider side effect. Persistent failures
-          // retain the journal for the next quota poll, including after restart.
+          if (!replacement || attempt >= 2) throw error;
+          // Retry only the returned value. Required database reads still fail
+          // closed; exhaustion is an error, never a successful refresh.
         }
       }
     });
   }
   // A quota read uses the same credential audience as execution. Operator status
   // alone never grants access to another member's personal subscription.
-  async function quotaAccounts(companyId: string, userId: string) {
+  async function quotaAccounts(companyId: string, userId: string, includeOtherProviders = false) {
     if (!(await membership(companyId, userId))) return [];
     const visible = await list(companyId, userId);
     const accounts = await rows(companyId);
     return accounts.flatMap(row => {
       const summary = visible.find(item => item.id === row.connection.id && item.grantId === row.grant.id);
-      if (!summary || summary.method !== "subscription" || !["openai", "anthropic"].includes(summary.provider)) return [];
+      if (!summary || summary.method !== "subscription" || !(includeOtherProviders ? ["openai", "anthropic", "xai"] : ["openai", "anthropic"]).includes(summary.provider)) return [];
       return [{ ...row, summary }];
     });
   }
-  return { list, selectDecision, quotaAccounts, refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
+  return { list, selectDecision, selectFastResponse, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
 }

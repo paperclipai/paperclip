@@ -54,16 +54,79 @@
       "additionalProperties": false,
       "allOf": [
         {
+          "if": { "properties": { "command": { "enum": ["initialize", "session.open"] } } },
+          "then": { "properties": { "params": {
+            "type": "object",
+            "properties": { "candidateAdmission": { "$ref": "#/$defs/candidateAdmission" } },
+            "if": { "properties": { "candidateAdmission": {} }, "required": ["candidateAdmission"] },
+            "then": { "required": ["agent", "model"], "properties": { "agent": { "const": "antigravity" }, "model": { "type": "string" } } }
+          } } },
+          "else": { "properties": { "params": { "type": "object", "properties": { "candidateAdmission": false } } } }
+        },
+        {
           "if": { "properties": { "command": { "const": "turn.steer" } } },
           "then": { "properties": { "params": { "$ref": "#/$defs/turnControl" } } }
         },
         {
           "if": { "properties": { "command": { "const": "session.open" } } },
-          "then": { "properties": { "params": { "$ref": "#/$defs/sessionOpenThinkingLevel" } } }
+          "then": { "properties": { "params": { "allOf": [{ "$ref": "#/$defs/sessionOpenParams" }, { "$ref": "#/$defs/sessionOpenThinkingLevel" }, { "$ref": "#/$defs/sessionOpenClaudeEffort" }] } } }
         }
       ]
     },
+    "candidateAdmission": {
+      "description": "The same closed record is accepted only from trusted runner startup CLI and repeated on sidecar initialize/open. Company authority is validated by the server; the runtime additionally checks compiled pins, actual run/session identity, native host, and expiry.",
+      "type": "object",
+      "required": ["schema", "companyId", "agent", "model", "profileDigest", "nativeClosureDigest", "platform", "architecture", "expiresAt", "runId", "normalizedSessionId"],
+      "properties": {
+        "schema": { "const": "paperclip.acpx-candidate-admission.v1" },
+        "companyId": { "type": "string", "minLength": 1, "maxLength": 240, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+        "agent": { "const": "antigravity" },
+        "model": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" },
+        "profileDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "nativeClosureDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "platform": { "const": "darwin" },
+        "architecture": { "const": "arm64" },
+        "expiresAt": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "runId": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+        "normalizedSessionId": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }
+      },
+      "additionalProperties": false
+    },
     "piThinkingLevel": { "enum": ["off", "low", "high", "max"] },
+    "sessionOpenParams": {
+      "description": "The closed session.open parameter set. The sidecar's open-parameter allowlist is generated from these property names; field-specific rules live in the sibling definitions.",
+      "type": "object",
+      "properties": {
+        "runtimeDirectory": true,
+        "normalizedSessionId": true,
+        "workingDirectory": true,
+        "agent": true,
+        "model": true,
+        "permissionMode": true,
+        "mode": true,
+        "piThinkingLevel": true,
+        "claudeEffort": true,
+        "grokEffort": true,
+        "grokDisableWebSearch": true,
+        "permissionModePinned": true,
+        "providerPolicy": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/providerPolicy" }] },
+        "systemInstructions": true,
+        "runtimeContext": { "description": "Validated against runtime-context.schema.json." },
+        "tools": true,
+        "providerSessionKey": true,
+        "expectedIdentity": true,
+        "candidateAdmission": true
+      },
+      "additionalProperties": false
+    },
+    "providerPolicy": {
+      "type": "object",
+      "required": ["readOnly"],
+      "properties": {
+        "readOnly": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
     "sessionOpenThinkingLevel": {
       "type": "object",
       "properties": {
@@ -88,6 +151,19 @@
           "expectedIdentity": { "type": ["object", "null"], "properties": { "piThinkingLevel": false } }
         }
       }
+    },
+    "claudeEffort": { "enum": ["low", "medium", "high", "xhigh", "max"] },
+    "sessionOpenClaudeEffort": {
+      "type": "object",
+      "properties": { "claudeEffort": { "$ref": "#/$defs/claudeEffort" } },
+      "if": { "properties": { "agent": { "const": "claude" } }, "required": ["agent"] },
+      "then": { "properties": { "expectedIdentity": {
+        "type": ["object", "null"], "properties": { "claudeEffort": { "$ref": "#/$defs/claudeEffort" } }
+      } } },
+      "else": { "properties": {
+        "claudeEffort": false,
+        "expectedIdentity": { "type": ["object", "null"], "properties": { "claudeEffort": false } }
+      } }
     },
     "response": {
       "type": "object",

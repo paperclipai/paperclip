@@ -6,7 +6,8 @@ import { dotRunnerBroker } from "../dot-runner-broker.js";
 import { ISSUE_STATUSES } from "@paperclipai/shared";
 import { localEncryptedProvider } from "../../secrets/local-encrypted-provider.js";
 import { logActivity } from "../activity-log.js";
-import { logger } from "../../middleware/logger.js";
+import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { type ApiDispatch } from "./capabilities.js";
 import { PublicMcpDisabledError, type McpPrincipal, type PublicMcpOAuth } from "./oauth.js";
 import { boundedJson, callbackUrl, eventFetch, McpEventError, postEvent, signingKey, verifyCallback, type EventFetch } from "./event-webhooks.js";
@@ -48,15 +49,23 @@ const dotEventDefinition = {
 
 export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDispatch, options: { fetch?: EventFetch; now?: () => number; cloudOrigin?: string; enableDotPrototype?: boolean; enableDotRunner?: boolean; isBackgroundWorkEnabled?: () => boolean } = {}) {
   const fetcher = options.fetch ?? eventFetch;
+  const queue = options.enableDotRunner ? DELIVERY_QUEUES.dotEvents : DELIVERY_QUEUES.mcpEvents;
+  let stopped = false;
+  let more = false;
+  let moreSources = false;
+  let nextPage: string | null = null;
+  let enabled = false;
   const now = options.now ?? Date.now;
-  const cloudOrigin = options.cloudOrigin ?? process.env.PAPERCLIP_CLOUD_API_ORIGIN;
+  // Dedicated tenant Dot grants are authenticated locally, including background
+  // deliveries. They never use the personal connection's Cloud broker proof.
+  const cloudOrigin = options.enableDotRunner ? undefined : options.cloudOrigin ?? process.env.PAPERCLIP_CLOUD_API_ORIGIN;
   if (cloudOrigin && (new URL(cloudOrigin).protocol !== "https:" || new URL(cloudOrigin).origin !== cloudOrigin)) throw new Error("MCP Events requires a fixed HTTPS Cloud origin.");
   const encrypt = async (value: Destination) => (await localEncryptedProvider.createSecret({ value: JSON.stringify(value) })).material;
   const decrypt = async (s: Subscription): Promise<Destination> => JSON.parse(await localEncryptedProvider.resolveVersion({ material: s.deliveryMaterial, externalRef: null, providerVersionRef: null }));
 
   async function authorize(principal: McpPrincipal, args: z.infer<typeof resourceFilters>) {
     if (args.bindingId) {
-      if (!options.enableDotRunner || cloudOrigin) throw new McpEventError(-32602, "Dot requires the direct self-hosted agent endpoint; the Cloud agent broker is not qualified.");
+      if (!options.enableDotRunner) throw new McpEventError(-32602, "Dot requires the dedicated agent endpoint.");
       await dotRunnerBroker(db).authorizeBinding(principal, args.companyId, args.bindingId); return;
     }
     if (args.companyId !== principal.grant.companyId || !principal.grant.scopes.includes("paperclip:read")) throw new McpEventError(-32602, "This task is outside the authorized company.");
@@ -172,6 +181,7 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
         const value = { companyId: principal.grant.companyId, grantId: principal.grant.id, name: input.name, taskId: input.arguments.taskId ?? null, bindingId: input.arguments.bindingId ?? null,
           arguments: input.arguments, deliveryMaterial: material, expiresAt, stoppedAt: null,
           verifiedAt: verify ? new Date(now()) : existing!.verifiedAt, startsAt: existing?.startsAt ?? requestedAt, scannedAt: new Date(now()) };
+        await notifyDeliveryWork(tx, queue, input.arguments.bindingId ? `binding:${input.arguments.bindingId}` : id);
         await tx.insert(subscriptions).values({ id, ...value }).onConflictDoUpdate({ target: subscriptions.id, set: value });
         if (input.arguments.bindingId && lease) {
           const [binding] = await tx.select().from(dotAgentBindings).where(and(
@@ -202,6 +212,7 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
     await db.transaction(async tx => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${id}, 0))`);
       await tx.update(admissions).set({ finishedAt: new Date(now()) }).where(and(eq(admissions.subscriptionId, id), isNull(admissions.finishedAt)));
+      await notifyDeliveryWork(tx, queue, id);
       await tx.delete(subscriptions).where(and(eq(subscriptions.id, id), eq(subscriptions.grantId, principal.grant.id)));
       await logActivity(tx as unknown as Db, { companyId: principal.grant.companyId, actorType: "user", actorId: principal.grant.userId,
         action: "mcp.event_unsubscribed", entityType: "mcp_subscription", entityId: id, details: { name: input.name, taskId: input.arguments.taskId } });
@@ -230,6 +241,7 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
           .where(and(eq(dotRunnerAssignments.companyId, b.companyId), eq(dotRunnerAssignments.bindingId, b.id), eq(dotRunnerAssignments.bindingGeneration, b.generation),
             eq(dotRunnerAssignments.status, "accepted"), gt(dotRunnerAssignments.expiresAt, new Date(now())),
             gte(issueComments.createdAt, dotRunnerAssignments.createdAt), sql`not exists (select 1 from ${dotMailboxItems} previous where previous.source_event_id = 'dot-follow-up:' || ${dotRunnerAssignments.id}::text || ':' || ${issueComments.id}::text)`, sql`(${issueComments.authorAgentId} is null or ${issueComments.authorAgentId} <> ${b.agentId})`)).limit(100);
+        if (incoming.length === 100) moreSources = true;
         for (const input of incoming) await tx.insert(dotMailboxItems).values({ companyId: b.companyId, bindingId: b.id, bindingGeneration: b.generation,
           assignmentId: input.assignmentId, kind: "follow_up", sourceEventId: `dot-follow-up:${input.assignmentId}:${input.commentId}`, references: { assignmentId: input.assignmentId, commentId: input.commentId } }).onConflictDoNothing();
       });
@@ -238,9 +250,11 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
         .leftJoin(deliveries, and(eq(deliveries.subscriptionId, s.id), eq(deliveries.mailboxItemId, dotMailboxItems.id)))
         .where(and(eq(dotMailboxItems.bindingId, b.id), eq(dotMailboxItems.bindingGeneration, b.generation), isNull(deliveries.id)))
         .orderBy(asc(dotMailboxItems.id)).limit(100);
+      if (rows.length === 100) moreSources = true;
       for (const { item, assignment } of rows) {
         const wanted = item.kind === "readiness_challenge" ? !!b.challengeHash && !!b.challengeExpiresAt && b.challengeExpiresAt > new Date(now())
-          : item.kind === "authority_revoked" || !!assignment && ["offered", "accepted"].includes(assignment.status) && assignment.expiresAt > new Date(now());
+          : item.kind === "authority_revoked" || (item.kind !== "follow_up" || item.references.consumed !== true)
+            && !!assignment && ["offered", "accepted"].includes(assignment.status) && assignment.expiresAt > new Date(now());
         await db.insert(deliveries).values({ subscriptionId: s.id, mailboxItemId: item.id, nextAttemptAt: new Date(now()),
           event: wanted ? { eventId: "evt_dot_" + item.id + "_" + s.startsAt.getTime(), name: names[4], timestamp: new Date(now()).toISOString(),
             data: { companyId: b.companyId, bindingId: b.id, bindingGeneration: b.generation, mailboxItemId: item.id, kind: item.kind }, cursor: null } : {},
@@ -259,13 +273,14 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
       .where(and(eq(activityLog.companyId, s.companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, s.taskId),
         gte(activityLog.createdAt, s.startsAt), lt(activityLog.createdAt, s.expiresAt), isNull(deliveries.id)))
       .orderBy(asc(activityLog.createdAt), asc(activityLog.id)).limit(100);
+    if (rows.length === 100) moreSources = true;
     for (const { activity } of rows) {
       const details = activity.details ?? {};
       const changes = details.changes && typeof details.changes === "object" ? details.changes as Record<string, unknown> : null;
       const previous = details._previous && typeof details._previous === "object" ? details._previous as Record<string, unknown> : null;
       const changedStatus = changes ? Object.hasOwn(changes, "status") : previous?.status !== details.status;
       const wanted = s.name === names[0] ? ["issue.updated", "issue.checked_out", "issue.released"].includes(activity.action) && changedStatus && ISSUE_STATUSES.includes(details.status as typeof ISSUE_STATUSES[number]) && (!Array.isArray(s.arguments.statuses) || s.arguments.statuses.includes(details.status))
-        : s.name === names[1] ? activity.action === "issue.comment_added" && z.uuid().safeParse(details.commentId).success
+        : s.name === names[1] ? activity.action === "issue.comment_added" && details.origin !== "fast_response" && z.uuid().safeParse(details.commentId).success
         : s.name === names[2] ? ["issue.document_created", "issue.document_updated"].includes(activity.action) && typeof details.key === "string" && typeof details.revisionNumber === "number"
         : options.enableDotPrototype && activity.action === "dot.work_available" && [details.runId, details.agentId, details.turnId, details.messageId].every(v => z.uuid().safeParse(v).success);
       const data = { companyId: s.companyId, taskId: s.taskId, url: oauth.config.origin + "/" + encodeURIComponent(company.prefix) + "/issues/" + s.taskId,
@@ -331,23 +346,90 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
     return true;
   }
   let running: Promise<void> | null = null;
-  const tick = () => running ?? (running = (async () => {
-    // The experimental setting is stored in SQL; check warm standby first.
-    if (options.isBackgroundWorkEnabled?.() === false || !await oauth.isEnabled()) return;
+  type Scan = { after: string | null; ids: string[] | null };
+  const tick = (scan: Scan | null = { after: null, ids: null }) => running ?? (running = (async () => {
+    if (stopped || options.isBackgroundWorkEnabled?.() === false) return;
+    more = false; moreSources = false; nextPage = null;
+    enabled = await oauth.isEnabled();
+    if (!enabled) return;
     await db.delete(admissions).where(lte(admissions.expiresAt, new Date(now())));
     await db.delete(subscriptions).where(lt(subscriptions.expiresAt, new Date(now() - 7 * 24 * hour)));
-    const active = await db.select().from(subscriptions).where(and(isNull(subscriptions.stoppedAt), gt(subscriptions.expiresAt, new Date(now())), options.enableDotRunner ? isNotNull(subscriptions.bindingId) : isNotNull(subscriptions.taskId))).orderBy(asc(subscriptions.scannedAt)).limit(20);
-    for (const s of active) await enqueue(s);
-    for (let i = 0; i < 20; i++) if (!await deliverOne()) break;
+    if (scan) {
+      const active = await db.select().from(subscriptions).where(and(isNull(subscriptions.stoppedAt), gt(subscriptions.expiresAt, new Date(now())),
+        options.enableDotRunner ? isNotNull(subscriptions.bindingId) : isNotNull(subscriptions.taskId),
+        scan.after ? gt(subscriptions.id, scan.after) : undefined,
+        scan.ids ? or(
+          inArray(subscriptions.id, scan.ids.filter(id => !id.includes(":"))),
+          inArray(subscriptions.bindingId, scan.ids.filter(id => id.startsWith("binding:")).map(id => id.slice(8))),
+          inArray(subscriptions.taskId, scan.ids.filter(id => id.startsWith("task:")).map(id => id.slice(5))),
+          inArray(subscriptions.companyId, scan.ids.filter(id => id.startsWith("company:")).map(id => id.slice(8))),
+        ) : undefined)).orderBy(asc(subscriptions.id)).limit(20);
+      for (const s of active) {
+        if (stopped || options.isBackgroundWorkEnabled?.() === false) return;
+        await enqueue(s);
+      }
+      if (active.length === 20) nextPage = active[active.length - 1].id;
+    }
+    for (let i = 0; i < 20; i++) {
+      if (stopped || options.isBackgroundWorkEnabled?.() === false || !await deliverOne()) break;
+      if (i === 19) more = true;
+    }
   })().finally(() => { running = null; }));
-  let timer: NodeJS.Timeout | undefined;
+  function start(coordinator: Pick<ReturnType<typeof createDeliveryWorkCoordinator>, "register">) {
+    let requested = 0, completed = -1;
+    let nextDeadline: number | null = null;
+    let requestedIds: Set<string> | null = null;
+    let scan: (Scan & { generation: number }) | null = null;
+    return coordinator.register(queue, {
+      retryMs: 2_000,
+      pausePassiveMaintenance: true,
+      onSettled: hints => {
+        requested++;
+        if (!hints || hints.has("*")) requestedIds = null;
+        else if (requestedIds) for (const id of hints) requestedIds.add(id);
+      },
+      async run() {
+        if (stopped || options.isBackgroundWorkEnabled?.() === false) return;
+        const generation = requested;
+        if (!scan && completed !== requested) {
+          scan = { generation: requested, after: null, ids: requestedIds ? [...requestedIds] : null };
+          requestedIds = new Set();
+        }
+        await tick(scan);
+        if (stopped || options.isBackgroundWorkEnabled?.() === false) return;
+        nextDeadline = null;
+        if (enabled) {
+          const [row] = await db.select({ nextAt: sql<Date | string | null>`min(${deliveries.nextAttemptAt})` })
+            .from(deliveries).innerJoin(subscriptions, eq(subscriptions.id, deliveries.subscriptionId))
+            .where(and(isNull(deliveries.finishedAt), options.enableDotRunner ? isNotNull(subscriptions.bindingId) : isNotNull(subscriptions.taskId)));
+          if (!row || row.nextAt === undefined) throw new Error("MCP event deadline query returned no result");
+          if (row.nextAt !== null) {
+            nextDeadline = new Date(row.nextAt).getTime();
+            if (!Number.isFinite(nextDeadline)) throw new Error("Invalid MCP event deadline");
+            if (nextDeadline <= Date.now()) nextDeadline = Date.now() + 2_000;
+          }
+          if (scan && !moreSources) {
+            if (nextPage) scan.after = nextPage;
+            else { completed = scan.generation; scan = null; }
+          }
+          if (more || scan || completed !== requested) nextDeadline = Date.now();
+        } else {
+          completed = generation; scan = null;
+          if (completed === requested) requestedIds = new Set();
+        }
+      },
+      hasPending: async () => false,
+      nextRunAt: () => stopped ? null : completed !== requested
+        ? Math.min(nextDeadline ?? Infinity, Date.now() + 2_000) : nextDeadline,
+    });
+  }
   return { subscribe, unsubscribe, tick,
     definitions: options.enableDotRunner ? [{ name: names[4], description: "The bound Dot mailbox changed. Drain paperclip_dot_inbox, read and accept current work. Duplicate/out-of-order events do not imply new assignments. Readiness challenges require paperclip_dot_confirm_event.", delivery: ["webhook"],
       inputSchema: z.toJSONSchema(z.object({ companyId: z.uuid(), bindingId: z.uuid() }).strict()),
       payloadSchema: z.toJSONSchema(z.object({ companyId: z.uuid(), bindingId: z.uuid(), bindingGeneration: z.number().int(), mailboxItemId: z.number().int(), kind: z.string() }).passthrough()),
     }] : [...publicMcpEventDefinitions, ...(options.enableDotPrototype ? [dotEventDefinition] : [])],
-    start() { if (!timer) { timer = setInterval(() => { void tick().catch(() => logger.warn("Public MCP event delivery tick failed")); }, 2000); timer.unref(); } },
-    async stop() { if (timer) clearInterval(timer); timer = undefined; await running?.catch(() => {}); },
+    start,
+    async stop() { stopped = true; await running?.catch(() => {}); },
   };
 }
 export type PublicMcpEvents = ReturnType<typeof createPublicMcpEvents>;

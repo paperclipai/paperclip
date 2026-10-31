@@ -23,6 +23,7 @@ import {
   parseHarnessRuntimeRequestResolution,
 } from "../../contracts/harness-driver.js";
 import type { NativeUserMessage } from "../../contracts/types.js";
+import type { NativeRunRuntimeGrant } from "../../contracts/runtime-context.js";
 import {
   CODEX_RESULT_OUTPUT_SCHEMA,
   type CodexModelContextSnapshot,
@@ -82,6 +83,10 @@ export class CodexHarnessSession
     }
   }
 
+  supportsTurnReasoning(): boolean {
+    return this.transport.supportsTurnReasoning?.() === true;
+  }
+
   turnControlCapabilities() {
     if (this.driverKind === "acpx_runtime") {
       return this.transport.turnControlCapabilities?.() ?? { steering: false, queuedFollowUp: false };
@@ -97,51 +102,59 @@ export class CodexHarnessSession
     };
   }
 
-  async attachRun(input: { runId: string }): Promise<void> {
+  async attachRun(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void> {
     this.assertProtocolIntegrity();
     const transportOwnsQuiescence = this.transport.attachRun !== undefined;
     if (
-      this.turnStartPending ||
+      this.turnStartPending || this.pendingRunAttachment !== null ||
       (!transportOwnsQuiescence &&
         (this.activeTurnId !== null || this.pendingRuntimeRequestMap.size > 0))
     ) {
       throw new Error("codex_run_attach_busy");
     }
     if (!input.runId) throw new Error("codex_run_attach_invalid");
-    await this.transport.attachRun?.({
-      runId: input.runId,
-      turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
-      itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
-    });
-    this.assertProtocolIntegrity();
-    if (transportOwnsQuiescence) {
-      // Runnerd's attachment contract performs two durable readiness probes,
-      // drains the settled provider tail, and rotates authority atomically.
-      // Its proof supersedes host reducer state that can remain stale when a
-      // semantic-result consumer stops before the interrupt terminal arrives.
-      // Drop only the prior run's already-proven-settled buffered suffix.
-      this.activeTurnId = null;
-      this.pendingRuntimeRequestMap.clear();
-      this.eventQueue.clear();
+    let settle!: () => void;
+    this.pendingRunAttachment = { runId: input.runId, settled: new Promise<void>(resolve => { settle = resolve; }) };
+    try {
+      await this.transport.attachRun?.({
+        runId: input.runId,
+        turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
+        itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
+        ...(input.currentRunGrant ? { currentRunGrant: structuredClone(input.currentRunGrant) } : {}),
+      });
+      this.assertProtocolIntegrity();
+      if (transportOwnsQuiescence) {
+        // Runnerd's attachment contract performs two durable readiness probes,
+        // drains the settled provider tail, and rotates authority atomically.
+        // Its proof supersedes host reducer state that can remain stale when a
+        // semantic-result consumer stops before the interrupt terminal arrives.
+        // Drop only the prior run's already-proven-settled buffered suffix.
+        this.activeTurnId = null;
+        this.pendingRuntimeRequestMap.clear();
+        this.eventQueue.clear();
+      }
+      if (this.codexUsageBaseline && input.runId !== this.runId) {
+        this.codexUsageBaseline = { baseline: { ...this.codexUsageBaseline.latest }, latest: { ...this.codexUsageBaseline.latest } };
+        this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
+      }
+      this.runId = input.runId;
+      this.result = null;
+      this.resultFingerprint = null;
+      this.resultCallId = null;
+      this.resultTurnId = null;
+      this.dispositionOnlyRecoveryConsumed = false;
+      this.dispositionOnlyRecoveryTurnId = null;
+      this.terminal = false;
+      this.terminalTurns.clear();
+      this.turnStarted = false;
+      this.protocolFailed = false;
+      this.protocolFailureCode = null;
+      this.protocolFailureMessage = null;
+      this.emit("run.attached", { runId: input.runId, sameSession: true });
+    } finally {
+      this.pendingRunAttachment = null;
+      settle();
     }
-    if (this.codexUsageBaseline && input.runId !== this.runId) {
-      this.codexUsageBaseline = { baseline: { ...this.codexUsageBaseline.latest }, latest: { ...this.codexUsageBaseline.latest } };
-      this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
-    }
-    this.runId = input.runId;
-    this.result = null;
-    this.resultFingerprint = null;
-    this.resultCallId = null;
-    this.resultTurnId = null;
-    this.dispositionOnlyRecoveryConsumed = false;
-    this.dispositionOnlyRecoveryTurnId = null;
-    this.terminal = false;
-    this.terminalTurns.clear();
-    this.turnStarted = false;
-    this.protocolFailed = false;
-    this.protocolFailureCode = null;
-    this.protocolFailureMessage = null;
-    this.emit("run.attached", { runId: input.runId, sameSession: true });
   }
 
   contextSnapshot(): CodexModelContextSnapshot {
@@ -157,11 +170,16 @@ export class CodexHarnessSession
     /** Set by orchestration only after successful provider-session recovery. */
     continuation?: true;
     requestedCollaborationMode?: "default" | "plan";
+    /** OpenCode/OpenRouter only. Applies to this turn, never subsequent turns. */
+    reasoningMode?: "default" | "disabled";
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode: "default" | "plan";
   }> {
     this.assertProtocolIntegrity();
+    if (input.reasoningMode !== undefined && !this.supportsTurnReasoning()) {
+      throw new Error("Per-turn reasoning is not supported by this provider");
+    }
     if (this.protocolFailed && this.protocolFailureCode) {
       throw new NativeProviderTerminalFailure(this.protocolFailureCode, false, this.protocolFailureMessage ?? undefined);
     }
@@ -231,6 +249,7 @@ export class CodexHarnessSession
     try {
       response = await this.transport.request("turn/start", {
         threadId: this.opened.threadId,
+        ...(input.reasoningMode === undefined ? {} : { reasoningMode: input.reasoningMode }),
         ...(this.reasoningEffort ? { effort: this.reasoningEffort } : {}),
         cwd: this.opened.context.workingDirectory,
         permissions:
@@ -475,12 +494,12 @@ export class CodexHarnessSession
         `request ${input.requestId} is already settling`,
       );
     }
-    pending.settlingResolution = structuredClone(resolution);
     const response = runtimeRequestResponse(
       pending.request,
       resolution,
       pending.responseContext,
     );
+    pending.settlingResolution = structuredClone(resolution);
     try {
       await this.transport.resolveRuntimeRequest?.({
         requestId: input.requestId,

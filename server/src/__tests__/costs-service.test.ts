@@ -537,6 +537,7 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
         cachedInputTokens: 10,
         outputTokens: 200_000_000,
         costCents: 2_000_000_000,
+        costStatus: "estimated",
         occurredAt: new Date("2026-04-11T00:00:00.000Z"),
       },
     ]);
@@ -555,6 +556,11 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(byAgentRow?.inputTokens).toBe(3_999_999_990);
     expect(byAgentRow!.inputTokens + byAgentRow!.cachedInputTokens).toBe(4_000_000_000);
     expect(byProjectRow?.costCents).toBe(4_000_000_000);
+    expect(byProjectRow).toMatchObject({ eventCount: 2, estimatedEventCount: 1 });
+    const [firstDayProject] = await costs.byProject(companyId, {
+      ...range, to: new Date("2026-04-10T23:59:59.999Z"),
+    });
+    expect(firstDayProject).toMatchObject({ eventCount: 1, estimatedEventCount: 0 });
     expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
   });
 

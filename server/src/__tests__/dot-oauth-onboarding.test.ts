@@ -161,6 +161,7 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     const authorization = await request(app).get("/mcp/runner/oauth/authorize").query(f.input);
     expect(authorization.status).toBe(303);
     expect(new URL(authorization.headers.location).origin).toBe(browserOrigin);
+    expect(new URL(authorization.headers.location).pathname).toMatch(/^\/dot-connect\/pcmcp_request_[A-Za-z0-9_-]{43}$/);
     const path = `/api/mcp/requests/${f.id}/dot-pairing`;
     expect((await request(app).post(path).set("Origin", "https://other.example").send({ pairingCode: f.pairing.pairingCode })).status).toBe(403);
     const approval = await request(app).post(path).set("Origin", browserOrigin).send({ pairingCode: f.pairing.pairingCode });
@@ -175,13 +176,14 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     for (const invalid of ["http://browser.example", "https://secret@browser.example", "https://browser.example/path", "https://browser.example?next=evil", "https://browser.example#fragment"])
       expect(() => publicMcpConfig({ PAPERCLIP_PUBLIC_URL: config.origin, PAPERCLIP_MCP_AUTHORIZATION_ORIGIN: invalid })).toThrow();
   });
-  it("connects without a board session, binds the exact agent, and consumes the capability once", async () => {
+  it.each(["mcp", "dot-mcp"])("connects via %s without a board session, binds the exact agent, and consumes the capability once", async prefix => {
     const f = await fixture();
     const personal = createPublicMcpOAuth(db, { ...config, resource: config.origin + "/mcp/paperclip" });
     const app = express(); app.use(express.json());
     app.use((req, _res, next) => { req.actor = { type: "none" }; next(); });
     app.use("/api", publicMcpManagementRoutes(personal, f.oauth));
-    const path = `/api/mcp/requests/${f.id}/dot-pairing`;
+    const path = `/api/${prefix}/requests/${f.id}/dot-pairing`;
+    expect((await request(app).get(`/api/${prefix}/requests/${f.id}`)).body.agentConnection).toBe(true);
     expect((await request(app).post(path).send({ pairingCode: f.pairing.pairingCode })).status).toBe(403);
     const preview = await request(app).post(path + "/preview").set("Origin", config.origin).send({ pairingCode: f.pairing.pairingCode });
     expect(preview.status).toBe(200);
@@ -207,6 +209,20 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0]!.adapterConfig.dotBindingId).toBe(f.pairing.bindingId);
     await expect(f.oauth.consentDotPairing(f.id, f.pairing.pairingCode)).rejects.toThrow();
     await expect(f.oauth.consentDotPairing(await f.begin(), f.pairing.pairingCode)).rejects.toThrow();
+  });
+  it("does not expose personal assistant requests through the public Dot pairing lane", async () => {
+    const f = await fixture();
+    const personal = createPublicMcpOAuth(db, { ...config, resource: config.origin + "/mcp/paperclip" });
+    const client = await personal.register({ client_name: "Personal", redirect_uris: [callback], grant_types: ["authorization_code"] }, randomUUID());
+    const id = (await personal.authorize({ ...f.input, client_id: client.client_id, resource: config.origin + "/mcp/paperclip", scope: "paperclip:read" })).split("/").at(-1)!;
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "none" }; next(); });
+    app.use("/api", publicMcpManagementRoutes(personal, f.oauth));
+    expect((await request(app).get(`/api/dot-mcp/requests/${id}`)).status).toBe(404);
+    for (const suffix of ["", "/preview"]) {
+      expect((await request(app).post(`/api/dot-mcp/requests/${id}/dot-pairing${suffix}`).set("Origin", config.origin).send({ pairingCode: f.pairing.pairingCode })).status).toBe(404);
+    }
+    expect((await request(app).get(`/api/mcp/requests/${id}`)).status).toBe(200);
   });
   it.each(["expired-code", "expired-request", "revoked", "paused", "viewer", "wrong-company", "dot-disabled", "mcp-disabled"])("rejects %s without creating a grant", async failure => {
     const f = await fixture();

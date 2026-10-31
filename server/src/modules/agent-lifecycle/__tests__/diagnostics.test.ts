@@ -5,6 +5,7 @@ import type { LifecycleAgent, LifecycleStore, LifecycleDriver } from "../applica
 import { startAgentLifecycle } from "../index.js";
 import { createAgentLifecycleEffects } from "../../../services/agent-lifecycle.js";
 import { logger } from "../../../middleware/logger.js";
+import { lifecycleFailureMessage, lifecycleVerificationNeedsRetry } from "../application/failure.js";
 
 const agent: LifecycleAgent = { id: "agent", companyId: "company", lifecycleState: "verifying", lifecycleVersion: 3,
   lifecycleRequiredPluginIds: null, lifecycleError: null,
@@ -13,15 +14,98 @@ function fixture() {
   const store = { get: vi.fn(), claim: vi.fn().mockResolvedValue(agent), renew: vi.fn().mockResolvedValue(true),
     setRequiredPlugins: vi.fn().mockResolvedValue(true), completeHost: vi.fn().mockResolvedValue(true),
     completePlugin: vi.fn().mockResolvedValue(true), defer: vi.fn().mockResolvedValue(true),
-    change: vi.fn().mockResolvedValue({ ...agent, lifecycleState: "ready" }), pending: vi.fn().mockResolvedValue([agent.id]) } satisfies LifecycleStore;
+    change: vi.fn().mockResolvedValue({ ...agent, lifecycleState: "ready", lifecycleVersion: 4, lifecycleOperation: null }), pending: vi.fn().mockResolvedValue([agent.id]) } satisfies LifecycleStore;
   const driver = { requiredPluginIds: vi.fn().mockResolvedValue(["plugin"]), runHost: vi.fn().mockResolvedValue("complete"),
-    runPlugin: vi.fn().mockResolvedValue("complete") } satisfies LifecycleDriver;
+    runPlugin: vi.fn().mockResolvedValue("complete"), onReady: vi.fn().mockResolvedValue(undefined) } satisfies LifecycleDriver;
   const report = vi.fn();
   return { store, driver, report, worker: createLifecycleWorker(store, driver, report) };
 }
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
+describe("lifecycle readiness handoff", () => {
+  it("notifies the scheduler only after host, plugins, and readiness have committed", async () => {
+    const { store, driver, worker } = fixture();
+    let commit!: (ready: LifecycleAgent) => void;
+    store.change.mockReturnValue(new Promise(resolve => { commit = resolve; }));
+    driver.onReady.mockImplementation(async ready => {
+      expect(store.completeHost).toHaveBeenCalledOnce();
+      expect(store.completePlugin).toHaveBeenCalledOnce();
+      expect(store.change).toHaveBeenCalledOnce();
+      expect(ready).toMatchObject({ lifecycleState: "ready", lifecycleVersion: 4, lifecycleOperation: null });
+    });
+    const work = worker.process(agent.id);
+    await vi.waitFor(() => expect(store.change).toHaveBeenCalledOnce());
+    expect(driver.onReady).not.toHaveBeenCalled();
+    commit({ ...agent, lifecycleState: "ready", lifecycleVersion: 4, lifecycleOperation: null });
+    await work;
+    expect(driver.onReady).toHaveBeenCalledOnce();
+    await worker.stop();
+  });
+
+  it.each(["host", "plugin", "transition", "hold"])("does not dispatch when %s prevents readiness", async stage => {
+    const { store, driver, worker } = fixture();
+    if (stage === "host") driver.runHost.mockResolvedValue("pending");
+    if (stage === "plugin") driver.runPlugin.mockResolvedValue("pending");
+    if (stage === "transition") store.change.mockResolvedValue(null);
+    if (stage === "hold") store.change.mockResolvedValue({ ...agent, lifecycleState: "paused" });
+    await worker.process(agent.id);
+    expect(driver.onReady).not.toHaveBeenCalled();
+    await worker.stop();
+  });
+
+  it("preserves committed readiness after a dispatch failure for the queue sweep to recover", async () => {
+    const { store, driver, report, worker } = fixture();
+    const error = new Error("queue unavailable");
+    driver.onReady.mockRejectedValue(error);
+    await worker.process(agent.id);
+    expect(report).toHaveBeenCalledWith(expect.objectContaining({ stage: "ready", phase: "ready", version: 4 }), error);
+    expect(store.defer).not.toHaveBeenCalled();
+    expect(driver.runHost).toHaveBeenCalledOnce();
+    expect(store.change).toHaveBeenCalledOnce();
+    await worker.stop();
+  });
+});
+
 describe("lifecycle failure diagnostics", () => {
+  it.each(["harness_auth_failed", "harness_model_unavailable", "harness_command_unavailable", "harness_cwd_invalid", "harness_probe_unexpected_output"])("waits for repair only for a host verification failure: %s", code => {
+    const error = { code };
+    expect(lifecycleVerificationNeedsRetry({ stage: "host", phase: "verifying" }, error)).toBe(true);
+    expect(lifecycleVerificationNeedsRetry({ stage: "plugin", phase: "verifying" }, error)).toBe(false);
+    expect(lifecycleVerificationNeedsRetry({ stage: "host", phase: "cleaning_up" }, error)).toBe(false);
+  });
+
+  it("allows two automatic retries of a generic failed test before waiting for repair", () => {
+    for (const verificationFailures of [1, 2, 3, 8_000]) {
+      const context = { stage: "host" as const, phase: "verifying" as const, attempts: 8_000, verificationFailures };
+      expect(lifecycleVerificationNeedsRetry(context, { code: "harness_test_failed" })).toBe(verificationFailures >= 3);
+    }
+  });
+
+  it.each([
+    ["host", "harness_model_unavailable", "Execution configuration check failed. The selected model is unavailable."],
+    ["plugin", "required_plugin_unavailable", "Execution configuration check: required plugin step failed. A required plugin is unavailable."],
+    ["select_plugins", "unknown private code", "Execution configuration check: finding required plugins failed. Paperclip could not complete this step."],
+    ["transition", "40P01", "Execution configuration check: saving progress failed. Paperclip could not complete this step."],
+  ] as const)("persists safe actionable errors for %s", async (stage, code, expected) => {
+    const { store, driver, worker } = fixture();
+    const error = Object.assign(new Error("secret provider output"), { code });
+    if (stage === "host") driver.runHost.mockRejectedValue(error);
+    if (stage === "plugin") driver.runPlugin.mockRejectedValue(error);
+    if (stage === "select_plugins") driver.requiredPluginIds.mockRejectedValue(error);
+    if (stage === "transition") store.change.mockRejectedValue(error);
+    await worker.process(agent.id);
+    expect(store.defer).toHaveBeenCalledWith(agent, expect.any(String), expect.stringContaining(expected), expect.any(Date),
+      ...(stage === "host" ? [{ retryRequired: true }] : []));
+    expect(JSON.stringify(store.defer.mock.calls)).not.toContain("secret provider output");
+    expect(JSON.stringify(store.defer.mock.calls)).not.toContain("unknown private code");
+    await worker.stop();
+  });
+
+  it("does not treat prototype properties as allowed failure codes", () => {
+    expect(lifecycleFailureMessage({ stage: "host", phase: "verifying" }, { code: "toString" }))
+      .toContain("Paperclip could not complete this step");
+  });
+
   it.each(["host", "plugin", "claim", "renew", "scan", "defer"] as const)("reports %s failures with the available context", async stage => {
     const { store, driver, report, worker } = fixture();
     const error = new Error("private provider detail");
@@ -41,14 +125,30 @@ describe("lifecycle failure diagnostics", () => {
     await worker.stop();
   });
 
-  it("reports periodic policy scan failures", async () => {
-    vi.useFakeTimers();
+  it("bounds retries for due work while plugins are unavailable and stops reading after shutdown", async () => {
+    const where = vi.fn().mockResolvedValue([{ due: 0 }]);
+    const select = vi.fn(() => ({ from: () => ({ where }) }));
+    const db = { select } as unknown as Db;
+    const work = startAgentLifecycle(db, createAgentLifecycleEffects(), fixture().driver, () => false);
+    try {
+      expect(await work.hasPending()).toBe(true);
+      expect(work.nextRunAt()).toBeNull();
+      await work.sweep();
+      expect(select).toHaveBeenCalledTimes(1);
+      await work.stop();
+      expect(await work.hasPending()).toBe(false);
+      expect(work.nextRunAt()).toBeNull();
+      expect(select).toHaveBeenCalledTimes(1);
+    } finally { await work.stop(); }
+  });
+
+  it("reports inherited company projection failures", async () => {
     const error = new Error("private database detail");
     const db = { select: () => { throw error; } } as unknown as Db;
     const effects = { ...createAgentLifecycleEffects(), reportFailure: vi.fn() };
     const work = startAgentLifecycle(db, effects, fixture().driver, () => true);
     try {
-      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(work.sweep()).rejects.toThrow(error);
       expect(effects.reportFailure).toHaveBeenCalledWith({ stage: "policy_scan" }, error);
     } finally { await work.stop(); }
   });
@@ -56,6 +156,7 @@ describe("lifecycle failure diagnostics", () => {
   it.each([
     [{ code: "required_plugin_unavailable" }, "required_plugin_unavailable"],
     [{ code: "harness_test_failed" }, "harness_test_failed"],
+    [{ code: "harness_auth_failed" }, "harness_auth_failed"],
     [{ cause: { code: "40P01", message: "private query" } }, "40P01"],
     [{ code: "private credential value" }, "unclassified"],
   ])("logs known codes without provider error contents", (details, failureCode) => {

@@ -239,15 +239,15 @@ describe("chat publication commit signals", () => {
     expect(persistedEvent).toBeGreaterThan(appendRunEventStart);
     expect(emittedEvent).toBeGreaterThan(persistedEvent);
 
-    const heartbeatSource = readFileSync(
-      new URL("./heartbeat.ts", import.meta.url),
+    const completionSource = readFileSync(
+      new URL("./heartbeat/run-completion.ts", import.meta.url),
       "utf8",
     );
-    const presentationMarker = heartbeatSource.indexOf(
+    const presentationMarker = completionSource.indexOf(
       'eventType: "run.presentation.resolved"',
     );
-    const committedComment = heartbeatSource.lastIndexOf(
-      "await issuesSvc.addComment",
+    const committedComment = completionSource.lastIndexOf(
+      "issuesSvc.addComment",
       presentationMarker,
     );
     expect(presentationMarker).toBeGreaterThanOrEqual(0);

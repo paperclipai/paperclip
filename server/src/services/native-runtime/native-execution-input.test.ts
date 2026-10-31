@@ -6,9 +6,10 @@ import { nativeCompletionSource, buildNativeCompletionContract } from "./complet
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
+import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 
 describe("LCA-05 explicit native work mode", () => {
-  it.each(["standard", "planning", "ask"])("title and description cannot override %s mode", (workMode) => {
+  it.each(["standard", "planning", "ask", "skill_test"])("title and description cannot override %s mode", (workMode) => {
     for (const text of ["Inspect files", "Making a plan", "Create a report", "Research proposal", "Implement now; no plan needed"]) {
       const input = buildNativeExecutionInput({
         companyId: "10000000-0000-4000-8000-000000000001",
@@ -20,12 +21,13 @@ describe("LCA-05 explicit native work mode", () => {
         normalizedSessionId: null,
         provider: "codex",
         codexReasoningEffort: "high",
+        codexWebSearch: "disabled",
         planningContext: workMode === "planning" ? { documentId: null, baseRevisionId: null, baseRevisionNumber: 0, markdown: "", sha256: "a".repeat(64), reviewContext: {} } : null,
         completionContract: { id: "70000000-0000-4000-8000-000000000007", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1", contract: { revision: "1", objective: "Deliver the requested work", criteria: [{ id: "output", requirement: "Deliver the requested work" }] } },
         runtimeContext: nativeRuntimeContextFixture(),
       });
       expect(input.task.workMode).toBe(workMode);
-      expect(input.provider).toMatchObject({ kind: "codex", reasoningEffort: "high" });
+      expect(input.provider).toMatchObject({ kind: "codex", reasoningEffort: "high", webSearch: "disabled" });
       expect(input.executionMode).toBe(workMode === "planning" ? "plan" : "default");
       expect(input.task.title).toBe(text);
     }
@@ -455,6 +457,28 @@ describe("native execution input external-chat framing", () => {
         "Never infer the file's contents or substitute an older file",
       );
 
+      const runtimeContext = nativeRuntimeContextFixture();
+      runtimeContext.skills = ["configured", "provider-mentioned"].map((name) => ({
+        key: `company/test/${name}`,
+        runtimeName: name,
+        versionId: null,
+        bundle: { ...runtimeContext.instructions.bundle },
+      }));
+      runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(runtimeContext);
+      const skillArgs = {
+        ...args,
+        issue: { ...args.issue, description: "Stale provider message: /provider-mentioned" },
+        taskPrompt: `${args.taskPrompt}\nGitHub message: /provider-mentioned`,
+        runtimeContext,
+        githubInstructionSkillKeys: ["company/test/configured", "company/other/unknown"],
+      };
+      const skillInput = buildNativeExecutionInput(skillArgs);
+      expect(skillInput.task.description).toBe("Configured GitHub instruction skills:\n/configured");
+      expect(buildNativeModelEnvelope(skillInput)).toMatchObject({ requestedSkills: ["configured"] });
+      expect(buildNativeModelEnvelope(buildNativeExecutionInput({
+        ...skillArgs, githubInstructionSkillKeys: [],
+      }))).toMatchObject({ requestedSkills: [] });
+
       const wake = args.wakePayload as Record<string, unknown>;
       for (const patch of [
         { externalChatProvider: "slack" },
@@ -472,6 +496,13 @@ describe("native execution input external-chat framing", () => {
         expect(unrelated.task.prompt).not.toContain(
           "Paperclip owns recovery navigation for unavailable GitHub attachments",
         );
+        if (["slack", "discord", "telegram", "microsoft-teams"].includes(patch.externalChatProvider ?? "")) {
+          const unrelatedSkills = buildNativeExecutionInput({
+            ...skillArgs, wakePayload: { ...wake, ...patch },
+          });
+          expect(unrelatedSkills.task.description).toBeNull();
+          expect(buildNativeModelEnvelope(unrelatedSkills)).toMatchObject({ requestedSkills: [] });
+        }
       }
     },
   );
@@ -632,5 +663,49 @@ describe("Pi thinking native execution projection", () => {
   });
   it("rejects a Pi thinking level attached to another harness", () => {
     expect(() => buildNativeExecutionInput({ ...fixture("low"), acpxAgent: "copilot" })).toThrow("only for Pi");
+  });
+});
+
+
+describe("Claude effort and master home-mode compatibility", () => {
+  it.each([
+    ["isolated", undefined, "v5"], ["preconfigured", undefined, "v7"],
+    ["isolated", "high", "v9"], ["preconfigured", "high", "v9"],
+  ] as const)("retains %s home mode with effort %s in %s", (homeMode, claudeEffort, version) => {
+    const value = buildNativeExecutionInput({
+      companyId: "company", runId: "run", agentId: "agent",
+      issue: { id: "issue", identifier: "CLA-1", title: "Useful output", description: null, workMode: "standard" },
+      taskPrompt: "Create the requested file.",
+      workspace: { id: "workspace", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: null, provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5",
+      acpxPermissionMode: "approve-all", homeMode, claudeEffort,
+      completionContract: { id: "contract", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+        contract: { revision: "1", objective: "Create a file", criteria: [{ id: "output", requirement: "Create the file" }] } },
+      runtimeContext: nativeRuntimeContextFixture(),
+    });
+    expect(value.schema).toBe(`paperclip.native-execution-input.${version}`);
+    if (version !== "v5") expect(value).toHaveProperty("homeMode", homeMode);
+    if (claudeEffort) expect(value.provider).toHaveProperty("claudeEffort", claudeEffort);
+    expect(JSON.stringify(buildNativeModelEnvelope(value))).not.toContain("claudeEffort");
+  });
+  it.each([
+    ["isolated", undefined, undefined, "v5"], ["isolated", "high", true, "v10"], ["isolated", undefined, false, "v10"],
+  ] as const)("retains %s home mode with effort %s and search policy %s in %s", (homeMode, grokEffort, grokDisableWebSearch, version) => {
+    const value = buildNativeExecutionInput({
+      companyId: "company", runId: "run", agentId: "agent",
+      issue: { id: "issue", identifier: "CLA-1", title: "Useful output", description: null, workMode: "standard" },
+      taskPrompt: "Create the requested file.",
+      workspace: { id: "workspace", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: null, provider: "acpx", acpxAgent: "grok", model: "grok-4.7",
+      acpxPermissionMode: "approve-all", homeMode, grokEffort, grokDisableWebSearch,
+      completionContract: { id: "contract", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+        contract: { revision: "1", objective: "Create a file", criteria: [{ id: "output", requirement: "Create the file" }] } },
+      runtimeContext: nativeRuntimeContextFixture(),
+    });
+    expect(value.schema).toBe(`paperclip.native-execution-input.${version}`);
+    if (version !== "v5") expect(value).toHaveProperty("homeMode", homeMode);
+    if (grokEffort) expect(value.provider).toHaveProperty("grokEffort", grokEffort);
+    if (grokDisableWebSearch !== undefined) expect(value.provider).toHaveProperty("grokDisableWebSearch", grokDisableWebSearch);
+    expect(JSON.stringify(buildNativeModelEnvelope(value))).not.toContain("grokEffort");
   });
 });

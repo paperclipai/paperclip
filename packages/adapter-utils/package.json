@@ -45,10 +45,12 @@
   "dependencies": {
     "@paperclipai/shared": "workspace:*",
     "acpx": "0.12.0",
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "smol-toml": "^1.9.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },
   "engines": {

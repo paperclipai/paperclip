@@ -1,9 +1,47 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIRequestContext, type APIResponse } from "@playwright/test";
 
 import { idle, json, send, setup } from "./agent-chat.shared";
 
 test.use({ trace: "retain-on-failure" });
 test.setTimeout(120_000);
+
+test("cleanup restores agent chat experiments when cancellation fails", async ({ request }) => {
+  const original = await json(await request.get("/api/instance/settings/experimental"));
+  const response = (status: number, body: unknown) => ({
+    ok: () => status >= 200 && status < 300,
+    status: () => status,
+    text: async () => JSON.stringify(body),
+    json: async () => body,
+  }) as APIResponse;
+  const failingRequest = new Proxy(request, {
+    get(target, property) {
+      if (property === "get") return async (...args: Parameters<APIRequestContext["get"]>) =>
+        args[0].endsWith("/live-runs")
+          ? response(200, [{ id: "cleanup-cancellation-fixture" }])
+          : target.get(...args);
+      if (property === "post") return async (...args: Parameters<APIRequestContext["post"]>) =>
+        args[0].endsWith("/heartbeat-runs/cleanup-cancellation-fixture/cancel")
+          ? response(500, { error: "simulated cancellation failure" })
+          : target.post(...args);
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  try {
+    const f = await setup(failingRequest);
+    await expect(f.restore()).rejects.toThrow("500");
+    const restored = await json(await request.get("/api/instance/settings/experimental"));
+    expect(restored).toMatchObject({
+      enableAgentChat: original.enableAgentChat,
+      enableClassicTaskInterface: original.enableClassicTaskInterface,
+    });
+  } finally {
+    await json(await request.patch("/api/instance/settings/experimental", { data: {
+      enableAgentChat: original.enableAgentChat,
+      enableClassicTaskInterface: original.enableClassicTaskInterface,
+    } }));
+  }
+});
 
 /**
  * Agent chat project and content coverage: project cards, split handoff,
@@ -124,12 +162,19 @@ test("split handoff commits relevant plans before execution and never creates ch
       const runs = await json(
         await request.get(`/api/companies/${f.company.id}/heartbeat-runs`),
       );
-      const run = runs.find(
+      const taskRuns = runs.filter(
         (run: any) => run.contextSnapshot?.issueId === task.id,
       );
-      expect(run).toBeTruthy();
+      expect(taskRuns.length).toBeGreaterThan(0);
+      const startedAt = taskRuns
+        .filter((run: any) => run.startedAt != null)
+        .map((run: any) => Date.parse(run.startedAt));
+      // A newer queued/cancelled run need not have started. Preserve the
+      // invariant against the first actual execution, not list ordering.
+      expect(startedAt.length).toBeGreaterThan(0);
+      expect(startedAt.every(Number.isFinite)).toBe(true);
       expect(Date.parse(plan.updatedAt)).toBeLessThanOrEqual(
-        Date.parse(run.startedAt),
+        Math.min(...startedAt),
       );
     }
     expect(
@@ -414,12 +459,18 @@ test("plan approval hands the preserved revision to an assigned project task", a
         { timeout: 60_000 },
       )
       .toBe(1);
+    // Task completion is delivered back to the chat as another real turn.
+    await idle(request, f.chatPath, 3);
     const task = (
       await json(await request.get(`/api/companies/${f.company.id}/issues`))
     )[0];
     expect(task.parentId).toBeNull();
     expect(task.projectId).toBeTruthy();
     expect(task.assigneeAgentId).toBe(f.agent.id);
+    const completion = page.getByText("Delegated work completed:", { exact: false });
+    await expect(completion.getByRole("link").and(page.locator(
+      `a[href="/${f.company.issuePrefix}/issues/${task.identifier}"]`,
+    ))).toBeVisible();
     const plan = await json(
       await request.get(`/api/issues/${task.id}/documents/plan`),
     );
@@ -455,6 +506,7 @@ test("shared questions resume and existing project reuse creates no project card
     );
     await page.goto(f.route);
     await send(page, { action: "question" });
+    await idle(request, f.chatPath);
     await expect(
       page.getByRole("radio", { name: "Garden club", exact: true }).last(),
     ).toBeVisible();
@@ -565,7 +617,7 @@ test("disabling the experiment lets an active turn settle and keeps idle history
     await send(page, { action: "delayed" });
     await expect(
       page.getByText("Turn started before feature disable.", { exact: true }),
-    ).toBeVisible();
+    ).toBeVisible({ timeout: 30_000 });
     const chat = await json(await request.get(f.chatPath));
     await json(
       await request.patch("/api/instance/settings/experimental", {

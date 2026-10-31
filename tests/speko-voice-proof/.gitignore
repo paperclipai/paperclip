@@ -1,0 +1,5 @@
+node_modules/
+reports/
+.env
+*.pcm
+*.wav

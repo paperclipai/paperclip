@@ -107,7 +107,7 @@ export async function captureAgentFileCheckpoint(input: {
       stats = JSON.parse(result.stdout.trim()) as AgentFileCheckpointStats;
       await fs.rm(cacheDir, { recursive: true, force: true });
       restore = await prepareAdapterExecutionTargetRuntime({ target, runId: input.runId, adapterKey: `agent-checkpoint-download-${path.basename(directory)}`, workspaceLocalDir: directory,
-        workspaceRemoteDir: remoteDirectory!, syncWorkspace: true, workspaceInboundMode: "adopt_remote", workspaceBaseline: { exclude: [], entries: new Map() }, workspaceGitSnapshot: null, workspaceFileMode: "all" });
+        workspaceRemoteDir: remoteDirectory!, syncWorkspace: true, workspaceInboundMode: "adopt_remote", workspaceBaseline: { exclude: [], entries: new Map() }, workspaceGitSnapshot: null, workspaceRepositories: [], workspaceFileMode: "all" });
       await restore.restoreWorkspace();
     }
     return { directory, manifest: await validateAgentFileCheckpoint(directory, input.previous), stats, cleanup };

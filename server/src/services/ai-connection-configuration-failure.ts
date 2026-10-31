@@ -1,4 +1,4 @@
-import { unprocessable } from "../errors.js";
+import { forbidden, unprocessable } from "../errors.js";
 
 const reasons = [
   "ai_connection_responsible_user_missing",
@@ -6,9 +6,12 @@ const reasons = [
   "ai_connection_missing",
   "ai_connection_incompatible",
   "ai_connection_unavailable",
+  "ai_connection_credential_not_shared",
 ] as const;
 type AiConnectionConfigurationReason = typeof reasons[number];
 const failures = new WeakMap<Error, AiConnectionConfigurationReason>();
+type CredentialAccessFailure = { connectionName: string; grantId?: string };
+const credentialAccessFailures = new WeakMap<Error, CredentialAccessFailure>();
 
 /** Preserve the existing HTTP error while recording an explicit selection rejection. */
 export function aiConnectionConfigurationFailure(
@@ -19,6 +22,19 @@ export function aiConnectionConfigurationFailure(
   const error = unprocessable(message, { ...details, code: reason });
   failures.set(error, reason);
   return error;
+}
+
+/** A verified active user lacks this credential's human sharing permission. */
+export function aiConnectionCredentialNotSharedFailure(context?: CredentialAccessFailure) {
+  const error = forbidden("This credential is not shared with the responsible user");
+  failures.set(error, "ai_connection_credential_not_shared");
+  if (context) credentialAccessFailures.set(error, { ...context });
+  return error;
+}
+
+/** Display metadata only, kept off the public 403 response and free of secret material. */
+export function readAiCredentialAccessFailure(error: unknown): CredentialAccessFailure | null {
+  return error instanceof Error ? credentialAccessFailures.get(error) ?? null : null;
 }
 
 /** Only owned producers supply this evidence; matching names or HTTP codes do not. */

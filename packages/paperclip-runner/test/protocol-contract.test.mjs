@@ -27,7 +27,7 @@ async function fixture(relativePath) {
 
 test("all schema IDs are unique and all external references resolve", async () => {
   const schemas = await loadSchemaCatalog(resolve(protocolRoot, "schemas"));
-  assert.equal(schemas.length, 28);
+  assert.equal(schemas.length, 29);
   assert.doesNotThrow(() => compileProtocolValidators(schemas));
 });
 
@@ -46,6 +46,22 @@ test("canonical replay fixtures use supported required versions", async () => {
     "source-gap.json",
   ]) {
     assert.equal(assertReplayFixtureCompatibility(await fixture(`replay/${name}`)).protocolVersion, 1);
+  }
+});
+
+test("runtime activity is a closed Runner notification in every supported event version", async () => {
+  const validators = compileProtocolValidators(await loadSchemaCatalog(resolve(protocolRoot, "schemas")));
+  const happy = await fixture("replay/happy-path.json");
+  const base = happy.events[0];
+  for (const [version, validate] of [[1, event => validators.fixture({ ...happy, events: [event] })], [2, validators.eventV2], [3, validators.eventV3]]) {
+    const event = { ...base, schema: `paperclip.prp.event.v${version}`, schemaVersion: version,
+      eventType: "runtime.activity.recorded", priority: 1, sourceKind: "runner", payload: { namespace: "example.runtime", activityKey: "desktop.used" } };
+    assert.equal(validate(event), true);
+    assert.equal(validate({ ...event, sourceKind: "control_plane" }), false);
+    for (const payload of [{ ...event.payload, runId: "caller-run" }, { ...event.payload, activityKey: "" },
+      { ...event.payload, activityKey: "x".repeat(161) }, { ...event.payload, namespace: "invalid\nkey" }]) {
+      assert.equal(validate({ ...event, payload }), false);
+    }
   }
 });
 
@@ -88,7 +104,7 @@ test("accepted fixtures satisfy the complete JSON Schemas", async () => {
   assert.doesNotThrow(() => assertSchemaInstance(validators.fixture, unsupported, "required-v2", false));
 });
 
-test("PRP v3 external operations are closed and Dot has no native model or thread", async () => {
+test("PRP v3 external operations are closed and external providers have no native model or thread", async () => {
   const schemas = await loadSchemaCatalog(resolve(protocolRoot, "schemas"));
   const validators = compileProtocolValidators(schemas);
   const happy = await fixture("replay/happy-path.json");
@@ -111,6 +127,11 @@ test("PRP v3 external operations are closed and Dot has no native model or threa
   assert.equal(validators.providerDescriptor(descriptor), true);
   assert.equal(validators.providerDescriptor({ ...descriptor, model: "invented" }), false);
   assert.equal(validators.providerDescriptor({ ...descriptor, providerSessionId: "invented-thread" }), false);
+  const museDescriptor = { ...descriptor, provider: "muse", driver: "muse_external", service: "muse" };
+  assert.equal(validators.providerDescriptor(museDescriptor), true);
+  assert.equal(validators.providerDescriptor({ ...museDescriptor, model: "invented" }), false);
+  assert.equal(validators.providerDescriptor({ ...museDescriptor, providerSessionId: "invented-thread" }), false);
+  assert.equal(validators.providerDescriptor({ ...museDescriptor, driver: "openai_dot_mcp" }), false);
 });
 
 test("provider descriptors require coherent provider, driver, and execution combinations", async () => {

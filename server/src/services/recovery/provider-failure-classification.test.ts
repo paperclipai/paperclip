@@ -10,6 +10,10 @@ import { legacyExecutionNeedsReconciliation } from "../legacy-execution-recovery
 import { isConfigurationIncompleteFailedRun } from "../../modules/wake-queue/domain/values.js";
 
 describe("classifyAdapterFailureForRecovery", () => {
+  it("does not automatically replay a project access denial", () => {
+    expect(classifyContinuationFailure({ errorCode: "project_access_denied", resultJson: null } as never))
+      .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
   it("waits for model configuration changes instead of retrying a typed native model rejection", () => {
     const run = { errorCode: "native_provider_model_rejected", error: "Fixed model configuration message", resultJson: null };
     expect(classifyAdapterFailureForRecovery(run)).toEqual({ kind: "configuration_incomplete" });
@@ -20,6 +24,12 @@ describe("classifyAdapterFailureForRecovery", () => {
     expect(classifyAdapterFailureForRecovery(unknown)).toBeNull();
     expect(classifyContinuationFailure(unknown as never).kind).toBe("transient_infra");
     expect(isConfigurationIncompleteFailedRun(unknown)).toBe(false);
+  });
+  it("retries a continuation whose host lost the controller lease before dispatch", () => {
+    expect(classifyContinuationFailure({ errorCode: "controller_lease_lost", error: "Legacy controller lease lost", resultJson: null } as never))
+      .toMatchObject({ kind: "transient_infra", maxAttempts: 3 });
+    expect(classifyContinuationFailure({ errorCode: "setup_failed", error: "Legacy controller lease lost", resultJson: null } as never).kind)
+      .toBe("non_retryable");
   });
   it.each(["acpx_auth_required", "claude_auth_required", "codex_auth_required", "adapter_auth_missing", "refresh_token_reused", "authentication_required"])("does not automatically retry provider authentication failure %s", (errorCode) => {
     const classification = classifyRunLiveness({ runStatus: "failed", issue: null, errorCode, authenticationRepairRequested: true });

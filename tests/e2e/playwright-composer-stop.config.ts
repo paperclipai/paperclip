@@ -19,6 +19,7 @@ if (fixture) {
     throw new Error(
       "PAPERCLIP_STOP_FAKE_CODEX must name the built fake-codex-app-server binary",
     );
+  fs.mkdirSync(path.join(fixtureDir, "codex-home"));
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
   fs.writeFileSync(
     path.join(fixtureDir, "codex"),
@@ -37,6 +38,14 @@ export default defineConfig({
       ...server?.env,
       HEARTBEAT_SCHEDULER_INTERVAL_MS: "10000",
       PATH: `${fixtureDir}${path.delimiter}${process.env.PATH ?? ""}`,
+      ...(fixture ? {
+        // Provider selection prefers the installed dependency over PATH.
+        // Scope this override and its empty credential home to the test server.
+        PAPERCLIP_STOP_CODEX_COMMAND: path.join(fixtureDir, "codex"),
+        CODEX_HOME: path.join(fixtureDir, "codex-home"),
+        OPENAI_API_KEY: "composer-stop-fixture-key",
+        NODE_OPTIONS: `${server?.env?.NODE_OPTIONS ?? ""} --import=${path.resolve(import.meta.dirname, "fixtures/composer-stop-codex-loader.mjs")}`,
+      } : {}),
     },
   },
 });

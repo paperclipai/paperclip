@@ -26,6 +26,8 @@ const mdxEditorMockState = vi.hoisted(() => ({
   throwOnRender: false,
   /** Markdown the mock emits through `onChange` once mounted, as the real editor would export it. */
   emitMountChange: null as string | null,
+  /** Markdown the mock emits once mounted with MDXEditor's `initialMarkdownNormalize` flag set. */
+  emitMountNormalizedMarkdown: null as string | null,
   /** Milliseconds the mock waits before painting its content, to model a slow import. */
   populateDelayMs: 0,
   markdownValues: [] as string[],
@@ -72,7 +74,7 @@ vi.mock("@mdxeditor/editor", async () => {
     }: {
       markdown: string;
       placeholder?: string;
-      onChange?: (value: string) => void;
+      onChange?: (value: string, initialMarkdownNormalize?: boolean) => void;
       onError?: (error: unknown) => void;
       suppressHtmlProcessing?: boolean;
       className?: string;
@@ -149,6 +151,10 @@ vi.mock("@mdxeditor/editor", async () => {
         }
         if (mdxEditorMockState.emitMountChange !== null) {
           onChange?.(mdxEditorMockState.emitMountChange);
+        }
+        if (mdxEditorMockState.emitMountNormalizedMarkdown !== null) {
+          setContent(mdxEditorMockState.emitMountNormalizedMarkdown);
+          onChange?.(mdxEditorMockState.emitMountNormalizedMarkdown, true);
         }
       }, 0);
       return () => {
@@ -326,6 +332,7 @@ describe("MarkdownEditor", () => {
     mdxEditorMockState.emitMountSilentEmptyState = false;
     mdxEditorMockState.throwOnRender = false;
     mdxEditorMockState.emitMountChange = null;
+    mdxEditorMockState.emitMountNormalizedMarkdown = null;
     mdxEditorMockState.populateDelayMs = 0;
     mdxEditorMockState.markdownValues = [];
     mdxEditorMockState.insertedMarkdownValues = [];
@@ -695,6 +702,31 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("does not report MDXEditor's initial markdown normalization as a change", async () => {
+    // MDXEditor rewrites `-` bullets to `*` on load and flags it as normalization.
+    mdxEditorMockState.emitMountNormalizedMarkdown = "* first\n* second";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value={"- first\n- second"} onChange={handleChange} placeholder="Markdown body" />,
+      );
+    });
+
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(handleChange).not.toHaveBeenCalled();
+    // The editor keeps its normalized document; nothing pushes the original back.
+    expect(container.textContent).toContain("* first");
+    expect(container.querySelector("textarea")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("returns editor output to the parent with the transport escaping removed", async () => {
     const value = "Affected versions: <= v0.3.1\n\nRename <name> to the real name.";
     // What the real exporter emits for this document: `<` re-escaped, `<=` bare.
@@ -931,6 +963,17 @@ describe("MarkdownEditor", () => {
     expect(mdxEditorMockState.insertedMarkdownValues).toEqual([pasted]);
     expect(innerPaste).not.toHaveBeenCalled();
 
+    const dashed = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(dashed, "clipboardData", {
+      value: { types: ["text/plain"], getData: () => "- a single dashed line" },
+    });
+    await act(async () => { editable.dispatchEvent(dashed); });
+    expect(dashed.defaultPrevented).toBe(true);
+    expect(mdxEditorMockState.insertedMarkdownValues).toEqual([
+      pasted,
+      "- a single dashed line",
+    ]);
+
     const plain = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(plain, "clipboardData", {
       value: { types: ["text/plain"], getData: () => "ordinary text" },
@@ -939,6 +982,54 @@ describe("MarkdownEditor", () => {
     expect(plain.defaultPrevented).toBe(false);
     expect(innerPaste).toHaveBeenCalledOnce();
     await act(async () => { root.unmount(); });
+  });
+
+  it("leaves a markdown paste inside a nested code block", async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="```txt\n\n```" onChange={() => {}} />);
+    });
+    await flush();
+
+    const editable = container.querySelector('[data-testid="mdx-editor"]') as HTMLDivElement;
+    const code = document.createElement("div");
+    code.className = "cm-content";
+    code.setAttribute("contenteditable", "true");
+    const text = document.createTextNode("");
+    code.appendChild(text);
+    editable.appendChild(code);
+
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    code.focus();
+
+    const pasted = "- keep this line in the code block\n- and this one";
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      configurable: true,
+      value: {
+        types: ["text/plain"],
+        getData: (type: string) => (type === "text/plain" ? pasted : ""),
+      },
+    });
+    const innerPaste = vi.fn();
+    code.addEventListener("paste", innerPaste);
+
+    await act(async () => {
+      code.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(mdxEditorMockState.insertedMarkdownValues).toEqual([]);
+    expect(innerPaste).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("escapes angle brackets in pasted markdown", async () => {

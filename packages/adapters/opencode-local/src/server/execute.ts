@@ -21,7 +21,7 @@ import {
   adapterExecutionTargetEnablesSandboxDuplexBridge,
   readAdapterExecutionTarget,
   readAdapterExecutionTargetHomeDir,
-  resolveAdapterExecutionTargetTimeoutSec,
+  resolveAdapterExecutionTargetTimeout,
   resolveAdapterExecutionTargetCommandForLogs,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
@@ -61,6 +61,7 @@ import {
   requireOpenCodeModelId,
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
+import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveOpenCodeSkillsHome } from "./skills.js";
@@ -329,7 +330,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
+    env, config,
+    sandboxToolOomPreference: executionTarget?.kind === "remote" && executionTarget.transport === "sandbox",
+  });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
   try {
@@ -338,10 +342,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
-    const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
+    const adapterExecutionTimeout = resolveAdapterExecutionTargetTimeout(
       executionTarget,
       asNumber(config.timeoutSec, 0),
     );
+    const timeoutSec = adapterExecutionTimeout.timeoutSec;
     const graceSec = asNumber(config.graceSec, 20);
     await ensureAdapterExecutionTargetRuntimeCommandInstalled({
       runId,
@@ -620,10 +625,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (resumeSessionId) args.push("--session", resumeSessionId);
       if (model) args.push("--model", model);
       if (variant) args.push("--variant", variant);
+      // OpenCode prefers the inherited PWD over process.cwd(). Use the realized
+      // workspace unless the operator already selected a directory explicitly.
+      const optionTerminator = extraArgs.indexOf("--");
+      const extraOptionArgs = optionTerminator === -1 ? extraArgs : extraArgs.slice(0, optionTerminator);
+      if (!extraOptionArgs.some((arg) => arg === "--dir" || arg.startsWith("--dir="))) {
+        args.push("--dir", effectiveExecutionCwd);
+      }
       if (extraArgs.length > 0) args.push(...extraArgs);
       return args;
     };
 
+    // Remote targets receive only the prepared environment, never host keys.
+    const accountingEnv = executionTargetIsRemote ? preparedRuntimeConfig.env : runtimeEnv;
     const runAttempt = async (resumeSessionId: string | null) => {
       await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
       const { basePrompt, promptMetrics } = buildPrompt(Boolean(resumeSessionId));
@@ -654,10 +668,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const provider = parseModelProvider(model || null);
         return { usage: parsed.usageReported ? parsed.usage : undefined, costUsd: parsed.costUsd,
           costStatus: parsed.usageComplete || parsed.costUsd != null ? undefined : "unpriced",
-          usageBasis: "per_run", provider, biller: resolveOpenCodeBiller(runtimeEnv, provider), billingType: "unknown", model, complete: false };
+          usageBasis: "per_run", provider, biller: resolveOpenCodeBiller(accountingEnv, provider), billingType: apiKeyBillingType(provider, accountingEnv), model, complete: false };
       });
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         onProcessStopped: providerStop.beginInvocation(),
+        // Keep a long sandbox run off the synchronous command HTTP request.
+        // Probes and preparation keep their existing execution paths.
+        ...(runtimeExecutionTarget?.kind === "remote" && runtimeExecutionTarget.transport === "sandbox"
+          && runtimeExecutionTarget.providerKey === "daytona" ? { useSession: true } : {}),
         cwd,
         env: preparedRuntimeConfig.env,
         stdin: prompt,
@@ -705,12 +723,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
           usageBasis: "per_run",
           provider: parseModelProvider(model || null),
-          biller: resolveOpenCodeBiller(runtimeEnv, parseModelProvider(model || null)),
+          biller: resolveOpenCodeBiller(accountingEnv, parseModelProvider(model || null)),
           model,
-          billingType: "unknown",
+          billingType: apiKeyBillingType(parseModelProvider(model || null), accountingEnv),
           costUsd: attempt.parsed.costUsd,
           costStatus: attempt.parsed.usageComplete || attempt.parsed.costUsd != null ? undefined : "unpriced",
-          errorMessage: `Timed out after ${timeoutSec}s`,
+          // A provider or output-observation timeout can arrive before the
+          // configured execution deadline. The boolean does not prove which
+          // timer fired, and provider stderr is not safe exception text.
+          errorMessage: "OpenCode execution timed out",
+          resultJson: { adapterExecutionTimeout },
           clearSession: clearSessionOnMissingSession,
         };
       }
@@ -760,12 +782,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
         provider: parseModelProvider(modelId),
-        biller: resolveOpenCodeBiller(runtimeEnv, parseModelProvider(modelId)),
+        biller: resolveOpenCodeBiller(accountingEnv, parseModelProvider(modelId)),
         model: modelId,
-        billingType: "unknown",
+        billingType: apiKeyBillingType(parseModelProvider(modelId), accountingEnv),
         costUsd: attempt.parsed.costUsd,
         costStatus: attempt.parsed.usageComplete || attempt.parsed.costUsd != null ? undefined : "unpriced",
         resultJson: {
+          adapterExecutionTimeout,
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
         },
