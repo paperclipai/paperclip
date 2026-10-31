@@ -55,8 +55,9 @@ original bounds. Its source registration is not an AWS or TestOps pass. The
 broader YAML catalog remains planning inventory.
 
 The explicit-only [Daytona restart continuity journey](../tests/runner-e2e/README.md)
-extends the existing native restart oracle to a 125-second controller outage,
-using the recorded Claude and Codex models in disposable development fixtures.
+extends the existing native restart oracle to a 300-second controller outage
+and another replacement after completion, using the recorded Claude and Codex
+models in disposable development fixtures.
 It requires same-process adoption, saved files and finalization without replay;
 local regression checks and catalog discovery are separate from live acceptance.
 
@@ -90,7 +91,9 @@ successor. Registration and calibration are separate from a live staging pass.
 
 [Reusable Product journeys](../tests/runner-e2e/PRODUCT-JOURNEYS.md) add explicit
 deployment targets and starting-state recipes. The shared task-properties
-journey uses no model; Cloud onboarding supplies reusable verified state. Cloud
+journey and task-document create/edit/reopen journey use no model; Cloud
+onboarding supplies reusable verified state. The document journey checks exact
+saved content and both revision records through independent API reads. Cloud
 fleet operations and trusted CI remain private. Local eval gateway qualification
 does not qualify Cloud routes, and these selections stay outside `--all`.
 

@@ -322,11 +322,11 @@ const uploadReceipt = { status: 'passed', cleanup: 'passed', caseId: 91, campaig
     { name: 'Execution provenance and checks', contentType: 'application/json', contentLength: 300 },
     { name: 'Sanitized Product E2E record and accounting', contentType: 'application/json', contentLength: 800 }] };
 const uploadRun = { id: 9, job: { id: 7, type: 'github' }, launchId: 10, url: 'https://github.com/paperclipai/paperclip/actions/runs/123', stage: 'finished' };
-function uploadApi(change = {}, absent = 0) {
+function uploadApi(change = {}, absent = 0, runChange = {}) {
   let polls = 0;
   return async (route, method) => {
     assert.equal(method, 'GET');
-    if (route === '/api/jobrun/9') return uploadRun;
+    if (route === '/api/jobrun/9') return { ...uploadRun, ...runChange };
     if (route === '/api/launch/10') return { id: 10, projectId: 1 };
     if (route.startsWith('/api/testresult?')) { polls++; return { content: polls <= absent ? [] : [{ id: 45, testCaseId: 91 }], totalElements: polls <= absent ? 0 : 1, totalPages: polls <= absent ? 0 : 1 }; }
     if (route === '/api/testresult/45') return { id: 45, projectId: 1, launchId: 10, testCaseId: 91, fullName, jobRun: uploadRun, status: 'passed',
@@ -348,9 +348,147 @@ test('readback verifies exact current launch/case/source/status and safe attachm
 
 test('readback rejects wrong launch, case, current jobrun, source and contradictory result status', async () => {
   const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
-  for (const change of [{ launchId: 11 }, { testCaseId: 92 }, { jobRun: { ...uploadRun, id: 11 } }, { links: [] }, { status: 'failed' }]) {
+  for (const change of [{ launchId: 11 }, { testCaseId: 92 }, { jobRun: { ...uploadRun, id: 11 } }, { links: [{ url: 'https://github.com/paperclipai/paperclip/commit/' + 'b'.repeat(40) }] }, { status: 'failed' }]) {
     await assert.rejects(verifyChatUpload(uploadApi(change), uploadContext, uploadSelection, uploadReceipt), /upload_mismatch/);
   }
+});
+
+test('readback joins an unexpanded result jobrun to the authoritative jobrun response', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  const { job, ...embedded } = uploadRun;
+  const result = await verifyChatUpload(uploadApi({ jobRun: embedded }), uploadContext, uploadSelection, uploadReceipt);
+  assert.equal(result.resultId, 45); assert.equal(result.jobId, 7); assert.equal(result.verification, 'VERIFIED');
+});
+
+test('readback accepts protected empty presentation links while retaining the source-bound current run', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  const { job, ...embedded } = uploadRun;
+  const result = await verifyChatUpload(uploadApi({ jobRun: embedded, links: [] }), uploadContext, uploadSelection, uploadReceipt);
+  assert.equal(result.targetSha, uploadContext.GITHUB_SHA); assert.equal(result.runId, '123');
+  assert.equal(result.resultId, 45); assert.equal(result.verification, 'VERIFIED');
+});
+
+test('readback rejects authoritative or embedded identity contradictions and a foreign source selection', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  const { job, ...embedded } = uploadRun;
+  for (const runChange of [{ job: { id: 8, type: 'github' } }, { job: { id: 7, type: 'gitlab' } },
+    { url: 'https://github.com/paperclipai/paperclip/actions/runs/124' }, { launchId: 11 }]) {
+    await assert.rejects(verifyChatUpload(uploadApi({ jobRun: embedded, links: [] }, 0, runChange), uploadContext, uploadSelection, uploadReceipt), /jobrun_mismatch/);
+  }
+  for (const change of [{ jobRun: { ...embedded, id: 11 } }, { jobRun: { ...embedded, job: { id: 8 } } },
+    { jobRun: { ...embedded, job: { id: 7, type: 'gitlab' } } }, { jobRun: { ...embedded, job: { id: 7, url: 'https://github.com/other/repo' } } },
+    { jobRun: { ...embedded, launchId: 11 } }, { jobRun: { ...embedded, url: 'https://github.com/paperclipai/paperclip/actions/runs/124' } },
+    { links: [{ url: 'https://github.com/paperclipai/paperclip/actions/runs/124' }] },
+    { links: [{ url: 'https://github.com/paperclipai/paperclip/commit/' + 'b'.repeat(40) }] }]) {
+    await assert.rejects(verifyChatUpload(uploadApi(change), uploadContext, uploadSelection, uploadReceipt), /upload_mismatch/);
+  }
+  for (const selection of [{ ...uploadSelection, targetSha: 'b'.repeat(40) }, { ...uploadSelection, workflowSha: 'b'.repeat(40) }]) {
+    await assert.rejects(verifyChatUpload(uploadApi({ jobRun: embedded, links: [] }), uploadContext, selection, uploadReceipt), /upload_mismatch/);
+  }
+});
+
+async function uploadFailureDiagnostic(api, context = uploadContext, selection = uploadSelection, receipt = uploadReceipt) {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  let error;
+  await assert.rejects(verifyChatUpload(api, context, selection, receipt), value => { error = value; return true; });
+  return { error, projected: failureProjection(error, 'upload_verification') };
+}
+
+test('upload diagnostics identify selected, environment and exported context without an HTTP call', async () => {
+  const noHttp = () => assert.fail('context rejection must precede HTTP');
+  const cases = [
+    [{}, { ...uploadSelection, targetSha: 'b'.repeat(40) }, uploadReceipt, 'selected_target_sha', 'string'],
+    [{ ALLURE_JOB_RUN_ID: undefined }, uploadSelection, uploadReceipt, 'selected_jobrun', 'string'],
+    [{}, uploadSelection, { ...uploadReceipt, count: 'private-count' }, 'export_count', 'string'],
+  ];
+  for (const [envChange, selected, receipt, first, type] of cases) {
+    const { projected } = await uploadFailureDiagnostic(noHttp, { ...uploadContext, ...envChange }, selected, receipt);
+    assert.equal(projected.code, 'chat_testops_upload_mismatch');
+    assert.equal(projected.verification.phase, 'context');
+    assert.equal(projected.verification.firstFailedPredicate, first);
+    assert.equal(projected.verification.checks[first], false);
+    assert.equal(projected.verification.types[first], type);
+    assert.ok(!JSON.stringify(projected).includes('private-count'));
+    if (first === 'selected_jobrun') assert.equal(projected.verification.types.env_jobrun, 'missing');
+  }
+});
+
+test('upload diagnostics distinguish absent page and row fields from contradictory numeric identities', async () => {
+  const base = uploadApi();
+  for (const [response, phase, first, type] of [
+    [{ content: [], totalPages: 0 }, 'result_page', 'total_integer', 'missing'],
+    [{ content: [], totalElements: 0, totalPages: 'private-page' }, 'result_page', 'pages_integer', 'string'],
+    [{ content: [{ id: 45 }], totalElements: 1, totalPages: 1 }, 'result_row', 'case_id', 'missing'],
+    [{ content: [{ id: 45, testCaseId: 92 }], totalElements: 1, totalPages: 1 }, 'result_row', 'case_id', 'number'],
+  ]) {
+    const { projected } = await uploadFailureDiagnostic((route, ...args) => route.startsWith('/api/testresult?') ? response : base(route, ...args));
+    assert.equal(projected.verification.phase, phase); assert.equal(projected.verification.firstFailedPredicate, first);
+    assert.equal(projected.verification.types[first], type); assert.equal(projected.verification.checks[first], false);
+    assert.ok(!JSON.stringify(projected).includes('private-page'));
+  }
+});
+
+test('upload diagnostics retain exact authoritative and result rejection predicates', async () => {
+  const base = uploadApi();
+  const cases = [
+    ['/api/jobrun/9', { ...uploadRun, job: { type: 'github' } }, 'jobrun', 'job_id', 'missing'],
+    ['/api/jobrun/9', { ...uploadRun, job: { id: 8, type: 'github' } }, 'jobrun', 'job_id', 'number'],
+    ['/api/launch/10', { id: 10, projectId: 2 }, 'launch', 'project_id', 'number'],
+  ];
+  for (const [target, response, phase, first, type] of cases) {
+    const { projected } = await uploadFailureDiagnostic((route, ...args) => route === target ? response : base(route, ...args));
+    assert.equal(projected.verification.phase, phase); assert.equal(projected.verification.firstFailedPredicate, first);
+    assert.equal(projected.verification.types[first], type);
+  }
+  const result = await uploadFailureDiagnostic(uploadApi({ status: 'private-status' }));
+  assert.equal(result.projected.verification.phase, 'result_status');
+  assert.equal(result.projected.verification.firstFailedPredicate, 'status_supported');
+  assert.ok(!JSON.stringify(result.projected).includes('private-status'));
+});
+
+test('upload diagnostics identify local attachment and backend attachment-page failures', async () => {
+  const local = await uploadFailureDiagnostic(() => assert.fail('attachment contract precedes HTTP'), uploadContext, uploadSelection,
+    { ...uploadReceipt, attachmentMetadata: uploadReceipt.attachmentMetadata.map((row, index) => index === 0 ? { ...row, contentType: 'private-type' } : row) });
+  assert.equal(local.projected.verification.phase, 'attachment_contract');
+  assert.equal(local.projected.verification.firstFailedPredicate, 'attachment_rows');
+  assert.ok(!JSON.stringify(local.projected).includes('private-type'));
+  const base = uploadApi();
+  const page = await uploadFailureDiagnostic((route, ...args) => route.startsWith('/api/testresult/attachment?')
+    ? { content: null, totalElements: 0, totalPages: 0 } : base(route, ...args));
+  assert.equal(page.projected.verification.phase, 'attachment_page');
+  assert.equal(page.projected.verification.firstFailedPredicate, 'content_array');
+  assert.equal(page.projected.verification.types.content_array, 'null');
+});
+
+test('upload diagnostic projection never retains secret values, unknown fields or mutable aliases', async () => {
+  const secret = 'DO_NOT_RETAIN_SYNTHETIC_CREDENTIAL_OR_PRIVATE_URL';
+  const { error, projected } = await uploadFailureDiagnostic(uploadApi({ fullName: secret, unknown: secret }),
+    { ...uploadContext, ALLURE_TOKEN: secret });
+  assert.equal(projected.verification.phase, 'result');
+  assert.equal(projected.verification.firstFailedPredicate, 'full_name');
+  assert.equal(projected.verification.types.full_name, 'string');
+  assert.ok(!JSON.stringify(projected).includes(secret));
+  projected.verification.phase = secret; projected.verification.failedPredicates.push(secret);
+  projected.verification.checks.full_name = secret; projected.verification.types.full_name = secret;
+  const again = failureProjection(error, 'upload_verification');
+  assert.equal(again.verification.phase, 'result'); assert.equal(again.verification.checks.full_name, false);
+  assert.ok(!JSON.stringify(again).includes(secret));
+  const unknown = failureProjection(Object.assign(new Error(secret), { verification: { phase: secret } }), 'upload_verification');
+  assert.equal(unknown.code, 'unknown_failure'); assert.ok(!Object.hasOwn(unknown, 'verification'));
+});
+
+test('upload diagnostics preserve an early mismatch when later array entries are null', async () => {
+  const result = await uploadFailureDiagnostic(uploadApi({ id: 46, links: [null] }));
+  assert.equal(result.projected.verification.phase, 'result');
+  assert.equal(result.projected.verification.firstFailedPredicate, 'result_id');
+  assert.equal(result.projected.verification.checks.result_id, false);
+  const base = uploadApi();
+  const page = await uploadFailureDiagnostic((route, ...args) => route.startsWith('/api/testresult/attachment?')
+    ? { content: [null], totalElements: 2, totalPages: 1 } : base(route, ...args));
+  assert.equal(page.projected.verification.firstFailedPredicate, 'total_matches_content');
+  const local = await uploadFailureDiagnostic(() => assert.fail('no HTTP'), uploadContext, uploadSelection,
+    { ...uploadReceipt, attachmentMetadata: [{ ...uploadReceipt.attachmentMetadata[0], contentType: 'unexpected' }, null, uploadReceipt.attachmentMetadata[2]] });
+  assert.equal(local.projected.verification.firstFailedPredicate, 'attachment_rows');
 });
 
 test('readback missing result or screenshot metadata is bounded unverified, never a fabricated pass', async () => {

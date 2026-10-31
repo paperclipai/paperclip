@@ -10,13 +10,45 @@ qualification.
 
 The explicit-only `daytona-restart-continuity` suite runs the existing
 `recover-controller` journey with the recorded Codex and Claude staging models
-on fresh Daytona fixtures. After a completed task tool in an active revision
-turn, it keeps the owned development controller offline for 125 seconds, beyond
-the controller's two-minute reconnect budget. The existing independent oracle
+on fresh reusable warm Daytona fixtures. The sandbox, Runner and provider history
+must survive both controller replacements. After a completed task tool in an active revision
+turn, it keeps the owned development controller offline for 300 seconds. This
+exceeds the 60-second ownership lease and remains within the Runner's 420-second
+reconnect grace. The existing independent oracle
 requires the original process, native session, sandbox lease and receipt prefix,
 one completion and successful workspace finalization, plus verified downloaded
-work. It permits one attempt per cell and retains failed evidence. This is
+work. After completion, it replaces the controller again with its native cache
+unavailable and asks a new turn to execute the saved project. The continuation
+oracle requires the same retained provider session and a new useful result.
+It permits one attempt per cell and retains failed evidence. This is
 development API-key acceptance, distinct from staging subscription recovery.
+The five-minute outage is a resilience test, not an HTTP downtime allowance.
+This suite gives its Daytona sandbox a 15-minute provider auto-stop interval,
+leaving headroom for the outage and replacement startup. Native agent idle timing,
+ownership/reconnect limits, archive/delete backstops and owned cleanup remain unchanged.
+The retained continuation accepts whitespace between its exact marker and the
+exact `queue_r` output token; readiness and final grading use the same matcher.
+
+Definition version 7 uses the existing warm reusable environment with a dedicated
+configuration key. Only the post-completion replacement follow-up uses the normal
+board-authenticated task-comment API, with one persisted user comment and the
+unchanged follow-up request. Initial creation, active outage and queued continuation
+retain their browser journey. Post-C settlement, task status and useful reply are
+read through production APIs, without post-C browser navigation or rendered-status
+assertions. The required final screenshot captures the actual retained Chromium
+page, which may be stale or show an error; it is labeled as unqualified browser
+evidence and does not establish fresh product state. The same strict native/provider
+identity, new tool,
+saved-project output and finalization checks remain required. Definition 6's
+observed post-C browser navigation timeout remains failed; its cause is unknown.
+This definition does not claim that browser reconnection was fixed.
+The prior version 5 per-turn/no-reuse measurement **failed**
+retained native/provider identity and remains failed; it does not qualify this
+warm fixture. Cache retirement moves the entire controller Runner directory,
+including provider failover-backup bytes. Once a per-turn sandbox is disposed,
+its DB checkpoint alone cannot replace those bytes. Per-turn application
+qualification under this disk loss awaits the provider-backup owner's durable
+storage contract; native controller recovery does not waive that dependency.
 
 The explicit-only [GitHub review bot journey](GITHUB-REVIEW-JOURNEY.md) tests
 attended bot setup and an automatic PR review against an attached deployment.
@@ -253,7 +285,7 @@ accordingly. Report regeneration recomputes interval verdicts, retains changed
 
 The explicit [deployment-targeted Product journeys](PRODUCT-JOURNEYS.md) reuse
 browser actions across managed self-hosted and Cloud targets. They include a
-model-free task-properties story, fresh Cloud onboarding, credential-free
+model-free task-properties and document-persistence stories, fresh Cloud onboarding, credential-free
 previews, private evidence, and prerequisite reuse; `--all` is unchanged.
 Cloud onboarding may retain a versioned `onboardingConnect` receipt for the
 Connect action: its last checkpoint, validation/hire response state and HTTP
@@ -595,6 +627,15 @@ Never put credentials in `catalog.ts`, screenshots, fixture metadata, workflow
 inputs, or a tracked env file.
 
 ## Local commands
+
+When the host cannot start embedded Postgres, set
+`PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL` to an explicitly supplied loopback
+test Postgres administrator. The launcher creates a new `runner_e2e_<random>`
+database per attempt; the serving app applies its migrations. This does not
+reuse the administrator URL's database. The administrator variable is not
+forwarded to the server or browser. The launcher checks the private ownership
+receipt and deletes only its database after confirmed process/resource cleanup.
+Unknown remote cleanup preserves that database and the private fixture for recovery.
 
 Install dependencies and Chromium once. Native local cells also need the local
 runner binaries:
@@ -2507,7 +2548,13 @@ The same four installed-package pins also admit three existing local native
 Codex cells: `first-task.runner-codex.local.task-card-accept`,
 `everyday-workflows.runner-codex.local.build-revise`, and
 `agent-chat.runner-codex.local.continuity-restart`. Select exact IDs; other
-Codex cells, legacy profiles and remote environments remain outside this lane.
+Codex cells and legacy profiles remain outside this lane. The two explicit
+Daytona controller-recovery cells are also admitted:
+`everyday-workflows.runner-codex.daytona.recover-controller` and
+`daytona-restart-continuity.runner-codex.daytona.recover-controller`.
+The latter uses the 300-second outage and retained-session follow-up. Daytona
+cells require the pinned installed plugin described below. Admission support
+does not establish that either cell has passed against installed artifacts.
 These reuse the onboarding, independently checked file/revision, and restart
 graders. They require separately authorized provider access and are not executed
 by the provider-free release smoke.

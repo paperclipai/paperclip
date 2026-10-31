@@ -136,6 +136,7 @@ export function buildRunnerE2EProcessEnvironment(
   const installed = usesInstalledCli(source);
   if (installed) assertInstalledCliSelection(source, executions);
   const result = { ...source };
+  delete result.PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL;
   // The supervisor's read-only recovery observer must use the same disposable
   // instance key as the serving child, never a launching shell's vault key.
   delete result.PAPERCLIP_SECRETS_MASTER_KEY;
@@ -209,6 +210,7 @@ export function buildPaperclipServerEnvironment(
   overrides: NodeJS.ProcessEnv = {},
 ): NodeJS.ProcessEnv {
   const result = { ...source };
+  delete result.PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL;
   for (const key of Object.keys(result)) {
     if (PROVIDER_SECRET_KEY.test(key)) delete result[key];
   }

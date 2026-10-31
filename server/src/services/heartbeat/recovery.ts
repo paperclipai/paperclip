@@ -1,3 +1,4 @@
+import { NATIVE_RETAINED_OWNER_WAIT } from "../native-runtime/native-controller-recovery.js";
 import { nativeEnvironmentSettlementDisposition, nativeEnvironmentSettlementWork } from "../native-runtime/native-environment-settlement-work.js";
 import { nativeWorkspaceFinalizationWork } from "../native-runtime/native-workspace-finalization-work.js";
 import { attemptNativeWorkspaceFinalization } from "../native-runtime/native-workspace-finalizer.js";
@@ -126,7 +127,7 @@ export interface HeartbeatRecoveryDependencies extends Pick<HeartbeatRetryDepend
     nativeRestartRecovery?: NativeRestartRecoveryClaim;
     onNativeExecutionLeaseAcquired?: () => Promise<void>;
   }) => Promise<void>;
-  scheduleNativeSessionResumeDispatch: (runId: string, nextAttemptAt: Date) => void;
+  scheduleNativeSessionResumeDispatch: (runId: string, nextAttemptAt: Date, mode?: "restart") => void;
   cancelHeartbeatNativeRun: (input: {
     db: Db; runId: string; reason: string; runtimeMode: string | null;
   }) => Promise<unknown>;
@@ -956,7 +957,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           inArray(heartbeatRuns.status, ["running", "failed"]),
           isNull(nativeRunFinalizations.resultId),
           eq(nativeRunFinalizations.phase, "retryable_failure"),
-          gt(nativeRunFinalizations.nextAttemptAt, now),
+          or(gt(nativeRunFinalizations.nextAttemptAt, now), eq(nativeRunFinalizations.failureCode, NATIVE_RETAINED_OWNER_WAIT)),
         ),
       );
     for (const scheduled of scheduledNativeRetries) {
@@ -1004,6 +1005,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           disposition.kind === "bootstrap_incomplete",
       );
       for (const disposition of dispositions) {
+        if (disposition.kind === "awaiting_evidence" && disposition.retryAt) {
+          scheduleNativeSessionResumeDispatch(disposition.runId, disposition.retryAt, "restart");
+        }
         const run = await getRun(disposition.runId);
         if (run) {
           const isClaim =
@@ -2005,7 +2009,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   let settledProcessesDiscovered = false;
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean; skipInstructionDirectoryCleanup?: boolean; skipStoppedInstructionCollection?: boolean; skipCancelledWorkspacePreservation?: boolean; skipObsoletePolicyReviews?: boolean; skipAutomaticCompletionReviews?: boolean; skipUnsafeWorkspaceExports?: boolean; skipNativePendingEffects?: boolean; skipNativeResponsePresentation?: boolean; skipNativeReviewResponse?: boolean; skipNativeStatusReassessment?: boolean; skipRetainedNativeSessionCleanup?: boolean; skipNativeWorkspaceFinalization?: boolean; skipNativeResultCommit?: boolean; skipNativeRunProjection?: boolean; skipNativeRecoveryNotices?: boolean; skipExternalConversationSettlement?: boolean; skipExternalAgentSettlement?: boolean; skipNativeEnvironmentSettlement?: boolean }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipNativeStatusWakeIntents?: boolean; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean; skipInstructionDirectoryCleanup?: boolean; skipStoppedInstructionCollection?: boolean; skipCancelledWorkspacePreservation?: boolean; skipObsoletePolicyReviews?: boolean; skipAutomaticCompletionReviews?: boolean; skipUnsafeWorkspaceExports?: boolean; skipNativePendingEffects?: boolean; skipNativeResponsePresentation?: boolean; skipNativeReviewResponse?: boolean; skipNativeStatusReassessment?: boolean; skipRetainedNativeSessionCleanup?: boolean; skipNativeWorkspaceFinalization?: boolean; skipNativeResultCommit?: boolean; skipNativeRunProjection?: boolean; skipNativeRecoveryNotices?: boolean; skipExternalConversationSettlement?: boolean; skipExternalAgentSettlement?: boolean; skipNativeEnvironmentSettlement?: boolean }) {
     if (!opts?.skipCancelledWorkspacePreservation) await preserveCancelledNativeWorkspaces(db);
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -2049,7 +2053,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     });
     if (!opts?.skipRetainedNativeSessionCleanup) scheduleRetainedNativeSessionCleanup();
     await reconcileRetainedWorkspaces(db, environmentRuntime, resumeRemoteStopComments);
-    await dispatchPendingNativeStatusWakeups().catch((error) => {
+    if (!opts?.skipNativeStatusWakeIntents) await dispatchPendingNativeStatusWakeups().catch((error) => {
       logger.warn(
         { err: error },
         "failed to dispatch persisted native status wake intents before orphan reaping",

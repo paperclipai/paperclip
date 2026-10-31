@@ -1,3 +1,5 @@
+import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
+
 import { usesNativeUsageDelivery } from "../native-runtime/native-usage-accounting.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
@@ -559,6 +561,20 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           sessionGoalControl.requestId,
         ));
       if (completedGoalControl) sessionGoalControl = null;
+      // Goal checkpoints already publish their task session. Goal-less turns
+      // need the same durable pointer before cleanup can delay host completion.
+      const taskSessionPublication = taskKey && !sessionGoalControl &&
+        context.resumeSessionGoalHeartbeat !== true && !completedGoalControl
+        ? {
+            taskKey,
+            adapterType: agent.adapterType,
+            sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
+              { ...runtimeSessionParamsForAdapter, cwd: executionWorkspace.cwd },
+              configuredModel,
+              sessionConfigMetadata,
+            ),
+          }
+        : undefined;
       const nativeDispatchAtMs = Date.now();
       const runCreatedAtMs = run.createdAt.getTime();
       const runStartedAtMs = (run.startedAt ?? run.createdAt).getTime();
@@ -608,6 +624,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               resumeSessionGoalHeartbeat:
                 context.resumeSessionGoalHeartbeat === true ||
                 completedGoalControl,
+              taskSessionPublication,
               onGoalCheckpoint: async (snapshot) => {
                 if (!taskKey) return;
                 const params =
@@ -966,7 +983,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               eq(heartbeatRuns.id, run.id),
               eq(heartbeatRuns.status, "running"),
             ),
-          ));
+          ), { companyId: run.companyId });
         const workspaceFinalizeStatus = hasWorkspaceRestoreFailure(adapterResult.resultJson) ? "failed" : "succeeded";
         await recordWorkspaceFinalize(workspaceFinalizeStatus);
         if (adapterResult.nativeFinalization) {
@@ -1026,6 +1043,10 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       preserveRunGatewayTokens = true;
       throw adapterErr;
     }
+    if (adapterErr instanceof NativeControllerRecoveryWaitingError) {
+      input.effects.onNativeSessionResumeScheduled();
+      throw new NativeSessionResumeScheduledError(adapterErr);
+    }
     if (adapterErr instanceof NativeRunnerOwnershipUnverifiedError) {
       input.effects.onNativeOwnershipHeld();
       throw adapterErr;
@@ -1042,7 +1063,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           eq(heartbeatRuns.id, run.id),
           eq(heartbeatRuns.status, "running"),
         ),
-      ));
+      ), { companyId: run.companyId });
     if (
       issueRef &&
       context.resumeSessionGoalHeartbeat === true &&

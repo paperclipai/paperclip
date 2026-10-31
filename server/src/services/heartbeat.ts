@@ -1,3 +1,8 @@
+import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
+import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
+import { registerIssueRecoveryWork } from "./recovery/work.js";
+import { registerRunDispatchWork } from "./heartbeat/dispatch-work.js";
+import { NATIVE_RETAINED_OWNER_WAIT } from "./native-runtime/native-controller-recovery.js";
 import { externalConversationSettlementWork } from "./external-conversation-settlement-work.js";
 import { nativeRecoveryNoticeWork } from "./native-runtime/native-recovery-notice-work.js";
 import { nativeRunProjectionWork } from "./native-runtime/native-run-projection-work.js";
@@ -606,6 +611,9 @@ const nativeSessionResumeDispatchTimers = new Map<
   string,
   ReturnType<typeof setTimeout>
 >();
+// Routes and the scheduler can drain/resume through different service facades.
+// Rearm through the original owner so its database and dispatch mode survive.
+const nativeRecoveryDeadlines = new Map<string, { rearm: () => void }>();
 // Shared with HTTP admission so an idle hold fences work before inspection.
 export { computeTaskDrain, applyTaskDrain, startTaskDrain, stopTaskDrain } from "./task-admission.js";
 
@@ -999,6 +1007,7 @@ export function heartbeatService(
     finalizeAiConnectionBusyDeferral,
     finalizeWorkspaceBusyDeferral,
     promoteDueScheduledRetries,
+    nextScheduledRetryAt,
     retryScheduledRetryNow,
     scheduleBoundedRetry,
   } = createHeartbeatRetries(db, {
@@ -1333,8 +1342,11 @@ export function heartbeatService(
     return heartbeatQueue.dispatchPendingNativeStatusWakeups(...args);
   }
 
-  function resumeQueuedRunsAfterDrain() {
-    const promise = heartbeatQueue.resumeQueuedRunsAfterDrain();
+  function resumeQueuedRunsAfterDrain(...args: Parameters<typeof heartbeatQueue.resumeQueuedRunsAfterDrain>) {
+    for (const pending of nativeRecoveryDeadlines.values()) {
+      pending.rearm();
+    }
+    const promise = heartbeatQueue.resumeQueuedRunsAfterDrain(...args);
     activeWakeupPromises.add(promise);
     void promise.then(
       () => { activeWakeupPromises.delete(promise); },
@@ -1609,15 +1621,15 @@ export function heartbeatService(
     void reportRunFailure(db, updated, failureReport);
   }
 
-  async function reconcileStrandedAssignedIssues(opts?: { skipExternalConversationSettlement?: boolean }) {
+  async function reconcileStrandedAssignedIssues(opts?: Parameters<typeof recovery.reconcileStrandedAssignedIssues>[0]) {
     return recovery.reconcileStrandedAssignedIssues({
-      skipExternalConversationSettlement: opts?.skipExternalConversationSettlement,
+      ...opts,
       issueCreatedAtGte: await getWorktreeExecutionCutoff(),
     });
   }
 
-  async function sweepStaleIssueLocks() {
-    return recovery.sweepStaleIssueLocks();
+  async function sweepStaleIssueLocks(opts?: Parameters<typeof recovery.sweepStaleIssueLocks>[0]) {
+    return recovery.sweepStaleIssueLocks(opts);
   }
 
   function issueIdFromRunContext(contextSnapshot: unknown) {
@@ -1647,10 +1659,7 @@ export function heartbeatService(
     });
   }
 
-  async function reconcileTaskWatchdogs(opts?: {
-    companyId?: string | null;
-    runId?: string | null;
-  }) {
+  async function reconcileTaskWatchdogs(opts?: Parameters<typeof taskWatchdogs.reconcileTaskWatchdogs>[0]) {
     return taskWatchdogs.reconcileTaskWatchdogs({
       ...opts,
       issueCreatedAtGte: await getWorktreeExecutionCutoff(),
@@ -1675,10 +1684,7 @@ export function heartbeatService(
     return recovery.buildRunOutputSilence(run, now);
   }
 
-  async function reconcileResolvedDependencyWakes(opts?: {
-    runId?: string | null;
-    companyId?: string | null;
-  }) {
+  async function reconcileResolvedDependencyWakes(opts?: Parameters<typeof recovery.reconcileResolvedDependencyWakeBackstop>[0]) {
     return recovery.reconcileResolvedDependencyWakeBackstop(opts);
   }
 
@@ -1709,10 +1715,15 @@ export function heartbeatService(
     }
   }
 
+  // Native ownership waits survive a temporary drain without adding a polling
+  // loop. A process restart rediscovers the same deadlines from coordinator rows.
   function scheduleNativeSessionResumeDispatch(
     runId: string,
     nextAttemptAt: Date,
+    mode?: "restart",
   ) {
+    const pending = { rearm: () => scheduleNativeSessionResumeDispatch(runId, nextAttemptAt, mode) };
+    nativeRecoveryDeadlines.set(runId, pending);
     const prior = nativeSessionResumeDispatchTimers.get(runId);
     if (prior) clearTimeout(prior);
     const delayMs = Math.max(0, nextAttemptAt.getTime() - Date.now());
@@ -1721,6 +1732,12 @@ export function heartbeatService(
       nativeSessionResumeDispatchTimers.delete(runId);
       void (async () => {
         if ((await getSchedulingSuppression()).suppressed) return;
+        if (nativeRecoveryDeadlines.get(runId) !== pending) return;
+        nativeRecoveryDeadlines.delete(runId);
+        if (mode === "restart") {
+          await recoverNativeRunsAfterRestart(new Date(), [runId]);
+          return;
+        }
         await dispatchNativeSessionResumptions({
           db,
           runnerInstanceId:
@@ -1742,6 +1759,9 @@ export function heartbeatService(
           },
         });
       })().catch((error) => {
+        if (!nativeRecoveryDeadlines.has(runId)) {
+          scheduleNativeSessionResumeDispatch(runId, new Date(Date.now() + 30_000), mode);
+        }
         logger.error(
           { err: error, runId },
           "failed to dispatch scheduled native session resume",
@@ -3532,7 +3552,8 @@ export function heartbeatService(
             err.original instanceof Error
               ? err.original.message
               : String(err.original ?? "");
-          const retryReasonCode = /native_finalization_missing/i.test(
+          const waitingForRetainedOwner = retryMessage === NATIVE_RETAINED_OWNER_WAIT;
+          const retryReasonCode = waitingForRetainedOwner ? NATIVE_RETAINED_OWNER_WAIT : /native_finalization_missing/i.test(
             retryMessage,
           )
             ? "semantic_result_missing"
@@ -3552,7 +3573,8 @@ export function heartbeatService(
             stream: "system",
             level: "warn",
             message:
-              retryReasonCode === "semantic_result_missing"
+              waitingForRetainedOwner ? "native continuation waiting for the retained controller lease"
+                : retryReasonCode === "semantic_result_missing"
                 ? "provider turn completed without a semantic result; same-run disposition recovery persisted"
                 : "native session transport interrupted; same-run resume persisted",
             payload: {
@@ -3689,7 +3711,7 @@ export function heartbeatService(
           await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx
             .update(heartbeatRuns)
             .set({ executionControlDeadlineAt: null })
-            .where(eq(heartbeatRuns.id, run.id)));
+            .where(eq(heartbeatRuns.id, run.id)), { companyId: run.companyId });
         }
         nativeOwnershipHeld =
           nativeOwnershipHeld ||
@@ -4211,6 +4233,30 @@ export function heartbeatService(
     computeTaskDrain,
     applyTaskDrain,
 
+    registerDeferredReceiptWork: (coordinator: Parameters<typeof registerDeferredReceiptWork>[1], canRun: () => boolean) =>
+      registerDeferredReceiptWork(db, coordinator, {
+        resume: scope => heartbeatQueue.resumeDeferredExecutionReceipts(scope),
+        settleTaskChat: scope => reconcileTaskChatRetryReceipts(db, { ...scope, settleOnly: true }),
+        createNativeBatch: heartbeatQueue.createNativeStatusWakeBatch,
+        schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
+      }, () => canRun() && readTaskDrain(new Date()) === null),
+    registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean) =>
+      registerIssueRecoveryWork(db, coordinator, {
+        stranded: scope => reconcileStrandedAssignedIssues({ ...scope, skipExternalConversationSettlement: true, skipRelatedRecovery: true }),
+        orphanBlockers: recovery.reconcileUnassignedBlockingIssues,
+        recoveryActions: recovery.reconcileActiveRecoveryActions,
+        dependencies: reconcileResolvedDependencyWakes,
+        locks: sweepStaleIssueLocks,
+        watchdogs: reconcileTaskWatchdogs,
+        schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
+      }, () => canRun() && readTaskDrain(new Date()) === null),
+    registerRunDispatchWork: (coordinator: Parameters<typeof registerRunDispatchWork>[0], canRun: () => boolean) =>
+      registerRunDispatchWork(coordinator, {
+        promoteDueScheduledRetries,
+        nextScheduledRetryAt,
+        resumeQueuedRunsAfterDrain,
+        schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
+      }, () => canRun() && readTaskDrain(new Date()) === null),
     promoteDueScheduledRetries,
     retryScheduledRetryNow,
 

@@ -178,10 +178,19 @@ test("replaying an accepted comment does not reopen completed work", async ({ pa
   }
 });
 
-test("startup work retries a failed session lookup while other APIs stay healthy", async ({ page, request }) => {
+for (const delayWorkspacePreference of [false, true]) test(delayWorkspacePreference
+  ? "startup title survives session recovery while workspace preferences remount the editor"
+  : "startup work retries a failed session lookup while other APIs stay healthy", async ({ page, request }) => {
   const company = await json(await request.post("/api/companies", { data: { name: `Session recovery ${Date.now()}` } }));
   const session = await json(await request.get("/api/auth/get-session"));
   let healthy = false, saving = false, failedAfterSave = 0;
+  let releasePreference!: () => void;
+  const preferenceGate = new Promise<void>(resolve => { releasePreference = resolve; });
+  let sawPreference!: () => void;
+  const preferenceRequested = new Promise<void>(resolve => { sawPreference = resolve; });
+  if (delayWorkspacePreference) await page.route("**/api/workspace-preferences/me", async route => {
+    sawPreference(); await preferenceGate; await route.continue();
+  });
   try {
     const issue = await json(await request.post(`/api/companies/${company.id}/issues`, {
       data: { title: "Before session recovery", status: "backlog" },
@@ -199,12 +208,24 @@ test("startup work retries a failed session lookup while other APIs stay healthy
     saving = true;
     await header.locator("textarea").press("Enter");
     await expect.poll(() => failedAfterSave).toBeGreaterThan(0);
+    if (delayWorkspacePreference) {
+      await expect(page.getByText("Couldn't update the task", { exact: true })).toBeVisible();
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => resolve(null))));
+    }
     healthy = true;
+    if (delayWorkspacePreference) {
+      // Returning to the tab retries session lookup while the saved edit waits.
+      await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
+      await preferenceRequested;
+      await expect(page.getByTestId("task-chat-history-content")).toBeHidden();
+      releasePreference();
+    }
     await expect.poll(async () => (await json(await request.get(`/api/issues/${issue.id}`))).title,
       { timeout: 15_000 }).toBe("Saved after session recovery");
     await page.reload();
     await expect(header.getByRole("heading", { name: "Saved after session recovery", exact: true })).toBeVisible();
   } finally {
+    releasePreference();
     await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
   }
 });

@@ -22,7 +22,7 @@ associate(["product-journeys"], { "task-create": ["tasks/create"], "ask-question
   "question-answer-resume": ["questions-and-approvals/questions", "questions-and-approvals/continuation"],
   "followup-while-running": ["steering/queue"],
   "project-task-context": ["projects/lifecycle", "projects/task-context", "tasks/create"],
-  "task-properties": ["tasks/properties"], "task-search-filter": ["tasks/organize"], "cloud-onboarding": ["onboarding/first-task"] });
+  "task-properties": ["tasks/properties"], "task-document-persistence": ["documents-artifacts/documents"], "task-search-filter": ["tasks/organize"], "cloud-onboarding": ["onboarding/first-task"] });
 associate(["antigravity-agent-journey"], {
   "saved-subscription-two-turn": ["agents/hire", "agents/instructions", "runs-adapters/validation", "runs-adapters/session",
     "tasks/create", "tasks/completion", "documents-artifacts/attachments", "documents-artifacts/work-products"],

@@ -1158,11 +1158,12 @@ describePostgres("heartbeat recovery module ownership", () => {
     await Promise.all([...deps.activeRunExecutionPromises]);
   });
 
-  it("rearms the persisted native retry deadline through the service callback", async () => {
+  it.each(["future", "overdue-owner"])("rearms the persisted native retry deadline through the service callback: %s", async scenario => {
     const run = await seedRun();
-    const nextAttemptAt = new Date(Date.now() + 60_000);
+    const nextAttemptAt = new Date(Date.now() + (scenario === "future" ? 60_000 : -1_000));
     await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: run.issueId, status: "failed" }).where(eq(heartbeatRuns.id, run.id));
-    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: run.companyId, issueId: run.issueId!, phase: "retryable_failure", nextAttemptAt });
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: run.companyId, issueId: run.issueId!, phase: "retryable_failure", nextAttemptAt,
+      failureCode: scenario === "overdue-owner" ? "native_controller_recovery_waiting_for_owner" : null });
     const deps = callbacks(db);
     const result = await createHeartbeatRecovery(db, deps).recoverNativeRunsAfterRestart();
     expect(result.scheduledRetryRunIds).toEqual([run.id]);
@@ -1171,6 +1172,16 @@ describePostgres("heartbeat recovery module ownership", () => {
     await Promise.all([...deps.activeRunExecutionPromises]);
     await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+  });
+
+  it("retains a live remote owner's actual lease deadline without dispatching competing work", async () => {
+    const deps = callbacks(db);
+    const runId = randomUUID(), retryAt = new Date(Date.now() + 60_000);
+    native.claims.mockResolvedValue([{ kind: "awaiting_evidence", runId, reason: "remote_controller_lease_live", retryAt }]);
+    const result = await createHeartbeatRecovery(db, deps).recoverNativeRunsAfterRestart();
+    expect(result.awaitingEvidenceRunIds).toEqual([runId]);
+    expect(deps.scheduleNativeSessionResumeDispatch).toHaveBeenCalledWith(runId, retryAt, "restart");
+    expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
   it("retains shutdown ownership until background native cleanup physically settles", async () => {
