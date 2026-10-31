@@ -1,5 +1,6 @@
 import { conflict, HttpError } from "../errors.js";
 import { setImmediate as immediate } from "node:timers/promises";
+import { setTimeout as realTimeout, clearTimeout as clearRealTimeout } from "node:timers";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { budgetService } from "../services/budgets.js";
@@ -25,6 +26,25 @@ import { issueService } from "../services/issues.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
 vi.setConfig({ testTimeout: 90_000 });
+// Vitest's waitFor advances fake time on every poll. Keep PostgreSQL leases
+// and actual child processes on wall time until an explicit idle deadline step.
+function waitForReal(assertion: () => unknown | Promise<unknown>, { timeout = 1000 } = {}) {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false, lastError: unknown;
+    let retry: ReturnType<typeof realTimeout> | undefined;
+    const deadline = realTimeout(() => finish(lastError ?? new Error("Expectation did not complete before its deadline")), timeout);
+    function finish(error?: unknown) {
+      if (settled) return;
+      settled = true; clearRealTimeout(deadline); if (retry) clearRealTimeout(retry);
+      if (error) reject(error); else resolve();
+    }
+    async function attempt() {
+      try { await assertion(); finish(); }
+      catch (error) { lastError = error; if (!settled) retry = realTimeout(attempt, 50); }
+    }
+    void attempt();
+  });
+}
 describe("deferred receipt durable dispatch", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
@@ -46,6 +66,9 @@ describe("deferred receipt durable dispatch", () => {
   });
   beforeEach(async () => {
     await db.execute(sql`truncate companies cascade`); drain = false; errors.length = 0; errorTimes.length = 0;
+    // Install one clock before any worker arms a timer. It follows wall time
+    // during actual process execution; accelerated steps only settle idle work.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
     heartbeat = heartbeatService(db);
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !drain, canReconcile: () => true,
       onError: error => { errors.push(error); errorTimes.push(Date.now()); } });
@@ -78,7 +101,8 @@ describe("deferred receipt durable dispatch", () => {
     return { companyId, agent, issue, source, actorId };
   }
   async function quiet() {
-    await vi.waitFor(async () => {
+    await Promise.allSettled([...passes]); await heartbeat.drainActiveRunExecutions();
+    await waitForReal(async () => {
       if (vi.isFakeTimers()) {
         // Fake-clock cases have no live execution. Settle finite cleanup
         // deadlines explicitly instead of advancing at waitFor's wall speed.
@@ -89,7 +113,6 @@ describe("deferred receipt durable dispatch", () => {
     }, { timeout: 40_000 });
     const reads = vi.spyOn(db, "select"), executes = vi.spyOn(db, "execute");
     const selected = reads.mock.calls.length, executed = executes.mock.calls.length;
-    if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const count = statements.length;
     await vi.advanceTimersByTimeAsync(25 * 60_000);
     expect(statements).toHaveLength(count);
@@ -97,12 +120,11 @@ describe("deferred receipt durable dispatch", () => {
   }
   async function finish(issueId: string) {
     await issueService(db).update(issueId, { status: "done" });
-    await vi.waitFor(async () => {
+    await waitForReal(async () => {
       await Promise.allSettled([...passes]); await heartbeat.drainActiveRunExecutions();
       expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.status} in ('queued', 'running')`)).toHaveLength(0);
     }, { timeout: 15_000 });
     const saved = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.status, "scheduled_retry"));
-    if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     if (saved.length) {
       const due = Math.max(...saved.map(run => run.scheduledRetryAt!.getTime()));
       while (Date.now() <= due) {
@@ -110,10 +132,16 @@ describe("deferred receipt durable dispatch", () => {
         await Promise.allSettled([...passes]); await immediate();
       }
     }
-    await vi.waitFor(async () => {
-      await vi.advanceTimersByTimeAsync(500); await Promise.allSettled([...passes]);
+    await waitForReal(async () => {
+      // A committed cancellation may be coalesced behind an already-armed
+      // worker deadline. Follow that deadline rather than a guessed 500ms step.
+      const next = coordinator.nextWakeAt();
+      await vi.advanceTimersByTimeAsync(next === null ? 500 : Math.max(1, next - Date.now()));
+      await Promise.allSettled([...passes]); await immediate();
       await heartbeat.drainActiveRunExecutions();
-      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.status, "scheduled_retry"))).toHaveLength(0);
+      const remaining = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.status, "scheduled_retry"));
+      expect(remaining, JSON.stringify({ next: coordinator.nextWakeAt(), at: Date.now(),
+        runs: remaining.map(run => ({ id: run.id, at: run.scheduledRetryAt, error: run.errorCode })) })).toHaveLength(0);
     });
   }
   it("is quiet after empty reconstruction and terminal receipt history", async () => {
@@ -131,11 +159,11 @@ describe("deferred receipt durable dispatch", () => {
       observedRunId: f.source.id, idempotencyKey: randomUUID() });
     expect(receipt.accepted).toBe(true);
     let runId: string | undefined;
-    await vi.waitFor(async () => {
+    await waitForReal(async () => {
       const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
       expect(wake.runId, JSON.stringify(wake)).toBeTruthy(); runId = wake.runId!;
     }, { timeout: 15_000 });
-    await vi.waitFor(async () => {
+    await waitForReal(async () => {
       await heartbeat.drainActiveRunExecutions();
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
       expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
@@ -150,7 +178,7 @@ describe("deferred receipt durable dispatch", () => {
     expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`)).toHaveLength(1);
     await quiet();
   });
-  async function blockedRetry(gate: "budget" | "project budget" | "paused agent", clocked = false) {
+  async function blockedRetry(gate: "budget" | "project budget" | "paused agent") {
     const f = await fixture(), lifecycle = createAgentLifecycle(db), budgets = budgetService(db);
     // Host lifecycle completion is controlled; all state, admission and the
     // eventual process adapter execution use their production implementations.
@@ -170,7 +198,6 @@ describe("deferred receipt durable dispatch", () => {
       await budgets.upsertPolicy(f.companyId, policy, f.actorId);
     } else await lifecycle.pauseAgent(f.agent.id);
     await lifecycleWorker.process(f.agent.id);
-    if (clocked) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
     await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
     await heartbeat.registerScheduledRetryCancellationWork(coordinator, () => !drain).ready;
@@ -178,7 +205,7 @@ describe("deferred receipt durable dispatch", () => {
       observedRunId: f.source.id, idempotencyKey: randomUUID() });
     expect(request.accepted).toBe(true);
     const read = async () => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!)))[0];
-    await vi.waitFor(async () => expect((await read()).payload?.executionWait).toMatchObject({
+    await waitForReal(async () => expect((await read()).payload?.executionWait).toMatchObject({
       reason: gate !== "paused agent" ? "budget.blocked" : "agent.not_invokable",
     }), { timeout: 10_000 });
     const refusals: unknown[] = [];
@@ -191,7 +218,7 @@ describe("deferred receipt durable dispatch", () => {
   }
 
   it.each(["budget", "project budget", "paused agent"] as const)("parks real task Retry behind unchanged %s without recurring SQL", async gate => {
-    const { request, read } = await blockedRetry(gate, true);
+    const { request, read } = await blockedRetry(gate);
     // The clock was installed before worker registration and every timer.
     // No execution exists while we observe actual driver SQL across25min.
     for (let n = 0; n < 3; n++) {
@@ -205,16 +232,16 @@ describe("deferred receipt durable dispatch", () => {
 
   it.each(["budget", "project budget", "paused agent"] as const)("releases real %s Retry into exactly one saved process execution", async gate => {
     const { f, lifecycle, budgets, policy, lifecycleWorker, request, read } = await blockedRetry(gate);
-    // This independent warm-worker fixture stays on the real PostgreSQL clock
-    // through gate release, controller authority and actual child-process exit.
+    // Keep the clock advancing with wall time through gate release and actual
+    // child-process exit. Accelerate only after that execution has settled.
     if (gate !== "paused agent") await budgets.upsertPolicy(f.companyId, { ...policy, amount: 1000 }, f.actorId);
     else await lifecycle.resumeAgent(f.agent.id);
     await lifecycleWorker.process(f.agent.id);
     let runId: string | null = null;
-    await vi.waitFor(async () => {
+    await waitForReal(async () => {
       const wake = await read(); expect(wake.runId).toBeTruthy(); runId = wake.runId;
     }, { timeout: 40_000 });
-    await vi.waitFor(async () => {
+    await waitForReal(async () => {
       await heartbeat.drainActiveRunExecutions();
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
       expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
@@ -248,6 +275,9 @@ describe("deferred receipt durable dispatch", () => {
   });
 
   it("retains failure backoff for a real wait-persistence database error", async () => {
+    // This case observes the millisecond before retry. Freeze before any
+    // fixture or worker can arm a timer; it never starts a child process.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: false });
     const f = await fixture();
     await createAgentLifecycle(db).pauseAgent(f.agent.id);
     const request = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issue.id, actorId: f.actorId,
@@ -257,18 +287,27 @@ describe("deferred receipt durable dispatch", () => {
         raise exception 'C1 injected wait persistence failure'; end if; return new; end $$`);
     await db.execute(sql`create trigger c1_refusal_fault before update on agent_wakeup_requests
       for each row execute function c1_refusal_fault()`);
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     try {
       await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
-      await vi.waitFor(() => expect(errors).toHaveLength(1));
+      await waitForReal(() => expect(errors).toHaveLength(1));
       const failure = errors[0] as AggregateError;
       expect(failure).toBeInstanceOf(AggregateError);
       expect(String(failure.errors[0]?.errors[0]?.cause?.message)).toContain("C1 injected wait persistence failure");
       const due = errorTimes[0] + 30_000;
-      await Promise.allSettled([...passes]); await immediate();
-      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBe(due));
+      // Other owners may publish a coalesced deadline after their real SQL
+      // settles. Run those saved deadlines without reaching the failed retry.
+      await waitForReal(async () => {
+        await Promise.allSettled([...passes]); await immediate();
+        const next = coordinator.nextWakeAt();
+        if (next !== null && next < due) {
+          await vi.advanceTimersByTimeAsync(Math.max(1, next - Date.now() + 1));
+          await Promise.allSettled([...passes]); await immediate();
+        }
+        expect(errors).toHaveLength(1);
+        expect(coordinator.nextWakeAt()).toBe(due);
+      });
       expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!)))[0].payload?.executionWait).toBeUndefined();
-      await vi.advanceTimersByTimeAsync(29_999);
+      await vi.advanceTimersByTimeAsync(due - Date.now() - 1);
       expect(errors).toHaveLength(1);
       await db.execute(sql`drop trigger c1_refusal_fault on agent_wakeup_requests`);
       await db.execute(sql`drop function c1_refusal_fault()`);
@@ -290,18 +329,19 @@ describe("deferred receipt durable dispatch", () => {
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
       source: "on_demand", reason: "task_retry", status: "deferred_issue_execution" }).returning();
     const failure = conflict("Unexpected admission conflict");
-    let fail = true;
-    const resume = vi.fn(async (scope: { onError?: (error: unknown) => void }) => { if (fail) scope.onError?.(failure); });
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    let fail = true, failedAt = 0;
+    const resume = vi.fn(async (scope: { onError?: (error: unknown) => void }) => {
+      if (fail) { failedAt = Date.now(); scope.onError?.(failure); }
+    });
     await registerDeferredReceiptWork(db, coordinator, { resume, settleTaskChat: async () => {}, dispatchNative: async () => {},
       schedulingSuppressed: async () => false }, () => !drain).ready;
     expect(errors).toHaveLength(1);
     expect((errors[0] as AggregateError).errors[0].errors).toEqual([failure]);
-    expect(coordinator.nextWakeAt()).toBe(Date.now() + 30_000);
+    expect(coordinator.nextWakeAt()).toBe(failedAt + 30_000);
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0].status).toBe("deferred_issue_execution");
     errors.length = 0; fail = false;
     await vi.advanceTimersByTimeAsync(30_000);
-    await vi.waitFor(() => expect(resume).toHaveBeenCalledTimes(2));
+    await waitForReal(() => expect(resume).toHaveBeenCalledTimes(2));
     await quiet();
   });
 
@@ -311,7 +351,6 @@ describe("deferred receipt durable dispatch", () => {
       source: "automation", status: native ? "claimed" : "deferred_issue_execution", claimedAt: updatedAt, updatedAt,
       payload: native ? {} : { executionWait: { reason: "recovery" } },
       requestedByActorType: "system", requestedByActorId: native ? "native-status-committer" : null }).returning();
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const check = vi.fn(async (scope: { companyId?: string; requestId?: string }) => {
       await db.update(agentWakeupRequests).set({ status: "skipped" }).where(eq(agentWakeupRequests.id, scope.requestId!));
     });
@@ -321,7 +360,7 @@ describe("deferred receipt durable dispatch", () => {
     expect(coordinator.nextWakeAt()).toBe(due); expect(check).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(due - Date.now() - 1); expect(check).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    await vi.waitFor(() => expect(check).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ companyId: f.companyId, requestId: wake.id })));
+    await waitForReal(() => expect(check).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ companyId: f.companyId, requestId: wake.id })));
     await quiet();
   });
   it("reconciles the first drained producer and waits for resume without domain SQL", async () => {
@@ -334,12 +373,11 @@ describe("deferred receipt durable dispatch", () => {
       await tx.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id, source: "on_demand",
         status: "deferred_issue_execution", reason: "task_retry" });
     });
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     await vi.advanceTimersByTimeAsync(1000);
     expect(resume).not.toHaveBeenCalled(); expect(dispatchNative).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+    await waitForReal(() => expect(idleWorkSnapshot().active).toBe(0));
     drain = false; await vi.advanceTimersByTimeAsync(30_000);
-    await vi.waitFor(() => expect(resume).toHaveBeenCalledTimes(1)); await quiet();
+    await waitForReal(() => expect(resume).toHaveBeenCalledTimes(1)); await quiet();
   });
   it.each([
     { name: "saved comment", payload: { _paperclipWakeContext: { wakeCommentIds: ["saved-comment"] } } },
@@ -363,7 +401,7 @@ describe("deferred receipt durable dispatch", () => {
       });
       expect(resume).not.toHaveBeenCalled();
     });
-    await vi.waitFor(() => expect(resume).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ companyId: f.companyId, requestId })), { timeout: 5_000 });
+    await waitForReal(() => expect(resume).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ companyId: f.companyId, requestId })), { timeout: 5_000 });
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, other.id)))[0].status).toBe("deferred_issue_execution");
     await quiet();
   });
@@ -378,6 +416,105 @@ describe("deferred receipt durable dispatch", () => {
       schedulingSuppressed: async () => false }, () => !drain).ready;
     expect(resume).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ companyId: f.companyId, requestId: wake.id }));
     await quiet();
+  });
+  it("parks an accepted conversation Retry while chat is disabled and resumes it on enablement", async () => {
+    const settings = instanceSettingsService(db), original = await settings.getExperimental();
+    await settings.updateExperimental({ enableAgentChat: true });
+    try {
+      const f = await fixture();
+      await db.update(issues).set({ status: "in_review", conversationAgentId: f.agent.id,
+        conversationUserId: f.actorId, conversationState: "waiting" }).where(eq(issues.id, f.issue.id));
+      const request = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issue.id,
+        actorId: f.actorId, observedRunId: f.source.id, idempotencyKey: randomUUID() });
+      expect(request.accepted).toBe(true);
+      await settings.updateExperimental({ enableAgentChat: false });
+      await expect(requestTaskRetry({ db, companyId: f.companyId, issueId: f.issue.id,
+        actorId: f.actorId, observedRunId: f.source.id, idempotencyKey: randomUUID() }))
+        .rejects.toMatchObject({ status: 404, message: "Agent Chat is disabled" });
+      const priorCursor = new Date(Date.now() - 31_000);
+      await db.update(agentWakeupRequests).set({ updatedAt: priorCursor }).where(eq(agentWakeupRequests.id, request.requestId!));
+      await heartbeat.resumeExecutionWaitComments({ companyId: f.companyId });
+      const [parked] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!));
+      expect(parked.updatedAt.getTime()).toBeGreaterThan(priorCursor.getTime());
+      expect(parked).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
+      await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
+      await Promise.allSettled([...passes]);
+      expect(errors).toEqual([]);
+      const read = async () => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!)))[0];
+      expect(await read()).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      await waitForReal(async () => {
+        await Promise.allSettled([...passes]);
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 40_000 });
+      const idleStatements = statements.length;
+      await new Promise(resolve => setTimeout(resolve, 31_000));
+      expect(statements).toHaveLength(idleStatements);
+      await settings.updateExperimental({ enableAgentChat: true });
+      let runId: string | null = null;
+      await waitForReal(async () => {
+        const saved = await read(); expect(saved.runId).toBeTruthy(); runId = saved.runId;
+      }, { timeout: 5_000 });
+      await waitForReal(async () => {
+        await heartbeat.drainActiveRunExecutions();
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
+        expect(run.status).toBe("succeeded"); expect(run.stdoutExcerpt).toContain("receipt-proof");
+      }, { timeout: 15_000 });
+      expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${request.requestId}`)).toHaveLength(1);
+      await heartbeat.drainActiveRunExecutions();
+    } finally { await settings.updateExperimental({ enableAgentChat: original.enableAgentChat }); }
+  });
+  it("resumes saved conversation input only after chat is re-enabled and its transaction commits", async () => {
+    const settings = instanceSettingsService(db), original = await settings.getExperimental();
+    await settings.updateExperimental({ enableAgentChat: true });
+    try {
+      const f = await fixture();
+      await db.update(issues).set({ status: "in_review", conversationAgentId: f.agent.id,
+        conversationUserId: f.actorId, conversationState: "waiting" }).where(eq(issues.id, f.issue.id));
+      const comment = await issueService(db).addComment(f.issue.id, "Continue with this saved input", { userId: f.actorId });
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
+        source: "on_demand", status: "deferred_issue_execution", reason: "issue_commented",
+        requestedByActorType: "user", requestedByActorId: f.actorId, updatedAt: new Date(Date.now() - 31_000),
+        payload: { issueId: f.issue.id, queuedCommentInterrupt: { actorId: f.actorId },
+          _paperclipWakeContext: { issueId: f.issue.id, wakeCommentIds: [comment.id] } } }).returning();
+      await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(Date.now() - 31_000),
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+          queuedCommentInterruptQueueId: wake.id } }).where(eq(heartbeatRuns.id, f.source.id));
+      await settings.updateExperimental({ enableAgentChat: false });
+      await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
+      await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
+      await waitForReal(async () => {
+        await Promise.allSettled([...passes]);
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 5_000 });
+      const idleStatements = statements.length;
+      await new Promise(resolve => setTimeout(resolve, 31_000));
+      expect(statements).toHaveLength(idleStatements);
+      const read = async () => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0];
+      expect(await read()).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      await expect(db.transaction(async tx => {
+        await instanceSettingsService(tx as unknown as typeof db).updateExperimental({ enableAgentChat: true });
+        throw new Error("rolled back chat enablement");
+      })).rejects.toThrow("rolled back chat enablement");
+      await Promise.allSettled([...passes]);
+      expect(await read()).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect((await settings.getExperimental()).enableAgentChat).toBe(false);
+      await settings.updateExperimental({ enableAgentChat: true });
+      let runId: string | null = null;
+      await waitForReal(async () => {
+        const saved = await read(); expect(saved.runId).toBeTruthy(); runId = saved.runId;
+      }, { timeout: 5_000 });
+      await waitForReal(async () => {
+        await heartbeat.drainActiveRunExecutions();
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
+        expect(run.status).toBe("succeeded"); expect(run.stdoutExcerpt).toContain("receipt-proof");
+      }, { timeout: 15_000 });
+      const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+        sql`${heartbeatRuns.id} <> ${f.source.id}`));
+      expect(runs).toHaveLength(1);
+      expect(runs[0].contextSnapshot?.wakeCommentIds).toEqual([comment.id]);
+      await quiet();
+    } finally { await settings.updateExperimental({ enableAgentChat: original.enableAgentChat }); }
   });
   it("settles a processed chat receipt without restaging it until an actual eligibility commit", async () => {
     const f = await fixture();
@@ -402,13 +539,13 @@ describe("deferred receipt durable dispatch", () => {
         providerActionId: randomUUID(), kind: "failed_run_retry", status: "processed", updatedAt: new Date(),
         payload: { issueId: f.issue.id, taskRetryIntentId: intentId, failedRunId: f.source.id } });
     });
-    await vi.waitFor(async () => {
+    await waitForReal(async () => {
       const [intent] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, intentId));
       expect(intent.updatedAt.getTime()).toBeGreaterThan(previous.getTime());
     }, { timeout: 5_000 });
     expect((await db.select().from(chatActions).where(eq(chatActions.id, actionId)))[0].status).toBe("processed");
     await db.transaction(tx => notifyDeferredExecutionEligibility(tx, { companyId: f.companyId }));
-    await vi.waitFor(async () => expect((await db.select().from(chatActions).where(eq(chatActions.id, actionId)))[0].status)
+    await waitForReal(async () => expect((await db.select().from(chatActions).where(eq(chatActions.id, actionId)))[0].status)
       .toBe("issued"), { timeout: 5_000 });
     await quiet();
   });
@@ -421,7 +558,6 @@ describe("deferred receipt durable dispatch", () => {
       _paperclipWakeContext: { wakeCommentIds: comments.map(row => row.id) } };
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
       source: "on_demand", status: "deferred_issue_execution", payload, updatedAt: initialAt }).returning();
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const deps = createHeartbeatQueueTestDependencies(db), queue = createHeartbeatQueue(db, deps);
     await registerDeferredReceiptWork(db, coordinator, { resume: scope => queue.resumeDeferredExecutionReceipts(scope),
       settleTaskChat: async () => {}, dispatchNative: async () => {}, schedulingSuppressed: async () => false }, () => !drain).ready;
@@ -434,11 +570,11 @@ describe("deferred receipt durable dispatch", () => {
       async (_locked, tx) => { await tx.updateWakeQueuedCommentIds({ wakeId: wake.id, payload,
         ids: comments.map(row => row.id).reverse(), updatedAt: movedAt }); });
     await vi.advanceTimersByTimeAsync(initialAt.getTime() + 30_000 - Date.now());
-    await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+    await waitForReal(() => expect(idleWorkSnapshot().active).toBe(0));
     expect(deps.resumeQueuedCommentInterrupt).not.toHaveBeenCalled();
     expect(coordinator.nextWakeAt()).toBe(movedAt.getTime() + 30_000);
     await vi.advanceTimersByTimeAsync(movedAt.getTime() + 30_000 - Date.now());
-    await vi.waitFor(() => expect(deps.resumeQueuedCommentInterrupt).toHaveBeenCalledExactlyOnceWith(f.companyId, wake.id));
+    await waitForReal(() => expect(deps.resumeQueuedCommentInterrupt).toHaveBeenCalledExactlyOnceWith(f.companyId, wake.id));
     await quiet();
   });
   it("reactivates a held task Retry when the authorized subtree hold is released without wakeAgents", async () => {
@@ -451,20 +587,20 @@ describe("deferred receipt durable dispatch", () => {
     const request = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issue.id, actorId: f.actorId,
       observedRunId: f.source.id, idempotencyKey: randomUUID() });
     expect(request.requestId).toBeTruthy();
-    await vi.waitFor(async () => {
+    await waitForReal(async () => {
       const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!));
       expect(wake.payload?.executionWait).toMatchObject({ reason: "issue_tree_hold_active" });
       expect(wake.runId).toBeNull();
     }, { timeout: 5_000 });
-    await vi.waitFor(() => { expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); }, { timeout: 40_000 });
+    await waitForReal(() => { expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); }, { timeout: 40_000 });
     await tree.releaseHold(f.companyId, f.issue.id, hold.hold.id, { actor, reason: "Resume saved Retry" });
     let runId: string | null = null;
-    await vi.waitFor(async () => {
+    await waitForReal(async () => {
       const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!));
       expect(wake.runId, JSON.stringify(wake)).toBeTruthy(); runId = wake.runId;
     }, { timeout: 40_000 });
     // Observe this Retry before closing the task and draining its follow-ups.
-    await vi.waitFor(async () => {
+    await waitForReal(async () => {
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
       expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
       expect(run.stdoutExcerpt).toContain("receipt-proof");
@@ -477,7 +613,6 @@ describe("deferred receipt durable dispatch", () => {
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
       source: "automation", status: "queued", error: "Transient dispatch failure", updatedAt: initialAt,
       requestedByActorType: "system", requestedByActorId: "native-status-committer" }).returning();
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const dispatchNative = vi.fn(async () => {});
     await registerDeferredReceiptWork(db, coordinator, { resume: async () => {}, settleTaskChat: async () => {},
       dispatchNative, schedulingSuppressed: async () => false }, () => !drain).ready;
@@ -485,10 +620,10 @@ describe("deferred receipt durable dispatch", () => {
     const movedAt = new Date();
     await db.update(agentWakeupRequests).set({ updatedAt: movedAt }).where(eq(agentWakeupRequests.id, wake.id));
     await vi.advanceTimersByTimeAsync(initialAt.getTime() + 30_000 - Date.now());
-    await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+    await waitForReal(() => expect(idleWorkSnapshot().active).toBe(0));
     expect(dispatchNative).not.toHaveBeenCalled(); expect(coordinator.nextWakeAt()).toBe(movedAt.getTime() + 30_000);
     await vi.advanceTimersByTimeAsync(movedAt.getTime() + 30_000 - Date.now());
-    await vi.waitFor(() => expect(dispatchNative).toHaveBeenCalledTimes(1)); await quiet();
+    await waitForReal(() => expect(dispatchNative).toHaveBeenCalledTimes(1)); await quiet();
   });
   it("arms one new wait reason grace and stays quiet when that same gate is still closed", async () => {
     const f = await fixture(); let reason = "operator_pause";
@@ -499,17 +634,16 @@ describe("deferred receipt durable dispatch", () => {
       schedulingSuppressed: async () => false }, () => !drain).ready;
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
       source: "on_demand", status: "deferred_issue_execution", reason: "task_retry" }).returning();
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     for (const nextReason of ["operator_pause", "budget_pause"]) {
       reason = nextReason;
       await writeDeferredExecutionWait(db, { companyId: f.companyId, requestId: wake.id }, { reason });
       const [current] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
       const due = current.updatedAt.getTime() + 30_000;
       await vi.advanceTimersByTimeAsync(1_000);
-      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBe(due));
+      await waitForReal(() => expect(coordinator.nextWakeAt()).toBe(due));
       const checked = resume.mock.calls.length;
       await vi.advanceTimersByTimeAsync(due - Date.now());
-      await vi.waitFor(() => expect(resume).toHaveBeenCalledTimes(checked + 1));
+      await waitForReal(() => expect(resume).toHaveBeenCalledTimes(checked + 1));
       await quiet();
     }
     expect(resume).toHaveBeenCalledTimes(2);
@@ -526,15 +660,15 @@ describe("deferred receipt durable dispatch", () => {
     await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
     await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
     await heartbeat.registerScheduledRetryCancellationWork(coordinator, () => !drain).ready;
-    await vi.waitFor(() => { expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); }, { timeout: 5_000 });
+    await waitForReal(() => { expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); }, { timeout: 5_000 });
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!)))[0].runId).toBeNull();
     await commitEligibility();
     let runId: string | null = null;
-    await vi.waitFor(async () => {
+    await waitForReal(async () => {
       const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!));
       expect(wake.runId, JSON.stringify(wake)).toBeTruthy(); runId = wake.runId;
     }, { timeout: 15_000 });
-    await vi.waitFor(async () => {
+    await waitForReal(async () => {
       await heartbeat.drainActiveRunExecutions();
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
       expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");

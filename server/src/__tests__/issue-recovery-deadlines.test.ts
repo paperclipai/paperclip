@@ -1,12 +1,16 @@
+import { createServer } from "node:http";
 import { setImmediate as immediate } from "node:timers/promises";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueRecoveryActions, issueRelations, issues, issueWatchdogs } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueRecoveryActions, issueRelations, issues, issueWatchdogs, issueComments } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { undeliveredConversationComments } from "../services/agent-conversations.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { issueService } from "../services/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { registerIssueRecoveryWork } from "../services/recovery/work.js";
@@ -71,6 +75,12 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
   async function compete() {
     const other = heartbeatService(db);
     const competing = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const register = competing.register.bind(competing);
+    competing.register = (queue, task) => register(queue, { ...task, run: signal => {
+      const pass = task.run(signal); passes.add(pass);
+      void pass.then(() => passes.delete(pass), () => passes.delete(pass));
+      return pass;
+    } });
     const work = other.registerIssueStateRecoveryWork(competing, () => true);
     extraStops.push(() => competing.stop()); extraDeadlines.push(competing.nextWakeAt); await work.ready;
   }
@@ -86,8 +96,32 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
     }).returning();
     return { companyId, agentId: agent.id };
   }
+  async function completingProvider(f: { companyId: string; agentId: string }, beforeComplete?: () => Promise<unknown>) {
+    const failures: unknown[] = [];
+    const listener = createServer(async (request, response) => {
+      try {
+        let body = "";
+        for await (const chunk of request) body += chunk;
+        const { runId } = JSON.parse(body) as { runId: string };
+        const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId),
+          eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.agentId, f.agentId)));
+        if (!run?.contextSnapshot?.issueId) throw new Error("Unknown controlled task run");
+        await beforeComplete?.();
+        await issueService(db).update(String(run.contextSnapshot.issueId), { status: "done" });
+        response.end("ok");
+      } catch (error) { failures.push(error); response.statusCode = 500; response.end("completion failed"); }
+    });
+    await new Promise<void>(resolve => listener.listen(0, "127.0.0.1", resolve));
+    extraStops.push(async () => { listener.closeAllConnections(); await new Promise<void>(resolve => listener.close(() => resolve())); });
+    const port = (listener.address() as { port: number }).port;
+    const script = `fetch("http://127.0.0.1:${port}/complete", {method:"POST", body:JSON.stringify({runId:process.env.PAPERCLIP_RUN_ID})}).then(async response=>{if(!response.ok)throw new Error(await response.text());console.log("recovery-proof")}).catch(error=>{console.error(error);process.exitCode=1})`;
+    await db.update(agents).set({ adapterConfig: { command: process.execPath, args: ["-e", script], cwd: process.cwd() } })
+      .where(eq(agents.id, f.agentId));
+    return failures;
+  }
   async function settled() {
     await vi.waitFor(async () => {
+      await Promise.allSettled([...passes]);
       await heartbeat.drainActiveRunExecutions();
       const wake = coordinator.nextWakeAt();
       const detail = wake === null ? "" : JSON.stringify({ now: Date.now(), tasks: await Promise.all([...tasks].map(async ([queue, task]) => ({ queue, at: task.nextRunAt?.(), pending: await task.hasPending() }))),
@@ -102,11 +136,19 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
     expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.status} in ('queued', 'running')`)).toHaveLength(0);
     const reads = vi.spyOn(db, "select"); const executes = vi.spyOn(db, "execute");
     const selected = reads.mock.calls.length, executed = executes.mock.calls.length;
+    const statements: string[] = [], priorDebug = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query) => { statements.push(query); };
     if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    try { await vi.advanceTimersByTimeAsync(20 * 60_000); expect(reads).toHaveBeenCalledTimes(selected); expect(executes).toHaveBeenCalledTimes(executed); }
-    finally { vi.useRealTimers(); reads.mockRestore(); executes.mockRestore(); }
+    try {
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      expect(reads).toHaveBeenCalledTimes(selected); expect(executes).toHaveBeenCalledTimes(executed);
+      expect(statements).toEqual([]);
+    } finally { vi.useRealTimers(); db.$client.options.debug = priorDebug; reads.mockRestore(); executes.mockRestore(); }
   }
   async function finish(issueId: string) {
+    const retries = () => db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "scheduled_retry"),
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`));
+    const before = await retries();
     await issueService(db).update(issueId, { status: "done" });
     // Closing one blocker can legitimately start its dependent. Wait for this
     // task's dispatch and execution; quiet() verifies the whole fixture later.
@@ -118,26 +160,18 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
         sql`${heartbeatRuns.status} in ('queued', 'running')`,
       ))).toHaveLength(0);
     }, { timeout: 15_000 });
-    const saved = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "scheduled_retry"),
-      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`));
-    if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const saved = [...new Map([...before, ...await retries()].map(run => [run.id, run])).values()];
     if (saved.length > 0) {
-      const due = Math.max(...saved.map(run => run.scheduledRetryAt!.getTime()));
-      // Keep PostgreSQL I/O and coordinator settlement ahead of virtual time.
-      // A single leap can otherwise occur before the retry deadline is armed.
-      while (Date.now() <= due) {
-        await vi.advanceTimersByTimeAsync(Math.min(500, due - Date.now() + 1));
-        await Promise.allSettled([...passes]);
-        await immediate();
-      }
+      const trace: unknown[] = [];
       await vi.waitFor(async () => {
-        await vi.advanceTimersByTimeAsync(500);
         await Promise.allSettled([...passes]);
         await heartbeat.drainActiveRunExecutions();
-        const remaining = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "scheduled_retry"),
-            sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`));
-        expect(remaining).toHaveLength(0);
-      });
+        const remaining = await retries();
+        if (remaining.length > 0) trace.push({ now: Date.now(),
+          deadlines: [coordinator.nextWakeAt(), ...extraDeadlines.map(next => next())],
+          remaining: remaining.map(run => ({ id: run.id, at: run.scheduledRetryAt })) });
+        expect(remaining, JSON.stringify(trace)).toHaveLength(0);
+      }, { timeout: Math.max(...saved.map(run => run.scheduledRetryAt!.getTime())) - Date.now() + 30_000 });
       for (const retry of saved) {
         const [settledRetry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry.id));
         expect(settledRetry.status).toBe("cancelled");
@@ -160,6 +194,93 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
     expect(run.stdoutExcerpt).toContain("recovery-proof");
     return run;
   }
+  async function savedConversation(withMessage = true) {
+    const f = await fixture(), settings = instanceSettingsService(db);
+    await settings.updateExperimental({ enableAgentChat: true, enableConferenceRoomChat: false });
+    const replies: string[] = [], failures: unknown[] = [];
+    const listener = createServer(async (request, response) => {
+      try {
+        let body = "";
+        for await (const chunk of request) body += chunk;
+        const { runId } = JSON.parse(body) as { runId: string };
+        const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId),
+          eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.agentId, f.agentId)));
+        if (!run) throw new Error("Unknown controlled conversation run");
+        await issueService(db).addComment(String(run.contextSnapshot?.issueId), "Saved chat delivered", {
+          agentId: f.agentId, runId: run.id,
+        });
+        replies.push(run.id); response.end("ok");
+      } catch (error) { failures.push(error); response.statusCode = 500; response.end("controlled reply failed"); }
+    });
+    await new Promise<void>(resolve => listener.listen(0, "127.0.0.1", resolve));
+    extraStops.push(async () => { listener.closeAllConnections(); await new Promise<void>(resolve => listener.close(() => resolve())); });
+    const port = (listener.address() as { port: number }).port;
+    const script = `fetch("http://127.0.0.1:${port}/reply", {method:"POST", body:JSON.stringify({runId:process.env.PAPERCLIP_RUN_ID})}).then(async response=>{if(!response.ok)throw new Error(await response.text());console.log("recovery-proof")}).catch(error=>{console.error(error);process.exitCode=1})`;
+    await db.update(agents).set({ adapterConfig: { command: process.execPath, args: ["-e", script], cwd: process.cwd() } })
+      .where(eq(agents.id, f.agentId));
+    const chat = await issueService(db).create(f.companyId, { title: "Saved conversation", status: "in_review",
+      conversationAgentId: f.agentId, conversationUserId: "recovery-user", assigneeAgentId: f.agentId,
+      conversationState: "waiting" });
+    const message = withMessage ? await issueService(db).addComment(chat.id, "Keep this message", { userId: "recovery-user" }, { clientRequestId: randomUUID() }) : null;
+    await settings.updateExperimental({ enableAgentChat: false });
+    await start(); await quiet();
+    expect(replies).toEqual([]);
+    return { ...f, settings, chat, message, replies, failures };
+  }
+  it("dispatches a saved conversation only from the committed Agent Chat enable transition", async () => {
+    const f = await savedConversation();
+    expect(await undeliveredConversationComments(db, f.companyId, f.chat.id)).toHaveLength(1);
+    await f.settings.updateExperimental({ enableAgentChat: true });
+    expect(coordinator.nextWakeAt()).not.toBeNull();
+    await vi.waitFor(async () => expect(await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1), { timeout: 40_000 });
+    const run = await completed(f.chat.id);
+    expect(f.replies).toEqual([run.id]); expect(f.failures).toEqual([]);
+    expect(await undeliveredConversationComments(db, f.companyId, f.chat.id)).toEqual([]);
+    expect((await db.select().from(issues).where(eq(issues.id, f.chat.id)))[0])
+      .toMatchObject({ conversationState: "waiting", executionRunId: null });
+    expect(await db.select().from(issueComments).where(and(eq(issueComments.createdByRunId, run.id),
+      eq(issueComments.authorAgentId, f.agentId)))).toHaveLength(1);
+    await quiet();
+    let hints = 0;
+    const stop = subscribeDeliveryWork(db, DELIVERY_QUEUES.strandedAssignments, () => { hints++; });
+    try { await f.settings.updateExperimental({ enableAgentChat: true }); expect(hints).toBe(0); await quiet(); }
+    finally { stop(); }
+    expect(f.replies).toEqual([run.id]);
+  });
+  it("keeps disabled saved conversations parked after rollback, unrelated flags and unchanged values", async () => {
+    const f = await savedConversation();
+    await expect(db.transaction(async tx => {
+      await instanceSettingsService(tx as unknown as typeof db).updateExperimental({ enableAgentChat: true });
+      throw new Error("chat flag rollback");
+    })).rejects.toThrow("chat flag rollback");
+    await quiet();
+    expect((await f.settings.getExperimental()).enableAgentChat).toBe(false);
+    let hints = 0;
+    const stop = subscribeDeliveryWork(db, DELIVERY_QUEUES.strandedAssignments, () => { hints++; });
+    try {
+      await f.settings.updateExperimental({ enableConferenceRoomChat: true });
+      await f.settings.updateExperimental({ enableAgentChat: false });
+      expect(hints).toBe(0); await quiet();
+    } finally { stop(); }
+    expect(f.replies).toEqual([]); expect(f.failures).toEqual([]);
+    expect(await db.select().from(heartbeatRuns)).toEqual([]);
+    expect(await undeliveredConversationComments(db, f.companyId, f.chat.id)).toHaveLength(1);
+  });
+  it("does not dispatch an accepted saved message after Agent Chat is disabled", async () => {
+    const f = await savedConversation(false);
+    await f.settings.updateExperimental({ enableAgentChat: true }); await quiet();
+    draining = true;
+    await issueService(db).addComment(f.chat.id, "Retain while disabled", { userId: "recovery-user" }, { clientRequestId: randomUUID() });
+    let hints = 0;
+    const stop = subscribeDeliveryWork(db, DELIVERY_QUEUES.strandedAssignments, () => { hints++; });
+    try { await f.settings.updateExperimental({ enableAgentChat: false }); expect(hints).toBe(0); }
+    finally { stop(); }
+    draining = false; await quiet();
+    expect(f.replies).toEqual([]); expect(f.failures).toEqual([]);
+    expect(await db.select().from(heartbeatRuns)).toEqual([]);
+    expect(await undeliveredConversationComments(db, f.companyId, f.chat.id)).toHaveLength(1);
+  });
   it("keeps empty, configured idle, and terminal history quiet", async () => {
     await fixture(); await start(); await quiet();
   });
@@ -281,18 +402,39 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
     const blocker = await issueService(db).create(f.companyId, { title: "Blocker", status: "todo" });
     const dependent = await issueService(db).create(f.companyId, { title: "Dependent", status: "blocked", assigneeAgentId: f.agentId,
       blockedByIssueIds: [blocker.id] });
+    const failures = await completingProvider(f);
     await start(); await quiet();
     await compete();
     await issueService(db).update(blocker.id, { status: "done" });
     const run = await completed(dependent.id);
     expect(run.contextSnapshot?.wakeReason).toBe("issue_blockers_resolved");
+    expect(failures).toEqual([]);
     await finish(dependent.id); await quiet();
     expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
       sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'issue_blockers_resolved'`))).toHaveLength(1);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
   }, 90_000);
+  it("settles saved disposition debt on its original real-clock timers before measuring idle", async () => {
+    const f = await fixture();
+    const blocker = await issueService(db).create(f.companyId, { title: "Saved debt blocker", status: "todo" });
+    const issue = await issueService(db).create(f.companyId, { title: "Saved disposition debt", status: "blocked",
+      assigneeAgentId: f.agentId, blockedByIssueIds: [blocker.id] });
+    await start(); await compete();
+    await issueService(db).update(blocker.id, { status: "done" });
+    await completed(issue.id);
+    let retryId: string | undefined;
+    await vi.waitFor(async () => {
+      const [retry] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "scheduled_retry"),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`));
+      expect(retry).toBeDefined(); retryId = retry!.id;
+    }, { timeout: 40_000 });
+    await finish(issue.id); await quiet();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retryId!)))[0].status).toBe("cancelled");
+  }, 120_000);
   it("uses ordinary watchdog configuration and subtree closure to dispatch a reusable review", async () => {
     const f = await fixture();
     const source = await issueService(db).create(f.companyId, { title: "Finished subtree", status: "done" });
+    const failures = await completingProvider(f, () => taskWatchdogService(db).disableForIssue(f.companyId, source.id));
     await start(); await quiet();
     await compete();
     const watchdog = await taskWatchdogService(db).upsertForIssue(f.companyId, source.id, { agentId: f.agentId });
@@ -302,6 +444,7 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
       expect(row.watchdogIssueId).toBeTruthy(); reviewId = row.watchdogIssueId!;
     }, { timeout: 15_000 });
     await completed(reviewId!);
+    expect(failures).toEqual([]);
     expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
       sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'task_watchdog_stopped_subtree'`))).toHaveLength(1);
     await finish(reviewId!);
