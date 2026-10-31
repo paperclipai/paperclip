@@ -3788,7 +3788,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(workerManager.call).toHaveBeenNthCalledWith(1, pluginId, "environmentResumeLease", expect.objectContaining({
       driverKey: "fake-plugin",
       providerLeaseId: "stale-plugin-lease",
-    }), 31234);
+    }), expect.any(Number));
+    const resumeTimeoutMs = vi.mocked(workerManager.call).mock.calls[0]?.[3];
+    expect(Number.isFinite(resumeTimeoutMs)).toBe(true);
+    expect(resumeTimeoutMs).toBeGreaterThanOrEqual(1);
+    expect(resumeTimeoutMs).toBeLessThanOrEqual(31234);
     expect(workerManager.call).not.toHaveBeenCalledWith(
       pluginId,
       "environmentDestroyLease",
@@ -3804,6 +3808,51 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await expect(environmentService(db).getLeaseById(staleLease.id)).resolves.toMatchObject({
       status: "active",
     });
+  });
+
+  it("preserves the exact lease while resume retries consume elapsed time", async () => {
+    const seeded = await seedReusablePluginSandboxLease();
+    const startedAt = Date.now();
+    const call = vi.fn(async (_pluginId: string, method: string, _params: unknown, _rpcTimeoutMs: number) => {
+      if (method !== "environmentResumeLease") throw new Error(`Unexpected plugin method: ${method}`);
+      if (call.mock.calls.length === 1) {
+        vi.setSystemTime(startedAt + 1000);
+        throw new Error("service unavailable");
+      }
+      throw new Error("stale sandbox");
+    });
+    const workerManager = {
+      isRunning: () => true,
+      call,
+      getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager;
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    try {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(startedAt);
+      await expect(runtime.acquireRunLease({
+        companyId: seeded.companyId,
+        environment: seeded.environment,
+        issueId: null,
+        agentId: seeded.agentId,
+        heartbeatRunId: seeded.runId,
+        persistedExecutionWorkspace: { id: seeded.executionWorkspaceId, mode: "shared_workspace" },
+      })).rejects.toThrow("the lease was preserved and no replacement was created");
+
+      expect(call).toHaveBeenCalledTimes(2);
+      for (const [index, timeoutMs] of [31234, 30234].entries()) {
+        expect(call).toHaveBeenNthCalledWith(index + 1, seeded.pluginId, "environmentResumeLease", expect.objectContaining({
+          driverKey: "fake-plugin",
+          providerLeaseId: seeded.reusableLease.providerLeaseId,
+        }), timeoutMs);
+      }
+      expect(call).not.toHaveBeenCalledWith(seeded.pluginId, "environmentDestroyLease", expect.anything(), expect.anything());
+      expect(call).not.toHaveBeenCalledWith(seeded.pluginId, "environmentAcquireLease", expect.anything(), expect.anything());
+      await expect(environmentService(db).getLeaseById(seeded.reusableLease.id)).resolves.toMatchObject({ status: "active" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("resumes only the exact stopped sandbox lifecycle without acquiring or reseeding", async () => {
