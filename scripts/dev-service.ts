@@ -1,6 +1,7 @@
 #!/usr/bin/env -S node --import tsx
 import { listLocalServiceRegistryRecords, removeLocalServiceRegistryRecord, terminateLocalService } from "../server/src/services/local-service-supervisor.ts";
 import { applyDevRunnerOptions } from "./dev-runner-options.ts";
+import { devRunnerStopTimeoutMs, killRemainingProcessGroup } from "./dev-runner-process-group.ts";
 import { repoRoot } from "./dev-service-profile.ts";
 
 function toDisplayLines(records: Awaited<ReturnType<typeof listLocalServiceRegistryRecords>>) {
@@ -48,7 +49,8 @@ if (command === "stop") {
     process.exit(0);
   }
   for (const record of records) {
-    await terminateLocalService(record);
+    await terminateLocalService(record, { forceAfterMs: devRunnerStopTimeoutMs });
+    await killRemainingProcessGroup(record.metadata?.serverProcessGroupId);
     await removeLocalServiceRegistryRecord(record.serviceKey);
     console.log(`Stopped ${record.serviceName} (pid ${record.pid})`);
   }
