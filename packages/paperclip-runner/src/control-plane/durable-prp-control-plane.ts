@@ -357,7 +357,7 @@ function captureCheckpoint(state: StoredCoreState, runnerVersion: string, runner
   records.set("header", JSON.stringify(header));
   records.set("cursor", JSON.stringify({ ackedSourceSeq: state.ackedSourceSeq, replayDeliveries: state.replayDeliveries,
     commandCount: commands.length, eventCount: recoveryEvents.length }));
-  const maintenance = new Set(["runner.drain", "runner.suspend", "session.snapshot", "session.close"]);
+  const maintenance = new Set(["turn.stop", "runner.drain", "runner.suspend", "session.snapshot", "session.close"]);
   return {
     runnerVersion, runnerDigest, runId, records, ...checkpointChanges(records, runId),
     recoveryEvidence: { runnerInstanceId: state.identity.runnerInstanceId, normalizedSessionId: state.identity.normalizedSessionId,

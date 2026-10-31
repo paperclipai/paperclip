@@ -106,6 +106,7 @@ it("restores authentication and commands from opaque checkpoint records", async 
   try {
     const ticket = first.issueBootstrapTicket();
     first.queueCommand("session.snapshot", {}, "maintenance");
+    first.queueCommand("turn.stop", {}, "retirement-maintenance");
     first.queueCommand("turn.start", {}, "execution");
     first.persistPreparedLaunchConfiguration(identity, "retained-configuration");
     await first.flushCheckpoint();

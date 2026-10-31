@@ -2724,6 +2724,14 @@ attachment IDs. A healthy warm handoff can create new attachment IDs within the
 retained Runner. Replacing that run's controller must preserve those IDs; deriving
 them again from the business run ID would request an invalid authority rotation.
 
+Accepted-result retirement still stops the old provider turn before draining and
+suspending its Runner. The checkpoint codec classifies `turn.stop` as lifecycle
+maintenance. Existing exact ownership, generation and accepted-result fences
+govern this cleanup; starting provider work still requires an active owner.
+Recovery also preserves the implicit isolated-home default when binding admitted
+configuration, so an unchanged home does not invalidate the retained session.
+Explicit home-mode changes retain their normal configuration-change checks.
+
 For per-turn direct sandbox recovery, the executor reads the retained Runner's
 suspended lifecycle through the recorded sandbox lease and validates its complete
 identity and lack of pending delivery/cleanup. Only a lifecycle projection is

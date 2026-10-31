@@ -14,6 +14,7 @@ import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionCo
 import { HttpError } from "../errors.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { bindHeartbeatRunnerHomeMode, prepareHeartbeatExecutionConfiguration, type HeartbeatExecutionConfigurationInput } from "../services/heartbeat/execution-configuration.js";
+import { buildEffectiveRunSessionConfigMetadata, resolveTaskSessionConfigFreshness } from "../services/heartbeat/workspaces.js";
 import { aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
 import { secretService } from "../services/secrets.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -26,6 +27,44 @@ import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recove
 const skillFailures = vi.hoisted(() => new Map<string, string>());
 
 describe("Runner home mode during recovery preparation", () => {
+  const fingerprint = (effectiveAdapterConfig: Record<string, unknown>) => buildEffectiveRunSessionConfigMetadata({
+    adapterType: "paperclip_runner", effectiveAdapterConfig, agentRuntimeConfig: {}, issueOverrides: null,
+    workspaceConfig: {}, environment: null, environmentEnv: null, projectEnv: null, routineEnv: null, runtimeSkills: [],
+  });
+  it.each([
+    { schema: "paperclip.native-execution-input.v5" },
+    { schema: "paperclip.native-execution-input.v7", homeMode: "isolated" },
+  ])("preserves the implicit isolated fingerprint through recovery and the next run: %j", async saved => {
+    const config = { provider: "codex", model: "fixture-model" };
+    // This is the effective configuration shape built by preparation, including
+    // its optional property when no explicit home mode was configured.
+    const prepare = (input: unknown) => ({ ...config, homeMode: bindHeartbeatRunnerHomeMode(config, input).homeMode });
+    const fresh = await fingerprint(prepare(null));
+    const recovered = await fingerprint(prepare(saved));
+    const next = await fingerprint(prepare(null));
+    expect(recovered.fingerprint).toBe(fresh.fingerprint);
+    expect(next.fingerprint).toBe(recovered.fingerprint);
+    expect(resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: config.model,
+      taskSessionParams: { __paperclipConfiguredModel: config.model, __paperclipConfigFingerprint: recovered.fingerprint,
+        __paperclipConfigFingerprintVersion: recovered.version, __paperclipConfigCategoryFingerprints: recovered.categoryFingerprints },
+      configMetadata: next })).toMatchObject({ reset: false, changedCategories: [] });
+    expect(config).not.toHaveProperty("homeMode");
+  });
+
+  it("pins the admitted isolated mode but invalidates a genuinely preconfigured next run", async () => {
+    const config = { provider: "codex", model: "fixture-model", homeMode: "preconfigured" };
+    const recoveredConfig = bindHeartbeatRunnerHomeMode(config, { schema: "paperclip.native-execution-input.v5" });
+    expect(recoveredConfig.homeMode).toBe("isolated");
+    expect(bindHeartbeatRunnerHomeMode(config, null).homeMode).toBe("preconfigured");
+    const recovered = await fingerprint(recoveredConfig);
+    const next = await fingerprint(config);
+    expect(next.fingerprint).not.toBe(recovered.fingerprint);
+    expect(resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: config.model,
+      taskSessionParams: { __paperclipConfiguredModel: config.model, __paperclipConfigFingerprint: recovered.fingerprint,
+        __paperclipConfigFingerprintVersion: recovered.version, __paperclipConfigCategoryFingerprints: recovered.categoryFingerprints },
+      configMetadata: next })).toMatchObject({ reset: true, changedCategories: ["adapterConfig"] });
+  });
+
   it.each([
     ["preconfigured", { schema: "paperclip.native-execution-input.v5" }, "isolated"],
     ["preconfigured", { schema: "paperclip.native-execution-input.v7", homeMode: "isolated" }, "isolated"],

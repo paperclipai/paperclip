@@ -1328,10 +1328,11 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     } finally { await authority.stop(); }
   });
 
-  it.each(["idle", "preparing_successor", "unclaimed_successor", "claimed_successor", "expired_preparation", "dispatching_successor", "foreign_preparation", "foreign_native_preparation", "wrong_issue", "new_work", "replaced_controller"] as const)(
-    "settles a completed warm checkpoint during early retirement without granting work: %s",
-    async scenario => {
-      const fixture = await seedRun(`WARM-EARLY-RETIREMENT-${scenario}`);
+  it.each((["idle", "preparing_successor", "unclaimed_successor", "claimed_successor", "expired_preparation", "dispatching_successor", "foreign_preparation", "foreign_native_preparation", "wrong_issue", "new_work", "replaced_controller", "unaccepted"] as const).flatMap(scenario =>
+    (["runner.suspend", "turn.stop"] as const).map(command => ({ scenario, command }))))(
+    "settles a completed warm checkpoint during early retirement without granting work: $scenario/$command",
+    async ({ scenario, command }) => {
+      const fixture = await seedRun(`WARM-EARLY-RETIREMENT-${scenario}-${command}`);
       const binding = { companyId, issueId: fixture.issueId, runId: fixture.runId };
       const identity = transportOptions(fixture, runtimeRoot).prpIdentity;
       const authority = new DurablePrpControlPlane({
@@ -1356,7 +1357,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         });
         await fixture.db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
           .where(eq(heartbeatRuns.id, fixture.runId));
-        await fixture.db.update(nativeRunFinalizations).set({ phase: "committed", resultId,
+        await fixture.db.update(nativeRunFinalizations).set({ phase: "committed", resultId: scenario === "unaccepted" ? null : resultId,
           leaseOwner: null, leaseExpiresAt: null,
           ...(scenario === "replaced_controller" ? { controllerBootId: randomUUID(), controllerGeneration: 2 } : {}),
         }).where(eq(nativeRunFinalizations.runId, fixture.runId));
@@ -1365,7 +1366,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         if (scenario !== "idle") {
           nextRunId = randomUUID();
           const preparing = scenario !== "claimed_successor" && scenario !== "unclaimed_successor";
-          const otherIssue = scenario === "wrong_issue" ? (await seedRun("WARM-OTHER-ISSUE")).issueId : fixture.issueId;
+          const otherIssue = scenario === "wrong_issue" ? (await seedRun(`WARM-OTHER-ISSUE-${command}`)).issueId : fixture.issueId;
           await fixture.db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId,
             issueId: otherIssue, scopeKind: "issue", contextSnapshot: { issueId: otherIssue },
             ...(preparing ? { runtimeMode: "legacy", executionStage: scenario === "dispatching_successor" ? "dispatching" : "preparing",
@@ -1382,7 +1383,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         }
         await fixture.db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, fixture.issueId));
         const before = (await loadNativeRunnerCheckpoint(fixture.db, binding))!;
-        authority.queueCommand(scenario === "new_work" ? "turn.start" : "runner.suspend", {}, `early-retirement-${scenario}`);
+        authority.queueCommand(scenario === "new_work" ? "turn.start" : command, {}, `early-retirement-${scenario}`);
         if (!["idle", "preparing_successor", "claimed_successor"].includes(scenario)) {
           await expect(authority.flushCheckpoint()).rejects.toThrow("native_runner_checkpoint_owner_lost");
           expect((await loadNativeRunnerCheckpoint(fixture.db, binding))?.records).toEqual(before.records);
@@ -1393,7 +1394,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
           saved.restoreSessionDirectory(restoredRoot);
           const restored = JSON.parse(await readFile(resolve(restoredRoot, "control-plane", "control-plane-state.json"), "utf8"));
           expect(restored.identity).toEqual(identity);
-          expect(restored.commands).toContainEqual(expect.objectContaining({ type: "runner.suspend", status: "pending" }));
+          expect(restored.commands).toContainEqual(expect.objectContaining({ type: command, status: "pending" }));
         }
         const [task] = await fixture.db.select({ executionRunId: issues.executionRunId }).from(issues)
           .where(eq(issues.id, fixture.issueId));
@@ -1401,6 +1402,83 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       } finally { await authority.stop(); }
     },
   );
+
+  realProcessIt("durably retires an accepted warm Runner while its same-controller successor prepares", async () => {
+    const fixture = await seedRun("REAL-WARM-RETIREMENT");
+    const binding = { companyId, issueId: fixture.issueId, runId: fixture.runId };
+    const root = resolve(runtimeRoot, fixture.runId, "real-retirement");
+    const options = transportOptions(fixture, root);
+    const diagnostics: string[] = [], checkpointFailures: unknown[] = [];
+    let authority!: DurablePrpControlPlane;
+    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: successor.bootId,
+      controllerGeneration: 1, leaseOwner: "real-retirement-owner", leaseExpiresAt: new Date(Date.now() + 60_000),
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const transport = createRunnerdCodexTransport({ ...options,
+      codexArgs: [...options.codexArgs, "--linger-after-turn-start"],
+      onDiagnostic: message => diagnostics.push(message),
+      controlPlaneRegistration: async core => {
+        authority = core;
+        const write = nativeRunnerCheckpointWriter(fixture.db, { ...binding, authorityRunId: fixture.runId,
+          bootId: successor.bootId, generation: 1, leaseOwner: "real-retirement-owner" });
+        core.setCheckpointPersistence(async checkpoint => {
+          try { await write(checkpoint); }
+          catch (error) { checkpointFailures.push(error); throw error; }
+        });
+        return registerRunnerPrpAuthority({ ...binding, authority: core });
+      },
+    });
+    let runnerPid: number | null = null, providerPid: number | null = null;
+    try {
+      await transport.transport.request("thread/start", { cwd: root, dynamicTools: [] });
+      await transport.transport.request("turn/start", { input: [{ type: "text", text: "Keep the provider alive after accepting its result." }] });
+      runnerPid = transport.evidence().runnerPid;
+      providerPid = transport.evidence().providerPid;
+      expect(runnerPid).toEqual(expect.any(Number));
+      expect(providerPid).toEqual(expect.any(Number));
+      await waitForCondition("active real provider before accepted-result retirement", () =>
+        authority.store.state.committedEvents.some(event => event.eventType === "turn.started"));
+      await authority.flushCheckpoint();
+      const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      const resultId = randomUUID();
+      await fixture.db.insert(nativeRunResults).values({ id: resultId, ...binding, turnId: options.prpIdentity.turnId,
+        completionContractId: run.completionContractId!, serverFingerprint: "real-retirement-accepted",
+        schemaStatus: "accepted", canonicalSha256: "a".repeat(64),
+        resultJson: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Accepted before provider cleanup." },
+      });
+      await fixture.db.update(nativeRunFinalizations).set({ phase: "committed", resultId, leaseOwner: null, leaseExpiresAt: null })
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      await fixture.db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, fixture.runId));
+      const nextRunId = randomUUID();
+      await fixture.db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId, issueId: fixture.issueId,
+        scopeKind: "issue", status: "running", runtimeMode: "legacy", executionStage: "preparing",
+        invocationSource: "assignment", contextSnapshot: { issueId: fixture.issueId },
+        controllerBootId: legacyControllerBootId, controllerLeaseExpiresAt: new Date(Date.now() + 60_000) });
+      await fixture.db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, fixture.issueId));
+      await expect(transport.transport.close(), diagnostics.join("\n")).resolves.toBeUndefined();
+      expect(checkpointFailures).toEqual([]);
+      const state = JSON.parse(await readFile(resolve(root, "runner", "runner-state.json"), "utf8"));
+      expect(state).toMatchObject({ lifecycle: "suspended", runId: fixture.runId,
+        normalizedSessionId: options.prpIdentity.normalizedSessionId, runnerInstanceId: options.prpIdentity.runnerInstanceId });
+      const saved = (await loadNativeRunnerCheckpoint(fixture.db, binding))!;
+      const commands = [...saved.records].filter(([key]) => key.startsWith("command:")).map(([, value]) => JSON.parse(value));
+      for (const type of ["turn.stop", "runner.drain", "runner.suspend"]) {
+        expect(commands, diagnostics.join("\n")).toContainEqual(expect.objectContaining({ type, status: "completed" }));
+      }
+      expect(commands.filter(command => command.type === "turn.start")).toHaveLength(1);
+      const [task] = await fixture.db.select().from(issues).where(eq(issues.id, fixture.issueId));
+      expect(task.executionRunId).toBe(nextRunId);
+    } catch (error) {
+      throw new Error(`${String(error)}; owned retirement diagnostics ${JSON.stringify({
+        checkpointFailures: checkpointFailures.map(String), diagnostics,
+        commands: authority?.store.state.commands.map(({ type, status }) => ({ type, status })),
+      })}`);
+    } finally {
+      await transport.transport.close().catch(() => undefined);
+      if (providerPid && processAlive(providerPid)) process.kill(providerPid, "SIGKILL");
+      await stopOwnedProcessGroup(runnerPid, root).catch(() => undefined);
+    }
+  }, 45_000);
 
   it("applies checkpoint deltas in Postgres without rewriting authority and removes only evicted events", async () => {
     const fixture = await seedRun("CHECKPOINT-DELTA");

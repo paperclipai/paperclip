@@ -2785,6 +2785,9 @@ Remote adoption tests must invoke actual external-state preparation. Inspecting
 transport options alone does not exercise the resumed-lease harness checks.
 Include a healthy warm handoff before the crash so recovery exercises the
 handoff's turn and item attachment IDs as well as first-run identities.
+Retirement tests must exercise the preceding `turn.stop` as well as drain and
+suspend after result acceptance. Configuration tests compare fresh and recovered
+home-mode fingerprints while preserving rejection of real mode changes.
 Run it against an isolated database with `PAPERCLIP_TEST_DATABASE_URL` when the
 host cannot start embedded Postgres:
 
