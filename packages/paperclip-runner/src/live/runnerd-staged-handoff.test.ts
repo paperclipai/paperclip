@@ -16,7 +16,7 @@ import {
 
 // The guest rejects WebSocket extensions. Use the same uncompressed wire
 // contract as production, without importing the server connector into Runner.
-async function openOwnedWire(url: string): Promise<{ wire: PrpWireConnection; closed: Promise<void>; close(): void }> {
+async function openOwnedWire(url: string): Promise<{ wire: PrpWireConnection; firstFrame: Promise<void>; closed: Promise<void>; close(): void }> {
   return new Promise((resolvePeer, reject) => {
     const key = randomBytes(16).toString("base64");
     const req = request(url.replace("ws:", "http:"), { headers: {
@@ -32,6 +32,8 @@ async function openOwnedWire(url: string): Promise<{ wire: PrpWireConnection; cl
       let buffer: Buffer = head, ended = false;
       let closeResolve!: () => void;
       const closed = new Promise<void>(done => { closeResolve = done; });
+      let firstFrameResolve!: () => void;
+      const firstFrame = new Promise<void>(done => { firstFrameResolve = done; });
       const finish = () => { if (ended) return; ended = true; for (const close of closes) close(); closeResolve(); };
       const send = (payload: Buffer, opcode: number) => {
         const mask = randomBytes(4), prefix = payload.length < 126 ? Buffer.from([0x80 | opcode, 0x80 | payload.length]) : Buffer.alloc(payload.length <= 65535 ? 4 : 10);
@@ -47,6 +49,10 @@ async function openOwnedWire(url: string): Promise<{ wire: PrpWireConnection; cl
           const size = initial === 126 ? buffer.readUInt16BE(2) : initial === 127 ? Number(buffer.readBigUInt64BE(2)) : initial;
           const offset = initial === 126 ? 4 : initial === 127 ? 10 : 2;
           if (buffer.length < offset + size) return;
+          firstFrameResolve();
+          // The HTTP head or guest data can arrive before the async caller
+          // attaches its authority. Keep every byte until that consumer exists.
+          if (listeners.length === 0) return;
           const payload = buffer.subarray(offset, offset + size); buffer = buffer.subarray(offset + size);
           if (opcode === 8) { socket.destroy(); finish(); return; }
           if (opcode === 9) send(payload, 10);
@@ -56,11 +62,39 @@ async function openOwnedWire(url: string): Promise<{ wire: PrpWireConnection; cl
       socket.on("data", bytes => { buffer = Buffer.concat([buffer, bytes]); parse(); }); socket.on("close", finish); socket.on("error", finish);
       const close = () => { socket.destroy(); finish(); };
       resolvePeer({ wire: { sendJson: value => send(Buffer.from(JSON.stringify(value)), 1), close,
-        onJson: listener => { listeners.push(listener); }, onClose: listener => { closes.push(() => listener({})); } }, closed, close });
+        onJson: listener => { listeners.push(listener); parse(); }, onClose: listener => { closes.push(() => listener({})); } }, firstFrame, closed, close });
       queueMicrotask(parse);
     }); req.end();
   });
 }
+
+it("retains upgrade-buffered guest frames until the controller subscribes", async () => {
+  const server = createServer();
+  const hello = { kind: "initial-handshake-frame", nonce: "fixture" };
+  let guestSocket: { destroy(): void } | undefined;
+  server.on("upgrade", (req, socket) => {
+    guestSocket = socket;
+    const accept = createHash("sha1").update(String(req.headers["sec-websocket-key"]) + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+    const payload = Buffer.from(JSON.stringify(hello));
+    // One write puts the first guest frame in Node's HTTP upgrade `head`.
+    socket.write(Buffer.concat([Buffer.from(`HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`),
+      Buffer.from([0x81, payload.length]), payload]));
+  });
+  await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+  let peer: Awaited<ReturnType<typeof openOwnedWire>> | undefined;
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing owned fixture endpoint");
+    peer = await openOwnedWire(`ws://127.0.0.1:${address.port}/fixture`);
+    const received: unknown[] = [];
+    peer.wire.onJson(value => { received.push(value); });
+    await vi.waitFor(() => expect(received).toEqual([hello]));
+  } finally {
+    peer?.close();
+    guestSocket?.destroy();
+    await new Promise<void>(done => server.close(() => done()));
+  }
+});
 
 // Real encrypted PRP and real Runner/provider processes; no model or server imports.
 it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every durable boundary without another process", async mode => {
@@ -134,6 +168,9 @@ it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every d
           while (!stopped && Date.now() < deadline) {
             try {
               const peer = await openOwnedWire(`ws://127.0.0.1:${guestPort}${path}`); socket = peer;
+              // Force the valid early-data window without relying on a sleep:
+              // the real guest's first frame arrives before its consumer.
+              if (generation > 0) await Promise.race([peer.firstFrame, peer.closed.then(() => { throw new Error("Guest closed before its first frame"); })]);
               if (stopped) { peer.close(); return; }
               core.attachWireConnection(peer.wire); readyResolve(); await peer.closed;
             } catch { /* The target listener appears only after the old receipt ACK. */ }
@@ -156,7 +193,7 @@ it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every d
       try {
         const opened = await within(first.transport.request("thread/start", { cwd: root, dynamicTools: [] }), "source open");
         runnerPid = first.evidence().runnerPid; providerPid = first.evidence().providerPid;
-        const startedAt = first.transport.processInfo().startedAt;
+        const startedAt = first.transport.processInfo!().startedAt;
         const providerStart = execFileSync("ps", ["-p", String(providerPid), "-o", "lstart="], { encoding: "utf8" }).trim();
         expect(runnerPid).toBeGreaterThan(0); expect(providerPid).toBeGreaterThan(0);
         const attach = first.transport.attachRun!({ runId: target.runId, turnId: target.turnId, itemId: target.itemId });
