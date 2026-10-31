@@ -296,6 +296,42 @@ describe("kimi_local execute", () => {
     expect(result).toMatchObject({ exitCode: 0, sessionId: "session_abc-123" });
   });
 
+  it("maps usage-limit exhaustion to the provider_quota error family", async () => {
+    const root = await makeTempRoot();
+    runProcessMock.mockImplementation(async () => ({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr:
+        "error: failed to run prompt: provider.auth_error: 403 You've reached your 5-hour usage limit. " +
+        "Your quota will reset when the current 5-hour window ends.\n",
+    }));
+
+    const result = await execute(makeContext(root));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("provider_quota");
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toBeUndefined();
+  });
+
+  it("ignores rate-limit wording in assistant output", async () => {
+    const root = await makeTempRoot();
+    runProcessMock.mockImplementation(async () => ({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: JSON.stringify({ role: "assistant", content: "The API returned 429 Too Many Requests." }) + "\n",
+      stderr: "error: tool crashed\n",
+    }));
+
+    const result = await execute(makeContext(root));
+
+    expect(result.errorCode).toBeNull();
+    expect(result.errorFamily).toBeNull();
+  });
+
   it("maps auth failures to the kimi_auth_required error code", async () => {
     const root = await makeTempRoot();
     runProcessMock.mockImplementation(async () => ({
