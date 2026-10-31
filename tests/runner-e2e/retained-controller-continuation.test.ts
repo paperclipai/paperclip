@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { gradeRetainedControllerContinuation, retainedControllerRun } from "./retained-controller-continuation.js";
+import { describe, expect, it, vi } from "vitest";
+import { gradeRetainedControllerContinuation, retainedControllerRun, retainedControllerFollowupTransport, submitRetainedControllerComment, onePersistedRetainedControllerComment } from "./retained-controller-continuation.js";
+
+import { runnerMatrix } from "./catalog.js";
 
 function fixture() {
   const before = retainedControllerRun({ id: "a", companyId: "company", agentId: "agent", nativeIssueId: "task",
@@ -27,5 +29,37 @@ describe("retained controller continuation evidence", () => {
     if (fault === "no-tool") input.completedTool = false;
     if (fault === "no-answer") input.usefulReply = false;
     expect(gradeRetainedControllerContinuation(input)[0]?.passed).toBe(false);
+  });
+});
+
+describe("post-controller API follow-up selection", () => {
+  const execution = runnerMatrix.find(cell => cell.id === "daytona-restart-continuity.runner-codex.daytona.recover-controller")!;
+  it("selects only the explicit dedicated definition and defaults to the browser", () => {
+    expect(retainedControllerFollowupTransport(execution)).toBe("task_comment_api");
+    for (const changed of [
+      { ...execution, suite: { ...execution.suite, id: "everyday-workflows" } },
+      { ...execution, task: { ...execution.task, id: "another-case" } },
+      { ...execution, suite: { ...execution.suite, definitionMetadata: { retainedControllerContinuation: true } } },
+      { ...execution, suite: { ...execution.suite, definitionMetadata: { retainedControllerFollowupTransport: "task_comment_api" } } },
+    ]) expect(retainedControllerFollowupTransport(changed)).toBe("browser");
+  });
+  it("posts one ordinary authenticated comment request with a stable client request ID", async () => {
+    const post = vi.fn(async () => ({ id: "saved-user-comment" }));
+    const api = { post } as unknown as Parameters<typeof submitRetainedControllerComment>[0];
+    await expect(submitRetainedControllerComment(api, "task-id", "Exact original follow-up.", "request-id"))
+      .resolves.toEqual({ id: "saved-user-comment" });
+    expect(post).toHaveBeenCalledExactlyOnceWith("/api/issues/task-id/comments", {
+      body: "Exact original follow-up.", reopen: true, clientRequestId: "request-id",
+    });
+  });
+  it("requires exactly the matching persisted user comment", () => {
+    const comment = { id: "comment", body: "Exact follow-up", authorType: "user" };
+    const proof = { added: [comment], commentId: comment.id, body: comment.body };
+    expect(onePersistedRetainedControllerComment(proof)).toBe(true);
+    expect(onePersistedRetainedControllerComment({ ...proof, commentId: "" })).toBe(false);
+    for (const added of [[], [comment, { ...comment, id: "duplicate" }], [{ ...comment, id: "other" }],
+      [{ ...comment, body: "changed" }], [{ ...comment, authorType: "system" }], [{ ...comment, authorAgentId: "agent" }]]) {
+      expect(onePersistedRetainedControllerComment({ ...proof, added })).toBe(false);
+    }
   });
 });

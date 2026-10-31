@@ -29,8 +29,17 @@ ownership/reconnect limits, archive/delete backstops and owned cleanup remain un
 The retained continuation accepts whitespace between its exact marker and the
 exact `queue_r` output token; readiness and final grading use the same matcher.
 
-Definition version 6 uses the existing warm reusable environment with a dedicated
-configuration key. The prior version 5 per-turn/no-reuse measurement **failed**
+Definition version 7 uses the existing warm reusable environment with a dedicated
+configuration key. Only the post-completion replacement follow-up uses the normal
+board-authenticated task-comment API, with one persisted user comment and the
+unchanged follow-up request. Initial creation, active outage and queued continuation
+retain their browser journey. Post-C settlement, task status and useful reply are
+read through production APIs; no post-C browser navigation, rendered status or
+final screenshot is claimed. The same strict native/provider identity, new tool,
+saved-project output and finalization checks remain required. Definition 6's
+observed post-C browser navigation timeout remains failed; its cause is unknown.
+This definition does not claim that browser reconnection was fixed.
+The prior version 5 per-turn/no-reuse measurement **failed**
 retained native/provider identity and remains failed; it does not qualify this
 warm fixture. Cache retirement moves the entire controller Runner directory,
 including provider failover-backup bytes. Once a per-turn sandbox is disposed,

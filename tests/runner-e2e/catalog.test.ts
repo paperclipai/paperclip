@@ -70,8 +70,8 @@ describe("runner E2E catalog", () => {
     }
     expect(baseConfig).toMatchObject({ autoStopInterval: 5, reuseLease: false, runnerLifecycleMode: "per_turn" });
     expect(warmConfig).toMatchObject({ autoStopInterval: 5, reuseLease: true, runnerLifecycleMode: "warm" });
-    expect(suite.definitionMetadata).toMatchObject({ version: 6, controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15,
-      retainedControllerContinuation: true, maximumAttemptsPerCell: 1 });
+    expect(suite.definitionMetadata).toMatchObject({ version: 7, controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15,
+      retainedControllerContinuation: true, retainedControllerFollowupTransport: "task_comment_api", maximumAttemptsPerCell: 1 });
   });
 
   it.each([
