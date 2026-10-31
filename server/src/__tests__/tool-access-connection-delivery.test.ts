@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { activityLog, authUsers, connectionGrants, connectionIntentDeliveries, createDb, databaseWorkPending, issueThreadInteractions,
-  toolApplications, toolConnections, toolPolicies } from "@paperclipai/db";
+  toolApplications, toolConnections, toolPolicies, toolProfiles } from "@paperclipai/db";
 import { toolAccessService } from "../services/tool-access.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -84,6 +84,12 @@ describePostgres("tool access writes notify the connection delivery worker", () 
     const f = await seedDisabledConnection();
     delivery = await startConnectionDelivery(db);
     for (const produce of [
+      async () => { const [zapier] = await db.insert(toolConnections).values({ companyId: f.companyId, applicationId: f.connection.applicationId, name: "Zapier", uid: "zapier", transport: "mcp_remote",
+        status: "draft", config: { sourceTemplateKey: "zapier", connectionMethodKey: "generated-url", url: "https://mcp.zapier.com/mcp", mcpPreserveAccess: true } }).returning();
+        await db.insert(toolProfiles).values({ companyId: f.companyId, profileKey: `app:${zapier!.id}`, name: "Zapier", defaultAction: "deny", status: "active" });
+        await tools().finishGalleryAppConnection(f.companyId, zapier!.id, { enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: "all_agents" }); },
+      async () => { const [chat] = await db.insert(toolConnections).values({ companyId: f.companyId, applicationId: f.connection.applicationId, name: "Chat", uid: "chat",
+        transport: "chat_sdk", connectionPurpose: "channel", config: {} }).returning(); await tools().updateConnection(chat!.id, { name: "Renamed chat" }); },
       () => tools().createApplication(f.companyId, { name: "Other", type: "mcp_http" }),
       async () => { const [app] = await db.select().from(toolApplications).where(eq(toolApplications.name, "Other")); await tools().deleteApplication(app!.id); },
       () => tools().createConnection(f.companyId, { name: "Second", applicationName: "Second app", transport: "mcp_remote", config: { url: "https://mcp.example.test/mcp" } }),
