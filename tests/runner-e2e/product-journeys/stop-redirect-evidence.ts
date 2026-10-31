@@ -60,4 +60,4 @@ export function stoppedRunAccountingFinalized(run: Row, before: StopWorkBoundary
     && Number.isSafeInteger(usage.accountingReceiptSequence) && usage.accountingReceiptSequence > 0;
 }
 
-export const STOP_REVISION_WAIT = "Before changing any file, run the bounded shell command sleep 90 exactly once. Wait for that command to finish before making the requested change. This gives me time to stop the revision while you work.";
+export const STOP_REVISION_WAIT = "Before changing any file, first run the harmless shell command printf 'Ready for revision\\n' once. Wait for that command's result. Then, in a separate shell tool call, run sleep 90 exactly once. Wait for the sleep command to finish before making the requested change. This gives me time to stop the revision while you work.";

@@ -43,6 +43,22 @@ describe("Stop work and redirect admission evidence", () => {
       [...events(), event(4, "turn.started", {}, "new-turn")], [...events(), event(4, "turn.cancelled")]];
     for (const rows of missing) expect(activeStopWorkBoundary(run, rows)).toBeNull();
   });
+  it("does not Stop a hold whose first usage report arrives only after the command ends", () => {
+    const rows = [event(1, "turn.started"), event(2, "tool.execution.started", command),
+      event(3, "tool.execution.progressed", command), event(4, "tool.execution.completed", { ...command, status: "completed" }),
+      event(5, "item.completed", { kind: "usage" }), event(6, "item.completed", usage), event(7, "turn.completed")];
+    for (let end = 1; end <= rows.length; end++) expect(activeStopWorkBoundary(run, rows.slice(0, end))).toBeNull();
+    expect(activeStopWorkBoundary({ ...run, status: "succeeded" }, rows)).toBeNull();
+  });
+  it("observes complete readiness usage and a separate still-active hold in the same turn", () => {
+    const ready = { ...command, executionId: "readiness" };
+    const rows = [event(1, "turn.started"), event(2, "tool.execution.started", ready),
+      event(3, "tool.execution.completed", { ...ready, status: "completed" }), event(4, "item.completed", { kind: "usage" }),
+      event(5, "item.completed", usage), event(6, "tool.execution.started", command)];
+    for (let end = 1; end < rows.length; end++) expect(activeStopWorkBoundary(run, rows.slice(0, end))).toBeNull();
+    expect(activeStopWorkBoundary(run, rows)).toMatchObject({ executionId: "sleep", startedSeq: 6, usageSeq: 5, turnId: "turn" });
+    expect(activeStopWorkBoundary(run, [...rows, event(7, "tool.execution.completed", { ...command, status: "completed" })])).toBeNull();
+  });
   it.each(["foreign-company", "foreign-agent", "foreign-run", "foreign-turn", "foreign-runner", "bad-source", "bad-envelope",
     "partial", "missing-count", "negative-count", "fractional-count", "placeholder-zero", "session-total", "semantic-tool", "read-only"])("rejects %s proof", kind => {
     const rows = events(), row = rows[1]!, envelope = row.payload.prpEvent;
@@ -171,6 +187,9 @@ describe("Stop work and redirect admission evidence", () => {
     }
   });
   it("retains the bounded command and exact three-run contract", () => {
+    expect(STOP_REVISION_WAIT).toContain("printf 'Ready for revision\\n'");
+    expect(STOP_REVISION_WAIT).toContain("Wait for that command's result. Then, in a separate shell tool call");
+    expect(STOP_REVISION_WAIT.indexOf("printf")).toBeLessThan(STOP_REVISION_WAIT.indexOf("sleep 90"));
     expect(STOP_REVISION_WAIT).toContain("sleep 90 exactly once");
     expect(STOP_REVISION_WAIT).toContain("Before changing any file");
     expect(agentJourneyRunCountValid("stop-redirect", 3)).toBe(true);

@@ -39,8 +39,11 @@ never start a server or depend on a tenant filesystem.
 | `hire-delegate-reuse` | Native lead with a fresh user chat and scoped hiring permission; Agent Chat enabled; direct hiring policy; seven work runs | Hire one teammate, delegate a saved checklist, reuse the same teammate for a saved review, verify native run and revision authorship, preserve the original, and follow the lead's saved result link after reload |
 | `cloud-onboarding` | Signed-in admitted Cloud account; fresh workspace; qualified bounded provider route | Create workspace in the portal, connect API key and native Codex agent in the wizard, complete a task, download and independently check its artifact |
 
-The deployment-targeted Stop journey asks the revision to run `sleep 90` once
-before changing files. Startup alone cannot trigger Stop. An independent observer
+The deployment-targeted Stop journey asks the revision to finish one harmless
+`printf` readiness command, then run `sleep 90` once in a separate shell call
+before changing files. The readiness call lets a provider report its first
+current-turn usage before the long hold starts. Running the hold first can leave
+no complete usage until that command has already ended. Startup alone cannot trigger Stop. An independent observer
 requires both a still-running bound native command and a complete, nonzero usage
 report for its current turn. After Stop, native cancellation and exact lease
 cleanup remain required. Before the redirect, the original run must have a
