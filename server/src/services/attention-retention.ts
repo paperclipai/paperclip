@@ -32,6 +32,7 @@ type PageEvidence = {
   agents: Set<string>;
   visibleIssues: Map<string, PageIssue>;
   newerRuns: Set<string>;
+  deferredRoots: Set<string>;
   blockers: Awaited<ReturnType<ReturnType<typeof issueService>["listBlockerAttention"]>>;
 };
 
@@ -184,7 +185,9 @@ export function attentionRetentionService(db: Db) {
       const visibleRows = await readIssues(issueIds);
       const visible = new Map(visibleRows.map(row => [row.id, row]));
       const blockerRoots = visibleRows.filter(row => blockerIds.includes(row.id));
-      const blockers: PageEvidence["blockers"] = blockerRoots.length ? await issueService(database).listBlockerAttention(companyId, blockerRoots) : new Map();
+      const blockerBatch = blockerRoots.length ? await issueService(database).listBlockerAttentionBatch(companyId, blockerRoots)
+        : { attention: new Map(), deferredRootIds: new Set<string>() };
+      const blockers: PageEvidence["blockers"] = blockerBatch.attention;
       const terminalIds = [...blockers.values()].filter(terminalBlockerRequiresAttention)
         .map(attention => attention.terminalBlockerIssueId).filter((id): id is string => id != null && !visible.has(id));
       for (const row of await readIssues(terminalIds)) visible.set(row.id, row);
@@ -192,13 +195,17 @@ export function attentionRetentionService(db: Db) {
         decisions: new Map(decisionRows.map(row => [row.id, row])), recoveries: new Map(recoveryRows.map(row => [row.id, row])),
         runs: new Map(runRows.map(row => [row.id, row])), agents: new Set(runAgents.map(row => row.id)), visibleIssues: visible,
         newerRuns: await listFailedRunsWithNewerRun(database, companyId,
-          runRows.map(run => ({ ...run, issueId: readRunIssueId(run.contextSnapshot) }))), blockers,
+          runRows.map(run => ({ ...run, issueId: readRunIssueId(run.contextSnapshot) }))), blockers, deferredRoots: blockerBatch.deferredRootIds,
       });
     }
     return result;
   }
 
   async function eligible(database: Db, candidate: Candidate, variant?: "owner" | "terminal", lock = false, reviewAttention?: Map<string, boolean>, interactionAttention?: Map<string, boolean>, evidence?: PageEvidence): Promise<Entry | null> {
+    if (candidate.sourceKind === "blocker_attention" && variant === "terminal" && evidence?.deferredRoots.has(candidate.sourceId)) {
+      return { ...candidate, rootId: candidate.sourceId, variant,
+        id: `${candidate.sourceKind}:${candidate.sourceId}:terminal`, dueAt: Date.now() };
+    }
     let sourceId = candidate.sourceId;
     let activityAt = candidate.activityAt;
     let dueAt = candidate.deadlineAt;
