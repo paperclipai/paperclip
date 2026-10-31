@@ -254,6 +254,8 @@ export interface AdapterExecutionContext {
   /** Server-owned, actor-attributed snapshot also rendered by legacy wake prompts. */
   executionContinuation?: ExecutionContinuationEnvelope | null;
   runId: string;
+  /** Issue resolved by the server for this run; unlike context.issueId, this is not caller supplied. */
+  issueId?: string | null;
   agent: AdapterAgent;
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
