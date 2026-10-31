@@ -625,8 +625,11 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
           }
         }
       }
+      const chatBecameEnabled = !toExperimentalView(current.experimental).enableAgentChat
+        && toExperimentalView(nextExperimental).enableAgentChat;
       const now = new Date();
       const [updated] = await db.transaction(async tx => {
+        if (chatBecameEnabled) await notifyDeferredExecutionEligibility(tx);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.grokDispatch);

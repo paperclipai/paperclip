@@ -379,6 +379,99 @@ describe("deferred receipt durable dispatch", () => {
     expect(resume).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ companyId: f.companyId, requestId: wake.id }));
     await quiet();
   });
+  it("parks an accepted conversation Retry while chat is disabled and resumes it on enablement", async () => {
+    const settings = instanceSettingsService(db), original = await settings.getExperimental();
+    await settings.updateExperimental({ enableAgentChat: true });
+    try {
+      const f = await fixture();
+      await db.update(issues).set({ status: "in_review", conversationAgentId: f.agent.id,
+        conversationUserId: f.actorId, conversationState: "waiting" }).where(eq(issues.id, f.issue.id));
+      const request = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issue.id,
+        actorId: f.actorId, observedRunId: f.source.id, idempotencyKey: randomUUID() });
+      expect(request.accepted).toBe(true);
+      await settings.updateExperimental({ enableAgentChat: false });
+      await expect(requestTaskRetry({ db, companyId: f.companyId, issueId: f.issue.id,
+        actorId: f.actorId, observedRunId: f.source.id, idempotencyKey: randomUUID() }))
+        .rejects.toMatchObject({ status: 404, message: "Agent Chat is disabled" });
+      await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
+      await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
+      await Promise.allSettled([...passes]);
+      expect(errors).toEqual([]);
+      const read = async () => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!)))[0];
+      expect(await read()).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      await vi.waitFor(async () => {
+        await Promise.allSettled([...passes]);
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 40_000 });
+      const idleStatements = statements.length;
+      await new Promise(resolve => setTimeout(resolve, 31_000));
+      expect(statements).toHaveLength(idleStatements);
+      await settings.updateExperimental({ enableAgentChat: true });
+      let runId: string | null = null;
+      await vi.waitFor(async () => {
+        const saved = await read(); expect(saved.runId).toBeTruthy(); runId = saved.runId;
+      }, { timeout: 5_000 });
+      await vi.waitFor(async () => {
+        await heartbeat.drainActiveRunExecutions();
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
+        expect(run.status).toBe("succeeded"); expect(run.stdoutExcerpt).toContain("receipt-proof");
+      }, { timeout: 15_000 });
+      expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${request.requestId}`)).toHaveLength(1);
+      await heartbeat.drainActiveRunExecutions();
+    } finally { vi.useRealTimers(); await settings.updateExperimental({ enableAgentChat: original.enableAgentChat }); }
+  });
+  it("resumes saved conversation input only after chat is re-enabled and its transaction commits", async () => {
+    const settings = instanceSettingsService(db), original = await settings.getExperimental();
+    await settings.updateExperimental({ enableAgentChat: true });
+    try {
+      const f = await fixture();
+      await db.update(issues).set({ status: "in_review", conversationAgentId: f.agent.id,
+        conversationUserId: f.actorId, conversationState: "waiting" }).where(eq(issues.id, f.issue.id));
+      const comment = await issueService(db).addComment(f.issue.id, "Continue with this saved input", { userId: f.actorId });
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
+        source: "on_demand", status: "deferred_issue_execution", reason: "issue_commented",
+        requestedByActorType: "user", requestedByActorId: f.actorId, updatedAt: new Date(Date.now() - 31_000),
+        payload: { issueId: f.issue.id, queuedCommentInterrupt: { actorId: f.actorId },
+          _paperclipWakeContext: { issueId: f.issue.id, wakeCommentIds: [comment.id] } } }).returning();
+      await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(Date.now() - 31_000),
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+          queuedCommentInterruptQueueId: wake.id } }).where(eq(heartbeatRuns.id, f.source.id));
+      await settings.updateExperimental({ enableAgentChat: false });
+      await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
+      await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
+      await vi.waitFor(async () => {
+        await Promise.allSettled([...passes]);
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 5_000 });
+      const idleStatements = statements.length;
+      await new Promise(resolve => setTimeout(resolve, 31_000));
+      expect(statements).toHaveLength(idleStatements);
+      const read = async () => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0];
+      expect(await read()).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      await expect(db.transaction(async tx => {
+        await instanceSettingsService(tx as unknown as typeof db).updateExperimental({ enableAgentChat: true });
+        throw new Error("rolled back chat enablement");
+      })).rejects.toThrow("rolled back chat enablement");
+      await Promise.allSettled([...passes]);
+      expect(await read()).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect((await settings.getExperimental()).enableAgentChat).toBe(false);
+      await settings.updateExperimental({ enableAgentChat: true });
+      let runId: string | null = null;
+      await vi.waitFor(async () => {
+        const saved = await read(); expect(saved.runId).toBeTruthy(); runId = saved.runId;
+      }, { timeout: 5_000 });
+      await vi.waitFor(async () => {
+        await heartbeat.drainActiveRunExecutions();
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
+        expect(run.status).toBe("succeeded"); expect(run.stdoutExcerpt).toContain("receipt-proof");
+      }, { timeout: 15_000 });
+      const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+        sql`${heartbeatRuns.id} <> ${f.source.id}`));
+      expect(runs).toHaveLength(1);
+      expect(runs[0].contextSnapshot?.wakeCommentIds).toEqual([comment.id]);
+      await quiet();
+    } finally { vi.useRealTimers(); await settings.updateExperimental({ enableAgentChat: original.enableAgentChat }); }
+  });
   it("settles a processed chat receipt without restaging it until an actual eligibility commit", async () => {
     const f = await fixture();
     await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
