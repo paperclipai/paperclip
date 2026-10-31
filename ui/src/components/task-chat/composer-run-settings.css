@@ -47,7 +47,10 @@
 .composer-run-settings-accent { color: var(--tc-mode-ask); }
 .composer-run-settings-height { overflow: hidden; transition: height var(--motion-duration-base) var(--motion-ease-out); }
 .composer-mobile-dialog {
-  top: max(calc(var(--spacing) * 4), env(safe-area-inset-top));
+  top: calc(
+    var(--mobile-entity-picker-visual-viewport-offset-top, 0px)
+    + max(calc(var(--spacing) * 4), env(safe-area-inset-top))
+  );
   width: calc(100vw - var(--spacing) * 4);
   max-width: calc(var(--spacing) * 96);
   max-height: calc(
