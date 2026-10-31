@@ -42,6 +42,7 @@ import {
 } from "./services/native-runtime/native-harness-backup-expiration.js";
 import { registerNativeRunnerEvidenceRetentionWork } from "./services/native-runtime/native-runner-evidence-retention-work.js";
 import { gitRestorePointRetentionService, registerGitRestorePointWork } from "./services/git-restore-point-ledger.js";
+import { remoteWorkspaceSnapshotRetentionService, registerRemoteWorkspaceSnapshotRetentionWork } from "./services/remote-workspace-snapshot-retention.js";
 import {
   nativeWorkspaceSyncRetentionService,
   registerNativeWorkspaceSyncRetentionWork,
@@ -1506,6 +1507,7 @@ async function startServerWithDatabaseTeardown(
       wakeup: heartbeat.wakeup,
     });
     const terminalWorkspaces = executionWorkspaceService(db as any, {
+      destroyRemoteWorkspaceLease: input => cleanupInspectionRuntime.destroyRemoteWorkspaceLease(input),
       pluginWorkerManager,
       gitCacheExpirationEnabled: config.gitCacheExpirationEnabled,
       gitBaseExpirationEnabled: config.gitBaseExpirationEnabled,
@@ -1542,6 +1544,10 @@ async function startServerWithDatabaseTeardown(
         logger.info(result, "git restore point retention");
       }
     });
+    registerRemoteWorkspaceSnapshotRetentionWork(deliveryWork,
+      remoteWorkspaceSnapshotRetentionService(db as any, { storage: storageService }), result => {
+        if (result.deleted || result.failed) logger.info(result, "remote workspace snapshot retention");
+      });
     if (config.nativeWorkspaceSyncRetentionEnabled) {
       unsubscribeNativeWorkspaceSyncRetention = registerNativeWorkspaceSyncRetentionWork(deliveryWork, nativeWorkspaceSyncRetentionService(db as any, {
         retentionDays: config.nativeWorkspaceSyncRetentionDays,

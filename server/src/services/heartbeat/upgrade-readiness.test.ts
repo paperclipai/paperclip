@@ -120,10 +120,33 @@ postgresTests("upgrade readiness persisted execution evidence", () => {
       expect((await readUpgradeReadiness(db, input)).ready).toBe(false);
       await db.update(nativeRunFinalizations).set({ ...lease, failureCode: null }).where(eq(nativeRunFinalizations.runId, runId));
     }
+    // Remote-authoritative runs retain their logical workspace identity without a host sync record.
+    const remoteWorkspace = { schema: "paperclip.remote-workspace-run.v1", workspaceId: workspace.workspaceId,
+      leaseId: workspace.leaseId, providerLeaseId: workspace.providerLeaseId, remoteCwd: workspace.remoteCwd,
+      epoch: 1, state: "prepared", snapshotId: null };
+    const remoteProfile = { remoteWorkspace };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: remoteProfile }).where(eq(heartbeatRuns.id, runId));
+    expect(await readUpgradeReadiness(db, input)).toMatchObject({ ready: true, recoverableRuns: 1, blockingRuns: 0 });
+    for (const remote of [{ ...remoteWorkspace, state: "saved", snapshotId: randomUUID() },
+      remoteWorkspace]) {
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { remoteWorkspace: remote,
+        nativeWorkspaceSync: { ...workspace, workspaceId: randomUUID() } } }).where(eq(heartbeatRuns.id, runId));
+      expect((await readUpgradeReadiness(db, input)).ready).toBe(true); // remote identity takes precedence
+    }
+    for (const remote of [null, {}, { ...remoteWorkspace, schema: "unknown" }, { ...remoteWorkspace, epoch: 0 },
+      { ...remoteWorkspace, workspaceId: randomUUID() }, { ...remoteWorkspace, leaseId: "invalid" },
+      { ...remoteWorkspace, remoteCwd: "" }, { ...remoteWorkspace, snapshotId: "invalid" }]) {
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceSync: workspace,
+        remoteWorkspace: remote } }).where(eq(heartbeatRuns.id, runId));
+      expect((await readUpgradeReadiness(db, input)).ready).toBe(false); // no fallback to the legacy identity
+    }
+    await db.update(heartbeatRuns).set({ runnerProfileJson: execution.runnerProfileJson }).where(eq(heartbeatRuns.id, runId));
     // Plugin task admission owns an environment lease identity and deliberately has no workspace-sync record.
     const pluginLeaseId = randomUUID();
     await db.insert(environmentLeases).values({ id: pluginLeaseId, companyId, heartbeatRunId: runId, issueId,
       provider: "plugin", providerLeaseId: "synthetic-task", metadata: { agentId, runnerTaskLease: true, runnerTaskDispatched: true } });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: remoteProfile }).where(eq(heartbeatRuns.id, runId));
+    expect((await readUpgradeReadiness(db, input)).ready).toBe(false); // contradictory task authorities cannot be adopted
     await db.update(heartbeatRuns).set({ runnerProfileJson: {} }).where(eq(heartbeatRuns.id, runId));
     expect((await readUpgradeReadiness(db, input)).ready).toBe(false); // workspace identity is not plugin task authority
     const pluginHeader = JSON.stringify({ ...JSON.parse(header), state: { ...JSON.parse(header).state,
