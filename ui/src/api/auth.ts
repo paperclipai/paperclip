@@ -187,6 +187,13 @@ export const authApi = {
     await authPost("/sign-up/email", input);
   },
 
+  signInOidc: async (input: { providerId: string; callbackURL: string }) => {
+    const payload = await authPost("/sign-in/social", { provider: input.providerId, callbackURL: input.callbackURL });
+    const url = (payload as { url?: unknown } | null)?.url;
+    if (typeof url !== "string") throw new Error("Single sign-on is unavailable");
+    window.location.assign(url);
+  },
+
   getProfile: async (): Promise<CurrentUserProfile> => {
     const res = await fetch("/api/auth/profile", {
       credentials: "include",

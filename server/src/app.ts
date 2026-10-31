@@ -56,6 +56,7 @@ import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
 import {
   derivePaperclipViteHmrPort,
+  type AuthOidcConfig,
   type DeploymentExposure,
   type DeploymentMode,
 } from "@paperclipai/shared";
@@ -440,6 +441,7 @@ export async function createApp(
     chatWebhookPublicBaseUrl?: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    authOidc?: Pick<AuthOidcConfig, "providerId" | "displayName">;
     announcements?: { enabled: boolean; feedUrl: string };
     instanceId?: string;
     hostVersion?: string;
@@ -471,6 +473,7 @@ export async function createApp(
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
     authReady: opts.authReady,
+    authOidc: opts.authOidc,
     companyDeletionEnabled: opts.companyDeletionEnabled,
     databaseBackupHealth: opts.databaseBackupHealth,
     isWarmStandby,

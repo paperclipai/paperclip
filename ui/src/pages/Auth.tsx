@@ -77,6 +77,13 @@ export function AuthPage() {
     },
   });
 
+  const oidcMutation = useMutation({
+    mutationFn: (providerId: string) => authApi.signInOidc({ providerId, callbackURL: nextPath }),
+    onError: (err) => {
+      setError(err instanceof Error ? err.message : "Authentication failed");
+    },
+  });
+
   const canSubmit =
     email.trim().length > 0 &&
     password.trim().length > 0 &&
@@ -98,6 +105,8 @@ export function AuthPage() {
   if (healthQuery.data?.cloud) {
     return <CloudSignIn cloud={healthQuery.data.cloud} returnTo={nextPath} />;
   }
+
+  const oidc = healthQuery.data?.oidc;
 
   return (
     <div className="fixed inset-0 flex bg-background">
@@ -203,6 +212,18 @@ export function AuthPage() {
                   : "Create Account"}
             </Button>
           </form>
+
+          {oidc && mode === "sign_in" && (
+            <Button
+              type="button"
+              variant="outline"
+              className="mt-3 w-full"
+              disabled={oidcMutation.isPending}
+              onClick={() => oidcMutation.mutate(oidc.providerId)}
+            >
+              Sign in with {oidc.displayName}
+            </Button>
+          )}
 
           <div className="mt-5 text-sm text-muted-foreground">
             {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}

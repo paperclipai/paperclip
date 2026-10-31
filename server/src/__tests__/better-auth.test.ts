@@ -1,8 +1,11 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BetterAuthOptions } from "better-auth";
 import { getCookies } from "better-auth/cookies";
+import type { Db } from "@paperclipai/db";
+import type { Config } from "../config.js";
 import {
   buildBetterAuthAdvancedOptions,
+  createBetterAuthInstance,
   buildBetterAuthRateLimitOptions,
   deriveAuthCookiePrefix,
   deriveAuthTrustedOrigins,
@@ -13,6 +16,8 @@ const ORIGINAL_INSTANCE_ID = process.env.PAPERCLIP_INSTANCE_ID;
 const ORIGINAL_PUBLIC_URL = process.env.PAPERCLIP_PUBLIC_URL;
 
 afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   if (ORIGINAL_INSTANCE_ID === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
   else process.env.PAPERCLIP_INSTANCE_ID = ORIGINAL_INSTANCE_ID;
   if (ORIGINAL_PUBLIC_URL === undefined) delete process.env.PAPERCLIP_PUBLIC_URL;
@@ -240,5 +245,70 @@ describe("Better Auth cookie scoping", () => {
     ]));
     expect(trustedOrigins).not.toContain("https://board.example.test:3100");
     expect(trustedOrigins).not.toContain("http://board.example.test:3100");
+  });
+});
+
+describe("Better Auth OIDC login", () => {
+  const origin = "https://paperclip.example.test";
+  const baseConfig = {
+    deploymentMode: "authenticated",
+    deploymentExposure: "private",
+    authBaseUrlMode: "explicit",
+    authPublicBaseUrl: origin,
+    authDisableSignUp: false,
+  } as Config;
+  const oidc = {
+    providerId: "kanidm",
+    displayName: "Kanidm",
+    discoveryUrl: "https://idm.example.test/oauth2/openid/paperclip/.well-known/openid-configuration",
+    clientId: "paperclip",
+  };
+  const create = (config: Partial<Config>) => createBetterAuthInstance({} as Db, { ...baseConfig, ...config }, [origin]);
+
+  it("registers no OIDC plugin or account linking when unconfigured", () => {
+    vi.stubEnv("BETTER_AUTH_SECRET", "oidc-test-secret-oidc-test-secret");
+    const auth = create({});
+    expect(auth.options.plugins).toBeUndefined();
+    expect(auth.options.account).toBeUndefined();
+  });
+
+  it("requires a client secret once configured", () => {
+    vi.stubEnv("BETTER_AUTH_SECRET", "oidc-test-secret-oidc-test-secret");
+    expect(() => create({ authOidc: oidc })).toThrow(/client secret/);
+  });
+
+  it("keeps password auth working when OIDC discovery fails", async () => {
+    vi.stubEnv("BETTER_AUTH_SECRET", "oidc-test-secret-oidc-test-secret");
+    vi.stubEnv("PAPERCLIP_AUTH_OIDC_CLIENT_SECRET", "client-secret");
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    const auth = create({ authOidc: oidc });
+    await expect(auth.$context).resolves.toBeDefined();
+  });
+
+  it("starts a PKCE sign-in and links only verified emails", async () => {
+    vi.stubEnv("BETTER_AUTH_SECRET", "oidc-test-secret-oidc-test-secret");
+    vi.stubEnv("PAPERCLIP_AUTH_OIDC_CLIENT_SECRET", "client-secret");
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      issuer: "https://idm.example.test/oauth2/openid/paperclip",
+      authorization_endpoint: "https://idm.example.test/ui/oauth2",
+      token_endpoint: "https://idm.example.test/oauth2/token",
+    })));
+    const auth = create({ authOidc: oidc });
+
+    expect(auth.options.plugins?.map((plugin) => plugin.id)).toEqual(["generic-oauth"]);
+    expect(auth.options.account?.accountLinking).toEqual({ enabled: true });
+
+
+    const provider = (await auth.$context).socialProviders.find((candidate) => candidate.id === "kanidm")!;
+    expect(provider.disableSignUp).toBe(true);
+    const redirect = await provider.createAuthorizationURL({
+      state: "state",
+      codeVerifier: "verifier",
+      redirectURI: `${origin}/api/auth/callback/kanidm`,
+    });
+    expect(redirect.origin + redirect.pathname).toBe("https://idm.example.test/ui/oauth2");
+    expect(redirect.searchParams.get("scope")).toBe("openid email profile");
+    expect(redirect.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(redirect.searchParams.get("redirect_uri")).toBe(`${origin}/api/auth/callback/kanidm`);
   });
 });
