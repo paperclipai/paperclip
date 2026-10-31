@@ -24,6 +24,14 @@ const task = await api(`/issues/${ctx.issueId}`);
 const comment = async (body) =>
   api(`/issues/${task.id}/comments`, "POST", { body });
 if (!task.conversationAgentId) {
+  if (task.description?.includes("proactive-digest-fixture")) {
+    await api("/agents/me/chat/messages", "POST", {
+      body: "## Morning PR digest\n\nPlease review [PR 123](https://github.com/paperclipai/paperclip/pull/123), [PR 456](https://github.com/paperclipai/paperclip/pull/456), and [PR 789](https://github.com/paperclipai/paperclip/pull/789).",
+      idempotencyKey: "morning-digest",
+    });
+    await api(`/issues/${task.id}`, "PATCH", { status: "done", comment: "Digest delivered." });
+    process.exit(0);
+  }
   const plan = await api(`/issues/${task.id}/documents/plan`);
   await api(`/issues/${task.id}/documents/output`, "PUT", {
     title: "Output",
@@ -178,6 +186,10 @@ if (command.action === "hold") {
     },
   });
   await comment("Please choose an audience.");
+} else if (command.action === "digest-followup") {
+  const digest = comments.find(c => c.metadata?.chatMessage && c.body.includes("Morning PR digest"));
+  if (!digest) throw new Error("Proactive digest is missing from the next human turn's history");
+  await comment("The first PR in your morning digest is PR 123.");
 } else if (command.action === "history") {
   for (let index = 0; index < 65; index++)
     await comment(`History message ${String(index).padStart(2, "0")}`);

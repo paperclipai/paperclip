@@ -222,6 +222,16 @@ Core permits read-only suspension proof for the exact saved identity of a
 successful warm run after its reuse lease is retained or superseded. This does
 not authorize new work or file access through that lease.
 Temporary credential homes are not needed after the originating run ends.
+An explicit reset to a different normalized session can retire a warm owner
+whose close failed only because it could not prove checkpoint suspension. Core
+requires the exact lease-bound task's `executionStopped: true` receipt, a
+successful `complete` handoff, and settled Core tool results first. It then
+collects stopped instruction files before it releases the in-memory owner. The old checkpoint remains evidence;
+it is not reused by the new session. A failed handoff, failed file collection,
+unsettled Core tool result, other close error, or continuation of the same
+session still blocks replacement.
+A controller restart is not required for this stopped-owner reset path.
+
 Termination receipts cover all run leases that owned the retired physical task.
 A stopped task gets a new provider task ID for checkpoint resumption. Inspection
 precedes in-memory session selection so a replacement cannot inherit the stopped

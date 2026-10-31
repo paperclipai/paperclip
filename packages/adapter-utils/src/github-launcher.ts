@@ -1,6 +1,12 @@
-/** Standalone source is staged unchanged on local, SSH, and sandbox runtimes. No secrets in files. */
-export function githubLauncherSource(options: { brokerFile?: boolean } = {}): string {
-  return String.raw`#!/usr/bin/env node
+import { isAbsolute } from "node:path";
+
+/** Standalone source for local, SSH, and sandbox runtimes. No secrets in files. */
+export function githubLauncherSource(options: { brokerFile?: boolean; interpreterPath?: string } = {}): string {
+  if (options.interpreterPath !== undefined && (typeof options.interpreterPath !== "string"
+    || !isAbsolute(options.interpreterPath) || /[\s\0]/u.test(options.interpreterPath))) {
+    throw new Error("GitHub launcher interpreter must be an absolute path without whitespace");
+  }
+  return String.raw`#!${options.interpreterPath ?? "/usr/bin/env node"}
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');

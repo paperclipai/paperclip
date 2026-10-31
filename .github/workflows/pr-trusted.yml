@@ -24,6 +24,82 @@ jobs:
   gate:
     uses: paperclipai/paperclip/.github/workflows/ci-routing.yml@master
 
+  test_selection:
+    name: Select Vitest files
+    needs: [gate]
+    if: >-
+      needs.gate.outputs.full_ci == 'true' && needs.gate.outputs.plan != '' &&
+      fromJSON(needs.gate.outputs.plan).mode == 'enabled' &&
+      fromJSON(needs.gate.outputs.plan).forceReason == null &&
+      (vars.CI_VITEST_SELECTION == '' || vars.CI_VITEST_SELECTION == 'enabled')
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 10
+    # An unavailable optimization must not suppress the original test matrix.
+    continue-on-error: true
+    outputs:
+      plan: ${{ steps.publish.outputs.plan }}
+    env:
+      CI_PLAN: ${{ needs.gate.outputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Check source-diff eligibility
+        id: eligible
+        run: |
+          if [[ -f scripts/ci/select-tests.mjs ]]; then
+            node scripts/ci/select-tests.mjs --eligible
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        if: steps.eligible.outputs.enabled == 'true'
+        with:
+          version: 9.15.4
+      - name: Restore dependencies for graph analysis
+        if: steps.eligible.outputs.enabled == 'true'
+        uses: ./.github/actions/setup-ci-dependencies
+      - name: Select files and rebalance test lanes
+        id: select
+        if: steps.eligible.outputs.enabled == 'true'
+        timeout-minutes: 5
+        run: node scripts/ci/select-tests.mjs
+      - name: Upload validated selection and audit
+        id: upload_selection
+        if: steps.select.outputs.selected == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vitest-selection-${{ github.run_attempt }}
+          path: |
+            .ci-test-selection/manifest.json
+            .ci-test-selection/audit.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      # Publish only after upload succeeds. Missing/failed/timed-out selectors
+      # produce no plan, and dependent jobs use the original gate's matrix.
+      - name: Publish the executable plan
+        id: publish
+        if: steps.eligible.outputs.enabled == 'true'
+        env:
+          ARTIFACT_ID: ${{ steps.upload_selection.outputs.artifact-id }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const plan = JSON.parse(readFileSync('.ci-test-selection/plan.json', 'utf8'));
+          if (plan.testSelection) {
+            assert.match(process.env.ARTIFACT_ID ?? '', /^[0-9]+$/);
+            plan.testSelection.artifactId = process.env.ARTIFACT_ID;
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, `plan=${JSON.stringify(plan)}\n`);
+          NODE
+
   policy:
     needs: [gate]
     runs-on: ${{ needs.gate.outputs.runner }}
@@ -126,7 +202,7 @@ jobs:
         run: node "$CI_NODE_TEST" ./scripts/__tests__/e2e-shard.test.mjs
 
       - name: Test release verify workflow wiring
-        run: node "$CI_NODE_TEST" ./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/__tests__/eval-schedule-monitor.test.mjs ./scripts/__tests__/prepare-runner-release-image.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/standard-image-contract.test.mjs
+        run: node "$CI_NODE_TEST" ./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/__tests__/eval-schedule-monitor.test.mjs ./scripts/__tests__/prepare-runner-release-image.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/standard-image-contract.test.mjs ./scripts/reuse-canary-image.test.mjs
 
       - name: Test standalone package build concurrency
         run: node "$CI_NODE_TEST" ./scripts/__tests__/build-standalone-concurrency.test.mjs
@@ -358,15 +434,17 @@ jobs:
 
   general_tests:
     name: General tests (${{ matrix.group_label }})
-    needs: [gate]
-    if: ${{ needs.gate.outputs.full_ci == 'true' && (needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).jobs.general_tests.run) }}
+    needs: [gate, test_selection]
+    if: ${{ always() && !cancelled() && needs.gate.result == 'success' && needs.gate.outputs.full_ci == 'true' && ((needs.test_selection.outputs.plan || needs.gate.outputs.plan) == '' || fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.general_tests.run) }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.general_tests.matrix) || '{"include":[{"group":"general-server-without-chat","group_label":"server (1/12)","shard_index":0,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (2/12)","shard_index":1,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (3/12)","shard_index":2,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (4/12)","shard_index":3,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (5/12)","shard_index":4,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (6/12)","shard_index":5,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (7/12)","shard_index":6,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (8/12)","shard_index":7,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (9/12)","shard_index":8,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (10/12)","shard_index":9,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (11/12)","shard_index":10,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (12/12)","shard_index":11,"shard_count":12,"task":"ci:server"},{"group":"general-chat","group_label":"chat (1/3)","shard_index":0,"shard_count":3,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (2/3)","shard_index":1,"shard_count":3,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (3/3)","shard_index":2,"shard_count":3,"task":"ci:chat"},{"group":"general-workspaces-a","group_label":"workspaces-a (1/2)","shard_index":0,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-a","group_label":"workspaces-a (2/2)","shard_index":1,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-b","group_label":"workspaces-b","task":"ci:workspaces-b"},{"group":"general-workspaces-c","group_label":"workspaces-c","task":"ci:db"}]}') }}
+      matrix: ${{ fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan) != '' && toJSON(fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.general_tests.matrix) || '{"include":[{"group":"general-server-without-chat","group_label":"server (1/12)","shard_index":0,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (2/12)","shard_index":1,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (3/12)","shard_index":2,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (4/12)","shard_index":3,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (5/12)","shard_index":4,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (6/12)","shard_index":5,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (7/12)","shard_index":6,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (8/12)","shard_index":7,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (9/12)","shard_index":8,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (10/12)","shard_index":9,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (11/12)","shard_index":10,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (12/12)","shard_index":11,"shard_count":12,"task":"ci:server"},{"group":"general-chat","group_label":"chat (1/3)","shard_index":0,"shard_count":3,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (2/3)","shard_index":1,"shard_count":3,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (3/3)","shard_index":2,"shard_count":3,"task":"ci:chat"},{"group":"general-workspaces-a","group_label":"workspaces-a (1/2)","shard_index":0,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-a","group_label":"workspaces-a (2/2)","shard_index":1,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-b","group_label":"workspaces-b","task":"ci:workspaces-b"},{"group":"general-workspaces-c","group_label":"workspaces-c","task":"ci:db"}]}') }}
 
     env:
+      PAPERCLIP_CI_TEST_SELECTION: ${{ matrix.selection && '.ci-test-selection/manifest.json' || '' }}
+      PAPERCLIP_CI_SELECTION_HASH: ${{ matrix.selection && fromJSON(needs.test_selection.outputs.plan).testSelection.hash || '' }}
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
       PAPERCLIP_CI_PROFILE_JOB: General tests (${{ matrix.group_label }})
 
@@ -375,6 +453,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      - name: Download selected test files
+        if: matrix.selection
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ fromJSON(needs.test_selection.outputs.plan).testSelection.artifactId }}
+          path: .ci-test-selection
 
       - name: Initialize CI profile
         continue-on-error: true
@@ -438,7 +523,7 @@ jobs:
           task: ${{ matrix.task }}
           args: ${{ matrix.shard_count && format('["--shard-index","{0}","--shard-count","{1}"]', matrix.shard_index, matrix.shard_count) || '[]' }}
           partition: ${{ strategy.job-index || 0 }}
-          force: ${{ needs.gate.outputs.profile_ci == 'true' || needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).mode != 'enabled' || fromJSON(needs.gate.outputs.plan).forceReason != null }}
+          force: ${{ needs.gate.outputs.profile_ci == 'true' || (needs.test_selection.outputs.plan || needs.gate.outputs.plan) == '' || fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).mode != 'enabled' || fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).forceReason != null }}
 
       - name: Run grouped general test suites
         if: hashFiles('turbo.json') == ''
@@ -521,14 +606,14 @@ jobs:
   verify:
     name: verify
     if: ${{ always() }}
-    needs: [gate, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, verify_serialized_server, canary_dry_run]
+    needs: [gate, test_selection, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, verify_serialized_server, canary_dry_run]
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 5
     steps:
       - name: Validate every planned suite result
         env:
           FULL_CI: ${{ needs.gate.outputs.full_ci }}
-          CI_PLAN: ${{ needs.gate.outputs.plan }}
+          CI_PLAN: ${{ needs.test_selection.outputs.plan || needs.gate.outputs.plan }}
           CI_RESULTS: ${{ toJSON(needs) }}
         run: |
           node --input-type=module <<'NODE'
@@ -539,6 +624,7 @@ jobs:
           assert.ok(['true', 'false'].includes(process.env.FULL_CI), 'Valid scope required');
           const plan = process.env.CI_PLAN ? JSON.parse(process.env.CI_PLAN) : null;
           if (plan) assert.equal(plan.version, 1, 'Supported task plan required');
+          if (plan?.testSelection) assert.equal(results.test_selection.result, 'success', 'Published selection must succeed');
           for (const job of ["typecheck_release_registry","general_tests","verify_paperclip_runner","build","docker_context_integrity","verify_serialized_server","canary_dry_run"]) {
             if (plan) assert.equal(typeof plan.jobs[job]?.run, 'boolean', 'Missing suite decision: ' + job);
             const selected = process.env.FULL_CI === 'true' && (!plan || plan.jobs[job].run);
@@ -1021,15 +1107,17 @@ jobs:
 
   verify_serialized_server:
     name: Verify serialized server suites (${{ matrix.shard_label }})
-    needs: [gate]
-    if: ${{ needs.gate.outputs.full_ci == 'true' && (needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).jobs.verify_serialized_server.run) }}
+    needs: [gate, test_selection]
+    if: ${{ always() && !cancelled() && needs.gate.result == 'success' && needs.gate.outputs.full_ci == 'true' && ((needs.test_selection.outputs.plan || needs.gate.outputs.plan) == '' || fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.verify_serialized_server.run) }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.verify_serialized_server.matrix) || '{"include":[{"shard_index":0,"shard_count":9,"shard_label":"1/9","task":"ci:serialized"},{"shard_index":1,"shard_count":9,"shard_label":"2/9","task":"ci:serialized"},{"shard_index":2,"shard_count":9,"shard_label":"3/9","task":"ci:serialized"},{"shard_index":3,"shard_count":9,"shard_label":"4/9","task":"ci:serialized"},{"shard_index":4,"shard_count":9,"shard_label":"5/9","task":"ci:serialized"},{"shard_index":5,"shard_count":9,"shard_label":"6/9","task":"ci:serialized"},{"shard_index":6,"shard_count":9,"shard_label":"7/9","task":"ci:serialized"},{"shard_index":7,"shard_count":9,"shard_label":"8/9","task":"ci:serialized"},{"shard_index":8,"shard_count":9,"shard_label":"9/9","task":"ci:serialized"}]}') }}
+      matrix: ${{ fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan) != '' && toJSON(fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.verify_serialized_server.matrix) || '{"include":[{"shard_index":0,"shard_count":9,"shard_label":"1/9","task":"ci:serialized"},{"shard_index":1,"shard_count":9,"shard_label":"2/9","task":"ci:serialized"},{"shard_index":2,"shard_count":9,"shard_label":"3/9","task":"ci:serialized"},{"shard_index":3,"shard_count":9,"shard_label":"4/9","task":"ci:serialized"},{"shard_index":4,"shard_count":9,"shard_label":"5/9","task":"ci:serialized"},{"shard_index":5,"shard_count":9,"shard_label":"6/9","task":"ci:serialized"},{"shard_index":6,"shard_count":9,"shard_label":"7/9","task":"ci:serialized"},{"shard_index":7,"shard_count":9,"shard_label":"8/9","task":"ci:serialized"},{"shard_index":8,"shard_count":9,"shard_label":"9/9","task":"ci:serialized"}]}') }}
 
     env:
+      PAPERCLIP_CI_TEST_SELECTION: ${{ matrix.selection && '.ci-test-selection/manifest.json' || '' }}
+      PAPERCLIP_CI_SELECTION_HASH: ${{ matrix.selection && fromJSON(needs.test_selection.outputs.plan).testSelection.hash || '' }}
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
       PAPERCLIP_CI_PROFILE_JOB: Verify serialized server suites (${{ matrix.shard_label }})
 
@@ -1038,6 +1126,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      - name: Download selected test files
+        if: matrix.selection
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ fromJSON(needs.test_selection.outputs.plan).testSelection.artifactId }}
+          path: .ci-test-selection
 
       - name: Initialize CI profile
         continue-on-error: true
@@ -1101,7 +1196,7 @@ jobs:
           task: ci:serialized
           args: ${{ format('["--shard-index","{0}","--shard-count","{1}"]', matrix.shard_index, matrix.shard_count) }}
           partition: ${{ strategy.job-index || 0 }}
-          force: ${{ needs.gate.outputs.profile_ci == 'true' || needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).mode != 'enabled' || fromJSON(needs.gate.outputs.plan).forceReason != null }}
+          force: ${{ needs.gate.outputs.profile_ci == 'true' || (needs.test_selection.outputs.plan || needs.gate.outputs.plan) == '' || fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).mode != 'enabled' || fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).forceReason != null }}
 
       - name: Run serialized server test shard
         if: hashFiles('turbo.json') == ''

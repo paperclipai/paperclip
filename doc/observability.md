@@ -254,6 +254,17 @@ It does not extend an earlier execution attempt or include time waiting for
 the background worker to run. Retries have separate roots. A check that finds
 no eligible work can end without a restore child.
 
+`task.response_presentation` owns recovery of an already committed native reply.
+It starts a separate linked root because deferred presentation can run after the
+execution attempt and workspace finalization have ended. Worker discovery for
+a specific run and worker checks include candidate reads under
+`response.resolve`. Each discovery or check owns its root; direct recovery and
+its worker check share one root when nested. `response.transaction`
+includes the recovery transaction; `response.transaction.entry` measures entry
+into its callback, including connection acquisition. These spans retain only the
+same hashed run ID and never capture reply content. A successful task status is
+separate from the time the reply is saved.
+
 These spans exist before provider dispatch, including setup failures. Preparation phases have
 only the existing `paperclip.task.run.run_id` attribute: the first 12 hexadecimal
 characters of the run UUID's SHA-256 hash. Failed operations set error status
@@ -316,6 +327,14 @@ with one child span per phase: `legacy_workspace_exports`,
 once known, `paperclip.native_reconciliation.candidates` (a count). A failed
 pass marks the pass span and the phase that was running with an error status.
 Faster passes record nothing.
+
+Heartbeat configuration preparation overlaps independent reads. Skill preparation
+runs alongside connector assignments; standing connection instructions wait for
+assignment catalog repairs, but can overlap the skill branch. These spans can
+finish out of order. Do not add their durations as serial elapsed time. The
+historical `skills.prepare` span ends when the skill branch settles, rather than
+when its concurrent branches finish. Each preparation attempt settles its started
+branches before it returns an error or releases acquired credentials.
 
 ### Detailed execution phases
 
@@ -611,6 +630,16 @@ They are children of the existing pack selection/upload path and also appear in
 the local run timing log. Their fixed names add no paths, credentials, or content
 attributes. The operator endpoint gate remains unchanged. Source installs without
 prebuilt archives retain the existing directory upload span.
+`provider_pack.directory.verify` measures expanded source verification when
+directory staging is required.
+
+Archive installation verifies the archive bytes and then the installed pack
+against the selected manifest. It does not hash the unused expanded controller
+tree. Directory installation still verifies that tree before upload, including
+when the remote cannot extract an available archive. The final installed-pack
+verification applies to both paths. A slow controller tree scan can block the
+server event loop and inflate overlapping asynchronous span durations; a copy
+span alone does not establish that the disk spent all that time copying.
 
 The native provider lifecycle emits one foldable OpenTelemetry trace, linked to
 the server attempt described above. This is
@@ -631,7 +660,8 @@ Without an OTLP endpoint, tracing remains silent and does not export data.
 
 The run link in Honeycomb matches `task.provider_session` for native runs, `task.run` for legacy adapters,
 `task.execution_attempt` for server preparation and settlement, and
-`task.workspace_finalization` for deferred native copyback. It retains the exact hashed run-ID and service filters and groups by trace ID. The URL builder uses Honeycomb’s supported `in` operator for the four root names; see the [query specification](https://github.com/honeycombio/honeycomb-mcp#query-specification-for-run_query). This changes only the query link. The operator endpoint gate and span attribute allowlist remain unchanged.
+`task.workspace_finalization` for deferred native copyback and `task.response_presentation`
+for committed native reply recovery. It retains the exact hashed run-ID and service filters and groups by trace ID. The URL builder uses Honeycomb’s supported `in` operator for the five root names; see the [query specification](https://github.com/honeycombio/honeycomb-mcp#query-specification-for-run_query). This changes only the query link. The operator endpoint gate and span attribute allowlist remain unchanged.
 
 The canonical lifecycle is:
 
@@ -2109,9 +2139,6 @@ rank optimizations, deploy a compatible source set and inspect actual collector
 exports for parentage, concurrent ownership, widths and closed failure spans.
 Unit tests do not establish ingestion or a latency improvement.
 
-The shared ACPX instrumentation advances Grok source profile 13 to 14 and
-Copilot 84 to 85. Historical identities remain unchanged and decodable. Provider
-packages, models and permission defaults are unchanged; Pi's bound declaration
-is unchanged. These are source attestations, not evidence of fresh live provider
-qualification. Re-run compatibility qualification for the new identities before
-rollout.
+The shared ACPX instrumentation does not change any provider profile identity:
+Copilot, Grok and Pi digests attest their upstream releases, not Runner source.
+Provider packages, models and permission defaults are unchanged.

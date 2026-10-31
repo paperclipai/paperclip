@@ -2984,6 +2984,27 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       )))[0];
       return { ...f, service, head, assessment, provider, action, inline, checks, writes };
     }
+    it("publishes one score heading when a newly configured bot submits a formatted summary", async () => {
+      const f = await publicationRetryFixture();
+      await db.update(chatEndpoints).set({ botDisplayName: "Fresh Review Bot" }).where(eq(chatEndpoints.id, f.endpoint.id));
+      const submit = (await githubBotToolsForSession(db, f.session)).find(tool => tool.upstreamToolName === "submit_review")!;
+      expect(submit.parametersSchema).toMatchObject({ properties: {
+        summary: { description: expect.stringContaining("Review body only") },
+        rationale: { description: expect.stringContaining("Do not repeat the summary") },
+      } });
+      const assessment = { ...f.assessment, summary: "## Fresh Review Bot — 2/5\n\n## Fresh Review Bot — 3/5\n\nAdvisory review\n\n### Findings\n\nKeep this section." };
+      const result = await f.service.execute(f.session, "submit_review", assessment, "formatted-summary");
+      expect(result).toMatchObject({ status: "processed", score: 3 });
+      const body = [...f.responseComments.values()][0].body;
+      expect(body).toMatch(/^## Fresh Review Bot — 3\/5\n\nAdvisory review/);
+      expect(body.match(/^## Fresh Review Bot — /gm)).toHaveLength(1);
+      expect(body).toContain("### Findings\n\nKeep this section.");
+      expect(body).toContain(f.assessment.rationale);
+      expect(body).toContain(`Reviewed commit: \`${f.head}\``);
+      expect(f.responseComments.size).toBe(1);
+      const [review] = await readChatGitHubReviewsByEndpointId(f.endpoint.id);
+      expect(review.assessment?.summary).toBe(assessment.summary);
+    });
     it("preserves the published GitHub assessment during passive-response maintenance", async () => {
       const f = await publicationRetryFixture();
       await f.service.execute(f.session, "submit_review", f.assessment, "published-before-passive-reply");
@@ -61017,7 +61038,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const beforeComments = await db
           .select({ id: issueComments.id })
           .from(issueComments)
-          .where(eq(issueComments.issueId, conversation.issueId));
+          .where(eq(issueComments.issueId, conversation.issueId))
+          .orderBy(issueComments.id);
         const beforeWakes = wakeup.mock.calls.length;
         const providerRuntime = runtime.endpoints.get(endpoint.id)!;
         const beforeProvider = {
@@ -61174,7 +61196,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           db
             .select({ id: issueComments.id })
             .from(issueComments)
-            .where(eq(issueComments.issueId, conversation.issueId)),
+            .where(eq(issueComments.issueId, conversation.issueId))
+            .orderBy(issueComments.id),
         ).resolves.toEqual(beforeComments);
         expect(wakeup.mock.calls.length).toBe(beforeWakes);
         expect({

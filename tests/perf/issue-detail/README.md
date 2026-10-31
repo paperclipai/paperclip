@@ -120,3 +120,7 @@ per-frame positions, layout shifts, browser timing counters, and reading-anchor
 measurement. The live script rejects non-local URLs and uses real provider
 capacity. Review the video as well as the assertions: layout-shift scores alone
 do not capture programmatic scrolling or replacement flashes.
+
+## Long-running agent chats
+
+The separate [agent-chat performance rig](../agent-chat/README.md) covers recent-only startup and scrolling history with long-lived conversations. It is opt-in and does not run in this task-detail rig.

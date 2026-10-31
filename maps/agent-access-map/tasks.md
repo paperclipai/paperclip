@@ -118,7 +118,9 @@ API: `not-applicable` — list/board, grouping/sort/columns/hierarchy/expanded r
 
 Agent access: `not-applicable` — no agent layout API; permitted underlying task data is separate.
 
-Policy: IssuesList loads/saves browser preferences by company/collection, with separate agent-created visibility. Contextual ancestors/descendants do not become unrelated independent results. No shared server view preference inferred.
+Policy: IssuesList loads/saves browser preferences by company/collection, with separate agent-created visibility. The Tasks page also owns a routine-only
+checkbox and `originKind=routine_execution` URL state; it uses the existing
+company-scoped task-list origin filter before pagination. Contextual ancestors/descendants do not become unrelated independent results. No shared server view preference inferred.
 
 Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`; [IssuesList.tsx](../../ui/src/components/IssuesList.tsx), [Issues.tsx](../../ui/src/pages/Issues.tsx), [Issues.test.tsx](../../ui/src/pages/Issues.test.tsx). No live execution claimed.
 

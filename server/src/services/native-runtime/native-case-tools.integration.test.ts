@@ -516,7 +516,7 @@ describe("native case tools through authenticated production routes", () => {
     expect(review.definitions().map(tool => tool.name)).not.toContain("read_case");
     await expect(review.execute({ tool: "update_case", callId: randomUUID(), arguments: { idempotencyKey: "review", title: "No" } })).rejects.toThrow("may only inspect");
     await server.db.update(issues).set({ workMode: "skill_test" }).where(eq(issues.id, f.issueId));
-    await expect(f.call("read_case")).rejects.toThrow("mode_denied");
+    await expect(f.call("read_case")).rejects.toMatchObject({ status: 403 });
     await server.db.update(issues).set({ workMode: "standard" }).where(eq(issues.id, f.issueId));
     await instanceSettingsService(server.db).updateExperimental({ enableCases: false });
     try { await expect(f.call("read_case")).rejects.toThrow("Cases are disabled"); }

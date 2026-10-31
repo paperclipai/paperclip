@@ -946,6 +946,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         .update(heartbeatRuns)
         .set({
           runtimeMode: "native",
+          controllerBootId: null,
+          controllerLeaseExpiresAt: null,
+          executionStage: null,
           runtimeModeResolverVersion:
             lockedRun.runtimeModeResolverVersion ??
             nativeRuntimeResolution.resolverVersion,

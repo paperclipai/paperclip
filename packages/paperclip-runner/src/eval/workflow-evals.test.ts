@@ -466,15 +466,15 @@ describe("workflow reports and stress traceability", () => {
       candidateFailures: 36,
     });
     expect(report.coverage).toMatchObject({
-      canonicalOperations: 69,
+      canonicalOperations: 70,
       capabilityCases: 106,
       workflows: 12,
       stressFindings: 44,
       stressExclusions: 1,
     });
-    expect(report.coverage.operations).toHaveLength(69);
+    expect(report.coverage.operations).toHaveLength(70);
     expect(report.coverage.operations).toEqual(expect.arrayContaining(
-      ["create_case", "read_case", "update_case", "handoff_case", "list_workflows", "read_workflow", "create_workflow", "update_workflow"].map(operationId =>
+      ["create_case", "read_case", "update_case", "handoff_case", "list_workflows", "read_workflow", "create_workflow", "update_workflow", "send_chat_message"].map(operationId =>
         expect.objectContaining({ operationId, workflowIds: [] })),
     ));
     expect(report.coverage.composedWorkflows).toHaveLength(12);
@@ -484,7 +484,7 @@ describe("workflow reports and stress traceability", () => {
       )?.workflowIds.length,
     ).toBeGreaterThan(0);
     expect(renderRunnerWorkflowMarkdown(report)).toContain(
-      "69 operations · 106 capability cases · 12 workflows",
+      "70 operations · 106 capability cases · 12 workflows",
     );
     expect(renderRunnerWorkflowJUnit(report)).toContain(
       'tests="36" failures="36" skipped="0"',
