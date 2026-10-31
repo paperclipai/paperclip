@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  decideDeferredWakeOwnership,
   decidePreDrain,
   decideQueuedCommentAction,
   decideQueuedCommentActorOwnsEntry,
@@ -10,6 +11,7 @@ import {
   decideWakeOutcome,
   deriveImmediateRecoveryContextLabels,
   type DeferredWakeOutcomeFacts,
+  type DeferredWakeOwnershipFacts,
   type DeferredWakeQueuedCommentFacts,
   type ImmediateRecoveryContextLabels,
   type PreDrainFacts,
@@ -734,4 +736,28 @@ describe("decideQueuedCommentActorOwnsEntry", () => {
       expect(decideQueuedCommentActorOwnsEntry(testCase.facts)).toBe(testCase.expected);
     });
   }
+});
+
+describe("decideDeferredWakeOwnership", () => {
+  const formerOwner: DeferredWakeOwnershipFacts = {
+    requiresIssueOwnership: true,
+    hasIndependentAuthority: false,
+    issueIsTerminal: false,
+    wakeAgentIsAssignee: false,
+    wakeAgentIsReviewParticipant: false,
+  };
+
+  it("marks a wake without a bypass, assignment or review participation as a former owner's", () => {
+    expect(decideDeferredWakeOwnership(formerOwner)).toBe("former_owner");
+  });
+
+  it.each<[string, Partial<DeferredWakeOwnershipFacts>]>([
+    ["the assignee", { wakeAgentIsAssignee: true }],
+    ["the current review participant", { wakeAgentIsReviewParticipant: true }],
+    ["a dispatch ownership bypass", { requiresIssueOwnership: false }],
+    ["independent authority", { hasIndependentAuthority: true }],
+    ["a terminal issue", { issueIsTerminal: true }],
+  ])("leaves the wake to the drain for %s", (_name, overrides) => {
+    expect(decideDeferredWakeOwnership({ ...formerOwner, ...overrides })).toBe("current_owner");
+  });
 });
