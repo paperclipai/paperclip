@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
-import type { StoryCheck } from "./everyday-observations.js";
+import { remoteWorkspaceAuthoritySchema, remoteWorkspaceRunReferenceSchema } from "../../packages/shared/src/remote-workspace.js";
+import type { ExecutionWorkspace, WorkspaceFileContent } from "../../packages/shared/src/index.js";
+import type { StoryCheck, StoryRun } from "./everyday-observations.js";
 import type { MatrixExecution } from "./types.js";
+import type { RunnerApi } from "./api.js";
+
+type RunSummary = Pick<StoryRun, "runtimeMode" | "status" | "agentId" | "finishedAt"> & { runId: string };
 
 export const REMOTE_WORKSPACE_STORAGE_SUITE = "remote-workspace-storage";
 export const REMOTE_WORKSPACE_PROOF_FILE = "workspace-proof.txt";
@@ -37,6 +42,45 @@ export function remoteWorkspaceStoragePrompt(base: string): string {
 export function remoteWorkspaceProofDigest(content: string): string {
   if (!/^[a-f0-9]{32}\n$/.test(content)) throw new Error("Remote workspace proof must contain its original generated synthetic reference");
   return createHash("sha256").update(content).digest("hex");
+}
+
+export async function readRemoteWorkspaceStorageCheckpoint(input: {
+  api: Pick<RunnerApi, "get">; companyId: string; agentId: string; issueId: string; environmentId: string;
+}): Promise<{ point?: RemoteWorkspaceStorageCheckpoint; content?: string }> {
+  const view = await input.api.get<{ issueId: string; workspace: ExecutionWorkspace | null }>(`/api/issues/${input.issueId}/workspace`);
+  const workspace = view.workspace;
+  const authorityResult = remoteWorkspaceAuthoritySchema.safeParse(workspace?.metadata?.remoteWorkspace);
+  if (view.issueId !== input.issueId || !workspace || workspace.companyId !== input.companyId
+    || workspace.providerType !== "cloud_sandbox" || !authorityResult.success) return {};
+  const authority = authorityResult.data;
+  if (!authority.snapshotId || authority.dirty || authority.writerRunId || !authority.location
+    || authority.location.environmentId !== input.environmentId) return {};
+  const runs = await input.api.get<RunSummary[]>(`/api/issues/${input.issueId}/runs`);
+  const latest = runs.filter(run => run.runtimeMode === "native" && run.status === "succeeded"
+    && run.agentId === input.agentId && typeof run.runId === "string")
+    .sort((a, b) => String(b.finishedAt).localeCompare(String(a.finishedAt)))[0];
+  if (!latest) return {};
+  const run = await input.api.get<StoryRun>(`/api/heartbeat-runs/${encodeURIComponent(latest.runId)}`);
+  if (run.id !== latest.runId || run.companyId !== input.companyId || run.agentId !== input.agentId
+    || run.nativeIssueId !== input.issueId || run.runtimeMode !== "native" || run.status !== "succeeded") return {};
+  const receiptResult = remoteWorkspaceRunReferenceSchema.safeParse(run.runnerProfileJson?.remoteWorkspace);
+  if (!receiptResult.success) return {};
+  const receipt = receiptResult.data;
+  if (receipt.state !== "saved" || receipt.snapshotId !== authority.snapshotId
+    || receipt.workspaceId !== workspace.id || receipt.epoch !== authority.epoch
+    || receipt.leaseId !== authority.location.leaseId || receipt.providerLeaseId !== authority.location.providerLeaseId
+    || receipt.remoteCwd !== authority.location.remoteCwd) return {};
+  const file = await input.api.get<WorkspaceFileContent>(`/api/issues/${input.issueId}/file-resources/content?workspace=execution&path=${REMOTE_WORKSPACE_PROOF_FILE}`);
+  if (file.content?.encoding !== "utf8" || typeof file.content.data !== "string") throw new Error("Remote workspace file oracle did not return text bytes");
+  if (file.resource?.source?.kind !== "live" || file.resource.workspaceKind !== "execution_workspace"
+    || file.resource.workspaceId !== workspace.id) return {};
+  return { content: file.content.data, point: {
+    workspaceId: workspace.id, snapshotId: authority.snapshotId, runId: run.id,
+    runSnapshotId: receipt.snapshotId, runSaveState: receipt.state,
+    authoritySchema: authority.schema, authorityDirty: authority.dirty,
+    authorityWriter: authority.writerRunId, providerType: workspace.providerType,
+    proofSha256: remoteWorkspaceProofDigest(file.content.data), fileSource: file.resource?.source?.kind,
+  } };
 }
 
 export function gradeRemoteWorkspaceStorage(evidence: RemoteWorkspaceStorageEvidence): StoryCheck[] {

@@ -26,8 +26,8 @@ import { hasPersistedSource, isSavedSourceCheckpoint } from "./everyday-interrup
 import { collectRunEvents } from "./run-observations.js";
 import { gradeRemoteRestart, observeRemoteRestartBoundary, projectRemoteRestartEvents, projectRemoteRestartRun, waitForRemoteRestartBoundary, type RemoteRestartEvidence } from "./everyday-remote-restart.js";
 import { controllerOutageForExecution, type ControllerOutageReceipt } from "./controller-outage.js";
-import { gradeRemoteWorkspaceStorage, isRemoteWorkspaceStorageExecution, remoteWorkspaceProofDigest,
-  REMOTE_WORKSPACE_PROOF_FILE, type RemoteWorkspaceStorageEvidence, type RemoteWorkspaceStorageCheckpoint } from "./remote-workspace-storage.js";
+import { gradeRemoteWorkspaceStorage, isRemoteWorkspaceStorageExecution, readRemoteWorkspaceStorageCheckpoint,
+  REMOTE_WORKSPACE_PROOF_FILE, type RemoteWorkspaceStorageEvidence } from "./remote-workspace-storage.js";
 import { gradeRetainedControllerContinuation, retainedControllerRun, retainedControllerFollowupTransport, submitRetainedControllerComment, onePersistedRetainedControllerComment } from "./retained-controller-continuation.js";
 import { setupAggregatorFixture } from "./aggregator-fixture.js";
 import { gradeProviderChoice, gradeProviderOutcome, requireProviderAccessCard } from "./connection-routing-evidence.js";
@@ -559,27 +559,8 @@ export async function runEverydayFlow(input: Input) {
   async function remoteWorkspaceStorageCheckpoint(phase: "initial" | "final") {
     const point = await pollUntil({
       label: `remote workspace ${phase} saved version`, deadlineAt: input.deadlineAt,
-      load: async (): Promise<{ point?: RemoteWorkspaceStorageCheckpoint; content?: string }> => {
-        const view = await api.get<Row>(`/api/issues/${parent!.id}/workspace`);
-        const authority = view.workspace?.metadata?.remoteWorkspace;
-        if (!authority?.snapshotId || authority.dirty || authority.writerRunId) return {};
-        const runs = await api.get<StoryRun[]>(`/api/issues/${parent!.id}/runs`);
-        const latest = runs.filter(run => run.runtimeMode === "native" && run.status === "succeeded" && run.nativeIssueId === parent!.id)
-          .sort((a, b) => String(b.finishedAt).localeCompare(String(a.finishedAt)))[0];
-        if (!latest) return {};
-        const run = await api.get<StoryRun>(`/api/heartbeat-runs/${latest.id}`);
-        const receipt = run.runnerProfileJson?.remoteWorkspace as Row | undefined;
-        if (!receipt || receipt.state !== "saved" || receipt.snapshotId !== authority.snapshotId) return {};
-        const file = await api.get<Row>(`/api/issues/${parent!.id}/file-resources/content?workspace=execution&path=${REMOTE_WORKSPACE_PROOF_FILE}`);
-        if (file.content?.encoding !== "utf8" || typeof file.content.data !== "string") throw new Error("Remote workspace file oracle did not return text bytes");
-        return { content: file.content.data, point: {
-          workspaceId: view.workspace.id, snapshotId: authority.snapshotId, runId: run.id,
-          runSnapshotId: receipt.snapshotId, runSaveState: receipt.state,
-          authoritySchema: authority.schema, authorityDirty: authority.dirty,
-          authorityWriter: authority.writerRunId, providerType: view.workspace.providerType,
-          proofSha256: remoteWorkspaceProofDigest(file.content.data), fileSource: file.resource?.source?.kind,
-        } };
-      },
+      load: () => readRemoteWorkspaceStorageCheckpoint({ api, companyId: fixtures.company.id,
+        agentId: fixtures.agent.id, issueId: parent!.id, environmentId: fixtures.environment.id }),
       accept: observed => Boolean(observed.point),
     });
     ev.remoteWorkspaceStorage![phase] = point.point!;
