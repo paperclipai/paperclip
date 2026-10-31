@@ -54,7 +54,7 @@ export function buildCodexExecArgs(
   // operator's extraArgs already carry it the injection would abort the run
   // with exit code 2. Skip the injection in that case and let the operator's
   // copy stand.
-  if (options.skipGitRepoCheck && !extraArgs.includes(SKIP_GIT_REPO_CHECK_FLAG)) {
+  if ((options.skipGitRepoCheck || !bypass) && !extraArgs.includes(SKIP_GIT_REPO_CHECK_FLAG)) {
     args.push(SKIP_GIT_REPO_CHECK_FLAG);
   }
   if (search) args.unshift("--search");
