@@ -8,7 +8,7 @@ import { agentService } from "./agents.js";
 import { createHash } from "node:crypto";
 import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
-import { aiConnectionBindingSchema, aiConnectionRouterBindingSchema } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, aiConnectionRouterBindingSchema, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { aiBindingForAuthRecovery, isAiAuthenticationFailure, isAiAuthenticationRepairable } from "./ai-auth-failure.js";
 import { and, eq, desc, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -63,6 +63,7 @@ import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { captureRunIdentity } from "./run-identity.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
+import { createToolGatewayService } from "./tool-gateway.js";
 
 type ConnectionRunClaims = Pick<RuntimeToolsTokenClaims, "sub" | "company_id" | "run_id" | "responsible_user_id">;
 type SavedChatSetup = NonNullable<ConnectionIntentInteraction["payload"]["savedSetup"]>;
@@ -123,6 +124,19 @@ function availableToolConnectionMethods(
   return getAvailableConnectionMethods(app).filter(
     (method) => (method.purpose ?? "tool") === "tool" && method.transport !== "runtime_auth",
   );
+}
+
+type RequestedToolPermission = { toolName: string; permission: "allowed" | "ask_first" };
+
+export function gatewaySatisfiesTools(decisions: Array<{ toolName: string; decision: string }>, tools: RequestedToolPermission[]) {
+  return tools.every((requested) => {
+    const matches = decisions.filter(tool => tool.toolName === requested.toolName).map(tool => tool.decision);
+    return matches.length === 1 && (matches[0] === "allowed" || (requested.permission === "ask_first" && matches[0] === "ask_first"));
+  });
+}
+
+export function gatewayAllowsAny(decisions: Array<{ decision: string }>) {
+  return decisions.some(tool => tool.decision === "allowed" || tool.decision === "ask_first");
 }
 
 export function connectionIntentService(db: Db) {
@@ -227,6 +241,7 @@ export function connectionIntentService(db: Db) {
         companyId: issues.companyId,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
+        projectId: issues.projectId,
       }).from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))).then((rows) => rows[0] ?? null),
       db.select({ id: agents.id, companyId: agents.companyId, name: agents.name })
         .from(agents)
@@ -291,7 +306,7 @@ export function connectionIntentService(db: Db) {
     return binding?.provider === serviceSlug ? { agent, binding, adapterConfig: agent.adapterConfig, requiresAdoption: !saved } : null;
   }
 
-  async function usableConnectionForAgent(input: {
+  type ConnectionLookup = {
     companyId: string;
     agentId: string;
     responsibleUserId: string;
@@ -299,7 +314,11 @@ export function connectionIntentService(db: Db) {
     purpose?: "ai" | "channel";
     sourceRunId?: string | null;
     inventory?: Awaited<ReturnType<typeof connectionInventory>>;
-  }) {
+    connectionId?: string;
+    ignoreInstall?: boolean;
+  };
+
+  async function usableConnectionForAgent(input: ConnectionLookup) {
     const managed = input.purpose === "ai" ? await managedAgent(input.companyId, input.agentId, input.serviceSlug, { sourceRunId: input.sourceRunId }) : null;
     if (managed) {
       try {
@@ -322,8 +341,10 @@ export function connectionIntentService(db: Db) {
     const effective = await access.getConnectionAssignmentsForAgent(input.companyId, input.agentId, matching.map(connection => connection.id));
     const installedIds = new Set(effective.installedConnections.map((connection) => connection.id));
     const permittedIds = new Set(effective.allowedConnectionIds);
+    const anySeat = input.ignoreInstall || input.connectionId !== undefined;
     const usable = (connection: ToolConnection | undefined) => connection
-      && installedIds.has(connection.id) && permittedIds.has(connection.id)
+      && (!input.connectionId || connection.id === input.connectionId)
+      && (anySeat || (installedIds.has(connection.id) && permittedIds.has(connection.id)))
       && connection.status === "active" && connection.enabled
       && (["mcp_remote", "local_stdio"].includes(connection.transport) || Boolean(restConnectorFor(connection)))
       && !isToolConnectionAttentionHealth(connection.healthStatus) ? connection : null;
@@ -333,7 +354,7 @@ export function connectionIntentService(db: Db) {
       });
       return usable(matching.find((connection) => connection.id === selection.grant?.connectionId));
     }
-    const installed = matching.filter((connection) => installedIds.has(connection.id));
+    const installed = anySeat ? matching : matching.filter((connection) => installedIds.has(connection.id));
     const grantsByConnection = await Promise.all(installed.map(async (connection) => ({
       connection,
       grants: (await access.listConnectionGrants(connection.id, input.companyId)).grants,
@@ -363,6 +384,46 @@ export function connectionIntentService(db: Db) {
       .map((grant) => ({ connection, grant })));
     const activeOrganization = organization.filter(({ grant }) => grant.status === "active");
     return activeOrganization.length === 1 ? usable(activeOrganization[0]!.connection) : null;
+  }
+
+  async function gatewayAccessForAgent(input: ConnectionLookup & {
+    heartbeatRunId: string | null;
+    issueId: string;
+    projectId: string | null;
+  }) {
+    const connection = await usableConnectionForAgent(input);
+    if (!connection) return null;
+    const gateway = createToolGatewayService(db);
+    const context = { companyId: input.companyId, connectionId: connection.id, agentId: input.agentId,
+      heartbeatRunId: input.heartbeatRunId, issueId: input.issueId, projectId: input.projectId };
+    const summary = await gateway.summarizeConnectionAccessForAgent(context);
+    const scopes = await gateway.googleWorkspaceScopesForAgent({ ...context, responsibleUserId: input.responsibleUserId });
+    const tools = scopes ? summary.tools.filter(tool => isGoogleWorkspaceToolGranted(tool.toolName, scopes)) : summary.tools;
+    return { connection, tools };
+  }
+
+  async function runtimeScopesAllow(input: { companyId: string; agentId: string; responsibleUserId: string;
+    connection: ToolConnection; heartbeatRunId: string; issueId: string; projectId: string | null; toolNames?: string[] }) {
+    const scopes = await createToolGatewayService(db).googleWorkspaceScopesForAgent({ companyId: input.companyId,
+      connectionId: input.connection.id, agentId: input.agentId, responsibleUserId: input.responsibleUserId,
+      heartbeatRunId: input.heartbeatRunId, issueId: input.issueId, projectId: input.projectId });
+    if (!scopes) return true;
+    const names = input.toolNames ?? (await indexedCatalog(input.connection.id, input.companyId))
+      .filter(tool => tool.entryKind === "tool").map(tool => tool.toolName);
+    return input.toolNames ? names.every(name => isGoogleWorkspaceToolGranted(name, scopes))
+      : names.some(name => isGoogleWorkspaceToolGranted(name, scopes));
+  }
+
+  async function gatewayReadyConnection(input: ConnectionLookup & {
+    issueId: string;
+    projectId: string | null;
+    heartbeatRunId: string;
+    tools?: RequestedToolPermission[];
+  }) {
+    const found = await gatewayAccessForAgent({ ...input, ignoreInstall: true });
+    if (!found) return null;
+    const ready = input.tools ? gatewaySatisfiesTools(found.tools, input.tools) : gatewayAllowsAny(found.tools);
+    return ready ? found.connection : null;
   }
 
   async function administrativeDenial(companyId: string, agentId: string, serviceSlug: string, inventory: Awaited<ReturnType<typeof connectionInventory>>) {
@@ -496,8 +557,14 @@ export function connectionIntentService(db: Db) {
       const { score, nameScore } = scoreConnectionSearch(preparedQuery, [app.slug, app.name],
         `${app.description ?? ""} ${app.searchCapabilities} ${catalog.map(tool => `${tool.toolName} ${tool.description ?? ""}`).join(" ")}`);
       if (!score) continue;
-      const ready = await usableConnectionForAgent({ companyId: run.companyId, agentId: agent.id,
+      const installed = await usableConnectionForAgent({ companyId: run.companyId, agentId: agent.id,
         responsibleUserId: run.responsibleUserId!, serviceSlug: service, purpose: aiOnly ? "ai" : service === "agentmail" ? "channel" : undefined, inventory });
+      const ready = (installed && (aiOnly || service === "agentmail" || await runtimeScopesAllow({ companyId: run.companyId,
+        agentId: agent.id, responsibleUserId: run.responsibleUserId!, connection: installed, heartbeatRunId: run.id,
+        issueId: issue.id, projectId: issue.projectId })) ? installed : null)
+        ?? (aiOnly || service === "agentmail" ? null : await gatewayReadyConnection({ companyId: run.companyId, agentId: agent.id,
+          responsibleUserId: run.responsibleUserId!, serviceSlug: service, issueId: issue.id, projectId: issue.projectId,
+          heartbeatRunId: run.id, inventory }));
       const denied = !aiOnly && !ready && matching.length > 0 && await administrativeDenial(run.companyId, agent.id, service, inventory);
       const methods = await Promise.all(app.methods.map(async method => {
         const declaredPurpose = definition ? discoveryMethods(definition).find(candidate => candidate.key === method.key)?.purpose : undefined;
@@ -783,6 +850,7 @@ export function connectionIntentService(db: Db) {
       throw unprocessable(`Connection service ${serviceSlug} is not available`);
     }
     let accessRequest: ConnectionIntentInteraction["payload"]["accessRequest"];
+    let gatewayReady: ToolConnection | null = null;
     if (!options.purpose) {
       const inventory = await connectionInventory(context.run.companyId);
       const matching = inventory.connections.filter(connection =>
@@ -811,18 +879,25 @@ export function connectionIntentService(db: Db) {
         const effective = await access.getEffectiveToolAssignmentsForAgent(context.run.companyId, context.agent.id);
         const installed = effective.installedConnections.some(item => item.id === connection.id);
         const missing = !installed || tools.some(tool => tool && !effective.allowedTools.some(allowed => allowed.id === tool.id));
-        if (missing && tools.length && tools.every(tool => Boolean(tool))) {
+        const requested = tools.flatMap(tool => tool ? [{ ...tool, permission: tool.riskLevel === "read" ? "allowed" as const : "ask_first" as const }] : []);
+        if (missing && tools.length && requested.length === tools.length) {
+          gatewayReady = await gatewayReadyConnection({ companyId: context.run.companyId, agentId: context.agent.id,
+            responsibleUserId: context.run.responsibleUserId!, serviceSlug: app.slug, issueId: context.issue.id,
+            projectId: context.issue.projectId, heartbeatRunId: context.run.id, inventory,
+            connectionId: connection.id, tools: requested });
+        }
+        if (missing && !gatewayReady && tools.length && requested.length === tools.length) {
           if (tools.length > 20) throw unprocessable("Specify the tools needed for this task (up to 20)");
           accessRequest = {
             connectionId: connection.id, connectionName: connection.name,
-            tools: tools.map(tool => ({ catalogEntryId: tool!.id, toolName: tool!.toolName, versionHash: tool!.versionHash,
-              permission: tool!.riskLevel === "read" ? "allowed" as const : "ask_first" as const }))
+            tools: requested.map(tool => ({ catalogEntryId: tool.id, toolName: tool.toolName, versionHash: tool.versionHash,
+              permission: tool.permission }))
               .sort((a, b) => Number(a.permission === "ask_first") - Number(b.permission === "ask_first") || a.toolName.localeCompare(b.toolName)),
           };
         }
       }
     }
-    const ready = await usableConnectionForAgent({
+    const installed = gatewayReady ? null : await usableConnectionForAgent({
       companyId: context.run.companyId,
       agentId: context.agent.id,
       responsibleUserId: context.run.responsibleUserId!,
@@ -830,6 +905,10 @@ export function connectionIntentService(db: Db) {
       purpose: options.purpose,
       sourceRunId: context.run.id,
     });
+    const ready = gatewayReady ?? (installed && (options.purpose || await runtimeScopesAllow({ companyId: context.run.companyId,
+      agentId: context.agent.id, responsibleUserId: context.run.responsibleUserId!, connection: installed,
+      heartbeatRunId: context.run.id, issueId: context.issue.id, projectId: context.issue.projectId,
+      toolNames: options.toolNames })) ? installed : null);
     if (ready && !accessRequest && (!options.connectionId || ready.id === options.connectionId)) {
       return {
         version: 1,
@@ -1289,6 +1368,7 @@ export function connectionIntentService(db: Db) {
   return {
     validate: loadRunContext,
     usableConnectionForAgent,
+    gatewayAccessForAgent,
     search,
     request,
     requestChatHandoff,

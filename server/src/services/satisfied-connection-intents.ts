@@ -4,19 +4,18 @@ import { enqueueTerminalIssueInteractionChatPublications } from "./chat-interact
 import { connectionManagementService } from "./connection-management.js";
 import { chatCredentialEntryGenerations } from "./chat-channels/credentials.js";
 import { and, asc, eq, gt, inArray, isNull, or } from "drizzle-orm";
-import { approvals, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolConnections, companyMemberships, connectionIntentDeliveries, issueApprovals, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
+import { approvals, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolConnections, companyMemberships, connectionIntentDeliveries, issueApprovals, issueThreadInteractions, issues, toolCatalogEntries, type Db } from "@paperclipai/db";
 import { connectionIntentPayloadSchema } from "@paperclipai/shared";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
-import { chatCredentialRotationId, connectionIntentService } from "./connection-intents.js";
+import { chatCredentialRotationId, connectionIntentService, gatewayAllowsAny, gatewaySatisfiesTools } from "./connection-intents.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { logger } from "../middleware/logger.js";
-import { createToolGatewayService } from "./tool-gateway.js";
 
 type Task = Pick<typeof issues.$inferSelect, "id" | "companyId" | "projectId" | "status" | "assigneeAgentId" | "assigneeUserId">;
 type Intent = Pick<typeof issueThreadInteractions.$inferSelect, "id" | "companyId" | "issueId" | "kind" | "status" | "payload" | "addresseeUserId"> & Partial<Pick<typeof issueThreadInteractions.$inferSelect, "sourceRunId">>;
 
 /** Verify existing access only. This never installs tools, grants access, or adopts an identity. */
-async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
+async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null, retiredConnectionId?: string) {
   if (intent.kind !== "connection_intent" || intent.status !== "pending"
     || intent.companyId !== task.companyId || intent.issueId !== task.id
     || task.assigneeUserId) return null;
@@ -65,9 +64,9 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
     });
     return capability.allowed ? connection : null;
   }
-  // Additional permissions, provider authentication and inbox setup still need
-  // their governed completion paths. Aggregator cards also name an upstream app.
-  if (payload.purpose || payload.accessRequest || payload.upstreamService
+  // Provider authentication and inbox setup still need their governed
+  // completion paths. Aggregator cards also name an upstream app.
+  if (payload.purpose || payload.upstreamService
     || payload.requestingAgentId !== task.assigneeAgentId || !intent.addresseeUserId) return null;
   if (intent.addresseeUserId !== "local-board") {
     const [membership] = await db.select().from(companyMemberships).where(and(
@@ -76,22 +75,36 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
     ));
     if (membership?.status !== "active" || !membership.membershipRole || membership.membershipRole === "viewer") return null;
   }
-  const connection = await connectionIntentService(db).usableConnectionForAgent({ companyId: task.companyId,
-    agentId: payload.requestingAgentId, responsibleUserId: intent.addresseeUserId, serviceSlug: payload.serviceSlug });
-  if (!connection) return null;
+  const accessRequest = payload.accessRequest;
+  const service = connectionIntentService(db);
+  const lookup = { companyId: task.companyId, agentId: payload.requestingAgentId,
+    responsibleUserId: intent.addresseeUserId, serviceSlug: payload.serviceSlug };
   // Use the gateway's exact descriptors and listing policy, including task,
   // project and routine context. Per-invocation approvals remain enforced.
-  const access = await createToolGatewayService(db).summarizeConnectionAccessForAgent({
-    companyId: task.companyId, connectionId: connection.id, agentId: payload.requestingAgentId,
+  const gateway = (connectionId?: string) => service.gatewayAccessForAgent({ ...lookup, connectionId,
     heartbeatRunId: policyRunId === undefined ? intent.sourceRunId ?? null : policyRunId,
-    issueId: task.id, projectId: task.projectId,
-  });
-  return access.allowedCount + access.askFirstCount > 0 ? connection : null;
+    issueId: task.id, projectId: task.projectId });
+  const available = (found: Awaited<ReturnType<typeof gateway>>) => found && gatewayAllowsAny(found.tools) ? found.connection : null;
+  if (retiredConnectionId) return available(await gateway(retiredConnectionId)) ?? available(await gateway());
+  if (!accessRequest) return available(await gateway());
+  const found = await gateway(accessRequest.connectionId);
+  if (!found) return null;
+  const connection = found.connection;
+  const catalog = await db.select().from(toolCatalogEntries).where(and(
+    eq(toolCatalogEntries.companyId, task.companyId), eq(toolCatalogEntries.connectionId, connection.id),
+    inArray(toolCatalogEntries.id, accessRequest.tools.map(tool => tool.catalogEntryId)),
+  ));
+  const satisfied = accessRequest.tools.every((requested) => {
+    const entry = catalog.find(candidate => candidate.id === requested.catalogEntryId);
+    return entry && entry.status === "active" && entry.entryKind === "tool"
+      && entry.toolName === requested.toolName && entry.versionHash === requested.versionHash;
+  }) && gatewaySatisfiesTools(found.tools, accessRequest.tools);
+  return satisfied ? connection : null;
 }
 
-export async function findSatisfiedToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
+export async function findSatisfiedToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null, retiredConnectionId?: string) {
   if (!["in_progress", "in_review"].includes(task.status)) return null;
-  return findAvailableToolConnection(db, task, intent, policyRunId);
+  return findAvailableToolConnection(db, task, intent, policyRunId, retiredConnectionId);
 }
 
 /** Recheck both live requests and system-retired cards against the next run. */
@@ -107,10 +120,10 @@ export async function connectionContinuationPendingResponse(db: Db, task: Task, 
     if (interaction.status !== "pending" && !retired) continue;
     if (retired && (interaction.payload as { requestingAgentId?: string }).requestingAgentId !== task.assigneeAgentId) continue;
     if (interaction.addresseeUserId !== responsibleUserId) return "interaction";
-    const connection = await findAvailableToolConnection(db, task, { ...interaction, status: "pending" }, policyRunId);
+    const connection = await findAvailableToolConnection(db, task, { ...interaction, status: "pending" }, policyRunId,
+      retired ? (interaction.result as { connectionId: string }).connectionId : undefined);
     // Historical system retirements describe a service need, not a permanent
-    // binding to an account the user may later replace. Delivery and native
-    // response projection still validate their own exact recorded connection.
+    // binding to an account the user may later replace.
     if (!connection) return "interaction";
   }
   const [approval] = await db.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, and(
