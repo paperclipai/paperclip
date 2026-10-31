@@ -18,7 +18,7 @@ import { decisionService, decisionRetentionService, toolAccessService, reconcile
 
 import { companies, runDatabaseBackup, type Db } from "@paperclipai/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1108,6 +1108,26 @@ describe("startServer feedback export wiring", () => {
       expect(registration[1].nextRunAt!()).toBeGreaterThan(Date.now());
       await registration[1].run(new AbortController().signal);
       expect(runDatabaseBackup).not.toHaveBeenCalled();
+    }
+  });
+
+  it("anchors the first automatic backup to the newest scheduled dump", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "startup-backup-anchor-"));
+    try {
+      const dump = path.join(directory, "paperclip-20261026-120000.sql.gz");
+      writeFileSync(dump, gzipSync("SELECT 1;\n"));
+      const dumpAt = new Date(Date.now() - 30 * 60_000);
+      utimesSync(dump, dumpAt, dumpAt);
+      writeFileSync(path.join(directory, "paperclip-pre-deploy.sql.gz"), gzipSync("SELECT 1;\n"));
+      loadConfigMock.mockReturnValue(buildTestConfig({ databaseBackupEnabled: true, databaseBackupDir: directory }));
+      await startServer();
+      const registration = deliveryWorkRegisterMock.mock.calls.find(([queue]) => queue === DELIVERY_QUEUES.databaseBackups);
+      expect(registration).toBeDefined();
+      // Config interval is 60 minutes: one interval after the dump, not after startup.
+      await vi.waitFor(() => expect(registration![1].nextRunAt!()).toBe(statSync(dump).mtimeMs + 60 * 60_000));
+      expect(runDatabaseBackup).not.toHaveBeenCalled();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 
