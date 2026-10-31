@@ -487,6 +487,24 @@ interface PluginToolExecuteRequest {
 }
 
 /**
+ * The form of a webhook body or header map that the delivery row's jsonb
+ * columns accept. PostgreSQL refuses a jsonb value that holds U+0000 or an
+ * unpaired UTF-16 surrogate (22P05 "unsupported Unicode escape sequence"),
+ * which `JSON.stringify` writes as `\u0000` and `\udXXX` escapes. The stored
+ * copy drops each NUL and turns each unpaired surrogate into U+FFFD, in keys
+ * and values alike. The worker still receives the request exactly as sent.
+ */
+export function pluginWebhookJsonbValue<T>(value: T): T {
+  const json = JSON.stringify(value);
+  if (json === undefined || !/\\u(?:0000|d[89a-f])/i.test(json)) return value;
+  // Only an escape preceded by an even run of backslashes is a real escape.
+  return JSON.parse(json.replace(
+    /(?<!\\)((?:\\\\)*)\\u(0000|d[89a-f][0-9a-f]{2})/gi,
+    (_match, backslashes: string, code: string) => `${backslashes}${code === "0000" ? "" : "\\ufffd"}`,
+  )) as T;
+}
+
+/**
  * Create Express router for plugin management API.
  *
  * Routes provided:
@@ -2838,8 +2856,8 @@ export function pluginRoutes(
         pluginId: plugin.id,
         webhookKey: endpointKey,
         status: "pending",
-        payload,
-        headers: rawHeaders,
+        payload: pluginWebhookJsonbValue(payload),
+        headers: pluginWebhookJsonbValue(rawHeaders),
         startedAt,
       })
       .returning({ id: pluginWebhookDeliveries.id });
