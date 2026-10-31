@@ -4,7 +4,7 @@ import { createConnection, createServer, type Socket } from "node:net";
 export type ObservedQuery = { protocol: "simple" | "extended"; sql: string; fingerprint: string };
 
 export function createPostgresProtocolObserver(onQuery: (query: ObservedQuery) => void, onFrame: (type: string) => void = () => {}) {
-  let frontend = Buffer.alloc(0), backend = Buffer.alloc(0), startup = true, pending = 0;
+  let frontend = Buffer.alloc(0), backend = Buffer.alloc(0), startup = true, ready = false, pending = 1;
   const statements = new Map<string, string>(), portals = new Map<string, string>();
   function cstring(body: Buffer, offset = 0): [string, number] {
     const end = body.indexOf(0, offset);
@@ -16,11 +16,12 @@ export function createPostgresProtocolObserver(onQuery: (query: ObservedQuery) =
   }
   return {
     get pending() { return pending; },
+    get ready() { return ready; },
     frontend(chunk: Buffer) {
       frontend = Buffer.concat([frontend, chunk]);
       while (frontend.length >= (startup ? 8 : 5)) {
         const length = frontend.readInt32BE(startup ? 0 : 1);
-        if (length < (startup ? 8 : 4) || length > 64 * 1024 * 1024) throw new Error("Invalid PostgreSQL frame length");
+        if (length < (startup ? 8 : 4) || length > 64 * 1024 * 1024) throw new Error(`Invalid PostgreSQL frame length: ${JSON.stringify({ length, startup, bufferedBytes: frontend.length, header: frontend.subarray(0, startup ? 8 : 5).toString("hex") })}`);
         const total = length + (startup ? 0 : 1);
         if (frontend.length < total) return;
         const frame = frontend.subarray(0, total);
@@ -59,7 +60,7 @@ export function createPostgresProtocolObserver(onQuery: (query: ObservedQuery) =
         const length = backend.readInt32BE(1);
         if (length < 4 || length > 64 * 1024 * 1024) throw new Error("Unsupported encrypted or invalid PostgreSQL response");
         if (backend.length < length + 1) return;
-        if (backend[0] === 90) pending = Math.max(0, pending - 1);
+        if (backend[0] === 90) { ready = true; pending = Math.max(0, pending - 1); }
         backend = backend.subarray(length + 1);
       }
     },
@@ -99,6 +100,7 @@ export async function startMaintenancePostgresProxy(databaseUrl: string) {
     get frames() { return { ...frames }; },
     get transport() { return { ...transport }; },
     get pending() { return [...observers].reduce((sum, observer) => sum + observer.pending, 0); },
+    get starting() { return [...observers].filter(observer => !observer.ready).length; },
     async stop() {
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

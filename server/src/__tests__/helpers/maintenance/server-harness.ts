@@ -159,7 +159,17 @@ export async function startMaintenanceServer(databaseUrl: string, options: { art
       snapshot: () => request<Snapshot>("snapshot"),
       drain: () => request<Snapshot>("drain"), resume: () => request<Snapshot>("resume"),
       realtime: () => request<Snapshot>("realtime"),
-      advance: (ms: number) => request<Snapshot>("advance", { ms }), freeze: () => request<Snapshot>("freeze"),
+      async advance(ms: number) {
+        const deadline = performance.now() + 30_000;
+        while (proxy.starting > 0) {
+          if (proxy.errors.length) throw new AggregateError(proxy.errors, "PostgreSQL observer failed");
+          if (performance.now() >= deadline) throw new Error("Maintenance database startup did not finish before clock advance");
+          await delay(5);
+        }
+        if (proxy.errors.length) throw new AggregateError(proxy.errors, "PostgreSQL observer failed");
+        return request<Snapshot>("advance", { ms });
+      },
+      freeze: () => request<Snapshot>("freeze"),
       get output() { return output; },
       async settled(quietMs = 500, deferredStartupHolds = 0) {
         let previous = -1, quietSince = Date.now();

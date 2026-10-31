@@ -1,5 +1,7 @@
 import { createCipheriv, createHash, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, randomUUID, sign, verify } from "node:crypto";
 import { createServer } from "node:http";
+import { Socket } from "node:net";
+import { once } from "node:events";
 import { agents, agentApiKeys, agentSessionGoalActions, agentTaskSessions, authUsers, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, issues, issueThreadInteractions, toolApplications, toolConnections } from "@paperclipai/db";
 import { access, mkdir, readdir, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -291,6 +293,51 @@ describeDatabase("assembled maintenance server production wiring", () => {
       await fixture.$client.unsafe("drop trigger if exists maintenance_hold_startup_archive on decision_retention").catch(() => {});
       await fixture.$client.unsafe("drop function if exists maintenance_hold_startup_archive()").catch(() => {});
       await fixture.$client.end(); await server?.stop();
+    }
+  }, 150_000);
+
+  it("does not advance the child clock over an actual driver socket whose startup write is held", async () => {
+    await clearDatabase();
+    const server = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true });
+    const client = createDb(server.proxy.url, { maxConnections: 1, idleTimeoutSeconds: 0, connectTimeoutSeconds: 30 });
+    const address = new URL(server.proxy.url);
+    const socket = new Socket();
+    let release = () => {};
+    let query: Promise<unknown> | undefined;
+    let advancing: ReturnType<typeof server.advance> | undefined;
+    try {
+      await settleClock(server); await server.freeze();
+      socket.connect({ host: address.hostname, port: Number(address.port) });
+      await once(socket, "connect");
+      const write = socket.write;
+      let entered!: () => void;
+      const startupHeld = new Promise<void>(resolve => { entered = resolve; });
+      socket.write = ((...args: Parameters<typeof socket.write>) => {
+        socket.write = write;
+        expect(Buffer.isBuffer(args[0]) && args[0].readInt32BE(4)).toBe(196608);
+        let released = false;
+        release = () => { if (!released) { released = true; Reflect.apply(write, socket, args); } };
+        entered();
+        return true;
+      }) as typeof socket.write;
+      Object.assign(client.$client.options, { socket: () => socket });
+      query = client.$client`select 1 as startup_control`.then(rows => rows);
+      await startupHeld;
+      const before = await server.snapshot();
+      advancing = server.advance(30_000);
+      const during = await server.snapshot();
+      expect(during.now).toBe(before.now);
+      release();
+      expect(await query).toMatchObject([{ startup_control: 1 }]);
+      expect((await advancing).now).toBe(before.now + 30_000);
+      await server.settled();
+      await writeFile(path.join(server.directory, "startup-clock-measurement.json"), JSON.stringify({ phase: "held-real-driver-startup-clock-barrier",
+        before, during, after: await server.snapshot(), boundary: "actual postgres.js StartupMessage write held before wire flush; child clock IPC stays behind startup, independent of the unexplained invalid-frame failure",
+      }, null, 2));
+    } finally {
+      release();
+      await Promise.allSettled([query, advancing]);
+      await client.$client.end(); socket.destroy(); await server.stop();
     }
   }, 150_000);
 

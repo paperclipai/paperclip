@@ -1,4 +1,6 @@
 import { createDb } from "@paperclipai/db";
+import { createConnection } from "node:net";
+import { once } from "node:events";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -16,7 +18,18 @@ describe("passive maintenance PostgreSQL observer", () => {
   it("counts fragmented simple and reused prepared executions without counting parses or parameter values", () => {
     const queries: ObservedQuery[] = [];
     const observer = createPostgresProtocolObserver(query => queries.push(query));
-    const bytes = Buffer.concat([startup,
+    expect(observer.pending).toBe(1);
+    expect(observer.ready).toBe(false);
+    for (const byte of startup) observer.frontend(Buffer.from([byte]));
+    expect(observer.pending).toBe(1);
+    const initialReady = frame("Z", "I");
+    observer.backend(initialReady.subarray(0, 3));
+    expect(observer.pending).toBe(1);
+    expect(observer.ready).toBe(false);
+    observer.backend(initialReady.subarray(3));
+    expect(observer.pending).toBe(0);
+    expect(observer.ready).toBe(true);
+    const bytes = Buffer.concat([
       frame("Q", "select 1\0"),
       frame("P", "statement\0select $1::text\0"),
       frame("B", "portal\0statement\0parameter-value-sentinel"),
@@ -78,6 +91,25 @@ describeDatabase("maintenance observer against PostgreSQL", () => {
       await new Promise(resolve => setTimeout(resolve, 100));
       expect(proxy.queries.length).toBe(before);
       expect(proxy.transport).toEqual(transport);
+      expect(proxy.starting).toBe(0);
+      const address = new URL(proxy.url);
+      for (const cancel of [false, true]) {
+        const socket = createConnection({ host: address.hostname, port: Number(address.port) });
+        try {
+          await once(socket, "connect");
+          await expect.poll(() => proxy.starting).toBe(1);
+          const closed = once(socket, "close");
+          if (cancel) {
+            const request = Buffer.alloc(16);
+            request.writeInt32BE(16); request.writeInt32BE(80877102, 4);
+            socket.write(request);
+          } else socket.end();
+          await closed;
+          await expect.poll(() => proxy.starting).toBe(0);
+          expect(proxy.pending).toBe(0);
+          expect(proxy.errors).toEqual([]);
+        } finally { socket.destroy(); }
+      }
     } finally { await db.$client.end(); await proxy.stop(); }
   });
 });
