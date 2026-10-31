@@ -2,7 +2,7 @@ import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationCont
 import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, RoutineListItem, WorkspaceOperation } from "@paperclipai/shared";
+import { isRepositoryUrl, type ExecutionWorkspace, type Issue, type Project, type ProjectWorkspace, type RoutineListItem, type WorkspaceOperation } from "@paperclipai/shared";
 import { Copy, ExternalLink, Loader2, Play, Repeat } from "lucide-react";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
@@ -327,12 +327,8 @@ function buildWorkspacePatch(initialState: WorkspaceFormState, nextState: Worksp
 
 function validateForm(form: WorkspaceFormState) {
   const repoUrl = normalizeText(form.repoUrl);
-  if (repoUrl) {
-    try {
-      new URL(repoUrl);
-    } catch {
-      return "Repo URL must be a valid URL.";
-    }
+  if (repoUrl && !isRepositoryUrl(repoUrl)) {
+    return "Repo URL must be a URL or a Git remote such as git@host:owner/repo.git.";
   }
 
   if (!form.inheritRuntime) {
