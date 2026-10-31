@@ -49,6 +49,8 @@ import { readContinuationAttempt } from "../recovery/index.js";
 import { withRecoveryContext } from "../recovery/status-only-context.js";
 import {
   MAX_TURN_CONTINUATION_RETRY_REASON,
+  ORIGINAL_WAKE_REASON_KEY,
+  PENDING_INTERACTION_WAKE_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
   AI_CONNECTION_BUSY_RETRY_REASON,
   AI_CONNECTION_POOL_WAIT_RETRY_REASON,
@@ -469,6 +471,16 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
     const contextSnapshot = parseObject(run.contextSnapshot);
+    // A bounded retry rewrites `wakeReason`, so a pending-card wake would lose
+    // the identity that exempts its addressee from assignee-ship and be
+    // cancelled as a reassignment on promotion. Carry that identity forward,
+    // including across chained retries.
+    const originalWakeReason =
+      readNonEmptyString(contextSnapshot[ORIGINAL_WAKE_REASON_KEY]) ??
+      (readNonEmptyString(contextSnapshot.wakeReason) ===
+        PENDING_INTERACTION_WAKE_REASON
+        ? PENDING_INTERACTION_WAKE_REASON
+        : null);
     // A retry inherits the durable authorization scope of its source run. Do
     // not promote an untrusted or legacy contextSnapshot.issueId into a new
     // issue binding: that could either violate the FK or misclassify history.
@@ -626,6 +638,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         ...contextSnapshot,
         executionRetryAccounting: accountingForScheduledRetry(run, retryReason, schedule.attempt),
         retryOfRunId: run.id,
+        ...(originalWakeReason
+          ? { [ORIGINAL_WAKE_REASON_KEY]: originalWakeReason }
+          : {}),
         wakeReason,
         retryReason,
         ...(retryReason === WORKSPACE_BUSY_RETRY_REASON

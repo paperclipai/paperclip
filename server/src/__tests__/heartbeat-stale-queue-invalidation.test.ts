@@ -644,6 +644,121 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(issue).toMatchObject({ status, assigneeAgentId: reassigned ? null : agentId });
   });
 
+  async function seedPendingCard(input: {
+    companyId: string;
+    issueId: string;
+    addresseeAgentId: string;
+    status?: "pending" | "answered";
+  }) {
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId: input.companyId,
+      issueId: input.issueId,
+      kind: "ask_user_questions",
+      status: input.status ?? "pending",
+      addresseeAgentId: input.addresseeAgentId,
+      payload: { version: 1, questions: [] },
+    }).returning();
+    return interaction;
+  }
+
+  it("does not cancel a pending card wake addressed to a non-assignee agent", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const [addressee] = await db.insert(agents).values({
+      companyId,
+      name: "Oracle",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true } },
+      permissions: {},
+    }).returning();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Card on another agent's issue",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    const interaction = await seedPendingCard({
+      companyId,
+      issueId,
+      addresseeAgentId: addressee.id,
+    });
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId: addressee.id,
+      issueId,
+      wakeReason: "interaction_pending",
+      invocationSource: "automation",
+      contextExtras: {
+        interactionId: interaction.id,
+        interactionKind: interaction.kind,
+        mutation: "interaction",
+        source: "issue.interaction.created",
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    expect(await waitForCondition(async () => {
+      return (await heartbeat.getRun(runId))?.status === "succeeded";
+    })).toBe(true);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run).toMatchObject({ status: "succeeded" });
+    expect(run?.errorCode).toBeNull();
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+  });
+
+  it.each([
+    { name: "the card is no longer pending", status: "answered" as const },
+    { name: "the card is addressed to a different agent", status: "pending" as const, addressedToRunAgent: false },
+  ])("still cancels an unverified non-assignee card wake when $name", async ({ status, addressedToRunAgent }) => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const [addressee] = await db.insert(agents).values({
+      companyId,
+      name: "Oracle",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true } },
+      permissions: {},
+    }).returning();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Unverified card wake",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    const interaction = await seedPendingCard({
+      companyId,
+      issueId,
+      addresseeAgentId: addressedToRunAgent === false ? agentId : addressee.id,
+      status,
+    });
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId: addressee.id,
+      issueId,
+      wakeReason: "interaction_pending",
+      invocationSource: "automation",
+      contextExtras: { interactionId: interaction.id, mutation: "interaction" },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    expect(await heartbeat.getRun(runId)).toMatchObject({
+      status: "cancelled",
+      errorCode: "issue_assignee_changed",
+    });
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
   it("cancels a resolved connection-intent wake parked before queued-run claim", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();

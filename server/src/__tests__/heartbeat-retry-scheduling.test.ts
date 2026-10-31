@@ -672,6 +672,140 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(promotedRun?.status).toBe("queued");
   });
 
+  async function seedPendingCardWake(input?: { interactionStatus?: "pending" | "answered" }) {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const addresseeAgentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    for (const [id, name] of [
+      [assigneeAgentId, "Assignee"],
+      [addresseeAgentId, "Oracle"],
+    ] as const) {
+      await db.insert(agents).values({
+        id,
+        companyId,
+        name,
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      });
+    }
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Card on another agent's issue",
+      status: "in_progress",
+      assigneeAgentId,
+    });
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: input?.interactionStatus ?? "pending",
+      addresseeAgentId,
+      payload: { version: 1, questions: [] },
+    }).returning();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: addresseeAgentId,
+      scopeKind: "issue",
+      issueId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "upstream overload",
+      errorCode: "adapter_failed",
+      finishedAt: now,
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      contextSnapshot: {
+        issueId,
+        wakeReason: "interaction_pending",
+        interactionId: interaction.id,
+        interactionKind: interaction.kind,
+        mutation: "interaction",
+        source: "issue.interaction.created",
+      },
+      updatedAt: now,
+      createdAt: now,
+    });
+    return { now, runId, issueId, interaction };
+  }
+
+  it("keeps a pending card wake exempt from reassignment across retry creation and promotion", async () => {
+    const fixture = await seedPendingCardWake();
+
+    const first = await heartbeat.scheduleBoundedRetry(fixture.runId, { now: fixture.now, random: () => 0 });
+    expect(first.outcome).toBe("scheduled");
+    if (first.outcome !== "scheduled") throw new Error("Expected a bounded retry");
+    expect(first.run.contextSnapshot).toMatchObject({
+      wakeReason: "transient_failure_retry",
+      originalWakeReason: "interaction_pending",
+      interactionId: fixture.interaction.id,
+    });
+
+    // A retry of the retry must keep the card identity too: the wake rewrite
+    // happens on every hop, and only the promoted run is promoted from here.
+    await db.update(heartbeatRuns).set({
+      status: "failed",
+      error: "upstream overload",
+      errorCode: "adapter_failed",
+      finishedAt: fixture.now,
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, first.run.id));
+    const second = await heartbeat.scheduleBoundedRetry(first.run.id, { now: fixture.now, random: () => 0 });
+    expect(second.outcome).toBe("scheduled");
+    if (second.outcome !== "scheduled") throw new Error("Expected a second bounded retry");
+    expect(second.run.contextSnapshot).toMatchObject({
+      wakeReason: "transient_failure_retry",
+      originalWakeReason: "interaction_pending",
+      interactionId: fixture.interaction.id,
+    });
+
+    expect(second.run.scheduledRetryAt).not.toBeNull();
+    expect(await heartbeat.promoteDueScheduledRetries(new Date(second.run.scheduledRetryAt!))).toEqual({
+      promoted: 1,
+      runIds: [second.run.id],
+    });
+    const promoted = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, second.run.id))
+      .then((rows) => rows[0] ?? null);
+    expect(promoted).toMatchObject({ status: "queued", errorCode: null });
+  });
+
+  it("still cancels a retried card wake when the card is no longer pending", async () => {
+    const fixture = await seedPendingCardWake({ interactionStatus: "answered" });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(fixture.runId, { now: fixture.now, random: () => 0 });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") throw new Error("Expected a bounded retry");
+    expect(scheduled.run.contextSnapshot).toMatchObject({
+      originalWakeReason: "interaction_pending",
+      interactionId: fixture.interaction.id,
+    });
+
+    const dueAt = new Date(fixture.now.getTime() + BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS[0]);
+    expect(await heartbeat.promoteDueScheduledRetries(dueAt)).toEqual({ promoted: 0, runIds: [] });
+    expect(await heartbeat.getRun(scheduled.run.id)).toMatchObject({
+      status: "cancelled",
+      errorCode: "issue_reassigned",
+    });
+  });
+
   it.each([1, 2])("ACCT-01 a failed disposition repair %s receives its own first infrastructure retry", async repairAttempt => {
     const f = await seedMaxTurnFixture();
     const episode = { id: f.runId, attempt: repairAttempt, maxAttempts: 2 };
