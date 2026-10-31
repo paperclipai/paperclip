@@ -5018,10 +5018,10 @@ html:not(.dark) .coordinator-sidebar {
 .coordinator-workspace [data-conversation-text="human"] { background: var(--bubble-human-bg); color: var(--bubble-human-fg); }
 .coordinator-workspace [data-question-answer] { background: var(--card); }
 .dark .coordinator-workspace [data-question-answer] { background: var(--muted); }
-/* Only the composer surface obscures history; its surrounding dock is clear. */
 .coordinator-workspace [data-testid="task-chat-composer-dock"] {
   flex-shrink: 0;
-  background: transparent;
+  background: var(--background);
+  border-radius: var(--coordinator-card-radius);
   backdrop-filter: none;
   pointer-events: none;
 }
