@@ -23,6 +23,68 @@ import {
   type PluginInvocationContext,
 } from "../src/protocol.js";
 import { isWorkerEntrypoint, startWorkerRpcHost } from "../src/worker-rpc-host.js";
+import type { PluginIssuesClient } from "../src/types.js";
+
+describe("worker issue creation RPC", () => {
+  it.each([
+    { idempotencyKey: "fixture.scheduler:report:2026-10-14", allowDuplicate: true },
+    { idempotencyKey: "k".repeat(255), allowDuplicate: false },
+    { idempotencyKey: null },
+    {},
+  ])("preserves issue creation options %j", async (options) => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const reader = createInterface({ input: output });
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const issueInput: Parameters<PluginIssuesClient["create"]>[0] = {
+      companyId: "company-a",
+      title: "Prepare scheduled report",
+      ...options,
+    };
+    const issue = { id: "issue-a", companyId: "company-a", title: issueInput.title };
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.data.register("create", () => ctx.issues.create(issueInput));
+      },
+    });
+    const worker = startWorkerRpcHost({ plugin, stdin: input, stdout: output });
+    let sequence = 0;
+    const pending = new Map<string, (value: JsonRpcResponse) => void>();
+    reader.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+      } else if (isJsonRpcRequest(message)) {
+        calls.push({ method: message.method, params: message.params });
+        input.write(serializeMessage(createSuccessResponse(message.id, issue)));
+      }
+    });
+    const call = (method: string, params: unknown) => new Promise<JsonRpcResponse>((resolve) => {
+      const id = String(++sequence);
+      pending.set(id, resolve);
+      input.write(serializeMessage(createRequest(method, params, id)));
+    });
+    try {
+      await call("initialize", {
+        manifest: {
+          id: "fixture.scheduler", apiVersion: 1, version: "1.0.0",
+          displayName: "Scheduler", description: "Fixture", author: "Tests",
+          categories: ["automation"], capabilities: ["issues.create"], entrypoints: {},
+        },
+        config: {}, databaseNamespace: null,
+      });
+      expect(await call("getData", { key: "create", companyId: "company-a", params: {} }))
+        .toMatchObject({ result: issue });
+      expect(calls).toEqual([{ method: "issues.create", params: issueInput }]);
+    } finally {
+      worker.stop();
+      reader.close();
+      input.destroy();
+      output.destroy();
+    }
+  });
+});
 
 describe("isWorkerEntrypoint", () => {
   const tempRoots: string[] = [];
