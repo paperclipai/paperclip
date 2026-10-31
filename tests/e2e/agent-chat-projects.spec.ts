@@ -475,6 +475,9 @@ test("plan approval hands the preserved revision to an assigned project task", a
       }) });
     await expect(completionReply).toBeVisible();
     await expect(completionReply).toHaveText(`Delegated work completed: ${task.identifier}`, { useInnerText: true });
+    await expect(completionReply.getByRole("link").and(page.locator(
+      `a[href="/${f.company.issuePrefix}/issues/${task.identifier}"]`,
+    ))).toBeVisible();
     const plan = await json(
       await request.get(`/api/issues/${task.id}/documents/plan`),
     );

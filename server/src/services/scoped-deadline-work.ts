@@ -13,6 +13,8 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     batchSize?: number;
     minimumPassIntervalMs?: number;
     concurrentChecks?: { limit: number; key(entry: Entry): string };
+    reconstructionIntervalMs?: number;
+    beforePass?(): Promise<void>;
     decodeScope(hint: string): Scope | undefined;
     matches(entry: Entry, scope?: Scope): boolean;
     load(scope?: Scope, signal?: AbortSignal): Promise<Entry[] | { rows: Entry[] | null; complete: boolean }>;
@@ -29,6 +31,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
   const entries = new Map<string, Entry>();
   const failures = new Map<string, { count: number; retryAt: number }>();
   const scopeFailures = new Map<string, { count: number; retryAt: number }>();
+  const reconstructAfter = new Map<string, number>();
   let earliest = 0;
   let lastCompany: string | null = null;
   function failed(map: typeof failures, id: string) {
@@ -38,13 +41,14 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
   function dirtyScopes() {
     return [...dirty].filter(hint => hint !== "*" || !scopeFailures.has(hint))
       .filter(hint => !scans.has(hint) || scopeFailures.has(hint))
+      .filter(hint => (reconstructAfter.get(hint) ?? 0) <= Date.now() || scopeFailures.has(hint))
       .map(hint => { try { return options.decodeScope(hint); } catch { return undefined; } });
   }
   function next() {
     if (!canRun()) return dirty.size > 0 || entries.size > 0 ? Date.now() + 30_000 : null;
     let nextAt: number | null = null;
     const take = (at: number) => { nextAt = nextAt === null ? at : Math.min(nextAt, at); };
-    for (const hint of dirty) take(Math.max(earliest, scopeFailures.get(hint)?.retryAt ?? 0));
+    for (const hint of dirty) take(Math.max(earliest, reconstructAfter.get(hint) ?? 0, scopeFailures.get(hint)?.retryAt ?? 0));
     const unavailable = dirtyScopes();
     for (const entry of entries.values()) if (!unavailable.some(scope => options.matches(entry, scope)))
       take(Math.max(earliest, entry.dueAt, failures.get(entry.id)?.retryAt ?? 0));
@@ -58,9 +62,18 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     } },
     run: async signal => {
       if (!canRun() || Date.now() < earliest) return;
+      if ((options.reconstructionIntervalMs ?? 0) > 0) for (const [hint, until] of reconstructAfter) {
+        if (until <= Date.now()) reconstructAfter.delete(hint);
+      }
+      const ready = [...dirty].filter(hint => Math.max(reconstructAfter.get(hint) ?? 0, scopeFailures.get(hint)?.retryAt ?? 0) <= Date.now());
+      if (ready.length === 0 && ![...entries.values()].some(entry => Math.max(entry.dueAt, failures.get(entry.id)?.retryAt ?? 0) <= Date.now())) return;
       earliest = Date.now() + (options.minimumPassIntervalMs ?? 1000);
+      try { await options.beforePass?.(); } catch (error) {
+        for (const hint of ready) failed(scopeFailures, hint);
+        for (const entry of entries.values()) if (entry.dueAt <= Date.now()) failed(failures, entry.id);
+        throw error;
+      }
       const errors: unknown[] = [];
-      const ready = [...dirty].filter(hint => (scopeFailures.get(hint)?.retryAt ?? 0) <= Date.now());
       const requested = ready.includes("*")
         ? ["*", ...ready.filter(hint => hint !== "*")].slice(0, 25)
         : ready.slice(0, 25);
@@ -85,6 +98,9 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
             entries.delete(entry.id); failures.delete(entry.id);
           }
           scans.delete(hint);
+          if ((options.reconstructionIntervalMs ?? 0) > 0) {
+            reconstructAfter.set(hint, Date.now() + options.reconstructionIntervalMs!);
+          }
           if ((versions.get(hint) ?? 0) !== scan.version) dirty.add(hint); else versions.delete(hint);
           if (!scope) scopeFailures.clear(); else scopeFailures.delete(hint);
         } catch (error) {

@@ -1,3 +1,4 @@
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyNativeReviewResponse } from "./native-review-response-notifications.js";
 import { isAgentStatusInvokable } from "@paperclipai/shared";
@@ -41,6 +42,7 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
     async beforeStatusChange(tx, companyId, agentId, before, after) {
       if (before !== after) {
         await notifyRunDispatch(tx, { companyId });
+        await notifyDeferredExecutionEligibility(tx, { companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       }
       if (!isAgentStatusInvokable(before) && isAgentStatusInvokable(after)) {

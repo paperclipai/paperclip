@@ -1,3 +1,4 @@
+import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
 import { notifyRunDispatch } from "../../../services/run-dispatch-notifications.js";
 import { notifyExternalConversationSettlement } from "../../../services/external-conversation-settlement-notifications.js";
 import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
@@ -1010,6 +1011,11 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
       )).for("update");
       if (!prior) throw new Error("wake-queue: the deferred wake to merge into was not found for this company");
       const priorPayload = parseObject(prior.payload), issueId = readNonEmptyString(priorPayload.issueId);
+      const previousComments = new Set(queuedCommentIdsFromWakePayload(priorPayload));
+      const newComments = queuedCommentIdsFromWakePayload(input.mergedPayload).some(id => !previousComments.has(id));
+      const newInteraction = readNonEmptyString(input.mergedPayload.interactionId);
+      if (newComments || newInteraction && newInteraction !== readNonEmptyString(priorPayload.interactionId))
+        await notifyDeferredExecutionWork(tx, { companyId: input.companyId, requestId: prior.id });
       const priorCommentId = readNonEmptyString(priorPayload.commentId), priorActor = readNonEmptyString(prior.requestedByActorId);
       const [priorComment] = prior.requestedByActorType === "user" && priorActor && issueId && isUuidLike(issueId) &&
         priorCommentId && isUuidLike(priorCommentId) ? await tx.select({ id: issueComments.id, body: issueComments.body }).from(issueComments).where(and(
@@ -1081,6 +1087,7 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
 
     async insertNewDeferredWake(scope, input) {
       const tx = requireAdmissionTx(scope, input.companyId);
+      await notifyDeferredExecutionWork(tx, { companyId: input.companyId });
       await tx.insert(agentWakeupRequests).values({
         ...input.durableReceipt,
         companyId: input.companyId,
