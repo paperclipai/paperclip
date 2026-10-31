@@ -273,6 +273,9 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     const current = optionsRef.current;
     const target = current.targetKey ?? current.sourceId;
     const admittedOwner = ownerRef.current ?? readOwner();
+    // A newer known-account edit supersedes an older startup job even if this
+    // save finishes before that job can adopt the account's registry key.
+    if (admittedOwner !== undefined) registry.delete(JSON.stringify([undefined, target]));
     const job: Job = { token: Symbol(), registryKey: JSON.stringify([admittedOwner, target]), resends: 0, id: ++sequence.current, target, owner: admittedOwner, account: client ? bindAccount(client) : null, draft,
       save: overrides.save ?? current.save, matchesServer: overrides.matchesServer ?? current.matchesServer,
       onRetryFailed: overrides.onRetryFailed, storageKey: current.storageKey ?? null, action: current.action ?? "save" };
