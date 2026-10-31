@@ -313,7 +313,7 @@ describe("Better Auth OIDC login", () => {
     const auth = create({ authOidc: oidc });
 
     expect(auth.options.plugins?.map((plugin) => plugin.id)).toEqual(["generic-oauth"]);
-    expect(auth.options.account?.accountLinking).toEqual({ enabled: true });
+    expect(auth.options.account?.accountLinking).toEqual({ enabled: true, requireLocalEmailVerified: true });
 
 
     const provider = (await auth.$context).socialProviders.find((candidate) => candidate.id === "kanidm")!;

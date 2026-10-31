@@ -247,12 +247,17 @@ export function loadConfig(override?: PaperclipConfig | null): Config {
     disableSignUpFromEnv !== undefined
       ? disableSignUpFromEnv === "true"
       : (fileConfig?.auth?.disableSignUp ?? false);
-  const oidcFromEnv = authOidcConfigSchema.safeParse({
+  const oidcEnv = {
     providerId: process.env.PAPERCLIP_AUTH_OIDC_PROVIDER_ID,
     displayName: process.env.PAPERCLIP_AUTH_OIDC_DISPLAY_NAME,
     discoveryUrl: process.env.PAPERCLIP_AUTH_OIDC_DISCOVERY_URL,
     clientId: process.env.PAPERCLIP_AUTH_OIDC_CLIENT_ID,
-  });
+  };
+  const oidcFromEnv = authOidcConfigSchema.safeParse(oidcEnv);
+  if (!oidcFromEnv.success && Object.values(oidcEnv).some(Boolean)) {
+    const fields = oidcFromEnv.error.issues.map((issue) => issue.path.join(".")).join(", ");
+    throw new Error(`Invalid PAPERCLIP_AUTH_OIDC_* settings: ${fields}`);
+  }
   const authOidc = oidcFromEnv.success ? oidcFromEnv.data : fileConfig?.auth?.oidc;
   const allowedHostnamesFromEnvRaw = process.env.PAPERCLIP_ALLOWED_HOSTNAMES;
   const allowedHostnamesFromEnv = allowedHostnamesFromEnvRaw

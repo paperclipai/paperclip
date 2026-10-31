@@ -300,7 +300,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
-    ...(oidc ? { account: { accountLinking: { enabled: true } } } : {}),
+    ...(oidc ? { account: { accountLinking: { enabled: true, requireLocalEmailVerified: !config.authDisableSignUp } } } : {}),
     rateLimit: buildBetterAuthRateLimitOptions({
       deploymentMode: config.deploymentMode,
       deploymentExposure: config.deploymentExposure,

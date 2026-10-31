@@ -255,7 +255,7 @@ a refusal should leave the current deployment serving.
 
 ### OpenID Connect sign-in
 
-Set all four variables to show a provider button on the sign-in page. Set `PAPERCLIP_AUTH_OIDC_CLIENT_SECRET` as well. The provider uses PKCE and never creates accounts. A user can sign in only when an account with the same email exists and the provider reports that email as verified. The same fields are available as `auth.oidc` in the config file, except for the secret.
+Set all four variables to show a provider button on the sign-in page. Set `PAPERCLIP_AUTH_OIDC_CLIENT_SECRET` as well. The provider uses PKCE and never creates accounts. A user can sign in only when an account with the same email exists and the provider reports that email as verified. Password accounts never have a verified email, so Paperclip links them only when sign-up is disabled (`PAPERCLIP_AUTH_DISABLE_SIGN_UP=true`). Startup fails if only some of the variables are set or a value is invalid. The same fields are available as `auth.oidc` in the config file, except for the secret.
 
 | Variable | Description |
 | --- | --- |
