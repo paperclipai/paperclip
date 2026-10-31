@@ -2,7 +2,7 @@ import { beginIdleTrackedWork } from "./task-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { StorageProvider } from "../storage/types.js";
 import type { RunLogStore, RunLogHandle, RunLogBeginInput } from "./run-log-store.js";
-import { createObjectByteJournal, type ObjectJournalWriter } from "./object-byte-journal.js";
+import { createObjectByteJournal, ObjectJournalSourcePrefixProofUnavailableError, type ObjectJournalWriter } from "./object-byte-journal.js";
 
 const MAX_SEGMENT_BYTES = 1024 * 1024;
 const MAX_PENDING_BYTES = 8 * MAX_SEGMENT_BYTES;
@@ -130,10 +130,20 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
             state.writer.head.sourceCursor,
           ),
         );
-        if (state.sourcePrefixVerified)
-          state.writer = await state.journal.recordVerifiedSourcePrefix(
-            state.writer, state.writer.head.sourceCursor, state.signal,
-          );
+        if (state.sourcePrefixVerified) {
+          try {
+            state.writer = await state.journal.recordVerifiedSourcePrefix(
+              state.writer, state.writer.head.sourceCursor, state.signal,
+            );
+          } catch (error) {
+            if (!(error instanceof ObjectJournalSourcePrefixProofUnavailableError)) throw error;
+            // The byte/index/head append is already committed. Lose only the
+            // optional provenance optimization; later appends remain deliverable.
+            state.writer = error.writer;
+            state.sourcePrefixVerified = false;
+            state.coverageEligible = false;
+          }
+        }
         for (const item of batch) item.resolve(item.bytes.length);
       } catch (error) {
         state.failure = error;
@@ -283,11 +293,19 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
       // admitted while the one-time source proof is being recorded.
       state.flushing = (async () => {
         try {
-          state.writer = await state.journal.recordVerifiedSourcePrefix(state.writer, sourceCursor, state.signal);
+          let proofUnavailable = false;
+          try {
+            state.writer = await state.journal.recordVerifiedSourcePrefix(state.writer, sourceCursor, state.signal);
+          } catch (error) {
+            if (!(error instanceof ObjectJournalSourcePrefixProofUnavailableError)) throw error;
+            state.writer = error.writer;
+            proofUnavailable = true;
+          }
           if (!state.coverageEligible) throw new Error("native_log_source_prefix_changed");
-          state.sourcePrefixVerified = true;
+          state.sourcePrefixVerified = !proofUnavailable;
+          if (proofUnavailable) state.coverageEligible = false;
           state.admittedSourceCursor = Math.max(state.admittedSourceCursor, sourceCursor);
-          handle.initialSourcePrefixVerified = true;
+          handle.initialSourcePrefixVerified = state.sourcePrefixVerified;
           handle.initialSourceCursor = sourceCursor;
           handle.initialBytes = state.writer.head.end;
           handle.initialSequence = state.writer.head.sequence;

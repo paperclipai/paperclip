@@ -5147,7 +5147,19 @@ done
             command: qualified_artifact(&command),
             proxy_script: qualified_artifact(&proxy),
         };
-        let launch = verified_cursor_cloud_launch(&profile).unwrap();
+        let launch = verified_cursor_cloud_launch(&profile);
+        if cfg!(target_os = "windows") {
+            let error = match launch {
+                Ok(_) => panic!("Cursor Cloud Windows launch must remain unsupported"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains(
+                "verified process snapshots are supported only on Linux and macOS"
+            ));
+            fs::remove_dir_all(directory).unwrap();
+            return;
+        }
+        let launch = launch.unwrap();
         assert_eq!(launch.arguments().len(), 1);
         assert!(matches!(
             launch.arguments().first(),
