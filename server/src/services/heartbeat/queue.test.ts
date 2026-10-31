@@ -10,6 +10,7 @@ import { createReleaseIssueExecution } from "../../modules/wake-queue/applicatio
 import { createHeartbeatQueue, type HeartbeatQueueDependencies } from "./queue.js";
 import { createHeartbeatRunControl } from "./run-control.js";
 import { callbacks as runControlCallbacks } from "./__tests__/run-control-fixtures.js";
+import { buildIssueCommentWakeIdempotencyKey } from "../issue-comment-wakeup.js";
 
 import { createHeartbeatQueueTestDependencies as callbacks } from "../../__tests__/helpers/heartbeat-queue.js";
 
@@ -120,6 +121,220 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     await db.update(issues).set({ executionRunId: run.id, executionAgentNameKey: agent.name, executionLockedAt: new Date() }).where(eq(issues.id, issue.id));
     return { company, agent, issue, wake, run };
   }
+
+  it.each(["succeeded", "failed", "cancelled"] as const)(
+    "replays one durable comment wake after its run is %s",
+    async (terminalStatus) => {
+      const [company] = await db.insert(companies).values({
+        name: "Comment wake retry",
+        issuePrefix: "CWR",
+      }).returning();
+      const [agent] = await db.insert(agents).values({
+        companyId: company.id,
+        name: "Comment wake agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+      }).returning();
+      const [issue] = await db.insert(issues).values({
+        companyId: company.id,
+        title: "Comment wake task",
+        status: "todo",
+        assigneeAgentId: agent.id,
+        responsibleUserId: "queue-test-user",
+      }).returning();
+      const [comment] = await db.insert(issueComments).values({
+        companyId: company.id,
+        issueId: issue.id,
+        body: "Please continue",
+        authorUserId: "queue-test-user",
+      }).returning();
+      const idempotencyKey = buildIssueCommentWakeIdempotencyKey(
+        comment.id,
+        agent.id,
+      );
+      const options = {
+        source: "automation" as const,
+        triggerDetail: "system" as const,
+        reason: "issue_commented",
+        payload: { issueId: issue.id, commentId: comment.id, mutation: "comment" },
+        requestedByActorType: "user" as const,
+        requestedByActorId: "queue-test-user",
+        idempotencyKey,
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          commentId: comment.id,
+          wakeCommentId: comment.id,
+          source: "issue.comment",
+          wakeReason: "issue_commented",
+        },
+      };
+      const deps = callbacks(db);
+      deps.getAgent.mockResolvedValue(agent);
+      deps.instanceSettings.getExperimental.mockResolvedValue({
+        enableIsolatedWorkspaces: false,
+      } as Awaited<ReturnType<HeartbeatQueueDependencies["instanceSettings"]["getExperimental"]>>);
+      const queue = createHeartbeatQueue(db, deps);
+
+      const first = await queue.trackWakeup(agent.id, options);
+      expect(first).not.toBeNull();
+      await db.update(heartbeatRuns).set({
+        status: terminalStatus,
+        finishedAt: new Date(),
+      }).where(eq(heartbeatRuns.id, first!.id));
+      await db.update(agentWakeupRequests).set({
+        status: terminalStatus,
+        finishedAt: new Date(),
+      }).where(eq(agentWakeupRequests.runId, first!.id));
+
+      const replays = await Promise.all(
+        Array.from({ length: 4 }, () => queue.trackWakeup(agent.id, options)),
+      );
+      expect(replays.map((run) => run?.id)).toEqual(
+        Array.from({ length: 4 }, () => first!.id),
+      );
+      expect(await db.select().from(agentWakeupRequests).where(eq(
+        agentWakeupRequests.idempotencyKey,
+        idempotencyKey,
+      ))).toHaveLength(1);
+      expect(await db.select().from(heartbeatRuns).where(eq(
+        heartbeatRuns.wakeupRequestId,
+        (await db.select().from(agentWakeupRequests).where(eq(
+          agentWakeupRequests.idempotencyKey,
+          idempotencyKey,
+        )))[0]!.id,
+      ))).toHaveLength(1);
+    },
+    30_000,
+  );
+
+  async function commentWakeFixture(agentStatus: "idle" | "paused" = "idle") {
+    const [company] = await db.insert(companies).values({
+      name: "Comment wake recovery",
+      issuePrefix: "CWR",
+    }).returning();
+    const [agent] = await db.insert(agents).values({
+      companyId: company.id,
+      name: "Comment wake agent",
+      role: "engineer",
+      status: agentStatus,
+      adapterType: "process",
+      adapterConfig: {},
+    }).returning();
+    const [issue] = await db.insert(issues).values({
+      companyId: company.id,
+      title: "Comment wake task",
+      status: "todo",
+      assigneeAgentId: agent.id,
+      responsibleUserId: "queue-test-user",
+    }).returning();
+    const [comment] = await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      body: "Please continue",
+      authorUserId: "queue-test-user",
+    }).returning();
+    const options = {
+      source: "automation" as const,
+      triggerDetail: "system" as const,
+      reason: "issue_commented",
+      payload: { issueId: issue.id, commentId: comment.id, mutation: "comment" },
+      requestedByActorType: "user" as const,
+      requestedByActorId: "queue-test-user",
+      idempotencyKey: buildIssueCommentWakeIdempotencyKey(comment.id, agent.id),
+      contextSnapshot: {
+        issueId: issue.id,
+        taskId: issue.id,
+        commentId: comment.id,
+        wakeCommentId: comment.id,
+        source: "issue.comment",
+        wakeReason: "issue_commented",
+      },
+    };
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    deps.instanceSettings.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+    } as Awaited<ReturnType<HeartbeatQueueDependencies["instanceSettings"]["getExperimental"]>>);
+    return { company, agent, issue, comment, options, deps, queue: createHeartbeatQueue(db, deps) };
+  }
+
+  it("redispatches a committed queued comment wake on retry", async () => {
+    const seeded = await commentWakeFixture();
+    seeded.deps.getSchedulingSuppression
+      .mockResolvedValueOnce({ suppressed: false, reason: null })
+      .mockRejectedValueOnce(new Error("dispatch unavailable"))
+      .mockResolvedValue({ suppressed: false, reason: null });
+
+    await expect(seeded.queue.trackWakeup(seeded.agent.id, seeded.options))
+      .rejects.toThrow("dispatch unavailable");
+    const [committed] = await db.select().from(heartbeatRuns);
+    expect(committed).toMatchObject({ status: "queued", agentId: seeded.agent.id });
+
+    const replay = await seeded.queue.trackWakeup(seeded.agent.id, seeded.options);
+    expect(replay?.id).toBe(committed!.id);
+    expect(seeded.deps.executeRun).toHaveBeenCalledWith(committed!.id);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
+  }, 30_000);
+
+  it("records a paused assignee comment wake refusal without rejecting the comment", async () => {
+    const seeded = await commentWakeFixture("paused");
+    seeded.deps.getAgentInvokability.mockResolvedValue({
+      invokable: false,
+      reason: "paused",
+      message: "Agent is paused",
+      invalidOrgChain: false,
+      details: {},
+    });
+
+    await expect(seeded.queue.trackWakeup(seeded.agent.id, {
+      ...seeded.options,
+      requestedByActorType: "agent",
+      requestedByActorId: seeded.agent.id,
+    }))
+      .resolves.toBeNull();
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests)).toEqual([
+      expect.objectContaining({
+        agentId: seeded.agent.id,
+        idempotencyKey: seeded.options.idempotencyKey,
+        status: "skipped",
+        reason: "agent.not_invokable",
+      }),
+    ]);
+  }, 30_000);
+
+  it("does not wake a reassigned agent after the comment wake was admitted", async () => {
+    const seeded = await commentWakeFixture();
+    const first = await seeded.queue.trackWakeup(seeded.agent.id, seeded.options);
+    expect(first).not.toBeNull();
+    const [nextAgent] = await db.insert(agents).values({
+      companyId: seeded.company.id,
+      name: "Reassigned comment agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {},
+    }).returning();
+    await db.update(issues).set({ assigneeAgentId: nextAgent.id }).where(eq(issues.id, seeded.issue.id));
+    const nextDeps = callbacks(db);
+    nextDeps.getAgent.mockResolvedValue(nextAgent);
+    nextDeps.instanceSettings.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+    } as Awaited<ReturnType<HeartbeatQueueDependencies["instanceSettings"]["getExperimental"]>>);
+
+    await createHeartbeatQueue(db, nextDeps).trackWakeup(nextAgent.id, {
+      ...seeded.options,
+      idempotencyKey: buildIssueCommentWakeIdempotencyKey(seeded.comment.id, nextAgent.id),
+    });
+
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
+    expect(nextDeps.executeRun).not.toHaveBeenCalled();
+  }, 30_000);
 
   async function strandedMention(runtimeMode = "legacy") {
     const seeded = await fixture("succeeded");

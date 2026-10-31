@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { shouldWakeAssigneeForIssueComment } from "./issue-comment-wakeup.js";
+import {
+  buildIssueCommentWakeIdempotencyKey,
+  isIssueCommentWakeIdempotencyKey,
+  shouldWakeAssigneeForIssueComment,
+} from "./issue-comment-wakeup.js";
 
 describe("shouldWakeAssigneeForIssueComment", () => {
   it("suppresses explicit resume from the run that currently owns the issue", () => {
@@ -60,5 +64,27 @@ describe("shouldWakeAssigneeForIssueComment", () => {
     expect(shouldWakeAssigneeForIssueComment({ ...base, reopened: true })).toBe(
       true,
     );
+  });
+
+  it("binds durable wake retries to the exact comment and assignee", () => {
+    const idempotencyKey = buildIssueCommentWakeIdempotencyKey(
+      "comment-1",
+      "agent-1",
+    );
+    expect(idempotencyKey).toBe("issue-comment:comment-1:agent-1");
+    expect(
+      isIssueCommentWakeIdempotencyKey({
+        idempotencyKey,
+        commentId: "comment-1",
+        agentId: "agent-1",
+      }),
+    ).toBe(true);
+    expect(
+      isIssueCommentWakeIdempotencyKey({
+        idempotencyKey,
+        commentId: "comment-1",
+        agentId: "agent-2",
+      }),
+    ).toBe(false);
   });
 });

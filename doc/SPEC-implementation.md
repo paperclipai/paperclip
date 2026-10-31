@@ -922,7 +922,19 @@ may wake the target assignee, including an explicit `resume: true` comment on a
 the normal agent rewake throttle; comment presentation cannot give it human
 wake privileges. Agent issue comments and updates require a persisted heartbeat
 run bound to the authenticated agent and company; missing, invalid, or mismatched
-run context fails closed before mutation. A run may attempt at most 20 cross-issue comments, issue
+run context fails closed before mutation. The sole no-run exception is a direct
+`POST /api/issues/:id/comments` by an agent key whose agent created that issue in
+the same company. It accepts only a plain body and UUID `clientRequestId`, without
+attachments, lifecycle intent, structured fields, or client-selected attribution.
+The request key is scoped by issue and author agent: an identical redacted-body
+retry returns the existing comment without another activity or assignee wake, a
+changed body returns 409, and concurrent retries serialize on the issue row. Fresh
+no-run comment admissions are limited to 20 per rolling minute for each company and
+agent across request keys and issues. Admission is recorded separately from the
+exactly-once `issue.comment_added` audit; retries and rolled-back comments do not
+consume another admission. Every
+other no-run or cross-issue write retains the persisted-run requirement.
+A run may attempt at most 20 cross-issue comments, issue
 updates, or issue-thread interaction resolutions across one shared counter. The
 server records each attempt with its source issue, target issue, run, count, and
 rollout mode, and fails closed with the cap in the error once enforcement is
