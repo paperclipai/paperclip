@@ -1,3 +1,26 @@
+/**
+ * Where the agent workspace is mounted in the pod. The value is also declared
+ * to git as a safe directory, because the mount root belongs to root while the
+ * container runs as uid 1000.
+ */
+const WORKSPACE_MOUNT_PATH = "/workspace";
+
+/**
+ * Marks the workspace mount as a git safe directory, in the pod's own HOME.
+ *
+ * The mount root belongs to root, because `fsGroup` sets the group and leaves
+ * the owner, while the container runs as uid 1000. Git refuses to work in a
+ * repository whose worktree belongs to another user, so the export step of a
+ * run fails with "detected dubious ownership".
+ *
+ * The setting is written to the config file rather than passed through
+ * `GIT_CONFIG_*`: those variables replace or interfere with the configuration
+ * an adapter supplies for credentials or URL rewriting. `--add` appends, so an
+ * adapter that declares its own safe directories keeps them. A failure here
+ * never blocks the container, which is why the command tolerates it.
+ */
+const GIT_SAFE_DIRECTORY_COMMAND = `git config --global --add safe.directory ${WORKSPACE_MOUNT_PATH} || true`;
+
 export interface BuildJobManifestInput {
   namespace: string;
   jobName: string;
@@ -59,7 +82,13 @@ export function buildJobManifest(input: BuildJobManifestInput): Record<string, u
               name: "agent",
               image: input.image,
               imagePullPolicy: "IfNotPresent",
-              command: ["/usr/bin/tini", "--", "/usr/local/bin/paperclip-agent-shim"],
+              command: [
+                "/usr/bin/tini",
+                "--",
+                "/bin/sh",
+                "-c",
+                `${GIT_SAFE_DIRECTORY_COMMAND}; exec /usr/local/bin/paperclip-agent-shim`,
+              ],
               // HOME must point at a writable mount; the image's default
               // HOME is inside the readOnly root filesystem. Agent runtimes
               // can silently exit with code 0 and no output when HOME is
@@ -79,7 +108,7 @@ export function buildJobManifest(input: BuildJobManifestInput): Record<string, u
                 limits: input.resources.limits ?? { cpu: "2", memory: "4Gi" },
               },
               volumeMounts: [
-                { name: "workspace", mountPath: "/workspace" },
+                { name: "workspace", mountPath: WORKSPACE_MOUNT_PATH },
                 { name: "home", mountPath: "/home/paperclip" },
                 { name: "cache", mountPath: "/home/paperclip/.cache" },
                 { name: "tmp", mountPath: "/tmp" },
