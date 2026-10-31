@@ -4,6 +4,7 @@ import { inspectNativeRunnerUpgradeHeader } from "../native-runtime/native-runne
 import { readNativeWorkspaceSyncReference } from "../native-runtime/native-workspace-sync.js";
 import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "../native-runtime/native-runner-recovery-contract.js";
 import { currentNativeControllerIdentity } from "../native-runtime/native-restart-recovery.js";
+import { readNativeControllerRecoveryInventory } from "../native-runtime/native-controller-recovery-inventory.js";
 
 const MAX_UPGRADE_RUNS = 1_000;
 type Counters = { activeRuns: number; pendingWakes: number; draining: boolean };
@@ -60,8 +61,16 @@ export async function readUpgradeReadiness(db: Db, input: {
       && identity.runnerInstanceId === row.runnerId && identity.normalizedSessionId === row.sessionId
       && identity.environmentLeaseId === (row.pluginLeaseId ?? workspace?.workspaceId)) };
   });
-  return summarizeUpgradeReadiness({ rows: candidates, before, after: input.counters(),
+  // Additive evidence does not strengthen or redefine the existing ready flag.
+  const retained = await readNativeControllerRecoveryInventory(db).catch(() => ({
+    version: 1 as const, observedAt: new Date().toISOString(), coverage: "unknown" as const,
+    reasons: { inventory_unavailable: 1 }, fullPayloadsValidated: false as const,
+  }));
+  const summary = summarizeUpgradeReadiness({ rows: candidates, before, after: input.counters(),
     activeRunIds: [...new Set([...beforeIds, ...input.activeRunIds])], controllerBootId: owner.bootId });
+  return { ...summary, nativeControllerRecovery: { activeExecutionAdoption: {
+    recoverableRuns: summary.recoverableRuns, blockingRuns: summary.blockingRuns, truncated: summary.truncated,
+  }, retained } };
 }
 
 export function summarizeUpgradeReadiness(input: {

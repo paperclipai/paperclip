@@ -109,12 +109,14 @@ not on the ordinary write pool. The helper ends that physical connection in
 actual refresh settlement. Summary writeback runs watched-query reads on its
 existing transaction, so a one-connection main pool completes the full flow.
 
-Migration0419 adds nullable internal `next_eval_reason` to the existing card row.
+Migration0420 adds nullable internal `next_eval_reason` to the existing card row.
 Membership deadlines may be reconstructed at startup after a committed source
 hint was lost. Policy eligibility and the atomically recorded five-minute retry
 lease retain their saved deadline. Explicit refresh deadlines remain due work.
 The HTTP card response removes this internal provenance; the public schema stays
 unchanged.
+
+Migration0419 retains the published agent-comment retry uniqueness and conversation read-state backfill. The status-card column follows it in migration0420; the combined schema snapshot is generated from both owners.
 
 For legacy rows, a pending change hash preserves policy eligibility. An untagged
 active deadline farther than five minutes away cannot be an outstanding
