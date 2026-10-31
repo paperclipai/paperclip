@@ -149,13 +149,19 @@ describePostgres("installExample writes notify the connection delivery worker", 
     await expectRetired(f.connectionId);
   }, 30_000);
 
-  it("retires once through duplicate installs", async () => {
+  it("reruns and retires once when duplicate installs commit while a sweep that already read the card is running", async () => {
     const f = await seedExampleRequest();
     delivery = await startConnectionDelivery(db);
     const baseline = delivery.sweeps;
-    await install(f.companyId);
-    await install(f.companyId);
-    await delivery.settle(baseline + 1);
+    const barrier = await holdLock(sql`lock table connection_intent_deliveries in access exclusive mode`);
+    try {
+      delivery.wake();
+      await waitingOn(`%"connection_intent_deliveries"%`);
+      expect(delivery.sweeps).toBe(baseline + 1);
+      await install(f.companyId);
+      await install(f.companyId);
+    } finally { await barrier.release(); }
+    await delivery.settle(baseline + 2);
     await expectRetired(f.connectionId);
   }, 30_000);
 

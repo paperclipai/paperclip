@@ -29,7 +29,6 @@ export async function seedPendingAccessRequest(db: Db, owner: string) {
   return { companyId, agentId, issueId, intent: intent!, connection: connection!, tool: tool! };
 }
 
-/** The real connection worker with no maintenance deadline: only notifications start a sweep. */
 export async function startConnectionDelivery(db: Db, options: { canRun?: () => boolean } = {}) {
   const wakeup = vi.fn().mockResolvedValue(null);
   const service = connectionIntentDeliveryService(db, { wakeup });
