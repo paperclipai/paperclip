@@ -2039,16 +2039,25 @@ function commandDigest(value: unknown): string {
   return `sha256:${createHash("sha256").update(durableRecoveryInternals.canonicalJson(value)).digest("hex")}`;
 }
 
+const runnerArtifactDigests = new Map<string, { file: string; digest: string }>();
+
 function approvedRunnerArtifact(runnerBinaryPath: string): {
   version: string;
   digest: string;
 } {
-  return {
-    version: RUNNER_CLIENT_VERSION,
-    digest: `sha256:${createHash("sha256")
-      .update(readFileSync(runnerBinaryPath))
-      .digest("hex")}`,
-  };
+  const stat = statSync(runnerBinaryPath);
+  const file = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+  let cached = runnerArtifactDigests.get(runnerBinaryPath);
+  if (cached?.file !== file) {
+    cached = {
+      file,
+      digest: `sha256:${createHash("sha256")
+        .update(readFileSync(runnerBinaryPath))
+        .digest("hex")}`,
+    };
+    runnerArtifactDigests.set(runnerBinaryPath, cached);
+  }
+  return { version: RUNNER_CLIENT_VERSION, digest: cached.digest };
 }
 
 /** Reads the caller-selected artifact binding; does not approve or execute it. */

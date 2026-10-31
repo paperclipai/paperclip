@@ -148,8 +148,10 @@ async function observedProcessStart(pid: number): Promise<Date | null> {
   }
 }
 
+let observedControllerStart: Date | null = null;
+
 export async function currentNativeControllerIdentity(): Promise<NativeControllerIdentity> {
-  const observed = await observedProcessStart(process.pid);
+  const observed = observedControllerStart ??= await observedProcessStart(process.pid);
   const fallback = new Date(getServerInfoSnapshot().processStartedAt);
   return {
     bootId: controllerBootId,
