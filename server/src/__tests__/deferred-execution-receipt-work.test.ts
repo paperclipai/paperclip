@@ -13,7 +13,7 @@ import { issueTreeControlService } from "../services/issue-tree-control.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, authUsers, chatActions, chatEndpoints, toolApplications, toolConnections, companies, companyMemberships, costEvents, createDb, reconcileDatabaseWork, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import { agents, agentWakeupRequests, authUsers, chatActions, chatEndpoints, toolApplications, toolConnections, companies, companyMemberships, costEvents, createDb, projects, reconcileDatabaseWork, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -142,17 +142,22 @@ describe("deferred receipt durable dispatch", () => {
     expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`)).toHaveLength(1);
     await quiet();
   });
-  async function blockedRetry(gate: "budget" | "paused agent", clocked = false) {
+  async function blockedRetry(gate: "budget" | "project budget" | "paused agent", clocked = false) {
     const f = await fixture(), lifecycle = createAgentLifecycle(db), budgets = budgetService(db);
     // Host lifecycle completion is controlled; all state, admission and the
     // eventual process adapter execution use their production implementations.
     const lifecycleWorker = configureAgentLifecycle(db, { requiredPluginIds: async () => [],
       runHost: async () => "complete", runPlugin: async () => "complete" });
     lifecycleWorkers.add(lifecycleWorker);
-    const policy = { scopeType: "agent" as const, scopeId: f.agent.id, amount: 100,
+    const projectId = gate === "project budget" ? randomUUID() : null;
+    if (projectId) {
+      await db.insert(projects).values({ id: projectId, companyId: f.companyId, name: "Retry budget project" });
+      await db.update(issues).set({ projectId }).where(eq(issues.id, f.issue.id));
+    }
+    const policy = { scopeType: projectId ? "project" as const : "agent" as const, scopeId: projectId ?? f.agent.id, amount: 100,
       metric: "billed_cents" as const, windowKind: "lifetime" as const, hardStopEnabled: true, notifyEnabled: false };
-    if (gate === "budget") {
-      await db.insert(costEvents).values({ companyId: f.companyId, agentId: f.agent.id,
+    if (gate !== "paused agent") {
+      await db.insert(costEvents).values({ companyId: f.companyId, agentId: f.agent.id, projectId,
         provider: "test", model: "receipt-proof", costCents: 200, occurredAt: new Date() });
       await budgets.upsertPolicy(f.companyId, policy, f.actorId);
     } else await lifecycle.pauseAgent(f.agent.id);
@@ -166,18 +171,18 @@ describe("deferred receipt durable dispatch", () => {
     expect(request.accepted).toBe(true);
     const read = async () => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!)))[0];
     await vi.waitFor(async () => expect((await read()).payload?.executionWait).toMatchObject({
-      reason: gate === "budget" ? "budget.blocked" : "agent.not_invokable",
+      reason: gate !== "paused agent" ? "budget.blocked" : "agent.not_invokable",
     }), { timeout: 10_000 });
     const refusals: unknown[] = [];
     await heartbeat.resumeExecutionWaitComments({ companyId: f.companyId, requestId: request.requestId!, onError: error => refusals.push(error) });
     expect(refusals).toHaveLength(1);
     expect(refusals[0]).toBeInstanceOf(HttpError);
     expect(refusals[0]).toMatchObject({ status: 409,
-      details: gate === "budget" ? { scopeType: "agent", scopeId: f.agent.id } : { status: "paused", reason: "paused" } });
+      details: gate !== "paused agent" ? { scopeType: policy.scopeType, scopeId: policy.scopeId } : { status: "paused", reason: "paused" } });
     return { f, lifecycle, budgets, policy, lifecycleWorker, request, read };
   }
 
-  it.each(["budget", "paused agent"] as const)("parks real task Retry behind unchanged %s without recurring SQL", async gate => {
+  it.each(["budget", "project budget", "paused agent"] as const)("parks real task Retry behind unchanged %s without recurring SQL", async gate => {
     const { request, read } = await blockedRetry(gate, true);
     // The clock was installed before worker registration and every timer.
     // No execution exists while we observe actual driver SQL across25min.
@@ -190,11 +195,11 @@ describe("deferred receipt durable dispatch", () => {
     expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${request.requestId}`)).toHaveLength(0);
   });
 
-  it.each(["budget", "paused agent"] as const)("releases real %s Retry into exactly one saved process execution", async gate => {
+  it.each(["budget", "project budget", "paused agent"] as const)("releases real %s Retry into exactly one saved process execution", async gate => {
     const { f, lifecycle, budgets, policy, lifecycleWorker, request, read } = await blockedRetry(gate);
     // This independent warm-worker fixture stays on the real PostgreSQL clock
     // through gate release, controller authority and actual child-process exit.
-    if (gate === "budget") await budgets.upsertPolicy(f.companyId, { ...policy, amount: 1000 }, f.actorId);
+    if (gate !== "paused agent") await budgets.upsertPolicy(f.companyId, { ...policy, amount: 1000 }, f.actorId);
     else await lifecycle.resumeAgent(f.agent.id);
     await lifecycleWorker.process(f.agent.id);
     let runId: string | null = null;
