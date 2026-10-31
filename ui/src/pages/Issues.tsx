@@ -186,7 +186,7 @@ function OrganizationIssues({
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const location = useLocation();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const fetchNextPageInFlightRef = useRef(false);
 
   const urlSearch = searchParams.get("q") ?? "";
@@ -198,6 +198,19 @@ function OrganizationIssues({
     return urlSearch;
   }, [searchOverride, urlSearch, location.search]);
   const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, "paperclip:issues-view");
+  const routineTasksOnly = searchParams.get("originKind") === "routine_execution";
+  const includeAgentCreatedTasks = showAgentCreatedTasks || routineTasksOnly;
+  const originKind = routineTasksOnly ? "routine_execution" : undefined;
+  const handleRoutineTasksOnlyChange = useCallback((checked: boolean) => {
+    setSearchParams(current => {
+      const next = new URLSearchParams(current);
+      if (syncedSearch) next.set("q", syncedSearch);
+      else next.delete("q");
+      if (checked) next.set("originKind", "routine_execution");
+      else next.delete("originKind");
+      return next;
+    }, { replace: true });
+  }, [setSearchParams, syncedSearch]);
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
   const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
@@ -273,7 +286,8 @@ function OrganizationIssues({
       workspaceIdFilter ?? "__all__",
       streamlinedUiEnabled ? "index" : "compact",
       "with-routine-executions",
-      showAgentCreatedTasks,
+      includeAgentCreatedTasks,
+      originKind,
       "infinite",
       issuePageSize,
     ],
@@ -282,7 +296,8 @@ function OrganizationIssues({
       participantAgentId,
       workspaceId: workspaceIdFilter,
       includeRoutineExecutions: true,
-      includeAgentCreatedTasks: showAgentCreatedTasks,
+      includeAgentCreatedTasks,
+      originKind,
       limit: issuePageSize,
       offset: pageParam,
       sortField: "updated",
@@ -341,10 +356,12 @@ function OrganizationIssues({
       initialSearch={syncedSearch}
       onSearchChange={handleSearchChange}
       enableAgentCreatedVisibilityFilter
+      routineTasksOnly={routineTasksOnly}
+      onRoutineTasksOnlyChange={handleRoutineTasksOnlyChange}
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId || workspaceIdFilter ? { participantAgentId, workspaceId: workspaceIdFilter } : undefined}
+      searchFilters={participantAgentId || workspaceIdFilter || originKind ? { participantAgentId, workspaceId: workspaceIdFilter, originKind } : undefined}
     />
   );
 }

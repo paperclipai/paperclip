@@ -18,7 +18,7 @@ import { agentJourneyRuns } from "./catalog.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 type Row = Record<string, any>;
-type AgentJourney = Exclude<keyof typeof agentJourneyRuns, "ask-question">;
+type AgentJourney = Exclude<keyof typeof agentJourneyRuns, "ask-question" | "question-answer-resume" | "followup-while-running">;
 interface TaskState { currentIssue: Row & { id: string; status: string }; taskRuns: Array<Row & { status: string }>; comments: Row[]; interactions: Array<Row & { id: string; status: string }>; attachments: StoryDelivery[] }
 interface Options { deadlineAt: number; directory: string; capture(id: string, label: string, file: string): Promise<void> }
 const active = (run: Row) => ["queued", "running"].includes(run.status);
@@ -46,7 +46,7 @@ export function validateAgentTaskState(context: JourneyContext, issueId: string,
   }
 }
 
-async function waitFor<T>(deadlineAt: number, load: () => Promise<T>, accept: (value: T) => boolean, code: string): Promise<T> {
+export async function waitFor<T>(deadlineAt: number, load: () => Promise<T>, accept: (value: T) => boolean, code: string): Promise<T> {
   while (Date.now() < deadlineAt) {
     const value = await load();
     if (accept(value)) return value;

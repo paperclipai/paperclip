@@ -32,8 +32,7 @@ describe("reconcileAdapterAvailability", () => {
     ]);
     expect(result.enabled).toEqual(["opencode_local"]);
     expect(result.disabled.sort()).toEqual(["claude_local", "pi_local"]);
-    expect(setAdapterDisabled).toHaveBeenCalledWith("claude_local", true);
-    expect(setAdapterDisabled).toHaveBeenCalledWith("opencode_local", false);
+    expect(setAdapterDisabled).not.toHaveBeenCalled();
   });
 
   it("throws when a declared adapter has no installed implementation", () => {

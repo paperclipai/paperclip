@@ -1,3 +1,4 @@
+import { usesNativeUsageDelivery } from "../native-runtime/native-usage-accounting.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { inspectPluginWorkspaceForFinalization } from "../native-runtime/native-plugin-workspace-finalization.js";
@@ -33,7 +34,7 @@ import {
   NativeWorkspaceFinalizationOwnershipLostError,
   type NativeWorkspaceFinalizationOwnership,
 } from "../native-runtime/native-workspace-finalization-ownership.js";
-import { createRunUsageRecorder } from "../usage-receipts.js";
+import { createRunUsageRecorder, readAcceptedRunUsageCheckpoint } from "../usage-receipts.js";
 import { applyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { isConversation } from "../agent-conversations.js";
@@ -172,6 +173,7 @@ export interface HeartbeatRuntimeExecutionInput {
     >;
   };
   output: Pick<AdapterExecutionContext, "onLog"> & {
+    onPersistedNativeLog?: (cursor: number, chunk: string) => Promise<void>;
     onAdapterEvent: NonNullable<AdapterExecutionContext["onEvent"]>;
     onAdapterMeta: AdapterExecutionContext["onMeta"];
     identityRedactor: ReturnType<typeof createAgentIdentityRedactor>;
@@ -495,9 +497,13 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     adapterFinalizeOutcome = status;
   };
 
-  const usageRecorder = await measureRunPhase("execution.usage_startup", () =>
+  const producerOwnsUsage = usesNativeUsageDelivery({
+    runnerd: nativeRuntimeResolution.kind === "native" && agent.adapterType === "paperclip_runner",
+    remote: executionTarget?.kind === "remote", provider: nativeExecution?.provider,
+  });
+  const usageRecorder = producerOwnsUsage ? undefined : await measureRunPhase("execution.usage_startup", () =>
     createRunUsageRecorder(db, { companyId: run.companyId, runId: run.id, adapterType: agent.adapterType }));
-  input.effects.onUsageCaptureReady(usageRecorder.persistFailure);
+  input.effects.onUsageCaptureReady(usageRecorder?.persistFailure ?? (async () => {}));
   let adapterResult: AdapterExecutionResult;
   const runGoalControlRequestId = readNonEmptyString(
     context.goalControlRequestId,
@@ -629,10 +635,11 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
                 goalCheckpointSession.current = { params, displayId };
               },
               onLog,
+              onPersistedNativeLog: input.output.onPersistedNativeLog,
               onEvent: onAdapterEvent,
               instructionWorkingCopy: nativeInstructionWorkingCopy(),
 
-              onUsage: async receipt => { await usageRecorder.capture(receipt); },
+              onUsage: usageRecorder ? async receipt => { await usageRecorder.capture(receipt); } : undefined,
               preparationSpans: nativeRunnerPreparationSpans,
               // Bootstrap with executable/home discovery while keeping
               // configured provider values and the server-selected
@@ -834,7 +841,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               onLog,
               onMeta: onAdapterMeta,
               onEvent: onAdapterEvent,
-              onUsage: async receipt => { await usageRecorder.capture(receipt); },
+              onUsage: usageRecorder ? async receipt => { await usageRecorder.capture(receipt); } : undefined,
               onExecutionPhase: executionControl.phases.enter,
               startupTraceContext: getStartupTraceContext(),
               onRuntimeProgress: async (progress) => {
@@ -913,8 +920,14 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     if (instructionSave) adapterResult.resultJson = { ...adapterResult.resultJson, instructionSave };
 
     if (parseObject(adapterResult.executionRecovery).providerWorkStarted !== false) {
-      const captured = await measureRunPhase("execution.usage", () => usageRecorder.complete(adapterResult));
-      adapterResult = { ...adapterResult, ...captured, usageComplete: captured.complete };
+      if (usageRecorder) {
+        const captured = await measureRunPhase("execution.usage", () => usageRecorder.complete(adapterResult));
+        adapterResult = { ...adapterResult, ...captured, usageComplete: captured.complete };
+      } else {
+        const accepted = await measureRunPhase("execution.usage", () => readAcceptedRunUsageCheckpoint(db, { companyId: run.companyId, runId: run.id }));
+        adapterResult = { ...adapterResult, ...accepted, usageComplete: accepted?.complete ?? false,
+          ...(!accepted ? { costStatus: "unpriced" as const } : {}) };
+      }
     } else {
       // Stop may already own the terminal result. Preserve its metadata
       // while durably recording the proof needed to release admission.

@@ -1,8 +1,10 @@
+import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
+import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, executionWorkspaces, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
+import { agents, budgetPolicies, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, executionWorkspaces, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { trace } from "@opentelemetry/api";
@@ -211,6 +213,38 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(await read(run.id)).toMatchObject({ status: "running", usageJson: { inputTokens: 7, outputTokens: 3, accountingReceiptReady: true } });
     expect(await finalizations()).toMatchObject([{ status: "succeeded" }]);
     expectCleanup(input);
+  });
+
+  it("returns the accepted exact native rate-card price and preserves its live budget hold", async () => {
+    const { input, run } = await fixture(true);
+    input.workspace.executionTarget = { kind: "remote", transport: "sandbox", remoteCwd: home };
+    input.runtime.nativeExecution!.provider = { kind: "codex", model: "gpt-6.1-sol" };
+    await db.insert(budgetPolicies).values({ companyId: run.companyId, scopeType: "agent", scopeId: input.agent.id,
+      metric: "billed_cents", windowKind: "lifetime", amount: 100, notifyEnabled: false });
+    let exact: string | undefined;
+    vi.mocked(executePaperclipNativeSession).mockImplementationOnce(async native => {
+      expect(native.onUsage).toBeUndefined();
+      const delivery = await createNativeUsageDelivery(db, { companyId: run.companyId, runId: run.id,
+        runnerInstanceId: native.runnerInstanceId, provider: native.execution.provider,
+        billing: { provider: "openai", biller: "openai", billingType: "metered_api" } });
+      const event = (sourceSeq: number, eventType: string, payload: Record<string, unknown>): PrpEvent => ({
+        sourceKind: "runner", sourceInstanceId: native.runnerInstanceId, runId: run.id, sourceSeq, sourceEventId: `priced-${sourceSeq}`,
+        turnId: "priced-turn", eventType, emittedAt: new Date().toISOString(), payload,
+      } as PrpEvent);
+      await delivery.capture(event(1, "usage.reported", { runDeltaBasis: "run", runDeltaAvailable: true,
+        runDelta: { inputTokens: 1000, outputTokens: 100000, providerCostUsd: 0 } }));
+      await delivery.capture(event(2, "turn.completed", {}));
+      const saved = (await read(run.id)).usageJson!;
+      exact = saved.costUsdExact as string;
+      expect(Number(exact)).toBe(1.002);
+      expect(saved.budgetExposure).toMatchObject({ costCents: "100.2000000" });
+      expect((await db.select().from(agents).where(eq(agents.id, input.agent.id)))[0].lifecycleHolds).toContain("budget");
+      return { exitCode: 0, signal: null, timedOut: false, usageComplete: true, costUsd: null, model: "gpt-6.1-sol" };
+    });
+    const result = await executeHeartbeatRuntime(db, input);
+    if (!result.dispatched) throw new Error("expected native dispatch");
+    expect(result.adapterResult).toMatchObject({ costUsdExact: exact, costStatus: "estimated", usageComplete: true,
+      pricingProvenance: { source: "rate_card" }, usage: { inputTokens: 1000, outputTokens: 100000 } });
   });
 
   it.each(["expected", "wrong"])("finalizes a plugin worktree through its owner (branch: %s)", async branch => {

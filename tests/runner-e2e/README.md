@@ -192,8 +192,8 @@ The explicit-only `necessary-question` suite has four development cells: the
 recorded Codex and Claude models, on local and Daytona environments. It requests
 one essential booking reference that only the test user knows. The browser must
 show the actual free-text prompt and its explanation, then submit the real answer.
-The oracle checks the unchanged question, its server-owned provider or semantic
-receipt, the exact stored user answer, and one bound continuation. The saved
+The oracle checks the unchanged question, its server-owned provider, semantic or
+native API receipt, the exact stored user answer, and one bound continuation. The saved
 confirmation must contain that answer exactly. The final reply's link must open
 that same task document and display its confirmation.
 A title, success claim, replacement card, duplicate wake, or uncommitted result
@@ -253,7 +253,7 @@ accordingly. Report regeneration recomputes interval verdicts, retains changed
 
 The explicit [deployment-targeted Product journeys](PRODUCT-JOURNEYS.md) reuse
 browser actions across managed self-hosted and Cloud targets. They include a
-model-free task-properties story, fresh Cloud onboarding, credential-free
+model-free task-properties and document-persistence stories, fresh Cloud onboarding, credential-free
 previews, private evidence, and prerequisite reuse; `--all` is unchanged.
 Cloud onboarding may retain a versioned `onboardingConnect` receipt for the
 Connect action: its last checkpoint, validation/hire response state and HTTP
@@ -1057,6 +1057,18 @@ published with permanent campaign dashboards; fixture authors must therefore
 keep credentials and other private data out of every captured UI state. SVG is
 active content and is rejected from the packaged evidence entirely.
 
+For native matrix campaigns, set `PAPERCLIP_RUNNER_E2E_RESULTS_ROOT` to a
+dedicated normalized absolute directory outside the checkout, for example
+`/private/tmp/paperclip-product-evidence`. Final attempt packages, campaign JSON,
+and dashboards are written there directly, so removing a checkout does not
+remove their evidence. The default remains `tests/runner-e2e/results`.
+Empty/relative paths, traversal, filesystem/home/checkout roots, and symbolic-link
+paths are rejected before credentials load. The output root is owner-only.
+Use a distinct `PAPERCLIP_E2E_CAMPAIGN_ID` for each invocation to preserve earlier
+attempts. This changes storage only; required evidence, redaction, grades, and
+temporary-instance cleanup retain their existing checks. Provider-connection,
+GitHub-review, and product-journey launchers retain their separate output contracts.
+
 The standard task and chat evidence collectors read durable run events through the paginated
 public API, including completion events beyond the first 1,000 rows. It rejects
 missing, repeated, or out-of-order sequence numbers and fails capture after
@@ -1705,13 +1717,18 @@ placement; it is not a statistical comparison with the former prompt arrangement
 
 The separate explicit-only `question-resume` suite uses the same neutral two-question
 request on native Codex and ACPX Claude. It qualifies the user journey through
-either the provider's built-in question or Paperclip's semantic question tool.
+the provider's built-in question, Paperclip's semantic question tool, or its native API fallback.
 It does not replace or regrade `question-tool-documentation`.
 
 The oracle classifies each wait from its exact task/agent/run identity. Provider
 questions require the server-generated request key and retain the paused run.
-Semantic questions require an applied `request_human_input` receipt and one new
-response wake bound to that interaction and source run. Only a verified provider
+Durable questions require an applied `request_human_input` receipt or a completed
+server-owned native `POST /api/issues/{id}/interactions` receipt. An API creation
+receipt must report HTTP 201 and preserve the original pending card's exact task,
+company, agent, source run, idempotency key and complete normalized form. It must
+remain unchanged after the answer. Both durable paths require one new response
+wake bound to that interaction and source run. Missing, pending, foreign or
+mismatched receipts fail; form shape and run counts cannot replace them. Only a verified provider
 choice may carry the adapter's optional Other field. A second substantive question
 is still rejected; the subsequent reference question must be text-only. Both real
 board answers must remain bound to unchanged forms, and one saved document must
@@ -1920,6 +1937,49 @@ Missing subscription coverage remains a qualification blocker;
 an API-key pass must not be reported as subscription evidence. See
 [`doc/grok-native-runner.md`](../../doc/grok-native-runner.md) for installation,
 credential boundaries and repetition requirements.
+
+### Kimi Code qualification
+
+`kimi-qualification` is a separate explicit-only candidate suite for maintained
+Kimi Code `@moonshot-ai/kimi-code@2.3.3`. It registers ten journeys on both local
+and Daytona: a completed reply, Paperclip semantic plan revision/approval, Ask
+mode, semantic question continuation, question continuation after a controller
+restart, verified file/artifact delivery, active Stop/reset/resume, and chat
+continuity after restart, native pending-permission Stop, and native worker loss.
+Its twenty cells do not change `extended-harnesses`
+or the default `--all` selection. Each cell has one attempt with no automatic
+retry. The exact `kimi-for-coding` model has authenticated request evidence;
+Product journey qualification remains pending. Registration and deterministic
+checks are not Product qualification evidence. The version-7 definition binds
+the current pending native identity and trusted company-scoped startup authority on Mac ARM64 and
+Linux x64. After company creation, the owned supervisor validates the selected
+manual Kimi execution and restarts the same disposable server with its exact
+model, profile, closure, target and expiry. Ambient grants, saved agent config
+and public requests cannot stage this authority. Metadata Test uses a separately
+bound operation/session identity and sends no model prompt. An ordinary qualified
+native profile needs no candidate grant. Earlier version-4/5/6 results remain
+historical evidence and do not qualify this merged runtime.
+
+Supply only the selected `KIMI_API_KEY`; the fixture writes its encrypted company
+secret reference into the Kimi provider configuration. It does not fall back to
+legacy `KIMI_MODEL_API_KEY` or import ambient login directories. Native Kimi
+questions, native plan approval, child activity, per-turn usage/cost, and
+same-turn steering are not claimed by these semantic journeys. Daytona cells
+also require the configured immutable runtime image and the existing remote
+prerequisites. Provider/process-loss and unanswered native-permission Stop
+remain separate acceptance gates, not claims of the chat Stop cell.
+The Kimi Stop/reset/resume cell retains all heartbeat rows. It still requires
+exactly three native provider runs and one server-authored `/new` reset. A
+separate pre-dispatch admission wait may be excluded from provider counts only
+with the complete server receipt, no provider authority or events, the same
+saved human `/new`, and exact recovered stopped-source evidence. The final
+reset and fresh native continuation remain required; a cancelled legacy row
+alone cannot qualify. Other chat suites keep their existing accounting.
+
+```sh
+pnpm test:e2e:runner -- --list --suite kimi-qualification
+pnpm test:e2e:runner -- --id kimi-qualification.runner-acpx-kimi.local.message-marker --max-automatic-retries 0
+```
 
 ### Grok branch qualification on EC2
 

@@ -1,3 +1,5 @@
+import { kimiManagedConfiguration } from "./kimi-config.js";
+import { kimiInstructionBinding } from "./kimi-instructions.js";
 import { AGENT_OBSERVABILITY_ENV_KEYS, codexObservabilityToml } from "../agent-observability.js";
 import { piProviderConfiguration } from "./pi-provider-config.js";
 import { configuredEnvironmentKeys } from "../../configured-environment.js";
@@ -421,6 +423,9 @@ export async function prepareAcpxRuntimeSandbox(input: {
     workspaceRecordPath,
     `${input.binding.workspacePath}\n`,
   );
+  if (input.agent === "kimi") {
+    await writePrivateFile(join(agentHomeDirectory, "config.toml"), kimiManagedConfiguration(input.binding.requestedModel));
+  }
   if (input.agent === "pi") {
     const configuration = piProviderConfiguration(input.environment);
     if (configuration) await writePrivateFile(join(agentHomeDirectory, "models.json"), configuration.json);
@@ -533,6 +538,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
     XDG_CACHE_HOME: cacheDirectory,
     PAPERCLIP_ACPX_PROFILE: input.agent,
     PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+    ...(input.agent === "kimi" ? { KIMI_CODE_HOME: agentHomeDirectory, PAPERCLIP_KIMI_INSTRUCTIONS: kimiInstructionBinding(policy.systemInstructions).payload } : {}),
     ...(input.agent === "antigravity" ? { GEMINI_HOME: agentHomeDirectory, AGY_ACP_FORCE_FILE_STORAGE: "1" } : {}),
     ...(input.agent === "grok" ? { GROK_HOME: agentHomeDirectory, NO_BROWSER: "1", GROK_DISABLE_AUTOUPDATER: "1" } : {}),
     ...(input.agent === "pi"
