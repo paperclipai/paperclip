@@ -1,3 +1,4 @@
+import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
@@ -26,7 +27,7 @@ import {
   decideLegacyContinuation, legacyDispositionEpisode, legacyDispositionFingerprint,
   LEGACY_DISPOSITION_REPAIR_INSTRUCTION, type LegacyDispositionEpisode,
 } from "./legacy-continuation.js";
-import { CONTROLLER_LEASE_LOST_FAILURE_CODE, hasLiveLegacyController } from "../legacy-controller-lease.js";
+import { CONTROLLER_LEASE_LOST_FAILURE_CODE, hasLiveLegacyController, liveLegacyControllerExpiresAt } from "../legacy-controller-lease.js";
 import { isCompletedOnboardingHandoffWake } from "../chat-completion-delivery.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { isWaitingConversation, settleConversationTurnForRun, deliverConversationComments } from "../agent-conversations.js";
@@ -244,6 +245,7 @@ type ResolvedDependencyWakeBackstopOptions = {
   runId?: string | null;
   companyId?: string | null;
   blockerIssueId?: string | null;
+  issueId?: string;
   source?: ResolvedDependencyWakeBackstopSource;
 };
 
@@ -2201,7 +2203,7 @@ export function recoveryService(
     return Boolean(budgetBlock);
   }
 
-  async function reconcileUnassignedBlockingIssues() {
+  async function reconcileUnassignedBlockingIssues(opts?: { companyId?: string }) {
     const candidates = await db
       .select({
         id: issues.id,
@@ -2215,6 +2217,8 @@ export function recoveryService(
       .where(
         and(
           eq(issueRelations.type, "blocks"),
+          eq(issueRelations.companyId, issues.companyId),
+          opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
           inArray(issues.status, ["todo", "blocked"]),
           isNull(issues.assigneeAgentId),
           isNull(issues.assigneeUserId),
@@ -2716,6 +2720,7 @@ export function recoveryService(
     const now = new Date();
     const retryAt = readProviderQuotaRetryAt(input.latestRun, now);
     return database.transaction(async (tx) => {
+      await notifyScheduledRetryDispatch(tx, { companyId: input.issue.companyId });
       const wakeup = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -3316,6 +3321,7 @@ export function recoveryService(
           created = Boolean(enqueuedRun);
         } else {
           scheduledRun = await db.transaction(async (tx) => {
+            await notifyScheduledRetryDispatch(tx, { companyId: input.issue.companyId });
             const wakeup = await tx
               .insert(agentWakeupRequests)
               .values({
@@ -3497,7 +3503,7 @@ export function recoveryService(
     return Boolean(run || wake);
   }
 
-  async function reconcileActiveRecoveryActions() {
+  async function reconcileActiveRecoveryActions(opts?: { companyId?: string }) {
     const rows = await db
       .select({
         action: issueRecoveryActions,
@@ -3511,7 +3517,8 @@ export function recoveryService(
           eq(issues.companyId, issueRecoveryActions.companyId),
         ),
       )
-      .where(inArray(issueRecoveryActions.status, ["active", "escalated"]));
+      .where(and(inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        opts?.companyId ? eq(issueRecoveryActions.companyId, opts.companyId) : undefined));
 
     const result = {
       requeued: 0,
@@ -4523,14 +4530,20 @@ export function recoveryService(
   }
 
   async function reconcileStrandedAssignedIssues(opts?: {
+    companyId?: string;
+    issueId?: string;
+    onDeferredDeadline?: (at: number) => void;
     issueCreatedAtGte?: Date | null;
     skipExternalConversationSettlement?: boolean;
+    skipRelatedRecovery?: boolean;
   }) {
     const candidates = await db
       .select(recoveryIssueFields)
       .from(issues)
       .where(
         and(
+          opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
+          opts?.issueId ? eq(issues.id, opts.issueId) : undefined,
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress", "in_review"]),
           or(
@@ -5711,6 +5724,7 @@ export function recoveryService(
               classification.baseBackoffMs *
               Math.pow(2, Math.max(0, consecutive - 1));
             if (elapsed < requiredDelay) {
+              opts?.onDeferredDeadline?.(latestFinishedAt.getTime() + requiredDelay);
               result.skipped += 1;
               continue;
             }
@@ -5770,16 +5784,18 @@ export function recoveryService(
       }
     }
 
-    const orphanBlockerRecovery = await reconcileUnassignedBlockingIssues();
-    result.orphanBlockersAssigned = orphanBlockerRecovery.assigned;
-    result.skipped += orphanBlockerRecovery.skipped;
-    result.issueIds.push(...orphanBlockerRecovery.issueIds);
+    if (!opts?.skipRelatedRecovery) {
+      const orphanBlockerRecovery = await reconcileUnassignedBlockingIssues(opts);
+      result.orphanBlockersAssigned = orphanBlockerRecovery.assigned;
+      result.skipped += orphanBlockerRecovery.skipped;
+      result.issueIds.push(...orphanBlockerRecovery.issueIds);
 
-    const activeRecovery = await reconcileActiveRecoveryActions();
-    result.continuationRequeued += activeRecovery.requeued;
-    result.escalated += activeRecovery.escalated;
-    result.skipped += activeRecovery.skipped;
-    result.issueIds.push(...activeRecovery.issueIds);
+      const activeRecovery = await reconcileActiveRecoveryActions(opts);
+      result.continuationRequeued += activeRecovery.requeued;
+      result.escalated += activeRecovery.escalated;
+      result.skipped += activeRecovery.skipped;
+      result.issueIds.push(...activeRecovery.issueIds);
+    }
     result.issueIds = [...new Set(result.issueIds)];
 
     return result;
@@ -5812,7 +5828,7 @@ export function recoveryService(
       source === "workspace.finalize"
         ? "workspace_finalize_reconciliation"
         : "issue_graph_liveness_reconciliation";
-    const useCursor = !opts?.blockerIssueId;
+    const useCursor = !opts?.blockerIssueId && !opts?.issueId;
 
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
@@ -5822,6 +5838,7 @@ export function recoveryService(
         sql`${issues.assigneeAgentId} is not null`,
       ];
       if (opts?.companyId) filters.push(eq(issues.companyId, opts.companyId));
+      if (opts?.issueId) filters.push(eq(issues.id, opts.issueId));
       if (afterIssueId) filters.push(gt(issues.id, afterIssueId));
 
       if (opts?.blockerIssueId) {
@@ -6112,6 +6129,7 @@ export function recoveryService(
       // fallback below. Without it, a terminal issue named in the run context
       // snapshot would still terminalize the shared run and defeat the guard.
       runReferencedByActiveIssue?: boolean;
+      onDeferredDeadline?: (at: number) => void;
     },
   ): Promise<{ terminalized: boolean; status: string }> {
     // Act only on a run in "running" status. A "queued" run has no process yet,
@@ -6127,8 +6145,11 @@ export function recoveryService(
     // Another controller may own a sandbox run whose PID has no meaning on
     // this host. Its live lease owns both execution and finalization, even if
     // the issue is already terminal or this process has no in-memory handle.
-    if (await hasLiveLegacyController(db, run))
+    const controllerDeadline = await liveLegacyControllerExpiresAt(db, run);
+    if (controllerDeadline) {
+      options?.onDeferredDeadline?.(controllerDeadline.getTime());
       return { terminalized: false, status: run.status };
+    }
 
     const pid = run.processPid ?? null;
     const processGroupId = run.processGroupId ?? null;
@@ -6349,7 +6370,7 @@ export function recoveryService(
   // still claims to be live but can no longer reach a terminal status on its
   // own, so a stuck "running" run can no longer block the sweep. Idempotent and
   // safe: clears at most one row's worth of lock columns per candidate.
-  async function sweepStaleIssueLocks() {
+  async function sweepStaleIssueLocks(opts?: { companyId?: string; issueId?: string; onDeferredDeadline?: (at: number) => void }) {
     const result = {
       cleared: 0,
       issueIds: [] as string[],
@@ -6366,7 +6387,9 @@ export function recoveryService(
       })
       .from(issues)
       .where(
-        sql`(${issues.checkoutRunId} is not null or ${issues.executionRunId} is not null)`,
+        and(sql`(${issues.checkoutRunId} is not null or ${issues.executionRunId} is not null)`,
+          opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
+          opts?.issueId ? eq(issues.id, opts.issueId) : undefined),
       );
 
     const referencedRunIds = [
@@ -6381,7 +6404,8 @@ export function recoveryService(
         ? await db
             .select()
             .from(heartbeatRuns)
-            .where(inArray(heartbeatRuns.id, referencedRunIds))
+            .where(and(inArray(heartbeatRuns.id, referencedRunIds),
+              opts?.companyId ? eq(heartbeatRuns.companyId, opts.companyId) : undefined))
         : [];
     const runStatusById = new Map<string, string>();
     for (const row of runRows) runStatusById.set(row.id, row.status);
@@ -6392,8 +6416,15 @@ export function recoveryService(
     // the same run id in a stale lock column. The terminal reference alone must
     // not terminalize a run that an active issue still owns, so exclude these
     // runs from the issue-terminal authority below.
+    const ownershipReferences = opts?.issueId && referencedRunIds.length > 0
+      ? await db.select({ companyId: issues.companyId, status: issues.status,
+          checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId }).from(issues).where(and(
+          opts.companyId ? eq(issues.companyId, opts.companyId) : undefined,
+          or(inArray(issues.checkoutRunId, referencedRunIds), inArray(issues.executionRunId, referencedRunIds)),
+        ))
+      : candidates;
     const runIdsReferencedByActiveIssue = new Set<string>();
-    for (const issue of candidates) {
+    for (const issue of ownershipReferences) {
       if (issue.status === "done" || issue.status === "cancelled") continue;
       for (const runId of [issue.checkoutRunId, issue.executionRunId]) {
         if (runId) runIdsReferencedByActiveIssue.add(runId);
@@ -6434,6 +6465,7 @@ export function recoveryService(
         referencingIssueTerminalStatus:
           issueTerminalStatusByRunId.get(row.id) ?? null,
         runReferencedByActiveIssue: runIdsReferencedByActiveIssue.has(row.id),
+        onDeferredDeadline: opts?.onDeferredDeadline,
       });
       runStatusById.set(row.id, outcome.status);
       if (outcome.terminalized) result.terminalizedRunIds.push(row.id);
@@ -6537,6 +6569,8 @@ export function recoveryService(
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
+    reconcileUnassignedBlockingIssues,
+    reconcileActiveRecoveryActions,
     reconcileLegacyContinuation,
     legacyRepairDispatchBlock,
     sweepStaleIssueLocks,
