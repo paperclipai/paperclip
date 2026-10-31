@@ -1,4 +1,5 @@
 import { notifyActiveRunSilence, notifyLiveRunRecovery, notifyLiveResourceRecovery } from "../../../services/live-run-recovery-notifications.js";
+import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
 import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
@@ -392,6 +393,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
           ));
       }
 
+      await notifyStatusCardIssueChange(tx, companyId);
       await tx
         .update(issues)
         .set({

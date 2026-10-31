@@ -266,6 +266,9 @@ export interface ConnectionGrant {
       appSlug?: string;
       accessRevision?: string;
       lastAccessRefreshAt?: string;
+      /** Unsettled Cloud binding changes; retained until the exact revision is delivered. */
+      bindingSync?: { id: string; removeInstallationIds: string[] };
+      continuityRetry?: { at: string; attempts: number; revision: string };
       lastWebhookAt?: string;
       webhookHealth?: "pending" | "healthy" | "unhealthy";
     };

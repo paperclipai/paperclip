@@ -1,8 +1,10 @@
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
-import { writeDeferredExecutionWait } from "../deferred-execution-wait.js";
+import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
 import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { notifyRunDispatch } from "../run-dispatch-notifications.js";
+import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
+import { notifyRoutineExecutionStatus } from "../routine-execution-status-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
@@ -1274,6 +1276,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
     async function bindClaimedIssueExecution(tx: Db, ownsIssue: boolean, claimedRun: typeof heartbeatRuns.$inferSelect | null | undefined) {
       if (!claimedRun || !issueId || !ownsIssue) return;
+      await notifyStatusCardIssueChange(tx, run.companyId);
       await tx.update(issues).set({
         executionRunId: claimedRun.id,
         executionAgentNameKey: normalizeAgentNameKey(agent.name),
@@ -2524,17 +2527,17 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       skipReason: string,
       patch: Partial<typeof agentWakeupRequests.$inferInsert> = {},
       waitCondition?: Record<string, unknown>,
-    ) => {
+    ): Promise<{ created: boolean; waitSaved?: boolean }> => {
       // A temporary refusal must leave the handoff retryable, without burning
       // its one durable receipt ID on a skipped wake.
       if (caseRequest) return { created: false };
       if (executionWaitRequestId) {
-        await writeDeferredExecutionWait(db, { companyId: agent.companyId, requestId: executionWaitRequestId }, {
+        const waitSaved = await writeDeferredExecutionWait(db, { companyId: agent.companyId, requestId: executionWaitRequestId }, {
           reason: skipReason, message: patch.error ?? (skipReason === "issue_tree_hold_active"
             ? "This task is paused. Resume it to send your saved message."
             : "Waiting for task execution to be enabled. Your message is saved."),
         });
-        return { created: false };
+        return { created: false, waitSaved };
       }
       const request = {
         ...durableReceiptFields,
@@ -2806,31 +2809,30 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       },
     );
     if (budgetBlock) {
-      await writeSkippedRequest("budget.blocked", { error: budgetBlock.reason }, {
+      const wait = await writeSkippedRequest("budget.blocked", { error: budgetBlock.reason }, {
         scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId,
       });
       if (caseRequest) return null;
-      throw conflict(budgetBlock.reason, {
-        scopeType: budgetBlock.scopeType,
-        scopeId: budgetBlock.scopeId,
-      });
+      const details = { scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId };
+      throw wait.waitSaved ? new PersistedExecutionWaitRefusal(budgetBlock.reason, details)
+        : conflict(budgetBlock.reason, details);
     }
 
     // Setup delays execution, but must not discard work accepted by a caller.
     const invokability = await getAgentInvokability(isAgentAwaitingSetup(agent) ? { ...agent, status: "idle" } : agent);
     if (!invokability.invokable) {
       if (caseRequest) return null;
+      let waitSaved = false;
       if (opts.requestedByActorType !== "user" || executionWaitRequestId) {
-        await writeSkippedRequest("agent.not_invokable", {
+        const wait = await writeSkippedRequest("agent.not_invokable", {
           error: invokability.message,
         }, { status: agent.status, reason: invokability.reason });
+        waitSaved = wait.waitSaved === true;
       }
-      throw conflict(invokability.message, {
-        status: agent.status,
-        reason: invokability.reason,
-        invalidOrgChain: invokability.invalidOrgChain,
-        ...invokability.details,
-      });
+      const details = { status: agent.status, reason: invokability.reason,
+        invalidOrgChain: invokability.invalidOrgChain, ...invokability.details };
+      throw waitSaved ? new PersistedExecutionWaitRefusal(invokability.message, details)
+        : conflict(invokability.message, details);
     }
 
     const policy = parseHeartbeatPolicy(agent);
@@ -3776,6 +3778,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   .from(agents)
                   .where(eq(agents.id, legacyRun.agentId))
                   .then((rows) => rows[0] ?? null);
+                await notifyStatusCardIssueChange(tx, issue.companyId);
                 await tx
                   .update(issues)
                   .set({
@@ -3937,6 +3940,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
               await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
               if (issue.status !== "blocked") await notifyChatResponseAvailability(tx, { companyId: issue.companyId, issueId: issue.id });
+              await notifyRoutineExecutionStatus(tx, issue.id, issue.companyId);
               await tx
                 .update(issues)
                 .set({

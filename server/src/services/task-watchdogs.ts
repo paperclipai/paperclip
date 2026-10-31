@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { createHash } from "node:crypto";
 import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
@@ -1409,10 +1410,13 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         }) ?? fallback
         : fallback;
       if (!shouldReopen && watchdogIssue.originFingerprint !== input.classification.stopFingerprint) {
-        await db
+        await db.transaction(async tx => {
+          await notifyStatusCardIssueChange(tx, input.watchdog.companyId);
+          await tx
           .update(issues)
           .set({ originFingerprint: input.classification.stopFingerprint, updatedAt: new Date() })
           .where(and(eq(issues.companyId, input.watchdog.companyId), eq(issues.id, watchdogIssue.id)));
+        });
         watchdogIssue.originFingerprint = input.classification.stopFingerprint;
       }
       await issuesSvc.addComment(

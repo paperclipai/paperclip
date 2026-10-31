@@ -1,4 +1,6 @@
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -1014,11 +1016,13 @@ export function issueTreeControlService(db: Db) {
       for (const [status, issueIdsForStatus] of issueIdsByStatus) {
         if (issueIdsForStatus.length === 0) continue;
         for (const issueId of issueIdsForStatus) {
+          await notifyRoutineExecutionStatus(tx, issueId, companyId);
           await notifyNativeStatusReassessment(tx, { companyId, issueId });
           await notifyTerminalWorkspaceWork(tx, `issue:${issueId}`);
           await notifyChatResponseAvailability(tx, { companyId, issueId });
           if (status === "blocked" || status === "in_review") await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId });
         }
+        await notifyStatusCardIssueChange(tx, companyId);
         const rows = await tx
           .update(issues)
           .set({

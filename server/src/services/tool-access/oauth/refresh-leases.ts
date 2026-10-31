@@ -43,15 +43,11 @@ export function createOAuthRefreshLeases(db: Db, now: () => Date, getConnectionR
   ) {
     const latest = await getConnectionRow(connection.id, connection.companyId);
     if (oauthRefreshLeaseId(latest) !== leaseId) return latest;
-    const nextConfig = {
-      ...latest.config,
-      oauth: withoutOAuthRefreshLease(oauthConfig(latest)),
-    };
     const [updated] = await db
       .update(toolConnections)
       .set({
-        config: nextConfig,
-        transportConfig: nextConfig,
+        config: sql`${toolConnections.config} #- '{oauth,refreshLease}'`,
+        transportConfig: sql`${toolConnections.transportConfig} #- '{oauth,refreshLease}'`,
         updatedAt: now(),
       })
       .where(
@@ -165,14 +161,10 @@ export function createOAuthRefreshLeases(db: Db, now: () => Date, getConnectionR
     });
     const oauth = oauthGrantConfig(latest);
     if (asRecord(oauth.refreshLease).id !== leaseId) return latest;
-    const providerTenant = {
-      ...(latest.providerTenant ?? {}),
-      oauth: withoutOAuthGrantRefreshLease(oauth),
-    };
     const [updated] = await db
       .update(connectionGrants)
       .set({
-        providerTenant,
+        providerTenant: sql`${connectionGrants.providerTenant} #- '{oauth,refreshLease}'`,
         updatedAt: now(),
       })
       .where(
@@ -202,7 +194,7 @@ export function createOAuthRefreshLeases(db: Db, now: () => Date, getConnectionR
     leaseId: string | null;
   }> {
     const waitDeadline = Date.now() + OAUTH_REFRESH_LEASE_WAIT_MS;
-    const initialUpdatedAt = grant.updatedAt.getTime();
+    const initialOAuth = JSON.stringify(withoutOAuthGrantRefreshLease(oauthGrantConfig(grant)));
     while (true) {
       const latest = await getOAuthGrantRow({
         companyId: connection.companyId,
@@ -221,7 +213,7 @@ export function createOAuthRefreshLeases(db: Db, now: () => Date, getConnectionR
         (!forceRefresh &&
           (expiresAtMs === null || expiresAtMs > Date.now() + 60_000)) ||
         (forceRefresh &&
-          latest.updatedAt.getTime() > initialUpdatedAt &&
+          JSON.stringify(withoutOAuthGrantRefreshLease(oauthGrantConfig(latest))) !== initialOAuth &&
           !asRecord(oauthGrantConfig(latest).refreshLease).id)
       ) {
         return { grant: latest, leaseId: null };
@@ -266,6 +258,7 @@ export function createOAuthRefreshLeases(db: Db, now: () => Date, getConnectionR
               eq(connectionGrants.id, latest.id),
               eq(connectionGrants.companyId, latest.companyId),
               eq(connectionGrants.status, "active"),
+              sql`${connectionGrants.providerTenant} = ${JSON.stringify(latest.providerTenant)}::jsonb`,
               sql`${connectionGrants.providerTenant} #>> '{oauth,refreshLease,id}' is null`,
             ),
           )

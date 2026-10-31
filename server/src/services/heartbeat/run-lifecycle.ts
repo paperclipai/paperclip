@@ -1046,7 +1046,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       if (previous && isHeartbeatRunTerminalStatus(status))
         await notifyRetainedNativeSessionCleanup(tx, { companyId: previous.companyId, runId: previous.id });
       if (isHeartbeatRunTerminalStatus(status)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
-      await notifyExecutionRunWork(tx, companyId ? { companyId } : undefined);
+      await notifyExecutionRunWork(tx, previous ? { companyId: previous.companyId, runId: previous.id,
+        issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined } : undefined);
       if (previous) await notifyChatRunMilestones(tx, { companyId: previous.companyId, runId: previous.id,
         issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined });
       return write(tx);
