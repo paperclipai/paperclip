@@ -165,6 +165,7 @@ const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null))
 const mockRetryWorkspaceExport = vi.hoisted(() => vi.fn());
 const mockRequestWorkspaceRecovery = vi.hoisted(() => vi.fn());
 const mockRequestTaskRetry = vi.hoisted(() => vi.fn());
+const mockOnboardingFirstTaskDependenciesAllowed = vi.hoisted(() => vi.fn(async () => undefined));
 const mockGetExperimental = vi.hoisted(() => vi.fn());
 const mockResumeWorkspaceFinalization = vi.hoisted(() => vi.fn());
 
@@ -176,6 +177,10 @@ function registerRouteMocks() {
     }) };
   });
   vi.doMock("../services/task-retry.js", () => ({ requestTaskRetry: mockRequestTaskRetry }));
+  vi.doMock("../services/onboarding-first-task-admission.js", async () => ({
+    ...await vi.importActual<typeof import("../services/onboarding-first-task-admission.js")>("../services/onboarding-first-task-admission.js"),
+    assertOnboardingFirstTaskDependenciesAllowed: mockOnboardingFirstTaskDependenciesAllowed,
+  }));
   vi.doMock("../services/task-interruption-presentation.js", () => ({
     taskInterruptionPresentation: vi.fn(async () => null),
     taskInterruptionPresentations: vi.fn(async () => new Map()),
@@ -3001,6 +3006,8 @@ describe("agent issue mutation checkout ownership", () => {
       ["in_review", { assigneeAgentId: ownerAgentId }],
       ["done", {}],
       ["blocked", {}],
+      ["todo", { blockedByIssueIds: [] }],
+      ["blocked", { blockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] }],
     ])("rejects %s before it releases the run's own execution lock (%j)", async (status, extra) => {
       const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status, ...extra });
 
@@ -3064,18 +3071,20 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review" });
     });
 
-    it("leaves a blocked status with dependency edits to the dependency rules", async () => {
-      const blockerId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-      mockIssueService.getById.mockImplementation(async (id: string) => id === blockerId
-        ? makeIssue({ id: blockerId, identifier: "PAP-1650", assigneeAgentId: null, executionRunId: null, checkoutRunId: null })
-        : makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId }));
+    it("keeps the dependency rule's error for a blocker it rejects", async () => {
+      const { HttpError: CurrentHttpError } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+      mockOnboardingFirstTaskDependenciesAllowed.mockRejectedValueOnce(
+        new CurrentHttpError(400, "Remove the onboarding task from blockedByIssueIds.", { code: "onboarding_first_task_parent_blocker" }));
 
-      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status: "blocked", blockedByIssueIds: [blockerId] });
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`)
+        .send({ status: "blocked", blockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] });
 
-      expect(res.status, JSON.stringify(res.body)).toBe(200);
-      expect(res.body).toMatchObject({ status: "blocked" });
-      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
-      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "blocked" });
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.details).toMatchObject({ code: "onboarding_first_task_parent_blocker" });
+      expect(mockOnboardingFirstTaskDependenciesAllowed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        companyId, actorAgentId: ownerAgentId, actorRunId: ownerRunId, blockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
+      }));
+      expect(mockIssueService.update).not.toHaveBeenCalled();
     });
 
     it("does not intercept a board user changing the status", async () => {
