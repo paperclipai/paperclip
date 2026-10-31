@@ -71,7 +71,9 @@ tests do not establish a completed live pass or unattended CI qualification.
 The deployment-targeted `question-answer-resume` journey reuses the classic
 two-question scenario and native continuation oracle on an attached target.
 It checks the actual board answers, one to three bound work runs, an agent-authored
-task document and browser readback after reload. It accepts provider questions and
+task document and browser readback after reload. A typed reference may use a text
+field or the native card's explicit written-answer control; a predefined option
+cannot replace the exact typed answer. It accepts provider questions and
 durable questions proven by an applied semantic receipt or an immutable completed
 native API mutation receipt. It does not qualify named-tool selection. Its provider owns target setup,
 usage and cleanup. Registration and local calibration do not establish a fresh

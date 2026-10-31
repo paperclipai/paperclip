@@ -1,3 +1,5 @@
+import { registerRoutineExecutionStatusWork } from "./services/routine-execution-status-work.js";
+import { routineExecutionStatusService } from "./services/routine-run-status.js";
 import { attentionRetentionService, registerAttentionRetentionWork } from "./services/attention-retention.js";
 import { registerProviderTraceRetentionWork } from "./services/provider-trace-retention-work.js";
 import { registerRunEvidenceMigrationWork } from "./services/run-evidence-migration-work.js";
@@ -1560,15 +1562,6 @@ async function startServerWithDatabaseTeardown(
       heartbeat.drainActiveRunExecutions();
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const routines = routineService(db as any, { pluginWorkerManager });
-    let nextRoutineStatusReconcile = 0;
-    const scheduleRoutineStatusReconcile = () => {
-      if (!isCloudManagedInstance() || isWarmStandby() || isIdleTaskDrainActive() || heartbeatSchedulerStopped ||
-          Date.now() < nextRoutineStatusReconcile) return;
-      nextRoutineStatusReconcile = Date.now() + 5 * 60_000;
-      trackHeartbeatSchedulerWork(routines.reconcileExecutionRunStatuses().then(result => {
-        if (result.settled > 0) logger.info(result, "reconciled routine execution issue status");
-      }).catch(() => logger.warn("routine execution status reconciliation deferred")));
-    };
     const statusCardEvaluation = statusCardEvaluationService(db as any, heartbeat);
     const issues = issueService(db as any);
     const mergedPullRequestConfirmations = issueThreadInteractionService(db as any, {
@@ -1941,7 +1934,6 @@ async function startServerWithDatabaseTeardown(
       // captures the authoritative set of running heartbeat rows.
       trackHeartbeatSchedulerWork((async () => {
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-        scheduleRoutineStatusReconcile();
         const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
         if (sweptRuntimeStatuses > 0) {
           logger.info(
@@ -1982,6 +1974,11 @@ async function startServerWithDatabaseTeardown(
       }));
     };
     const startHeartbeatScheduler = () => {
+      if (isCloudManagedInstance()) {
+        const status = registerRoutineExecutionStatusWork(deliveryWork, routineExecutionStatusService(db as any),
+          () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped);
+        trackHeartbeatSchedulerWork(status.ready);
+      }
       const scheduled = registerScheduledWork(deliveryWork, {
         retryMs: config.heartbeatSchedulerIntervalMs,
         tickAgentTimers: async signal => {
