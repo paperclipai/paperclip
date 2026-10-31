@@ -1,3 +1,4 @@
+import { lockCompanyLifecycle } from "../company-deletion.js";
 import { randomUUID } from "node:crypto";
 import { notifyGitHubCredentialChange } from "../github-connection-notifications.js";
 import type { ActorInfo } from "./types.js";
@@ -234,6 +235,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
     // Serialize external binding changes with grant/connection lifecycle writes.
     // Requests occur only for saved debt; no idle lock or connection is retained.
     return db.transaction(async tx => {
+      await lockCompanyLifecycle(tx, connection.companyId);
       // Company deletion locks its parent before cascading to grants/connections.
       // Keep that order while retaining admission through the external handoff.
       const [company] = await tx.select({ status: companies.status }).from(companies)

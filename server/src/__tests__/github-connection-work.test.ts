@@ -419,13 +419,13 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
     const deleted = Promise.allSettled([deletion]);
     let handoff: Promise<unknown> | undefined;
     try {
-      const deletionPid = await companyLocked;
+      await companyLocked;
       handoff = f.service.syncGitHubGrantBindings(f.connection, pending!);
       const completed = Promise.allSettled([deletion, handoff]);
       await vi.waitFor(async () => {
         const waiting = await db.execute(sql`select pid from pg_stat_activity
-          where datname = current_database() and query like '%"companies"%' and query like '%for share%'
-            and ${deletionPid} = any(pg_blocking_pids(pid))`);
+          where datname = current_database() and query like '%pg_advisory_xact_lock_shared%'
+            and cardinality(pg_blocking_pids(pid)) > 0`);
         expect(waiting).toHaveLength(1);
       }, { timeout: 5_000, interval: 20 });
       release();
@@ -456,7 +456,7 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
       const deleted = Promise.allSettled([deletion]);
       await vi.waitFor(async () => {
         const waiting = await db.execute(sql`select pid from pg_stat_activity
-          where datname = current_database() and query like '%"companies"%' and query like '%for no key update%'
+          where datname = current_database() and query like '%pg_advisory_xact_lock(%'
             and cardinality(pg_blocking_pids(pid)) > 0`);
         expect(waiting).toHaveLength(1);
       }, { timeout: 5_000, interval: 20 });
