@@ -341,6 +341,14 @@ export function setupLiveEventsWebSocketServer(
           resource: { type: "project", companyId: event.companyId, projectId: project.id } })).allowed) return null;
       }
       if (event.type.startsWith("heartbeat.run.")) return runId ? event : null;
+      // Run-loop signals carry run ids plus the looping issue/wakeReason, no
+      // transcript content. Company membership is verified above, and an
+      // issue-scoped loop additionally required issue read via readBindings, so
+      // an allowed viewer should receive it. Without this branch the event
+      // falls through to the default `return null` and never reaches
+      // authenticated clients ("heartbeat.run_loop_suspected" is not matched by
+      // the "heartbeat.run." prefix above).
+      if (event.type === "heartbeat.run_loop_suspected") return event;
       if (event.type === "agent.session.goal.changed") return issueId ? event : null;
       // Company-wide invalidations carry no task-derived content. Authorized
       // clients obtain details through viewer-filtered HTTP reads.
