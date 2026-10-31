@@ -29,21 +29,25 @@
   "files": [
     "dist",
     "ui-dist",
-    "skills"
+    "skills",
+    "scripts/install-copilot-assets.mjs"
   ],
   "scripts": {
     "dev": "tsx src/index.ts",
     "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true tsx ./scripts/dev-watch.ts",
     "prepare:ui-dist": "bash ../scripts/prepare-server-ui-dist.sh",
-    "build": "pnpm run prepare:runner-vendor && node scripts/verify-runner-vendor-dependencies.mjs && tsc && mkdir -p dist/onboarding-assets dist/built-ins dist/services/scripts dist/vendor/paperclip-runner && cp -R src/onboarding-assets/. dist/onboarding-assets/ && cp -R src/built-ins/. dist/built-ins/ && cp -R src/services/scripts/. dist/services/scripts/ && cp -Rf ../packages/paperclip-runner/dist/. dist/vendor/paperclip-runner/ && node scripts/write-build-stamp.mjs",
+    "build": "pnpm run prepare:runner-vendor && node scripts/verify-runner-vendor-dependencies.mjs && tsc && mkdir -p dist/onboarding-assets dist/built-ins dist/services/scripts dist/vendor/paperclip-runner && cp -R src/onboarding-assets/. dist/onboarding-assets/ && cp -R src/built-ins/. dist/built-ins/ && cp -R src/services/scripts/. dist/services/scripts/ && cp -Rf ../packages/paperclip-runner/dist/. dist/vendor/paperclip-runner/ && cp ../packages/paperclip-runner/scripts/install-copilot-assets.mjs ../packages/paperclip-runner/scripts/materialize-copilot-binary.mjs ../packages/paperclip-runner/scripts/copilot-inner-distribution.mjs dist/ && node dist/install-copilot-assets.mjs && node scripts/write-build-stamp.mjs",
     "prepack": "pnpm run prepare:ui-dist && pnpm run build",
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
+    "build:runtime": "node scripts/bundle-runtime.mjs",
     "start": "node dist/index.js",
     "prepare:runner-vendor": "node scripts/prepare-runner-vendor.mjs",
-    "typecheck": "pnpm run prepare:runner-vendor && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+    "typecheck": "pnpm run prepare:runner-vendor && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit",
+    "postinstall": "node scripts/install-copilot-assets.mjs"
   },
   "dependencies": {
+    "@1password/sdk": "0.5.0",
     "@agentclientprotocol/claude-agent-acp": "0.73.0",
     "@agentclientprotocol/codex-acp": "1.6.2",
     "@ai-sdk/amazon-bedrock": "5.0.113",
@@ -62,6 +66,7 @@
     "@modelcontextprotocol/sdk": "^1.31.0",
     "@openrouter/ai-sdk-provider": "3.1.0",
     "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/otlp-transformer": "0.221.0",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-cloud": "workspace:*",
@@ -107,11 +112,13 @@
     "pino-http": "^11.0.0",
     "pino-pretty": "^13.1.3",
     "sharp": "^0.35.4",
-    "smol-toml": "^1.4.2",
+    "smol-toml": "^1.9.1",
     "ssh2": "^1.17.0",
     "svix": "1.76.1",
+    "tar-stream": "3.2.0",
     "ws": "^8.22.0",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@opentelemetry/resources": "2.10.0"
   },
   "bundleDependencies": [
     "@agentclientprotocol/claude-agent-acp",
@@ -136,13 +143,15 @@
     "@types/node": "^24.0.0",
     "@types/sharp": "^0.32.0",
     "@types/supertest": "^7.2.1",
+    "@types/tar-stream": "^3.1.5",
     "@types/ws": "^8.18.2",
     "cross-env": "^10.1.0",
     "supertest": "^7.0.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.3",
+    "protobufjs": "7.6.6"
   },
   "peerDependencies": {
     "@opentelemetry/auto-instrumentations-node": "0.79.0",

@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { expect, it, vi } from "vitest";
-import { RunnerdDotDriver, type RunnerdDotDriverOptions } from "./runnerd-dot-driver.js";
+import { describe, expect, it, vi } from "vitest";
+import { RunnerdDotDriver, externalRunnerExitMessage, type RunnerdDotDriverOptions } from "./runnerd-dot-driver.js";
 import { describeRunnerdNativeSessionBackend } from "../../backends/codex-native-backend.js";
 import { createNativeSessionBackend } from "../../backends/native-backend-factory.js";
 import * as controlPlane from "../../control-plane/durable-prp-control-plane.js";
@@ -120,7 +120,8 @@ it.each([
     } else {
       handle!.child.kill("SIGTERM");
       await handle!.completion;
-      await expect(session.read!()).rejects.toThrow("dot_runner_process_exited_recovery_required");
+      await expect(session.read!()).rejects.toThrow(
+        /^dot_runner_process_exited_recovery_required: code=\S+ signal=\S+ disconnectedMs=(?:none|\d+)$/);
     }
   } finally {
     commandSpy.mockRestore(); spawnSpy.mockRestore();
@@ -131,7 +132,7 @@ it.each([
   }
 }, 45000);
 
-it.each(["local", "custom local directory", "external launcher", "grok external launcher"])("reattaches the %s Rust bridge without duplicate operations and refuses lost checkpoints", async launch => {
+it.each(["local", "local pending finish", "custom local directory", "external launcher", "grok external launcher", "external launcher empty controller"])("reattaches the %s Rust bridge without duplicate operations and refuses lost checkpoints", async launch => {
   const root = await mkdtemp(join(tmpdir(), "dot-driver-recovery-"));
   await writeFile(join(root, "AGENTS.md"), "Use only the synthetic counter.");
   const input = execution(root, launch === "grok external launcher" ? "grok_bot" : "openai_dot");
@@ -141,6 +142,11 @@ it.each(["local", "custom local directory", "external launcher", "grok external 
   const settlements = new Map<string, unknown>();
   const dispatches: unknown[] = [];
   let controllerPort = 0;
+  const emptyController = launch === "external launcher empty controller";
+  const pendingFinish = launch === "local pending finish";
+  const firstCompletion = vi.fn(() => new Promise<string>(() => {}));
+  const recoveredCompletion = vi.fn(async () => "Completion accepted");
+  let checkpoint: controlPlane.DurablePrpCheckpoint | undefined;
   const options: RunnerdDotDriverOptions = {
     execution: input, stateDirectory: join(root, "state"),
     identity: { runnerInstanceId: randomUUID(), environmentLeaseId: randomUUID(), runId: input.binding.runId,
@@ -148,18 +154,23 @@ it.each(["local", "custom local directory", "external launcher", "grok external 
     runnerBinary: resolve("runner/target/debug/paperclip-runnerd"),
     onSpawn: process => { spawned = process; },
     controlPlaneRegistration: async authority => {
+      if (emptyController) {
+        authority.setCheckpointPersistence(async saved => { checkpoint = controlPlane.decodeDurablePrpCheckpoint(new Map(saved.records)); });
+        await authority.flushCheckpoint();
+      }
       await authority.start(controllerPort);
       controllerPort = Number(new URL(authority.connectUrl).port);
       return { connectUrl: authority.connectUrl, release: () => authority.stop() };
     },
     dynamicTools: [{ name: "synthetic_counter", description: "Read a synthetic counter", inputSchema: { type: "object", properties: {}, additionalProperties: false } }],
     dynamicToolHandler: async () => ({ count: ++calls }),
+    ...(pendingFinish ? { completionFeedback: firstCompletion } : {}),
     port: { dispatch: async event => { dispatches.push(event); }, settle: async event => { settlements.set(String(event.payload.requestId), event.payload.outcome); },
       attach: async callback => { send = callback; return async () => { send = undefined; }; } },
   };
-  const runnerState = launch === "local" ? join(root, "state/runner") : join(root, "external-runtime/runner");
+  const runnerState = launch === "local" || pendingFinish ? join(root, "state/runner") : join(root, "external-runtime/runner");
   if (launch === "custom local directory") options.runnerStateDirectory = runnerState;
-  if (["external launcher", "grok external launcher"].includes(launch)) {
+  if (launch.includes("external launcher")) {
     await mkdir(runnerState, { recursive: true });
     options.runnerStateDirectory = runnerState;
     options.readProviderState = async () => {
@@ -167,6 +178,7 @@ it.each(["local", "custom local directory", "external launcher", "grok external 
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
     };
     options.runnerProcessLauncher = spec => {
+      if (emptyController) expect(Object.keys(JSON.parse(checkpoint!.records.get("header")!).state.tickets)).toHaveLength(1);
       expect(spec.environment).not.toHaveProperty("OPENAI_API_KEY");
       expect(spec.args).toContain(runnerState);
       const child = spawn(spec.command, [...spec.args], { cwd: runnerState, env: spec.environment, stdio: "ignore" });
@@ -195,13 +207,37 @@ it.each(["local", "custom local directory", "external launcher", "grok external 
       await send!(renewal);
       await vi.waitFor(() => expect(settlements.get(renewal.requestId)).toMatchObject({ status: "renewed" }), { timeout: 10000 });
     }
+    const finish = operation("tool", { name: "paperclip_finish", arguments: {
+      schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Read the counter",
+      completionClaim: { contractRevision: "1", objectiveSatisfied: true, criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }], remainingWork: [] },
+      evidence: [], verification: [], attentionRequests: [], artifacts: [],
+    } });
+    if (pendingFinish) {
+      await send!(finish);
+      await vi.waitFor(() => expect(firstCompletion).toHaveBeenCalledOnce(), { timeout: 10000 });
+      expect(settlements.has(finish.requestId)).toBe(false);
+    }
     const snapshot = await session.snapshot();
     expect(snapshot).toMatchObject({ providerSessionId: null, activeTurnId: options.identity.turnId, providerRecoveryPolicy: "same_session_only" });
     await session.detachControllerForRestart!();
-    const recoveredDriver = new RunnerdDotDriver({ ...options, adoptExistingRunner: { ...spawned!, isAlive: () => true } });
+    if (emptyController) {
+      await rm(options.stateDirectory, { recursive: true });
+      checkpoint!.restoreSessionDirectory(options.stateDirectory);
+    }
+    const recoveredDriver = new RunnerdDotDriver({ ...options,
+      ...(pendingFinish ? { completionFeedback: recoveredCompletion } : {}),
+      ...(emptyController ? { runnerBinary: join(root, "unavailable-old-runner"),
+        runnerArtifact: { version: checkpoint!.runnerVersion, digest: checkpoint!.runnerDigest } } : {}),
+      adoptExistingRunner: { ...spawned!, isAlive: () => true } });
     const recovered = await recoveredDriver.recoverSession(snapshot, { signal: new AbortController().signal });
     expect(recovered.recovered).toBe(true);
     session = recovered.session!;
+    if (pendingFinish) {
+      expect(options.recoverSemanticToolInput).toBeUndefined();
+      await vi.waitFor(() => expect(settlements.get(finish.requestId)).toMatchObject({ status: "completed", isError: false }), { timeout: 10000 });
+      expect(recoveredCompletion).toHaveBeenCalledOnce();
+      expect(firstCompletion).toHaveBeenCalledOnce();
+    }
     await send!(call);
     expect(calls).toBe(1);
     expect(dispatches).toHaveLength(1);
@@ -220,4 +256,24 @@ it("rejects a mismatched Grok driver before any provider state is attached", asy
   const input = execution("/synthetic/pinned-instructions", "grok_bot");
   expect(() => parseNativeExecutionInput({ ...input, session: { ...input.session, driverKind: "openai_dot_mcp" } })).toThrow();
   expect(() => parseNativeExecutionInput({ ...input, provider: { ...input.provider, kind: "unsupported_bot" } })).toThrow();
+});
+
+describe("external Runner failure diagnostics", () => {
+  it.each([
+    ["active connection lease expired; durable state is preserved", "lease_expired_requires_bootstrap"],
+    ["runner_remote_process_exited lifecycle=running recoverableFailure=transport_reconnect_grace_exceeded", "transport_reconnect_grace_exceeded"],
+    ["transport reconnect deadline elapsed; durable state is preserved", "transport_reconnect_deadline_exceeded"],
+  ])("preserves the bounded failure reason from %s", (stderr, reason) => {
+    expect(externalRunnerExitMessage({ code: null, signal: null, stdout: "", stderr }))
+      .toContain(`reason=${reason}`);
+  });
+  it("does not disclose raw diagnostics or transport credentials", () => {
+    const stderr = "Bearer qualification-secret https://private.example/path?ticket=qualification-secret UNKNOWN_REASON";
+    expect(externalRunnerExitMessage({ code: null, signal: null, stdout: "", stderr }))
+      .toBe("dot_runner_process_exited_recovery_required: code=null signal=null");
+    const recognized = externalRunnerExitMessage({ code: null, signal: null, stdout: "", stderr: `connection lease expired ${stderr}` });
+    expect(recognized).toContain("reason=lease_expired_requires_bootstrap");
+    expect(recognized).not.toContain("qualification-secret");
+    expect(recognized).not.toContain("private.example");
+  });
 });

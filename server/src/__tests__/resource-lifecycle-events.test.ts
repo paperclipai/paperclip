@@ -1,7 +1,7 @@
 import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { agentApiKeys, agents, budgetPolicies, companies, costEvents, createDb, pluginCompanySettings, pluginLifecycleAcknowledgments, plugins, projects, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -40,7 +40,7 @@ describePostgres("Resource lifecycle events", () => {
   });
   afterEach(() => { vi.unstubAllEnvs(); });
 
-  const events = () => db.select().from(resourceLifecycleEvents).where(eq(resourceLifecycleEvents.companyId, companyId));
+  const events = () => db.select().from(resourceLifecycleEvents).where(and(eq(resourceLifecycleEvents.companyId, companyId), ne(resourceLifecycleEvents.resourceType, "agent_runtime")));
   const createAgent = async (status: "idle" | "pending_approval" | "terminated" = "idle", database: Db = db) => {
     const agent = await createAgentLifecycle(database).requestHire(companyId, { name: "Lifecycle agent", adapterType: "process", adapterConfig: {}, status });
     await worker.process(agent.id);
@@ -473,6 +473,18 @@ describePostgres("Resource lifecycle events", () => {
       expect(low.id).not.toBe(high.id);
     });
     expect(await inbox.list(companyId)).toEqual([expect.objectContaining({ action: "create" })]);
+  });
+
+  it.each([{ resourceLifecycle: ["project"] }, { resourceLifecycle: ["agent_runtime"] }] as const)("preserves legacy manual streams with automatic subscription %j", async ({ resourceLifecycle }) => {
+    const plugin = await createPlugin();
+    await createAgent();
+    await db.insert(resourceLifecycleEvents).values({ companyId, resourceType: "project", resourceId: randomUUID(), action: "create" });
+    const services = buildHostServices(db, plugin.id, plugin.pluginKey, createPluginEventBus(), undefined, { manifest: { resourceLifecycle } as never });
+    const handlers = createHostClientHandlers({ pluginId: plugin.id, capabilities: ["events.subscribe"], services });
+    try {
+      const rows = await handlers["events.listLifecycle"]({ companyId }, { invocationScope: { companyId } });
+      expect(new Set(rows.map(row => row.resourceType))).toEqual(new Set(resourceLifecycle[0] === "agent_runtime" ? ["agent", "project", "agent_runtime"] : ["agent", "project"]));
+    } finally { services.dispose(); }
   });
 
   it("enforces capability, invocation company, plugin availability, and company boundaries through host RPC", async () => {

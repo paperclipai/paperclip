@@ -55,3 +55,13 @@ export async function recordPhotonInboundActivity(
       inboundActivityPublications,
     );
 }
+
+export async function photonConversationBindingIsComplete(
+  conversationId: string,
+  hasCommittedTaskControlCompletion: (conversationId: string) => Promise<boolean>,
+): Promise<boolean> {
+  // A reply finishes an iMessage turn, not the conversation. Only a
+  // delivered /new or /close releases this chat's task binding. Use
+  // the durable control receipt so pre-fix completed rows also resume.
+  return await hasCommittedTaskControlCompletion(conversationId);
+}

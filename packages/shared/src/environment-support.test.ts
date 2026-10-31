@@ -13,6 +13,7 @@ describe("isSandboxProviderSupportedForAdapter", () => {
       "local",
       "ssh",
       "sandbox",
+      "plugin",
     ]);
   });
 

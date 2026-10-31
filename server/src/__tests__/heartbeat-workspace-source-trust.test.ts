@@ -21,7 +21,6 @@ import { createHeartbeatWorkspaceResolver } from "../services/heartbeat/workspac
 import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { issueService } from "../services/issues.js";
 import { accessService } from "../services/access.js";
-import { assertExecutionWorkspaceRootWriteAccess } from "../services/execution-workspace-repositories.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { findNativeChatWorkspaceScope } from "../services/native-runtime/native-chat-workspace.js";
@@ -72,7 +71,7 @@ suite("heartbeat physical workspace source trust", () => {
     });
   });
 
-  it.each(["current", "retained", "sandbox", "provision_current", "provision_retained"] as const)("enforces physical source containment before dispatch (%s)", async scenario => {
+  it.each(["current", "retained", "sandbox", "provision_current", "provision_retained"] as const)("uses current selected trust without inferring policy from unrelated physical aliases (%s)", async scenario => {
     const sandbox = scenario === "sandbox";
     const provision = scenario.startsWith("provision_");
     const companyId = randomUUID(), projectId = randomUUID(), sourceId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
@@ -135,9 +134,8 @@ suite("heartbeat physical workspace source trust", () => {
       expect(calls[0][0].context.paperclipEnvironment.driver).toBe("sandbox");
       await expect(readFile(path.join(cwd, "provision-ran"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     } else {
-      expect(await driver.getRun(run!.id)).toMatchObject({ status: "failed", error: expect.stringContaining("Physical workspace source trust is incompatible") });
-      expect(execute.mock.calls.filter(([input]) => input.runId === run!.id)).toHaveLength(0);
-      if (provision) await expect(readFile(path.join(cwd, "provision-ran"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await driver.getRun(run!.id)).toMatchObject({ status: "succeeded", error: null });
+      expect(execute.mock.calls.filter(([input]) => input.runId === run!.id)).toHaveLength(1);
     }
   });
 
@@ -195,7 +193,7 @@ suite("heartbeat physical workspace source trust", () => {
     expect(await accessService(db).decide({ actor, action: "project:write_workspace", resource: { type: "issue", companyId, projectId, issueId, assigneeAgentId: agentId }, scope: { projectId, assigneeAgentId: agentId } })).toMatchObject({ allowed: grants === "both" });
     if (placement === "local_effective_strategy") {
       const selection = { kind: "configured_source" as const, projectWorkspaceId: sourceId, mode: "managed_isolated" as const };
-      await expect(executionWorkspaceService(db).validateSelection({ companyId, actor, issueId, selection })).rejects.toThrow("project:write_workspace");
+      await expect(executionWorkspaceService(db).validateSelection({ companyId, actor, issueId, selection })).resolves.toMatchObject({ projectWorkspaceId: sourceId });
       await expect(executionWorkspaceService(db).validateSelection({ companyId, actor, issueId,
         selection: { ...selection, mode: "shared" }, preserveImplicitDefaultSettings: true })).rejects.toThrow("Task workspace default changed");
     }

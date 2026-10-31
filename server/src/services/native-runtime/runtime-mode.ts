@@ -51,7 +51,9 @@ export type NativeRuntimeResolution =
           | "claude_managed_agents_api"
           | "aws_agentcore_harness_api"
           | "acpx_runtime"
-          | "openai_dot_mcp" | "grok_bot_mcp";
+          | "openai_dot_mcp"
+          | "grok_bot_mcp"
+          | "muse_external";
         protocolVersion: 1;
       };
       authorityDecision: NativeStatusDecision;
@@ -97,11 +99,12 @@ function ineligible(
 
 export function resolveNativeRuntimeMode(input: {
   enabled: boolean;
+  museEnabled?: boolean;
   dotEnabled?: boolean;
   grokEnabled?: boolean;
   runtimeConfig: unknown;
   adapterConfig?: unknown;
-  agent: { id?: string; status: string; adapterType: string | null };
+  agent: { id?: string; companyId?: string; status: string; adapterType: string | null };
   issue: { id: string; workMode: string; executionWorkspaceId?: string | null } | null;
   target: { kind?: string } | null | undefined;
   workspaceId: string | null;
@@ -120,7 +123,7 @@ export function resolveNativeRuntimeMode(input: {
   }
   let runnerProfile: PaperclipRunnerProviderProfile;
   try {
-    runnerProfile = resolvePaperclipRunnerProviderProfile(input.adapterConfig);
+    runnerProfile = resolvePaperclipRunnerProviderProfile(input.adapterConfig, { companyId: input.agent.companyId });
   } catch (error) {
     if (error instanceof PaperclipRunnerProviderProfileError) {
       throw ineligible(error.code, error.message);
@@ -128,11 +131,17 @@ export function resolveNativeRuntimeMode(input: {
     throw error;
   }
   // Dot has its own rollout; enabling it does not opt in other Runner providers.
-  if (runnerProfile.provider === "openai_dot") {
+  if (runnerProfile.provider === "muse") {
+    if (!input.enabled) throw ineligible("paperclip_runner_rollout_disabled", "Paperclip Runner is experimental and disabled on this instance.");
+    if (input.museEnabled !== true) throw ineligible("paperclip_runner_muse_disabled", "Enable Muse personal-agent connections in experimental settings before assigning new work.");
+  } else if (runnerProfile.provider === "openai_dot") {
     if (input.dotEnabled !== true) throw ineligible("paperclip_runner_dot_disabled", "Enable OpenAI Dot and Assistant connections (MCP) in experimental settings before assigning new work.");
   } else if (runnerProfile.provider === "grok_bot" && (input.grokEnabled !== true || !input.enabled)) {
     throw ineligible("paperclip_runner_grok_disabled", "Enable Grok Bot, Paperclip Runner, and Assistant connections (MCP) before assigning new work.");
-  } else if (!input.enabled) {
+  } else if (runnerProfile.provider !== "codex" && runnerProfile.provider !== "opencode"
+    && !(runnerProfile.provider === "acpx"
+      && (["claude", "copilot", "pi", "antigravity"].includes(runnerProfile.acpxAgent ?? "")))
+    && !input.enabled) {
     throw ineligible(
       "paperclip_runner_rollout_disabled",
       "Paperclip Runner is experimental and disabled on this instance.",
@@ -147,11 +156,11 @@ export function resolveNativeRuntimeMode(input: {
       "Paperclip Runner requires an active agent.",
     );
   }
-  const allowedWorkModes = ["standard", "planning", "ask"];
+  const allowedWorkModes = ["standard", "planning", "ask", "skill_test"];
   if (!input.issue || !allowedWorkModes.includes(input.issue.workMode)) {
     throw ineligible(
       "paperclip_runner_issue_ineligible",
-      "Paperclip Runner requires a standard, planning, or ask task.",
+      "Paperclip Runner requires a standard, planning, ask, or skill test task.",
     );
   }
   const rollout = resolveNativeMigrationStatus({
@@ -189,6 +198,7 @@ export function resolveHeartbeatRuntimeMode(input: {
     runtimeModeResolvedAt: Date | null;
   };
   enabled: boolean;
+  museEnabled?: boolean;
   dotEnabled?: boolean;
   grokEnabled?: boolean;
   adapterType: string | null;
@@ -217,6 +227,7 @@ export function resolveHeartbeatRuntimeMode(input: {
   try {
     resolution = resolveNativeRuntimeMode({
       enabled: input.enabled,
+      museEnabled: input.museEnabled,
       dotEnabled: input.dotEnabled,
       grokEnabled: input.grokEnabled,
       runtimeConfig: {},
@@ -254,6 +265,7 @@ export function resolveHeartbeatRuntimeMode(input: {
         ? "claude_managed"
         : resolution.profile.backend === "aws_agentcore_harness_api"
           ? "aws_agentcore"
+      : resolution.profile.backend === "muse_external" ? "muse"
       : resolution.profile.backend === "grok_bot_mcp" ? "grok_bot"
       : resolution.profile.backend === "openai_dot_mcp" ? "openai_dot"
       : resolution.profile.backend === "acpx_runtime"
@@ -275,11 +287,12 @@ export function resolveHeartbeatNativeRuntimeMode(input: {
     driverKind?: string | null;
   };
   enabled: boolean;
+  museEnabled?: boolean;
   dotEnabled?: boolean;
   grokEnabled?: boolean;
   runtimeConfig: unknown;
   adapterConfig?: unknown;
-  agent: { id?: string; status: string; adapterType: string | null };
+  agent: { id?: string; companyId?: string; status: string; adapterType: string | null };
   issue: { id: string; workMode: string; executionWorkspaceId?: string | null } | null;
   target: { kind?: string } | null | undefined;
   workspaceId: string | null;
@@ -308,6 +321,7 @@ export function resolveHeartbeatNativeRuntimeMode(input: {
           ? "claude_managed_agents_api"
           : driverKind === "aws_agentcore_harness_api"
             ? "aws_agentcore_harness_api"
+        : driverKind === "muse_external" ? "muse_external"
         : driverKind === "grok_bot_mcp" ? "grok_bot_mcp"
         : driverKind === "openai_dot_mcp" ? "openai_dot_mcp"
         : driverKind === "acpx_runtime"

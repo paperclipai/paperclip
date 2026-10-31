@@ -111,7 +111,7 @@ async function fetchVerifiedRun(
   candidateRunId: string | null | undefined,
   agentId: string,
   issueId: string,
-): Promise<{ id: string; status: string } | null> {
+): Promise<{ id: string; status: string; errorCode: string | null } | null> {
   if (!candidateRunId) return null;
   const runRes = await board.get(`${BASE_URL}/api/heartbeat-runs/${candidateRunId}`);
   if (!runRes.ok()) return null;
@@ -119,7 +119,9 @@ async function fetchVerifiedRun(
   const context = candidateRun.contextSnapshot ?? {};
   if (candidateRun.agentId !== agentId) return null;
   if (context.issueId !== issueId && context.taskId !== issueId) return null;
-  return { id: candidateRunId, status: candidateRun.status };
+  const errorCode = typeof candidateRun.errorCode === "string" && /^[a-z][a-z0-9_.-]{0,79}$/i.test(candidateRun.errorCode)
+    ? candidateRun.errorCode : null;
+  return { id: candidateRunId, status: candidateRun.status, errorCode };
 }
 
 /**
@@ -237,9 +239,13 @@ async function invokeHeartbeat(
         if (
           typeof recentRun.id === "string" &&
           recentRun.agentId === agentId &&
-          (context.issueId === issueId || context.taskId === issueId)
+          (context.issueId === issueId || context.taskId === issueId) &&
+          ["queued", "running", "succeeded"].includes(recentRun.status)
         ) {
-          return recentRun.id;
+          // A prior signoff stage can leave a cancelled run in recent history.
+          // Re-read a viable candidate: it may have settled since the list read.
+          const verified = await fetchVerifiedRun(board, recentRun.id, agentId, issueId);
+          if (verified && ["queued", "running", "succeeded"].includes(verified.status)) return verified.id;
         }
       }
     }
@@ -289,7 +295,7 @@ async function waitForFixtureRun(
     status = run!.status;
     if (status === "succeeded") return true;
     if (status === "cancelled" && allowCancelledLock) return false;
-    expect(["queued", "running"], `Fixture run ${runId} ended as ${status}`).toContain(status);
+    expect(["queued", "running"], `Fixture run ${runId} ended as ${status} (errorCode=${run!.errorCode ?? "unavailable"})`).toContain(status);
     await new Promise((resolve) => setTimeout(resolve, WAKEUP_POLL_INTERVAL_MS));
   } while (Date.now() < deadline);
   throw new Error(`Fixture run ${runId} did not succeed within ${waitBudgetMs}ms (last status: ${status})`);
@@ -548,15 +554,47 @@ async function createIssueWithPolicy(ctx: TestContext, title: string, stages?: u
   return issue;
 }
 
+test("a deferred signoff wake ignores cancelled history from an earlier stage", async () => {
+  const actingAgent = "executor";
+  const issueId = "returning-task";
+  const json = (body: unknown) => ({ ok: () => true, json: async () => body });
+  const reads: string[] = [];
+  let wakes = 0;
+  const board = {
+    post: async (url: string) => {
+      expect(url).toBe(`${BASE_URL}/api/agents/${actingAgent}/wakeup`);
+      wakes++;
+      return json({ reason: "issue_execution_deferred", executionRunId: "reviewer-turn", executionAgentId: "reviewer" });
+    },
+    get: async (url: string) => {
+      reads.push(url);
+      if (url === `${BASE_URL}/api/heartbeat-runs/reviewer-turn`) return json({ status: "succeeded" });
+      if (url === `${BASE_URL}/api/issues/${issueId}`) return json({ companyId: "company", assigneeAgentId: actingAgent });
+      if (url === `${BASE_URL}/api/companies/company/heartbeat-runs?agentId=${actingAgent}&limit=20`) return json([
+        { id: "cancelled-earlier-stage", agentId: actingAgent, status: "cancelled", errorCode: "issue_assignee_changed", contextSnapshot: { issueId } },
+        { id: "current-executor-turn", agentId: actingAgent, status: "running", contextSnapshot: { issueId } },
+      ]);
+      if (url === `${BASE_URL}/api/heartbeat-runs/current-executor-turn`) return json({
+        id: "current-executor-turn", agentId: actingAgent, status: "running", contextSnapshot: { issueId },
+      });
+      throw new Error(`Unexpected fixture read: ${url}`);
+    },
+  } as unknown as APIRequestContext;
+  expect(await invokeHeartbeat(board, actingAgent, issueId)).toBe("current-executor-turn");
+  expect(wakes).toBe(1);
+  expect(reads).toContain(`${BASE_URL}/api/heartbeat-runs/current-executor-turn`);
+  expect(reads).toContain(`${BASE_URL}/api/companies/company/heartbeat-runs?agentId=${actingAgent}&limit=20`);
+});
+
 test.describe("Signoff execution policy", () => {
   let ctx: TestContext;
 
-  test.beforeAll(async () => {
+  test.beforeEach(async () => {
     const boardRequest = await pwRequest.newContext({ baseURL: BASE_URL });
     ctx = await setupCompany(boardRequest);
   });
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
     if (!ctx) return;
     const board = ctx.boardRequest;
 

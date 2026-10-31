@@ -43,3 +43,5 @@ export function replaceSpekoChannelRuntime(runtime: ChatRuntime | ChatSdkRuntime
   if (!("replaceVoiceEndpoint" in runtime)) throw conflict("Voice runtime is unavailable");
   return runtime.replaceVoiceEndpoint({ companyId: record.endpoint.companyId, endpointId: record.endpoint.id, userName: record.assignedAgentName, persistence });
 }
+
+export const SPEKO_CONVERSATION_IS_LINEAR = false;

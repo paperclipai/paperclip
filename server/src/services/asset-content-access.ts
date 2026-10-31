@@ -1,8 +1,9 @@
 import { and, eq } from "drizzle-orm";
-import { assets, heartbeatRuns, issues, issueAttachments, runnerApiResponseReservations, type Db } from "@paperclipai/db";
+import { assets, caseAttachments, heartbeatRuns, issues, issueAttachments, runnerApiResponseReservations, type Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { canActorReadHeartbeatRun } from "./heartbeat-run-privacy.js";
+import { canActorReadCase } from "./case-access.js";
 
 type Asset = Pick<typeof assets.$inferSelect, "id" | "companyId" | "objectKey" | "createdByAgentId" | "createdByUserId">;
 
@@ -54,6 +55,17 @@ export async function canActorReadAssetContent(db: Db, actor: AuthorizationActor
     if (!(await access.decide({ actor, action: "issue:read", resource: {
       type: "issue", companyId: asset.companyId, issueId: attachment.issueId,
     } })).allowed) return false;
+  }
+  const caseLinks = await db.select({ caseId: caseAttachments.caseId }).from(caseAttachments)
+    .where(and(eq(caseAttachments.assetId, asset.id), eq(caseAttachments.companyId, asset.companyId)));
+  // A retained asset must not become company-readable when a case link is removed.
+  // The upload namespace independently retains its original case identity.
+  if (namespace(asset) === "cases") {
+    if (!sourceIssueId || !isUuidLike(sourceIssueId)
+      || !(await canActorReadCase(db, actor, { id: sourceIssueId, companyId: asset.companyId }))) return false;
+  }
+  for (const link of caseLinks) {
+    if (!(await canActorReadCase(db, actor, { id: link.caseId, companyId: asset.companyId }))) return false;
   }
   return true;
 }

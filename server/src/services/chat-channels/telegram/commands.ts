@@ -1,3 +1,4 @@
+import { linearControlCommand, type chatSurfaceKind } from "../inbound/surfaces.js";
 import type { EndpointRow, RuntimeContext } from "../runtime-types.js";
 
 import {
@@ -127,4 +128,17 @@ export function telegramForumControlResponse(command: "new" | "close", taskLabel
   return hasConversation
     ? "This chat conversation is closed. A later message here will continue the same Paperclip task."
     : "No task is active. Send a message to start one.";
+}
+
+export function telegramInboundControls(text: string, surfaceKind: ReturnType<typeof chatSurfaceKind>) {
+  // Telegram exposes its small command vocabulary in forum topics too.
+  // A forum topic is a native provider thread and therefore stays bound to
+  // one immutable Paperclip task, but the command must still be consumed
+  // as control-plane input instead of becoming a task comment/wakeup.
+  const controlCommand = linearControlCommand(text);
+  const guidanceCommand = telegramGuidanceCommand(text);
+  const isForumTopic = surfaceKind === "native_thread";
+  const bypassesControlChronology = controlCommand === "status" ||
+    (controlCommand === "new" && isForumTopic) || guidanceCommand !== null;
+  return { controlCommand, guidanceCommand, isForumTopic, bypassesControlChronology };
 }

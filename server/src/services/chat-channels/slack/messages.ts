@@ -1,3 +1,6 @@
+import type { Message, Thread } from "chat";
+import type { EndpointRow } from "../runtime-types.js";
+import type { ChatSdkMessageCallbackEvent } from "../../chat-sdk-runtime.js";
 import { createHash } from "node:crypto";
 
 
@@ -95,4 +98,13 @@ export function slackOrphanFollowUp(threadId: string, messageId: string): boolea
 
 export function stripSlackTitleMentions(text: string): string {
   return text.replace(/<@[A-Z0-9]+>/gi, "");
+}
+
+export function slackMessageMeetsMentionRequirement(
+  endpoint: Pick<EndpointRow, "requireAtMention">,
+  thread: Pick<Thread, "isDM">,
+  trigger: ChatSdkMessageCallbackEvent["trigger"],
+  message: Pick<Message, "isMention">,
+): boolean {
+  return !endpoint.requireAtMention || thread.isDM || trigger === "mention" || message.isMention === true;
 }

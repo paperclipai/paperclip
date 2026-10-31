@@ -107,3 +107,17 @@ export function teamsOrphanFollowUp(threadId: string, messageId: string): boolea
 export function teamsAttachmentReferenceText(count: number, providerUrl: string | null): string {
   return `Shared ${count} Microsoft Teams file reference${count === 1 ? "" : "s"}.${providerUrl ? ` Open in Microsoft Teams: ${providerUrl}` : ""}`;
 }
+
+export function teamsWebhookLifecycleEventFromPayload(
+  payload: unknown,
+  endpointRuntime: Pick<ChatEndpointRuntime, "acceptsProviderScope" | "parseMicrosoftTeamsMessage">,
+): MicrosoftTeamsLifecycleEvent | null {
+  if (!payload || !endpointRuntime.acceptsProviderScope(payload)) return null;
+  return microsoftTeamsLifecycleEventFromPayload(payload, endpointRuntime);
+}
+
+export function teamsRootMentionCanEnableSetupDestination(
+  resource: { type: string } | null | undefined,
+): boolean {
+  return resource?.type === "channel";
+}

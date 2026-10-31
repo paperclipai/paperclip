@@ -1,8 +1,10 @@
+import { useId } from "react";
 import { Check, Circle, Loader2 } from "lucide-react";
 import { AGENT_ROLES, type CreateGrokInvitation, type DotPairing, type GrokConnection } from "@paperclipai/shared";
 import { AdapterMark } from "../AdapterMark";
 import { AgentSetupPrompt } from "../AgentSetupPrompt";
-import { Button } from "../ui/button";
+import { Button, buttonVariants } from "../ui/button";
+import { CopyText } from "../CopyText";
 import { Input } from "../ui/input";
 import { NativeSelect } from "../ui/select";
 import { DialogDescription, DialogTitle } from "../ui/dialog";
@@ -23,6 +25,7 @@ export interface GrokBotSetupContentProps {
 }
 const steps = ["Identify Bot", "Connect access", "Enable assignments", "Verify"];
 export function GrokBotSetupContent(p: GrokBotSetupContentProps) {
+  const pairingCodeId = useId();
   const binding = p.connection?.binding;
   const routine = binding?.routine;
   const exchange = routine?.lastExchange;
@@ -57,7 +60,14 @@ export function GrokBotSetupContent(p: GrokBotSetupContentProps) {
         {p.step === 1 && <div className="space-y-4 text-sm">
           <p>Copy the connection instructions into your Bot’s chat. Add the custom MCP plugin and complete its browser authorization.</p>
           {p.connection?.resourceUrl && <AgentSetupPrompt prompt={buildGrokAccessPrompt(p.connection.resourceUrl, p.details.botName)} label="Copy connection instructions" title="Connect Paperclip access" description="Send these instructions to your Bot. The pairing code stays in your browser." />}
-          {!binding?.connected && p.pairing && <label className="block space-y-2"><span>One-use pairing code</span><Input value={p.pairing.pairingCode} readOnly type="password" autoComplete="off" onFocus={e => e.target.select()} /><span className="block text-xs text-muted-foreground">Copy this field into Paperclip’s authorization page. Do not paste it into Bot chat. Expires {new Date(p.pairing.expiresAt).toLocaleTimeString()}.</span></label>}
+          {!binding?.connected && p.pairing && <div className="space-y-2">
+            <label htmlFor={pairingCodeId}>One-use pairing code</label>
+            <div className="flex items-center gap-2">
+              <Input id={pairingCodeId} value={p.pairing.pairingCode} readOnly type="password" autoComplete="off" />
+              <CopyText text={p.pairing.pairingCode} ariaLabel="Copy pairing code" className={buttonVariants({ variant: "outline", size: "sm" })}>Copy code</CopyText>
+            </div>
+            <p className="text-xs text-muted-foreground">Copy this code into Paperclip’s authorization page. Do not paste it into Bot chat. Expires {new Date(p.pairing.expiresAt).toLocaleTimeString()}.</p>
+          </div>}
           <p role="status" aria-live="polite" className="text-muted-foreground">{binding?.connected ? "Agent access connected." : "Watching for authorization. This connection works as the named agent."}</p>
           <p className="text-xs text-muted-foreground">Grok plugins are account-wide. Linking one Bot does not isolate its credentials from other Bots on your account.</p>
         </div>}

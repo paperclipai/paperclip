@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHeartbeatPreparationTiming } from "./preparation-timing.js";
 
 const handles = vi.hoisted(() => ({ spans: [] as Array<{ setStatus: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> }> }));
@@ -15,7 +15,8 @@ vi.mock("@opentelemetry/api", () => ({
 }));
 
 describe("heartbeat preparation timing", () => {
-  beforeEach(() => { vi.clearAllMocks(); handles.spans.length = 0; });
+  beforeEach(() => { vi.clearAllMocks(); handles.spans.length = 0; vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test"); });
+  afterEach(() => vi.unstubAllEnvs());
 
   it("correlates preparation with the existing run hash without recording content", async () => {
     const runId = "private-run-id";

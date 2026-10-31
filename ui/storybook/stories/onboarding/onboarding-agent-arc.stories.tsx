@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { OnboardingWizard } from "@/components/OnboardingWizard";
 import { PillGuy } from "@/components/onboarding/PillGuy";
 import { Stepper } from "@/components/onboarding/Stepper";
+import { storybookHiredAgent } from "../../fixtures/paperclipData";
 import { useCompanyListQuery } from "@/api/companies-query";
 import { useDialog } from "@/context/DialogContext";
 import {
@@ -41,7 +42,8 @@ const meta = {
         "onboarding/first-task"
       ],
       "implementation": "production",
-      "boundary": "fixtures"
+      "boundary": "fixtures",
+      "notes": "Production wizard with simulated accounts, immutable-target discovery, native/Legacy setup and refused/unconfirmed cleanup. Fixtures do not prove isolation, lease cleanup, runtime limits, draft reload persistence or model execution."
     },
   },
 } satisfies Meta;
@@ -527,3 +529,129 @@ export const LocalClaudeRetry = localSubscriptionStory("Claude", "retry");
 export const LocalCodexRetry = localSubscriptionStory("OpenAI", "retry");
 export const LocalClaudeSuccess = localSubscriptionStory("Claude", "success");
 export const LocalCodexSuccess = localSubscriptionStory("OpenAI", "success");
+
+
+type CodexPlatformFixtureOutcome = "native" | "legacy" | "permission" | "cleanup";
+interface CodexPlatformFixtureReceipt {
+  calls: string[];
+  testRequests: Record<string, unknown>[];
+  hireRequests: Record<string, unknown>[];
+  createdAdapterType: string | null;
+}
+let codexPlatformFixtureReceipt: CodexPlatformFixtureReceipt | null = null;
+
+function installCodexPlatformFixture(outcome: CodexPlatformFixtureOutcome) {
+  clearOnboardingDraft();
+  resetOnboardingFixtureState();
+  setOnboardingFixtureState({ environments: "managed-sandbox", authSignal: "present", savedManagedSubscription: "openai" });
+  const previous = window.fetch;
+  const receipt: CodexPlatformFixtureReceipt = { calls: [], testRequests: [], hireRequests: [], createdAdapterType: null };
+  codexPlatformFixtureReceipt = receipt;
+  let qualified = false;
+  const diagnostic = outcome === "permission"
+    ? "Instance admin access is required to qualify this environment. Ask an instance admin or choose Legacy runner in Advanced."
+    : "The setup lease could not be confirmed as released. Ask an instance admin to resolve cleanup or choose Legacy runner in Advanced.";
+  const fixtureFetch: typeof fetch = async (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
+    const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+    const payload = async (): Promise<Record<string, unknown>> => JSON.parse(typeof init?.body === "string" ? init.body : input instanceof Request ? await input.clone().text() : "{}");
+    if (url.pathname === `/api/companies/${STORYBOOK_COMPANY_ID}/environments` && method === "GET") {
+      const response = await previous(input, init);
+      const environments = await response.json();
+      return Response.json(environments.map((environment: { id: string; config: Record<string, unknown> }) => ({ ...environment,
+        config: { ...environment.config, image: `registry.example.test/paperclip@sha256:${"a".repeat(64)}` },
+      })));
+    }
+    if (url.pathname === "/api/adapters" && url.searchParams.get("companyId") === STORYBOOK_COMPANY_ID) {
+      if (url.searchParams.get("environmentId") !== "environment-storybook-sandbox") return Response.json({ error: "Discovery requires the selected environment." }, { status: 400 });
+      receipt.calls.push(qualified ? "discovery-after" : "discovery-before");
+      const response = await previous(input, init);
+      const adapters = (await response.json()).map((adapter: { type: string }) => adapter.type === "codex_local" ? { ...adapter,
+        defaultRunner: qualified && outcome === "native" ? "paperclip" : "legacy",
+        supportedRunners: qualified && outcome === "native" ? ["paperclip", "legacy"] : ["legacy"],
+      } : adapter);
+      return Response.json([...adapters, { type: "paperclip_runner", loaded: true, disabled: false, source: "builtin", label: "Paperclip Runner", modelsCount: 0 }]);
+    }
+    if (url.pathname === "/api/environments/environment-storybook-sandbox/probe" && method === "POST") {
+      receipt.calls.push("platform");
+      if (url.searchParams.get("companyId") !== STORYBOOK_COMPANY_ID) return Response.json({ error: "The probe requires this company's context." }, { status: 403 });
+      if (outcome === "permission") return Response.json({ error: diagnostic }, { status: 403 });
+      if (outcome === "cleanup") return Response.json({ ok: false, driver: "sandbox", summary: diagnostic,
+        details: { platformQualificationRecorded: false, leaseId: "storybook-platform-lease", platformQualificationDiagnostic: diagnostic } });
+      qualified = true;
+      return Response.json({ ok: true, driver: "sandbox", summary: "The immutable image was measured and its setup lease released.",
+        details: { platformQualificationRecorded: true, leaseId: "storybook-platform-lease" } });
+    }
+    if (url.pathname === `/api/companies/${STORYBOOK_COMPANY_ID}/adapters/codex_local/test-environment` && method === "POST") {
+      receipt.calls.push("adapter");
+      receipt.testRequests.push(await payload());
+      const response = await previous(input, init);
+      const result = await response.json();
+      return Response.json({ ...result, adapterType: outcome === "native" && qualified ? "paperclip_runner" : "codex_local" });
+    }
+    if (url.pathname === `/api/companies/${STORYBOOK_COMPANY_ID}/agent-hires` && method === "POST") {
+      receipt.calls.push("hire");
+      const request = await payload();
+      receipt.hireRequests.push(request);
+      const native = outcome === "native" && qualified;
+      receipt.createdAdapterType = native ? "paperclip_runner" : "codex_local";
+      const adapterConfig = request.adapterConfig as Record<string, unknown>;
+      return Response.json({ agent: { ...storybookHiredAgent, ...request, adapterType: receipt.createdAdapterType,
+        adapterConfig: { ...adapterConfig, ...(native ? { provider: "codex" } : {}) } }, approval: null });
+    }
+    return previous(input, init);
+  };
+  window.fetch = fixtureFetch;
+  return () => {
+    if (window.fetch === fixtureFetch) window.fetch = previous;
+    if (codexPlatformFixtureReceipt === receipt) codexPlatformFixtureReceipt = null;
+    clearOnboardingDraft();
+    resetOnboardingFixtureState();
+  };
+}
+
+function managedCodexQualificationStory(outcome: CodexPlatformFixtureOutcome): StoryObj {
+  return {
+    beforeEach: () => installCodexPlatformFixture(outcome),
+    render: () => <WizardArc />,
+    parameters: { docs: { description: { story: "Production onboarding with simulated immutable OCI environment, scoped runner discovery and saved platform probe. No sandbox, login, cleanup or provider execution is performed." } } },
+    play: async () => {
+      await advance("Connect a model");
+      await userEvent.click(await screen.findByRole("radio", { name: /^OpenAI / }, { timeout: STEP_TIMEOUT_MS }));
+      const success = outcome === "native" || outcome === "legacy";
+      if (success) {
+        await screen.findByRole("heading", { name: "Let's get started..." }, { timeout: STEP_TIMEOUT_MS });
+      } else {
+        await screen.findByText(outcome === "permission"
+          ? "Instance admin access is required to qualify this environment. Ask an instance admin or choose Legacy runner in Advanced."
+          : "The setup lease could not be confirmed as released. Ask an instance admin to resolve cleanup or choose Legacy runner in Advanced.", {}, { timeout: STEP_TIMEOUT_MS });
+        await userEvent.click(screen.getByText("Advanced", { exact: true, selector: "summary" }));
+        const runnerControl = screen.getByRole("button", { name: "Runner" });
+        await expect(runnerControl).toHaveTextContent("Legacy runner (default)");
+        await waitFor(() => expect(runnerControl).toBeEnabled(), { timeout: STEP_TIMEOUT_MS });
+        await userEvent.click(runnerControl);
+        await expect(await screen.findByRole("option", { name: "Legacy runner (default)" })).toBeEnabled();
+        await userEvent.keyboard("{Escape}");
+        await expect(screen.queryByRole("heading", { name: "Let's get started..." })).not.toBeInTheDocument();
+      }
+      const receipt = codexPlatformFixtureReceipt!;
+      await expect(receipt.calls.filter(call => call === "platform")).toHaveLength(1);
+      await expect(receipt.testRequests).toHaveLength(success ? 1 : 0);
+      await expect(receipt.hireRequests).toHaveLength(success ? 1 : 0);
+      if (success) {
+        await expect(receipt.calls.indexOf("discovery-after")).toBeGreaterThan(receipt.calls.indexOf("platform"));
+        await expect(receipt.calls.indexOf("adapter")).toBeGreaterThan(receipt.calls.indexOf("discovery-after"));
+        await expect(receipt.calls.indexOf("hire")).toBeGreaterThan(receipt.calls.indexOf("adapter"));
+        await expect(receipt.testRequests[0]).not.toHaveProperty("runner");
+        await expect(receipt.testRequests[0]).toHaveProperty("environmentId", "environment-storybook-sandbox");
+        await expect(receipt.hireRequests[0]).not.toHaveProperty("runner");
+        await expect(receipt.createdAdapterType).toBe(outcome === "native" ? "paperclip_runner" : "codex_local");
+      }
+    },
+  };
+}
+
+export const ManagedCodexQualifiesOnConnect = managedCodexQualificationStory("native");
+export const ManagedCodexMeasuredLegacy = managedCodexQualificationStory("legacy");
+export const ManagedCodexQualificationRefused = managedCodexQualificationStory("permission");
+export const ManagedCodexCleanupUnconfirmed = managedCodexQualificationStory("cleanup");

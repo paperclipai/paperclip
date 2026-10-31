@@ -1,10 +1,12 @@
 import { ProjectSkillRepositoryRow } from "@/components/skill-studio/ProjectSkillRepositoryRow";
 import { SkillSourceConnectionRepair } from "@/components/skill-studio/SkillSourceConnectionRepair";
+import { SkillSourceBranchRepair } from "@/components/skill-studio/SkillSourceBranchRepair";
 import { SkillSourceSyncControls } from "@/components/skill-studio/SkillSourceSyncControls";
+import { SkillsPageNavigation } from "@/components/skill-studio/SkillsNavigationTabs";
 import { GithubIcon } from "@/components/icons/github-icon";
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { RefreshCw, Plus, ExternalLink, Check, Lock, GitBranch, FileText, MoreVertical } from 'lucide-react';
+import { RefreshCw, Plus, ExternalLink, Check, Lock, GitBranch, FileText, MoreVertical, CircleAlert } from 'lucide-react';
 import { parseGitHubSkillRepositoryUrl, type SkillSourceDisconnectRequest, type SkillSource, type SkillSourceDiscovery, type SkillSourceRefreshResult, type SkillSourceScanProgress } from '@paperclipai/shared';
 import { Link, useNavigate, useParams } from '@/lib/router';
 import { useCompany } from '@/context/CompanyContext';
@@ -38,11 +40,13 @@ export function SkillSources() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const [results, setResults] = useState<Record<string, { message: string; failedAt: number; operation: 'refresh' | 'settings' } | null>>({});
   const [repairSourceId, setRepairSourceId] = useState<string | null>(null);
+  const [branchSourceId, setBranchSourceId] = useState<string | null>(null);
   const [disconnectSource, setDisconnectSource] = useState<SkillSource | null>(null);
   const companyId = selectedCompanyId ?? '';
   useEffect(() => { setBreadcrumbs([{ label: 'Skills', href: '/skills' }, { label: 'Sources' }]); }, [setBreadcrumbs]);
   const query = useQuery({ queryKey: sourceKey(companyId), queryFn: () => skillSourcesApi.list(companyId), enabled: Boolean(companyId), refetchInterval: 5000 });
   const repairSource = query.data?.find(source => source.id === repairSourceId);
+  const branchSource = query.data?.find(source => source.id === branchSourceId);
   const projectRepositories = useQuery({ queryKey: queryKeys.skillSources.projects(companyId), queryFn: () => skillSourcesApi.projectRepositories(companyId), enabled: Boolean(companyId), refetchInterval: 5000 });
   async function invalidate() {
     await Promise.all([client.invalidateQueries({ queryKey: queryKeys.skillSources.projects(companyId) }), client.invalidateQueries({ queryKey: sourceKey(companyId) }), client.invalidateQueries({ queryKey: queryKeys.companySkills.list(companyId) })]);
@@ -56,9 +60,6 @@ export function SkillSources() {
   const settings = useMutation({ mutationFn: ({ source, enabled }: { source: SkillSource; enabled: boolean }) => skillSourcesApi.settings(companyId, source.id, { revision: source.revision, automaticUpdates: enabled }),
     onSuccess: async (_result, variables) => { setResults(prev => ({ ...prev, [variables.source.id]: null })); await invalidate(); },
     onError: (error, variables) => setResults(prev => ({ ...prev, [variables.source.id]: { message: error.message, failedAt: Date.now(), operation: 'settings' } })) });
-  const repairBranch = useMutation({ mutationFn: (source: SkillSource) => skillSourcesApi.settings(companyId, source.id, { revision: source.revision, trackingRef: 'HEAD' }),
-    onSuccess: async (_result, source) => { setResults(prev => ({ ...prev, [source.id]: null })); await invalidate(); sourceActionButtons.current[source.id]?.focus(); },
-    onError: (error, source) => { setResults(prev => ({ ...prev, [source.id]: { message: error.message, failedAt: Date.now(), operation: 'settings' } })); void invalidate(); } });
   const availableProjects = groupProjectSkillRepositories(Array.isArray(projectRepositories.data) ? projectRepositories.data.filter(repo => !repo.sourceId) : []);
   const groupSource = (group: typeof availableProjects[number]) => query.data?.find(source => source.repositoryUrl.toLowerCase() === group.repository.repositoryUrl.toLowerCase() && source.trackingRef === group.repository.trackingRef);
   const uninstalledProjects = availableProjects.filter(group => !groupSource(group));
@@ -85,9 +86,19 @@ export function SkillSources() {
   return <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 p-4 md:p-6">
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div><h1 className="text-xl font-semibold">Skill sources</h1><p className="mt-1 text-sm text-muted-foreground">Skills from your repositories stay up to date automatically.</p></div>
-      <Button onClick={() => navigate('/skills/sources/new')}><Plus className="size-4" />Import from GitHub</Button>
+      <div className="flex items-center gap-2">
+        <Button onClick={() => navigate('/skills/sources/new')}><Plus className="size-4" />Import from GitHub</Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="icon" aria-label="More source actions"><MoreVertical className="size-4" /></Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem asChild><Link to="/apps">Manage GitHub connection</Link></DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
     </header>
-    <Link to="/skills" className="text-sm text-muted-foreground hover:text-foreground">Installed skills</Link>
+    <SkillsPageNavigation activeView="sources" />
     {query.isPending && <p role="status" className="text-sm text-muted-foreground">Loading sources…</p>}
     {query.error && <p role="alert" className="text-sm text-destructive">{query.error.message} <Button variant="ghost" size="sm" onClick={() => void query.refetch()}>Try again</Button></p>}
     {query.data?.length === 0 && availableProjects.length === 0 && <div className="flex flex-col items-start gap-3 py-8"><p className="text-sm text-muted-foreground">No repositories added yet. Import your skills to make them available in {selectedCompany?.name ?? 'this company'}.</p><Button variant="outline" onClick={() => navigate('/skills/sources/new')}>Import from GitHub</Button></div>}
@@ -103,6 +114,7 @@ export function SkillSources() {
         const newCount = source.entries.filter(entry => entry.selection === 'new' && entry.present).length;
         const result = results[source.id];
         const projectGroup = availableProjects.find(group => groupSource(group)?.id === source.id);
+        const importingProjectSkills = projectGroup && (projectGroup.hasPending || (adopt.isPending && adopt.variables?.key === projectGroup.key));
         const localError = result && result.message !== source.lastError
           && (result.operation === 'settings' || !source.lastSuccessAt || new Date(source.lastSuccessAt).getTime() < result.failedAt)
           ? result.message : null;
@@ -110,8 +122,7 @@ export function SkillSources() {
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex min-w-0 basis-full items-start gap-3 sm:flex-1 sm:basis-auto"><GithubIcon className="size-5 shrink-0 text-muted-foreground" /><div className="min-w-0 flex-1">
               <a href={source.repositoryUrl} target="_blank" rel="noreferrer" title={source.fullName} className="block truncate rounded-sm text-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{source.fullName}</a>
-              <p className="truncate text-xs text-muted-foreground">{source.trackingRef === 'HEAD' ? 'Default branch' : source.trackingRef}{source.lastSuccessAt ? ` · Updated ${timeAgo(source.lastSuccessAt)}` : ''}{source.accessScope === 'projects' ? ' · Project access' : ''}</p>
-              <div className="flex flex-wrap gap-x-3 gap-y-1">{source.projects?.map(project => <Link key={project.id} to={`/projects/${project.id}`} className="break-words text-xs text-muted-foreground hover:underline">{project.name}</Link>)}</div>
+              <p className="truncate text-xs text-muted-foreground">{source.trackingRef === 'HEAD' ? 'Default branch' : source.trackingRef}{source.lastSuccessAt ? ` · Updated ${timeAgo(source.lastSuccessAt)}` : ''}{source.accessScope === 'projects' ? ' · Project access' : ''}{importingProjectSkills && <span role="status"> · Importing skills…</span>}</p>
               {source.enabled && source.automaticUpdates === false && <p className="text-xs text-muted-foreground">Automatic updates paused</p>}
               {source.trackingActive === false && <p className="text-xs text-muted-foreground">Repository tracking stopped · installed skills kept</p>}
               {!source.enabled && <p className="text-xs text-muted-foreground">Disconnected</p>}
@@ -130,13 +141,16 @@ export function SkillSources() {
                 <DropdownMenuCheckboxItem checked={source.automaticUpdates ?? true} disabled={!source.enabled || settings.isPending}
                   onCheckedChange={enabled => settings.mutate({ source, enabled })}>Automatic updates</DropdownMenuCheckboxItem>
                 <DropdownMenuItem onSelect={() => navigate(`/skills/sources/${source.id}`)}>Select skills</DropdownMenuItem>
+                {projectGroup && projectGroup.importableWorkspaces.length > 0 && <DropdownMenuItem disabled={adopt.isPending} onSelect={() => adopt.mutate(projectGroup)}>
+                  {projectGroup.repository.status === 'error' ? 'Retry project import' : projectGroup.hasPending ? 'Import remaining project skills' : 'Import project skills'}
+                </DropdownMenuItem>}
                 <DropdownMenuItem onSelect={() => setRepairSourceId(source.id)}>Choose connection</DropdownMenuItem>
+                {source.accessScope !== 'projects' && !source.projects?.some(project => project.active) && <DropdownMenuItem onSelect={() => setBranchSourceId(source.id)}>Choose a new branch</DropdownMenuItem>}
                 <DropdownMenuItem variant="destructive" disabled={disconnect.isPending} onSelect={() => { disconnect.reset(); reloadRemoval.reset(); setDisconnectSource(source); }}>{source.enabled ? 'Disconnect source' : 'Remove source'}</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
-          {projectGroup && <ProjectSkillRepositoryRow repository={projectGroup.repository} backgroundPending={projectGroup.hasPending} showRepository={false} disabled={adopt.isPending}
-            pending={adopt.isPending && adopt.variables?.key === projectGroup.key} onImport={() => adopt.mutate(projectGroup)} />}
+          {projectGroup?.repository.lastError && <SourceErrorNotice message={projectGroup.repository.lastError} />}
           {installed.length > 0 && <ul className="ml-8 min-w-0" aria-label={`Installed skills from ${source.fullName}`}>
             {installed.map(entry => <li key={entry.id}>
               <Link to={skillRoute(entry.skillId!)} title={entry.path} className="group flex min-w-0 items-center gap-2 rounded-sm py-1 text-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -150,19 +164,20 @@ export function SkillSources() {
           {installed.length === 0 && source.entries.length === 0 && source.syncState !== 'refreshing' && !source.lastError && <p className="ml-8 text-sm text-muted-foreground">
             No skills found yet.{source.enabled && source.automaticUpdates && source.importNewSkills ? ' New skills will be imported automatically.' : ''}
           </p>}
-          {localError && <p role="alert" className="text-sm text-destructive">{localError}</p>}
+          {localError && <SourceErrorNotice message={localError} />}
           <SkillImportWarnings warnings={skillImportWarnings(source.entries.filter(entry => entry.selection === 'selected'), source.repositoryPackage)} />
-          {source.lastError && source.lastAttemptAt && <p className="text-xs text-muted-foreground">Last attempt {timeAgo(source.lastAttemptAt)}</p>}
-          {source.lastError && <p role="alert" className="text-sm text-destructive">{source.lastError} <Link to={`/skills/sources/${source.id}`} className="underline">Review source</Link></p>}
+          {source.lastError && <SourceErrorNotice message={source.lastError}
+            detail={source.lastAttemptAt ? `Last attempt ${timeAgo(source.lastAttemptAt)}` : undefined}
+            action={<Link to={`/skills/sources/${source.id}`} className="font-medium text-destructive underline underline-offset-2">Review source</Link>} />}
           {source.lastError && (source.repairAction === 'connection' || (!source.repairAction && !source.connectionId)) && <Button variant="outline" size="sm" className="self-start" onClick={() => setRepairSourceId(source.id)}>Choose connection</Button>}
           {source.lastError && source.repairAction === 'branch' && (source.accessScope === 'projects' || source.projects?.some(project => project.active)
             ? <div className="flex flex-wrap gap-3">{source.projects?.filter(project => project.active).map(project => <Link key={project.id} to={`/projects/${project.id}`} className="text-sm underline">Update {project.name} repository</Link>)}</div>
-            : <Button variant="outline" size="sm" className="self-start" disabled={repairBranch.isPending} onClick={() => repairBranch.mutate(source)}>
-              {repairBranch.isPending && repairBranch.variables.id === source.id ? 'Updating branch…' : 'Use default branch'}</Button>)}
-          {source.connectionId && <Link to={`/apps/${source.connectionId}/permissions`} className="text-xs text-muted-foreground hover:text-foreground">Manage GitHub connection</Link>}
+            : <Button variant="outline" size="sm" className="self-start" onClick={() => setBranchSourceId(source.id)}>Choose a new branch</Button>)}
         </section>;
       })}
     </div>
+    {branchSource && <SkillSourceBranchRepair companyId={companyId} source={branchSource} onClose={() => setBranchSourceId(null)}
+      onReturnFocus={() => sourceActionButtons.current[branchSource.id]?.focus()} onSaved={async () => { setResults(prev => ({ ...prev, [branchSource.id]: null })); await invalidate(); }} />}
     {repairSource && <SkillSourceConnectionRepair companyId={companyId} source={repairSource} onClose={() => setRepairSourceId(null)} onReturnFocus={() => sourceActionButtons.current[repairSource.id]?.focus()} onSaved={async () => {
       setResults(prev => ({ ...prev, [repairSource.id]: null })); await invalidate();
     }} />}
@@ -175,6 +190,19 @@ export function SkillSources() {
       setResults(prev => ({ ...prev, [result.source.id]: null })); await invalidate(); navigate('/skills/sources');
     }} />}
     {sourceId && sourceId !== 'new' && query.isSuccess && !activeSource && <p role="alert" className="text-sm text-destructive">Source not found.</p>}
+  </div>;
+}
+
+function SourceErrorNotice({ message, detail, action }: { message: string; detail?: string; action?: ReactNode }) {
+  return <div role="alert" className="ml-8 flex min-w-0 items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
+    <CircleAlert className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />
+    <div className="min-w-0 flex-1">
+      <p className="break-words text-foreground">{message}</p>
+      {(detail || action) && <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        {detail && <span className="text-muted-foreground">{detail}</span>}
+        {action}
+      </div>}
+    </div>
   </div>;
 }
 

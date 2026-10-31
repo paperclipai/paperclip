@@ -117,6 +117,7 @@ export class CodexSessionState {
   resultCallId: string | null = null;
   resultTurnId: string | null = null;
   turnStartPending = false;
+  pendingRunAttachment: { runId: string; settled: Promise<void> } | null = null;
   /**
    * Resolves once a pending turn/start settles, on the accepted path or on a
    * provider rejection. A terminal notification for that turn must wait on
@@ -451,7 +452,7 @@ export class CodexSessionState {
       ...(refs.itemId ? { itemId: refs.itemId } : {}),
       eventType,
       schemaVersion: 1,
-      priority: eventType === "run.result.proposed" ? 0 : 1,
+      priority: eventType === "run.result.proposed" || eventType === "auth.credentials.updated" ? 0 : 1,
       emittedAt: this.now().toISOString(),
       payload,
     });

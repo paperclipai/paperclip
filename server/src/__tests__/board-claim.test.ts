@@ -1,3 +1,5 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -8,6 +10,7 @@ import {
   createDb,
   instanceUserRoles,
   principalPermissionGrants,
+  subscribeDatabaseWork,
 } from "@paperclipai/db";
 import {
   claimBoardOwnership,
@@ -20,7 +23,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_BOARD_CLAIM_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("board claim", () => {
@@ -28,8 +32,8 @@ describeEmbeddedPostgres("board claim", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-board-claim-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-board-claim-");
+    db = createDb(external ?? tempDb!.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -42,10 +46,11 @@ describeEmbeddedPostgres("board claim", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
-  it("lets a signed-in user claim a local-board-only authenticated instance", async () => {
+  it.each(["new", "suspended", "active"] as const)("claims a local-board-only instance with %s membership and wakes only restored authority", async prior => {
     const now = new Date();
     const userId = `claim-user-${randomUUID()}`;
     const company = await db
@@ -70,6 +75,10 @@ describeEmbeddedPostgres("board claim", () => {
       role: "instance_admin",
     });
 
+    if (prior !== "new") await db.insert(companyMemberships).values({
+      companyId: company.id, principalType: "user", principalId: userId,
+      status: prior, membershipRole: "owner",
+    });
     await initializeBoardClaimChallenge(db, { deploymentMode: "authenticated" });
     const warningUrl = getBoardClaimWarningUrl("127.0.0.1", 3197);
     expect(warningUrl).toBeTruthy();
@@ -84,12 +93,19 @@ describeEmbeddedPostgres("board claim", () => {
       claimedByUserId: null,
     });
 
-    await expect(
-      claimBoardOwnership(db, { token, code, userId }),
-    ).resolves.toEqual({
-      status: "claimed",
-      claimedByUserId: userId,
-    });
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, event => events.push(event));
+    try {
+      await db.transaction(async tx => {
+        await expect(claimBoardOwnership(tx as unknown as typeof db, { token, code, userId }))
+          .resolves.toEqual({ status: "claimed", claimedByUserId: userId });
+        expect(events).toEqual(prior === "active" ? [] : ["intent"]);
+        // A nested claim must not publish a commit before its caller settles.
+        const outside = await db.select().from(companyMemberships).where(eq(companyMemberships.companyId, company.id));
+        expect(outside.map(row => row.status)).toEqual(prior === "new" ? [] : [prior]);
+      });
+      expect(events).toEqual(prior === "active" ? [] : ["intent", "settled"]);
+    } finally { unsubscribe(); }
 
     await expect(
       db

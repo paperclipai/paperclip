@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   mergePendingIssueQueuedComments,
   normalizeIssueQueuedCommentQueue,
+  startingQueuedCommentIds,
 } from "./issue-queued-comment-queue";
 
 function comment(id: string, body: string) {
@@ -22,6 +23,22 @@ function comment(id: string, body: string) {
 }
 
 describe("normalizeIssueQueuedCommentQueue", () => {
+  it("keeps later inputs and uncertain or retry queues editable", () => {
+    const opener = comment("opener", "Start this turn");
+    const later = { ...comment("later", "Follow up"), createdAt: new Date("2026-09-04T12:00:02Z") };
+    const queue = normalizeIssueQueuedCommentQueue({ queueId: "wake", state: "queued",
+      entries: [opener, later].map(comment => ({ comment })) }, "issue-1");
+    const run = { runId: "run", contextIssueId: "issue-1", wakeupRequestId: "wake", status: "queued",
+      startedAt: null, createdAt: "2026-09-04T12:00:01Z", wakeCommentIds: [opener.id, later.id] };
+    const ids = (runs: unknown[], value = queue) => [...startingQueuedCommentIds(value, runs as import("../api/activity").RunForIssue[])];
+    expect(ids([run])).toEqual(["opener"]);
+    expect(ids([{ ...run, retryOfRunId: "prior" }])).toEqual([]);
+    expect(ids([{ ...run, wakeupRequestId: "new-wake" }])).toEqual([]);
+    expect(ids([{ ...run, contextIssueId: "other-issue" }])).toEqual([]);
+    expect(ids([])).toEqual([]);
+    expect(ids([run], { ...queue, targetRunId: "previous", state: "deferred" })).toEqual([]);
+    expect(ids([run], { ...queue, entries: [{ ...queue.entries[0]!, source: { kind: "interaction", interactionId: "decision", interactionKind: "request_confirmation", requiresFreshSession: false } }] })).toEqual([]);
+  });
   it("retains the immutable response and fresh-turn requirement", () => {
     const source = { kind: "interaction", interactionId: "approval-1", interactionKind: "request_confirmation", requiresFreshSession: true };
     const normalized = normalizeIssueQueuedCommentQueue({ entries: [{ comment: comment("approval-1", "Accepted: Plan"), source,

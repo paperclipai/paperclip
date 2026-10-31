@@ -15,7 +15,7 @@ import { baseRoutine } from '../fixtures/routineWebhooks';
 import { storybookProjects, storybookIssues } from '../fixtures/paperclipData';
 import { COMPANY_ID, SOURCE_ID, COMMIT, installFixtures, candidates, sourceFixture } from '../fixtures/githubSkillSources';
 
-export type Scenario = 'new-project' | 'attach-repository' | 'legacy' | 'duplicate' | 'missing-branch' | 'ready' | 'refreshing' | 'error' | 'empty' | 'private' | 'shared' | 'shared-private' | 'long' | 'many' | 'paused' | 'removed' | 'validation' | 'repair' | 'repair-conflict' | 'automatic' | 'latest';
+export type Scenario = 'new-project' | 'attach-repository' | 'legacy' | 'duplicate' | 'partial-adoption' | 'missing-branch' | 'ready' | 'refreshing' | 'error' | 'empty' | 'private' | 'shared' | 'shared-private' | 'long' | 'many' | 'paused' | 'removed' | 'validation' | 'repair' | 'repair-conflict' | 'automatic' | 'latest';
 export const projectRepository: ProjectSkillRepository = {
   projectId: 'project-skills', projectName: 'Acme platform', projectVisibility: 'open',
   workspaceId: 'workspace-skills', repositoryUrl: 'https://github.com/acme/team-skills', trackingRef: 'main',
@@ -34,13 +34,18 @@ export function installProjectSkillFixtures(scenario: Scenario, client: QueryCli
   const timers: ReturnType<typeof setTimeout>[] = [];
   let projectCreated = scenario !== 'new-project';
   const updatedSources = new Set<string>();
-  const sourcePreferences = new Map<string, { automaticUpdates?: boolean; importNewSkills?: boolean; connectionId?: string | null; trackingRef?: 'HEAD' }>();
+  const sourcePreferences = new Map<string, { automaticUpdates?: boolean; importNewSkills?: boolean; connectionId?: string | null; trackingRef?: string }>();
   let live = true, automaticUpdates = scenario !== 'paused', failed = ['error', 'repair', 'repair-conflict', 'missing-branch'].includes(scenario);
   let sourceRevision = sourceFixture().revision, repairConflict = scenario === 'repair-conflict';
   const privateProject = scenario === 'private';
-  let repository = { ...projectRepository, projectVisibility: privateProject ? 'private' as const : 'open' as const };
+  let repository = { ...projectRepository, projectName: scenario === 'partial-adoption' ? 'Paperclip' : projectRepository.projectName,
+    projectVisibility: privateProject ? 'private' as const : 'open' as const };
   if (!['new-project', 'legacy', 'duplicate'].includes(scenario)) repository = { ...repository, sourceId: SOURCE_ID, bindingId: 'binding-skills', status: 'ready' };
-  let additionalRepositories: ProjectSkillRepository[] = scenario === 'duplicate' ? [{ ...repository, workspaceId: 'second-workspace', projectId: 'second-project', projectName: 'Sentry' }] : [];
+  let additionalRepositories: ProjectSkillRepository[] = scenario === 'duplicate' ? [{ ...repository, workspaceId: 'second-workspace', projectId: 'second-project', projectName: 'Sentry' }]
+    : scenario === 'partial-adoption' ? [
+      { ...repository, workspaceId: 'cloud-workspace', projectId: 'paperclip-cloud', projectName: 'Paperclip Cloud', sourceId: null, bindingId: null, status: 'available' },
+      { ...repository, workspaceId: 'sentry-workspace', projectId: 'sentry', projectName: 'Sentry', sourceId: null, bindingId: null, status: 'available' },
+    ] : [];
   let project = { ...storybookProjects[0]!, id: repository.projectId, urlKey: repository.projectId, name: repository.projectName, companyId: COMPANY_ID,
     workspaces: storybookProjects[0]!.workspaces.slice(0, 1).map(workspace => ({ ...workspace, id: repository.workspaceId, projectId: repository.projectId, repoUrl: repository.repositoryUrl, repoRef: 'main', defaultRef: 'main', name: 'acme/team-skills', metadata: { ...workspace.metadata, githubRepositoryId: '123456' } })) };
   const workspaceTemplate = project.workspaces[0]!;
@@ -89,6 +94,8 @@ export function installProjectSkillFixtures(scenario: Scenario, client: QueryCli
     repairAction: !failed ? null : scenario === 'missing-branch' ? 'branch' : scenario.startsWith('repair') ? 'connection' : 'retry',
     projects: scenario === 'missing-branch' ? [] : ['shared', 'shared-private'].includes(scenario) ? [{ id: project.id, name: 'Private research', visibility: 'private', active: true },
       { id: 'project-open', name: 'Engineering', visibility: scenario === 'shared' ? 'open' : 'private', active: true }]
+      : scenario === 'partial-adoption' ? [repository, ...additionalRepositories].filter(row => row.sourceId === source.id && row.status === 'ready')
+        .map(row => ({ id: row.projectId, name: row.projectName, visibility: row.projectVisibility, active: true }))
       : [{ id: project.id, name: project.name, visibility: repository.projectVisibility, active: true }],
     entries: scenario === 'empty' ? [] : scenario === 'many' ? Array.from({ length: 80 }, (_, index) => ({
       ...source.entries[0]!, id: 'entry-' + index, name: 'Project workflow ' + (index + 1), skillId: 'skill-' + index,
@@ -101,13 +108,16 @@ export function installProjectSkillFixtures(scenario: Scenario, client: QueryCli
     await adopt(row); return { bindingId: `binding-${workspaceId}` };
   };
   skillSourcesApi.refresh = refresh;
+  skillSourcesApi.branches = async () => ({ defaultBranch: scenario === 'missing-branch' ? 'master' : 'main', branches: [
+    { name: scenario === 'missing-branch' ? 'master' : 'main', isDefault: true }, { name: 'release/2026.10', isDefault: false },
+  ], truncated: false });
   skillSourcesApi.settings = async (_companyId, id, input) => {
     if (input.connectionId !== undefined && repairConflict) {
       repairConflict = false; sourceRevision++;
-      throw new ApiError('The source was updated while choosing a connection.', 409, null);
+      throw new ApiError('The source was updated while choosing a connection.', 409, { code: 'skill_source_settings_changed' });
     }
     if (input.revision !== undefined && input.revision < sourceRevision) {
-      throw new ApiError('The source revision changed.', 409, null);
+      throw new ApiError('The source revision changed.', 409, { code: 'skill_source_settings_changed' });
     }
     sourcePreferences.set(id, { ...sourcePreferences.get(id),
       ...(input.automaticUpdates === undefined ? {} : { automaticUpdates: input.automaticUpdates }),

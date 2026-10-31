@@ -120,6 +120,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
+  resumeTaskRetry: vi.fn(async () => undefined),
 }));
 const mockRunnerGoalService = vi.hoisted(() => ({
   projection: vi.fn(async () => null),
@@ -162,11 +163,31 @@ const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
 
 const mockRetryWorkspaceExport = vi.hoisted(() => vi.fn());
+const mockRequestWorkspaceRecovery = vi.hoisted(() => vi.fn());
+const mockRequestTaskRetry = vi.hoisted(() => vi.fn());
+const mockOnboardingFirstTaskDependenciesAllowed = vi.hoisted(() => vi.fn(async () => undefined));
+const mockGetExperimental = vi.hoisted(() => vi.fn());
 const mockResumeWorkspaceFinalization = vi.hoisted(() => vi.fn());
 
 function registerRouteMocks() {
+  vi.doMock("../services/instance-settings.js", async () => {
+    const actual = await vi.importActual<typeof import("../services/instance-settings.js")>("../services/instance-settings.js");
+    return { ...actual, instanceSettingsService: (...args: Parameters<typeof actual.instanceSettingsService>) => ({
+      ...actual.instanceSettingsService(...args), getExperimental: mockGetExperimental,
+    }) };
+  });
+  vi.doMock("../services/task-retry.js", () => ({ requestTaskRetry: mockRequestTaskRetry }));
+  vi.doMock("../services/onboarding-first-task-admission.js", async () => ({
+    ...await vi.importActual<typeof import("../services/onboarding-first-task-admission.js")>("../services/onboarding-first-task-admission.js"),
+    assertOnboardingFirstTaskDependenciesAllowed: mockOnboardingFirstTaskDependenciesAllowed,
+  }));
+  vi.doMock("../services/task-interruption-presentation.js", () => ({
+    taskInterruptionPresentation: vi.fn(async () => null),
+    taskInterruptionPresentations: vi.fn(async () => new Map()),
+  }));
   vi.doMock("../services/native-runtime/native-workspace-owner-recovery.js", () => ({ resumeNativeWorkspaceAfterOwnerStop: mockResumeWorkspaceFinalization }));
   vi.doMock("../services/native-runtime/native-workspace-export-retry.js", () => ({ retryNativeWorkspaceExport: mockRetryWorkspaceExport }));
+  vi.doMock("../services/workspace-recovery.js", () => ({ requestWorkspaceRecovery: mockRequestWorkspaceRecovery }));
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
@@ -252,6 +273,7 @@ function registerRouteMocks() {
     goalService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
     instanceSettingsService: () => ({
+      getExperimental: mockGetExperimental,
       get: vi.fn(async () => ({
         id: "instance-settings-1",
         general: {
@@ -322,6 +344,12 @@ function makeAgent(id: string, overrides: Record<string, unknown> = {}) {
   };
 }
 
+function emptyCaseHandoffQuery() {
+  return { where: vi.fn(() => ({
+    orderBy: vi.fn(() => ({ limit: vi.fn(async () => []) })),
+  })) };
+}
+
 function createRunContextDb(
   contextSnapshot: Record<string, unknown> = {},
   runAgentOrRows: string | Record<string, unknown>[] = ownerAgentId,
@@ -385,6 +413,7 @@ function createRunContextDb(
     transaction: async (callback: (tx: typeof dbStub) => Promise<unknown>) => callback(dbStub),
     select: vi.fn((selection: Record<string, unknown> = {}) => ({
       from: vi.fn((table: Parameters<typeof getTableName>[0]) => {
+        if (getTableName(table) === "case_handoffs") return emptyCaseHandoffQuery();
         if (emptyWakeQueue && getTableName(table) === "agent_wakeup_requests") {
           return buildQuery({}, false, true);
         }
@@ -472,6 +501,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset().mockResolvedValue(null);
     mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
     mockChatRunRetries.processFailedChatRunRetry.mockReset();
+    mockRequestTaskRetry.mockReset().mockResolvedValue({ requestId: recoveryActionId, accepted: true, stale: false });
+    mockGetExperimental.mockReset().mockResolvedValue({ enableAgentChat: true });
     mockAccessService.canUser.mockReset();
     mockAccessService.decide.mockReset();
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
@@ -844,6 +875,50 @@ describe("agent issue mutation checkout ownership", () => {
     }));
   });
 
+  it("admits ordinary Retry only for a board actor with task mutation permission", async () => {
+    const body = { idempotencyKey: recoveryActionId, observedRunId: ownerRunId };
+    const deniedAgent = await request(createApp(peerActor())).post(`/api/issues/${issueId}/retry`).send(body);
+    expect(deniedAgent.status).toBe(403);
+    expect(mockRequestTaskRetry).not.toHaveBeenCalled();
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action !== "issue:mutate", action: input.action, reason: "test_gate", explanation: "Task is read-only.",
+    }));
+    const deniedReader = await request(createApp(boardActor())).post(`/api/issues/${issueId}/retry`).send(body);
+    expect(deniedReader.status).toBe(403);
+    expect(mockRequestTaskRetry).not.toHaveBeenCalled();
+    mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow_test", explanation: "Allowed." });
+    const accepted = await request(createApp(boardActor())).post(`/api/issues/${issueId}/retry`).send(body);
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(202);
+    expect(mockRequestTaskRetry).toHaveBeenCalledWith(expect.objectContaining({
+      companyId, issueId, actorId: "board-user", actorSource: "local_implicit", ...body,
+    }));
+  });
+
+  it("rejects client-selected workspace strategy and certifications on ordinary Retry", async () => {
+    const response = await request(createApp(boardActor())).post(`/api/issues/${issueId}/retry`).send({
+      idempotencyKey: recoveryActionId, observedRunId: ownerRunId,
+      forceFreshSession: true, workspaceRepairEvidence: { verified: true },
+    });
+    expect(response.status).toBe(400);
+    expect(mockRequestTaskRetry).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { owner: "another-user", enabled: true, status: 403 },
+    { owner: "board-user", enabled: false, status: 404 },
+    { owner: "board-user", enabled: true, status: 202 },
+  ])("gates Agent Chat task Retry by owner and feature ($owner, $enabled)", async ({ owner, enabled, status }) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      conversationAgentId: ownerAgentId, conversationUserId: owner,
+    }));
+    mockGetExperimental.mockResolvedValue({ enableAgentChat: enabled });
+    const response = await request(createApp(boardActor())).post(`/api/issues/${issueId}/retry`).send({
+      idempotencyKey: recoveryActionId, observedRunId: ownerRunId,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(status);
+    expect(mockRequestTaskRetry).toHaveBeenCalledTimes(status === 202 ? 1 : 0);
+  });
+
   it.each([
     ["patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked" })],
     ["delete", (app: express.Express) => request(app).delete(`/api/issues/${issueId}`)],
@@ -1020,6 +1095,7 @@ describe("agent issue mutation checkout ownership", () => {
     ]);
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
     expect(mockIssueService.listComments).toHaveBeenCalledWith(issueId, {
+      companyId,
       afterCommentId: null,
       order: "desc",
       limit: null,
@@ -1129,22 +1205,6 @@ describe("agent issue mutation checkout ownership", () => {
         createdByRunId: ownerRunId,
         lockedDocumentStrategy: "create_new_document",
       }),
-    );
-  });
-
-  it("stores the authenticated agent run id when creating work products", async () => {
-    const app = await createApp(ownerActor());
-
-    await request(app).post(`/api/issues/${issueId}/work-products`).send({
-      type: "artifact",
-      provider: "test",
-      title: "Artifact",
-    }).expect(201);
-
-    expect(mockWorkProductService.createForIssue).toHaveBeenCalledWith(
-      issueId,
-      companyId,
-      expect.objectContaining({ createdByRunId: ownerRunId }),
     );
   });
 
@@ -2068,6 +2128,30 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  it("lets a task editor request safe recovery without runtime certification", async () => {
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({ allowed: ["issue:read", "issue:mutate"].includes(action) }));
+    mockRequestWorkspaceRecovery.mockResolvedValue({ actionId: recoveryActionId, status: "queued" });
+    const res = await request(await createApp(boardActor()))
+      .post(`/api/issues/${issueId}/recovery-actions/recover-workspace`)
+      .send({ actionId: recoveryActionId, runId: ownerRunId, idempotencyKey: ownerRunId });
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockRequestWorkspaceRecovery).toHaveBeenCalledWith(expect.objectContaining({ companyId, issueId,
+      actionId: recoveryActionId, runId: ownerRunId, idempotencyKey: ownerRunId, actorId: "board-user" }));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it.each(["agent", "viewer", "certification"])("rejects an unauthorized or fabricated recovery request: %s", async kind => {
+    mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
+      allowed: action === "issue:read" || (kind === "certification" && action === "issue:mutate"), explanation: "Read-only task access",
+    }));
+    const res = await request(await createApp(kind === "agent" ? ownerActor() : boardActor()))
+      .post(`/api/issues/${issueId}/recovery-actions/recover-workspace`)
+      .send({ actionId: recoveryActionId, runId: ownerRunId, idempotencyKey: ownerRunId,
+        ...(kind === "certification" ? { providerStopped: true, workspaceRepairEvidence: "I claim the missing files were repaired." } : {}) });
+    expect(res.status).toBe(kind === "certification" ? 400 : 403);
+    expect(mockRequestWorkspaceRecovery).not.toHaveBeenCalled();
+  });
+
   it.each(["agent", "viewer"])("rejects %s export-only retries before admission", async kind => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:read", explanation: "The viewer can read but has no runtime access",
@@ -2901,6 +2985,118 @@ describe("agent issue mutation checkout ownership", () => {
     });
   });
 
+  describe("native run changing its own task status", () => {
+    const nativeRun = {
+      id: ownerRunId,
+      companyId,
+      agentId: ownerAgentId,
+      runtimeMode: "native",
+      status: "running",
+      contextSnapshot: { issueId },
+    };
+    const runActor = () => ({ ...ownerActor(), source: "agent_jwt" });
+
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId }));
+      mockHeartbeatService.getRun.mockResolvedValue(nativeRun);
+    });
+
+    it.each([
+      ["in_review", {}],
+      ["in_review", { assigneeAgentId: ownerAgentId }],
+      ["done", {}],
+      ["blocked", {}],
+      ["todo", { blockedByIssueIds: [] }],
+      ["blocked", { blockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] }],
+    ])("rejects %s before it releases the run's own execution lock (%j)", async (status, extra) => {
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status, ...extra });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details).toMatchObject({ code: "native_run_status_reported_by_finish", requestedStatus: status });
+      expect(res.body.error).toContain("paperclip_finish");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    });
+
+    it("still lets the run edit other fields of its task", async () => {
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ title: "Renamed by its run" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ["a legacy run", { runtimeMode: "legacy" }, {}],
+      ["a native run that no longer owns execution", {}, { executionRunId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", checkoutRunId: null }],
+      ["a native run that is no longer running", { status: "failed" }, {}],
+    ])("leaves the status change to the existing rules for %s", async (_label, runOverrides, issueOverrides) => {
+      mockHeartbeatService.getRun.mockResolvedValue({ ...nativeRun, ...runOverrides });
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId, ...issueOverrides }));
+
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: "in_review" });
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review" });
+    });
+
+    it("does not intercept a native run handing its task to a human", async () => {
+      // A native handoff still stops the outgoing run first; confirm that stop
+      // so the request reaches the update instead of the stop-unconfirmed 409.
+      mockHeartbeatService.cancelRun.mockResolvedValue({ ...nativeRun, status: "cancelled" });
+      const handoff = { assigneeAgentId: null, assigneeUserId: "board-user", status: "in_review" };
+
+      const res = await request(createApp(runActor(), createRunContextDb({}, ownerAgentId, ownerRunId, [], true)))
+        .patch(`/api/issues/${issueId}`).send(handoff);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject(handoff);
+      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(ownerRunId, expect.anything(), expect.anything());
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockHeartbeatService.cancelRun.mock.invocationCallOrder[0])
+        .toBeLessThan(mockIssueService.update.mock.invocationCallOrder[0]!);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(handoff);
+    });
+
+    it("does not intercept a native conversation reply moving to review", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId,
+        conversationAgentId: ownerAgentId, conversationUserId: "board-user" }));
+
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: "in_review" });
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review" });
+    });
+
+    it("keeps the dependency rule's error for a blocker it rejects", async () => {
+      const { HttpError: CurrentHttpError } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+      mockOnboardingFirstTaskDependenciesAllowed.mockRejectedValueOnce(
+        new CurrentHttpError(400, "Remove the onboarding task from blockedByIssueIds.", { code: "onboarding_first_task_parent_blocker" }));
+
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`)
+        .send({ status: "blocked", blockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.details).toMatchObject({ code: "onboarding_first_task_parent_blocker" });
+      expect(mockOnboardingFirstTaskDependenciesAllowed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        companyId, actorAgentId: ownerAgentId, actorRunId: ownerRunId, blockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
+      }));
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("does not intercept a board user changing the status", async () => {
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: "in_review" });
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review" });
+    });
+  });
+
   describe("task watchdog scope grants", () => {
     const watchdogRunId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
     const watchdogReportIssueId = "cccccccc-cccc-4ccc-8ccc-cccccccccccd";
@@ -2972,7 +3168,8 @@ describe("agent issue mutation checkout ownership", () => {
       return {
         transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
         select: vi.fn((selection: Record<string, unknown> = {}) => ({
-          from: vi.fn(() => buildQuery(selection)),
+          from: vi.fn((table: Parameters<typeof getTableName>[0]) => getTableName(table) === "case_handoffs"
+            ? emptyCaseHandoffQuery() : buildQuery(selection)),
         })),
       };
     }

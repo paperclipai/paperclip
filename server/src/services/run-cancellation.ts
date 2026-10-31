@@ -55,6 +55,36 @@ export function readControllerLeaseLossCause(cancellation: RunCancellation): Leg
   return LEGACY_CONTROLLER_LEASE_LOSS_CAUSES.find(cause => cancellation.reason === controllerLeaseLossReason(cause)) ?? null;
 }
 
+/** Watchdog timings at the moment the lease was lost, in milliseconds. */
+export interface LegacyControllerLeaseLossTiming {
+  sinceRenewalMs: number;
+  renewalPendingMs: number | null;
+  deadlineLateMs: number | null;
+  renewalCount: number;
+}
+/** Read-side record: a `null` timing is dropped, so every present timing is a number. */
+export type LegacyControllerLeaseLoss = { cause: LegacyControllerLeaseLossCause }
+  & Partial<Record<keyof LegacyControllerLeaseLossTiming, number>>;
+
+const MAX_LEASE_LOSS_TIMING = 86_400_000;
+const leaseLossTimingValue = (value: unknown) =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.min(Math.round(value), MAX_LEASE_LOSS_TIMING) : undefined;
+
+/** Closed cause and bounded counters only; unknown keys and values are dropped. */
+export function readControllerLeaseLoss(value: unknown): LegacyControllerLeaseLoss | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const cause = LEGACY_CONTROLLER_LEASE_LOSS_CAUSES.find(label => label === record.cause);
+  if (!cause) return null;
+  const loss: LegacyControllerLeaseLoss = { cause };
+  for (const field of ["sinceRenewalMs", "renewalPendingMs", "deadlineLateMs", "renewalCount"] as const) {
+    const timing = leaseLossTimingValue(record[field]);
+    if (timing !== undefined) loss[field] = timing;
+  }
+  return loss;
+}
+
 /** Preserve recorded stop intent when adapter completion replaces resultJson. */
 export function cancellationResultJson(run: Run, status: string, patch?: Run["resultJson"], errorCode?: string | null, error?: string | null): Run["resultJson"] {
   if (status !== "cancelled" && status !== "interrupted") return patch ?? run.resultJson;

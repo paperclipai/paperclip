@@ -1,14 +1,30 @@
-import { createGitHubMaintenance } from "./chat-channels/github/maintenance.js";
-import { createSpekoChannelService, authorizeSpekoPublicVoiceTask, replaceSpekoChannelRuntime } from "./chat-channels/speko/runtime.js";
+import { githubReviewCheckService } from "./chat-github-checks.js";
+import { leasedChatProvider } from "./chat-channels/runtime/receiver-policy.js";
+import { chatReceiverSchedule } from "./chat-channels/runtime/receiver-schedule.js";
+import { registerChatReceiverWork } from "./chat-channels/runtime/receiver-work.js";
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
+import { notifyChatEndpointConfiguration } from "./chat-channels/configuration-work-notifications.js";
+import { registerDiscordCommandWork } from "./chat-channels/discord/command-work.js";
+import { discordCommandSchedule } from "./chat-channels/discord/command-schedule.js";
+import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { notifyChatConnectionHealth } from "./chat-channels/connection-health-notifications.js";
+import { credentialFingerprint } from "./chat-channels/credential-fingerprint.js";
+import { createChatSdkMessageReceiver } from "./chat-channels/runtime/sdk-messages.js";
+import { admitDiscordSdkMessage } from "./chat-channels/discord/messages.js";
+import { resolveInboundConversationBinding } from "./chat-channels/inbound/conversation-binding.js";
+import { githubResponseCommentService } from "./chat-github-response-comments.js";
+import { createSpekoChannelService, authorizeSpekoPublicVoiceTask, replaceSpekoChannelRuntime, SPEKO_CONVERSATION_IS_LINEAR } from "./chat-channels/speko/runtime.js";
 import { prepareDiscordRuntimeCommand } from "./chat-channels/discord/runtime-commands.js";
 import { createSlackSetupServices } from "./chat-channels/slack/setup-services.js";
+import { preservesProvisionedSlackVerification } from "./chat-channels/slack/callback-verification.js";
 import { isSupportedTelegramWebhookBaseUrl } from "./chat-channels/telegram/setup.js";
 import { initializeGitHubWebhookRuntime } from "./chat-channels/github/webhook-runtime.js";
 import { githubInboundTaskTitle, githubInboundCommentText, githubAssignedAgentRequiresLowTrust, retainGitHubDeliveryAuthority, retainGitHubReviewReceipt } from "./chat-channels/github/task-preparation.js";
 import { applyChatTaskReviewContainment } from "./chat-channels/inbound/task-trust.js";
-import { photonControlTargetsConversation, photonReplyMetadata, recordPhotonInboundActivity } from "./chat-channels/imessage-photon/messages.js";
+import { photonConversationBindingIsComplete, photonControlTargetsConversation, photonReplyMetadata, recordPhotonInboundActivity } from "./chat-channels/imessage-photon/messages.js";
 import { deferTeamsSetupReply } from "./chat-channels/microsoft-teams/setup-replies.js";
-import { slackOrphanFollowUp, stripSlackTitleMentions } from "./chat-channels/slack/messages.js";
+import { slackOrphanFollowUp, stripSlackTitleMentions, slackMessageMeetsMentionRequirement } from "./chat-channels/slack/messages.js";
+import type { ConnectionManagementContext } from "./connection-management.js";
 import { createChatPublicationResolution } from "./chat-channels/publications/resolution.js";
 import { createChatPublicationRequests } from "./chat-channels/publications/requests.js";
 import { createTeamsBoardSendPreparation } from "./chat-channels/microsoft-teams/board-send-preparation.js";
@@ -16,9 +32,9 @@ import { createInboundWakeAuthority, inboundWakeScope } from "./chat-channels/in
 import { createInboundWakeups } from "./chat-channels/inbound/wakeups.js";
 import { createInboundWakeNotices } from "./chat-channels/inbound/wakeup-notices.js";
 import { createDiscordRuntimeReconciliation } from "./chat-channels/discord/runtime-reconciliation.js";
-import { createPhotonRuntimeCallbacks } from "./chat-channels/imessage-photon/runtime-callbacks.js";
+import { createPhotonRuntimeCallbacks, discardPhotonInboundMessages, photonRuntimeStatusMayAdvance, PHOTON_MESSAGE_INGRESS_ONLY } from "./chat-channels/imessage-photon/runtime-callbacks.js";
 import { createChatReceiverOwnership } from "./chat-channels/runtime/ownership.js";
-import { createGitHubWebhookScope } from "./chat-channels/github/webhook-scope.js";
+import { createGitHubWebhookScope, githubWebhookCanRecoverRevokedInstallation } from "./chat-channels/github/webhook-scope.js";
 import { createGitHubWebhookAuthentication, retryableGitHubWebhookResponse } from "./chat-channels/github/webhook-authentication.js";
 import { createSlackWebhookCallbacks } from "./chat-channels/slack/webhook-callbacks.js";
 import { createGitHubWebhookEvents } from "./chat-channels/github/webhook-events.js";
@@ -55,12 +71,13 @@ export { createChatSdkStatePersistence } from "./chat-channels/sdk-state.js";
 import { createChatInteractionCallbacks } from "./chat-channels/interactions/callbacks.js";
 import { createChatInteractionContinuations } from "./chat-channels/interactions/continuations.js";
 import { createGitHubInstallationLifecycle } from "./chat-channels/github/installation-lifecycle.js";
+import { githubChatReviewService } from "./chat-github-reviews.js";
 import { createGitHubAppSetup } from "./chat-channels/github/app-setup.js";
 import { createSlackTaskAuthorityRegistration } from "./chat-channels/slack/task-authority.js";
 import { createGitHubPublicationPolicy } from "./chat-channels/github/publication-policy.js";
 import { createTelegramAttachmentFailure } from "./chat-channels/telegram/attachment-failure.js";
 import { createSlackCommands } from "./chat-channels/slack/commands.js";
-import { createTelegramCommands, telegramGuidanceCommand, telegramGuidanceResponse, telegramForumControlResponse } from "./chat-channels/telegram/commands.js";
+import { createTelegramCommands, telegramInboundControls, telegramGuidanceResponse, telegramForumControlResponse } from "./chat-channels/telegram/commands.js";
 import { createTeamsFileDelivery } from "./chat-channels/microsoft-teams/file-delivery.js";
 import { createGitHubSetupSecret } from "./chat-channels/github/setup-secret.js";
 import { createSlackInventory } from "./chat-channels/slack/inventory.js";
@@ -108,7 +125,7 @@ import {
 import { telegramLifecycleEventFromPayload, telegramIgnoresInboundMessage } from "./chat-channels/telegram/messages.js";
 
 import {
-  microsoftTeamsLifecycleEventFromPayload, teamsOrphanFollowUp, teamsAttachmentReferenceText,
+  teamsWebhookLifecycleEventFromPayload, teamsRootMentionCanEnableSetupDestination, teamsOrphanFollowUp, teamsAttachmentReferenceText,
 } from "./chat-channels/microsoft-teams/messages.js";
 import {
   githubSupplementalLifecycleFromRequest,
@@ -264,6 +281,9 @@ const SUPPLIED_CREDENTIAL_KEYS: Record<ChatProvider, readonly string[]> = {
 };
 
 const MAX_ERROR_TEXT = 2_000;
+const RECONNECT_CREDENTIAL_KEYS: Partial<Record<ChatProvider, readonly string[]>> = {
+  github: [...SUPPLIED_CREDENTIAL_KEYS.github, "webhookSecret", "clientSecret"],
+};
 // A Discord root mention is durably staged before the adapter creates its
 // provider thread. Give the bounded provider retry loop ample time to finish;
 // if the process disappears, the delivery worker verifies that thread over
@@ -275,7 +295,6 @@ const ORPHAN_FOLLOW_UP_GRACE_MS = 5_000;
 const ORPHAN_FOLLOW_UP_MAX_ATTEMPTS = 12;
 const PUBLICATION_ENDPOINT_CONCURRENCY = 4;
 
-function leasedChatProvider(provider: string): boolean { return provider === "discord" || provider === "imessage-photon"; }
 
 const DISCORD_GATEWAY_LEASE_POLL_MS = 100;
 const PROVIDER_CREDENTIAL_CHECK_TIMEOUT_MS = 25_000;
@@ -308,20 +327,6 @@ function runtimeGeneration(setup: ChatEndpointSetupState): number {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
-function credentialFingerprint(refs: ToolCredentialSecretRef[]): string {
-  const stable = refs
-    .map((ref) => ({
-      configPath: ref.configPath,
-      secretId: ref.secretId,
-      versionSelector: ref.versionSelector ?? "latest",
-    }))
-    .sort((left, right) =>
-      `${left.configPath}:${left.secretId}:${left.versionSelector}`.localeCompare(
-        `${right.configPath}:${right.secretId}:${right.versionSelector}`,
-      ),
-    );
-  return createHash("sha256").update(JSON.stringify(stable)).digest("hex");
-}
 type ConversationRow = typeof chatConversations.$inferSelect;
 type DeliveryRow = typeof chatDeliveries.$inferSelect;
 
@@ -546,6 +551,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const { normalizedCredentials, verifyCredentials, nativeBotIdentityMatches, legacyGitHubLabelsMatchVerifiedCredentials, assertNativeBotIdentityAvailable, isNativeBotIdentityUniqueViolation, nativeBotIdentityConflict, persistCredentials, clearCredentials, resolveCredentialRefs, resolveCredentials, prepareProviderInventory } = createChatCredentials(db, {
     secrets, PROVIDER_LABELS, REQUIRED_CREDENTIALS, PROVIDER_CREDENTIAL_CHECK_TIMEOUT_MS,
     fetchImpl, redactError, credentialFingerprint, verifyPhotonCredentials,
+    preservesWebhookVerification: (endpoint, setup, credentials) => endpoint.provider === "slack" && preservesProvisionedSlackVerification(
+      setup, credentials.signingSecret ?? "", `${getWebhookPublicBaseUrl()}/api/chat-webhooks/${endpoint.publicId}/slack`,
+    ),
   });
   const { inspectPhoton } = createPhotonSetupInspection(db, { endpointRecord, inspectPhotonCredentials });
   const questionResponses = questionResponseDeliveryService(db, {
@@ -559,14 +567,21 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const discordGatewayOwnerships = new Map<string, DiscordGatewayOwnership>();
   const discordGatewayStopTasks = new Set<Promise<void>>();
   let shuttingDown = false;
-  const { discordGatewayNotOwnedError, isDiscordGatewayNotOwnedError, releaseDiscordGatewayLeaseRow, stopDiscordGatewayOwnership, renewDiscordGatewayOwnershipForMessageAdmission, ensureDiscordGatewayRuntimeIsCurrent, acquireDiscordGatewayOwnership, discordGatewayRuntimeIsCurrent } = createChatReceiverOwnership(db, { runtime, runtimeVersions, runtimeCallbackEndpoint, redactError, leasedChatProvider, discordGatewayOwnerships, discordGatewayStopTasks, isShuttingDown: () => shuttingDown, get discordGatewayLeaseTtlMs() { return options.discordGatewayLeaseTtlMs; }, get discordGatewayLeaseRenewalIntervalMs() { return options.discordGatewayLeaseRenewalIntervalMs; }, get discordGatewayLeaseWaitMs() { return options.discordGatewayLeaseWaitMs; }, get renewDiscordGatewayLease() { return options.renewDiscordGatewayLease; } });
+  let receiverWork: ReturnType<typeof registerChatReceiverWork> | undefined;
+  const { discordGatewayNotOwnedError, isDiscordGatewayNotOwnedError, releaseDiscordGatewayLeaseRow, stopDiscordGatewayOwnership, renewDiscordGatewayOwnershipForMessageAdmission, ensureDiscordGatewayRuntimeIsCurrent, acquireDiscordGatewayOwnership, discordGatewayRuntimeIsCurrent } = createChatReceiverOwnership(db, { runtime, runtimeVersions, runtimeCallbackEndpoint, redactError, leasedChatProvider, discordGatewayOwnerships, discordGatewayStopTasks, isShuttingDown: () => shuttingDown, onStopped: id => receiverWork?.changed(id), get discordGatewayLeaseTtlMs() { return options.discordGatewayLeaseTtlMs; }, get discordGatewayLeaseRenewalIntervalMs() { return options.discordGatewayLeaseRenewalIntervalMs; }, get discordGatewayLeaseWaitMs() { return options.discordGatewayLeaseWaitMs; }, get renewDiscordGatewayLease() { return options.renewDiscordGatewayLease; } });
+  const { receiveSdkMessages } = createChatSdkMessageReceiver({
+    endpointRecord, processMessage,
+    ingressOnly: (provider) => provider === "imessage-photon"
+      ? PHOTON_MESSAGE_INGRESS_ONLY
+      : options.deferWebhookProcessing === true,
+  });
 
   function localRuntimeEpoch(endpointId: string): number {
     return runtimeLocalEpochs.get(endpointId) ?? 0;
   }
 
   function runtimeContextForRecord(
-    record: NonNullable<Awaited<ReturnType<typeof endpointRecord>>>,
+    record: Pick<NonNullable<Awaited<ReturnType<typeof endpointRecord>>>, "endpoint" | "credentialSecretRefs">,
   ): RuntimeContext {
     const generation = runtimeGeneration(record.endpoint.setup);
     const refsFingerprint = credentialFingerprint(record.credentialSecretRefs);
@@ -580,9 +595,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function invalidateRuntime(endpointId: string): Promise<boolean> {
-    for (const [deliveryId, live] of liveInboundMessages) {
-      if (live.runtimeContext?.endpointRuntime === runtime.get(endpointId) && live.thread.id.startsWith("imessage-photon:")) liveInboundMessages.delete(deliveryId);
-    }
+    discardPhotonInboundMessages(liveInboundMessages, () => runtime.get(endpointId));
     runtimeLocalEpochs.set(endpointId, localRuntimeEpoch(endpointId) + 1);
     runtimeVersions.delete(endpointId);
     const discordOwnership = discordGatewayOwnerships.get(endpointId);
@@ -657,6 +670,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         endpoint: chatEndpoints,
         assignedAgentName: agents.name,
         connectionName: toolConnections.name,
+        connectionHealthStatus: toolConnections.healthStatus,
         applicationId: toolConnections.applicationId,
         credentialSecretRefs: toolConnections.credentialSecretRefs,
       })
@@ -767,8 +781,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       runtimeGeneration(endpoint.setup) !== context.generation
     )
       return null;
-    const refs = await tx
-      .select({ refs: toolConnections.credentialSecretRefs })
+    const connection = await tx
+      .select({ refs: toolConnections.credentialSecretRefs, healthStatus: toolConnections.healthStatus })
       .from(toolConnections)
       .where(
         and(
@@ -776,8 +790,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           eq(toolConnections.id, endpoint.connectionId),
         ),
       )
-      .then((rows) => rows[0]?.refs ?? []);
-    if (credentialFingerprint(refs) !== context.credentialFingerprint) {
+      .then((rows) => rows[0]);
+    if (
+      (leasedChatProvider(endpoint.provider) && endpoint.status === "attention" && connection?.healthStatus === "failed") ||
+      credentialFingerprint(connection?.refs ?? []) !== context.credentialFingerprint
+    ) {
       return null;
     }
     const runtimeContext = context as RuntimeContext;
@@ -805,6 +822,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       return null;
     }
     return record &&
+      !(leasedChatProvider(record.endpoint.provider) && record.endpoint.status === "attention" && record.connectionHealthStatus === "failed") &&
       allowedStatuses.includes(record.endpoint.status) &&
       runtimeGeneration(record.endpoint.setup) === context.generation &&
       credentialFingerprint(record.credentialSecretRefs) ===
@@ -834,14 +852,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const { lockTelegramCallbackNoticeAuthority } = createTelegramCallbackNoticeAuthority({ nonDirectDestinationAllowed, lockCurrentPrincipalAuthorization });
   const { stageProviderEffect, processProviderEffect, processPendingProviderEffects } = createProviderEffects(db, { endpointRecord, runtimeCallbackEndpoint, withCredentialMutationLease, runtimeFor, invalidateRuntime, lockCurrentPrincipalAuthorization, redactError, MAX_ERROR_TEXT, nonDirectDestinationAllowed, lockTelegramCallbackNoticeAuthority });
   const { publicationFiles } = createOutboundAttachments(db, { get storage() { return options.storage; } });
-  const { authorizeInboundWakeup, authorizeInboundWorkStart, authorizeFastResponse } = createInboundWakeAuthority(db, { runtimeCallbackEndpoint, lockCurrentPrincipalAuthorization });
+  const { authorizeInboundWakeup, authorizeGitHubTaskRetryBatch, authorizeInboundWorkStart, authorizeFastResponse } = createInboundWakeAuthority(db, { runtimeCallbackEndpoint, lockCurrentPrincipalAuthorization });
   const { ingestAttachments, attachmentOmissionDetail } = createInboundAttachments(db, { authorizeInboundWakeup, lifecycleRuntimeFence, sanitizeFilename, issuesSvc, isExternalActionAuthorizationChange, redactError, get storage() { return options.storage; } });
-  const { stageInboundWakeup, acceptInboundWakeup, settleRejectedInboundWakeups, processInboundWakeup } = createInboundWakeups(db, { authorizeInboundWakeup, authorizeInboundWorkStart, attachmentOmissionDetail, isExternalActionAuthorizationChange, redactError, fetchImpl, get heartbeat() { return options.heartbeat; } });
+  const { stageInboundWakeup, acceptInboundWakeup, settleRejectedInboundWakeups, processInboundWakeup, unregisterDeferredWakeOwner } = createInboundWakeups(db, { authorizeInboundWakeup, authorizeInboundWorkStart, attachmentOmissionDetail, isExternalActionAuthorizationChange, redactError, fetchImpl, get heartbeat() { return options.heartbeat; } });
   const { settleTelegramAttachmentOnlyFailure } = createTelegramAttachmentFailure(db, {
     attachmentOmissionDetail, runtimeContextForRecord, endpointRecord, stageProviderEffect, scheduleProviderEffect,
   });
   const { handleReaction, processPendingReactionDeliveries } = createInboundReactions(db, { lockCurrentPrincipalAuthorization, runtimeCallbackRecord, runtimeCallbackEndpoint, ensurePrincipal, durableExternalThreadIdentity, recordCurrentMicrosoftTeamsRoute, lifecycleRuntimeFence, deliveryReady, redactError, nonDirectDestinationAllowed, reactionLinkPreflightBarrier: () => options.reactionLinkPreflightBarrier?.() ?? Promise.resolve(), reactionReplayEndpointLockBarrier: () => options.reactionReplayEndpointLockBarrier?.() ?? Promise.resolve(), reactionReplayConversationLockBarrier: () => options.reactionReplayConversationLockBarrier?.() ?? Promise.resolve() });
-  const { addReceiptReaction, processReceiptReaction, processPendingReceiptReactions } = createReceiptReactions(db, { endpointRecord, runtimeContextForRecord, withCredentialMutationLease, runtimeFor, fetchImpl, runtime, runtimeGeneration, credentialFingerprint, redactError, MAX_ERROR_TEXT, receiptReactionTransportBarrier: () => options.receiptReactionTransportBarrier?.() ?? Promise.resolve() });
+  const { stageReceiptReaction, addReceiptReaction, processReceiptReaction, processPendingReceiptReactions } = createReceiptReactions(db, { endpointRecord, runtimeContextForRecord, withCredentialMutationLease, runtimeFor, fetchImpl, runtime, runtimeGeneration, credentialFingerprint, redactError, MAX_ERROR_TEXT, receiptReactionTransportBarrier: () => options.receiptReactionTransportBarrier?.() ?? Promise.resolve() });
   const { admitDiscordRootMention, discordRootThreadPending, reconcileDiscordRootThread, promoteDiscordRootReceipt } = createDiscordRootThreads(db, { ensureDiscordGatewayRuntimeIsCurrent, withCredentialMutationLease, runtimeCallbackEndpoint, lockCurrentPrincipalAuthorization, processMessage, redactError, scheduleConversationDrain, lifecycleRuntimeFence, runtimeFor, DISCORD_ROOT_THREAD_CONFIRMATION_DELAY_MS, discordRootThreadTransportBarrier: () => options.discordRootThreadTransportBarrier?.() ?? Promise.resolve() });
   const { handleDiscordGatewayEvent } = createDiscordGatewayEvents(db, { ensureDiscordGatewayRuntimeIsCurrent, discordGatewayRuntimeIsCurrent, runtimeCallbackRecord, runtimeCallbackEndpoint, applyProviderLifecycleEffect, runtimeGeneration, discordGatewayEventBarrier: (event) => options.discordGatewayEventBarrier?.(event) ?? Promise.resolve() });
   const { handlePhotonFailure, handlePhotonEvent } = createPhotonEvents(db, { runtimeCallbackRecord, runtimeCallbackEndpoint, invalidateRuntime, ensurePrincipal, requireCurrentExternalActionAuthorization, isExternalActionAuthorizationChange, scheduleMessageProcessing, processPendingPublications, questionResponses, redactError, renewDiscordGatewayOwnershipForMessageAdmission, handleSdkMessage });
@@ -859,7 +877,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     get deferWebhookProcessing() { return options.deferWebhookProcessing; },
   });
   const { handleTelegramSlashCommand } = createTelegramCommands({ runtime, runtimeFor, handleSdkMessage });
-  const { stageGitHubWebhookIngress, githubIngressAcceptedResponse, processGitHubWebhookIngress, processFailedGitHubWebhookDeliveries, processPendingGitHubWebhookIngress } = createGitHubWebhookIngress(db, { endpointRecord, runtimeContextForRecord, resolveCredentialRefs, runtimeGeneration, credentialFingerprint, getWebhookPublicBaseUrl, redactError, handleWebhook, runtimeCallbackEndpoint, fetchImpl, persistence, withCredentialMutationLease, isShuttingDown: () => shuttingDown, get githubWebhookReplayBarrier() { return options.githubWebhookReplayBarrier; }, supportedWebhookEvents: SUPPORTED_GITHUB_WEBHOOK_EVENTS });
+  const { registerWebhookRecoveryWork, stageGitHubWebhookIngress, githubIngressAcceptedResponse, processGitHubWebhookIngress, processFailedGitHubWebhookDeliveries, processPendingGitHubWebhookIngress } = createGitHubWebhookIngress(db, { endpointRecord, runtimeContextForRecord, resolveCredentialRefs, runtimeGeneration, credentialFingerprint, getWebhookPublicBaseUrl, redactError, handleWebhook, runtimeCallbackEndpoint, fetchImpl, persistence, withCredentialMutationLease, isShuttingDown: () => shuttingDown, get githubWebhookReplayBarrier() { return options.githubWebhookReplayBarrier; }, supportedWebhookEvents: SUPPORTED_GITHUB_WEBHOOK_EVENTS });
   const { stageSlackSessionStop, processSlackSessionStop, processPendingSlackSessionStops, handleSlackSessionStopPayload } = createSlackSessionStop(db, { scheduleMessageProcessing, get deferWebhookProcessing() { return options.deferWebhookProcessing; }, runtimeCallbackEndpoint, lockCurrentPrincipalAuthorization, nonDirectDestinationAllowed, stageAuthorizedTaskControlPublication, getPublicBaseUrl, get heartbeat() { return options.heartbeat; }, redactError });
   const { stageTelegramMaintenance, processTelegramMaintenance, processPendingTelegramMaintenance, processPendingTelegramActions, processTelegramSubscriptionDiscovery, scheduleTelegramSubscriptionDiscovery, hasPendingTelegramSubscriptionDiscovery, hasTelegramStopSubscription, recordTelegramStopSubscription } = createTelegramMaintenance(db, { endpointRecord, runtimeContextForRecord, withCredentialMutationLease, resolveCredentials, clearCredentials, runtimeCallbackEndpoint, getWebhookPublicBaseUrl, fetchImpl, runtimeGeneration, credentialFingerprint, redactError, credentialCheckTimeoutMs: PROVIDER_CREDENTIAL_CHECK_TIMEOUT_MS });
   const { reconcileGitHubWebhookRepository, reconcileProviderResourceRows, listResources, listGitHubRepositories, replaceResources, toggleAllGitHubRepositories, hasNewerProcessedProviderLifecycleEffect, applyProviderAvailability } = createChatResourceReconciliation(db, { endpointRecord, withCredentialMutationLease, runtimeGeneration, maxErrorText: MAX_ERROR_TEXT });
@@ -875,7 +893,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const { authenticateGitHubWebhook } = createGitHubWebhookAuthentication(db, { endpointRecord, runtimeContextForRecord, withCredentialMutationLease, resolveCredentials, reconcileGitHubWebhookRepository, stageGitHubWebhookIngress, processGitHubWebhookIngress, githubIngressAcceptedResponse, scheduleMessageProcessing, backgroundMessageTasks, redactError, get githubWebhookAuthenticationBarrier() { return options.githubWebhookAuthenticationBarrier; }, get deferWebhookProcessing() { return options.deferWebhookProcessing; } });
   const { inspectSlackWebhookScope, recordSlackWebhookCallback } = createSlackWebhookCallbacks(db, { resolveCredentials, runtimeCallbackEndpoint, getWebhookPublicBaseUrl, scheduleMessageProcessing, slackRegistration: { notifyVerified: (endpointId) => slackRegistration.notifyVerified(endpointId) } });
 
-  const { reconcileDiscordRuntime } = createDiscordRuntimeReconciliation(db, { reconcileDiscordCommands, endpointRecord, runtimeContexts, invalidateRuntime, runtimeFor, runtime, runtimeCallbackEndpoint, credentialFingerprint, discordGatewayRuntimeIsCurrent });
+  const { reconcileDiscordRuntime } = createDiscordRuntimeReconciliation(db, { endpointRecord, runtimeContexts, invalidateRuntime, runtimeFor, runtime, runtimeCallbackEndpoint, credentialFingerprint, discordGatewayRuntimeIsCurrent });
+
+  function registerCommandWork(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
+    return registerDiscordCommandWork(coordinator, discordCommandSchedule(db, async endpointId => {
+      await reconcileDiscordCommands(endpointId);
+      const instance = runtime.get(endpointId);
+      if (instance) await reconcileDiscordRuntime(endpointId, instance);
+    }), () => !shuttingDown && canRun());
+  }
 
   async function runtimeFor(
     endpoint: EndpointRow,
@@ -890,7 +916,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (
         record.endpoint.status === "archived" ||
         record.endpoint.status === "paused" ||
-        record.endpoint.status === "draft"
+        record.endpoint.status === "draft" ||
+        (leasedChatProvider(record.endpoint.provider) && record.endpoint.status === "attention" && record.connectionHealthStatus === "failed")
       ) {
         throw conflict("Chat endpoint runtime is not available in this state", {
           code: "chat_endpoint_runtime_unavailable",
@@ -1063,7 +1090,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           const stillRegistered = runtime.get(endpoint.id) === instance;
           const stillCurrent =
             latest !== null &&
-            (latest.endpoint.status === record.endpoint.status || record.endpoint.provider === "imessage-photon" && record.endpoint.status === "attention" && ["active", "verifying"].includes(latest.endpoint.status)) &&
+            (latest.endpoint.status === record.endpoint.status || record.endpoint.provider === "imessage-photon" && photonRuntimeStatusMayAdvance(record.endpoint, latest.endpoint)) &&
             runtimeContextForRecord(latest).version === context.version;
           if (!stillRegistered || !stillCurrent) {
             if (stillRegistered) {
@@ -1095,7 +1122,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             runtimeVersions.delete(endpoint.id);
           }
           if (discordOwnership) {
-            await stopDiscordGatewayOwnership(discordOwnership, false);
+            await stopDiscordGatewayOwnership(discordOwnership, { removeRuntime: false });
           }
           throw error;
         }
@@ -1110,6 +1137,30 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         }
       }
     }
+  }
+
+  const receiverSchedule = chatReceiverSchedule(db, {
+    stop: async id => {
+      const ownership = discordGatewayOwnerships.get(id);
+      // Discovery already observed removal; only independent ownership loss needs another wake.
+      if (ownership) await stopDiscordGatewayOwnership(ownership, { notifyStopped: false });
+    },
+    reconcile: async id => {
+      const record = await endpointRecord(id);
+      if (!record) return "owned";
+      try {
+        const instance = await runtimeFor(record.endpoint, { requireDiscordOwnership: true });
+        await reconcileDiscordRuntime(id, instance);
+        return "owned";
+      } catch (error) {
+        if (isDiscordGatewayNotOwnedError(error)) return "foreign";
+        throw error;
+      }
+    },
+  });
+  function registerReceiverWork(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
+    receiverWork = registerChatReceiverWork(coordinator, receiverSchedule, () => !shuttingDown && canRun());
+    return receiverWork;
   }
 
   async function reconcileProviderRuntimes() {
@@ -1132,6 +1183,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           inArray(chatEndpoints.status, ["verifying", "active", "attention"]),
           eq(toolConnections.status, "active"),
           eq(toolConnections.enabled, true),
+          or(ne(chatEndpoints.status, "attention"), ne(toolConnections.healthStatus, "failed")),
         ),
       );
     const eligibleIds = new Set(eligibleRows.map((row) => row.endpointId));
@@ -1185,9 +1237,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     processFailedChatRunRetry,
     processFailedChatRunRetries,
     enqueueFailedChatRetryPublications,
+    loadFailedRetryNoticeScopes,
+    reconcileFailedRetryNotices,
     pendingFailedRetries,
   } = createChatFailedRunRetry(db, {
     authorizeInboundWakeup,
+    authorizeGitHubTaskRetryBatch,
     isExternalActionAuthorizationChange,
     inboundWakeScope,
     lifecycleRuntimeFence,
@@ -1200,13 +1255,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     stageTerminalReceiptReactionRemovals, runtimeContextForRecord, scheduleMessageProcessing, processReceiptReaction,
   });
   const { stageTeamsBoardFileIntent, deriveTeamsFileTransferAuthority } = createTeamsFileAuthority({ runtimeGeneration, credentialFingerprint, runtime, runtimeContexts, localRuntimeEpoch, runtimeVersions, lockCurrentPrincipalAuthorization, lifecycleRuntimeFence, assertFailedRetryReceipt, inboundWakeScope, failedChatRetrySource, isExplicitOperatorPublication, retryCommentIds });
-  const { teamsTransferProtocol, handleTeamsFileConsent, tryProcessTeamsFilePublication, scheduleTeamsFileMaintenance } = createTeamsFileDelivery(db, {
+  const { registerTeamsAttemptRecoveryWork, registerTeamsConsentExpiryWork, teamsTransferProtocol, handleTeamsFileConsent, tryProcessTeamsFilePublication } = createTeamsFileDelivery(db, {
     endpointRecord, runtimeContextForRecord, runtimeFor, runtimeContexts, localRuntimeEpoch, runtime,
     deriveTeamsFileTransferAuthority, publicationFiles, scheduleMessageProcessing, processPendingPublications,
     withCredentialMutationLease, teamsFileRetryAfter, isShuttingDown: () => shuttingDown,
     get teamsFileUploadRequest() { return options.teamsFileUploadRequest; },
   });
-  const { enqueueInboundWakeupPublications, authorizeInboundWakePublication } = createInboundWakeNotices(db, { authorizeInboundWakeup, enqueueFailedChatRetryPublications, authorizeRetainedChatSourcePublication, isExternalActionAuthorizationChange, isShuttingDown: () => shuttingDown });
+  const { enqueueInboundWakeupPublications, loadInboundWakeNoticeScopes, reconcileInboundWakeNotices, authorizeInboundWakePublication } = createInboundWakeNotices(db, { authorizeInboundWakeup, enqueueFailedChatRetryPublications, authorizeRetainedChatSourcePublication, isExternalActionAuthorizationChange, isShuttingDown: () => shuttingDown });
 
   async function authorizeRetainedChatSourcePublication(
     tx: DbOrTransaction,
@@ -1679,72 +1734,25 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         })
         .where(eq(chatDeliveries.id, activeDelivery.id));
 
-      const latestConversation =
-        endpoint.provider === "microsoft-teams"
-          ? await conversationForThread(endpoint.id, thread.id)
-          : await db
-              .select()
-              .from(chatConversations)
-              .where(
-                and(
-                  eq(chatConversations.endpointId, endpoint.id),
-                  eq(
-                    chatConversations.externalConversationId,
-                    thread.channelId,
-                  ),
-                  eq(chatConversations.externalThreadId, thread.id),
-                ),
-              )
-              .orderBy(desc(chatConversations.sessionGeneration))
-              .then((rows) => rows[0] ?? null);
-      const isLinear = endpoint.provider !== "speko" && surfaceKind !== "native_thread";
-      let existingConversation: ConversationRow | null = latestConversation;
-      let existingIssue: typeof issues.$inferSelect | null =
-        existingConversation
-          ? await db
-              .select()
-              .from(issues)
-              .where(
-                and(
-                  eq(issues.companyId, endpoint.companyId),
-                  eq(issues.id, existingConversation.issueId),
-                ),
-              )
-              .then((rows) => rows[0] ?? null)
-          : null;
-      if (
-        isLinear &&
-        existingConversation &&
-        (endpoint.provider === "imessage-photon"
-          // A reply finishes an iMessage turn, not the conversation. Only a
-          // delivered /new or /close releases this chat's task binding. Use
-          // the durable control receipt so pre-fix completed rows also resume.
-          ? await hasCommittedTaskControlCompletion(existingConversation.id)
-          : existingConversation.state === "completed" ||
-            existingIssue?.status === "done" ||
-            existingIssue?.status === "cancelled")
-      ) {
-        if (existingConversation.state !== "completed") {
-          await db
-            .update(chatConversations)
-            .set({ state: "completed", updatedAt: new Date() })
-            .where(eq(chatConversations.id, existingConversation.id));
-        }
-        existingConversation = null;
-        existingIssue = null;
-      }
-      // Telegram exposes its small command vocabulary in forum topics too.
-      // A forum topic is a native provider thread and therefore stays bound to
-      // one immutable Paperclip task, but the command must still be consumed
-      // as control-plane input instead of becoming a task comment/wakeup.
-      const controlCommand =
-        isLinear || endpoint.provider === "telegram"
-          ? linearControlCommand(message.text)
-          : null;
-      const guidanceCommand =
-        endpoint.provider === "telegram"
-          ? telegramGuidanceCommand(message.text)
-          : null;
+      let { conversation: existingConversation, issue: existingIssue, latestConversation, isLinear } =
+        await resolveInboundConversationBinding(db, {
+          endpoint, thread,
+          isLinear: () => endpoint.provider === "speko" ? SPEKO_CONVERSATION_IS_LINEAR : surfaceKind !== "native_thread",
+          lookupConversation: endpoint.provider === "microsoft-teams"
+            ? () => conversationForThread(endpoint.id, thread.id)
+            : undefined,
+          conversationIsComplete: endpoint.provider === "imessage-photon"
+            ? (conversationId) => photonConversationBindingIsComplete(conversationId, hasCommittedTaskControlCompletion)
+            : undefined,
+        });
+      const telegramControls = endpoint.provider === "telegram"
+        ? telegramInboundControls(message.text, surfaceKind)
+        : null;
+      const controlCommand = telegramControls
+        ? telegramControls.controlCommand
+        : isLinear ? linearControlCommand(message.text) : null;
+      const guidanceCommand = telegramControls?.guidanceCommand ?? null;
+      const bypassesControlChronology = telegramControls?.bypassesControlChronology ?? controlCommand === "status";
       const endpointAllowed =
         endpoint.status === "verifying" || endpoint.status === "active";
       const destinationAllowed = thread.isDM
@@ -1780,7 +1788,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         (endpoint.provider === "github" ||
           endpoint.provider === "discord" ||
           (endpoint.provider === "microsoft-teams" &&
-            resource?.type === "channel")) &&
+            teamsRootMentionCanEnableSetupDestination(resource))) &&
         !thread.isDM &&
         endpoint.status === "verifying" &&
         enabledResourceCount === 0 &&
@@ -1852,11 +1860,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
       const filterPreControlSource = async (database: DbOrTransaction) => {
         if (
-          controlCommand === "status" ||
-          (controlCommand === "new" &&
-            endpoint.provider === "telegram" &&
-            surfaceKind === "native_thread") ||
-          guidanceCommand ||
+          bypassesControlChronology ||
           (await readChatControlChronology(
             database,
             endpoint,
@@ -2009,8 +2013,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
 
       if (controlCommand) {
-        const isTelegramForumTopic =
-          endpoint.provider === "telegram" && surfaceKind === "native_thread";
+        const isTelegramForumTopic = telegramControls?.isForumTopic === true;
         const taskLabel = existingIssue
           ? `${existingIssue.identifier}: ${existingIssue.title}`
           : "No task is active in this conversation.";
@@ -2122,6 +2125,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         taskUserId: string | null,
       ) => {
         let conversation = existingConversation;
+        if (conversation) {
+          await notifyChatRunMilestones(taskTx, { companyId: taskEndpoint.companyId, issueId: conversation.issueId });
+        }
         if (!conversation) {
           const [taskResource] = await taskTx.select({ executionDefaults: chatEndpointResources.executionDefaults })
             .from(chatEndpointResources).where(and(eq(chatEndpointResources.id, resource.id), eq(chatEndpointResources.endpointId, taskEndpoint.id)));
@@ -2163,6 +2169,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             },
             taskTx,
           );
+          await notifyChatRunMilestones(taskTx, { companyId: taskEndpoint.companyId, issueId: issue.id });
           await taskTx
             .insert(chatConversations)
             .values({
@@ -2239,6 +2246,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               ? "Started a conversation by mentioning the agent."
               : "Sent an empty message.");
         let comment!: Awaited<ReturnType<typeof issuesSvc.addComment>>;
+        await notifyChatEndpointConfiguration(taskTx, taskEndpoint);
         await taskTx
           .update(chatEndpoints)
           .set({
@@ -2264,9 +2272,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             authorType: taskUserId ? "user" : "system",
             metadata: {
               version: 1,
-              ...(endpoint.provider === "imessage-photon"
-                ? { sourceChannel: "imessage-photon" as const }
-                : {}),
+              sourceChannel: endpoint.provider,
               sections: [
                 {
                   title: `${PROVIDER_LABELS[endpoint.provider]} sender`,
@@ -2338,6 +2344,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             updatedAt: new Date(),
           })
           .where(eq(chatConversations.id, conversation!.id));
+        await notifyChatConnectionHealth(taskTx, taskEndpoint);
         await taskTx
           .update(toolConnections)
           .set({
@@ -2363,10 +2370,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           principalId: principalResolution.principal.id,
           actorUserId: taskUserId,
         });
+        const receiptActionId = taskEndpoint.provider === "slack" && receiptReactionSupported && runtimeContext
+          ? await stageReceiptReaction(taskTx, {
+              deliveryId: activeDelivery.id,
+              endpoint: taskEndpoint,
+              threadId: thread.id,
+              messageId: message.id,
+              runtimeContext,
+            })
+          : null;
         if (taskEndpoint.provider === "imessage-photon") {
           await recordPhotonInboundActivity(taskTx, taskEndpoint, issue, comment.id, taskUserId, inboundActivityPublications);
         }
-        return { actorUserId: taskUserId, comment, conversation, issue };
+        return { actorUserId: taskUserId, comment, conversation, issue, receiptActionId };
       };
       const taskMutation = await db.transaction(async (tx) => {
         // Admission and durable task mutation are separate so the provider
@@ -2414,10 +2430,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           : nonDirectDestinationAllowed(currentEndpoint, currentResource);
         const mentionStillAllowed =
           currentEndpoint.provider !== "slack" ||
-          !currentEndpoint.requireAtMention ||
-          thread.isDM ||
-          trigger === "mention" ||
-          message.isMention === true;
+          slackMessageMeetsMentionRequirement(currentEndpoint, thread, trigger, message);
         if (
           !endpointStillAllowed ||
           !mentionStillAllowed ||
@@ -2509,6 +2522,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         );
       });
       if (!taskMutation) return;
+      // Slack's eyes mean the authorized message has been durably received.
+      // Dispatch immediately after commit, independently of file downloads,
+      // subscriptions and scheduler admission. The durable action owns retry;
+      // slow Slack I/O must not hold up the task's remaining acceptance work.
+      const earlyReceiptReaction = taskMutation.receiptActionId
+        ? processReceiptReaction(taskMutation.receiptActionId).catch((error) => {
+            logger.warn({ error: redactError(error) }, "early chat receipt dispatch failed; durable worker will recover");
+          })
+        : null;
+      if (earlyReceiptReaction) {
+        backgroundMessageTasks.add(earlyReceiptReaction);
+        void earlyReceiptReaction.finally(() => backgroundMessageTasks.delete(earlyReceiptReaction));
+      }
       // The open task can fetch the comment immediately, before attachments
       // finish preparing or the agent starts. Never publish an uncommitted row.
       for (const publication of inboundActivityPublications) {
@@ -2560,10 +2586,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         .limit(1)
         .then((rows) => rows[0] ?? null);
       if (acceptedWake?.status !== "processed") return;
-      // Provider-visible acknowledgement begins only after the task, external
-      // comment, durable wakeup request, delivery state, and message link commit.
+      // Other providers acknowledge accepted wakeup requests here. Slack's
+      // receipt was already staged with the authorized task/comment above;
+      // this idempotent reconciliation also covers older recovered deliveries.
       await Promise.allSettled([
-        receiptReactionSupported
+        earlyReceiptReaction ?? (receiptReactionSupported
           ? addReceiptReaction({
               deliveryId: activeDelivery.id,
               endpoint,
@@ -2571,7 +2598,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               runtimeContext,
               thread,
             })
-          : Promise.resolve(),
+          : Promise.resolve()),
         // Slack implements this through assistant.threads.setStatus, which
         // requires assistant:write. The least-privilege Paperclip manifest
         // deliberately does not request that scope; the coalesced lifecycle
@@ -2628,40 +2655,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       slackSlashControl?: boolean;
     } = {},
   ) {
-    if (
-      event.provider === "discord" &&
-      (!runtimeContext ||
-        !(await ensureDiscordGatewayRuntimeIsCurrent(
-          event.endpointId,
-          runtimeContext,
-        )))
-    ) {
-      return;
-    }
-    if (event.provider === "discord") {
-      await options.discordGatewayMessageAdmissionBarrier?.();
-    }
-    const record = await endpointRecord(event.endpointId);
-    if (!record) throw notFound("Chat endpoint not found");
-    const messages = [...(event.context?.skipped ?? []), event.message];
-    for (const message of messages)
-      await processMessage(
-        record.endpoint,
-        event.thread,
-        message,
-        message === event.message ? event.trigger : "subscribed_message",
-        event.provider === "imessage-photon" ||
-          options.deferWebhookProcessing === true,
-        null,
-        runtimeContext,
-        event.providerUpdateId,
-        null,
-        messageOptions.receiptReactionSupported !== false,
-        undefined,
-        false,
-        false,
-        messageOptions.slackSlashControl === true,
-      );
+    if (event.provider === "discord" && !(await admitDiscordSdkMessage(
+      event.endpointId,
+      runtimeContext,
+      {
+        ensureRuntimeIsCurrent: ensureDiscordGatewayRuntimeIsCurrent,
+        messageAdmissionBarrier: () => options.discordGatewayMessageAdmissionBarrier?.(),
+      },
+    ))) return;
+    return receiveSdkMessages(event, runtimeContext, messageOptions);
   }
   async function handleMessageUpdated(...args: Parameters<ReturnType<typeof createChatMessageLifecycle>["handleMessageUpdated"]>) {
     return messageLifecycle.handleMessageUpdated(...args);
@@ -2938,9 +2940,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .then((rows) => rows[0] ?? null);
     const recoveringRevokedGitHubInstallation =
-      endpoint?.status === "revoked" &&
-      provider === "github" &&
-      request.headers.get("x-github-event") === "installation";
+      githubWebhookCanRecoverRevokedInstallation(endpoint?.status, provider, request);
     if (
       !endpoint ||
       endpoint.status === "archived" ||
@@ -3035,40 +3035,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (slackCallbackInspection && response.ok) {
       await recordSlackWebhookCallback(endpoint, request, slackCallbackInspection, runtimeContext);
     }
-    if (githubInspection && response.ok) {
-      const lifecycle = await githubSupplementalLifecycleFromRequest(githubInspection);
-      if (lifecycle) {
-        await recordLifecycleDelivery(
-          {
-            endpointId: endpoint.id,
-            ...lifecycle,
-          },
-          runtimeContext,
-        );
-      }
-    }
-    if (provider === "telegram" && response.ok && lifecyclePayload) {
-      const lifecycle = telegramLifecycleEventFromPayload(lifecyclePayload);
-      if (lifecycle) {
-        await recordLifecycleDelivery(
-          {
-            endpointId: endpoint.id,
-            ...lifecycle,
-          },
-          runtimeContext,
-        );
-      }
-    }
-    if (
-      provider === "microsoft-teams" &&
-      response.ok &&
-      lifecyclePayload &&
-      endpointRuntime.acceptsProviderScope(lifecyclePayload)
-    ) {
-      const lifecycle = microsoftTeamsLifecycleEventFromPayload(
-        lifecyclePayload,
-        endpointRuntime,
-      );
+    if (response.ok) {
+      const lifecycle = githubInspection
+        ? await githubSupplementalLifecycleFromRequest(githubInspection)
+        : provider === "telegram" && lifecyclePayload
+          ? telegramLifecycleEventFromPayload(lifecyclePayload)
+          : provider === "microsoft-teams"
+            ? teamsWebhookLifecycleEventFromPayload(lifecyclePayload, endpointRuntime)
+            : null;
       if (lifecycle) {
         await recordLifecycleDelivery(
           {
@@ -3370,22 +3344,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return publicationQueue.processPendingPublications(...args);
   }
 
-  const { scheduleGitHubMaintenance } = createGitHubMaintenance(db, fetchImpl, {
-    scheduleMessageProcessing, isShuttingDown: () => shuttingDown,
-  });
-
-  async function processPublicationMaintenance(limit = 25) {
-    scheduleTeamsFileMaintenance();
-    scheduleGitHubMaintenance();
-    await enqueueInboundWakeupPublications();
-    await reconcileTerminalConfirmationActions(limit);
-    await processPendingInteractionWakeups(limit);
+  const githubReviews = githubChatReviewService(db, fetchImpl);
+  async function processPublicationMaintenance() {
+    await githubReviewCheckService(db, fetchImpl).repairSupersededReviews();
   }
 
   // The app refills free endpoint slots on commits and durable deadlines.
   // Work remains tracked by this service and is joined before runtime shutdown.
   async function schedulePendingPublications(limit = 25) {
-    await processPublicationMaintenance(limit);
+    await processPublicationMaintenance();
     return processPendingPublications(limit, { waitForCompletion: false, maintenance: false });
   }
 
@@ -3431,7 +3398,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     persistCredentials, clearCredentials, resolveCredentials, prepareProviderInventory,
     reconcileProviderResourceRows, reconcileDiscordCommands, runtimeFor, runtimeContextForRecord,
     stageTelegramMaintenance, processTelegramMaintenance, recordTelegramStopSubscription,
-    fetchImpl, redactError, runtimeGeneration, leasedChatProvider, PROVIDER_LABELS, SUPPLIED_CREDENTIAL_KEYS,
+    fetchImpl, redactError, runtimeGeneration, leasedChatProvider, PROVIDER_LABELS, SUPPLIED_CREDENTIAL_KEYS, RECONNECT_CREDENTIAL_KEYS,
     PROVIDER_CREDENTIAL_CHECK_TIMEOUT_MS, isSupportedTelegramWebhookBaseUrl,
     get slackRegistration() { return slackRegistration; },
     get githubWizard() { return githubWizard; },
@@ -3476,7 +3443,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const publicationTransport = createChatPublicationTransport(db, {
     endpointRecord, fetchImpl, getTaskBaseUrl, publicationFiles, receiptReactionCompletionRunId,
     runIdFromMilestonePublication, runtime, runtimeFor, runtimeGeneration, CAPABILITIES,
-    voice, voiceStore, scheduleMessageProcessing,
+    voiceStore,
   });
   const { postSafePublication } = publicationTransport;
   const { claimPublicationTransportAuthorization } = createChatPublicationAuthorization(db, {
@@ -3504,10 +3471,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     withCredentialMutationLease, receiptReactionCompletionRunId,
   });
   const { processSelectedPublication } = publicationWorker;
-  const { processPendingInteractionWakeups } = createChatInteractionContinuations(db, {
+  const { processPendingInteractionWakeups, registerInteractionContinuationWork } = createChatInteractionContinuations(db, {
+    preparePublications: (scope, canContinue) => processPendingPublications(25, { maintenance: false, scope, canContinue }),
     redactError, CONFIRMATION_WAKEUP_RETRY_BACKOFF_MS, get heartbeat() { return options.heartbeat; },
   });
-  const { handleAction, handleModalSubmit, reconcileTerminalConfirmationActions } = createChatInteractionCallbacks(db, {
+  const { handleAction, handleModalSubmit, reconcileTerminalConfirmationActions, registerTerminalConfirmationWork } = createChatInteractionCallbacks(db, {
+    heartbeat: options.heartbeat,
     CAPABILITIES, MAX_ERROR_TEXT, actionThreadMatchesConversation, nonDirectDestinationAllowed, sameTeamsThreadIdentity,
     ensurePrincipal, endpointRecord, runtimeCallbackRecord, runtimeCallbackEndpoint,
     requireCurrentExternalActionAuthorization, isExternalActionAuthorizationChange,
@@ -3530,6 +3499,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const { prepareTeamsBoardSend } = createTeamsBoardSendPreparation(db, { endpointRecord, runtimeFor });
   const { getPublicationBatchStatus, publishComment, publishBoardMessage } = createChatPublicationRequests(db, { endpointRecord, stageTeamsBoardFileIntent, processPendingSlackBoardMessages, processPendingPublications, prepareTeamsBoardSend });
 return {
+    registerInteractionContinuationWork,
+    registerGitHubReviewCheckWork: githubReviewCheckService(db, fetchImpl).registerCheckWork,
+    registerGitHubTerminalResponseWork: githubResponseCommentService(db, fetchImpl).registerTerminalResponseWork,
+    registerGitHubAcknowledgementWork: githubResponseCommentService(db, fetchImpl).registerAcknowledgementWork,
+    registerTerminalConfirmationWork,
+    loadFailedRetryNoticeScopes,
+    reconcileFailedRetryNotices,
+    registerTeamsAttemptRecoveryWork,
+    registerTeamsConsentExpiryWork,
+    registerCommandWork,
+    registerReceiverWork,
     voice,
     authorizeFastResponse,
     slackRegistration,
@@ -3549,7 +3529,7 @@ return {
     configure,
     inspectPhoton,
     test,
-    finishSlackSetup: (endpointId: string, userId: string) => test(endpointId, { optionalSlackTestForUser: userId }),
+    finishSlackSetup: (endpointId: string, userId: string, managementContext?: ConnectionManagementContext) => test(endpointId, { optionalSlackTestForUser: userId }, managementContext),
     setupTestStatus,
     handleWebhook,
     listResources,
@@ -3575,6 +3555,8 @@ return {
     reconcileProviderRuntimes,
     processPendingPublications,
     enqueueInboundWakeupPublications,
+    loadInboundWakeNoticeScopes,
+    reconcileInboundWakeNotices,
     schedulePendingPublications,
     processPendingDeliveries,
     processQueuedDeliveries: () => processPendingDeliveries(25, undefined, false),
@@ -3592,6 +3574,8 @@ return {
     processPublicationMaintenance,
     nextInboundDeliveryAt,
     nextPublicationAt,
+    processPendingGitHubReviewPublications: githubReviews.processPending,
+    nextGitHubReviewPublicationAt: githubReviews.nextPendingAt,
     nextSlackReceiptAt,
     onPublicationsSettled: (wake: () => void) => { wakePublications = wake; },
     prepareFailedChatRunRetry,
@@ -3599,6 +3583,7 @@ return {
     processFailedChatRunRetry,
     processFailedChatRunRetries,
     processPendingGitHubWebhookIngress,
+    registerGitHubWebhookRecoveryWork: registerWebhookRecoveryWork,
     processFailedGitHubWebhookDeliveries,
     processPendingProviderEffects,
     processPendingReceiptReactions,
@@ -3609,6 +3594,7 @@ return {
     shutdown: async () => {
       shuttingDown = true;
       await Promise.allSettled(pendingFailedRetries());
+      unregisterDeferredWakeOwner();
       unregisterFailedRetryAuthority();
       unregisterSlackTaskAuthority();
       voice.unregisterAgentTools();

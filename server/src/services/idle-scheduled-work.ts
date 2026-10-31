@@ -8,7 +8,7 @@ const limit = 10_000;
 
 export interface ScheduledWake {
   version: 1;
-  kind: "routines";
+  kind: "routines" | "routines_and_issue_monitors";
   generation: string;
   nextWakeAt: string;
 }

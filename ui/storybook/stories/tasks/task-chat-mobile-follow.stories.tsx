@@ -1,10 +1,10 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { TaskChatComposerDock } from "@/components/task-chat/TaskChatComposerDock";
 import { TaskChatThreadView } from "@/components/task-chat/TaskChatThreadView";
-import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow";
+import { useMobileVisualViewport } from "@/hooks/useMobileVisualViewport";
 
 function StreamingResponse({ running }: { running: boolean }) {
   const [lines, setLines] = useState(16);
@@ -13,7 +13,7 @@ function StreamingResponse({ running }: { running: boolean }) {
     const timer = window.setTimeout(() => setLines(lines + 1), 500);
     return () => window.clearTimeout(timer);
   }, [running, lines]);
-  return <TaskChatThreadView scroll={false} items={[
+  return <TaskChatThreadView items={[
     { id: "request", kind: "message", author: "human", text: "Give me a detailed progress report as you work." },
     {
       id: "response", kind: "message", author: "agent", authorName: "Researcher", streaming: running,
@@ -24,21 +24,19 @@ function StreamingResponse({ running }: { running: boolean }) {
 
 function MobileFollow() {
   const [running, setRunning] = useState(true);
-  // The child updates independently, exercising late layout growth as well as
-  // normal streaming without relying on a parent content-key notification.
-  useWindowAutoFollow(0, true);
-  return <div className="flex min-h-dvh flex-col bg-background text-foreground">
-    <header className="flex h-12 shrink-0 items-center px-4 text-sm font-medium">Streaming progress report</header>
-    <main className="flex flex-1 flex-col p-4 pb-(--tc-composer-visible-nav-offset)"
-      style={{ "--tc-composer-bottom": "var(--tc-composer-visible-nav-offset)" } as CSSProperties}>
-      <div data-testid="task-chat-thread" className="-mx-4 flex flex-col">
+  const viewportRef = useMobileVisualViewport(true);
+  return <div ref={viewportRef} data-mobile="true" className="paperclip-app-shell flex min-h-dvh flex-col bg-background text-foreground">
+    <div className="app-main-row"><div className="app-content-column flex flex-col">
+    <header className="app-breadcrumb flex h-12 shrink-0 items-center px-4 text-sm font-medium">iOS layout — focus-scroll correction</header>
+    <div className="app-content-row"><main id="main-content" className="flex flex-1 flex-col p-4">
+      <div data-task-chat-shell="" data-testid="task-chat-thread" className="-mx-4 flex min-h-0 flex-1 flex-col">
         <StreamingResponse running={running} />
         <TaskChatComposerDock mobile streamlined={false}>
           <TaskChatComposer mobile workMode="standard" onAdd={async () => setRunning(true)}
             onStop={running ? async () => setRunning(false) : undefined} />
         </TaskChatComposerDock>
       </div>
-    </main>
+    </main></div></div></div>
     <MobileBottomNav visible />
   </div>;
 }
@@ -56,7 +54,7 @@ const meta = {
       ],
       "implementation": "production",
       "boundary": "fixtures",
-      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+      "notes": "Production mobile viewport sizing, message scroller, and composer with bounded synthetic streaming. Physical iPhone keyboard acceptance is required."
     },
   },
   globals: { theme: "light", viewport: { value: "mobile", isRotated: false } },

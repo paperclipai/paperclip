@@ -13,8 +13,8 @@ const connection: GrokConnection = { enabled: true, resourceUrl: "https://paperc
   agentLifecycleState: "ready", canConfigureConnection: true, recoveryNeeded: false,
   binding: { id: bindingId, providerKind: "grok_bot", status: "connected", connected: true, subscriptionVerified: false,
     hasPendingChallenge: false, pairingExpiresAt: null, challengeExpiresAt: null, wakeVerified: false, routine: null } };
-function SetupPreview({ initialStep = 0, outboundOnly = false, rejected = false, recovering = false, saved = false }: {
-  initialStep?: GrokSetupStep; outboundOnly?: boolean; rejected?: boolean; recovering?: boolean; saved?: boolean;
+function SetupPreview({ initialStep = 0, outboundOnly = false, rejected = false, recovering = false, saved = false, awaitingAuthorization = false }: {
+  initialStep?: GrokSetupStep; outboundOnly?: boolean; rejected?: boolean; recovering?: boolean; saved?: boolean; awaitingAuthorization?: boolean;
 }) {
   const [open, setOpen] = useState(true);
   const [step, setStep] = useState(initialStep);
@@ -30,7 +30,7 @@ function SetupPreview({ initialStep = 0, outboundOnly = false, rejected = false,
       status: verified ? "acknowledged" as const : recovering ? "unknown" as const : rejected ? "rejected" as const : "accepted" as const,
       httpStatus: rejected ? 401 : recovering ? null : 200, sentAt: new Date().toISOString(), acknowledgedAt: verified ? new Date().toISOString() : null,
       expiresAt: new Date(Date.now() + 600000).toISOString() } : null } : null;
-  const state: GrokConnection = { ...connection, recoveryNeeded: recovering, binding: { ...connection.binding!, status: verified ? "ready" : "connected", routine, wakeVerified: verified } };
+  const state: GrokConnection = { ...connection, agentLifecycleState: awaitingAuthorization ? "verifying" : connection.agentLifecycleState, recoveryNeeded: recovering, binding: { ...connection.binding!, connected: !awaitingAuthorization, status: awaitingAuthorization ? "pairing" : verified ? "ready" : "connected", routine, wakeVerified: verified } };
   return open ? <Dialog open onOpenChange={setOpen}><AnimatedDialogContent className="sm:max-w-(--sz-560px)">
     <GrokBotSetupContent step={step} companyName="Acme" details={details} managers={[]} created={created}
       connection={state} pairing={{ bindingId, pairingCode: "synthetic-code-never-a-credential", expiresAt: new Date(Date.now() + 900000).toISOString() }}
@@ -51,6 +51,13 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 export const FreshSetup: Story = {};
 export const SavedSetup: Story = { args: { initialStep: 1, saved: true } };
+export const WaitingForAuthorization: Story = { args: { initialStep: 1, saved: true, awaitingAuthorization: true }, play: async ({ canvasElement }) => {
+  const page = within(canvasElement.ownerDocument.body);
+  await expect(page.getByLabelText("One-use pairing code")).toHaveAttribute("type", "password");
+  await expect(page.getByRole("button", { name: "Copy pairing code" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Continue$/ })).toBeDisabled();
+  await expect(page.getByText("Watching for authorization. This connection works as the named agent.")).toBeVisible();
+} };
 export const ConfigureRoutine: Story = { args: { initialStep: 2, saved: true } };
 export const OutboundOnly: Story = { args: { initialStep: 3, outboundOnly: true, saved: true }, play: async ({ canvasElement }) => {
   const page = within(canvasElement.ownerDocument.body);

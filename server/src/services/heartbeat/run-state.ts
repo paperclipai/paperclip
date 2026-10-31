@@ -1,3 +1,5 @@
+import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
+import { conversationEventCondition, conversationEventColumns } from "./conversation-events.js";
 import { deriveTaskKey } from "./run-preparation.js";
 import { retryIdempotentDatabaseOperation } from "../../database-retry.js";
 import { isConversation } from "../agent-conversations.js";
@@ -24,6 +26,7 @@ import {
   agentTaskSessions,
   heartbeatRunEvents,
   heartbeatRuns,
+  workspaceRestoreFailureCodesSql,
   issues,
 } from "@paperclipai/db";
 import { notFound } from "../../errors.js";
@@ -50,6 +53,7 @@ import {
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
 import { isUuidLike } from "@paperclipai/shared";
+import { HEARTBEAT_RUN_LIST_DEFAULT_LIMIT, HEARTBEAT_RUN_LIST_MAX_LIMIT } from "@paperclipai/shared";
 import { isUnsafeSessionWorkspaceCwd } from "../session-workspace-cwd.js";
 
 export const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON =
@@ -130,18 +134,25 @@ const heartbeatRunSummaryListColumns = {
   resultJson: sql<Record<string, unknown> | null>`NULL`.as("resultJson"),
 } as const;
 
+const heartbeatRunListContextRecord = sql`lateral jsonb_to_record(
+  case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+    then ${heartbeatRuns.contextSnapshot} else '{}'::jsonb end
+) as run_context("issueId" text, "taskId" text, "taskKey" text,
+  "commentId" text, "wakeCommentId" text, "wakeReason" text,
+  "wakeSource" text, "wakeTriggerDetail" text)`;
+
 const heartbeatRunListContextColumns = {
   contextIssueId: sql<string | null>`coalesce(
     ${heartbeatRuns.issueId}::text,
-    ${heartbeatRuns.contextSnapshot} ->> 'issueId'
+    run_context."issueId"
   )`.as("contextIssueId"),
-  contextTaskId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskId'`.as("contextTaskId"),
-  contextTaskKey: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskKey'`.as("contextTaskKey"),
-  contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
-  contextWakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as("contextWakeCommentId"),
-  contextWakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`.as("contextWakeReason"),
-  contextWakeSource: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeSource'`.as("contextWakeSource"),
-  contextWakeTriggerDetail: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeTriggerDetail'`.as("contextWakeTriggerDetail"),
+  contextTaskId: sql<string | null>`run_context."taskId"`.as("contextTaskId"),
+  contextTaskKey: sql<string | null>`run_context."taskKey"`.as("contextTaskKey"),
+  contextCommentId: sql<string | null>`run_context."commentId"`.as("contextCommentId"),
+  contextWakeCommentId: sql<string | null>`run_context."wakeCommentId"`.as("contextWakeCommentId"),
+  contextWakeReason: sql<string | null>`run_context."wakeReason"`.as("contextWakeReason"),
+  contextWakeSource: sql<string | null>`run_context."wakeSource"`.as("contextWakeSource"),
+  contextWakeTriggerDetail: sql<string | null>`run_context."wakeTriggerDetail"`.as("contextWakeTriggerDetail"),
 } as const;
 
 const heartbeatRunListResultColumns = {
@@ -228,7 +239,7 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
         'workspaceRestoreRecovery', case when ${heartbeatRuns.resultJson} #>> '{workspaceRestoreRecovery,schema}' = 'paperclip.workspace-restore-recovery.v1'
           then jsonb_build_object('schema', 'paperclip.workspace-restore-recovery.v1') end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
-          in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
+          in (${workspaceRestoreFailureCodesSql})
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
         'cancellation', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'cancellation') = 'object'
           then jsonb_strip_nulls(jsonb_build_object(
@@ -333,18 +344,39 @@ const heartbeatRunSqlAsciiSafeColumns = {
   stderrExcerpt: sql<string | null>`NULL`.as("stderrExcerpt"),
 } as const;
 
-const heartbeatRunLogAccessColumns = {
+const heartbeatRunReadAccessColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
   scopeKind: heartbeatRuns.scopeKind,
   issueId: heartbeatRuns.issueId,
+} as const;
+
+const heartbeatRunLogAccessColumns = {
+  ...heartbeatRunReadAccessColumns,
   logStore: heartbeatRuns.logStore,
   logRef: heartbeatRuns.logRef,
+  runtimeMode: heartbeatRuns.runtimeMode,
+  status: heartbeatRuns.status,
+  logBytes: heartbeatRuns.logBytes,
+} as const;
+
+const heartbeatRunIssueControlColumns = {
+  id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+  status: heartbeatRuns.status, runtimeMode: heartbeatRuns.runtimeMode,
+  runtimeModeResolvedAt: heartbeatRuns.runtimeModeResolvedAt,
+  startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
+  contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+    then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId') else null end`,
+  runnerProfileJson: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object'
+    then jsonb_build_object('adapterDispatch', jsonb_build_object('adapterType', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->'adapterType'))
+    else null end`,
 } as const;
 
 const heartbeatRunIssueSummaryColumns = {
   id: heartbeatRuns.id,
   runtimeMode: heartbeatRuns.runtimeMode,
+  wakeupRequestId: heartbeatRuns.wakeupRequestId,
+  queuedCommentSourceWakeIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'queuedCommentSourceWakeIds'`.as("queuedCommentSourceWakeIds"),
   status: heartbeatRuns.status,
   invocationSource: heartbeatRuns.invocationSource,
   triggerDetail: heartbeatRuns.triggerDetail,
@@ -1105,12 +1137,90 @@ export function createHeartbeatRunState(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getRunExecutionWait(companyId: string, runId: string) {
+    const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
+    return db.select({
+      ...heartbeatRunIssueControlColumns,
+      finishedAt: heartbeatRuns.finishedAt,
+      errorCode: heartbeatRuns.errorCode,
+      error: safeForLegacyEncoding ? heartbeatRunSqlAsciiSafeColumns.error : heartbeatRuns.error,
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      nativeSessionId: heartbeatRuns.nativeSessionId,
+      processPid: heartbeatRuns.processPid,
+      processGroupId: heartbeatRunProcessGroupIdColumn,
+      processStartedAt: heartbeatRuns.processStartedAt,
+      sessionIdAfter: heartbeatRuns.sessionIdAfter,
+      executionStage: heartbeatRuns.executionStage,
+      controllerBootId: heartbeatRuns.controllerBootId,
+      controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
+      resultJson: heartbeatRunExecutionEvidenceColumn,
+      contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+        then (select coalesce(jsonb_object_agg(key, value), '{}'::jsonb)
+          from jsonb_each(${heartbeatRuns.contextSnapshot})
+          where key = any(array['issueId', 'connectionIntentResolution', 'source', 'interactionKind',
+            'interactionStatus', 'mutation', 'interactionId'])) else null end`,
+    }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId),
+    )).then(rows => rows[0] ?? null);
+  }
+
+  async function getRunCleanupState(runId: string) {
+    return db.select({
+      id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+      runtimeMode: heartbeatRuns.runtimeMode, status: heartbeatRuns.status,
+      errorCode: heartbeatRuns.errorCode, nativePhase: heartbeatRuns.nativePhase,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(rows => rows[0] ?? null);
+  }
+
+  async function getRunWorkspaceSettlement(runId: string) {
+    const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
+    return db.select({
+      id: heartbeatRuns.id, status: heartbeatRuns.status,
+      error: safeForLegacyEncoding ? heartbeatRunSqlAsciiSafeColumns.error : heartbeatRuns.error,
+      runnerProfileJson: sql<Record<string, unknown> | null>`case when ${heartbeatRuns.runnerProfileJson} is null then null
+        else jsonb_build_object('nativeWorkspaceSync', ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync',
+          'nativeResourceDisposition', ${heartbeatRuns.runnerProfileJson}->'nativeResourceDisposition') end`,
+      resultJson: sql<Record<string, unknown> | null>`case when ${heartbeatRuns.resultJson} is null then null
+        else jsonb_build_object('workspaceExportRetry', ${heartbeatRuns.resultJson}->'workspaceExportRetry') end`,
+      contextSnapshot: sql<Record<string, unknown> | null>`case when ${heartbeatRuns.contextSnapshot} is null then null
+        else jsonb_build_object('timerClaimWasFirstHeartbeat', ${heartbeatRuns.contextSnapshot}->'timerClaimWasFirstHeartbeat') end`,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(rows => rows[0] ?? null);
+  }
+
+  async function getRunStatus(runId: string) {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getRunReadAccess(runId: string) {
+    return db
+      .select(heartbeatRunReadAccessColumns)
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function getRunLogAccess(runId: string) {
     return db
       .select(heartbeatRunLogAccessColumns)
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function getRunWorkspaceAccess(runId: string) {
+    return db.select({
+      ...heartbeatRunReadAccessColumns,
+      executionWorkspaceId: sql<unknown>`${heartbeatRuns.contextSnapshot}->'executionWorkspaceId'`,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(rows => rows[0] ?? null);
   }
 
   async function getRuntimeState(agentId: string) {
@@ -1619,6 +1729,9 @@ export function createHeartbeatRunState(db: Db) {
           if (run?.status === "cancelled" || run?.contextSnapshot?.conversationSessionGeneration !== issue.conversationSessionGeneration) return 0;
         }
       }
+      const goals = await tx.select({ id: agentTaskSessions.id }).from(agentTaskSessions)
+        .where(and(...conditions, sql`${agentTaskSessions.goalStatus} is not null`, sql`${agentTaskSessions.goalStatus} <> 'complete'`)).limit(1);
+      if (goals.length) await notifyExternalConversationSettlement(tx, { companyId });
       return tx.delete(agentTaskSessions).where(and(...conditions)).returning().then((rows) => rows.length);
     });
   }
@@ -1653,6 +1766,9 @@ export function createHeartbeatRunState(db: Db) {
     getAgent,
     resolveSessionBeforeForWakeup,
     getRun,
+    getRunCleanupState,
+    getRunExecutionWait,
+    getRunWorkspaceSettlement,
     ensureRuntimeState,
     getTaskSession,
     getLatestAgentConfigRevision,
@@ -1662,7 +1778,10 @@ export function createHeartbeatRunState(db: Db) {
     clearTaskSessions,
     resolveExplicitResumeSessionOverride,
     hasResolvablePriorSessionWorkspaceForWake,
+    getRunStatus,
+    getRunReadAccess,
     getRunLogAccess,
+    getRunWorkspaceAccess,
 
     listRuns: async (
       companyId: string,
@@ -1693,6 +1812,7 @@ export function createHeartbeatRunState(db: Db) {
                   },
           )
           .from(heartbeatRuns)
+          .leftJoin(heartbeatRunListContextRecord, sql`true`)
           .where(
             agentId
               ? and(
@@ -1703,7 +1823,10 @@ export function createHeartbeatRunState(db: Db) {
           )
           .orderBy(desc(heartbeatRuns.createdAt));
 
-        return limit ? await query.limit(limit) : await query;
+        const boundedLimit = Number.isFinite(limit)
+          ? Math.max(1, Math.min(HEARTBEAT_RUN_LIST_MAX_LIMIT, Math.trunc(limit!)))
+          : HEARTBEAT_RUN_LIST_DEFAULT_LIMIT;
+        return await query.limit(boundedLimit);
       });
       return rows.map((row) => {
         const {
@@ -1849,14 +1972,15 @@ export function createHeartbeatRunState(db: Db) {
       };
     },
 
-    listEvents: (runId: string, afterSeq = 0, limit = 200) =>
+    listEvents: (runId: string, afterSeq = 0, limit = 200, conversationOnly = false) =>
       db
-        .select()
+        .select(conversationOnly ? conversationEventColumns(runId) : getTableColumns(heartbeatRunEvents))
         .from(heartbeatRunEvents)
         .where(
           and(
             eq(heartbeatRunEvents.runId, runId),
             gt(heartbeatRunEvents.seq, afterSeq),
+            conversationOnly ? conversationEventCondition(runId) : undefined,
           ),
         )
         .orderBy(asc(heartbeatRunEvents.seq))
@@ -1887,6 +2011,19 @@ export function createHeartbeatRunState(db: Db) {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runId))
         .limit(1);
+      return run ?? null;
+    },
+
+    getRunIssueControl: async (runId: string) => {
+      const [run] = await db.select(heartbeatRunIssueControlColumns).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId)).limit(1);
+      return run ?? null;
+    },
+
+    getActiveRunIssueControlForAgent: async (agentId: string) => {
+      const [run] = await db.select(heartbeatRunIssueControlColumns).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running")))
+        .orderBy(desc(heartbeatRuns.startedAt)).limit(1);
       return run ?? null;
     },
 

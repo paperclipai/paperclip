@@ -1,6 +1,7 @@
 # Replace @cryppadotta if a different maintainer or team should own release infrastructure.
 
 .github/** @cryppadotta @devinfoley @nickyleach @forgottendev
+scripts/ci-profile/** @cryppadotta @devinfoley @nickyleach @forgottendev
 scripts/release*.sh @cryppadotta @devinfoley @nickyleach @forgottendev
 scripts/release-*.mjs @cryppadotta @devinfoley @nickyleach @forgottendev
 scripts/create-github-release.sh @cryppadotta @devinfoley @nickyleach @forgottendev
@@ -20,3 +21,5 @@ package.json @cryppadotta @devinfoley @nickyleach @forgottendev
 pnpm-lock.yaml @cryppadotta @devinfoley @nickyleach @forgottendev
 pnpm-workspace.yaml @cryppadotta @devinfoley @nickyleach @forgottendev
 .npmrc @cryppadotta @devinfoley @nickyleach @forgottendev
+
+/packages/paperclip-runner/src/contracts/runtime-context-prompts.ts @cryppadotta @devinfoley @nickyleach @forgottendev

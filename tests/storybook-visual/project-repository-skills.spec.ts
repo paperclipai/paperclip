@@ -12,12 +12,37 @@ test('groups matching project repositories and keeps progress visible through ad
   await expect(page.getByRole('button', { name: 'Import skills', exact: true })).toHaveCount(0);
 });
 
+test('keeps an existing source compact while allowing project import from its menu', async ({ page }, info) => {
+  await page.goto(story('existing-source-more-projects'));
+  const source = page.getByRole('region', { name: 'acme/team-skills', exact: true });
+  await expect(source.getByRole('link', { name: 'acme/team-skills', exact: true })).toHaveCount(1);
+  await expect(source).not.toContainText('Paperclip Cloud');
+  await expect(source).not.toContainText('Sentry');
+  await expect(source).not.toContainText('Other projects with this repo');
+  await expect(page.getByRole('link', { name: 'Installed skills', exact: true })).toHaveCount(0);
+  await expect(source.getByRole('button', { name: 'Import skills', exact: true })).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath('existing-source-more-projects.png') });
+  await source.getByRole('button', { name: 'More actions for acme/team-skills', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Import project skills', exact: true }).click();
+  await expect(source.getByRole('status')).toContainText('Importing skills');
+  await expect(source.getByRole('status')).toHaveCount(0);
+  await source.getByRole('button', { name: 'More actions for acme/team-skills', exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: /^(Import (remaining )?project skills|Retry project import)$/ })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(source).toBeVisible();
+  await expect(source).not.toContainText('Paperclip Cloud');
+  await expect(source).not.toContainText('Sentry');
+});
+
 test('repairs a missing branch without prompting for another connection', async ({ page }) => {
   await page.goto(story('missing-branch'));
   await expect(page.getByRole('button', { name: 'Choose connection', exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Use default branch', exact: true }).click();
+  await page.getByRole('button', { name: 'Choose a new branch', exact: true }).click();
+  await page.getByRole('combobox', { name: 'Branch', exact: true }).click();
+  await page.getByRole('option', { name: 'master Default', exact: true }).click();
+  await page.getByRole('button', { name: 'Change branch', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveCount(0);
-  await expect(page.getByText(/Default branch · Updated/)).toBeVisible();
+  await expect(page.getByText(/master · Updated/)).toBeVisible();
   await expect(page.getByRole('region', { name: 'acme/team-skills', exact: true }).getByText('Code review', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'More actions for acme/team-skills', exact: true })).toBeFocused();
 });
@@ -99,7 +124,7 @@ test('legacy adoption imports directly and survives navigation within the journe
   await expect(source).toBeVisible();
   await expect(source.getByText('Code review', { exact: true })).toBeVisible();
   await expect(action).toHaveCount(0);
-  await page.getByRole('link', { name: 'Installed skills', exact: true }).click();
+  await page.getByLabel('Skills', { exact: true }).getByRole('link', { name: 'Installed', exact: true }).click();
   await expect(source).toHaveCount(0);
   await expect(page.getByText('Code review', { exact: true }).first()).toBeVisible();
   await page.getByLabel('Skills', { exact: true }).getByRole('link', { name: 'Sources', exact: true }).click();
@@ -115,11 +140,24 @@ test('background refresh imports an addition without clicking refresh', async ({
   await page.screenshot({ path: info.outputPath('automatic-update.png') });
 });
 
+test('keeps GitHub connection management in the page actions menu', async ({ page }) => {
+  await page.goto(story('synced'));
+  const source = page.getByRole('region', { name: 'acme/team-skills', exact: true });
+  await expect(source.getByRole('link', { name: 'Manage GitHub connection', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'More source actions', exact: true }).click();
+  const manageConnection = page.getByRole('menuitem', { name: 'Manage GitHub connection', exact: true });
+  await expect(manageConnection).toBeVisible();
+  await expect(manageConnection).toHaveAttribute('href', /\/apps$/);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: 'More source actions', exact: true })).toBeFocused();
+});
+
 test('refresh failure retains content and retry recovers', async ({ page }, info) => {
   await page.goto(story('failed-refresh'));
   const source = page.getByRole('region', { name: 'acme/team-skills', exact: true });
   await expect(source.getByText('Code review', { exact: true })).toBeVisible();
   await expect(source.getByRole('alert')).toContainText('installed skills were kept');
+  await page.screenshot({ path: info.outputPath('refresh-error.png') });
   await source.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(source.getByRole('button', { name: 'Refresh', exact: true })).toBeEnabled();
   await source.getByRole('button', { name: 'Refresh', exact: true }).click();

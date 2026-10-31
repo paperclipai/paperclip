@@ -30,8 +30,9 @@ export const skillSourceSettingsSchema = z.object({
   automaticUpdates: z.boolean().optional(),
   importNewSkills: z.boolean().optional(),
   connectionId: z.string().uuid().nullable().optional(),
-  trackingRef: z.literal('HEAD').optional(),
+  trackingRef: z.string().trim().min(1).max(255).refine(value => !/[\x00-\x1f\x7f]/.test(value), 'Enter a valid branch or revision.').optional(),
 });
+export const skillSourceBranchesQuerySchema = z.object({ connectionId: z.string().uuid().optional() });
 export const projectSkillSourceAdoptSchema = z.object({
   workspaceId: z.string().uuid(),
 });

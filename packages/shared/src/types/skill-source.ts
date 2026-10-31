@@ -86,8 +86,15 @@ export interface SkillSourceSettingsRequest {
   automaticUpdates?: boolean;
   importNewSkills?: boolean;
   connectionId?: string | null;
-  /** Explicitly resume following the default branch; existing version pins remain intact. */
-  trackingRef?: 'HEAD';
+  /** Follow this branch/ref, or HEAD for the default branch. Version pins remain intact. */
+  trackingRef?: string;
+}
+export interface SkillSourceBranchesQuery { connectionId?: string }
+export interface SkillSourceBranches {
+  defaultBranch: string;
+  branches: Array<{ name: string; isDefault: boolean }>;
+  /** The bounded list may omit branches; an unlisted name can still be entered. */
+  truncated: boolean;
 }
 export interface ProjectSkillRepository {
   projectId: string;

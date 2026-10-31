@@ -235,7 +235,7 @@ export interface WakeQueueTransaction {
  */
 export interface IssueLockWriter {
   withIssueExecutionLock(
-    input: { companyId: string; runId: string; now: Date },
+    input: { companyId: string; runId: string; now: Date; resumeStrandedQueue?: boolean },
     fn: (
       locked: LockedIssueExecution,
       ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
@@ -322,7 +322,9 @@ export type DurableWakeAdmissionReceipt = {
   requestedAt: Date;
 };
 
-export type CoalescedDeferredAdmissionReceipt = DurableWakeAdmissionReceipt & {
+export type CoalescedDeferredAdmissionReceipt =
+  Omit<DurableWakeAdmissionReceipt, "id" | "requestedAt"> &
+  Partial<Pick<DurableWakeAdmissionReceipt, "id" | "requestedAt">> & {
   agentId: string;
   source: string;
   triggerDetail: string | null;
@@ -407,6 +409,8 @@ export interface WakeAdmissionReader {
       companyId: string;
       agentId: string;
       issueId: string;
+      /** Matches only deferred wakes for this chat conversation or for no conversation. */
+      chatConversationId?: string | null;
       durableActor?: { type: string | null; id: string | null };
     },
   ): Promise<ExistingDeferredWake | null>;
