@@ -86,6 +86,11 @@ offset; total scroll offset legitimately changes when history is prepended.
 
 Ordinary task opens defer the concealed history and composer until their initial
 data is ready. The skeleton and scroll/composer containers retain their geometry.
+Compact tasks reuse saved replies from completed runs. Their transcript reads
+start when the reader opens older history through **More messages** or **More run
+output**. Live runs, failures, yielded runs, explicit anchors, and runs without a
+saved reply still load their output. A transcript already shown during this visit
+stays mounted when the run completes.
 Comment-link navigation prepares content eagerly so the target can be positioned
 before reveal. Revealed content stays mounted during refresh. The draft scenario
 holds a background task read, checks the same editor remains mounted, reloads the
@@ -104,6 +109,20 @@ not a shared or production instance. Without the override, the harness starts it
 isolated instance as before. Live provider walkthroughs additionally require a
 configured native Paperclip runner and Codex authentication; deterministic
 browser fixtures do not substitute for watching an actual provider run.
+
+`saved-reply-startup.spec.ts` adds a PostgreSQL fixture with 200 long saved agent
+replies and 200 completed native runs. It holds transcript requests, checks that
+desktop and mobile reveal the recent replies without those reads, and measures
+reply positions on each frame. Opening older history must start the transcript
+reads and preserve the editor and draft. This case is skipped unless
+`PAPERCLIP_ISSUE_PERF_DATABASE_URL` points to a disposable loopback PostgreSQL
+database whose name ends in `_test`. Use the same database as the local server:
+
+```sh
+PAPERCLIP_ISSUE_PERF_BASE_URL=http://127.0.0.1:3102 \
+PAPERCLIP_ISSUE_PERF_DATABASE_URL=postgres://paperclip:paperclip@127.0.0.1:5432/task_loading_test \
+  pnpm exec playwright test --config tests/perf/issue-detail/playwright.config.ts saved-reply-startup.spec.ts
+```
 
 For the live walkthrough, first assign a disposable task to a native Paperclip
 runner configured with the Codex provider. Its scratch project should contain

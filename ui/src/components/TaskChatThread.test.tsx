@@ -703,6 +703,57 @@ describe.each(["legacy", "native"] as const)("%s task history readiness", (runti
     nativeTranscriptState.hydratedRunIds = new Set();
   });
 
+  it("opens saved compact replies without fetching their completed run and loads output on expansion", async () => {
+    const props = {
+      issueId: "saved-compact-task", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+      linkedRuns: [{ ...retryRun, runId: "saved-run", status: "succeeded", startedAt: retryRun.createdAt }],
+      comments: [{ ...createLongThreadComments()[3], id: "saved-answer", authorType: "agent" as const,
+        authorAgentId: "agent-1", body: "Saved investigation result", runId: "saved-run" }],
+    };
+    render(<TaskChatThread {...props} initialHistoryPending />);
+    expect(transcriptHookRuns.native.at(-1)).toEqual([]);
+    expect(transcriptHookRuns.legacy.at(-1)).toEqual([]);
+    render(<TaskChatThread {...props} initialHistoryPending={false} />);
+    await settleThreadLayout();
+    expect(container.textContent).toContain("Saved investigation result");
+    expect(transcriptHookRuns.native.at(-1)).toEqual([]);
+    expect(transcriptHookRuns.legacy.at(-1)).toEqual([]);
+    const editor = container.querySelector('[data-testid="mock-editor"]');
+    act(() => editorCallbacks.change("Keep this draft"));
+    const output = [...container.querySelectorAll("button")].find(button => button.textContent === "More run output");
+    expect(output).toBeDefined();
+    act(() => output!.click());
+    expect(props.onExpandHistory).toHaveBeenCalledOnce();
+    render(<TaskChatThread {...props} compactHistory={false} />);
+    expect((runtimeMode === "native" ? transcriptHookRuns.native : transcriptHookRuns.legacy).at(-1)).toMatchObject([{ id: "saved-run" }]);
+    expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+    expect(editor?.textContent).toBe("Keep this draft");
+  });
+
+  it.each(["running", "failed", "no-reply", "placeholder", "chat", "yielded", "no-presentation", "progress"])("hydrates compact output when it is required (%s)", (scenario) => {
+    const props = {
+      issueId: "required-output", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+      conversationMode: scenario === "chat",
+      linkedRuns: [{ ...retryRun, runId: "saved-run", status: ["running", "failed"].includes(scenario) ? scenario : "succeeded", startedAt: retryRun.createdAt,
+        resultJson: scenario === "yielded" ? { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded" } }
+          : scenario === "no-presentation" ? { presentationDecision: { schema: "paperclip.run_presentation_decision.v1", commentId: null } }
+          : scenario === "progress" ? { semanticToolReceipts: { progress: { operationId: "report_progress", result: { commentId: "saved-answer" } } } } : {} }],
+      comments: scenario === "no-reply" ? [] : [{ ...createLongThreadComments()[3], id: "saved-answer", authorType: "agent" as const,
+        authorAgentId: "agent-1", body: scenario === "placeholder" ? "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log)." : "Saved investigation result", runId: "saved-run" }],
+    };
+    render(<TaskChatThread {...props} />);
+    expect((runtimeMode === "native" ? transcriptHookRuns.native : transcriptHookRuns.legacy).at(-1)).toMatchObject([{ id: "saved-run" }]);
+  });
+
+  it("retains a live transcript after the saved reply arrives", () => {
+    const props = { issueId: "live-to-saved", compactHistory: true, onAdd: async () => {}, onExpandHistory: vi.fn(),
+      linkedRuns: [{ ...retryRun, runId: "live-run", status: "running", startedAt: retryRun.createdAt }], comments: createLongThreadComments() };
+    render(<TaskChatThread {...props} />);
+    render(<TaskChatThread {...props} linkedRuns={[{ ...props.linkedRuns[0], status: "succeeded" }]}
+      comments={[...props.comments, { ...props.comments[3], authorType: "agent", authorAgentId: "agent-1", runId: "live-run", body: "Just saved" }]} />);
+    expect((runtimeMode === "native" ? transcriptHookRuns.native : transcriptHookRuns.legacy).at(-1)).toMatchObject([{ id: "live-run" }]);
+  });
+
   it("reveals comments while a scheduled retry has no transcript to hydrate", async () => {
     renderThread({
       issueId: "issue-1",
