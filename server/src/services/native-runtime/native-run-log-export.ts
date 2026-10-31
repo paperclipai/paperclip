@@ -4,6 +4,7 @@ import { heartbeatRunEvents, type Db } from "@paperclipai/db";
 import { validatePrpEvent, type PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { nativeSha256 } from "./canonical.js";
 import type { RunLogHandle, RunLogStore } from "../run-log-store.js";
+import { compactRunLogChunk } from "../heartbeat/run-log.js";
 
 export function formatNativeRunLogEvent(event: PrpEvent) {
   return `${JSON.stringify({ type: "paperclip.prp.event", event })}\n`;
@@ -104,13 +105,59 @@ function matchPublishedImageOmissions(source: unknown, published: unknown): unkn
   return result;
 }
 
+function matchesPublishedEvent(source: unknown, published: unknown) {
+  return nativeSha256(published) === nativeSha256(matchPublishedImageOmissions(source, published));
+}
+
+/** Recover a compactor omission contained within one source-backed JSON string.
+ * Retained properties may have any order: JSONB does not retain writer ordering.
+ * Reconstruct the complete envelope, prove the exact compactor output, and then
+ * compare every field semantically. A marker or matching substring alone is not proof.
+ */
+function restoreCompactedEvent(chunk: string, source: unknown): unknown {
+  const marker = /\n\[paperclip truncated run log chunk: omitted ([1-9][0-9]*) chars\]\n/g;
+  const found = marker.exec(chunk);
+  if (!found || marker.exec(chunk)) return;
+  const omitted = Number(found[1]);
+  if (!Number.isSafeInteger(omitted)) return;
+  const head = chunk.slice(0, found.index), tail = chunk.slice(found.index + found[0].length);
+  let quoted = false, escaped = false, start = -1;
+  for (let index = 0; index < head.length; index++) {
+    const character = head[index];
+    if (!quoted) {
+      if (character === '"') { quoted = true; start = index; }
+    } else if (escaped) escaped = false;
+    else if (character === "\\") escaped = true;
+    else if (character === '"') quoted = false;
+  }
+  if (!quoted) return;
+  const leading = head.slice(start);
+  function* strings(value: unknown): Generator<string> {
+    if (typeof value === "string") yield value;
+    else if (Array.isArray(value)) for (const child of value) yield* strings(child);
+    else if (value && typeof value === "object")
+      for (const child of Object.values(value)) yield* strings(child);
+  }
+  for (const value of strings(source)) {
+    const encoded = JSON.stringify(value), end = leading.length + omitted;
+    if (end >= encoded.length || !encoded.startsWith(leading) || !tail.startsWith(encoded.slice(end))) continue;
+    const restored = head + encoded.slice(leading.length, end) + tail;
+    if (compactRunLogChunk(restored) !== chunk) continue;
+    try {
+      const envelope = JSON.parse(restored);
+      if (envelope.type === "paperclip.prp.event" && matchesPublishedEvent(source, envelope.event))
+        return envelope;
+    } catch { /* Another candidate cannot make malformed evidence authoritative. */ }
+  }
+}
+
 export function createNativeRunLogCoverageVerifier(
   db: Db,
   companyId: string,
   runId: string,
   options?: {
     allowSourceSuffix?: boolean;
-    redactChunk?: (chunk: string) => string;
+    redactChunks?: (chunk: string) => string[];
     signal?: AbortSignal;
   },
 ) {
@@ -133,12 +180,22 @@ export function createNativeRunLogCoverageVerifier(
       throw unproven();
     }
     if (typeof chunk !== "string") throw unproven();
+    let expected: Awaited<ReturnType<typeof next>>;
+    let forms: unknown[] | undefined;
+    async function sourceForms() {
+      expected ??= await next();
+      if (!expected) throw unproven();
+      return forms ??= options?.redactChunks?.(formatNativeRunLogEvent(expected.event))
+        .map(form => JSON.parse(form).event) ?? [expected.event];
+    }
     let envelope: { type?: unknown; event?: unknown };
     try {
       envelope = JSON.parse(chunk);
     } catch {
-      if (chunk.includes('"paperclip.prp.event"')) throw unproven();
-      return;
+      if (!chunk.includes('"paperclip.prp.event"')) return;
+      const restored = (await sourceForms()).map(form => restoreCompactedEvent(chunk, form)).find(Boolean);
+      if (!restored) throw unproven();
+      envelope = restored;
     }
     if (envelope?.type !== "paperclip.prp.event") return;
     let event: PrpEvent;
@@ -149,7 +206,7 @@ export function createNativeRunLogCoverageVerifier(
     } catch {
       throw unproven();
     }
-    const expected = await next();
+    expected ??= await next();
     if (
       !expected ||
       event.runId !== runId ||
@@ -161,12 +218,11 @@ export function createNativeRunLogCoverageVerifier(
       event.eventType !== expected.event.eventType
     )
       throw unproven();
-    if (options?.redactChunk) {
+    if (options?.redactChunks) {
       // JSONB reorders object keys. Compare the complete redacted event
       // semantically while retaining the original published bytes.
       try {
-        const expectedEnvelope = JSON.parse(options.redactChunk(formatNativeRunLogEvent(expected.event)));
-        if (nativeSha256(event) !== nativeSha256(matchPublishedImageOmissions(expectedEnvelope.event, event)))
+        if (!(await sourceForms()).some(form => matchesPublishedEvent(form, event)))
           throw unproven();
       } catch {
         throw unproven();
@@ -194,24 +250,45 @@ export function createNativeRunLogCoverageVerifier(
   };
 }
 
-/** Prove the published source prefix before replaying an incomplete native log. */
+/** Validate committed provenance, or prove an older unwatermarked source prefix. */
 export async function nativeRunLogPrefixCursor(input: {
   db: Db;
   companyId: string;
   runId: string;
-  store: Partial<Pick<RunLogStore, "read">>;
+  store: Partial<Pick<RunLogStore, "read" | "recordVerifiedSourcePrefix">>;
   handle: RunLogHandle;
-  redactChunk: (chunk: string) => string;
+  redactChunks: (chunk: string) => string[];
   signal?: AbortSignal;
 }) {
   const bytes = input.handle.initialBytes ?? 0;
   const watermark = input.handle.initialSourceCursor ?? 0;
-  if (!bytes && !watermark) return 0;
   const unproven = () => new Error("native_log_source_coverage_unproven");
-  if (!input.store.read || !Number.isSafeInteger(bytes) || bytes < 0) throw unproven();
+  if (!Number.isSafeInteger(bytes) || bytes < 0 || !Number.isSafeInteger(watermark) || watermark < 0)
+    throw unproven();
+  if (!bytes && !watermark) {
+    await input.store.recordVerifiedSourcePrefix?.(input.handle, 0);
+    return 0;
+  }
+  if (input.handle.initialSourcePrefixVerified) {
+    const sequence = input.handle.initialSequence ?? 0;
+    const [company, , run, extra] = input.handle.logRef.split("/");
+    if (input.handle.store !== "s3_segments" || company !== input.companyId || run !== input.runId || extra ||
+      !bytes || !Number.isSafeInteger(sequence) || sequence < 1) throw unproven();
+    // A separate immutable proof binds this exact journal index/end/sequence/cursor.
+    // Legacy maximum-cursor metadata alone never establishes ordered coverage.
+    // Only explicitly coverage-preserving appends can carry the proof forward;
+    // an older writer's changed prefix gets no matching proof and must scan once.
+    if (watermark) {
+      const [source] = await sourcePage(input.db, input.companyId, input.runId,
+        watermark - 1, watermark, input.signal);
+      if (!source || source.cursor !== watermark) throw unproven();
+    }
+    return watermark;
+  }
+  if (!input.store.read) throw unproven();
   const verifier = createNativeRunLogCoverageVerifier(input.db, input.companyId, input.runId, {
     allowSourceSuffix: true,
-    redactChunk: input.redactChunk,
+    redactChunks: input.redactChunks,
     signal: input.signal,
   });
   let offset = 0;
@@ -227,6 +304,7 @@ export async function nativeRunLogPrefixCursor(input: {
   }
   const cursor = await verifier.finish();
   if (watermark > cursor) throw unproven();
+  await input.store.recordVerifiedSourcePrefix?.(input.handle, cursor);
   return cursor;
 }
 

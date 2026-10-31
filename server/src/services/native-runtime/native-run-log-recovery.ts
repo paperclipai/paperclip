@@ -151,9 +151,10 @@ export async function recoverSettledNativeRunLog(
     try {
       lastSourceCursor = await nativeRunLogPrefixCursor({
         db, companyId, runId, store, handle, signal,
-        redactChunk: (chunk) => compactRunLogChunk(
-          redactCurrentUserText(identityRedactor.redact(chunk), redaction),
-        ),
+        redactChunks: (chunk) => [false, true].map(enabled => compactRunLogChunk(
+          redactCurrentUserText(identityRedactor.redact(chunk), { ...redaction, enabled }),
+          Number.MAX_SAFE_INTEGER,
+        )),
       });
       const exporter = createNativeRunLogExporter({
         db,
@@ -167,6 +168,7 @@ export async function recoverSettledNativeRunLog(
             ts: new Date().toISOString(),
             seq: ++sequence,
             sourceCursor,
+            preservesSourceCoverage: true,
             chunk: compactRunLogChunk(
               redactCurrentUserText(identityRedactor.chunk("stdout", chunk), redaction),
             ),
