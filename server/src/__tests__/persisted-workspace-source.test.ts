@@ -110,6 +110,38 @@ describe("persisted Git workspace source", () => {
     } } });
   });
 
+  it.each(["https://example.invalid/original", "https://example.invalid/original/", "https://example.invalid/original.git/"])(
+    "treats a saved repository URL that differs only by .git or a trailing slash as the same origin (%s)", async repoUrl => {
+      const { original, worktree, input } = await fixture();
+      const workspace = { ...input.workspace, repoUrl };
+      expect(await resolvePersistedGitWorkspaceSource({ ...input, workspace })).toBe(original);
+      await exec("git", ["-C", original, "worktree", "remove", "--force", worktree]);
+      expect(await resolvePersistedGitWorkspaceSource({ ...input, workspace })).toBe(original);
+    });
+
+  it("materializes a source whose cloned origin keeps the .git suffix of a saved repository URL", async () => {
+    const { root, original, input } = await fixture();
+    const restored = path.join(root, "restored-source");
+    const missingWorktree = path.join(root, "missing-worktree");
+    const materializeOriginalRepository = vi.fn(async () => {
+      await exec("git", ["clone", original, restored]);
+      await exec("git", ["-C", restored, "remote", "set-url", "origin", "https://example.invalid/original.git"]);
+      return restored;
+    });
+    expect(await resolvePersistedGitWorkspaceSource({ ...input,
+      workspace: { ...input.workspace, repoUrl: "https://example.invalid/original", cwd: missingWorktree, providerRef: missingWorktree },
+      candidateBaseCwds: [restored], materializeOriginalRepository,
+    })).toBe(restored);
+  });
+
+  it("rejects an origin that differs from the saved repository URL by more than .git or a trailing slash", async () => {
+    const { input } = await fixture();
+    await expect(resolvePersistedGitWorkspaceSource({ ...input, workspace: { ...input.workspace,
+      repoUrl: "https://example.invalid/original-fork" } })).rejects.toMatchObject({ resultJson: { workspaceValidation: {
+      reasonCode: "source_repository_mismatch",
+    } } });
+  });
+
   it("rejects changed origin identity even at the recorded managed path", async () => {
     const { original, input } = await fixture();
     await exec("git", ["-C", original, "remote", "set-url", "origin", "https://example.invalid/other.git"]);
