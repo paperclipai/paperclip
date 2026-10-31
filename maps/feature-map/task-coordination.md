@@ -25,6 +25,11 @@ Agent access: [companion](../agent-access-map/task-coordination.md).
 
 Open the task’s parent/child and dependency links in task detail.
 
+The task feed shows a linked card when an agent creates a direct subtask or a
+follow-up task from that task. The card stays at its creation time beside
+documents and artifacts. It shows the current task title, number, and status.
+The Tasks tab retains the complete relationship list.
+
 ### `review-and-controls`
 
 Inspect the task’s execution policy and available review, pause, resume, or stop controls.
@@ -40,6 +45,11 @@ creates a hold; it does not change task statuses to a paused status.
 ### `task-relationships`
 
 Automated: [dependency wakeups](../../server/src/__tests__/issue-dependency-wakeups-routes.test.ts) checks server behavior; visual relationship navigation remains a manual check.
+
+The [created task card stories](../../ui/storybook/stories/task-coordination/task-created-inline.stories.tsx)
+render the production feed with fixture task reads. The
+[task feed tests](../../ui/src/components/TaskChatThread.task-creation-order.test.tsx)
+check creation order, current status, links, and duplicate suppression.
 
 Manual: Block one task on another, finish the prerequisite, and observe the dependent task’s eligible continuation. Follow parent/child links back to the source request. Verify no duplicate run or false parent completion occurs.
 

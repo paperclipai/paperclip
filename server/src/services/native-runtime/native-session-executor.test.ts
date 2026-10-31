@@ -47,6 +47,7 @@ import {
 import {
   canonicalNativeRuntimeContextDigest,
   CURSOR_DISTRIBUTION_PINS,
+  KIMI_DISTRIBUTION_CLOSURE_SHA256,
   QUALIFIED_ACPX_PROFILES,
   acpxRuntimeSessionDirectoryName,
   resolveAcpxRuntimeRoot,
@@ -391,6 +392,8 @@ import {
   REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
   verifyRemoteRunnerReattachment,
   readRemoteProviderPackManifest,
+  prepareRemoteProviderPackOnTarget,
+  resolveRemoteProviderPackSource,
   readBundledRemoteProviderPackManifest,
   providerSessionIdentityFromDurableProviderState,
   durableProviderCheckpointFailureReason,
@@ -1946,6 +1949,40 @@ describe("remote provider pack manifest", () => {
     expect(readRemoteProviderPackManifest(root).payload.pins.opencode).toBe(
       "1.18.34",
     );
+    // Both execution and setup Test consume this same normal installer. Reuse
+    // the complete controller fixture here instead of inventing a thin pack.
+    const selectedPack = resolveRemoteProviderPackSource(root);
+    for (const mode of ["staged", "preinstalled", "uploaded", "failed-final", "missing-transport"] as const) {
+      let transferred = false;
+      const syncIn = vi.fn(async (operations: { files: { sourcePath?: string; targetPath: string; kind: string }[] }[]) => {
+        expect(operations[0]?.files[0]).toMatchObject({ sourcePath: root,
+          targetPath: "/workspace/.paperclip-runtime/paperclip-runner/provider-pack", kind: "directory" });
+        transferred = true;
+        return { operations: [] };
+      });
+      const execute = vi.fn(async (command: { command: string; args?: string[]; timeoutMs?: number }) => {
+        expect(command.timeoutMs).toBeGreaterThan(0);
+        expect(command.timeoutMs).toBeLessThanOrEqual(30_000);
+        const verification = command.args?.[0] === "-e";
+        const packRoot = command.args?.[2];
+        const valid = mode === "staged" || mode === "preinstalled" && packRoot === "/opt/paperclip-runner/provider-pack"
+          || transferred && mode !== "failed-final";
+        return { pid: null, startedAt: null, exitCode: verification && !valid ? 1 : 0, timedOut: false, signal: null,
+          stdout: command.args?.[0] === "--version" ? "1.18.34\n"
+            : command.args?.some(value => value.includes("for candidate in")) ? "/opt/paperclip-runner/provider-pack\n" : "",
+          stderr: verification && !valid ? "manifest mismatch" : "" };
+      });
+      const runner = { execute, ...(mode === "missing-transport" ? {} : { syncIn }) };
+      const preparation = prepareRemoteProviderPackOnTarget({
+        target: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", runner } as never,
+        runner, configuredProviderPackRoot: selectedPack.configuredRoot, manifest: selectedPack.manifest,
+      });
+      if (mode === "failed-final") await expect(preparation).rejects.toThrow("provider pack verification");
+      else if (mode === "missing-transport") await expect(preparation).rejects.toThrow("transport cannot stage a provider pack");
+      else await expect(preparation).resolves.toMatchObject({ source: mode, root: "/workspace/.paperclip-runtime/paperclip-runner/provider-pack",
+        manifest: selectedPack.manifest });
+      expect(syncIn).toHaveBeenCalledTimes(mode === "uploaded" || mode === "failed-final" ? 1 : 0);
+    }
     const cursorPath = "provider-assets/cursor/linux-x64";
     await mkdir(join(root, cursorPath), { recursive: true });
     await writeFile(join(root, cursorPath, "runtime"), "pinned Cursor runtime");
@@ -1980,6 +2017,78 @@ describe("remote provider pack manifest", () => {
     await writeFile(join(root, cursorPath, "runtime"), "substitute Cursor runtime");
     expect(() => readRemoteProviderPackManifest(root)).toThrow("asset tree digest mismatch");
     await writeFile(join(root, cursorPath, "runtime"), "pinned Cursor runtime");
+    const kimiPath = "provider-assets/kimi/linux-x64";
+    await mkdir(join(root, kimiPath), { recursive: true });
+    await writeFile(join(root, kimiPath, "runtime"), "pinned Kimi runtime");
+    const kimi = { version: QUALIFIED_ACPX_PROFILES.kimi.agentServerVersion,
+      profileDigest: QUALIFIED_ACPX_PROFILES.kimi.commandDigest,
+      closureDigest: `sha256:${KIMI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"]}`,
+      qualification: "qualified", path: kimiPath, sha256: sha256DirectoryTree(join(root, kimiPath)) };
+    Object.assign(payload, { providers: { cursor, kimi } });
+    await mkdir(releaseMetadata, { recursive: true });
+    const writeKimiManifest = async () => {
+      await writeManifest();
+      await cp(join(root, "provider-pack.json"), manifestPath);
+    };
+    await writeKimiManifest();
+    expect(readRemoteProviderPackManifest(root).payload.providers?.kimi).toEqual(kimi);
+    expect(readBundledRemoteProviderPackManifest(manifestPath).payload.providers?.kimi?.qualification).toBe("qualified");
+    for (const field of ["version", "profileDigest", "closureDigest"] as const) {
+      const previous = kimi[field];
+      kimi[field] = field === "version" ? "older-kimi" : digest(`old-kimi-${field}`);
+      await writeKimiManifest();
+      expect(() => readRemoteProviderPackManifest(root)).toThrow("Kimi profile or closure");
+      expect(() => readBundledRemoteProviderPackManifest(manifestPath)).toThrow("Kimi profile or closure");
+      kimi[field] = previous;
+    }
+    kimi.closureDigest = `sha256:${KIMI_DISTRIBUTION_CLOSURE_SHA256["darwin-arm64"]}`;
+    await writeKimiManifest();
+    expect(() => readBundledRemoteProviderPackManifest(manifestPath)).toThrow("Kimi profile or closure");
+    kimi.closureDigest = `sha256:${KIMI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"]}`;
+    for (const target of [{ platform: "linux", architecture: "arm64" }, { platform: "darwin", architecture: "arm64" }]) {
+      payload.target = target;
+      kimi.path = `provider-assets/kimi/${target.platform}-${target.architecture}`;
+      Object.assign(payload, { providers: {} });
+      await writeKimiManifest();
+      expect(() => readBundledRemoteProviderPackManifest(manifestPath)).toThrow("bundled image pack must target linux-x64");
+    }
+    payload.target = originalTarget;
+    kimi.path = kimiPath;
+    Object.assign(payload, { providers: { cursor, kimi } });
+    kimi.qualification = "pending";
+    await writeKimiManifest();
+    expect(() => readBundledRemoteProviderPackManifest(manifestPath)).toThrow("invalid candidate identity");
+    kimi.qualification = "qualified";
+    Object.assign(payload, { providers: { cursor, kimi }, candidateProviders: { kimi } });
+    await writeKimiManifest();
+    expect(() => readBundledRemoteProviderPackManifest(manifestPath)).toThrow("Kimi profile or closure");
+    Object.assign(payload, { providers: { cursor, kimi } });
+    Reflect.deleteProperty(payload, "candidateProviders");
+    await writeKimiManifest();
+    await writeFile(join(root, kimiPath, "runtime"), "substitute Kimi runtime");
+    expect(() => readRemoteProviderPackManifest(root)).toThrow("candidate asset tree digest mismatch");
+    await writeFile(join(root, kimiPath, "runtime"), "pinned Kimi runtime");
+    const threeCandidates = { cursor,
+      pi: { ...kimi, version: "1.0.0", qualification: "qualified", path: "provider-assets/pi/linux-x64" },
+      copilot: { ...kimi, qualification: "pending", version: QUALIFIED_ACPX_PROFILES.copilot.agentServerVersion,
+        profileDigest: QUALIFIED_ACPX_PROFILES.copilot.commandDigest,
+        closureDigest: "sha256:a3d8f4367cfa1694d79e3f8b7930b6fbfe42a229c272b375b11951d631db8d07",
+        path: "provider-assets/copilot/linux-x64" } };
+    for (const candidate of [threeCandidates.pi, threeCandidates.copilot]) {
+      await mkdir(join(root, candidate.path), { recursive: true });
+      await writeFile(join(root, candidate.path, "runtime"), "candidate runtime");
+      candidate.sha256 = sha256DirectoryTree(join(root, candidate.path));
+    }
+    Object.assign(payload, { candidateProviders: threeCandidates });
+    await writeKimiManifest();
+    expect(Object.keys(readRemoteProviderPackManifest(root).payload.candidateProviders!)).toHaveLength(3);
+    Object.assign(payload, { candidateProviders: { ...threeCandidates, unknown: kimi } });
+    await writeKimiManifest();
+    expect(() => readBundledRemoteProviderPackManifest(manifestPath)).toThrow("invalid candidate inventory");
+    Object.assign(payload, { candidateProviders: { unknown: kimi } });
+    await writeKimiManifest();
+    expect(() => readBundledRemoteProviderPackManifest(manifestPath)).toThrow("invalid candidate identity");
+    await rm(releaseMetadata, { recursive: true, force: true });
     const candidatePath = "provider-assets/pi/linux-x64";
     await mkdir(join(root, candidatePath), { recursive: true });
     await writeFile(join(root, candidatePath, "runtime"), "pinned runtime");
@@ -3791,10 +3900,10 @@ describe("runtime question fallback", () => {
 });
 
 describe("native provider bootstrap environment", () => {
-  it.each(["pi", "cursor", "copilot", "antigravity"] as const)("does not promote ambient %s credentials when bindings are omitted", agent => {
+  it.each(["pi", "cursor", "copilot", "antigravity", "kimi"] as const)("does not promote ambient %s credentials when bindings are omitted", agent => {
     const provider = { kind: "acpx", agent } as NativeExecutionInput["provider"];
     const host = { PATH: "/host/bin", HOME: "/host/home", OPENROUTER_API_KEY: "ambient-pi",
-      CURSOR_API_KEY: "ambient-cursor", CURSOR_AUTH_TOKEN: "ambient-cursor-login", COPILOT_GITHUB_TOKEN: "ambient-copilot",
+      CURSOR_API_KEY: "ambient-cursor", CURSOR_AUTH_TOKEN: "ambient-cursor-login", COPILOT_GITHUB_TOKEN: "ambient-copilot", KIMI_API_KEY: "ambient-kimi",
       GEMINI_API_KEY: "ambient-google", GOOGLE_API_KEY: "ambient-other-google", GEMINI_HOME: "/ambient-google-home",
       GOOGLE_APPLICATION_CREDENTIALS: "/ambient-google-credential.json", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "ambient-google-subscription",
       PAPERCLIP_ACPX_CREDENTIAL_BINDING: "ambient-forged-binding" };
