@@ -1,3 +1,4 @@
+import { appendPrivateAttemptDiagnostic, readPrivateAttemptObservation, type PrivateAttemptDiagnosticInput } from "./private-attempt-diagnostic.js";
 import { withholdPrivateScreenshots } from "./screenshot-privacy.js";
 import { copyHealthHelloDetail } from "./chat-readiness-detail.js";
 import { copyRetainedSourceSdk } from "./source-sdk-evidence.js";
@@ -112,6 +113,7 @@ const localEnvPath = path.join(repositoryRoot, ".env.runner-e2e.local");
 let resultsRoot = path.join(repositoryRoot, "tests/runner-e2e/results");
 const manualEvidenceSecrets = new Set<string>();
 let manualPrivateHandoff: ManualPrivateHandoff | undefined;
+let manualDiagnostic: PrivateAttemptDiagnosticInput | undefined;
 const activeProcessGroups = new Set<number>();
 const activeProcessCleanup = new Map<number, Promise<string | null>>();
 const activeProcessTerminators = new Map<number, () => void>();
@@ -892,6 +894,7 @@ async function runAttempt(input: {
       });
       const resultPath = path.join(casePrivateDir, "result.json");
       if (manualPrivateHandoff) {
+        manualDiagnostic = { stage: "package-original", result, observation: await readPrivateAttemptObservation(casePrivateDir) };
         await preserveOriginalFrameworkResult(casePrivateDir);
         await writeFile(
           resultPath,
@@ -906,6 +909,7 @@ async function runAttempt(input: {
           privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const },
         });
         const originalEvidence = evidence, originalFeaturePassed = result.status === "passed";
+        manualDiagnostic!.evidence = originalEvidence;
         if (evidence.leaks.length > 0 || evidence.missing.length > 0) {
           result = withholdPrivateScreenshots(result, { packagedEvidenceSecretFinding: evidence.leaks.length > 0 });
           result = {
@@ -933,6 +937,7 @@ async function runAttempt(input: {
             privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const },
           });
         }
+        manualDiagnostic!.stage = "seal-original";
         await sealStandardOriginalEvidence({ context: manualPrivateHandoff,
           executionId: candidate.id, source: casePrivateDir, evidence: originalEvidence, secrets: credentials, expectPassScreenshot: originalFeaturePassed });
       } else {
@@ -963,6 +968,7 @@ async function runAttempt(input: {
     }
     return [...publishedResults];
   } catch (error) {
+    if (manualDiagnostic) manualDiagnostic.error = error;
     if (error instanceof PublicOriginCleanupError) processCleanupFailed = true;
     // Packaging/diagnostic failures must not erase an actually launched attempt
     // or its primary startup failure. Retain only closed sanitized metadata;
@@ -1192,6 +1198,7 @@ async function main() {
   }
   const executions = selectRunnerExecutions(options, runnerMatrix);
   manualPrivateHandoff = await readManualPrivateHandoff(process.env, executions.map(execution => execution.id));
+  if (manualPrivateHandoff) await appendPrivateAttemptDiagnostic({ stage: "execution" });
   resultsRoot = manualPrivateHandoff ? path.join(manualPrivateHandoff.root, "results") : resolveRunnerE2EResultsRoot(repositoryRoot);
   if (options.installedStartupOnly) {
     assertInstalledStartupOnly(process.env, executions, options);
@@ -1388,7 +1395,13 @@ async function main() {
 
 await main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
+  if (manualPrivateHandoff) manualDiagnostic ??= { stage: "execution", error };
   process.exitCode = 1;
 }).finally(async () => {
   if (manualPrivateHandoff) await sealManualResultEvidence(manualPrivateHandoff, [...manualEvidenceSecrets]);
-}).catch(() => { process.stderr.write("Private evidence finalization failed; no public fallback\n"); process.exitCode = 1; });
+}).catch((error) => {
+  if (manualDiagnostic && !manualDiagnostic.error) manualDiagnostic.error = error;
+  process.stderr.write("Private evidence finalization failed; no public fallback\n"); process.exitCode = 1;
+}).finally(async () => {
+  if (manualPrivateHandoff && manualDiagnostic) await appendPrivateAttemptDiagnostic(manualDiagnostic).catch(() => {});
+});

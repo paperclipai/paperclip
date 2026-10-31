@@ -1,3 +1,4 @@
+import { readPrivateAttemptObservation } from "./private-attempt-diagnostic.js";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -275,13 +276,13 @@ it.each([0, 1])("actual launcher packaging call %s retains the verified private 
 
 async function actualLauncherEvidenceBranch(packageCall = packageEvidence) {
   const source = await readFile(new URL("./launch.ts", import.meta.url), "utf8");
-  const start = source.indexOf("      if (manualPrivateHandoff) {\n        await preserveOriginalFrameworkResult(casePrivateDir);");
   const parser = createRequire(import.meta.url)("../../node_modules/.pnpm/@babel+parser@7.29.8/node_modules/@babel/parser");
   const ast = parser.parse(source, { sourceType: "module", plugins: ["typescript"] });
-  let end = -1;
+  let start = -1, end = -1;
   const visit = (node: any) => {
     if (!node || typeof node !== "object") return;
-    if (node.type === "IfStatement" && node.start === start + 6) end = node.end;
+    if (node.type === "IfStatement" && node.test?.name === "manualPrivateHandoff" && Array.isArray(node.consequent?.body) && node.consequent.body.some((statement: any) =>
+      statement.expression?.argument?.callee?.name === "preserveOriginalFrameworkResult")) { start = node.start; end = node.end; }
     for (const value of Object.values(node)) {
       if (Array.isArray(value)) value.forEach(visit);
       else if (value && typeof value === "object") visit(value);
@@ -289,10 +290,10 @@ async function actualLauncherEvidenceBranch(packageCall = packageEvidence) {
   };
   visit(ast);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
-  const code = stripTypeScriptTypes(`async function actualBranch(manualPrivateHandoff, candidate, casePrivateDir, resultsRoot, uploadDir, credentials, result, resultPath) { ${source.slice(start, end)} return result; }`, { mode: "strip" });
+  const code = stripTypeScriptTypes(`async function actualBranch(manualPrivateHandoff, candidate, casePrivateDir, resultsRoot, uploadDir, credentials, result, resultPath) { let manualDiagnostic; ${source.slice(start, end)} return result; }`, { mode: "strip" });
   const publisher = vi.fn(publishRunnerE2EAttemptEvidence);
-  const branch = Function("preserveOriginalFrameworkResult", "writeFile", "sanitizeJson", "packageEvidence", "privateCellEvidenceOwner", "sealStandardOriginalEvidence", "publishRunnerE2EAttemptEvidence", `${code}; return actualBranch;`)(
-    preserveOriginalFrameworkResult, writeFile, sanitizeJson, packageCall, privateCellEvidenceOwner, sealStandardOriginalEvidence, publisher,
+  const branch = Function("preserveOriginalFrameworkResult", "writeFile", "sanitizeJson", "packageEvidence", "privateCellEvidenceOwner", "sealStandardOriginalEvidence", "publishRunnerE2EAttemptEvidence", "readPrivateAttemptObservation", `${code}; return actualBranch;`)(
+    preserveOriginalFrameworkResult, writeFile, sanitizeJson, packageCall, privateCellEvidenceOwner, sealStandardOriginalEvidence, publisher, readPrivateAttemptObservation,
   ) as (context: ManualPrivateHandoff | undefined, candidate: { id: string }, source: string, root: string, target: string, secrets: string[], result: RunnerE2EResult, resultPath: string) => Promise<RunnerE2EResult>;
   return { branch, publisher };
 }
