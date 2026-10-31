@@ -9,7 +9,7 @@ import type { ActivityPublication } from "../../../types/activity-publication.js
 import { AgentLifecycleConflict } from "../domain/policy.js";
 import type { LifecycleEffects } from "./effects.js";
 
-export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects, id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions, publications: ActivityPublication[] = []) {
+export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects, id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions, publications?: ActivityPublication[]) {
   if (!("nestedIndex" in tx)) throw new AgentLifecycleConflict("Configuration integration requires a database transaction");
   assertConfigurationFields(data);
   const [current] = await tx.select().from(agents).where(eq(agents.id, id)).for("no key update");

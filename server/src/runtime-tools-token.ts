@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { resolvePaperclipInstanceId } from "./home-paths.js";
+import { deploymentServerCredential } from "./deployment/runtime.js";
 
 export interface RuntimeToolsTokenClaims {
   sub: string;
@@ -15,7 +16,8 @@ export interface RuntimeToolsTokenClaims {
 const TOKEN_TTL_SECONDS = 60 * 60;
 
 function secret() {
-  return process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim()
+  return deploymentServerCredential("auth")
+    || process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim()
     || process.env.BETTER_AUTH_SECRET?.trim()
     || null;
 }

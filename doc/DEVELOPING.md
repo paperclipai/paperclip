@@ -120,6 +120,9 @@ For mode definitions and intended CLI behavior, see `doc/DEPLOYMENT-MODES.md`.
 For sandbox file synchronization, lock ownership, and the required upgrade
 procedure from directory locks, see [Workspace restore locks](workspace-restore-locks.md).
 
+For descriptor-driven native startup, first-admin bootstrap, and owned resource
+reconciliation, see [Native deployment declarations](../docs/deploy/native-declarations.md).
+
 Current implementation status:
 
 - canonical model: `local_trusted` and `authenticated` (with `private/public` exposure)

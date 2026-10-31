@@ -1,4 +1,5 @@
 import { notifySkillVersionRetention, notifySkillVersionPinChange } from "./skill-version-retention-notifications.js";
+import type { ActivityPublication } from "../types/activity-publication.js";
 import { agentAppearanceSchema, randomAgentAppearance } from "@paperclipai/shared";
 import { normalizePaperclipRunnerAdapterConfig } from "@paperclipai/adapter-utils/server-utils";
 import { agents, toolConnectionInstalls, principalPermissionGrants, type Db } from "@paperclipai/db";
@@ -60,7 +61,7 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
     role, adapterType, adapterConfig, permissions: normalizedPermissions, runtimeConfig };
 }
 
-export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, options?: CreateAgentOptions) {
+export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, options?: CreateAgentOptions, publications?: ActivityPublication[]) {
   const tx = txDb;
   const companyId = created.companyId;
   await agentIdentityService(txDb).ensureAgentIdentity(companyId, created.id);
@@ -87,7 +88,7 @@ export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, op
       createdByUserId: install.createdByUserId,
     }))).onConflictDoNothing();
   }
-  await agentCredentialService(txDb).syncAgentSecretBindings(created, txDb);
+  await agentCredentialService(txDb).syncAgentSecretBindings(created, txDb, null, {}, publications);
   if (!options?.setupOnly && options?.createdByUserId && !readBuiltInAgentMarker(created.metadata)) {
     await initializePrimaryAgent(txDb, companyId, options.createdByUserId, created.id);
   }
@@ -134,9 +135,9 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
   return patch;
 }
 
-export async function completeAgentHireApproval(txDb: Db, updated: AgentHireRecord, existing: AgentHireRecord) {
+export async function completeAgentHireApproval(txDb: Db, updated: AgentHireRecord, existing: AgentHireRecord, publications?: ActivityPublication[]) {
   const tx = txDb;
-  await agentCredentialService(txDb).syncAgentSecretBindings(updated, txDb, existing.adapterConfig);
+  await agentCredentialService(txDb).syncAgentSecretBindings(updated, txDb, existing.adapterConfig, {}, publications);
   if (!permissionsImplyLowTrust(updated.permissions) && !readBuiltInAgentMarker(updated.metadata)) {
     await tx.insert(principalPermissionGrants).values(
       NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({

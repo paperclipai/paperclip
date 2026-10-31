@@ -22,6 +22,7 @@
  *    exchanged a second time even inside that window.
  */
 
+import { deploymentServerCredential } from "../deployment/runtime.js";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 /** Ticket envelope version. Bumped whenever the signed payload shape changes. */
@@ -215,7 +216,7 @@ export function resolveWorkspaceHandoffRootSecret(
   const dedicated = env[HANDOFF_ROOT_SECRET_ENV]?.trim();
   if (dedicated) return { secret: dedicated, source: "dedicated" };
 
-  const fallback = env.BETTER_AUTH_SECRET?.trim() || env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
+  const fallback = deploymentServerCredential("auth") || env.BETTER_AUTH_SECRET?.trim() || env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
   if (!fallback) return null;
   return {
     secret: createHmac("sha256", fallback)

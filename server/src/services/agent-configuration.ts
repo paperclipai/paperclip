@@ -92,7 +92,7 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
   return normalizedPatch;
 }
 
-export async function completeAgentConfiguration(txDb: Db, existing: AgentConfigurationRecord, updated: AgentConfigurationRecord, normalizedPatch: AgentConfigurationPatch, options: UpdateAgentOptions | undefined, publications: ActivityPublication[]) {
+export async function completeAgentConfiguration(txDb: Db, existing: AgentConfigurationRecord, updated: AgentConfigurationRecord, normalizedPatch: AgentConfigurationPatch, options: UpdateAgentOptions | undefined, publications: ActivityPublication[] | undefined) {
   const id = updated.id;
   const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
   const beforeConfig = shouldRecordRevision
@@ -126,11 +126,12 @@ export async function completeAgentConfiguration(txDb: Db, existing: AgentConfig
       updated, txDb,
       existing.adapterConfig,
       options?.recordRevision,
+      publications,
     );
   }
 
   if (normalizedPatch.budgetMonthlyCents !== undefined) {
-    await budgetServiceInTransaction(txDb, publications).upsertPolicy(existing.companyId, {
+    await budgetServiceInTransaction(txDb, publications ?? []).upsertPolicy(existing.companyId, {
       scopeType: "agent", scopeId: id, amount: normalizedPatch.budgetMonthlyCents,
       isActive: normalizedPatch.budgetMonthlyCents > 0, windowKind: "calendar_month_utc",
     }, options?.recordRevision?.createdByUserId ?? null);

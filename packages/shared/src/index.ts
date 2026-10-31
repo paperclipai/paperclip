@@ -2868,3 +2868,4 @@ export * from "./workspace-provider.js";
 export * from "./workflows.js";
 export { updateWorkspacePreferenceSchema, type UpdateWorkspacePreference, type WorkspacePreference } from "./workspace-preferences.js";
 export * from "./agent-configuration.js";
+export { deploymentManifestSchema, type DeploymentManifest } from "./deployment-manifest.js";

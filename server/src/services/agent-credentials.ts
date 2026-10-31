@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { agents, type Db } from "@paperclipai/db";
 import { agentHarnessType } from "@paperclipai/shared";
 import { collectSecretRefs, collectUserSecretRefs, syncAgentAdapterEnvBindings } from "./agent-secret-bindings.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { claudeOAuthBindingsMatchExactly, claudeOAuthClaimRejectedError,
   CLAUDE_LOCAL_ADAPTER_TYPE, readClaudeOAuthBinding, secretService, type ClaudeOAuthBindingInvariantDecision } from "./secrets.js";
 import { createDbSetupTokenCleanupStore } from "./setup-token-session.js";
@@ -15,6 +15,7 @@ export function agentCredentialService(db: Db) {
     dbClient: Db = db,
     previousAdapterConfig: unknown = null,
     actor: RevisionMetadata = {},
+    publications?: ActivityPublication[],
   ) {
     const scopedSecretsSvc = dbClient === db ? secretsSvc : secretService(dbClient);
     await syncAgentAdapterEnvBindings({
@@ -62,7 +63,7 @@ export function agentCredentialService(db: Db) {
           secretId: ref.secretId,
           definitionKey: ref.definitionKey,
         },
-      });
+      }, publications);
     }
   }
 

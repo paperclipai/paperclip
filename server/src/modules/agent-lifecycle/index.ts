@@ -1,6 +1,8 @@
 import { hireApprovalService as approvalRecords, type HireDecisionTarget } from "./adapters/approvals.js";
-import { agents } from "@paperclipai/db";
-import { inArray, sql } from "drizzle-orm";
+import { agents, companies } from "@paperclipai/db";
+import { AgentLifecycleConflict } from "./domain/policy.js";
+import type { ActivityPublication } from "../../types/activity-publication.js";
+import { eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { LifecycleEffects } from "./adapters/effects.js";
 export type { LifecycleEffects } from "./adapters/effects.js";
@@ -97,6 +99,25 @@ export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
     retry: (id: string) => change(id, "retry"),
     clearError: records.clearError,
     purgeAgent: (id: string) => purgeAgent(db, effects, id),
+  };
+}
+
+export function createAgentLifecycleInTransaction(tx: Db, effects: LifecycleEffects, publications: ActivityPublication[]) {
+  if (!("nestedIndex" in tx)) throw new AgentLifecycleConflict("Lifecycle integration requires a database transaction");
+  const transactionalEffects: LifecycleEffects = { ...effects,
+    transaction: async (_db, companyId, work) => {
+      const [company] = await tx.select({ id: companies.id }).from(companies)
+        .where(eq(companies.id, companyId)).for("no key update");
+      if (!company) throw new AgentLifecycleConflict("Company not found");
+      return work(tx, publications);
+    },
+  };
+  const records = agentRecords(tx, transactionalEffects);
+  return {
+    requestHire: records.create,
+    updateConfiguration: (id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions) =>
+      updateAgentConfiguration(tx, transactionalEffects, id, data, options, publications),
+    pauseAgent: (id: string, reason: string) => createLifecycleStore(tx, transactionalEffects).change(id, "pause", { reason }),
   };
 }
 

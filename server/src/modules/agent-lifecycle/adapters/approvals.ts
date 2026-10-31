@@ -27,7 +27,7 @@ export function hireApprovalService(db: Db, effects: LifecycleEffects) {
     const companyId = initial.companyId;
     // Hire decisions acquire the company lock before changing an approval or agent.
     return effects.transaction(db, companyId, async (tx, publications) => {
-      const records = agentRecords(tx, effects);
+      const records = agentRecords(tx, effects, publications);
       let approvalId = typeof target === "string" ? null : target.approvalId;
       if (typeof target === "string") {
         const [open] = await tx.select({ id: approvals.id }).from(approvals).where(and(

@@ -17,6 +17,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { fenceActiveCompanyAgentStopsInTransaction as fenceActiveCompanyStops } from "../modules/agent-lifecycle/index.js";
 import { applyAgentPolicyHoldsInTransaction } from "../modules/agent-lifecycle/index.js";
 import { trackIdleWork } from "./task-admission.js";
+import type { ActivityPublication } from "../types/activity-publication.js";
 import { environmentService } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { pluginEnvironmentRequiresAgent } from "./plugin-environment-driver.js";
@@ -70,6 +71,10 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
 
 export function createAgentLifecycle(db: Db, hooks: BudgetServiceHooks = {}) {
   return lifecycle.createAgentLifecycle(db, createAgentLifecycleEffects(hooks));
+}
+
+export function createAgentLifecycleInTransaction(tx: Db, publications: ActivityPublication[]) {
+  return lifecycle.createAgentLifecycleInTransaction(tx, createAgentLifecycleEffects(), publications);
 }
 
 function trackedDriver(driver: lifecycle.LifecycleDriver): lifecycle.LifecycleDriver {

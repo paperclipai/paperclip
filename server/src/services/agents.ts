@@ -109,7 +109,7 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       id: string,
       name: string,
       scope: AgentApiKeyScope = { kind: "standard" },
-      options?: { responsibleUserId?: string | null },
+      options?: { responsibleUserId?: string | null; token?: string },
     ) => {
       const existing = await getById(id);
       if (!existing) throw notFound("Agent not found");
@@ -123,7 +123,7 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         throw conflict("Cannot create keys for terminated agents");
       }
 
-      const token = createToken();
+      const token = options?.token ?? createToken();
       const keyHash = hashToken(token);
       const created = await db
         .insert(agentApiKeys)

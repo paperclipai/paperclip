@@ -290,6 +290,16 @@ export function createLocalEncryptedCipher(mode: "read" | "write") {
   };
 }
 
+export function verifyLocalEncryptedMaterials(rawKey: string, materials: StoredSecretVersionMaterial[]): void {
+  const key = decodeMasterKey(rawKey);
+  if (!key) throw new Error("Invalid deployment encryption key");
+  try {
+    for (const material of materials) decryptValue(key, asLocalEncryptedMaterial(material));
+  } catch {
+    throw new Error("Deployment encryption key cannot decrypt stored secrets");
+  }
+}
+
 export const localEncryptedProvider: SecretProviderModule = {
   id: "local_encrypted",
   descriptor() {
