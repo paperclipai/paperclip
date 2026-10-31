@@ -1247,7 +1247,7 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
   /** Explicit evaluation-only candidate selection, never derived from persisted session input. */
-  acpxCandidateProfile?: "pi" | "cursor" | "copilot";
+  acpxCandidateProfile?: "pi" | "cursor" | "copilot" | "kimi";
   /** Server/operator authority; never derived from persisted agent or provider input. */
   acpxCandidateAdmission?: AcpxCandidateAdmission;
   acpxPermissionMode?: NativeAcpxPermissionMode;
@@ -3099,7 +3099,7 @@ function acpxProviderPackageAuthority(
   // Native provider closures belong to the runner package itself. Their asset
   // guard requires the bound manifest directly inside that same package root;
   // the workspace dependency root used by JS providers is a different owner.
-  if (agent === "copilot" || agent === "pi" || agent === "antigravity") {
+  if (agent === "copilot" || agent === "pi" || agent === "kimi" || agent === "antigravity") {
     return {
       root: sidecarPackageRoot,
       manifest: resolve(sidecarPackageRoot, "package.json"),
@@ -3148,7 +3148,7 @@ function acpxRunnerLaunchProfile(
     `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
   let candidateAdmission: AcpxCandidateStartupAdmission | undefined;
   if (options.acpxCandidateAdmission) {
-    if (!identity || options.runnerFilesystemRoot) throw new Error("ACPX candidate requires an actual local startup identity");
+    if (!identity || options.acpxCandidateAdmission.agent === "antigravity" && options.runnerFilesystemRoot) throw new Error("ACPX candidate requires an actual authorized startup identity");
     candidateAdmission = bindAcpxCandidateAdmission(options.acpxCandidateAdmission, identity);
   }
   if (!options.runnerFilesystemRoot) {
@@ -3202,6 +3202,7 @@ function acpxRunnerLaunchProfile(
     );
   }
   return {
+    ...(candidateAdmission ? { candidateAdmission } : {}),
     authorityDigest,
     command,
     commandSha256,
@@ -3394,7 +3395,7 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: providerPackageAuthority.root,
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST:
         providerPackageAuthority.manifest,
-      ...(!input.options.acpxCandidateAdmission && input.options.providerRecoveryPolicy ===
+      ...(input.options.acpxCandidateAdmission?.agent !== "antigravity" && input.options.providerRecoveryPolicy ===
       "allow_replacement_after_governed_wait"
         ? {
             PAPERCLIP_ACPX_PROVIDER_RECOVERY_POLICY:
@@ -3689,18 +3690,21 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     if (options.acpxCandidateAdmission !== undefined) {
       const candidate = options.acpxCandidateAdmission;
+      if (options.provider !== "acpx") {
+        throw new Error("ACPX candidate admission requires the exact ACPX provider");
+      }
       const admitted = parseAcpxCandidateAdmission(candidate, { companyId: candidate.companyId, agent: options.acpxAgent ?? "", model: candidate.model });
-      this.options = { ...this.options, acpxCandidateAdmission: Object.freeze(admitted), providerRecoveryPolicy: "same_session_only" };
-      this.prepareConversationResume = params => this.#prepareCandidateConversationResume(params);
-      if (options.provider !== "acpx" || process.platform !== "darwin" || process.arch !== "arm64"
+      this.options = { ...this.options, acpxCandidateAdmission: Object.freeze(admitted), ...(candidate.agent === "antigravity" ? { providerRecoveryPolicy: "same_session_only" as const } : {}) };
+      if (candidate.agent === "antigravity") this.prepareConversationResume = params => this.#prepareCandidateConversationResume(params);
+      if (candidate.agent === "antigravity" && (options.provider !== "acpx" || process.platform !== "darwin" || process.arch !== "arm64"
         || options.runnerFilesystemRoot || options.prepareLaunch || options.runnerProcessLauncher
         || options.homeMode === "preconfigured" || options.lifecyclePolicy?.mode === "warm"
         || options.adoptExistingRunner || options.resumeActiveTurnId
-        ) {
+        )) {
         throw new Error("ACPX candidate admission supports only a fresh local isolated per-turn execution");
       }
     }
-    if (options.acpxCandidateAdmission && options.resumeProviderSession) {
+    if (options.acpxCandidateAdmission?.agent === "antigravity" && options.resumeProviderSession) {
       const prior = options.resumeProviderSession;
       const identity = record(prior.providerIdentity);
       if (!prior.driverSessionId?.trim() || !prior.providerSessionId?.trim()
@@ -3713,7 +3717,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (options.provider === "acpx" && options.acpxAgent !== undefined
       && ACPX_CAPABILITY_PROFILES[options.acpxAgent].qualification === "pending"
       && options.acpxCandidateProfile !== options.acpxAgent
-      && !(options.acpxAgent === "antigravity" && options.acpxCandidateAdmission)) {
+      && !(options.acpxCandidateAdmission?.agent === options.acpxAgent)) {
       throw new Error("The candidate ACPX profile requires explicit evaluation opt-in");
     }
     this.#failureSignal = new Promise<never>((_resolve, reject) => {
@@ -4283,7 +4287,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       }
       const payload = {
         ...runAttachTemplate,
-        paperclipNextAuthority: { identity: desired, connection },
+        paperclipNextAuthority: { identity: desired, connection,
+          ...(this.options.acpxCandidateAdmission?.agent === "kimi"
+            ? { candidateAdmission: bindAcpxCandidateAdmission(this.options.acpxCandidateAdmission, desired) } : {}),
+        },
       };
       core.queueCommand("run.attach", payload, commandId, true);
       // ACPX run attachment checkpoints the old sidecar and starts a fresh
@@ -5421,7 +5428,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   async #resumeWork(): Promise<void> {
-    if (this.options.acpxCandidateAdmission) throw new Error("ACPX candidate durable runner recovery is not admitted");
+    if (this.options.acpxCandidateAdmission?.agent === "antigravity") throw new Error("ACPX candidate durable runner recovery is not admitted");
     let desiredIdentity = this.options.prpIdentity;
     if (desiredIdentity === undefined) {
       throw new Error("PRP provider resume state is unavailable");

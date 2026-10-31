@@ -84,6 +84,7 @@ import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import { issueService } from "../services/issues.js";
 import * as heartbeatWorkspaces from "../services/heartbeat/workspaces.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-lifecycle.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 
 describe("P6-25 pre-result native session recovery", () => {
@@ -1048,13 +1049,10 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
       );
       await once(staleProviderProcess, "spawn");
       expect(staleProviderProcess.pid).toEqual(expect.any(Number));
-      await db
-        .update(heartbeatRuns)
-        .set({
-          processPid: staleProviderProcess.pid!,
-          processStartedAt: new Date("2026-08-09T04:00:00.000Z"),
-        })
-        .where(eq(heartbeatRuns.id, runId));
+      await persistHeartbeatRunProcessMetadata(db, runId, {
+        pid: staleProviderProcess.pid!, processGroupId: null,
+        startedAt: new Date("2026-08-09T04:00:00.000Z").toISOString(), targetKind: "local",
+      });
       const factoryInputs: NativeExecutionInput[] = [];
       const freshStartTurn = vi.fn<NativeSession["startTurn"]>();
       const freshBackend = (

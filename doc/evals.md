@@ -1,5 +1,11 @@
 # Paperclip evaluation guide
 
+The explicit-only [Kimi Code qualification suite](../tests/runner-e2e/README.md#kimi-code-qualification)
+registers twenty candidate cells across local and Daytona. It reuses the
+browser, semantic interaction, file/artifact, Stop and continuation oracles with
+scoped candidate admission and an encrypted Code credential. Registration does
+not establish a live pass, native question/plan support or usable cost accounting.
+
 The public directory calls full-product testing **E2E tests**. Suites describe
 what is tested; deployment targets describe which app instance was tested.
 QA smoke is a named selection of existing journeys against QA, and appears in
@@ -76,6 +82,12 @@ checks one essential input, the rendered prompt and context, the real answer,
 one bound continuation, and an exact saved confirmation. Its four development
 cells use the recorded Codex and Claude models. Registration and calibration do
 not establish Slack, staging authentication, warm lifecycle, or live qualification.
+
+The explicit `followup-while-running` [Product journey](../tests/runner-e2e/PRODUCT-JOURNEYS.md#active-follow-up)
+checks a saved message during independently observed native work, one attributed
+reply with the late requirement, and persistence after reload. Its attached and
+managed targets share the same story and permit one steered run or one normal
+successor. Registration and calibration are separate from a live staging pass.
 
 [Reusable Product journeys](../tests/runner-e2e/PRODUCT-JOURNEYS.md) add explicit
 deployment targets and starting-state recipes. The shared task-properties
