@@ -75,6 +75,12 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
   async function compete() {
     const other = heartbeatService(db);
     const competing = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const register = competing.register.bind(competing);
+    competing.register = (queue, task) => register(queue, { ...task, run: signal => {
+      const pass = task.run(signal); passes.add(pass);
+      void pass.then(() => passes.delete(pass), () => passes.delete(pass));
+      return pass;
+    } });
     const work = other.registerIssueStateRecoveryWork(competing, () => true);
     extraStops.push(() => competing.stop()); extraDeadlines.push(competing.nextWakeAt); await work.ready;
   }
@@ -90,8 +96,32 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
     }).returning();
     return { companyId, agentId: agent.id };
   }
+  async function completingProvider(f: { companyId: string; agentId: string }, beforeComplete?: () => Promise<unknown>) {
+    const failures: unknown[] = [];
+    const listener = createServer(async (request, response) => {
+      try {
+        let body = "";
+        for await (const chunk of request) body += chunk;
+        const { runId } = JSON.parse(body) as { runId: string };
+        const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId),
+          eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.agentId, f.agentId)));
+        if (!run?.contextSnapshot?.issueId) throw new Error("Unknown controlled task run");
+        await beforeComplete?.();
+        await issueService(db).update(String(run.contextSnapshot.issueId), { status: "done" });
+        response.end("ok");
+      } catch (error) { failures.push(error); response.statusCode = 500; response.end("completion failed"); }
+    });
+    await new Promise<void>(resolve => listener.listen(0, "127.0.0.1", resolve));
+    extraStops.push(async () => { listener.closeAllConnections(); await new Promise<void>(resolve => listener.close(() => resolve())); });
+    const port = (listener.address() as { port: number }).port;
+    const script = `fetch("http://127.0.0.1:${port}/complete", {method:"POST", body:JSON.stringify({runId:process.env.PAPERCLIP_RUN_ID})}).then(async response=>{if(!response.ok)throw new Error(await response.text());console.log("recovery-proof")}).catch(error=>{console.error(error);process.exitCode=1})`;
+    await db.update(agents).set({ adapterConfig: { command: process.execPath, args: ["-e", script], cwd: process.cwd() } })
+      .where(eq(agents.id, f.agentId));
+    return failures;
+  }
   async function settled() {
     await vi.waitFor(async () => {
+      await Promise.allSettled([...passes]);
       await heartbeat.drainActiveRunExecutions();
       const wake = coordinator.nextWakeAt();
       const detail = wake === null ? "" : JSON.stringify({ now: Date.now(), tasks: await Promise.all([...tasks].map(async ([queue, task]) => ({ queue, at: task.nextRunAt?.(), pending: await task.hasPending() }))),
@@ -116,6 +146,9 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
     } finally { vi.useRealTimers(); db.$client.options.debug = priorDebug; reads.mockRestore(); executes.mockRestore(); }
   }
   async function finish(issueId: string) {
+    const retries = () => db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "scheduled_retry"),
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`));
+    const before = await retries();
     await issueService(db).update(issueId, { status: "done" });
     // Closing one blocker can legitimately start its dependent. Wait for this
     // task's dispatch and execution; quiet() verifies the whole fixture later.
@@ -127,26 +160,18 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
         sql`${heartbeatRuns.status} in ('queued', 'running')`,
       ))).toHaveLength(0);
     }, { timeout: 15_000 });
-    const saved = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "scheduled_retry"),
-      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`));
-    if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const saved = [...new Map([...before, ...await retries()].map(run => [run.id, run])).values()];
     if (saved.length > 0) {
-      const due = Math.max(...saved.map(run => run.scheduledRetryAt!.getTime()));
-      // Keep PostgreSQL I/O and coordinator settlement ahead of virtual time.
-      // A single leap can otherwise occur before the retry deadline is armed.
-      while (Date.now() <= due) {
-        await vi.advanceTimersByTimeAsync(Math.min(500, due - Date.now() + 1));
-        await Promise.allSettled([...passes]);
-        await immediate();
-      }
+      const trace: unknown[] = [];
       await vi.waitFor(async () => {
-        await vi.advanceTimersByTimeAsync(500);
         await Promise.allSettled([...passes]);
         await heartbeat.drainActiveRunExecutions();
-        const remaining = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "scheduled_retry"),
-            sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`));
-        expect(remaining).toHaveLength(0);
-      });
+        const remaining = await retries();
+        if (remaining.length > 0) trace.push({ now: Date.now(),
+          deadlines: [coordinator.nextWakeAt(), ...extraDeadlines.map(next => next())],
+          remaining: remaining.map(run => ({ id: run.id, at: run.scheduledRetryAt })) });
+        expect(remaining, JSON.stringify(trace)).toHaveLength(0);
+      }, { timeout: Math.max(...saved.map(run => run.scheduledRetryAt!.getTime())) - Date.now() + 30_000 });
       for (const retry of saved) {
         const [settledRetry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry.id));
         expect(settledRetry.status).toBe("cancelled");
@@ -377,18 +402,39 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
     const blocker = await issueService(db).create(f.companyId, { title: "Blocker", status: "todo" });
     const dependent = await issueService(db).create(f.companyId, { title: "Dependent", status: "blocked", assigneeAgentId: f.agentId,
       blockedByIssueIds: [blocker.id] });
+    const failures = await completingProvider(f);
     await start(); await quiet();
     await compete();
     await issueService(db).update(blocker.id, { status: "done" });
     const run = await completed(dependent.id);
     expect(run.contextSnapshot?.wakeReason).toBe("issue_blockers_resolved");
+    expect(failures).toEqual([]);
     await finish(dependent.id); await quiet();
     expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
       sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'issue_blockers_resolved'`))).toHaveLength(1);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
   }, 90_000);
+  it("settles saved disposition debt on its original real-clock timers before measuring idle", async () => {
+    const f = await fixture();
+    const blocker = await issueService(db).create(f.companyId, { title: "Saved debt blocker", status: "todo" });
+    const issue = await issueService(db).create(f.companyId, { title: "Saved disposition debt", status: "blocked",
+      assigneeAgentId: f.agentId, blockedByIssueIds: [blocker.id] });
+    await start(); await compete();
+    await issueService(db).update(blocker.id, { status: "done" });
+    await completed(issue.id);
+    let retryId: string | undefined;
+    await vi.waitFor(async () => {
+      const [retry] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "scheduled_retry"),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`));
+      expect(retry).toBeDefined(); retryId = retry!.id;
+    }, { timeout: 40_000 });
+    await finish(issue.id); await quiet();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retryId!)))[0].status).toBe("cancelled");
+  }, 120_000);
   it("uses ordinary watchdog configuration and subtree closure to dispatch a reusable review", async () => {
     const f = await fixture();
     const source = await issueService(db).create(f.companyId, { title: "Finished subtree", status: "done" });
+    const failures = await completingProvider(f, () => taskWatchdogService(db).disableForIssue(f.companyId, source.id));
     await start(); await quiet();
     await compete();
     const watchdog = await taskWatchdogService(db).upsertForIssue(f.companyId, source.id, { agentId: f.agentId });
@@ -398,6 +444,7 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
       expect(row.watchdogIssueId).toBeTruthy(); reviewId = row.watchdogIssueId!;
     }, { timeout: 15_000 });
     await completed(reviewId!);
+    expect(failures).toEqual([]);
     expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
       sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'task_watchdog_stopped_subtree'`))).toHaveLength(1);
     await finish(reviewId!);
