@@ -141,8 +141,10 @@ dashboard root are browser UI routes; Paperclip tests `/api/health` and starts
 runs with `/api/v1/runs` after mapping them to the API base.
 
 This mode does not start Hermes. It creates runs with `POST /v1/runs`, streams
-Hermes events with SSE, polls run status as a fallback, and stops timed-out runs
-with `POST /v1/runs/{run_id}/stop`.
+Hermes events with SSE (resuming with `Last-Event-ID` after a disconnect), polls
+run status as a fallback, and stops timed-out or cancelled runs with
+`POST /v1/runs/{run_id}/stop`. A cancellation is acknowledged only after Hermes
+reports the run terminal.
 
 ### Compatibility with the old gateway package
 

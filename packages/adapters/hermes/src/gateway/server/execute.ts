@@ -33,6 +33,7 @@ type SessionKeyStrategy = "issue" | "agent" | "run" | "none";
 type SseFrame = {
   event: string | null;
   data: string;
+  id?: string;
 };
 
 type HermesHttpError = Error & {
@@ -53,6 +54,7 @@ type TerminalState = {
 
 type ExecutionState = {
   runId: string;
+  lastSeq: number;
   outputChunks: string[];
   lastEventName: string | null;
   terminal: TerminalState | null;
@@ -439,6 +441,23 @@ function fetchFailureMessage(err: unknown): string {
   return causeCode ? `${message} (${causeCode}: ${causeMessage})` : `${message} (${causeMessage})`;
 }
 
+const CREATE_RETRY_DELAYS_MS = [250, 1_000];
+const AMBIGUOUS_CREATE_FAILURES = new Set<GatewayRequestFailure["reason"]>(["connection_reset", "connection_timeout"]);
+
+async function createRun(ctx: AdapterExecutionContext, url: string, init: RequestInit, redactText: TextRedactor): Promise<unknown> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await fetchJson(url, init);
+    } catch (err) {
+      const reason = err instanceof Error ? requestConnectionFailures.get(err)?.reason : undefined;
+      const delayMs = CREATE_RETRY_DELAYS_MS[attempt];
+      if (!reason || !AMBIGUOUS_CREATE_FAILURES.has(reason) || delayMs === undefined) throw err;
+      await ctx.onLog("stderr", `[hermes-gateway] create request ${reason}; retrying with the same Idempotency-Key in ${delayMs}ms: ${redactErrorMessage(err, redactText)}\n`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<unknown> {
   let response: Response;
   try {
@@ -501,6 +520,7 @@ export function parseSseFramesForTest(buffer: string): { frames: SseFrame[]; res
     const rawFrame = normalized.slice(offset, idx);
     offset = idx + 2;
     let event: string | null = null;
+    let id: string | null = null;
     const dataLines: string[] = [];
     for (const line of rawFrame.split("\n")) {
       if (!line || line.startsWith(":")) continue;
@@ -508,9 +528,11 @@ export function parseSseFramesForTest(buffer: string): { frames: SseFrame[]; res
         event = line.slice("event:".length).trim();
       } else if (line.startsWith("data:")) {
         dataLines.push(line.slice("data:".length).trimStart());
+      } else if (line.startsWith("id:")) {
+        id = line.slice("id:".length).trim();
       }
     }
-    if (dataLines.length > 0) frames.push({ event, data: dataLines.join("\n") });
+    if (dataLines.length > 0) frames.push({ event, data: dataLines.join("\n"), ...(id ? { id } : {}) });
   }
   return { frames, rest: normalized.slice(offset) };
 }
@@ -522,6 +544,7 @@ function createExecutionState(runId: string): ExecutionState {
   });
   return {
     runId,
+    lastSeq: -1,
     outputChunks: [],
     lastEventName: null,
     terminal: null,
@@ -555,6 +578,12 @@ function extractOutput(value: unknown): string | null {
   return nested ? extractOutput(nested) : null;
 }
 
+function eventSeq(frame: SseFrame, record: Record<string, unknown> | null): number | null {
+  const raw = frame.id ?? record?.seq;
+  const value = typeof raw === "number" ? raw : typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : NaN;
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
 async function handleEvent(
   ctx: AdapterExecutionContext,
   state: ExecutionState,
@@ -563,6 +592,11 @@ async function handleEvent(
 ): Promise<void> {
   const parsed = parseJsonData(frame.data);
   const record = asRecord(parsed);
+  const seq = eventSeq(frame, record);
+  if (seq !== null) {
+    if (seq <= state.lastSeq) return;
+    state.lastSeq = seq;
+  }
   const eventName = eventNameFromData(parsed, frame.event);
   state.lastEventName = eventName;
   await ctx.onLog(
@@ -651,7 +685,9 @@ async function consumeEvents(input: {
     try {
       const response = await fetch(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.state.runId)}/events`), {
         method: "GET",
-        headers: input.headers,
+        headers: input.state.lastSeq >= 0
+          ? { ...input.headers, "Last-Event-ID": String(input.state.lastSeq) }
+          : input.headers,
         signal: input.signal,
       });
       if (!response.ok) {
@@ -808,6 +844,69 @@ async function stopRun(input: {
     await input.ctx.onLog("stderr", `[hermes-gateway] stop request failed: ${redactErrorMessage(err, input.redactText)}\n`);
     return null;
   }
+}
+
+const CANCEL_SETTLE_MS = 60_000;
+
+type CancellationReceipt = Pick<AdapterExecutionResult, "executionRecovery"> & {
+  resultJson: Record<string, unknown>;
+};
+
+async function settleCancellation(input: {
+  ctx: AdapterExecutionContext;
+  baseUrl: URL;
+  headers: Record<string, string>;
+  runId: string;
+  redactText: TextRedactor;
+}): Promise<{ receipt: CancellationReceipt | null; finalStatus: Record<string, unknown> | null }> {
+  await stopRun(input);
+  const finalStatus = await fetchFinalStatus({
+    baseUrl: input.baseUrl, headers: input.headers, runId: input.runId, deadlineMs: CANCEL_SETTLE_MS,
+  });
+  const status = extractStatus(finalStatus);
+  if (!status || !TERMINAL_STATUSES.has(status)) {
+    await input.ctx.onLog("stderr", `[hermes-gateway] stop of run ${input.runId} not confirmed within ${CANCEL_SETTLE_MS / 1000}s; leaving it unsettled\n`);
+    return { receipt: null, finalStatus };
+  }
+  await input.ctx.onLog("stdout", `[hermes-gateway] run ${input.runId} confirmed ${status} after stop\n`);
+  return {
+    finalStatus,
+    receipt: {
+      executionRecovery: { kind: "interrupted", providerStopped: true, sessionPreserved: true, actionOutcomes: "settled" },
+      resultJson: { executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString() } },
+    },
+  };
+}
+
+function cancelledResult(input: {
+  runId: string | null;
+  receipt: CancellationReceipt | null;
+  finalStatus: Record<string, unknown> | null;
+  lastEvent: string | null;
+  sessionKey: string | null;
+  strategy: SessionKeyStrategy;
+  redactText: TextRedactor;
+}): AdapterExecutionResult {
+  const usage = parseUsage(input.finalStatus);
+  return {
+    exitCode: 1,
+    signal: "SIGTERM",
+    timedOut: false,
+    errorCode: "cancelled",
+    errorMessage: "Hermes gateway run was cancelled",
+    provider: "hermes_gateway",
+    ...(usage ? { usage } : {}),
+    ...(input.receipt?.executionRecovery ? { executionRecovery: input.receipt.executionRecovery } : {}),
+    resultJson: {
+      run_id: input.runId,
+      status: extractStatus(input.finalStatus) ?? "stopping",
+      last_event: input.lastEvent,
+      final_status: redactForLog(input.finalStatus, [], 0, input.redactText),
+      ...input.receipt?.resultJson,
+    },
+    ...(input.runId ? { sessionParams: { hermesRunId: input.runId, strategy: input.strategy } } : {}),
+    sessionDisplayId: input.sessionKey ? input.redactText(input.sessionKey) : null,
+  };
 }
 
 async function fetchFinalStatus(input: {
@@ -985,17 +1084,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ctx.onLog("stdout", `[hermes-gateway] creating run at ${createRunUrl} (timeout=${timeoutSec}s, session=${strategy})\n`);
   await ctx.onLog("stdout", `[hermes-gateway] request headers (redacted): ${stringifyForLog(redactForLog(runHeaders, [], 0, redactText), 3_000)}\n`);
 
+  await ctx.onCancellationReady?.();
+  if (ctx.signal?.aborted) {
+    return {
+      ...cancelledResult({ runId: null, receipt: null, finalStatus: null, lastEvent: null, sessionKey, strategy, redactText }),
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      resultJson: { status: "not_started", executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString() } },
+    };
+  }
+
   let runId: string | null = null;
   try {
     // This adapter has no local child process, so crossing into the first
     // remote create request is its dispatch boundary. Report it before the
     // request can block so continuation gates may release their issue lock.
     ctx.onDispatch?.();
-    const created = await fetchJson(createRunUrl, {
+    const created = await createRun(ctx, createRunUrl, {
       method: "POST",
       headers: runHeaders,
       body: JSON.stringify(body),
-    });
+    }, redactText);
     runId = extractRunId(created);
     if (!runId) {
       return {
@@ -1012,6 +1120,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);
+  if (ctx.signal?.aborted) {
+    const settled = await settleCancellation({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
+    return cancelledResult({ runId, ...settled, lastEvent: null, sessionKey, strategy, redactText });
+  }
 
   const state = createExecutionState(runId);
   const controller = new AbortController();
@@ -1040,9 +1152,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutTimer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
 
-  const outcome = await Promise.race([state.terminalPromise, timeoutPromise]);
+  let resolveCancel!: (value: "cancelled") => void;
+  const cancelPromise = new Promise<"cancelled">((resolve) => {
+    resolveCancel = resolve;
+  });
+  const onCancel = () => resolveCancel("cancelled");
+  ctx.signal?.addEventListener("abort", onCancel, { once: true });
+  if (ctx.signal?.aborted) onCancel();
+
+  const outcome = await Promise.race([state.terminalPromise, timeoutPromise, cancelPromise]);
   if (timeoutTimer) clearTimeout(timeoutTimer);
+  ctx.signal?.removeEventListener("abort", onCancel);
   controller.abort();
+
+  if (outcome === "cancelled") {
+    const settled = await settleCancellation({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
+    return cancelledResult({ runId, ...settled, lastEvent: state.lastEventName, sessionKey, strategy, redactText });
+  }
 
   if (outcome === "timeout") {
     await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });

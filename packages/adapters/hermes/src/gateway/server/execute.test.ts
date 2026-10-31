@@ -738,6 +738,179 @@ describe("execute", () => {
     expect(result.errorCode).toBe("hermes_gateway_timeout");
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/stop"))).toBe(true);
   });
+
+  it("acknowledges an operator Stop only after Hermes reports the exact run terminal", async () => {
+    const controller = new AbortController();
+    let stopped = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-stop", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        controller.abort(new Error("operator stop"));
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith("/run-stop/stop")) {
+        stopped = true;
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      }
+      if (init?.method === "GET" && url.endsWith("/run-stop")) {
+        return new Response(JSON.stringify({ status: stopped ? "cancelled" : "running" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const onCancellationReady = vi.fn(async () => undefined);
+
+    const result = await execute({
+      ...makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 30 }),
+      signal: controller.signal,
+      onCancellationReady,
+    });
+
+    expect(onCancellationReady).toHaveBeenCalledTimes(1);
+    expect(stopped).toBe(true);
+    expect(result.errorCode).toBe("cancelled");
+    expect(result.timedOut).toBe(false);
+    expect(result.executionRecovery).toEqual({
+      kind: "interrupted", providerStopped: true, sessionPreserved: true, actionOutcomes: "settled",
+    });
+    expect(result.resultJson).toMatchObject({ run_id: "run-stop", status: "cancelled", executionCancellation: { state: "acknowledged" } });
+  });
+
+  it("leaves a Stop unacknowledged when Hermes cannot confirm the run stopped", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-lost", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        controller.abort(new Error("operator stop"));
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith("/stop")) {
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      }
+      if (init?.method === "GET") throw new TypeError("fetch failed");
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute({
+      ...makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 30 }),
+      signal: controller.signal,
+      onCancellationReady: vi.fn(async () => undefined),
+    });
+
+    expect(result.errorCode).toBe("cancelled");
+    expect(result.executionRecovery).toBeUndefined();
+    expect(result.resultJson).not.toHaveProperty("executionCancellation");
+  });
+
+  it("retries a create lost to a connection reset with the same Idempotency-Key and body", async () => {
+    let creates = 0;
+    const createInits: RequestInit[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        creates += 1;
+        createInits.push(init ?? {});
+        if (creates === 1) {
+          throw new TypeError("fetch failed", { cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }) });
+        }
+        return new Response(JSON.stringify({ run_id: "run-original", status: "running", replayed: true }), { status: 202 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(sseStream("id: 0\nevent: run.completed\ndata: {\"event\":\"run.completed\",\"output\":\"done\"}\n\n"), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" }));
+
+    expect(creates).toBe(2);
+    const keys = createInits.map((init) => (init.headers as Record<string, string>)["Idempotency-Key"]);
+    expect(keys).toEqual(["pc-run-1", "pc-run-1"]);
+    expect(createInits[1]?.body).toBe(createInits[0]?.body);
+    expect(result.exitCode).toBe(0);
+    expect(result.resultJson).toMatchObject({ run_id: "run-original", status: "completed" });
+  });
+
+  it("does not retry a create the gateway refused outright", async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new TypeError("fetch failed", { cause: Object.assign(new Error("refused"), { code: "ECONNREFUSED" }) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" }));
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(result.errorCode).toBe("hermes_gateway_connect_failed");
+  });
+
+  it("resumes a dropped event stream with Last-Event-ID and skips replayed events", async () => {
+    const eventHeaders: Array<Record<string, string>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-resume", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        eventHeaders.push({ ...(init?.headers as Record<string, string>) });
+        if (eventHeaders.length === 1) {
+          return new Response(sseStream(
+            "id: 0\nevent: message.delta\ndata: {\"event\":\"message.delta\",\"delta\":\"Hel\"}\n\n" +
+            "id: 1\nevent: message.delta\ndata: {\"event\":\"message.delta\",\"delta\":\"lo\"}\n\n",
+          ), { status: 200 });
+        }
+        return new Response(sseStream(
+          "id: 1\nevent: message.delta\ndata: {\"event\":\"message.delta\",\"delta\":\"lo\"}\n\n" +
+          "id: 2\nevent: message.delta\ndata: {\"event\":\"message.delta\",\"delta\":\"!\"}\n\n" +
+          "id: 3\nevent: run.completed\ndata: {\"event\":\"run.completed\"}\n\n",
+        ), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", eventReconnectMs: 250, pollIntervalMs: 10_000,
+    }));
+
+    expect(eventHeaders).toHaveLength(2);
+    expect(eventHeaders[0]).not.toHaveProperty("Last-Event-ID");
+    expect(eventHeaders[1]?.["Last-Event-ID"]).toBe("1");
+    expect(result.exitCode).toBe(0);
+    expect(result.resultJson).toMatchObject({ output: "Hello!" });
+  });
+
+  it("parses SSE ids and leaves frames without one unchanged", () => {
+    const parsed = parseSseFramesForTest("id: 7\nevent: message.delta\ndata: {}\n\nevent: run.completed\ndata: {}\n\n");
+    expect(parsed.frames).toEqual([
+      { event: "message.delta", data: "{}", id: "7" },
+      { event: "run.completed", data: "{}" },
+    ]);
+  });
+
+  it("does not create a Hermes run when Stop arrives before provider startup", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("stopped before startup"));
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ run_id: "unexpected" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute({
+      ...makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" }),
+      signal: controller.signal,
+      onCancellationReady: vi.fn(async () => undefined),
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
+    expect(result.resultJson).toMatchObject({ executionCancellation: { state: "acknowledged" } });
+  });
 });
 
 describe("gateway connection failure reporting", () => {
