@@ -368,6 +368,56 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
     expect(provider).toHaveBeenCalledTimes(2);
   });
 
+  it("coalesces repeated company status writes without rebuilding every future object", async () => {
+    clock(); const svc = service(); const own = await fixture(), foreign = await fixture();
+    const future = new Date(Date.now() + 86_400_000);
+    for (let offset = 0; offset < 1100; offset += 250) {
+      const ids = Array.from({ length: Math.min(250, 1100 - offset) }, () => randomUUID());
+      await db.insert(externalObjects).values(ids.map(id => ({ id, companyId: own.companyId,
+        providerKey: "url", objectType: "link", externalId: id, nextRefreshAt: future })));
+      await db.insert(externalObjectMentions).values(ids.map(objectId => ({ companyId: own.companyId,
+        sourceIssueId: own.issueId, sourceKind: "description" as const, objectId })));
+    }
+    await svc.syncIssue(foreign.issueId);
+    await db.update(externalObjects).set({ nextRefreshAt: future });
+    await start(svc);
+    await settle(() => coordinator!.nextWakeAt() === future.getTime());
+    const reads: Array<{ query: string; params: unknown[] }> = [];
+    const debug = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query, params) => {
+      if (/^select/i.test(query) && query.includes('from "external_objects"') && query.includes('inner join "companies"'))
+        reads.push({ query, params: [...params] });
+    };
+    try {
+      const companiesSvc = companyService(db);
+      await companiesSvc.update(own.companyId, { status: "paused" });
+      await settle(() => reads.length === 1 && coordinator!.nextWakeAt() === future.getTime()
+        && !databaseWorkPending(db, DELIVERY_QUEUES.externalObjectRefresh));
+      for (const status of ["active", "paused", "active", "paused", "active"] as const) {
+        await companiesSvc.update(own.companyId, { status });
+        await settle(() => !databaseWorkPending(db, DELIVERY_QUEUES.externalObjectRefresh)
+          && (coordinator!.nextWakeAt() ?? 0) > Date.now());
+        expect(reads).toHaveLength(1);
+      }
+      const rebuildAt = coordinator!.nextWakeAt()!;
+      expect(rebuildAt - Date.now()).toBeGreaterThan(20_000);
+      expect(rebuildAt - Date.now()).toBeLessThanOrEqual(30_000);
+      await vi.advanceTimersByTimeAsync(rebuildAt - Date.now());
+      await settle(() => coordinator!.nextWakeAt() === future.getTime() && reads.length === 6);
+      for (const read of reads) {
+        expect(read.query).toContain('"external_objects"."company_id" =');
+        expect(read.params).toContain(own.companyId);
+        expect(read.params).not.toContain(foreign.companyId);
+        expect(read.params.at(-1)).toBe(250);
+      }
+      const count = reads.length;
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      expect(reads).toHaveLength(count); expect(provider).not.toHaveBeenCalled();
+      expect(coordinator!.nextWakeAt()).toBe(future.getTime());
+      expect(errors).not.toHaveBeenCalled();
+    } finally { db.$client.options.debug = debug; }
+  });
+
   it("scopes repeated issue deletions to cascaded source objects and cancels their last future mention", async () => {
     clock(); const svc = service();
     const own = await fixture(), foreign = await fixture();

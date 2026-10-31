@@ -6,6 +6,8 @@ import { subscribeDatabaseWork, authUsers, companyMemberships, agents, approvals
   decisionRetention, decisions, costEvents, heartbeatRunEvents, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issueRelations, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { attentionRetentionService, registerAttentionRetentionWork } from "../services/attention-retention.js";
+import { workspaceOperationService } from "../services/workspace-operations.js";
+import * as workspaceOperationLogs from "../services/workspace-operation-log-store.js";
 import { budgetService } from "../services/budgets.js";
 import { writeExecutionControl } from "../services/execution-control-notifications.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
@@ -35,15 +37,22 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
   const errors: unknown[] = [];
   const statements: string[] = [];
   const parameterCounts: number[] = [];
+  let captureBlockerPlan = false;
+  let blockerPlanQuery: { query: string; parameters: unknown[] } | undefined;
   beforeAll(async () => {
     if (externalUrl) await applyPendingMigrations(externalUrl);
     else temporary = await startEmbeddedPostgresTestDatabase("attention-retention-");
     db = createDb(externalUrl ?? temporary!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     db.$client.options.onnotice = () => {};
-    db.$client.options.debug = (_connection, query, parameters) => { statements.push(query); parameterCounts.push(parameters.length); };
+    db.$client.options.debug = (_connection, query, parameters) => {
+      statements.push(query); parameterCounts.push(parameters.length);
+      if (captureBlockerPlan && !blockerPlanQuery && query.includes("latest_blocker_operation") && query.includes("issue_relations"))
+        blockerPlanQuery = { query, parameters: [...parameters] };
+    };
   }, 30_000);
   beforeEach(async () => {
     companyId = randomUUID(); agentId = randomUUID(); draining = false; errors.length = 0;
+    captureBlockerPlan = false; blockerPlanQuery = undefined;
     await db.insert(companies).values({ id: companyId, name: "Retention", issuePrefix: `A${companyId.slice(0, 6)}` });
     await db.insert(authUsers).values({ id: "board", name: "Board", email: "board@retention.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board", membershipRole: "owner", status: "active" });
@@ -426,6 +435,169 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(await service.check(entry)).toBeNull();
     expect(await db.select().from(decisionRetention)).toHaveLength(0);
     expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
+  });
+
+  it.each(["running", "run", "confirmation", "completed"] as const)("filters completed blocker history before bounded %s attention and archive checks", async kind => {
+    const root = await insertIssue("blocked"), workspaceId = randomUUID();
+    await db.execute(sql`insert into execution_workspaces (id, company_id, name, mode, strategy_type)
+      values (${workspaceId}::uuid, ${companyId}::uuid, 'Finalized shared history', 'shared', 'project_primary')`);
+    await db.execute(sql`insert into workspace_operations (company_id, execution_workspace_id, phase, status, started_at)
+      values (${companyId}::uuid, ${workspaceId}::uuid, 'workspace_finalize', 'succeeded', ${old().toISOString()}::timestamptz)`);
+    await db.execute(sql`with history as (
+      insert into issues (id, company_id, title, status, updated_at, execution_workspace_id)
+      select ('00000000-0000-4000-8000-' || lpad(to_hex(n), 12, '0'))::uuid,
+        ${companyId}::uuid, 'completed-blocker-' || n, 'done', ${old().toISOString()}::timestamptz, ${workspaceId}::uuid
+      from generate_series(1, 2100) n returning id)
+      insert into issue_relations (company_id, issue_id, related_issue_id, type)
+      select ${companyId}::uuid, id, ${root.id}::uuid, 'blocks' from history`);
+    if (kind !== "completed") {
+      const live = await insertIssue(kind === "running" ? "in_progress" : "todo", { id: "ffffffff-ffff-4fff-8fff-ffffffffffff", assigneeAgentId: agentId });
+      await db.insert(issueRelations).values({ companyId, issueId: live.id, relatedIssueId: root.id, type: "blocks" });
+      if (kind === "run") {
+        const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
+        await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, live.id));
+      } else if (kind === "confirmation") await db.insert(issueThreadInteractions).values({ companyId, issueId: live.id,
+        kind: "request_confirmation", status: "pending", payload: { prompt: "Still waiting" } });
+    }
+    statements.length = 0; parameterCounts.length = 0;
+    captureBlockerPlan = kind === "completed";
+    const batch = await issueService(db).listBlockerAttentionBatch(companyId, [root]);
+    captureBlockerPlan = false;
+    if (kind === "completed") {
+      expect(blockerPlanQuery).toBeTruthy();
+      const explain = await db.$client.unsafe("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + blockerPlanQuery!.query,
+        blockerPlanQuery!.parameters as never[]);
+      type Plan = { "Relation Name"?: string; "Actual Rows": number; "Actual Loops": number; "Rows Removed by Filter"?: number; Plans?: Plan[] };
+      const rootPlan = (explain[0]!["QUERY PLAN"] as Array<{ Plan: Plan }>)[0]!.Plan;
+      const visit = (node: Plan): void => {
+        if (node["Relation Name"] === "issues" && node["Actual Loops"] > 1) {
+          expect(node["Actual Rows"]).toBeLessThanOrEqual(1);
+          expect(node["Rows Removed by Filter"] ?? 0).toBe(0);
+        }
+        node.Plans?.forEach(visit);
+      };
+      visit(rootPlan);
+      process.stdout.write(JSON.stringify({ completedBlockerHistoryPlan: explain }) + "\n");
+    }
+    expect(batch.nodeCount).toBeLessThanOrEqual(BLOCKER_ATTENTION_MAX_NODES);
+    expect(batch.edgeCount).toBeLessThanOrEqual(BLOCKER_ATTENTION_MAX_NODES * 2);
+    const service = attentionRetentionService(db), page = await service.load({ companyId, sourceKind: "blocker_attention" });
+    const entry = page.rows!.find(row => row.rootId === root.id && row.variant === "terminal");
+    if (kind !== "completed") {
+      // Exercise the authoritative fresh check even if discovery correctly omits the live root.
+      await service.check(entry ?? { id: `blocker_attention:${root.id}:terminal`, companyId, sourceKind: "blocker_attention",
+        sourceId: root.id, rootId: root.id, issueId: root.id, variant: "terminal", activityAt: old().toISOString(), deadlineAt: Date.now(), dueAt: Date.now() });
+      expect(await state("blocker_attention", root.id)).toBeNull();
+      expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
+    } else {
+      expect(entry).toBeTruthy(); await service.check(entry!);
+      expect((await state("blocker_attention", root.id))?.archivedAt).toBeInstanceOf(Date);
+      expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(1);
+    }
+    expect(batch.fetchedRows).toBeLessThanOrEqual(4);
+    expect(batch.deferredRootIds.size).toBe(0);
+    expect(Boolean(batch.attention.get(root.id)?.blockingTreeLive)).toBe(kind !== "completed");
+    expect(parameterCounts.length).toBeLessThanOrEqual(100);
+  });
+
+  it("does not archive an unknown truncated blocker tree during its fresh check", async () => {
+    const root = await insertIssue("blocked");
+    await db.execute(sql`with blockers as (
+      insert into issues (company_id, title, status, updated_at)
+      select ${companyId}::uuid, 'unresolved-' || n, 'backlog', ${old().toISOString()}::timestamptz
+      from generate_series(1, 2100) n returning id)
+      insert into issue_relations (company_id, issue_id, related_issue_id, type)
+      select ${companyId}::uuid, id, ${root.id}::uuid, 'blocks' from blockers`);
+    const service = attentionRetentionService(db), page = await service.load({ companyId, sourceKind: "blocker_attention" });
+    const entry = page.rows!.find(row => row.rootId === root.id && row.variant === "terminal")!;
+    expect(entry).toBeTruthy(); expect(await service.check(entry)).toBeNull();
+    expect(await db.select().from(decisionRetention)).toHaveLength(0);
+    expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
+    await start(); await quiet();
+  });
+
+  function simulateRecorderLogStorage() {
+    // The recorder lifecycle and SQL are real; only its log-storage boundary is simulated.
+    vi.spyOn(workspaceOperationLogs, "getWorkspaceOperationLogStore").mockReturnValue({
+      begin: async () => ({ store: "local_file", logRef: "retention-finalize-proof" }),
+      append: async () => {}, finalize: async () => ({ bytes: 0, compressed: false }), read: async () => ({ content: "" }),
+    });
+  }
+
+  it.each(["issue", "workspace"] as const)("publishes retention intent from ordinary no-run %s finalization", async scope => {
+    simulateRecorderLogStorage();
+    const source = await insertIssue(), workspaceId = randomUUID();
+    await db.execute(sql`insert into execution_workspaces (id, company_id, name, mode, strategy_type)
+      values (${workspaceId}::uuid, ${companyId}::uuid, 'Finalize producer', 'shared', 'project_primary')`);
+    await start(); await quiet();
+    const committedHints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.attentionRetention, (event, hints) => {
+      if (event === "settled") committedHints.push(...hints ?? []);
+    });
+    try {
+      const result = await workspaceOperationService(db).createRecorder({ companyId,
+        executionWorkspaceId: scope === "workspace" ? workspaceId : undefined,
+        issueId: scope === "issue" ? source.id : undefined,
+      }).recordOperation({ phase: "workspace_finalize", run: async () => ({ status: "succeeded" }) });
+      expect(result.status).toBe("succeeded");
+      expect(committedHints.length).toBeGreaterThan(0);
+      expect(committedHints.map(hint => JSON.parse(hint).companyId).every(id => id === companyId)).toBe(true);
+      await quiet();
+      if (scope === "workspace") {
+        committedHints.length = 0;
+        await workspaceOperationService(db).createRecorder({ companyId })
+          .recordOperation({ phase: "workspace_finalize", run: async () => ({ status: "succeeded" }) });
+        expect(committedHints).toEqual([]); await quiet();
+      }
+    } finally { unsubscribe(); }
+  });
+
+  describe("no-run finalization with an incomplete blocker graph", () => {
+    let rootIds: string[], workspaceId: string, subjectId: string;
+    let loadedScopes: Array<Parameters<ReturnType<typeof attentionRetentionService>["load"]>[0]>;
+    beforeEach(async () => {
+      const began = performance.now();
+      simulateRecorderLogStorage();
+      const roots = await Promise.all([insertIssue("blocked"), insertIssue("blocked")]);
+      rootIds = roots.map(root => root.id); workspaceId = randomUUID();
+      await db.execute(sql`insert into execution_workspaces (id, company_id, name, mode, strategy_type)
+        values (${workspaceId}::uuid, ${companyId}::uuid, 'Pending shared export', 'shared', 'project_primary')`);
+      await workspaceOperationService(db).createRecorder({ companyId, executionWorkspaceId: workspaceId })
+        .recordOperation({ phase: "workspace_provision", run: async () => ({ status: "succeeded" }) });
+      await db.execute(sql`with history as (
+        insert into issues (company_id, title, status, updated_at, execution_workspace_id)
+        select ${companyId}::uuid, 'waiting-for-export-' || n, 'done', ${old().toISOString()}::timestamptz, ${workspaceId}::uuid
+        from generate_series(1, 2100) n returning id)
+        insert into issue_relations (company_id, issue_id, related_issue_id, type)
+        select ${companyId}::uuid, history.id, root.id, 'blocks' from history
+        cross join (values (${rootIds[0]}::uuid), (${rootIds[1]}::uuid)) root(id)`);
+      const [subject] = await db.select({ id: issues.id }).from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.status, "done"))).limit(1);
+      subjectId = subject!.id;
+      const review = await insertIssue("in_review", { assigneeUserId: "board" });
+      await decisionRetentionService(db).setKeep({ ...mutation("review", review.id), keep: true });
+      const service = attentionRetentionService(db), load = service.load.bind(service); loadedScopes = [];
+      vi.spyOn(service, "load").mockImplementation((scope, signal) => { loadedScopes.push(scope); return load(scope, signal); });
+      process.stdout.write(JSON.stringify({ incompleteFinalizePhase: "seeded", setupMs: performance.now() - began }) + "\n");
+      await start(service); await quiet();
+      for (const rootId of rootIds) expect(await state("blocker_attention", rootId)).toBeNull();
+      process.stdout.write(JSON.stringify({ incompleteFinalizeFixtureRows: 2100, incompleteRoots: 2, setupMs: performance.now() - began }) + "\n");
+    }, 30_000);
+    it("archives only after the ordinary workspace-only finalize commits, then settles quiet", async () => {
+      const finish = (database: Db) => workspaceOperationService(database).createRecorder({ companyId, executionWorkspaceId: workspaceId, issueId: subjectId })
+        .recordOperation({ phase: "workspace_finalize", run: async () => ({ status: "succeeded" }) });
+      await expect(db.transaction(async tx => {
+        await finish(tx as unknown as Db); throw new Error("rollback finalization");
+      })).rejects.toThrow("rollback finalization");
+      await settle(); for (const rootId of rootIds) expect(await state("blocker_attention", rootId)).toBeNull();
+      loadedScopes.length = 0;
+      expect((await finish(db)).status).toBe("succeeded");
+      for (const rootId of rootIds) await archived("blocker_attention", rootId);
+      await quiet();
+      expect(loadedScopes.length).toBeGreaterThan(0);
+      expect(loadedScopes.every(scope => scope?.companyId === companyId && scope.sourceKind === "blocker_attention")).toBe(true);
+      expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(2);
+    });
   });
 
   it("disarms finite deferred-root checks when large retained graphs have no archive obligation", async () => {

@@ -122,3 +122,24 @@ acceptance measures zero recurring SQL after settlement. The scheduled check ret
 post-refresh scoped read to revalidate current company, reference and resolver
 eligibility and recover an authoritative lease after a competing writer; all such
 reads target one object rather than rebuilding a company.
+
+### Repeated eligibility changes
+
+Company status and company plugin settings affect every eligible object. Their
+company-wide reconstruction hints now coalesce for 30 seconds after a completed
+reconstruction. This is a deadline for a newly received dirty hint, not a periodic
+scan. Object and provider-identity hints remain immediate; already known object
+deadlines still execute on time and re-read current company/provider eligibility.
+Reactivation after a second broad change can wait up to 30 seconds to reconstruct
+previously removed future obligations. Startup and instance-wide feature changes
+retain their existing behavior.
+
+The shared scoped worker accepts an owner-selected reconstruction interval for
+its typed scope; existing numeric callers retain their policy. It does not know
+companies or provider identities. A real PostgreSQL regression with 1,100 future
+objects reproduces five immediate page reads after a status toggle before the
+fix. With the fix, five repeated status writes retain one owed reconstruction,
+then execute exactly one company-scoped five-page pass. Twenty quiet minutes add
+no reads or provider calls. A scheduler control proves an exact object hint and a
+250ms saved deadline still preempt the broad reconstruction. All 76 affected
+external-object, route, and scheduler tests and server types pass.
