@@ -212,7 +212,7 @@ These are application-level observations, not a host or Neon suspension test.
 When no external database is supplied, the PostgreSQL suites use the repository's
 embedded support probe and skip only on an unsupported environment. An explicit
 acceptance database bypasses that probe and runs every case. The passive protocol
-unit cases still run without PostgreSQL. Dedicated acceptance requires all 34
+unit cases still run without PostgreSQL. Dedicated acceptance requires all 44
 cases to execute with no skips.
 
 The harness owns its temporary directory, proxy, port reservation, log and child
