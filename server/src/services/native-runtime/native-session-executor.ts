@@ -117,7 +117,6 @@ import type {
 import type { NativeFinalizationResult } from "@paperclipai/shared";
 import type {
   DurablePrpControlPlane,
-  DurableRecoveryIdentity,
   HarnessRuntimeRequestResolution,
   NativeExecutionInput,
   NativeRuntimeContextSnapshot,
@@ -12305,7 +12304,7 @@ async function createRunnerdBackendWithinSessionClaim(
   const recoveryUsageIdentity = stagedRecovery?.sourceIdentity ?? input.remoteWarmRecovery?.identity ?? durableIdentity;
   const recoveryUsage = input.onAccountingEvent && recoveryUsageIdentity
     ? createNativeRecoveryUsageDelivery({
-        db: input.db, execution: input.execution, sourceIdentity: recoveryUsageIdentity,
+        db: input.db, execution: input.execution, sourceIdentity: { ...recoveryUsageIdentity },
         matchesExecution: previous => nativeSessionScopeKey(previous) === nativeSessionScopeKey(input.execution) &&
           nativeSessionConfigDigest(previous, target.kind) === nativeSessionConfigDigest(input.execution, target.kind),
       })
@@ -13906,8 +13905,12 @@ async function createRunnerdBackendWithinSessionClaim(
           if (!current) throw new Error("native_session_authority_unavailable");
           if (input.remoteWarmRecovery && event.runId === input.remoteWarmRecovery.identity.runId) {
             if (!recoveryUsage) throw new Error("native_recovery_usage_source_unproven");
-            await current.acceptRecoveryAccountingEvent(event, () => recoveryUsage(event,
-              input.remoteWarmRecovery!.identity as DurableRecoveryIdentity));
+            const source = input.remoteWarmRecovery.identity;
+            await current.acceptRecoveryAccountingEvent(event, () => recoveryUsage(event, {
+              runnerInstanceId: source.runnerInstanceId, environmentLeaseId: source.environmentLeaseId,
+              runId: source.runId, normalizedSessionId: source.normalizedSessionId,
+              turnId: source.turnId, itemId: source.itemId,
+            }));
             return;
           }
           await current.acceptAccountingEvent(event);
@@ -14333,7 +14336,7 @@ async function createRunnerdBackendWithinSessionClaim(
       await recordAdmittedProviderPack();
       return wrapManagedSession(session);
     },
-  } satisfies NativeSessionBackend & { bindManagedSession(session: NativeSession): NativeSession };
+  } satisfies ManagedRunnerdBackend;
 }
 
 export function createRemoteNativeArtifactPreparation(input: {
