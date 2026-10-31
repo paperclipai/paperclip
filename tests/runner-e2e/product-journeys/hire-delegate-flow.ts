@@ -35,7 +35,6 @@ export function hireHandoffMentions(scope: Pick<HireScope, "companyId" | "leadId
   return Object.freeze({ teammate: `[@${hired.name}](${agentHref})`, project: `[@${project.name}](${projectHref})` });
 }
 
-/** The same native hiring/document oracles used by classic Agent Chat, on an attached deployment. */
 export async function hireDelegateReuse(context: JourneyContext, session: TargetSession, campaignId: string, evidence: JourneyEvidence, options: Options) {
   const { api, page } = context, agent = context.agent;
   if (!agent || agent.runtimeMode !== "native" || !context.environmentId) throw new JourneyError("unsupported", "native_agent_and_environment_required");
@@ -59,8 +58,6 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
   const chatPath = `/api/companies/${context.company.id}/chats/${agent.id}`;
   if (await api.get(chatPath)) throw new JourneyError("unsupported", "fresh_lead_chat_required");
   const freshChat = { companyId: context.company.id, userId: context.user.id, leadAgentId: agent.id, absent: true as const };
-  // First-send creates the conversation. Persist scope before any UI action so
-  // a lost response can be recovered through the normal lead/user chat GET.
   await session.own({ kind: "issue", name: `Chat with ${lead.name}`, journeyId: "hire-delegate-reuse", freshChat });
   const chatUrl = `${api.origin}/${context.company.issuePrefix}/chats/${agent.id}`;
   await page.goto(chatUrl, { waitUntil: "domcontentloaded" });
@@ -72,8 +69,6 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
   const readObserved = async <T>(route: string): Promise<T> => {
     try { return await api.get<T>(route); }
     catch (error) {
-      // Only the sanitized GET transport contract is retryable. In particular,
-      // ownership hooks may mutate state and must never be replayed on error.
       if (error instanceof ConnectionFailure && (error.message === "api_request_failed"
         || /^api_status_(408|429|502|503|504)$/.test(error.message))) {
         throw new HireReadTransportError("hire_observation_transport_unavailable");
@@ -100,8 +95,6 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
       model: agent.model, provider: agent.provider, environmentId: context.environmentId!, connectionBinding: lead.runtimeConfig.aiConnection, connectionChoice };
     if (chat.id !== scope.chatId) throw new JourneyError("failed", "hire_chat_replaced");
     if (!known.has(chat.id)) { await session.own({ kind: "issue", name: chat.title, id: chat.id, journeyId: "hire-delegate-reuse", freshChat }); known.add(chat.id); }
-    // Read the audit after the run snapshot, then fetch its exact creations.
-    // Shared company lists are paginated and cannot prove this run's children.
     const leadProjection = await readRuns(chat.id);
     const leadRuns = leadProjection.filter(run => run.companyId === scope!.companyId
       && run.agentId === scope!.leadId && hireRunIssueId(run) === chat.id);
@@ -128,7 +121,6 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
       scopeMismatch ||= observed.scopeMismatch;
       for (const resource of [...observed.agents.map(row => ({ kind: "agent" as const, id: row.id, name: row.name })),
         ...observed.tasks.map(row => ({ kind: "issue" as const, id: row.id, name: row.title }))]) {
-        // Save each proven child before the next exact lookup can fail.
         if (!known.has(resource.id)) { await session.own({ ...resource, journeyId: "hire-delegate-reuse" }); known.add(resource.id); }
       }
     }
@@ -190,7 +182,6 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
     check("hire-user-messages-stored-once", added.length === 1 && added[0].body === text);
     return state;
   };
-  // Hire first. The private adapter prepares this exact owned teammate's budget before delegation.
   await session.own({ kind: "agent", name: names.hire, journeyId: "hire-delegate-reuse" });
   let state = await turn(`Hire exactly one teammate named ${names.hire}, reporting to you, using your native runner, model, and available AI connection. Do not create or start any tasks yet. Tell me when this teammate is ready.`, 1);
   const hired = assertHireBinding(scope!, state.agents);
@@ -237,12 +228,9 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
       chatCompletionDeliveryIds: run.contextSnapshot?.chatCompletionDeliveryIds, chatCompletionUpdates: run.contextSnapshot?.chatCompletionUpdates })),
     completionReplies: state.comments.filter(comment => state.runs.some(run => run.id === comment.createdByRunId
       && run.contextSnapshot?.wakeReason === "chat_task_completed")).map(comment => ({ id: comment.id, createdByRunId: comment.createdByRunId })) });
-  // The saved chat link opened this exact owned child task.
   await options.capture("hire-delegate-reuse", "Hired teammate completed and reused", "hire-delegate-reuse.png");
 }
 
-/** Reload queries render asynchronously. Poll saved replies and their links only
- * until the same journey deadline; never resend the user's request. */
 export async function openSavedHireResult(page: Page, origin: string, issuePrefix: string, comments: Row[], leadId: string, task: Row, deadlineAt: number) {
   while (Date.now() < deadlineAt) {
     for (const comment of comments.filter(row => row.authorAgentId === leadId)) {

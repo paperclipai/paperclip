@@ -49,11 +49,10 @@ function approvedFallback(scope: HireScope, hiredBinding: unknown) {
 }
 export const hireRunIssueId = (run: Row) => run.issueId ?? run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId;
 
-/** A full newest-first page is complete for these runs only if it reaches their start. */
 export function assertHireAuditCoverage(activity: Row[], leadRuns: Row[]) {
   if (!Array.isArray(activity) || activity.length > 500) throw new JourneyError("failed", "hire_activity_coverage_unavailable");
   if (activity.length < 500) return;
-  if (!leadRuns.length) return; // No native actor exists yet; observation will poll again.
+  if (!leadRuns.length) return;
   const starts = leadRuns.map(run => Date.parse(run.startedAt ?? run.createdAt));
   const oldest = Math.min(...activity.map(event => Date.parse(event.createdAt)));
   if (!starts.every(Number.isFinite) || !Number.isFinite(oldest) || oldest > Math.min(...starts)) {
@@ -61,7 +60,6 @@ export function assertHireAuditCoverage(activity: Row[], leadRuns: Row[]) {
   }
 }
 
-/** Exclude unrelated work in a persistent company; require the real native actor's audit. */
 export function observedHireResources<A extends Row, T extends Row>(scope: HireScope, state: { agents: A[]; tasks: T[]; activity: Row[]; leadRuns: Row[] }) {
   const names = hireDelegateNames(scope.campaignId);
   const authored = (row: Row, actions: string[]) => state.activity.some(event => event.companyId === scope.companyId
@@ -74,8 +72,6 @@ export function observedHireResources<A extends Row, T extends Row>(scope: HireS
   const ownable = (row: Row, name: unknown) => row.companyId === scope.companyId && typeof row.id === "string" && row.id
     && typeof name === "string" && Boolean(name);
   const ownedAgents = agents.filter(agent => ownable(agent, agent.name)), ownedTasks = tasks.filter(task => ownable(task, task.title));
-  // Persist proven same-company creations before grading their manager/project.
-  // Foreign or malformed rows are never owned, and still make the journey fail.
   return { agents: ownedAgents, tasks: ownedTasks, hires: ownedAgents.filter(agent => agent.name === names.hire),
     expectedTasks: ownedTasks.filter(task => [names.checklist, names.review].includes(task.title)),
     scopeMismatch: state.activity.some(event => [...agents, ...tasks].some(row => row.id === event.entityId)
@@ -119,8 +115,6 @@ export function assertHireRuns(scope: HireScope, hiredId: string | undefined, ta
           throw new JourneyError("failed", "hire_completion_binding_mismatch");
         }
         deliveries.add(ids[0]);
-        // Admission freezes exact completed task facts; a queued run has not yet
-        // received that projection. Successful callbacks must have it.
         if (run.status === "succeeded" || updates !== undefined) {
           if (!Array.isArray(updates) || updates.length !== 1 || updates[0]?.status !== "done"
             || !tasks.some(task => task.id === updates[0]?.id && task.status === "done") || completedTasks.has(updates[0].id)) {
@@ -130,8 +124,6 @@ export function assertHireRuns(scope: HireScope, hiredId: string | undefined, ta
             const replies = comments.filter(comment => comment.createdByRunId === run.id);
             if (replies.some(comment => comment.companyId !== scope.companyId || comment.issueId !== scope.chatId
               || comment.authorAgentId !== scope.leadId || comment.authorUserId)) throw new JourneyError("failed", "hire_completion_reply_mismatch");
-            // Terminal state is persisted before response.add_comment. Missing
-            // materialization is pending; a different author/binding is not.
             if (!replies.some(comment => typeof comment.body === "string" && comment.body.trim())) completionRepliesReady = false;
           }
           completedTasks.add(updates[0].id);

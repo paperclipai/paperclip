@@ -9,8 +9,6 @@ import { hireDelegateReuse, hireHandoffMentions, openSavedHireResult } from "./h
 import { hireDelegateNames } from "./hire-delegate-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
-// These tests exercise the real journey observation/ownership path. Browser
-// controls are stubs; they do not claim a live user-journey pass.
 vi.mock("@playwright/test", () => ({ expect: (value: unknown) => Object.assign(expect(value), { toBeVisible: async () => {}, toHaveURL: async (predicate: (url: URL) => boolean) => { expect(predicate(new URL("https://qa.example.test/QA/issues/QA-2"))).toBe(true); } }) }));
 vi.mock("../chat-flow.js", () => ({ sendChatMessage: vi.fn(), readChatOutputDocument: vi.fn() }));
 vi.mock("./hire-delegate-composer.js", () => ({ sendHireHandoffMessage: (page: any, text: string) => sendChatMessage(page, text) }));
