@@ -126,7 +126,7 @@ jobs:
         run: node tests/runner-e2e/testops-chat-reporter.mjs launch-plan
       - name: Retain only closed metadata from zero-result setup
         if: always() && needs.authorize.outputs.operation == 'bootstrap'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chat-testops-setup-${{ github.run_id }}-1
           path: |
@@ -141,7 +141,7 @@ jobs:
           if-no-files-found: error
       - name: Retain the one plan-launch receipt and stop state
         if: always() && needs.authorize.outputs.operation == 'launch-plan'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chat-testops-plan-launch-${{ github.run_id }}-1
           path: |
@@ -153,7 +153,7 @@ jobs:
       - name: Retain only the token-free exact selection receipt
         id: selection_upload
         if: steps.selection.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chat-testops-selection-${{ github.run_id }}-1
           path: testops-selection.json
@@ -197,7 +197,7 @@ jobs:
           sha256sum chat-testops-build.tar.gz > chat-testops-build.tar.gz.sha256
       - name: Retain credential-free immutable outputs
         id: bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chat-testops-build-${{ github.sha }}-${{ github.run_id }}-1
           path: |
@@ -394,7 +394,7 @@ jobs:
         run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/testops-chat-export.ts
       - name: Upload only the sanitized TestOps projection
         if: always() && steps.export.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-e2e-testops-${{ github.run_id }}-1
           path: runner-e2e-testops/
@@ -441,7 +441,7 @@ jobs:
         run: node tests/runner-e2e/testops-chat-reporter.mjs verify-upload runner-e2e-testops
       - name: Retain only closed actual TestOps verification metadata
         if: always() && !cancelled() && (steps.verify_upload.outcome == 'success' || steps.verify_upload.outcome == 'failure')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chat-testops-verification-${{ github.run_id }}-1
           path: |
