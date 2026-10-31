@@ -15,13 +15,16 @@ describePostgres("connectGalleryApp writes notify the connection delivery worker
   let db!: ReturnType<typeof createDb>;
   let temp!: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let delivery: Awaited<ReturnType<typeof startConnectionDelivery>> | null = null;
+  let releaseHeldSweep: (() => Promise<void>) | null = null;
   beforeAll(async () => {
     temp = await startEmbeddedPostgresTestDatabase("paperclip-gallery-connection-delivery-");
     db = createDb(temp.connectionString);
     await db.insert(authUsers).values({ id: "owner", name: "Owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
   }, 20_000);
   beforeEach(async () => { await db.execute(sql`truncate table companies cascade`); });
-  afterEach(async () => { await delivery?.stop(); delivery = null; });
+  afterEach(async () => {
+    try { await releaseHeldSweep?.(); } finally { releaseHeldSweep = null; await delivery?.stop(); delivery = null; }
+  });
   afterAll(async () => { await db.$client.end({ timeout: 1 }); await temp?.cleanup(); });
 
   const card = async () => (await db.select().from(issueThreadInteractions))[0]!;
@@ -149,11 +152,14 @@ describePostgres("connectGalleryApp writes notify the connection delivery worker
       locked();
       await done;
     }).finally(() => blocker.$client.end({ timeout: 1 }));
-    await ready;
+    let released: Promise<void> | null = null;
+    const releaseLock = () => (released ??= (release(), held));
+    releaseHeldSweep = releaseLock;
+    await Promise.race([ready, held]);
     const started = delivery!.sweeps;
     delivery!.wake();
     while (delivery!.sweeps === started) await new Promise(resolve => setTimeout(resolve, 10));
-    return async () => { release(); await held; };
+    return releaseLock;
   }
 
   it("retires once when the restore commits while a started sweep is held before its read", async () => {
