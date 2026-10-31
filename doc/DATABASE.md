@@ -1,5 +1,20 @@
 # Database
 
+### Proactive agent chat messages
+
+Migration `0419_slippery_impossible_man.sql` adds an agent-scoped unique constraint
+on `issue_comments(issue_id, author_agent_id, client_request_id)` alongside the
+existing human request constraint. Proactive delivery stores a source-task-scoped
+retry key and server-authored `metadata.chatMessage` provenance/content fingerprint.
+The comment and audit record commit together; a retry returns the original receipt.
+Conversation creation reuses the unique company/agent/human identity and existing
+advisory-lock order. No message outbox is added.
+
+Chat list/detail unread projections reuse `issue_read_states`, including chats
+with no human participation. Read cutoffs use the exact PostgreSQL comment
+timestamp; upserts take the greatest previous/new cutoff so delayed requests
+cannot move a read receipt backward or clear a later unseen arrival.
+
 Paperclip uses PostgreSQL via [Drizzle ORM](https://orm.drizzle.team/). There are three ways to run the database, from simplest to most production-ready.
 
 ### Persistent case handoffs
@@ -1544,6 +1559,23 @@ It uses disposable embedded PostgreSQL by default. A disposable local database
 named `review_wait_benchmark...` can be supplied through
 `PAPERCLIP_TEST_DATABASE_URL` to compare another PostgreSQL major version.
 DataRow bytes exclude response metadata and transport overhead.
+
+
+### Sandbox creation ownership
+
+Migration 0418 adds `sandbox_creation_operations`. Admission commits company,
+original environment, run, request key and provider identity before external
+creation. Configuration contains nonsecret values and existing secret references.
+The original identity survives environment, run, task and company deletion; only
+the optional live environment FK uses SET NULL. Company/run deletion must not
+erase an outstanding remote-resource obligation.
+
+The unique company/environment/run/request index fences duplicate creation and
+ambiguous successful lease commits. Normal lease attachment and operation transfer
+share a transaction. Recovery transfers one claimed cleanup lease after provider
+ownership lookup. The pending deadline index drives the existing cleanup worker.
+`needs_reconciliation` is a durable manual outcome, not an automatic retry or an
+idle blocker. See [cleanup ownership](idle-environment-cleanup.md).
 
 ## Object-backed run evidence
 
