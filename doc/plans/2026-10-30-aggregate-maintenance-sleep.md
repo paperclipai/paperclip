@@ -202,3 +202,20 @@ across the following two qualified hours. Both windows also retained zero new
 outgoing HTTP requests, non-database TCP connections and non-database bytes.
 The test requires zero active tracked work throughout the settled boundaries.
 These are application-level observations, not a host or Neon suspension test.
+
+## Portable harness and receipt ownership
+
+When no external database is supplied, the PostgreSQL suites use the repository's
+embedded support probe and skip only on an unsupported environment. An explicit
+acceptance database bypasses that probe and runs every case. The passive protocol
+unit cases still run without PostgreSQL. Dedicated acceptance requires all 34
+cases to execute with no skips.
+
+The harness owns its temporary directory, proxy, port reservation, log and child
+from setup through stop. Stop is idempotent. It finishes child shutdown before
+releasing the proxy and files, and it removes owned files on startup failure too.
+By default, configuration, logs, session state and measurement receipts are deleted.
+Set `PAPERCLIP_MAINTENANCE_KEEP_ARTIFACTS=1` for an explicit proof run. Stop then
+prints `[maintenance-test] retained artifacts: <directory>` and exposes the same
+path as `retainedDirectory` on the harness result. This mode retains receipts on
+failure as well. The caller owns removal of explicitly retained proof artifacts.

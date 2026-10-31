@@ -2,6 +2,7 @@ import { createDb } from "@paperclipai/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { maintenanceDatabaseSupport } from "./helpers/maintenance/environment.js";
 import { createPostgresProtocolObserver, startMaintenancePostgresProxy, type ObservedQuery } from "./helpers/maintenance/postgres-proxy.js";
 
 const startup = Buffer.from([0, 0, 0, 8, 0, 3, 0, 0]);
@@ -44,7 +45,10 @@ describe("passive maintenance PostgreSQL observer", () => {
 
 let databaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_MAINTENANCE_TEST_DATABASE_URL");
 let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
-describe("maintenance observer against PostgreSQL", () => {
+const databaseSupport = await maintenanceDatabaseSupport(databaseUrl);
+const describeDatabase = databaseSupport.supported ? describe : describe.skip;
+if (!databaseSupport.supported) console.warn(`Skipping maintenance PostgreSQL tests: ${databaseSupport.reason ?? "unsupported environment"}`);
+describeDatabase("maintenance observer against PostgreSQL", () => {
   beforeAll(async () => {
     if (!databaseUrl) { temporary = await startEmbeddedPostgresTestDatabase("maintenance-observer-"); databaseUrl = temporary.connectionString; }
   }, 90_000);

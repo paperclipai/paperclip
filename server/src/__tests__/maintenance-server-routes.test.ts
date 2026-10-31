@@ -7,12 +7,16 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { maintenanceDatabaseSupport } from "./helpers/maintenance/environment.js";
 import { CLOUD_RUNTIME_IDENTITY_AUDIENCE, CLOUD_RUNTIME_IDENTITY_ISSUER, CLOUD_RUNTIME_IDENTITY_JWS_TYPE } from "../services/cloud-runtime-identity.js";
 import { prepareMaintenanceRuntime } from "./helpers/maintenance/runtime-build.js";
 import { startMaintenanceServer } from "./helpers/maintenance/server-harness.js";
 
 let databaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_MAINTENANCE_BOOT_TEST_DATABASE_URL");
 let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
+const databaseSupport = await maintenanceDatabaseSupport(databaseUrl);
+const describeDatabase = databaseSupport.supported ? describe : describe.skip;
+if (!databaseSupport.supported) console.warn(`Skipping maintenance PostgreSQL tests: ${databaseSupport.reason ?? "unsupported environment"}`);
 async function clearDatabase() {
   if (!temporary && !new URL(databaseUrl!).pathname.endsWith("_test")) throw new Error("Maintenance boot requires an owned disposable _test database");
   const fixture = createDb(databaseUrl!, { maxConnections: 1 });
@@ -39,7 +43,7 @@ function receipt(queries: Array<{ protocol: string; sql: string; fingerprint: st
   }
   return [...groups.values()];
 }
-describe("assembled maintenance server production wiring", () => {
+describeDatabase("assembled maintenance server production wiring", () => {
   beforeAll(async () => {
     await prepareMaintenanceRuntime();
     if (!databaseUrl) { temporary = await startEmbeddedPostgresTestDatabase("maintenance-server-"); databaseUrl = temporary.connectionString; }
@@ -244,6 +248,8 @@ describe("assembled maintenance server production wiring", () => {
       await fixture.$client.unsafe("drop function if exists maintenance_age_isolation_attention()").catch(() => {});
       await server?.stop(); await fixture.$client.end();
     }
+    if (server!.retainedDirectory) await access(server!.retainedDirectory);
+    else await expect(access(server!.directory)).rejects.toMatchObject({ code: "ENOENT" });
   }, 150_000);
 
   it("exposes readiness while real deferred housekeeping is held and settles its work after release", async () => {
