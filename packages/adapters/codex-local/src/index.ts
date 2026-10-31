@@ -39,6 +39,7 @@ export function resolveCodexLocalCliPolicy(config: unknown, options: { networkAc
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = [
   "gpt-6-astra",
   "gpt-6.1-sol",
+  "gpt-6.1-terra",
   "gpt-6-sol",
   "gpt-6-luna",
   "gpt-5.6-sol",
@@ -97,6 +98,7 @@ export function codexLocalReasoningEffortsForModel(
   switch (normalizedModel) {
     case "gpt-6-astra":
     case "gpt-6.1-sol":
+    case "gpt-6.1-terra":
     case "gpt-6-sol":
     case "gpt-5.6-sol":
     case "gpt-5.6-terra":
@@ -120,6 +122,10 @@ const CODEX_LOCAL_MODEL_MINIMUM_CLI_VERSIONS: Readonly<Record<string, string>> =
   // 0.156.1 and older are rejected (openai/codex#49396); 0.159.0 and 0.159.2 are accepted
   // (openai/codex#49464). No stable release between those was verified either way.
   "gpt-6.1-sol": "0.159.0",
+  // Codex 0.165.0 release notes: "Added GPT-6.1 Terra to the model catalogs" (backported to
+  // 0.165.0-alpha.1.2). 0.164.0 and older have no bundled metadata for it, so the backend rejects
+  // it for ChatGPT sign-in on those builds.
+  "gpt-6.1-terra": "0.165.0",
   // Codex 0.157.0 release notes: "Add GPT-6 Sol and Luna to the model catalog".
   "gpt-6-sol": "0.157.0",
   "gpt-6-luna": "0.157.0",
@@ -216,6 +222,9 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
 // returns this list as written and the model dropdown keeps its order.
 export const models = [
   { id: "gpt-6.1-sol", label: "gpt-6.1-sol" },
+  // Same 6.1 version, second by capability: the bundled Codex 0.166.0 catalog orders it behind
+  // GPT-6.1 Sol and it sits beside GPT-6 Astra, matching where GPT-5.6 Terra already sits.
+  { id: "gpt-6.1-terra", label: "gpt-6.1-terra" },
   { id: "gpt-6-astra", label: "gpt-6-astra" },
   { id: "gpt-6-sol", label: "gpt-6-sol" },
   { id: "gpt-6-luna", label: "gpt-6-luna" },
@@ -248,10 +257,10 @@ Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to stdin prompt at runtime
 - model (string, optional): Codex model id
-- modelReasoningEffort (string, optional): reasoning effort override passed via -c model_reasoning_effort=...; GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-5.6 Sol/Terra support low|medium|high|xhigh|max|ultra; GPT-6 Luna and GPT-5.6 Luna support low|medium|high|xhigh|max
+- modelReasoningEffort (string, optional): reasoning effort override passed via -c model_reasoning_effort=...; GPT-6 Astra, GPT-6.1 Sol/Terra, GPT-6 Sol, and GPT-5.6 Sol/Terra support low|medium|high|xhigh|max|ultra; GPT-6 Luna and GPT-5.6 Luna support low|medium|high|xhigh|max
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
-- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-6 (astra/sol/luna), GPT-6.1 Sol, GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and passed through for manual model IDs
+- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-6 (astra/sol/luna), GPT-6.1 (sol/terra), GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and passed through for manual model IDs
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
@@ -284,7 +293,7 @@ Notes:
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
 - OpenAI retired gpt-5.5 (October 14, 2026), gpt-5.4 and gpt-5.4-mini (August 31, 2026) from Codex with ChatGPT sign-in. They remain selectable for OpenAI API-key sessions; with ChatGPT sign-in the Test names the retirement and its replacement.
 - With ChatGPT sign-in, model availability depends on the installed Codex capabilities. Legacy setup reports known model/version mismatches. Native setup tests the actual app-server and selected model; a version number alone does not reject or replace an installed CLI. If the provider rejects the model, select an available model or update Codex in the execution environment.
-- Fast mode is supported on GPT-6 (astra/sol/luna), GPT-6.1 Sol, GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
+- Fast mode is supported on GPT-6 (astra/sol/luna), GPT-6.1 (sol/terra), GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 - The ACP engine keeps its workspace sandbox and enables network access on each turn. Explicit sandbox_workspace_write.network_access overrides in extraArgs (or env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS="false") disable it; execution-target network denial wins. The bundled ACP patch is needed because upstream mode presets override Codex config.toml on every turn.
 - The CLI engine defaults to a writable workspace sandbox with network access for unattended work and Paperclip API calls. It does not enable the dangerous bypass flag. Explicit sandbox modes/profiles and network overrides in extraArgs retain their meaning. An execution-target network denial remains enforced.
