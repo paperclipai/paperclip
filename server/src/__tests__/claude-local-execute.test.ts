@@ -70,7 +70,16 @@ const payload = {
   mcpConfigPath,
   mcpConfigContents: mcpConfigPath ? fs.readFileSync(mcpConfigPath, "utf8") : null,
   skillEntries: addDir ? fs.readdirSync(path.join(addDir, ".claude", "skills")).sort() : [],
+  skillContents: addDir ? Object.fromEntries(
+    fs.readdirSync(path.join(addDir, ".claude", "skills")).map((name) => [
+      name,
+      fs.readFileSync(path.join(addDir, ".claude", "skills", name, "SKILL.md"), "utf8"),
+    ]),
+  ) : {},
   claudeConfigDir: process.env.CLAUDE_CONFIG_DIR || null,
+  home: process.env.HOME || null,
+  claudePluginCacheDir: process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR || null,
+  officialMarketplaceAutoInstall: process.env.CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL || null,
   claudeConfigEntries: process.env.CLAUDE_CONFIG_DIR && fs.existsSync(process.env.CLAUDE_CONFIG_DIR)
     ? fs.readdirSync(process.env.CLAUDE_CONFIG_DIR).sort()
     : [],
@@ -175,7 +184,11 @@ type CapturePayload = {
   instructionsFilePath: string | null;
   instructionsContents: string | null;
   skillEntries: string[];
+  skillContents?: Record<string, string>;
   claudeConfigDir: string | null;
+  home?: string | null;
+  claudePluginCacheDir?: string | null;
+  officialMarketplaceAutoInstall?: string | null;
   claudeConfigEntries?: string[];
   paperclipApiUrl?: string | null;
   paperclipApiKey?: string | null;
@@ -494,6 +507,93 @@ describe("claude execute", () => {
       expect(alpha.mcpConfigPath).toContain("/agents/agent-alpha/");
     } finally {
       restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("imports opted-in personal skills and plugins into isolated managed Claude runs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-managed-plugins-execute-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const sourceDir = path.join(root, "personal-claude-config");
+    const managedHomeDir = path.join(root, "paperclip", "connection-home");
+    const managedConfigDir = path.join(managedHomeDir, "provider");
+    const sourcePluginDir = path.join(sourceDir, "plugins", "cache", "trusted", "careconnections", "1.0.0");
+    const selectedSkillDir = path.join(root, "paperclip-selected-skills", "careconnections");
+    await fs.mkdir(sourcePluginDir, { recursive: true });
+    await fs.mkdir(path.join(sourceDir, "skills", "careconnections"), { recursive: true });
+    await fs.mkdir(selectedSkillDir, { recursive: true });
+    await fs.writeFile(path.join(sourceDir, ".credentials.json"), "personal-secret", "utf8");
+    await fs.writeFile(path.join(sourceDir, "settings.json"), JSON.stringify({ enabledPlugins: { "careconnections@trusted": true } }), "utf8");
+    await fs.writeFile(path.join(sourceDir, "plugins", "installed_plugins.json"), JSON.stringify({
+      version: 2,
+      plugins: { "careconnections@trusted": [{ scope: "user", installPath: sourcePluginDir, version: "1.0.0" }] },
+    }), "utf8");
+    await fs.writeFile(path.join(sourcePluginDir, "plugin.js"), "trusted plugin payload", "utf8");
+    await fs.writeFile(path.join(sourceDir, "skills", "careconnections", "SKILL.md"), "company skill", "utf8");
+    await fs.writeFile(path.join(selectedSkillDir, "SKILL.md"), "Paperclip selected task skill", "utf8");
+
+    const previousEnv = Object.fromEntries([
+      "PAPERCLIP_CLAUDE_PLUGIN_SOURCE_DIR", "PAPERCLIP_HOME", "PAPERCLIP_INSTANCE_ID",
+    ].map((key) => [key, process.env[key]])) as Record<string, string | undefined>;
+    process.env.PAPERCLIP_CLAUDE_PLUGIN_SOURCE_DIR = sourceDir;
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+    process.env.PAPERCLIP_INSTANCE_ID = "managed-plugin-test";
+
+    try {
+      const result = await execute({
+        runId: "run-managed-plugin-import",
+        agent: { id: "agent-managed", companyId: "company-managed", name: "Claude", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            HOME: managedHomeDir,
+            CLAUDE_CONFIG_DIR: managedConfigDir,
+            PAPERCLIP_CLAUDE_PLUGIN_IMPORT_MODE: "cache",
+            ANTHROPIC_API_KEY: "managed-credential",
+          },
+          managedAiConnection: { provider: "anthropic", method: "api_key" },
+          paperclipRuntimeSkills: [{ key: "careconnections", runtimeName: "careconnections", source: selectedSkillDir }],
+          paperclipSkillSync: { desiredSkills: ["careconnections"] },
+        },
+        runtimeMcp: { getServers: () => [{
+          name: "paperclip",
+          url: "https://paperclip.example/api/tool-gateway/gateways/agent/mcp",
+          token: "paperclip-mcp-token",
+          connectionId: "connection-paperclip",
+        }] },
+        context: {},
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.home).toBe(managedHomeDir);
+      expect(capture.claudeConfigDir).toBe(managedConfigDir);
+      expect(capture.officialMarketplaceAutoInstall).toBe("1");
+      expect(capture.claudePluginCacheDir).toContain("managed-plugin-cache");
+      expect(capture.claudePluginCacheDir).toContain("agents/agent-managed");
+      expect(capture.claudeConfigEntries).toContain("settings.json");
+      expect(capture.claudeConfigEntries).not.toContain("skills");
+      expect(capture.skillEntries).toContain("careconnections");
+      expect(capture.skillContents?.careconnections).toBe("Paperclip selected task skill");
+      await expect(fs.access(path.join(managedConfigDir, "skills", "careconnections", "SKILL.md")))
+        .rejects.toMatchObject({ code: "ENOENT" });
+      expect(await fs.readFile(path.join(capture.claudePluginCacheDir!, "cache", "trusted", "careconnections", "1.0.0", "plugin.js"), "utf8"))
+        .toBe("trusted plugin payload");
+      expect(JSON.parse(capture.mcpConfigContents!).mcpServers.paperclip.headers.Authorization)
+        .toBe("Bearer paperclip-mcp-token");
+      expect(capture.claudeConfigEntries).not.toContain(".credentials.json");
+      expect(await fs.readFile(path.join(sourceDir, ".credentials.json"), "utf8")).toBe("personal-secret");
+    } finally {
+      restore();
+      for (const [key, value] of Object.entries(previousEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       await fs.rm(root, { recursive: true, force: true });
     }
   });

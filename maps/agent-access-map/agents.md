@@ -4,6 +4,12 @@ Product map: [Hiring, agent configuration, and organization](../feature-map/agen
 
 Feature ID: `agents`.
 
+Claude runtime policies (`profileImportMode`, `profileSourceDir`,
+`transcriptRetentionEnabled`, `transcriptRetentionDays`) use the existing agent
+configuration routes and authorization. No new execution or credential authority
+is granted. Response presentation exposes only validated legacy mode/boolean/day
+choices; environment values and secret references retain their existing redaction.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).

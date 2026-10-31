@@ -59,6 +59,16 @@ function makeOverlay(patch?: Partial<AgentConfigOverlay>): AgentConfigOverlay {
 }
 
 describe("buildAgentUpdatePatch", () => {
+  it("keeps inherited Claude display defaults out of saved configuration", () => {
+    const agent = makeAgent();
+    agent.adapterConfigDefaults = { profileImportMode: "cache", transcriptRetentionEnabled: true, transcriptRetentionDays: 14 };
+    const patch = buildAgentUpdatePatch(agent, makeOverlay({ adapterConfig: { env: { PAPERCLIP_CLAUDE_PLUGIN_IMPORT_MODE: "off" } } }));
+    expect(patch).not.toHaveProperty("adapterConfigDefaults");
+    expect(patch.adapterConfig).not.toHaveProperty("profileImportMode");
+    expect(patch.adapterConfig).not.toHaveProperty("transcriptRetentionEnabled");
+    expect(patch.adapterConfig).not.toHaveProperty("transcriptRetentionDays");
+    expect(patch.adapterConfig).toMatchObject({ env: { PAPERCLIP_CLAUDE_PLUGIN_IMPORT_MODE: "off" } });
+  });
   it("merges the agent-scoped provider trace debug setting into runtime config", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),

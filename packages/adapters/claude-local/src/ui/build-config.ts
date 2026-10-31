@@ -21,6 +21,10 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
 
 export function buildClaudeLocalConfig(v: CreateConfigValues): Record<string, unknown> {
   const ac: Record<string, unknown> = {};
+  if (v.claudeProfileImportMode !== undefined) ac.profileImportMode = v.claudeProfileImportMode;
+  if (v.claudeProfileSourceDir !== undefined) ac.profileSourceDir = v.claudeProfileSourceDir;
+  if (v.claudeTranscriptRetentionEnabled !== undefined) ac.transcriptRetentionEnabled = v.claudeTranscriptRetentionEnabled;
+  if (v.claudeTranscriptRetentionDays !== undefined) ac.transcriptRetentionDays = v.claudeTranscriptRetentionDays;
   if (v.claudeEngine === "cli") ac.engine = "cli";
   if (v.claudeEngine === "acp") {
     ac.engine = "acp";

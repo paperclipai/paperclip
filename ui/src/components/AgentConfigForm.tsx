@@ -1085,6 +1085,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     values: isCreate ? { ...props.values, ...(runnerProfile && fieldsAdapterType === "paperclip_runner" ? { adapterSchemaValues: { ...props.values.adapterSchemaValues, ...runnerProfile } } : {}) } : null,
     set: isCreate ? (patch: Partial<CreateConfigValues>) => props.onChange(patch) : null,
     config: runnerProfile && fieldsAdapterType === "paperclip_runner" ? { ...config, ...runnerProfile } : config,
+    displayDefaults: isCreate ? undefined : props.agent.adapterConfigDefaults,
     eff: eff as <T>(group: "adapterConfig", field: string, original: T) => T,
     // Harness transitions supply the new harness's default model. Resolve
     // user-selected model IDs in ModelDropdown, not through the previous

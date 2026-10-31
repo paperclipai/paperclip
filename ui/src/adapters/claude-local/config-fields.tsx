@@ -9,6 +9,7 @@ import {
 } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
 import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
+import { ClaudeRuntimePolicyFields } from "./runtime-policy-fields";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -72,16 +73,8 @@ export function ClaudeLocalConfigFields({
   ));
 }
 
-export function ClaudeLocalAdvancedFields({
-  section,
-  isCreate,
-  values,
-  set,
-  config,
-  eff,
-  mark,
-  managedSandboxOnly,
-}: AdapterConfigFieldsProps) {
+export function ClaudeLocalAdvancedFields(props: AdapterConfigFieldsProps) {
+  const { section, isCreate, values, set, config, eff, mark, managedSandboxOnly } = props;
   const rawEngine = isCreate
     ? values!.claudeEngine ?? "auto"
     : eff("adapterConfig", "engine", String(config.engine ?? "auto"));
@@ -90,6 +83,7 @@ export function ClaudeLocalAdvancedFields({
 
   return configFieldsForSection(section, (
     <>
+      {!managedSandboxOnly && <ClaudeRuntimePolicyFields {...props} configSection="runPolicy" />}
       {/*
         The execution engine picks which binary runs on the execution host, and
         the ACP sub-fields below name host paths. The platform-managed

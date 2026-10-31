@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import { resolveClaudeRuntimeSettings } from "../runtime-settings.js";
 import { buildClaudeLocalConfig } from "./build-config.js";
+
+it("roundtrips typed runtime policies without changing environment secrets", () => {
+  const config = buildClaudeLocalConfig(makeValues({
+    claudeProfileImportMode: "cache", claudeProfileSourceDir: "/trusted",
+    claudeTranscriptRetentionEnabled: true, claudeTranscriptRetentionDays: 14,
+    envBindings: { TOKEN: { type: "secret_ref", secretId: "secret-1" } },
+  }));
+  expect(resolveClaudeRuntimeSettings(config)).toEqual({ profileImportMode: "cache", profileSourceDir: "/trusted", transcriptRetentionEnabled: true, transcriptRetentionDays: 14 });
+  expect(config.env).toEqual({ TOKEN: { type: "secret_ref", secretId: "secret-1" } });
+});
 
 function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigValues {
   return {

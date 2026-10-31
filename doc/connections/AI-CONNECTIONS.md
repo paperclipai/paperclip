@@ -320,6 +320,89 @@ grant's credentials. Inherited credential variables are cleared. Conflicting
 project authentication and provider-routing overrides are rejected. Managed
 failure cannot reactivate host or legacy credentials.
 
+Managed Claude runtime paths and profile imports can be set per agent in its
+Environment variables. By default each invocation receives a private generated
+`HOME` and `CLAUDE_CONFIG_DIR`, and Paperclip removes that generated home after
+the run. By default each run gets its own random home, matching Paperclip's
+existing managed-runtime behavior. When managed Claude transcript retention is
+enabled, Paperclip claims a stable per-connection home when available so Claude
+can reuse path-dependent prompt-cache entries; transcript data is retained
+separately, while credentials remain in the disposable home. Overlapping runs
+still get separate random homes. Set `HOME` or `CLAUDE_CONFIG_DIR` explicitly
+to opt into stable agent-owned paths. Paperclip never removes either configured
+path. Use a distinct writable path per agent: sharing one path can share
+credentials, plugin settings, and session files, and concurrent runs may write
+to it at the same time.
+
+Under **Advanced → Run policies**, local Claude agents have typed settings:
+`profileImportMode` (`off`, `copy`, `cache`), `profileSourceDir`,
+`transcriptRetentionEnabled`, and `transcriptRetentionDays` (a positive integer).
+Typed values take precedence over legacy environment bindings, including explicit
+`off`, `false`, and an empty source path. Leaving a field unset keeps its legacy
+environment/instance fallback. Existing non-secret mode and retention choices are
+shown as read-only display defaults without revealing raw environment values or
+secret references. Saving another setting does not convert inherited values into
+typed choices. Clearing a typed source path selects automatic discovery even if
+the server has a source override.
+
+Profile import can alternatively use `PAPERCLIP_CLAUDE_PLUGIN_IMPORT_MODE`
+(`off`, `copy`, or `cache`) and `PAPERCLIP_CLAUDE_PLUGIN_SOURCE_DIR`. Import is
+off by default, even if the server-level source variable is configured. When
+mode is `off`, Paperclip preserves Claude's normal CLI/ACP plugin and
+marketplace environment and skips personal-profile discovery. A
+per-agent source path takes precedence over the server-level
+`PAPERCLIP_CLAUDE_PLUGIN_SOURCE_DIR` fallback. If both are empty and import is
+enabled, Paperclip reads the Claude profile selected by the server process's
+`CLAUDE_CONFIG_DIR`, or defaults to that process user's `~/.claude` directory.
+If that auto-detected directory is absent, import is skipped. `copy` stages
+files into the invocation's disposable managed home and imports them again on
+the next run. For ACP conversation identity, the copied profile uses a content
+signature instead of the generated per-run plugin path. A plugin or skill content
+change still invalidates the conversation;
+`cache` reuses content-addressed plugin snapshots in Paperclip's per-company,
+per-agent runtime state. Copy mode requires the default temporary home. Cache mode
+may be used with an explicitly persistent `HOME`. Profile import cannot be
+combined with an explicit `CLAUDE_CONFIG_DIR`, because import writes settings
+and skills into the active config; use the direct config override by itself when
+Claude should read a profile as-is. When importing into a generated or HOME-based
+config, Paperclip merges the imported enabled-plugin entries into `settings.json`
+and keeps the other existing settings. It leaves an existing skill directory in
+place, including a same-name Paperclip-selected skill.
+
+Paperclip reads the profile's enabled-plugin list, installed-plugin metadata,
+cached payloads for enabled plugins, and `skills/`. It never modifies or deletes
+the source profile. Imported enabled plugins are registered as user installs in
+the private destination; an install scope from another profile does not grant
+managed-policy authority in the destination. A registry layout version prevents
+reuse of snapshots with older scope metadata. Credentials, user MCP servers, hook settings outside enabled
+plugins, and marketplace credentials or source URLs are not imported. For enabled
+plugins from GitHub marketplaces, the import creates a minimal local catalog and
+retains only the public `owner/repo` identity. Claude requires this catalog even
+when the plugin payload is already cached. Other marketplace source types are
+not currently imported. Paperclip's own
+MCP config remains attached to the run. A profile skill whose runtime name
+matches a Paperclip-selected skill is omitted for that run, so the selected skill
+wins. When an import contains skills or plugins, Paperclip adds a destination-only
+user rule that asks Claude to select applicable skills by their descriptions and
+load them with the native Skill tool. Direct file reads can skip skill metadata.
+This rule does not change the source profile or name a specific plugin. It is
+model guidance, not a guarantee that every response invokes a skill.
+Official marketplace auto-install is disabled for managed runs; cached
+plugins are reused without downloading them again. Only import profiles whose
+plugins and skills are trusted: plugin code, including hooks and MCP servers,
+runs with the agent's permissions.
+
+Profile import applies to local managed CLI runs, including a local-process
+sandbox, and local managed ACP runs. Workspace-scoped CLI sandbox runs mount the
+imported cache read-only. Opted-in ACP runs include the managed user settings
+source through a per-session ACPX environment flag; agents with import off retain
+the existing ACPX setting sources. This does not enable another agent's personal
+profile or change the Paperclip server's process environment. Remote CLI and ACP
+runs do not stage this personal
+profile. Profile caching persists plugin and skill files, not Claude transcripts;
+session resume depends on the selected `HOME`/`CLAUDE_CONFIG_DIR` and adapter
+session support.
+
 A subscription invocation takes no lease. Two invocations of one grant, from
 the same or a different provider account, run at the same time. At cleanup,
 each invocation re-reads the credential stored at that moment under a row
@@ -562,6 +645,42 @@ identity, a different grant or responsible user, or a changed credential generat
 requires a fresh session. The metadata is removed before passing session params
 to an adapter. Temporary authentication-home paths do not change the configuration
 fingerprint. These checks do not relax current connection authorization.
+
+Managed Claude (`claude_local`) on a local target can keep its conversation
+transcripts so that a later run of the same task resumes the session. This is off by
+default. Set the agent's `transcriptRetentionEnabled` to `true` to turn it on, or
+`false` to disable it independently of the instance default. Without a typed choice,
+the agent's `PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_ENABLED` binding wins over
+the same server environment variable. When it is off, the transcripts are
+deleted with the temporary home and each run starts a fresh provider session.
+
+When it is on, transcripts are stored in
+`companies/<company>/agents/<agent>/claude-transcripts/`. Each task and session
+identity (grant, responsible user, credential, and credential epoch) gets its own
+directory, so a replaced credential does not see the earlier conversations.
+Credentials stay in the temporary home and cleanup still deletes them. The ACP
+engine ignores the temporary-home paths in its session fingerprint only when the
+transcripts are kept. Runs without a task, such as unscoped timer wakes, remote
+targets, and other harnesses keep nothing.
+Retention also requires a Paperclip-generated managed `HOME`; an explicit agent
+`HOME` override has no generated home to retain. For confined runs, Paperclip
+mounts the server-approved per-task transcript directory instead of resolving the
+agent-writable `projects` symlink in the Claude config directory.
+
+Private file modes do not isolate agents that run as the same OS user. Workspace
+filesystem confinement mounts only the run's own transcript directory, so a confined
+run cannot read other tasks' transcripts. An unconfined local run executes as the
+server's OS user and can read every transcript directory, the same as any other
+server-owned file. Turn retention on only when every local agent on the instance may
+see the conversations of the others, for example on a single-owner instance.
+
+A scheduled cleanup pass deletes the transcripts of a task after its issue has been
+closed and unused for the recorded `transcriptRetentionDays`. The fallback is the
+agent's `PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_DAYS`, then the server value,
+then 7 days. The effective window is recorded when the task runs; changing it takes
+effect on that task's next retained run. Disabling retention does not immediately
+delete earlier transcripts; their existing cleanup policy still applies (see
+`doc/recoverable-disk-cleanup.md`).
 
 Quota polling has a 20-second response deadline. Once a managed OAuth refresh
 starts, it has its own 60-second request lifetime so the replacement token body
