@@ -1,0 +1,138 @@
+import { fork } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
+import { createWriteStream } from "node:fs";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import { startMaintenancePostgresProxy } from "./postgres-proxy.js";
+
+async function withDeadline<T>(promise: Promise<T>, ms: number, message: () => string): Promise<T> {
+  const controller = new AbortController();
+  try {
+    return await Promise.race([promise, delay(ms, undefined, { signal: controller.signal }).then(() => { throw new Error(message()); })]);
+  } finally { controller.abort(); }
+}
+
+type Snapshot = { idle: { active: number; generation: number }; startup: { phase: string }; outgoingHttpRequests: number; network: { nonDatabaseConnections: number; databaseConnections: number; nonDatabaseBytesWritten: number }; now: number };
+
+export async function startMaintenanceServer(databaseUrl: string, options: { enabled?: boolean; clock?: boolean; suppressed?: boolean; githubOrigin?: string; cloud?: { jwks: string; s3Origin: string; standby: boolean } } = {}) {
+  const proxy = await startMaintenancePostgresProxy(databaseUrl);
+  const directory = await mkdtemp(path.join(tmpdir(), "paperclip-maintenance-"));
+  const reservation = createServer();
+  await new Promise<void>(resolve => reservation.listen(0, "127.0.0.1", resolve));
+  const address = reservation.address();
+  if (!address || typeof address === "string") throw new Error("Maintenance HTTP reservation failed");
+  const configPath = path.join(directory, "config.json");
+  await writeFile(configPath, JSON.stringify({
+    $meta: { version: 1, updatedAt: new Date().toISOString(), source: "onboard" },
+    database: { mode: "postgres", connectionString: proxy.url, backup: { enabled: false, dir: path.join(directory, "backups") } },
+    logging: { mode: "file", logDir: path.join(directory, "logs") },
+    server: { deploymentMode: "local_trusted", exposure: "private", bind: "loopback", host: "127.0.0.1", port: address.port, serveUi: false },
+    storage: options.cloud ? { provider: "s3", s3: { bucket: "maintenance-test", region: "us-east-1", endpoint: options.cloud.s3Origin, forcePathStyle: true } }
+      : { provider: "local_disk", localDisk: { baseDir: path.join(directory, "storage") } },
+    secrets: { provider: "local_encrypted", strictMode: false, localEncrypted: { keyFilePath: path.join(directory, "master.key") } },
+    telemetry: { enabled: false }, updates: { checkEnabled: false },
+  }), { mode: 0o600 });
+  await new Promise<void>(resolve => reservation.close(() => resolve()));
+  const child = fork(fileURLToPath(new URL("./server-child.ts", import.meta.url)), [], {
+    cwd: fileURLToPath(new URL("../../../../..", import.meta.url)),
+    execArgv: ["--import", fileURLToPath(new URL("../../../../node_modules/tsx/dist/loader.mjs", import.meta.url))],
+    env: {
+      PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, NODE_ENV: "production",
+      PAPERCLIP_HOME: directory, PAPERCLIP_CONFIG: configPath, PAPERCLIP_INSTANCE_ID: "maintenance-test",
+      DATABASE_URL: proxy.url, DATABASE_POOL_MAX: "6", DATABASE_APPLICATION_NAME: "maintenance-integration-test",
+      PAPERCLIP_AGENT_JWT_SECRET: randomUUID(), PAPERCLIP_DECISION_SIGNING_SECRET: randomUUID(),
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: randomUUID(), BETTER_AUTH_SECRET: randomUUID(),
+      CODEX_HOME: path.join(directory, "codex"), PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false",
+      PAPERCLIP_DB_BACKUP_ENABLED: "false", PAPERCLIP_UI_DEV_MIDDLEWARE: "false",
+      HEARTBEAT_SCHEDULER_ENABLED: String(options.enabled ?? true),
+      PAPERCLIP_MAINTENANCE_FAKE_CLOCK: String(options.clock ?? false),
+      ...(options.suppressed ? { PAPERCLIP_IN_WORKTREE: "true" } : {}),
+      ...(options.githubOrigin ? { PAPERCLIP_MAINTENANCE_GITHUB_ORIGIN: options.githubOrigin } : {}),
+      ...(options.cloud ? {
+        PAPERCLIP_MANAGED_CONFIG: JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "2026.720.0", features: {}, plugins: { autoInstall: [] } }),
+        PAPERCLIP_SECRETS_MASTER_KEY: randomBytes(32).toString("hex"),
+        PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "maintenance-tenant-token", PAPERCLIP_CLOUD_STACK_ID: "maintenance-stack",
+        PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS: options.cloud.jwks, PAPERCLIP_CLOUD_WARM_STANDBY: options.cloud.standby ? "1" : "0",
+        PAPERCLIP_PUBLIC_URL: "https://pool-maintenance.staging.paperclip.app", PAPERCLIP_PRIMARY_HOST: "pool-maintenance.staging.paperclip.app",
+        AWS_ACCESS_KEY_ID: "maintenance-fixture", AWS_SECRET_ACCESS_KEY: "maintenance-fixture", AWS_EC2_METADATA_DISABLED: "true",
+      } : {}),
+      PAPERCLIP_MIGRATION_PROMPT: "never", PAPERCLIP_MIGRATION_AUTO_APPLY: "true", PAPERCLIP_MANAGED_RUNTIME_HTTPS: "off",
+    },
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
+  });
+  let output = "", requestId = 0;
+  const log = createWriteStream(path.join(directory, "server.log"));
+  child.stdout?.on("data", chunk => { output += String(chunk); log.write(chunk); });
+  child.stderr?.on("data", chunk => { output += String(chunk); log.write(chunk); });
+  const requests = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
+  let readyResolve: (port: number) => void, readyReject: (error: Error) => void;
+  const ready = new Promise<number>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+  const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
+  child.on("message", (message: any) => {
+    if (message.kind === "ready") readyResolve(message.port);
+    else if (message.id) {
+      const request = requests.get(message.id); requests.delete(message.id);
+      if (message.kind === "error") request?.reject(new Error(message.error)); else request?.resolve(message);
+    } else if (message.kind === "error") readyReject(new Error(message.error));
+  });
+  child.once("error", error => readyReject(error));
+  child.once("exit", (code, signal) => {
+    const error = new Error(`Maintenance child exited (${code}/${signal}): ${output.slice(-12_000)}`);
+    readyReject(error);
+    for (const request of requests.values()) request.reject(error);
+    requests.clear();
+  });
+  async function request<T>(command: string, payload: { ms?: number } = {}): Promise<T> {
+    const id = ++requestId;
+    const result = new Promise<T>((resolve, reject) => requests.set(id, { resolve, reject }));
+    child.send({ id, command, ...payload });
+    try { return await withDeadline(result, 30_000, () => `Maintenance child ${command} timed out: ${output.slice(-8_000)}`); }
+    finally { requests.delete(id); }
+  }
+  async function stop() {
+    try {
+      if (child.exitCode === null && child.signalCode === null && child.connected) await request("shutdown");
+      await withDeadline(exited, 30_000, () => "Maintenance child did not exit after shutdown");
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      await proxy.stop();
+      await new Promise<void>(resolve => log.end(resolve));
+    }
+  }
+  try {
+    const port = await withDeadline(ready, 90_000, () => `Maintenance boot timed out: ${output.slice(-12_000)}`);
+    return {
+      proxy, directory, port, stop,
+      async api<T>(method: string, route: string, body?: unknown): Promise<T> {
+        if (options.clock) await request("realtime");
+        try {
+          const response = await fetch(`http://127.0.0.1:${port}/api${route}`, { method, signal: AbortSignal.timeout(30_000),
+            headers: { "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+          const value = await response.json();
+          if (!response.ok) throw new Error(`Maintenance API ${method} ${route}: ${response.status} ${JSON.stringify(value)}`);
+          return value as T;
+        } finally { if (options.clock) await request("freeze"); }
+      },
+      snapshot: () => request<Snapshot>("snapshot"),
+      drain: () => request<Snapshot>("drain"), resume: () => request<Snapshot>("resume"),
+      advance: (ms: number) => request<Snapshot>("advance", { ms }), freeze: () => request<Snapshot>("freeze"),
+      get output() { return output; },
+      async settled(quietMs = 500, deferredStartupHolds = 0) {
+        let previous = -1, quietSince = Date.now();
+        for (const deadline = Date.now() + 30_000; Date.now() < deadline;) {
+          const snapshot = await request<Snapshot>("snapshot");
+          if (proxy.errors.length) throw new AggregateError(proxy.errors, "PostgreSQL observer failed");
+          if (snapshot.idle.active !== deferredStartupHolds || proxy.pending !== 0 || proxy.queries.length !== previous) quietSince = Date.now();
+          previous = proxy.queries.length;
+          if (snapshot.idle.active === deferredStartupHolds && proxy.pending === 0 && Date.now() - quietSince >= quietMs) return snapshot;
+          await delay(25);
+        }
+        throw new Error(`Maintenance did not settle: ${JSON.stringify({ queries: proxy.queries.length, pending: proxy.pending, snapshot: await request("snapshot") })}\n${output.slice(-12_000)}`);
+      },
+    };
+  } catch (error) { await stop().catch(() => {}); throw error; }
+}
