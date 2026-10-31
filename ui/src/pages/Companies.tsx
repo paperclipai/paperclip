@@ -3,8 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useCloudInstance } from "../hooks/useCloudInstance";
 import { companiesApi } from "../api/companies";
+import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { formatCents, relativeTime } from "../lib/utils";
 import { Input } from "@/components/ui/input";
@@ -43,9 +43,15 @@ export function Companies() {
   const { openOnboarding } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const { data: health, isError: healthError } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    enabled: false,
+  });
   // A cloud stack holds exactly one company; creating another is a 403 floor
   // server-side, so the wizard entry point is hidden rather than dead-ending.
-  const isCloud = Boolean(useCloudInstance());
+  const isCloud = Boolean(health?.cloud);
+  const companyDeletionEnabled = !healthError && health?.features?.companyDeletionEnabled === true;
 
   const { data: stats } = useQuery({
     queryKey: queryKeys.companies.stats,
@@ -127,7 +133,10 @@ export function Companies() {
         {companies.map((company) => {
           const selected = company.id === selectedCompanyId;
           const isEditing = editingId === company.id;
-          const isConfirmingDelete = confirmDeleteId === company.id;
+          const hasDeletionResult = deleteMutation.variables === company.id
+            && (deleteMutation.isPending || deleteMutation.isError);
+          const isConfirmingDelete = confirmDeleteId === company.id
+            && (companyDeletionEnabled || hasDeletionResult);
           const companyStats = stats?.[company.id];
           const agentCount = companyStats?.agentCount ?? 0;
           const issueCount = companyStats?.issueCount ?? 0;
@@ -247,14 +256,22 @@ export function Companies() {
                           Unarchive
                         </DropdownMenuItem>
                       )}
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        variant="destructive"
-                        onClick={() => setConfirmDeleteId(company.id)}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                        Delete Organization
-                      </DropdownMenuItem>
+                      {companyDeletionEnabled && (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            variant="destructive"
+                            disabled={deleteMutation.isPending}
+                            onClick={() => {
+                              deleteMutation.reset();
+                              setConfirmDeleteId(company.id);
+                            }}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Delete Organization
+                          </DropdownMenuItem>
+                        </>
+                      )}
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
@@ -295,14 +312,24 @@ export function Companies() {
                   className="mt-4 flex items-center justify-between bg-destructive/5 border border-destructive/20 rounded-md px-4 py-3"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <p className="text-sm text-destructive font-medium">
-                    Delete this organization and all its data? This cannot be undone.
-                  </p>
+                  <div>
+                    <p className="text-sm text-destructive font-medium">
+                      Delete this organization and all its data? This cannot be undone.
+                    </p>
+                    {deleteMutation.error && deleteMutation.variables === company.id && (
+                      <p role="alert" className="text-sm text-destructive">
+                        {deleteMutation.error.message}
+                      </p>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2 ml-4 shrink-0">
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setConfirmDeleteId(null)}
+                      onClick={() => {
+                        setConfirmDeleteId(null);
+                        deleteMutation.reset();
+                      }}
                       disabled={deleteMutation.isPending}
                     >
                       Cancel
@@ -311,7 +338,7 @@ export function Companies() {
                       variant="destructive"
                       size="sm"
                       onClick={() => deleteMutation.mutate(company.id)}
-                      disabled={deleteMutation.isPending}
+                      disabled={!companyDeletionEnabled || deleteMutation.isPending}
                     >
                       {deleteMutation.isPending ? "Deleting…" : "Delete"}
                     </Button>

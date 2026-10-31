@@ -273,6 +273,7 @@ function wantsAsyncImport(req: Request) {
 export interface CompanyRoutesOptions {
   /** Overridable in tests; defaults to `<instance root>/import-transfers`. */
   importTransferSpoolRoot?: string;
+  companyDeletionEnabled?: boolean;
 }
 
 export function companyRoutes(db: Db, storage?: StorageService, options?: CompanyRoutesOptions) {
@@ -1361,6 +1362,9 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertBoard(req);
+    if (options?.companyDeletionEnabled !== true) {
+      throw forbidden("Company deletion is disabled");
+    }
     const company = await svc.remove(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });

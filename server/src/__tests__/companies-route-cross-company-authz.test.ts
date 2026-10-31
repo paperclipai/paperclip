@@ -62,7 +62,10 @@ function registerCompanyRouteMocks() {
 
 let appImportCounter = 0;
 
-async function createApp(actor: Record<string, unknown>) {
+async function createApp(
+  actor: Record<string, unknown>,
+  options: { companyDeletionEnabled?: boolean } | null = { companyDeletionEnabled: true },
+) {
   registerCompanyRouteMocks();
   appImportCounter += 1;
   const routeModulePath = `../routes/companies.js?cross-company-authz-${appImportCounter}`;
@@ -77,7 +80,7 @@ async function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api/companies", companyRoutes({} as any));
+  app.use("/api/companies", companyRoutes({} as any, undefined, options ?? undefined));
   app.use(errorHandler);
   return app;
 }
@@ -360,11 +363,49 @@ describe("company route cross-company authorization", () => {
     expect(remove.body.error).toContain("Board access required");
   });
 
+  it.each([
+    { label: "disabled", options: { companyDeletionEnabled: false }, status: 403 },
+    { label: "missing property", options: {}, status: 403 },
+    { label: "missing options", options: null, status: 403 },
+    { label: "enabled", options: { companyDeletionEnabled: true }, status: 200 },
+  ])("gates company deletion for an authorized board member: $label", async ({ options, status }) => {
+    const app = await createApp(boardActor({
+      userId: "member",
+      companyIds: [companyBId],
+      memberships: [{ companyId: companyBId, membershipRole: "member", status: "active" }],
+    }), options);
+
+    const response = await request(app).delete(`/api/companies/${companyBId}`).expect(status);
+    if (status === 200) {
+      expect(response.body).toEqual({ ok: true });
+      expect(mockCompanyService.remove).toHaveBeenCalledWith(companyBId);
+    } else {
+      expect(response.body.error).toContain("Company deletion is disabled");
+      expect(mockCompanyService.remove).not.toHaveBeenCalled();
+    }
+  });
+
+  it("preserves the missing-company response when deletion is enabled", async () => {
+    const app = await createApp(boardActor({ source: "local_implicit", isInstanceAdmin: true }));
+    mockCompanyService.remove.mockResolvedValueOnce(null);
+    const response = await request(app).delete(`/api/companies/${companyBId}`).expect(404);
+    expect(response.body).toEqual({ error: "Company not found" });
+    expect(mockCompanyService.remove).toHaveBeenCalledWith(companyBId);
+  });
+
+  it("requires authentication even when deletion is enabled", async () => {
+    const app = await createApp({ type: "none" });
+    await request(app).delete(`/api/companies/${companyBId}`).expect(401);
+    expect(mockCompanyService.remove).not.toHaveBeenCalled();
+  });
+
   it("covers board actor access for non-member, viewer, active member, local trusted board, and instance admin without target membership", async () => {
     const nonMemberApp = await createApp(boardActor({ userId: "outsider" }));
     const nonMember = await request(nonMemberApp).get(`/api/companies/${companyBId}`);
     expect(nonMember.status).toBe(403);
     expect(nonMember.body.error).toContain("access to this company");
+    await request(nonMemberApp).delete(`/api/companies/${companyBId}`).expect(403);
+    expect(mockCompanyService.remove).not.toHaveBeenCalled();
 
     vi.clearAllMocks();
     resetMockDefaults();
@@ -379,6 +420,9 @@ describe("company route cross-company authorization", () => {
     expect(viewerWrite.body.error).toContain("Viewer access is read-only");
     expect(mockCompanyService.update).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
+    const viewerDelete = await request(viewerApp).delete(`/api/companies/${companyBId}`).expect(403);
+    expect(viewerDelete.body.error).toContain("Viewer access is read-only");
+    expect(mockCompanyService.remove).not.toHaveBeenCalled();
 
     vi.clearAllMocks();
     resetMockDefaults();
@@ -405,6 +449,8 @@ describe("company route cross-company authorization", () => {
     }));
     await request(localTrustedApp).get(`/api/companies/${companyBId}`).expect(200);
     await request(localTrustedApp).patch(`/api/companies/${companyBId}`).send({ description: "Local" }).expect(200);
+    await request(localTrustedApp).delete(`/api/companies/${companyBId}`).expect(200);
+    expect(mockCompanyService.remove).toHaveBeenCalledWith(companyBId);
 
     vi.clearAllMocks();
     resetMockDefaults();
@@ -418,6 +464,7 @@ describe("company route cross-company authorization", () => {
     const adminWrite = await request(adminWithoutMembershipApp).patch(`/api/companies/${companyBId}`).send({ description: "Admin" });
     expect(adminWrite.status).toBe(403);
     expect(adminWrite.body.error).toContain("access to this company");
+    await request(adminWithoutMembershipApp).delete(`/api/companies/${companyBId}`).expect(403);
     assertNoTargetMutationSideEffects();
   });
 });

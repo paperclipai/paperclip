@@ -97,6 +97,34 @@ remaining operations before qualifying the whole capability.
 Gaps: Convenience archive and general company PATCH have different authorization. Review
 equivalence rather than declaring all archival human-only.
 
+## `deletion`
+
+Capability ID: `companies/deletion`.
+
+Review: `baseline`.
+
+API: `present` — DELETE /api/companies/{companyId}.
+
+Agent access: `restricted` — the REST endpoint and CLI company delete require
+board identity, including for an agent's own company.
+
+Policy: Existing company write access and board checks run before the deletion
+flag. The route requires an explicit true option. An unset environment variable
+keeps the local_trusted default enabled and the authenticated default disabled.
+
+Evidence: `source-only` — the app wiring and route check are changed from
+`68a09dcb5f50e3fb6ceaaeac2706d96db97fc9b3` in this PR:
+[app](../../server/src/app.ts), [route](../../server/src/routes/companies.ts),
+and [configuration](../../server/src/config.ts).
+
+Verification: `not-run` for live agent execution. [Route tests](../../server/src/__tests__/companies-route-cross-company-authz.test.ts)
+cover denied agent and board actors with deletion enabled; the
+[integration test](../../server/src/__tests__/company-deletion.integration.test.ts)
+uses a real app and disposable database to check denied and allowed board calls,
+dependent rows, and another company. These tests do not qualify a live agent path.
+
+Gaps: No agent deletion authority or delegated deletion path is established.
+
 ## `portability`
 
 Capability ID: `companies/portability`.

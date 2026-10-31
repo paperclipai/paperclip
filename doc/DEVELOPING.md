@@ -3295,6 +3295,16 @@ Default behavior:
 - `local_trusted`: enabled
 - `authenticated`: disabled
 
+An explicit `true` enables deletion in either mode. An explicit `false`
+disables it in either mode. Leaving the variable unset preserves the defaults
+above, including the enabled default in `local_trusted`.
+
+The DELETE route requires board identity and company access before checking
+the flag. A disabled or missing route option returns HTTP 403 before the
+deletion service runs. The Companies page hides **Delete Organization** unless
+the health response explicitly enables it. A rejected deletion remains visible
+as an error in the confirmation.
+
 ## CLI Client Operations
 
 Paperclip CLI now includes client-side control-plane commands in addition to setup commands.

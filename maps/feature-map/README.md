@@ -47,7 +47,7 @@ Use this index to open a recipe or copy its feature and full capability IDs.
 | --- | --- | --- |
 | `onboarding` | [Onboarding and first work](onboarding.md) | `onboarding/instance`, `onboarding/company`, `onboarding/adapter`, `onboarding/first-task`, `onboarding/resume` |
 | `access` | [Login, invitations, and access](access.md) | `access/login`, `access/invitations`, `access/membership`, `access/resources`, `access/cli-auth` |
-| `companies` | [Companies and portability](companies.md) | `companies/selection`, `companies/identity`, `companies/decision-models`, `companies/prompt-injection-prevention`, `companies/fast-responses`, `companies/agent-observability`, `companies/archive`, `companies/portability` |
+| `companies` | [Companies and portability](companies.md) | `companies/selection`, `companies/identity`, `companies/decision-models`, `companies/prompt-injection-prevention`, `companies/fast-responses`, `companies/agent-observability`, `companies/archive`, `companies/deletion`, `companies/portability` |
 
 ### Tasks and conversations
 
