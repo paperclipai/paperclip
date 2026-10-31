@@ -1,3 +1,4 @@
+import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
 import { hasRequiredWorkspaceRecovery } from "../../../services/workspace-restore-recovery-state.js";
 import { readNativeWorkspaceSyncReference } from "../../../services/native-runtime/native-workspace-sync.js";
 import { isPreDispatchExecutionWaitVerified } from "../../../services/pre-dispatch-execution-wait.js";
@@ -996,6 +997,7 @@ export function createPostgresRunDispatchAdapter(
         recordedCommentId && authors.get(recordedCommentId) === actorId ? [recordedCommentId] : [];
     }));
     if (commentIds.some(id => !recordedCommentIds.has(id))) return null;
+    await notifyDeferredExecutionWork(tx, { companyId: run.companyId, requestId: wake.id });
     const [deferred] = await tx.update(agentWakeupRequests).set({
       status: "deferred_issue_execution", runId: null, claimedAt: null, finishedAt: null, error: null,
       payload: withQueuedCommentIdsInWakePayload({ ...payload, _paperclipWakeContext: context,
