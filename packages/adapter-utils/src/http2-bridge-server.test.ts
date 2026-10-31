@@ -1857,6 +1857,52 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
     }
   });
 
+  it("test_a_stream_that_arrives_destroyed_leaks_no_uncaught_error", async () => {
+    const forwarderTracker = createForwarderCallTracker();
+    const { handle, clientSide } = bindTestServer({
+      forwardRequest: async (request) => {
+        forwarderTracker.markCalled();
+        return { status: 200, body: Buffer.from(JSON.stringify({ path: request.pathname }), "utf8") };
+      },
+    });
+    let destroyedOnArrival = 0;
+    handle.server.prependListener("stream", (stream) => {
+      if (destroyedOnArrival > 0) return;
+      destroyedOnArrival += 1;
+      stream.destroy(Object.assign(new Error("refused before the handler ran"), { code: "ERR_HTTP2_ERROR" }));
+    });
+    const uncaught: unknown[] = [];
+    const onUncaught = (error: unknown): void => {
+      uncaught.push(error);
+    };
+    process.on("uncaughtException", onUncaught);
+    const rawClient = connectRawClient(clientSide);
+    try {
+      await new Promise<void>((resolve) => {
+        const req = rawClient.request({ ":method": "GET", ":path": "/api/agents/me" });
+        req.on("error", () => undefined);
+        req.on("close", () => resolve());
+        req.resume();
+        req.end();
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(destroyedOnArrival).toBe(1);
+      expect(uncaught).toEqual([]);
+      expect(forwarderTracker.called).toBe(false);
+
+      const survivingResponse = await expectSessionStillServesARequest(rawClient, {
+        method: "GET",
+        path: "/api/agents/me",
+        token: BRIDGE_TOKEN,
+      });
+      expect(survivingResponse.status).toBe(200);
+    } finally {
+      process.removeListener("uncaughtException", onUncaught);
+      rawClient.close();
+      await handle.close();
+    }
+  });
+
   it("test_a_denied_stream_with_an_unfinished_body_still_frees_its_stream_slot", async () => {
     // The server answers a denied stream (an invalid token, here) at once,
     // before it ever reads the request body. A peer that leaves that body
