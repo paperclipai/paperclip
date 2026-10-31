@@ -4,6 +4,7 @@ import { notifyToolConnectionHealth } from "./tool-connection-health-notificatio
 import { dispatchGitHubBotCloudEvent } from "./chat-github-cloud-ingress.js";
 import { chatEndpoints } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   connectionEventDeliveries,
   connectionGrants,
@@ -223,8 +224,21 @@ export function githubConnectionEventService(
 ) {
   const now = options.now ?? (() => new Date());
   let nextPollAt = 0;
-  const config = options.connector ? null : paperclipCloudConnectorConfigFromEnv(options.env);
-  const connector = options.connector ?? (config ? createPaperclipCloudConnector({ config }) : null);
+  let configuredConnector: {
+    config: NonNullable<ReturnType<typeof paperclipCloudConnectorConfigFromEnv>>;
+    connector: PaperclipCloudConnector;
+  } | undefined;
+  function currentConnector() {
+    if (options.connector) return options.connector;
+    // Enrollment and identity replacement can happen after this owner starts.
+    // Read only on an admitted pass; preserve negotiated delivery while unchanged.
+    const config = paperclipCloudConnectorConfigFromEnv(options.env);
+    if (!config) { configuredConnector = undefined; return null; }
+    if (!configuredConnector || !isDeepStrictEqual(configuredConnector.config, config)) {
+      configuredConnector = { config, connector: createPaperclipCloudConnector({ config }) };
+    }
+    return configuredConnector.connector;
+  }
   const forcePolling = (options.env ?? process.env).PAPERCLIP_GITHUB_EVENT_POLLING === "1";
   let emptyPolls = 0;
   let nextSetupPollAt = 0;
@@ -484,6 +498,7 @@ export function githubConnectionEventService(
   }
 
   async function runPoll(): Promise<GitHubConnectionEventPollResult> {
+    const connector = currentConnector();
     if (!connector) {
       nextPollAt = Number.POSITIVE_INFINITY;
       return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };
