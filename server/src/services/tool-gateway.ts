@@ -206,6 +206,7 @@ import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.j
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
+const UNAVAILABLE_STORED_RESULT = Symbol("unavailable_stored_result");
 
 export function resolveCredentialGrantKind(
   policy: "shared" | "per_user" | "per_user_with_fallback" | "per_agent",
@@ -7942,11 +7943,11 @@ export function createToolGatewayService(
     invocation: typeof toolInvocations.$inferSelect,
   ): unknown {
     const summary = invocation.resultSummary?.summary;
-    if (typeof summary !== "string") return null;
+    if (typeof summary !== "string") return UNAVAILABLE_STORED_RESULT;
     try {
       return JSON.parse(summary);
     } catch {
-      return summary;
+      return UNAVAILABLE_STORED_RESULT;
     }
   }
 
@@ -10565,6 +10566,18 @@ export function createToolGatewayService(
                 throw error;
               }
             }
+          }
+          if (replayResult === UNAVAILABLE_STORED_RESULT) {
+            throw new ToolGatewayHttpError(
+              409,
+              "The action completed, but its stored result is unavailable. Do not repeat the action to recover its output.",
+              "tool_result_unavailable",
+              {
+                invocationId: replay.invocationId,
+                replayed: true,
+                executionStatus: "succeeded",
+              },
+            );
           }
           return {
             invocationId: replay.invocationId,
