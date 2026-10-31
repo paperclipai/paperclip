@@ -1,3 +1,4 @@
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyGitHubCompanyChange } from "./github-connection-notifications.js";
@@ -338,6 +339,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
           await notifyRunDispatch(tx, { companyId: id });
           await notifyGitHubCompanyChange(tx, id);
+          await notifyDeferredExecutionEligibility(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
           await notifyExternalObjectRefresh(tx, id);
@@ -498,6 +500,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         if (!wasAlreadyArchived) {
           await notifyRunDispatch(tx, { companyId: id });
           await notifyGitHubCompanyChange(tx, id);
+          await notifyDeferredExecutionEligibility(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
           await notifyExternalObjectRefresh(tx, id);

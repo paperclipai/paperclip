@@ -377,6 +377,37 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
   });
 
+  it.each(["in_progress", "run", "confirmation"])("preserves observed child live evidence (%s) after explicit blockers fill the node budget", async (kind) => {
+    const root = await insertIssue("blocked");
+    await db.execute(sql`with blockers as (
+      insert into issues (id, company_id, title, status, assignee_agent_id, updated_at)
+      select gen_random_uuid(), ${companyId}::uuid, 'explicit-leaf-' || n, 'backlog', ${agentId}::uuid, ${old().toISOString()}::timestamptz
+      from generate_series(1, 1999) n returning id)
+      insert into issue_relations (company_id, issue_id, related_issue_id, type)
+      select ${companyId}::uuid, id, ${root.id}::uuid, 'blocks' from blockers`);
+    const child = await insertIssue(kind === "in_progress" ? "in_progress" : "todo", { parentId: root.id, assigneeAgentId: agentId });
+    if (kind === "run") {
+      const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
+      await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, child.id));
+    } else if (kind === "confirmation") {
+      await db.insert(issueThreadInteractions).values({ companyId, issueId: child.id, kind: "request_confirmation", status: "pending", payload: { prompt: "Approve?" } });
+    }
+    parameterCounts.length = 0;
+    const batch = await issueService(db).listBlockerAttentionBatch(companyId, [root]);
+    expect(batch.nodeCount).toBeLessThanOrEqual(BLOCKER_ATTENTION_MAX_NODES);
+    expect(batch.edgeCount).toBeLessThanOrEqual(BLOCKER_ATTENTION_MAX_NODES * 2);
+    expect(batch.fetchedRows).toBeLessThanOrEqual(BLOCKER_ATTENTION_MAX_NODES * 6);
+    expect(parameterCounts.length).toBeLessThanOrEqual(100);
+    expect(Math.max(...parameterCounts)).toBeLessThanOrEqual(1100);
+    expect(batch.deferredRootIds.has(root.id)).toBe(true);
+    expect(batch.attention.get(root.id)?.blockingTreeLive).toBe(true);
+    const service = attentionRetentionService(db), page = await service.load({ companyId, sourceKind: "blocker_attention" });
+    const entry = page.rows!.find(item => item.rootId === root.id && item.variant === "terminal")!;
+    expect(await service.check(entry)).toBeNull();
+    expect(await db.select().from(decisionRetention)).toHaveLength(0);
+    expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
+  });
+
   it("disarms finite deferred-root checks when large retained graphs have no archive obligation", async () => {
     await db.execute(sql`insert into issues (id, company_id, title, status, updated_at)
       select gen_random_uuid(), ${companyId}::uuid, 'held-root-' || n, 'blocked', ${old().toISOString()}::timestamptz

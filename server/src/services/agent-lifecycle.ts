@@ -1,3 +1,4 @@
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyNativeReviewResponse } from "./native-review-response-notifications.js";
@@ -43,6 +44,7 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
       await notifyAttentionRetentionWork(tx, { companyId });
       if (before !== after) {
         await notifyRunDispatch(tx, { companyId });
+        await notifyDeferredExecutionEligibility(tx, { companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       }
       if (!isAgentStatusInvokable(before) && isAgentStatusInvokable(after)) {
