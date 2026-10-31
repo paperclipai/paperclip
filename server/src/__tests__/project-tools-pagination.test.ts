@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createProjectToolInputJsonSchema } from "@paperclipai/shared";
 import { callProjectTool, projectToolDefinitions } from "../services/project-tools.js";
 
 const input = {
@@ -26,6 +27,14 @@ describe("project discovery result bounds", () => {
     vi.stubGlobal("fetch", fetch);
     await expect(callProjectTool({ ...input, arguments: arguments_ })).rejects.toThrow();
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("project tool definitions", () => {
+  it("advertises the create_project input schema that the shared package converted", () => {
+    const tool = projectToolDefinitions("standard", true).find(t => t.name === "create_project");
+    expect(tool?.inputSchema).toEqual(createProjectToolInputJsonSchema());
+    expect((tool?.inputSchema as { required?: string[] }).required).toContain("idempotencyKey");
   });
 });
 

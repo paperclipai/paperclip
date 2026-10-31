@@ -1,4 +1,4 @@
-import { projectDiscoverySchema, createProjectSchema, createIssueSchema, setIssueTitleSchema, requiredQualityReviewSchema } from "@paperclipai/shared";
+import { projectDiscoverySchema, createProjectToolInputSchema, createProjectToolInputJsonSchema, createIssueSchema, setIssueTitleSchema, requiredQualityReviewSchema } from "@paperclipai/shared";
 import { z } from "zod";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../vendor/paperclip-runner/index.js";
 import { badRequest } from "../errors.js";
@@ -10,7 +10,7 @@ export function projectToolDefinitions(workMode: string, includeTask = false) {
     && tool.allowedModes.includes(workMode as "standard"),
   ).map(tool => ({ name: tool.operationId, description: tool.description,
     inputSchema: tool.operationId === "create_project"
-      ? z.toJSONSchema(createProjectSchema.extend({ idempotencyKey: z.string().min(1).max(255) }))
+      ? createProjectToolInputJsonSchema()
       : tool.inputSchema,
   }));
 }
@@ -35,7 +35,7 @@ export async function callProjectTool(input: {
     path += `?${query}`;
   }
   else if (input.name === "create_project") {
-    body = createProjectSchema.extend({ idempotencyKey: z.string().min(1).max(255) }).parse(args);
+    body = createProjectToolInputSchema.parse(args);
   } else if (input.name === "create_task") {
     const key = z.string().min(1).max(150).parse(args.idempotencyKey);
     path = `/companies/${input.companyId}/issues`;
