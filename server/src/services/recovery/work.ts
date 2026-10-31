@@ -32,13 +32,14 @@ export function registerIssueRecoveryWork(
       reconstructionIntervalMs: 30_000,
       beforePass: async () => { enabled = !(await owner.schedulingSuppressed()); },
       decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint) as IssueRecoveryScope,
-      matches: (entry, scope) => !scope || entry.companyId === scope.companyId,
+      matches: (entry, scope) => !scope || (entry.companyId === scope.companyId && (!scope.issueId || entry.id === scope.issueId)),
       load: async scope => {
-        const key = scope?.companyId ?? "*";
+        const key = scope ? JSON.stringify([scope.companyId, scope.issueId]) : "*";
         if (!enabled) { cursors.delete(key); return []; }
         const cursor = cursors.get(key);
         const rows = await db.select({ id: issues.id, companyId: issues.companyId }).from(issues).where(and(
           scope ? eq(issues.companyId, scope.companyId) : undefined,
+          scope?.issueId ? eq(issues.id, scope.issueId) : undefined,
           cursor ? gt(issues.id, cursor) : undefined,
           statuses ? inArray(issues.status, statuses) : or(isNotNull(issues.checkoutRunId), isNotNull(issues.executionRunId)),
           statuses ? isNull(issues.hiddenAt) : undefined,
