@@ -550,7 +550,7 @@ async function renderCreateClaudeSandbox(
 // `renderCreateForm` harness cannot show the environment-change reset, because
 // its `values` prop never changes. `valuesRef` exposes the current merged
 // values to the test.
-async function renderStatefulCreateClaudeSandbox(environments: Environment[]) {
+async function renderStatefulCreateClaudeSandbox(environments: Environment[], showSecretSources = false) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
 
   const container = document.createElement("div");
@@ -572,6 +572,7 @@ async function renderStatefulCreateClaudeSandbox(environments: Environment[]) {
     return (
       <AgentConfigForm
         mode="create"
+        showSecretSources={showSecretSources}
         values={values}
         onChange={(patch) => setValues((prev) => ({ ...prev, ...patch }))}
         hidePromptTemplate
@@ -1527,6 +1528,31 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).not.toContain("Environment variables");
   });
 
+  it.each(["change", "remove"])("preserves hidden bindings through Runtime %s, save and reload", async operation => {
+    const hidden = {
+      COMPANY_TOKEN: { type: "secret_ref", secretId: "secret-1", version: "latest" },
+      USER_TOKEN: { type: "user_secret_ref", key: "personal", required: true },
+      MASKED: { type: "plain", value: "***REDACTED***" },
+    };
+    const result = await renderForm([], { adapterConfig: { env: { ...hidden, PLAIN: { type: "plain", value: "before" } } } },
+      { environmentVariablesPlacement: "configuration" });
+    roots.push(result.root);
+    if (operation === "remove") {
+      await clickElement(result.container.querySelector('[aria-label="Remove PLAIN"]'));
+    } else {
+      await act(async () => setInputValue(result.container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!, "after"));
+      await flushReact();
+    }
+    await clickByText(result.container, "Save");
+    const expected = operation === "remove" ? hidden : { ...hidden, PLAIN: { type: "plain", value: "after" } };
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({ env: expected }) }));
+    const reloaded = await renderForm([], { adapterConfig: result.onSave.mock.calls[0][0].adapterConfig },
+      { environmentVariablesPlacement: "configuration" });
+    roots.push(reloaded.root);
+    expect([...reloaded.container.querySelectorAll<HTMLInputElement>('input[aria-label="Variable name"]')].map(input => input.value))
+      .toEqual(operation === "remove" ? [] : ["PLAIN"]);
+  });
+
   it.each([
     { variant: "current", adapterType: "paperclip_runner" },
     { variant: "current", adapterType: "claude_local" },
@@ -1555,6 +1581,48 @@ describe("AgentConfigForm environment selector", () => {
     expect(container.textContent).toContain("Environment variables");
     expect(container.textContent).toContain("Secret access");
     expect(container.textContent).not.toContain("No environment variables");
+  });
+
+  it.each([
+    { variant: "current", adapterType: "paperclip_runner" },
+    { variant: "current", adapterType: "claude_local" },
+    { variant: "classic", adapterType: "paperclip_runner" },
+    { variant: "classic", adapterType: "claude_local" },
+  ])("keeps Runtime plain-only and Secrets complete for $variant $adapterType", async ({ variant, adapterType }) => {
+    mockEnvironmentsApi.list.mockResolvedValue([]);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const env = {
+      PLAIN: { type: "plain", value: "visible" },
+      COMPANY_TOKEN: { type: "secret_ref", secretId: "secret-1", version: "latest" },
+      USER_TOKEN: { type: "user_secret_ref", key: "personal", required: true },
+      MASKED: { type: "plain", value: "***REDACTED***" },
+    };
+    const agent = { ...makeAgent({ adapterType, adapterConfig: { env } }), chainOfCommand: [], access: { canAssignTasks: false, taskAssignSource: "none" as const, membership: null, grants: [] } };
+    const client = createFormQueryClient();
+    const callbacks = { onDirtyChange: vi.fn(), onSaveActionChange: vi.fn(), onCancelActionChange: vi.fn(), onSavingChange: vi.fn(),
+      updatePermissions: { mutate: vi.fn(), isPending: false } };
+    const render = async (secrets: boolean) => {
+      await act(async () => renderFormView(root, client, <MemoryRouter>
+        {variant === "current"
+          ? <ConfigurationTab agent={agent} companyId="company-1" content={secrets ? "secrets" : "runtime"} {...callbacks} />
+          : <ClassicConfigurationTab agent={agent} companyId="company-1" content={secrets ? "secrets" : "configuration"} {...callbacks} />}
+      </MemoryRouter>));
+      await flushReact();
+    };
+    const names = () => [...container.querySelectorAll<HTMLInputElement>('input[aria-label="Variable name"]')].map(input => input.value);
+    await render(false);
+    expect(names()).toEqual(["PLAIN"]);
+    expect(container.querySelector('[aria-label="Value source"]')).toBeNull();
+    expect(container.textContent).not.toContain("Store as secret");
+    await render(true);
+    expect(names()).toEqual(Object.keys(env));
+    expect(container.querySelector('[aria-label="Value source"]')).not.toBeNull();
+    expect(container.textContent).toContain("Secret access");
+    await render(false);
+    expect(names()).toEqual(["PLAIN"]);
   });
 
   it("shows concise Environment copy when one runnable non-local environment exists", async () => {
@@ -3290,7 +3358,8 @@ describe("AgentConfigForm environment selector", () => {
       .mockResolvedValueOnce(staleList)
       .mockResolvedValue(freshList);
 
-    const result = await renderStatefulCreateClaudeSandbox(daytonaEnvironments());
+    // Import keeps the full editor; ordinary creation hides the bound secret row.
+    const result = await renderStatefulCreateClaudeSandbox(daytonaEnvironments(), true);
     roots.push(result.root);
 
     await runTest(result.container);

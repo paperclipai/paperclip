@@ -86,6 +86,7 @@ import {
   EnvironmentVariablesEditor,
   type EnvironmentVariablesEditorHandle,
 } from "./environment-variables-editor";
+import { AgentEnvironmentVariablesEditor } from "./AgentEnvironmentVariablesEditor";
 import { buildFixedClaudeOAuthBinding, CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
 import { useProposalReview } from "../pages/secrets/proposal-review";
@@ -152,6 +153,8 @@ type AgentConfigFormProps = {
 } & (
   | {
       mode: "create";
+      /** Import has no separate Secrets tab; retain its full editor. */
+      showSecretSources?: boolean;
       values: CreateConfigValues;
       onChange: (patch: Partial<CreateConfigValues>) => void;
     }
@@ -1510,8 +1513,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     });
   }
 
+  const EnvironmentEditor = props.content === "secrets" || (isCreate && props.showSecretSources)
+    ? EnvironmentVariablesEditor
+    : AgentEnvironmentVariablesEditor;
   const environmentVariablesEditor = (
-    <EnvironmentVariablesEditor
+    <EnvironmentEditor
       ref={environmentVariablesEditorRef}
       disabled={runnerUpgradePending}
       key={environmentEditorKey}
