@@ -201,7 +201,7 @@ test("a draft survives background task refresh, reload, and one persisted reply"
 });
 
 test("failed initial comments expose retry, then recover without an indefinite skeleton", async ({ page }) => {
-  await page.route("**/api/issues/*/recent-comments", (route) => route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"Temporarily unavailable"}' }));
+  await page.route("**/api/issues/*/recent-comments", (route) => route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"Comment read failed"}' }));
   await page.goto(`/${prefix}/issues/${issue.identifier}`);
   await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeVisible({ timeout: 30_000 });
   await page.unroute("**/api/issues/*/recent-comments");
@@ -237,8 +237,7 @@ for (const mobile of [false, true]) {
     if (mobile) await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/${prefix}/issues/${issue.identifier}`);
     await ready(page);
-    await page.getByRole("button", { name: "More messages", exact: true }).click();
-    await page.getByText("Historical message 10", { exact: true }).waitFor({ state: "attached" });
+    await page.getByText("Historical message 159", { exact: true }).waitFor({ state: "attached" });
     await expect(page.locator(`[id="comment-${oldestCommentId}"]`)).toHaveCount(0);
     const originalThread = await page.getByTestId("task-chat-thread").elementHandle();
     const before = await page.evaluate(() => {

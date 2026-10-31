@@ -400,6 +400,25 @@ it("keeps revealed history scrollable while metadata for another page is pending
   expect(container.querySelector('[data-testid="history-scroll-ready"]')?.textContent).toBe("true");
 });
 
+it("waits for a same-task comment target before applying its scroll position without hiding the thread", async () => {
+  function Readiness() { return <span data-testid="target-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
+  const props = { issueId: "linked-task", compactHistory: true, comments: createLongThreadComments(), onAdd: async () => {}, threadHeader: <Readiness /> };
+  const show = (hash: string, pending: boolean) => render(
+    <TaskChatScrollNavigation.Provider value={{ key: hash || "initial", hash, restore: false }}>
+      <TaskChatThread {...props} initialHistoryPending={pending} />
+    </TaskChatScrollNavigation.Provider>,
+  );
+  show("", false);
+  await settleThreadLayout();
+  const editor = container.querySelector('[data-testid="mock-editor"]');
+  show("#comment-older", true);
+  expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("false");
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+  show("#comment-older", false);
+  expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("true");
+});
+
 it.each([0, 32_000, 100_000])("offers earlier output only when a single legacy run exceeds the compact window (%s bytes)", (logBytes) => {
   const onExpandHistory = vi.fn();
   if (logBytes > 32_000) transcriptState.truncatedRunIds.add("legacy-run");
