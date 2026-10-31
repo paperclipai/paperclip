@@ -611,6 +611,8 @@
   --agent-detail-control-border: color-mix(in oklab, var(--foreground) 20%, transparent);
   --agent-detail-control-bg: color-mix(in oklab, var(--foreground) 5%, var(--background));
   --agent-detail-switch-off: color-mix(in oklab, var(--foreground) 15%, transparent);
+  --agent-detail-dot-unsaved: var(--status-task-icon-todo);
+  --agent-detail-dot-saved: var(--status-task-icon-done);
   --motion-primary-crown-pop: 598ms; /* --motion-duration-deliberate slowed by 15% */
   --motion-primary-crown-pop-delay: var(--motion-duration-fast);
   --primary-crown-bubble-size: 7px;

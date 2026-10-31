@@ -1684,9 +1684,9 @@ export function AgentDetail() {
       {showConfigActionBar && <footer className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background py-4">
         <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
           {configSaving ? null : configDirty ? (
-            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-amber-500" />
+            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--agent-detail-dot-unsaved)" />
           ) : configJustSaved ? (
-            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--status-task-icon-done)" />
+            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--agent-detail-dot-saved)" />
           ) : null}
           {configSaving ? "Saving changes…" : configDirty ? "Unsaved changes" : configJustSaved ? "Changes saved" : "No unsaved changes"}
         </p>

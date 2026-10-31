@@ -141,7 +141,7 @@ export function InstructionsBundleSettings({
               {!blocked && load.kind === "error" ? <span className="text-destructive">{load.message}</span> : null}
               {!blocked && load.kind === "loaded" ? (
                 <span className="flex items-center gap-2 text-muted-foreground">
-                  <span className="size-1.5 shrink-0 rounded-full bg-(--status-task-icon-done)" aria-hidden />
+                  <span className="size-1.5 shrink-0 rounded-full bg-(--agent-detail-dot-saved)" aria-hidden />
                   Loaded {load.entry} from {load.root}
                 </span>
               ) : null}
