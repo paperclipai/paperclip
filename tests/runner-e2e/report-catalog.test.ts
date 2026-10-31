@@ -11,6 +11,7 @@ import { buildRunnerCampaign } from "./history.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
 import { regenerateRunnerDashboard } from "./dashboard-regenerate.js";
 import { journeyCapabilities, journeyFeatureIds } from "./journey-features.js";
+import { journeyRequiredChecks } from "./product-journeys/success-contract.js";
 import type { RunnerE2EResult } from "./types.js";
 
 const temporary: string[] = [];
@@ -89,6 +90,30 @@ describe("trusted report catalog discovery", () => {
     expect(journeyCapabilities(product).map(capability => capability.id)).toEqual(["questions-and-approvals/questions"]);
     expect(journeyCapabilities({ ...product, task: { ...known.task, id: "task-create" } }).map(capability => capability.id)).toEqual(["tasks/create"]);
     expect(journeyCapabilities({ ...product, task: { ...known.task, id: "task-search-filter" } }).map(capability => capability.id)).toEqual(["tasks/organize"]);
+  });
+
+  it.each([
+    { caseId: "question-answer-resume", feature: "questions-and-approvals", capabilities: ["questions-and-approvals/questions", "questions-and-approvals/continuation"] },
+    { caseId: "followup-while-running", feature: "steering", capabilities: ["steering/queue"] },
+  ])("reports deployment journey $caseId in its feature coverage", ({ caseId, feature, capabilities }) => {
+    const known = runnerMatrix.find(execution => execution.id === "core-compatibility.legacy-codex.local.ask-question")!;
+    const execution = { ...known, id: `product-journeys.${known.profile.id}.${known.environment.id}.${caseId}`,
+      suite: { ...known.suite, id: "product-journeys" }, task: { ...known.task, id: caseId } };
+    expect(journeyCapabilities(execution).map(capability => capability.id)).toEqual(capabilities);
+    expect(journeyFeatureIds(execution)).toEqual([feature]);
+    expect(journeyCapabilities({ ...execution, suite: { ...execution.suite, id: "unrecognized-suite" } })).toEqual([]);
+    const page = renderRunnerE2EDashboard({ title: "Deployment coverage", generatedAt: "2026-10-20T12:00:00Z",
+      expected: [execution.id], catalog: [execution], entries: [{ valid: true, errors: [],
+        result: { ...result(), executionId: execution.id, suiteId: execution.suite.id, profileId: execution.profile.id,
+          environmentId: execution.environment.id, caseId, provider: "opencode", runIds: ["run-1"],
+          productJourney: { targetId: "qa", outcome: "passed", startingState: "recipe", privacy: "private", resourceDisposition: "retained",
+            phases: [{ phase: "journey", outcome: "passed" }], checks: journeyRequiredChecks[caseId]!.map(id => ({ id, passed: true })),
+            deployment: { kind: "cloud", targetId: "qa", origin: "https://qa.example.test", commit: "a".repeat(40),
+              cloudRelease: "b".repeat(40), runtimeImage: "immutable-image", configurationHash: "config" } } } }] });
+    expect(page).toContain(`data-execution-id="${execution.id}"`);
+    expect(page).toContain(`data-report-features="${feature}"`);
+    expect(page).toContain(`title="${capabilities.join(", ")}"`);
+    expect(page).toContain("1/1 passed");
   });
 
   it("counts the project/task deployment journey toward projects and task creation coverage", () => {

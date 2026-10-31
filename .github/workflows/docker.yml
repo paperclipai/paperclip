@@ -33,6 +33,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  reuse_canary_image:
+    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && startsWith(github.ref, 'refs/tags/canary/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+      attestations: read
+    outputs:
+      reused: ${{ steps.reuse.outputs.reused }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Reuse the verified master image when present
+        id: reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/reuse-canary-image.mjs
+
   # Multi-arch by native runner, not QEMU.
   #
   # This was one job building linux/amd64,linux/arm64 together on an x86
@@ -56,6 +85,8 @@ jobs:
   # digest; `merge` assembles the manifest list. Both architectures remain
   # available to self-hosted installations and downstream image composers.
   build-and-push:
+    needs: [reuse_canary_image]
+    if: ${{ !cancelled() && (needs.reuse_canary_image.result == 'skipped' || (needs.reuse_canary_image.result == 'success' && needs.reuse_canary_image.outputs.reused == 'false')) }}
     strategy:
       # Independent legs: one architecture failing should still publish
       # nothing, but it must not also hide the other's logs behind a
@@ -277,6 +308,7 @@ jobs:
   # tags. Nothing is publicly tagged until this runs, so a half-published
   # multi-arch image is not a state anything can pull.
   merge-and-push:
+    if: ${{ !cancelled() && needs.build-and-push.result == 'success' }}
     needs: build-and-push
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -407,11 +439,8 @@ jobs:
   # promotion is gated on its own completed pushes). Every interleaving
   # converges the Docker channel onto the npm channel.
   promote_canary_channel:
-    if: startsWith(github.ref, 'refs/tags/canary/v')
-    # merge-and-push, not build-and-push: the per-arch legs push untagged
-    # digests, and the production `sha-*` tags this promotion retags only
-    # exist once the manifest merge has named them.
-    needs: [merge-and-push]
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/canary/v') && (needs.merge-and-push.result == 'success' || (needs.reuse_canary_image.result == 'success' && needs.reuse_canary_image.outputs.reused == 'true')) }}
+    needs: [reuse_canary_image, merge-and-push]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

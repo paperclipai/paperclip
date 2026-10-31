@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, environmentCustomImageSetupSessions, environmentLeases, environments, heartbeatRuns } from "@paperclipai/db";
 import { historicalCleanupVerificationService } from "../services/historical-cleanup-verification.js";
+import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { withoutCleanupVerification } from "../services/cleanup-verification-proof.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readIdleSleepSafety, type IdleSleepDrainStatus } from "../services/idle-sleep-safety.js";
@@ -16,7 +17,7 @@ if (!support.supported) console.warn(`Skipping historical cleanup database tests
 (support.supported ? describe : describe.skip)("historical cleanup verification", () => {
   let db: ReturnType<typeof createDb>, database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("historical-cleanup-"); db = createDb(database.connectionString); }, 60_000);
-  afterEach(async () => { await db.execute(sql`SET client_min_messages = warning; TRUNCATE companies, plugins, environments CASCADE`); });
+  afterEach(async () => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); await db.execute(sql`SET client_min_messages = warning; TRUNCATE companies, plugins, environments CASCADE`); });
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
   const read = () => readIdleSleepSafety(db, owned, () => now, ownerId, async () => "none", undefined, undefined, true, true);
   const state = async () => (await read()).backgroundWork;
@@ -37,6 +38,55 @@ if (!support.supported) console.warn(`Skipping historical cleanup database tests
       inspectSetup: async row => ({ providerLeaseId: row.providerLeaseId, state: setupState }),
     });
   }
+  it.each([false, true])("reconciles a legacy Cloud lease through signed absence and permits idle sleep (ad-hoc %s)", async adHoc => {
+    const f = await seed(adHoc);
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    for (const [key, value] of Object.entries({ PAPERCLIP_CLOUD_STACK_ID: "fixture-stack",
+      PAPERCLIP_CLOUD_API_ORIGIN: "https://cloud.example.test", PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "fleet-fixture",
+      PAPERCLIP_PRIMARY_HOST: "fixture.paperclip.test", PAPERCLIP_AUTH_SECRET: "fixture-secret",
+      PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS: JSON.stringify({ keys: [{ ...publicKey.export({ format: "jwk" }), kid: "fixture", alg: "EdDSA", use: "sig" }] }) })) vi.stubEnv(key, value);
+    let absent = false;
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      if (!absent) return Response.json({ absent: false });
+      const binding = JSON.parse(init.body as string), seconds = Math.floor(Date.now() / 1000);
+      expect(binding).toEqual({ purpose: "cleanup", companyId: f.companyId, environmentId: f.environment.id,
+        leaseId: f.lease.id, heartbeatRunId: adHoc ? null : f.runId, provider: "daytona", providerLeaseId: f.lease.providerLeaseId });
+      const header = Buffer.from(JSON.stringify({ alg: "EdDSA", kid: "fixture", typ: "paperclip-sandbox-cleanup-absence+jwt" })).toString("base64url");
+      const claims = Buffer.from(JSON.stringify({ v: 1, iss: "paperclip-cloud", aud: "paperclip-sandbox-cleanup-absence/v1",
+        sub: "fixture-stack", ...binding, absent: true, iat: seconds, exp: seconds + 60 })).toString("base64url");
+      return Response.json({ receipt: `${header}.${claims}.${sign(null, Buffer.from(`${header}.${claims}`), privateKey).toString("base64url")}` });
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+    const runtime = environmentRuntimeService(db);
+    const service = historicalCleanupVerificationService(db, {
+      inspectLease: row => runtime.inspectLeaseResource(row.id), inspectSetup: async () => undefined,
+    });
+    expect(await state()).toBe("present");
+    expect(await service.sweep()).toMatchObject({ checked: 1, deferred: 1, verified: 0 });
+    expect(await state()).toBe("present");
+    absent = true;
+    expect(await service.sweep()).toMatchObject({ checked: 1, verified: 1, failed: 0 });
+    expect(await state()).toBe("none");
+    const [current] = await db.select().from(environmentLeases);
+    expect(current).toMatchObject({ status: "failed", cleanupStatus: "success", heartbeatRunId: adHoc ? null : f.runId });
+    expect(current!.metadata).not.toHaveProperty("remoteExecutionTermination");
+    expect(await service.sweep()).toMatchObject({ checked: 0 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+  it.each(["active", "stopped", "unknown"] as const)("does not replace an explicit %s provider observation with a Cloud read", async providerState => {
+    await seed(true);
+    for (const [key, value] of Object.entries({ PAPERCLIP_CLOUD_STACK_ID: "fixture-stack",
+      PAPERCLIP_CLOUD_API_ORIGIN: "https://cloud.example.test", PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "fleet-fixture",
+      PAPERCLIP_PRIMARY_HOST: "fixture.paperclip.test", PAPERCLIP_AUTH_SECRET: "fixture-secret" })) vi.stubEnv(key, value);
+    const fetchImpl = vi.fn(); vi.stubGlobal("fetch", fetchImpl);
+    const runtime = environmentRuntimeService(db, { drivers: [{ driver: "sandbox",
+      acquireRunLease: async () => { throw new Error("unexpected acquire"); }, releaseRunLease: async () => null,
+      inspectLeaseResource: async ({ lease }) => ({ providerLeaseId: lease.providerLeaseId!, state: providerState }),
+    }] });
+    const service = historicalCleanupVerificationService(db, { inspectLease: row => runtime.inspectLeaseResource(row.id), inspectSetup: async () => undefined });
+    expect(await service.sweep()).toMatchObject({ checked: 1, verified: 0, deferred: 1 });
+    expect(await state()).toBe("present"); expect(fetchImpl).not.toHaveBeenCalled();
+  });
   it.each([false, true])("accepts exact deletion proof without changing outcomes or granting run authority (ad-hoc %s)", async adHoc => {
     const f = await seed(adHoc); expect(await state()).toBe("present");
     const service = verifier(); expect(await service.sweep()).toMatchObject({ checked: 1, verified: 1, failed: 0 });
