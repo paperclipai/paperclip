@@ -1,3 +1,4 @@
+import { RESPONSIBLE_USER_DENIAL_CODES } from "@paperclipai/shared";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeRecoveryNotices } from "../native-recovery-notice-notifications.js";
@@ -26,7 +27,19 @@ export function projectNativeTerminalRunStatus(
 
 
 
-export function nativeRunProjectionNeedsRepair(projectedStatus: "succeeded" | "failed" | "cancelled" | SQL) {
+/** Preserve a recorded authorization denial when a successful result is replayed. */
+function responsibleUserDenialRecorded() {
+  return sql<boolean>`coalesce(${heartbeatRuns.errorCode} in (${sql.join(
+    RESPONSIBLE_USER_DENIAL_CODES.map((code) => sql`${code}`), sql`, `)}), false)`;
+}
+
+function denialAwareProjectionStatus(status: "succeeded" | "failed" | "cancelled" | SQL) {
+  return sql`case when ${status} = 'succeeded' and ${responsibleUserDenialRecorded()}
+    then 'failed' else ${status} end`;
+}
+
+export function nativeRunProjectionNeedsRepair(status: "succeeded" | "failed" | "cancelled" | SQL) {
+  const projectedStatus = denialAwareProjectionStatus(status);
   return and(
     eq(heartbeatRuns.runtimeMode, "native"),
     or(
@@ -144,14 +157,14 @@ export async function projectCommittedRun(input: {
       .update(heartbeatRuns)
       .set({
         executionStatusDeliveryId: randomUUID(),
-        status: projectedStatus,
+        status: denialAwareProjectionStatus(projectedStatus),
         finishedAt: before.finishedAt ?? now,
         nativePhase: "committed",
         nativePhaseUpdatedAt: now,
         ...(terminalState === "succeeded"
           ? {
-              error: null,
-              errorCode: null,
+              error: sql`case when ${responsibleUserDenialRecorded()} then ${heartbeatRuns.error} else null end`,
+              errorCode: sql`case when ${responsibleUserDenialRecorded()} then ${heartbeatRuns.errorCode} else null end`,
 
 
 

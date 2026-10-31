@@ -31,6 +31,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { isResponsibleUserDenialCode } from "@paperclipai/shared";
 import {
   agents,
   agentWakeupRequests,
@@ -411,6 +412,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     if (["openai_dot", "muse"].includes(String(parseObject(agent.adapterConfig).provider))
         || ["openai_dot", "muse"].includes(String(parseObject(parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput).provider).kind))) {
       return { outcome: "not_scheduled" as const, reason: "Dot external execution must be reconciled before a new assignment; Paperclip cannot confirm its external stop.", issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
+    }
+    if (isResponsibleUserDenialCode(run.errorCode)) {
+      return { outcome: "not_scheduled" as const,
+        reason: "The responsible user denied this work; a new attempt would hit the same denial.",
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     }
     if (run.errorCode === "provider_tool_definition_invalid") {
       return { outcome: "not_scheduled" as const,

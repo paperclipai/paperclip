@@ -456,6 +456,15 @@ describe("decideReleaseRecovery", () => {
       expected: { kind: "blocked", notice: "execution_review_participant" },
     },
     {
+      name: "blocked: a reviewer run denied by its responsible user does not queue another reviewer run",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        reviewParticipant: { ...baseReleaseRecoveryFacts.reviewParticipant, applies: true },
+        immediate: { ...baseReleaseRecoveryFacts.immediate, isResponsibleUserDenialRun: true },
+      },
+      expected: { kind: "blocked", notice: "responsible_user_denial" },
+    },
+    {
       name: "queue_review_participant_recovery: review-participant recovery applies and no suppression or block condition fires",
       facts: {
         ...baseReleaseRecoveryFacts,
