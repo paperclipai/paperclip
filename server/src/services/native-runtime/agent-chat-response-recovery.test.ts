@@ -72,6 +72,7 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
       agentId: f.agentId, sessionGeneration: 0 });
     await db.insert(chatCompletionDeliveries).values({ id: deliveryId, companyId: f.companyId, taskId,
       statusVersion: 2, status: "queued", targetRunId: f.runId, nextAttemptAt: new Date(0) });
+    await db.update(heartbeatRuns).set({ finishedAt: new Date() }).where(and(eq(heartbeatRuns.id, f.runId), eq(heartbeatRuns.status, "succeeded")));
     await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, source: "automation", wakeReason: "chat_task_completed",
       conversationMode: true, conversationSessionGeneration: 0, chatCompletionDeliveryIds: [deliveryId], chatCompletionUpdates: [{ taskId }] } })
       .where(eq(heartbeatRuns.id, f.runId));
@@ -191,24 +192,82 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     expect(await comments(f.runId)).toEqual([]);
   });
 
-  it("uses the accepted retry deadline without authorizing a reply or a new model run", async () => {
-    const f = await fixture(), outbox = await completion(f), nextAttemptAt = new Date(Date.now() + 300_000);
-    await db.update(nativeRunFinalizations).set({ nextAttemptAt }).where(eq(nativeRunFinalizations.runId, f.runId));
-    await outbox.service.deliver(outbox.deliveryId);
-    expect(await outbox.delivery()).toMatchObject({ status: "queued", targetRunId: f.runId, attempts: 0, nextAttemptAt });
-    expect(outbox.wakeup).not.toHaveBeenCalled();
-    expect(await comments(f.runId)).toEqual([]);
+  it("saves a legitimate delayed reply before the fixed limit without another model run", async () => {
+    const started = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(started);
+    try {
+      const f = await fixture(), outbox = await completion(f);
+      for (const elapsed of [0, 60_000, 120_000, 240_000]) {
+        vi.setSystemTime(started + elapsed);
+        await outbox.service.deliver(outbox.deliveryId);
+        expect(await outbox.delivery()).toMatchObject({ status: "queued", targetRunId: f.runId, attempts: 0, responseCommentId: null });
+        expect(outbox.wakeup).not.toHaveBeenCalled();
+      }
+      vi.setSystemTime(started + 299_999);
+      const work = nativeResponsePresentationWork(db), [entry] = await work.load(f.input);
+      await expect(work.check(entry)).resolves.toBeNull();
+      const [comment] = await comments(f.runId);
+      expect(comment).toMatchObject({ body: f.reply, authorAgentId: f.agentId, createdByRunId: f.runId });
+      expect(await issue(f.issueId)).toMatchObject({ status: "in_review", conversationState: "waiting" });
+      expect(await outbox.delivery()).toMatchObject({ status: "delivered", targetRunId: f.runId, attempts: 0, responseCommentId: comment.id });
+      vi.setSystemTime(started + 300_000);
+      await outbox.service.deliver(outbox.deliveryId);
+      expect(await comments(f.runId)).toHaveLength(1);
+      expect(outbox.wakeup).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
   });
 
-  it("does not turn candidate deferral into authority for a digest mismatch", async () => {
-    const f = await fixture(), outbox = await completion(f);
-    await db.update(nativeRunResults).set({ canonicalSha256: "invalid-digest" }).where(eq(nativeRunResults.runId, f.runId));
-    await outbox.service.deliver(outbox.deliveryId);
-    const work = nativeResponsePresentationWork(db), [entry] = await work.load(f.input);
-    await expect(work.check(entry)).resolves.toBeNull();
-    expect(await comments(f.runId)).toEqual([]);
-    expect(await outbox.delivery()).toMatchObject({ status: "queued", targetRunId: f.runId, attempts: 0, responseCommentId: null });
-    expect(outbox.wakeup).not.toHaveBeenCalled();
+  it("clamps an external native retry deadline to the immutable five-lease presentation limit", async () => {
+    const started = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(started);
+    try {
+      const f = await fixture(), outbox = await completion(f);
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(started + 86_400_000) })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      await outbox.service.deliver(outbox.deliveryId);
+      expect(await outbox.delivery()).toMatchObject({ status: "queued", targetRunId: f.runId, attempts: 0,
+        nextAttemptAt: new Date(started + 300_000) });
+      expect(outbox.wakeup).not.toHaveBeenCalled();
+      expect(await comments(f.runId)).toEqual([]);
+      vi.setSystemTime(started + 300_000);
+      await outbox.service.deliver(outbox.deliveryId);
+      expect(await outbox.delivery()).toMatchObject({ status: "pending", targetRunId: null, attempts: 1 });
+      expect(outbox.wakeup).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["digest", "external-context"])("bounds permanent %s declines without sliding, publishing or changing accepted work", async fault => {
+    const started = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(started);
+    try {
+      const f = await fixture(), outbox = await completion(f);
+      if (fault === "digest") await db.update(nativeRunResults).set({ canonicalSha256: "invalid-digest" }).where(eq(nativeRunResults.runId, f.runId));
+      else {
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+        await db.update(heartbeatRuns).set({ contextSnapshot: { ...run.contextSnapshot, externalChatContinuation: true } }).where(eq(heartbeatRuns.id, f.runId));
+      }
+      const [acceptedBefore] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId));
+      const work = nativeResponsePresentationWork(db), [entry] = await work.load(f.input);
+      for (const elapsed of [0, 60_000, 120_000, 240_000]) {
+        vi.setSystemTime(started + elapsed);
+        await outbox.service.deliver(outbox.deliveryId);
+        await expect(work.check(entry)).resolves.toBeNull();
+        expect(await comments(f.runId)).toEqual([]);
+        expect(await outbox.delivery()).toMatchObject({ status: "queued", targetRunId: f.runId, attempts: 0,
+          responseCommentId: null, nextAttemptAt: new Date(started + Math.min(elapsed + 60_000, 300_000)) });
+        expect(outbox.wakeup).not.toHaveBeenCalled();
+      }
+      vi.setSystemTime(started + 299_999);
+      await outbox.service.deliver(outbox.deliveryId);
+      expect((await outbox.delivery()).nextAttemptAt).toEqual(new Date(started + 300_000));
+      vi.setSystemTime(started + 300_000);
+      await outbox.service.deliver(outbox.deliveryId);
+      expect(await outbox.delivery()).toMatchObject({ status: "pending", targetRunId: null, attempts: 1, responseCommentId: null });
+      expect(outbox.wakeup).toHaveBeenCalledTimes(1);
+      expect(await comments(f.runId)).toEqual([]);
+      expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId)))[0]).toEqual(acceptedBefore);
+      expect(await issue(outbox.taskId)).toMatchObject({ status: "done", statusVersion: 2 });
+    } finally { vi.useRealTimers(); }
   });
 
   it("finds a committed final Agent Chat turn, persists the exact reply once and only then settles waiting", async () => {

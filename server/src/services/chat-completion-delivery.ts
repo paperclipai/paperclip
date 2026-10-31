@@ -235,7 +235,10 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
       if (runId) {
         const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
         if (run && activeRuns.includes(run.status)) return;
-        if (run?.runtimeMode === "native" && run.status === "succeeded") {
+        // Each callback gets one fixed grace, never a new window per sweep.
+        const presentationDeadline = run?.runtimeMode === "native" && run.status === "succeeded" && run.finishedAt
+          ? run.finishedAt.getTime() + MAX_ATTEMPTS * LEASE_MS : null;
+        if (run && presentationDeadline !== null && Date.now() < presentationDeadline) {
           const scope = { companyId: claimed.companyId, issueId: row.handoff.conversationId,
             runId: run.id, agentId: row.handoff.agentId };
           const deferred = await db.transaction(async tx => {
@@ -243,11 +246,11 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
             // authorize and save the accepted reply under its full guards.
             const candidates = nativeResponsePresentationCandidates(scope).as("pending_native_completion_reply");
             const [response] = await tx.select().from(candidates);
-            if (!response) return false;
+            if (!response || Date.now() >= presentationDeadline) return false;
             await notifyNativeResponsePresentation(tx, scope);
-            const updated = await tx.update(deliveries).set({ nextAttemptAt: new Date(Math.max(
+            const updated = await tx.update(deliveries).set({ nextAttemptAt: new Date(Math.min(presentationDeadline, Math.max(
               claimed.nextAttemptAt.getTime(), response.nextAttemptAt?.getTime() ?? 0,
-            )) }).where(and(eq(deliveries.id, id), eq(deliveries.companyId, claimed.companyId),
+            ))) }).where(and(eq(deliveries.id, id), eq(deliveries.companyId, claimed.companyId),
               eq(deliveries.status, "queued"), eq(deliveries.targetRunId, run.id),
               eq(deliveries.statusVersion, row.task.statusVersion))).returning({ id: deliveries.id });
             return updated.length > 0;
