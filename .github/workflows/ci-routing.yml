@@ -21,7 +21,9 @@ permissions:
 jobs:
   gate:
     name: Select trusted runner
-    runs-on: ${{ vars.AWS_CI_ENABLED == 'true' && vars.AWS_CI_ROUTING_USER_IDS_SOURCE != '' && vars.AWS_CI_TRUSTED_USER_IDS == vars.AWS_CI_ROUTING_USER_IDS_SOURCE && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && ((github.event_name == 'pull_request' && contains(vars.AWS_CI_ROUTING_USER_IDS, format('|{0}|', github.event.pull_request.user.id)) && contains(vars.AWS_CI_ROUTING_USER_IDS, format('|{0}|', github.event.sender.id))) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && contains(vars.AWS_CI_ROUTING_USER_IDS, format('|{0}|', github.actor_id)))) && 'runs-on/fleet=paperclip-ci-routing-x64/env=public-ci' || 'ubuntu-latest' }}
+    # No AWS capacity is allocated until current CI CODEOWNERS are verified.
+    # A cached numeric allowlist alone can outlive removal from CODEOWNERS.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       plan: ${{ steps.plan.outputs.plan }}
@@ -51,6 +53,7 @@ jobs:
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVENT_MERGE_SHA: ${{ github.sha }}
           RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -u
 
@@ -73,7 +76,8 @@ jobs:
 
           is_allowed() {
             local user_id="$1"
-            jq -e --argjson user_id "$user_id" 'index($user_id) != null' \
+            jq -e --argjson user_id "$user_id" --argjson owners "$owner_ids" \
+              'index($user_id) != null and ($owners | index($user_id) != null)' \
               <<< "$TRUSTED_USER_IDS" >/dev/null
           }
 
@@ -94,9 +98,27 @@ jobs:
             all(.[]; type == "number" and . > 0 and floor == .)
           ' <<< "$TRUSTED_USER_IDS" >/dev/null 2>&1 || fail_closed 'trusted user ID list is malformed'
 
+          # Both the resolver and CODEOWNERS come from the same protected master
+          # revision. Never use the PR's CODEOWNERS or execute its source here.
+          trusted_sha="$(gh api /repos/paperclipai/paperclip/git/ref/heads/master --jq .object.sha)" \
+            || fail_closed 'could not resolve trusted CODEOWNERS revision'
+          is_commit_sha "$trusted_sha" || fail_closed 'invalid trusted CODEOWNERS revision'
+          owner_helper="$RUNNER_TEMP/aws-ci-owners.mjs"
+          if ! gh api "/repos/paperclipai/paperclip/contents/scripts/ci-profile/authorize.mjs?ref=$trusted_sha" \
+              --jq '.content' > "$owner_helper.base64" ||
+             ! base64 --decode < "$owner_helper.base64" > "$owner_helper"; then
+            fail_closed 'could not load trusted CODEOWNERS resolver'
+          fi
+          owner_ids="$(node --input-type=module - "$owner_helper" "$trusted_sha" <<'NODE'
+          import { pathToFileURL } from 'node:url';
+          const { trustedOwnerIds } = await import(pathToFileURL(process.argv[2]));
+          console.log(JSON.stringify(trustedOwnerIds(undefined, process.argv[3])));
+          NODE
+          )" || fail_closed 'could not verify current CI CODEOWNERS'
+
           for user_id in "$EVENT_PR_AUTHOR_ID" "$EVENT_SENDER_ID"; do
             is_positive_integer "$user_id" || fail_closed 'event contains a malformed user ID'
-            is_allowed "$user_id" || fail_closed "GitHub user ID $user_id is not allowlisted"
+            is_allowed "$user_id" || fail_closed "GitHub user ID $user_id is not an allowlisted CI CODEOWNER"
           done
 
           for commit_sha in "$EVENT_BASE_SHA" "$EVENT_HEAD_SHA" "$EVENT_MERGE_SHA"; do
@@ -204,20 +226,24 @@ jobs:
           [[ "$event_merge_tree" == "$live_merge_tree" ]] \
             || fail_closed 'current merge tree differs from the triggering merge tree'
 
+          is_positive_integer "$RUN_ID" || fail_closed 'invalid workflow run ID'
+          is_positive_integer "$RUN_ATTEMPT" || fail_closed 'invalid workflow run attempt'
           run_json="$(gh api \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "/repos/paperclipai/paperclip/actions/runs/$RUN_ID" 2>/dev/null)" \
+            "/repos/paperclipai/paperclip/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT" 2>/dev/null)" \
             || fail_closed 'could not refresh workflow run state'
 
           triggering_actor_id="$(jq -r '.triggering_actor.id // empty' <<< "$run_json")"
           is_positive_integer "$triggering_actor_id" || fail_closed 'workflow run has no valid triggering actor ID'
-          is_allowed "$triggering_actor_id" || fail_closed "triggering GitHub user ID $triggering_actor_id is not allowlisted"
+          is_allowed "$triggering_actor_id" || fail_closed "triggering GitHub user ID $triggering_actor_id is not an allowlisted CI CODEOWNER"
 
           jq -e \
             --argjson repository_id 1170821064 \
+            --argjson run_attempt "$RUN_ATTEMPT" \
             --arg event_name "$EVENT_NAME" '
               .repository.id == $repository_id and
+              .run_attempt == $run_attempt and
               .event == $event_name
             ' <<< "$run_json" >/dev/null 2>&1 \
             || fail_closed 'current workflow run does not match the expected repository event'
@@ -350,24 +376,27 @@ jobs:
           FORCE_FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
           CI_INCREMENTAL_MODE: ${{ vars.CI_INCREMENTAL_MODE || 'enabled' }}
           STACK_JSON: ${{ toJSON(github.event.pull_request.stack) }}
-          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVENT_MERGE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           fallback() { echo 'plan=' >> "$GITHUB_OUTPUT"; exit 0; }
           [[ "$FULL_CI" == 'true' ]] || fallback
-          [[ "$EVENT_BASE_SHA" =~ ^[0-9a-f]{40}$ && "$EVENT_MERGE_SHA" =~ ^[0-9a-f]{40}$ ]] || fallback
+          [[ "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$EVENT_MERGE_SHA" =~ ^[0-9a-f]{40}$ ]] || fallback
           trusted="$(gh api /repos/paperclipai/paperclip/git/ref/heads/master --jq .object.sha)" || fallback
           [[ "$trusted" =~ ^[0-9a-f]{40}$ ]] || fallback
           directory="$(mktemp -d)"
           trap 'rm -rf "$directory"' EXIT
-          for file in .github/scripts/ci-plan.mjs .github/ci-task-matrix.json turbo.json; do
+          for file in .github/scripts/ci-plan.mjs .github/scripts/ci-inputs.mjs .github/scripts/ci-diff.mjs .github/ci-task-matrix.json turbo.json; do
             gh api -H 'Accept: application/vnd.github.raw+json' \
               "/repos/paperclipai/paperclip/contents/$file?ref=$trusted" \
               > "$directory/${file##*/}" || fallback
           done
-          gh api "/repos/paperclipai/paperclip/compare/$EVENT_BASE_SHA...$EVENT_MERGE_SHA" \
-            > "$directory/comparison.json" || fallback
+          # Read the exact tested merge and both parents. The event's base SHA can
+          # lag behind its actual first parent. A bare tree diff has no API file cap.
+          git init --bare "$directory/repository.git" >/dev/null || fallback
+          git -C "$directory/repository.git" fetch --quiet --no-tags --filter=blob:none --depth=2 \
+            https://github.com/paperclipai/paperclip.git "$EVENT_MERGE_SHA" || fallback
           if [[ "$PROFILE_CI" == 'true' || "$FORCE_FULL_CI" == 'true' ]]; then
             export CI_FORCE_REASON='Full suite requested by label'
           elif [[ "$STACK_JSON" != 'null' && -n "$STACK_JSON" ]]; then
@@ -375,5 +404,5 @@ jobs:
           fi
           export CI_TASK_CONFIG="$directory/turbo.json"
           export CI_TASK_MATRIX="$directory/ci-task-matrix.json"
-          export CI_COMPARISON="$directory/comparison.json"
+          export CI_DIFF_REPOSITORY="$directory/repository.git"
           node "$directory/ci-plan.mjs" || fallback

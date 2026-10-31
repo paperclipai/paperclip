@@ -243,8 +243,22 @@ export async function onboardingFirstTask(input: OnboardingFirstTaskInput): Prom
     if (childId && child?.id !== childId) fail("onboarding_approved_child_mismatch");
     const workspacePending = assertRuns(snapshot, [parent.id, ...(childId ? [childId] : [])]);
     if (snapshot.attachments.some(row => row.issueId !== childId)) fail("onboarding_artifact_created_by_parent");
+    const pending = workspacePending || [...seen.values()].some(isPendingRun);
+    if (child?.status === "blocked" && child.unblockDescriptor?.owner === "board" && !pending) {
+      const childRuns = [...seen.values()].filter(run => runIssueId(run) === child.id)
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+      const latest = childRuns[0];
+      const createdAt = latest && typeof latest.createdAt === "string" ? Date.parse(latest.createdAt) : NaN;
+      const result = latest?.resultJson;
+      if (Number.isFinite(createdAt) && childRuns.slice(1).every(run => Date.parse(run.createdAt) < createdAt) &&
+        latest?.runtimeMode === "native" && latest.nativeIssueId === child.id && latest.contextSnapshot?.issueId === child.id &&
+        latest.status === "succeeded" && latest.nativePhase === "committed" && result?.finalizationPhase === "committed" &&
+        result.prpReportedWorkDisposition === "blocked" && result.finalizationReasonCode === "current_track_blocker_waiting" &&
+        result.authoritativeDecision === "blocked" && result.issueStatusAfter === "blocked" &&
+        Number.isSafeInteger(child.statusVersion) && result.statusVersionAfter === child.statusVersion) fail("onboarding_child_task_blocked");
+    }
     const settled = child && currentParent.status === "done" && firstTaskCompletionSettled(snapshot.tasks, [parent.id], parent.id) &&
-      !workspacePending && ![...seen.values()].some(isPendingRun);
+      !pending;
     if (settled) {
       const artifacts = snapshot.attachments.filter(row => row.issueId === child.id && row.originalFilename === "connection-proof.json");
       if (artifacts.length !== 1) fail("onboarding_child_artifact_missing");

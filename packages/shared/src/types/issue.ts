@@ -1178,6 +1178,12 @@ export interface IssueCommentMetadataSection {
 
 export interface IssueCommentMetadata {
   version: 1;
+  chatMessage?: {
+    sourceTaskId: string;
+    sourceTaskIdentifier: string;
+    sourceRunId: string;
+    contentHash: string;
+  };
   /** Producer-classified diagnostics; task interruption UI owns system repair. */
   recoveryResponsibility?: "system" | "user";
   /** Inbound channel attribution; never an authorization input. */
@@ -1779,6 +1785,7 @@ export interface IssueAttachment {
 /** Bounded cold-open window; the complete chronological feed stays paginated. */
 export interface IssueRecentComments {
   latestCommentId: string | null;
+  oldestCommentId?: string | null;
   comments: IssueComment[];
   hasMore: boolean;
 }

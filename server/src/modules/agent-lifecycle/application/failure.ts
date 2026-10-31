@@ -15,6 +15,16 @@ const reasons = {
 } as const;
 
 const transientCodes = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "40001", "40P01", "53300", "57P01"]);
+const configurationFailures = new Set([
+  "harness_auth_failed", "harness_model_unavailable",
+  "harness_command_unavailable", "harness_cwd_invalid", "harness_probe_unexpected_output",
+]);
+
+export function lifecycleVerificationNeedsRetry(context: LifecycleFailure, error: unknown): boolean {
+  const code = lifecycleFailureCode(error) ?? "";
+  return context.phase === "verifying" && context.stage === "host"
+    && (configurationFailures.has(code) || (code === "harness_test_failed" && (context.verificationFailures ?? 0) >= 3));
+}
 
 export function lifecycleFailureCode(error: unknown): string | undefined {
   const candidate = error as { code?: unknown; cause?: { code?: unknown } } | null;
@@ -36,5 +46,6 @@ export function lifecycleFailureMessage(context: LifecycleFailure, error: unknow
   const code = lifecycleFailureCode(error);
   const reason = code && Object.hasOwn(reasons, code) ? reasons[code as keyof typeof reasons]
     : "Paperclip could not complete this step. It will retry automatically. If this continues, contact your instance administrator.";
-  return `${step} failed. ${reason}`;
+  return `${step} failed. ${reason}${lifecycleVerificationNeedsRetry(context, error)
+    ? " Automatic verification is paused. Update Configuration or choose Retry now." : ""}`;
 }

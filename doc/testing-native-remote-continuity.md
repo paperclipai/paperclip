@@ -172,10 +172,15 @@ disk outbox. No second remote journal or new polling loop is introduced.
 The live event window keeps the latest identity, turn, result and usage anchors,
 as well as unsettled semantic inputs, through long output streams. The 4,096-event
 and 500-command limits remain. This checkpoint is intentionally not a complete
-transcript: an abrupt crash can lose display output already acknowledged but not
-yet projected to the existing run log. The same provider turn continues; recovery
-never reruns work to reconstruct display text. Tool outcomes and terminal state
-retain their durable barriers.
+transcript. With local-only logs, an abrupt crash can lose a display projection
+already acknowledged by the controller. The opt-in `s3_segments` log backend
+checkpoints its canonical native export cursor in S3 and replays missing records
+from the existing validated `heartbeat_run_events` source on takeover. This adds
+no payload writes or per-record checkpoint transactions. Generic process output
+and optional raw provider sidecars have separate durability boundaries. See
+[run evidence storage](run-evidence-storage.md). The same provider turn continues;
+recovery never reruns provider work to reconstruct display text. Tool outcomes
+and terminal state retain their durable barriers.
 
 Rollback must use a controller that understands sparse checkpoints and the signed
 recovery cursor. A v2 decoder alone is insufficient. Runners admitted before this
@@ -278,3 +283,121 @@ This is protocol and persistence evidence. The separate
 `everyday-workflows.runner-codex.daytona.recover-controller` Product E2E cell
 qualifies the actual Daytona/provider path, including completion and workspace
 finalization. Neither test substitutes for the other's failure boundary.
+
+## Required native usage acceptance
+
+Built-in native remote Runner execution accepts structured accounting before
+its PRP transport ACK. `usage.reported`, turn-start, and turn-terminal facts
+produce immutable `run_usage_receipts` rows. The receipt stores only structured
+usage and turn identity. It does not depend on output logs or raw trace capture.
+The source UUID derives from the run and Runner identity. Provider-turn IDs and
+turn-start source facts preserve aggregation when several provider turns share
+one PRP envelope turn. Source event IDs and
+sequences remain stable across receiver replacement. Repeated delivery checks
+the saved fact and does not create another receipt for the same report.
+
+A failed receipt transaction rejects acceptance. The remote Runner keeps its
+outbox report and reconnects through its existing protocol lifecycle. A lost
+commit response can replay the same immutable receipt. A replacement receiver
+restores accepted per-turn aggregation from Postgres, then accepts pending
+reports from the same producer. The existing source fence prevents a retired
+producer from replacing the current source's usage. Missing or partial usage
+keeps accounting pending; it does not produce a zero-cost charge.
+
+The native session authority epoch supplies the current run's accounting owner
+to reused warm transports. The usual controller checkpoint and generation checks
+still control transport acknowledgement and attachment. Ledger settlement,
+pricing, reservations, and budget enforcement retain their existing owners.
+No accounting receipt directory is created for this supported remote path.
+
+Local native execution, legacy adapters, and external Dot/Muse execution retain
+their existing recorder behavior. This change does not establish disposable-web
+accounting durability for those paths. Server-originated model calls keep their
+existing admission and settlement records. No S3 accounting spool is introduced.
+The independent run-log/trace storage change can consume its own persisted
+sources; output acceptance is not accounting acceptance.
+
+Run the focused PostgreSQL/Runner experiment with:
+
+```sh
+pnpm exec vitest run server/src/services/native-runtime/native-usage-delivery.integration.test.ts --maxWorkers=1
+```
+
+The provider fixture emits a real PRP usage report through the durable Rust
+Runner. A PostgreSQL trigger fails receipt insertion. The test removes the first
+receiver directory, replaces its accounting owner, reconnects the same Runner,
+and independently reads the receipt and ledger. The provider is controlled;
+no paid provider request is made. Additional cases cover lost commit responses,
+replay conflicts, per-turn aggregation, partial usage, source replacement, and
+budget holds. Optional log and trace callbacks are absent from the experiment.
+
+The cold fixture build runs before opening PostgreSQL, with the existing native
+integration build budget. PR CI routes this suite through the existing cached
+native Runner lane. CI builds the release fixture; local execution uses debug.
+The behavior test has its own bounded receiver/process deadline after compilation.
+
+### Codex usage authority and release order
+
+The qualified Codex producer keeps its current-run baseline and latest session
+totals in its existing durable provider state. It observes historical resume
+snapshots, preserves that baseline across process recovery, and resets the
+baseline to the latest totals when attaching the next run. Multiple request
+reports therefore emit the whole run delta, rather than the provider's last
+request. Regressing or incomplete live counters cannot certify completion.
+
+Authoritative Codex reports carry `runDeltaBasis: "run"`. This requires a Runner
+artifact built from the provider baseline implementation in this change. A
+version string alone does not establish support; use the qualified artifact
+digest. Existing unmarked Codex reports remain incomplete and unpriced in the
+new accounting path. Their budget debt remains pending for reconciliation.
+No deployed Runner artifact has been qualified by this source-only change.
+
+PRP negotiates envelope versions and the admitted Runner digest. It does not
+negotiate this usage payload field. The existing event envelope validators leave
+usage payloads open, but an old standalone usage-schema consumer rejects this
+new field. Update receivers and strict usage-schema consumers first, then
+release the matching Runner artifact before claiming this durability guarantee.
+Finish or explicitly reconcile older admitted Codex runs during cutover. Do not
+claim that an old producer's final-request delta is a whole-run receipt.
+
+Heartbeat completion reads the current immutable accepted receipt, including its
+saved exact rate-card amount and provenance. It does not reprice with current
+rates or replace that accepted estimate with an absent provider dollar amount.
+The terminal UPDATE preserves the current producer-owned accounting projection
+atomically. If another report arrived after completion read its checkpoint, the
+newer receipt, readiness, price, and budget exposure win; unrelated session and
+completion metadata can still update. A newer partial receipt stays pending.
+Non-accounting attachment control events keep their existing handoff acceptance;
+an old run's accounting report still cannot acquire a successor's authority.
+
+The provider drains its bounded settled-turn usage tail before publishing the
+terminal event that closes the run. An authoritative active goal keeps its
+existing continuation path unless an uncorrected completion rejection closes
+the run. The
+same owner predicate selects both final usage drain and terminal outcome. A
+completed turn remains authoritative after a
+fully drained provider exit; ordinary session-exit handling still records an
+unavailable process independently. This keeps a late cumulative increase on the old run before the
+next run resets its baseline. Readiness and attachment retain accounting facts
+in the existing provider checkpoint instead of discarding them, including facts
+consumed before a later quiescence error. An increase
+that arrives after authoritative completion requires explicit reconciliation:
+PostgreSQL rejects changed finalized native usage or authoritative monetary evidence, so the existing Runner
+outbox retains it under the old source identity without another charge. Equal
+snapshots are harmless. No recurring scan or automatic adjustment is added.
+
+If delayed usage arrives after attachment and cannot belong to the current
+provider turn, the provider retains its cumulative evidence and the matching
+saved prior identity, leaves the successor baseline unchanged, and emits a
+failed run terminal. The existing reconciliation lifecycle blocks further work,
+including after restart. Unknown older ownership stays explicit rather than
+being inferred from provider-supplied run identity. Manual reconciliation or a
+fresh session is required for this rare unsupported timing case.
+
+Prior-turn increases are checked against the saved attachment baseline, even
+when a successor has already reported a higher session total. Required usage
+bypasses the optional diagnostic limit. An affected successor publishes an
+explicit incomplete usage report before failure; this preserves known budget
+exposure without settling ambiguous usage. That required report and its receipt
+retain the accounting measurements and matching saved prior identity, so an
+optional diagnostic acknowledgement cannot discard reconciliation evidence.
