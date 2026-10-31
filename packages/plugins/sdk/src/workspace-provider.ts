@@ -23,7 +23,7 @@ export const workspaceRecoveryPullRequestSchema = z.object({
   headSha: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
 }).strict();
 export type PluginWorkspaceRecoveryPullRequest = z.infer<typeof workspaceRecoveryPullRequestSchema>;
-const destinationRef = z.string().max(256).regex(/^refs\/heads\/[^\x00-\x20\x7f~^:?*\[\]\\]+$/)
+const destinationRef = z.string().max(266).regex(/^refs\/heads\/[^\x00-\x20\x7f~^:?*\[\]\\]+$/)
   .refine(ref => !ref.includes("..") && !ref.includes("@{") && !ref.endsWith(".") && !ref.endsWith("/")
     && ref.split("/").every(part => part && !part.startsWith(".") && !part.endsWith(".lock")));
 export const workspaceProviderOperationSchema = z.discriminatedUnion("kind", [

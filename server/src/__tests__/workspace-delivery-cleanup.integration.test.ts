@@ -50,6 +50,36 @@ const support = await getEmbeddedPostgresTestSupport();
       inspections: () => f.calls.filter(call => call.operation.kind === "inspect"),
       removals: () => f.calls.filter(call => call.operation.kind === "remove") };
   }
+  it("defers stalled remote proofs at startup without losing paged cleanup deadlines", async () => {
+    const f = await fixture(); f.setProof(f.delivered());
+    let release!: (proof: GitHubWorkspaceDeliveryResult) => void;
+    const stalled = new Promise<GitHubWorkspaceDeliveryResult>(resolve => { release = resolve; });
+    f.resolve.mockImplementationOnce(async () => stalled);
+    let startupFinished = false;
+    const startup = f.service.sweepTerminalWorkspaces(1, undefined, { allowRemoteDeliveryChecks: false })
+      .then(() => { startupFinished = true; });
+    try {
+      await vi.waitFor(() => expect(startupFinished).toBe(true), { timeout: 1500 });
+      expect(f.resolve).not.toHaveBeenCalled();
+      expect(f.inspections()).toHaveLength(0);
+      expect(f.service.hasTerminalWorkspaceSweepContinuation()).toBe(true);
+      const deadline = await f.service.nextTerminalWorkspaceSweepAt();
+      expect(deadline).not.toBeNull();
+      await f.service.sweepTerminalWorkspaces(1);
+      expect(f.service.hasTerminalWorkspaceSweepContinuation()).toBe(false);
+      expect(await f.service.nextTerminalWorkspaceSweepAt()).toBe(deadline);
+      let maintenanceFinished = false;
+      const maintenance = f.service.sweepTerminalWorkspaces(1).then(() => { maintenanceFinished = true; });
+      await vi.waitFor(() => expect(f.resolve).toHaveBeenCalledTimes(1));
+      expect(maintenanceFinished).toBe(false);
+      release(f.delivered());
+      await maintenance;
+      expect(f.removals()).toHaveLength(1);
+    } finally {
+      release(f.delivered());
+      await startup;
+    }
+  });
   it("retries a known commit remotely and inspects only after delivery without a work product", async () => {
     const f = await fixture();
     await f.service.sweepTerminalWorkspaces();

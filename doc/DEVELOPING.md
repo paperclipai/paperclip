@@ -3611,7 +3611,10 @@ cleanup validation still inspect current Git state; neither uses a display resul
 to authorize removal.
 
 The terminal-workspace reaper uses the database work coordinator. Startup scans
-recover existing workspace rows in bounded pages. Issue status and tree changes,
+recover existing workspace rows in bounded pages. The first readiness sweep
+defers the new remote delivery-proof checks while preserving candidate deadlines;
+later scheduled work performs them. GitHub latency does not block readiness
+through this path. Issue status and tree changes,
 workspace lifecycle writes, finalization receipts, and pull-request work-product writes signal work on
 their transaction before writing. The coordinator wakes after the outer
 transaction settles and holds idle admission while writes or cleanup are active.

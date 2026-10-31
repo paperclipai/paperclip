@@ -3337,7 +3337,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     // `compact: false` skips workspace compaction and compaction-trash deletion
     // for this sweep only. Pending compactions keep their deadlines, so a later
     // sweep runs them.
-    sweepTerminalWorkspaces: async (limit = 50, signal?: AbortSignal, options: { compact?: boolean } = {}) => {
+    sweepTerminalWorkspaces: async (limit = 50, signal?: AbortSignal, options: { compact?: boolean; allowRemoteDeliveryChecks?: boolean } = {}) => {
       // Skip this sweep while another sweep runs. A concurrent sweep would share
       // the cursor and the boundary and could corrupt the rotation state. A
       // skipped tick is safe: the next tick runs the sweep with intact state.
@@ -3709,6 +3709,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             result.skippedUndelivered += 1;
             continue;
           }
+        }
+        if (deliveryCandidate && options.allowRemoteDeliveryChecks === false) {
+          result.skippedBackoff += 1;
+          continue;
         }
         if (opts.terminalWorkspaceInspectionBackoffMs) {
           const revision = createHash("sha256").update(JSON.stringify([

@@ -65,9 +65,60 @@ const support = await getEmbeddedPostgresTestSupport();
       f.loseRemoval();
       await expect(removePluginWorkspace(db, f.workers, workspace!, "a".repeat(40), recoveryPullRequest)).rejects.toThrow();
       const [pending] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace!.id));
-      expect(pending.metadata?.workspaceProviderRemoval).toMatchObject({ operation: { recoveryPullRequest } });
+      expect((pending.metadata?.workspaceProviderRemoval as { operation: { recoveryPullRequest?: unknown } }).operation.recoveryPullRequest)
+        .toEqual(version === 1 ? recoveryPullRequest : undefined);
       await removePluginWorkspace(db, f.workers, pending, "a".repeat(40), recoveryPullRequest, async () => { throw new Error("must not reauthorize pending removal"); });
       expect(f.calls.at(-1).operation.recoveryPullRequest).toEqual(version === 1 ? recoveryPullRequest : undefined);
+    });
+    it.each([1, undefined])("replays a lost removal acknowledgement unchanged after capability flip (%s)", async (version) => {
+      const f = await fixture();
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+      const setCapability = (recoveryPullRequestVersion: 1 | undefined) => db.update(plugins).set({ manifestJson: {
+        ...plugin.manifestJson, workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, recoveryPullRequestVersion },
+      } }).where(eq(plugins.id, f.pluginId));
+      await setCapability(version as 1 | undefined);
+      const workspace = await preparePluginWorkspace(db, f.workers, f.input);
+      f.loseRemoval();
+      await expect(removePluginWorkspace(db, f.workers, workspace!, "a".repeat(40), { number: 42, headSha: "a".repeat(40) })).rejects.toThrow();
+      const first = f.calls.at(-1);
+      await db.update(plugins).set({ status: "disabled" }).where(eq(plugins.id, f.pluginId));
+      const count = f.calls.length;
+      await expect(removePluginWorkspace(db, f.workers, workspace!, "a".repeat(40))).rejects.toThrow("unavailable");
+      expect(f.calls).toHaveLength(count);
+      await db.update(plugins).set({ status: "ready" }).where(eq(plugins.id, f.pluginId));
+      await setCapability(version === 1 ? undefined : 1);
+      const [pending] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace!.id));
+      await removePluginWorkspace(db, f.workers, pending, "a".repeat(40));
+      expect(f.calls.at(-1).operation).toEqual(first.operation);
+      expect(f.calls.at(-1).operationId).toBe(first.operationId);
+      expect(pending.metadata?.workspaceProviderRemoval).toMatchObject({ operation: first.operation, operationId: first.operationId });
+      const [removed] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace!.id));
+      expect(removed.metadata?.workspaceProviderRemoved).toBe(true);
+    });
+    it.each(["legacy", "ambiguous", "mismatched"] as const)("fails closed for uncertain removal identities (%s)", async (identity) => {
+      const hint = identity !== "legacy";
+      const f = await fixture();
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+      await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
+        workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, recoveryPullRequestVersion: 1 } } }).where(eq(plugins.id, f.pluginId));
+      const workspace = await preparePluginWorkspace(db, f.workers, f.input);
+      f.loseRemoval();
+      await expect(removePluginWorkspace(db, f.workers, workspace!, "a".repeat(40), hint ? { number: 42, headSha: "a".repeat(40) } : undefined)).rejects.toThrow();
+      const first = f.calls.at(-1);
+      const [pending] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace!.id));
+      const intent = pending.metadata!.workspaceProviderRemoval as Record<string, unknown>;
+      if (identity === "mismatched") intent.operationId = "0".repeat(64);
+      else delete intent.operationId;
+      await db.update(executionWorkspaces).set({ metadata: { ...pending.metadata, workspaceProviderRemoval: intent } }).where(eq(executionWorkspaces.id, pending.id));
+      if (hint) {
+        const count = f.calls.length;
+        await expect(removePluginWorkspace(db, f.workers, pending, "a".repeat(40))).rejects.toThrow(identity === "ambiguous" ? "identity is ambiguous" : "identity does not match");
+        expect(f.calls).toHaveLength(count);
+      } else {
+        await removePluginWorkspace(db, f.workers, pending, "a".repeat(40));
+        expect(f.calls.at(-1).operationId).toBe(first.operationId);
+        expect(f.calls.at(-1).operation).toEqual(first.operation);
+      }
     });
     it.each(["refs/heads/main", null, undefined])("persists the actual prepared destination (%s)", async (destinationRef) => {
       const f = await fixture();

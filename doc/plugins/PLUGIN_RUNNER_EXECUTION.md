@@ -192,12 +192,20 @@ can then include `recoveryPullRequest: { number, headSha }` in `inspect` and
 must use its trusted source repository, validate that the specific PR recovery
 reference still identifies `headSha`, and independently check the actual workspace
 and all owned data. Arbitrary remote URLs and reference names are not accepted.
-Absent capability means Core does not send the extra field. Pending removal
-persists the same hint for safe retry; it never replaces the provider's checks.
+Absent capability means Core does not send the extra field. Before dispatch,
+Core persists the negotiated removal payload and its operation ID. Retries replay
+both unchanged, even if capabilities change, while still enforcing company,
+provider enablement, binding and generation checks. A downgraded provider can
+reject an unsupported payload; Core does not silently change its identity.
+Legacy intents without a recovery hint retain their deterministic ID. A hinted
+intent without a recorded ID is ambiguous and fails closed. None of these
+receipts replaces the provider's checks.
 
 The optional `prepared.destinationRef` records the resolved delivery branch as
-`refs/heads/<branch>`. Providers should return null when preparation cannot
-establish an unambiguous branch destination. Core stores this alongside the source
+`refs/heads/<branch>`, up to 266 characters including the prefix. Providers should
+return null when preparation cannot establish an unambiguous branch destination
+or its canonical ref exceeds this receipt limit; an optional receipt must not
+fail an otherwise successful preparation. Core stores this alongside the source
 snapshot; callers cannot overwrite it through workspace metadata updates. Older
 providers omit it. Core only falls back to their captured explicit source refs,
 not a mutable project configuration or a newly chosen default branch. A source

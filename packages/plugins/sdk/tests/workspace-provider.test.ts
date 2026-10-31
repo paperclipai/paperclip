@@ -70,6 +70,15 @@ describe("workspace provider SDK", () => {
       expect(() => parseWorkspaceProviderResult(params, { ...result, destinationRef })).toThrow();
     }
   });
+  it("preserves a 255-character destination branch through preparation and restoration", () => {
+    const destinationRef = `refs/heads/release/${"a".repeat(247)}`;
+    expect(destinationRef).toHaveLength(266);
+    for (const input of [params, { ...params, operation: { ...params.operation, branchMode: "existing" as const, existing: result.binding } }]) {
+      expect(parseWorkspaceProviderResult(input as PluginWorkspaceParams, { ...result, destinationRef }))
+        .toMatchObject({ destinationRef });
+      expect(() => parseWorkspaceProviderResult(input as PluginWorkspaceParams, { ...result, destinationRef: `${destinationRef}a` })).toThrow();
+    }
+  });
   it("separates completion acknowledgement from removal safety", () => {
     const input: PluginWorkspaceParams = { ...params, agentId: id(6), runId: id(7),
       operation: { kind: "finalize", binding: result.binding } };

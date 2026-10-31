@@ -89,6 +89,7 @@ export async function callWorkspaceProvider(
     advanceGeneration?: boolean;
     runId?: string | null;
     agentId?: string | null;
+    removalOperationId?: string;
   },
 ) {
   const { workspace } = input;
@@ -108,7 +109,10 @@ export async function callWorkspaceProvider(
       : 0;
   const operationGeneration = generation + (input.advanceGeneration ? 1 : 0);
   const operation = workspaceProviderOperationSchema.parse(input.operation);
-  if ((operation.kind === "inspect" || operation.kind === "remove")
+  if (input.removalOperationId !== undefined && (operation.kind !== "remove" ||
+    input.removalOperationId !== createHash("sha256").update(JSON.stringify([workspace.id, operationGeneration, operation])).digest("hex")))
+    throw conflict("Workspace removal identity does not match its recorded payload");
+  if ((operation.kind === "inspect" || operation.kind === "remove") && input.removalOperationId === undefined
     && selectedProvider.manifestJson.workspaceProvider?.recoveryPullRequestVersion !== 1) delete operation.recoveryPullRequest;
   if (operation.kind === "prepare" && operation.fresh) {
     if (!workspace.sourceIssueId) throw conflict("Fresh workspace task ownership is missing");
@@ -120,7 +124,7 @@ export async function callWorkspaceProvider(
     companyId: workspace.companyId,
     projectId: workspace.projectId,
     executionWorkspaceId: workspace.id,
-    operationId:
+    operationId: input.removalOperationId ?? (
       operation.kind === "inspect"
         ? randomUUID()
         : createHash("sha256")
@@ -128,7 +132,7 @@ export async function callWorkspaceProvider(
               JSON.stringify([workspace.id, operationGeneration, operation,
                 ...(operation.kind === "finalize" ? [input.runId, input.agentId] : [])]),
             )
-            .digest("hex"),
+            .digest("hex")),
     generation: operationGeneration,
     deadline: new Date(Date.now() + (operation.kind === "finalize" ? 30_000 : 300_000)).toISOString(),
     runId: input.runId ?? null,
@@ -745,7 +749,7 @@ async function finishPendingRemoval(
 ): Promise<Workspace> {
   if (workspace.metadata?.workspaceProviderRemoved === true) return workspace;
   const pending = workspace.metadata?.workspaceProviderRemoval as
-    | { generation?: unknown; operation?: unknown }
+    | { generation?: unknown; operation?: unknown; operationId?: unknown }
     | undefined;
   const parsed = workspaceProviderOperationSchema.safeParse(pending?.operation);
   const binding = readWorkspaceProviderBinding(workspace.metadata);
@@ -756,9 +760,15 @@ async function finishPendingRemoval(
     JSON.stringify(parsed.data.binding) !== JSON.stringify(binding)
   )
     throw conflict("Workspace removal intent is unavailable or stale");
+  if (pending.operationId === undefined && parsed.data.recoveryPullRequest)
+    throw conflict("Workspace removal identity is ambiguous; reconciliation requires the original request");
+  const operationId = createHash("sha256").update(JSON.stringify([workspace.id, pending.generation, parsed.data])).digest("hex");
+  if (pending.operationId !== undefined && pending.operationId !== operationId)
+    throw conflict("Workspace removal identity does not match its recorded payload");
   const result = await callWorkspaceProvider(db, workers, {
     workspace,
     operation: parsed.data,
+    removalOperationId: operationId,
   });
   if (result.kind !== "removed")
     throw conflict("Workspace removal is incomplete");
@@ -830,7 +840,10 @@ export async function removePluginWorkspace(
   }
   await beforeRemove?.();
   const generation = workspace.metadata?.lifecycleGeneration ?? 0;
-  const operation = { kind: "remove" as const, binding, expectedHeadSha, ...(recoveryPullRequest ? { recoveryPullRequest } : {}) };
+  const selectedProvider = await provider(db, workers, workspace.companyId, binding.pluginId);
+  const operation = workspaceProviderOperationSchema.parse({ kind: "remove", binding, expectedHeadSha,
+    ...(recoveryPullRequest && selectedProvider.manifestJson.workspaceProvider?.recoveryPullRequestVersion === 1 ? { recoveryPullRequest } : {}) });
+  const operationId = createHash("sha256").update(JSON.stringify([workspace.id, generation, operation])).digest("hex");
   const [pending] = await db.transaction(async (tx) => {
     await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
     return tx
@@ -838,7 +851,7 @@ export async function removePluginWorkspace(
       .set({
         metadata: {
           ...workspace.metadata,
-          workspaceProviderRemoval: { generation, operation },
+          workspaceProviderRemoval: { generation, operation, operationId },
         },
         updatedAt: new Date(),
       })
