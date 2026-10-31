@@ -22,6 +22,7 @@ import { assertSupportedConnection } from "../connections/setup-policy.js";
 
 import { actorBinding } from "../actor.js";
 import { assertOAuthRedirectConstraints, randomOauthToken, base64UrlSha256 } from "./authorization-constraints.js";
+import { resolveOAuthRedirectUri } from "./redirect-overrides.js";
 import type { createPersonalConnectionIdentity } from "../connections/personal-identity.js";
 
 type Dependencies = {
@@ -61,6 +62,10 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
     await assertExperimentalConnectorSetupEnabled(connection.config.sourceTemplateKey, connection.status !== "draft");
     if (connection.status === "archived")
       throw conflict("Archived app connections cannot start sign in");
+    input = {
+      ...input,
+      redirectUri: resolveOAuthRedirectUri(connection.config.url, input.redirectUri),
+    };
     const sourceTemplateKey =
       typeof connection.config.sourceTemplateKey === "string"
         ? connection.config.sourceTemplateKey
