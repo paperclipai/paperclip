@@ -53,6 +53,7 @@ type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 type CreateWorkspaceInput = {
   name?: string | null;
   sourceType?: string | null;
@@ -690,6 +691,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
   };
 
   const getProjectById = async (id: string): Promise<ProjectWithGoals | null> => {
+    if (!UUID_RE.test(id)) return null;
     const row = await db
       .select()
       .from(projects)
