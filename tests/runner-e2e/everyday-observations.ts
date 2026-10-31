@@ -344,17 +344,34 @@ export function storyRepliesConsumed(
   );
 }
 
+export type StoryReplyExpectation = string | ((body: string) => boolean);
+
+export function storyAgentReplyMatches(
+  comment: StoryComment | undefined,
+  agentId: string,
+  expected: StoryReplyExpectation,
+): boolean {
+  if (!comment || comment.authorAgentId !== agentId) return false;
+  const body = String(comment.body ?? "");
+  return typeof expected === "string" ? body.includes(expected) : expected(body);
+}
+
+/** The requested output is one exact token after this continuation's marker. */
+export function retainedControllerReplyMatcher(marker: string): (body: string) => boolean {
+  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`(?:^|\\s)${escaped}\\s+queue_r(?=\\s|$)`);
+  return body => pattern.test(body);
+}
+
 /** A terminal task is only ready for response assertions after its agent reply is visible. */
 export function storyHasAgentReply(
   issue: StoryIssue | undefined,
   agentId: string,
-  expectedText: string,
+  expectedText: StoryReplyExpectation,
 ): boolean {
   return (
     issue?.comments?.some(
-      (comment) =>
-        comment.authorAgentId === agentId &&
-        String(comment.body ?? "").includes(expectedText),
+      (comment) => storyAgentReplyMatches(comment, agentId, expectedText),
     ) ?? false
   );
 }

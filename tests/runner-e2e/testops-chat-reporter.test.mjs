@@ -200,7 +200,7 @@ test('post-watch facade runs exact official command with bounded pipes and prese
   assert.equal(result.runId, '123'); assert.equal(result.workflowSha, context.GITHUB_SHA); assert.equal(result.targetSha, context.GITHUB_SHA);
   assert.equal(result.currentRunUrlMatches, true); assert.equal(result.publicWorkflowMatches, true);
   assert.equal(result.capturedAfterWatch, true); assert.equal(result.runnableBindingQualified, false); assert.equal(result.actualResult, null);
-  assert.deepEqual(result.parameters, [{ id: 17, name: 'operation', value: 'bootstrap' }]);
+  assert.deepEqual(result.parameters, [{ id: 17, kind: 'UNRESOLVED', value: 'NOT_PROJECTED' }]);
   assert.ok(!bytes.toString().includes('SYNTHETIC')); assert.equal(f.env.ALLURE_JOB_RUN_ID, '');
   assert.deepEqual(await readFile(path.join(f.state, 'job.json')), f.originalJob);
   const second = await captureSafeErrors(() => reporter('bootstrap-context', undefined, f.env, () => assert.fail('no second auth'), () => assert.fail('no second CLI')));
