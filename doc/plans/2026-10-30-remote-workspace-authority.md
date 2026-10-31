@@ -8,9 +8,11 @@ has been performed.
 Execution record (2026-10-30): native remote preparation, encrypted saved versions,
 portable restore, ordinary file access, Stop/failure recovery, guarded closure,
 retention, and explicit migration are implemented. The branch includes current
-master through `105a67b52c`. Required recursive typecheck and the full build pass.
-All normal CI test, build, typecheck, Rust and browser gates passed on `b24126ad67`;
-the latest follow-up fixes require a fresh full CI run. The original
+master through `b866fa4bdc`. Migration 0420 was generated after master took
+0419; upstream 0419 is preserved. At pre-rebase `1939ba2f06`, full recursive
+typecheck, production build and all CI gates passed (52 successful checks and
+three intentional skips), with Greptile 5/5 and no unresolved comments. The
+post-rebase checks are recorded in the PR. The original
 serial test invocation was deliberately interrupted after eleven minutes; its
 log is retained. Its recorded general-server workload alone exceeds ninety serial
 minutes, so an interrupted command is not recorded as a passing suite.
@@ -35,12 +37,27 @@ succeeded, with a maximum measured latency of 11.2 ms. Peak process RSS was
 experiment under concurrent test load. It is not a production throughput or low
 memory guarantee.
 
-Live Daytona acceptance is **not verified**. The zero-retry campaign stopped at
-image qualification before agent creation. Its saved eval credential also failed
-an independent API read with HTTP 401. The attempt and provisional creation name
-are retained privately; provider absence cannot be certified with an invalid key.
-A current credential is required before retry. Active native controller continuity
-also depends on [PR #18343](https://github.com/paperclipai/paperclip/pull/18343).
+Actual Daytona **storage-service cold restore passed** at `1939ba2f06` on
+2026-10-31 UTC. The production plugin, environment leases, native transfers,
+encrypted secret binding, real Postgres and actual S3 saved synthetic remote
+files and Git state. After the first allocation was destroyed and its entire
+controller home removed, a separate process and allocation restored matching
+file hashes, modes, link, empty directory, unpushed commit, index, staged and
+unstaged changes, and untracked work. A new remote file then survived generation
+3 and saved Files-service readback. Independent checks confirmed both allocation
+IDs and all provisional names absent, four fixture inventories empty, no
+unresolved creation intents and no remaining S3 objects.
+
+This proves production storage services. It does not qualify a model run,
+Runner execution, HTTP/UI, or active native controller continuity. The registered
+full native restart journey remains unpassed and depends on the retained-session
+work in [PR #18343](https://github.com/paperclipai/paperclip/pull/18343).
+The original zero-retry campaign's HTTP 401 failure is retained. The user later
+supplied a valid credential, and the original provisional name is absent in that
+account. The private storage verifier also retained failures from a missing
+source-worker loader, an incorrect file selector after a real save/delete, and
+a reused fixture prefix before provider admission. The corrected proof uses the
+normal loader, validated selector and a separate database for each campaign.
 A separate ordinary saved-copy browser check passed against actual S3, with
 the original source deleted: file listing, saved-copy time, text preview, exact
 binary download hash, and reload all passed in the supported classic interface.
@@ -55,7 +72,7 @@ limit; fresh task-owned Docker databases provide the DB evidence above. Existing
 recovery tests exposed cross-test retained-candidate history; isolated comparisons
 pass, and the full 144-case repeat passes with company-scoped fixture cleanup.
 Parallel checks also exceeded the original disposable database limit of forty
-connections. The task database now allows two hundred connections. The failed
+connections. That task database was raised to two hundred connections. The failed
 run is retained separately. A later local broad attempt ended incomplete with
 10,191 passing and 58 failing tests; later groups did not run. Isolated replays do
 not change that outcome. The full normal CI suite subsequently passed on

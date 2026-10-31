@@ -948,7 +948,7 @@ provider-attempt counter.
 
 ## Experimental remote workspace snapshots
 
-Migration [0419_exotic_the_executioner.sql](../packages/db/src/migrations/0419_exotic_the_executioner.sql)
+Migration [0420_mean_veda.sql](../packages/db/src/migrations/0420_mean_veda.sql)
 adds the company-scoped `execution_workspace_snapshots` ledger. It records the
 workspace, source operation/run, parent, generation, writer epoch, encrypted
 object receipt, hashes, manifest digest, and retention state. Integrity and key
