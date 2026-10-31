@@ -5153,9 +5153,9 @@ done
                 Ok(_) => panic!("Cursor Cloud Windows launch must remain unsupported"),
                 Err(error) => error,
             };
-            assert!(error.to_string().contains(
-                "verified process snapshots are supported only on Linux and macOS"
-            ));
+            assert!(error
+                .to_string()
+                .contains("verified process snapshots are supported only on Linux and macOS"));
             fs::remove_dir_all(directory).unwrap();
             return;
         }
