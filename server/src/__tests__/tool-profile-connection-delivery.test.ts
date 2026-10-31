@@ -87,7 +87,6 @@ describePostgres("tool profile writes notify the connection delivery worker", ()
     const baseline = delivery.sweeps;
     let pendingAtFirstProfileWrite: boolean | undefined;
     await db.transaction(async (tx) => {
-      // Observe the caller transaction itself (not a proxy) right before its first tool profile insert.
       const insert = tx.insert.bind(tx);
       tx.insert = ((table: Parameters<typeof insert>[0]) => {
         if (table === toolProfiles) pendingAtFirstProfileWrite ??= databaseWorkPending(db, DELIVERY_QUEUES.connection);
