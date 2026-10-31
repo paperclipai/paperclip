@@ -1,7 +1,6 @@
 import { and, eq, getTableColumns, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { agents, decisionRetention, decisions, heartbeatRuns,
   issueApprovals, issueRecoveryActions, issueThreadInteractions, issues, approvals, type Db } from "@paperclipai/db";
-import type { AttentionSourceKind } from "@paperclipai/shared";
 import { evaluateAgentInvokability } from "./agent-invokability.js";
 import { HUMAN_RECOVERY_OWNER_TYPES, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, listFailedRunsWithNewerRun, readRunIssueId, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
 import { decisionRetentionService, DEFAULT_DECISION_ARCHIVE_DAYS } from "./decision-retention.js";
@@ -13,12 +12,13 @@ import { issueService } from "./issues.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 import { registerScopedDeadlineWork } from "./scoped-deadline-work.js";
+import type { AttentionRetentionScope } from "./retention-work-notifications.js";
 
 const archiveDelay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
 const kinds = ["decision", "issue_thread_interaction", "recovery_action", "blocker_attention", "review",
   "failed_run", "budget_alert", "agent_error_alert"] as const;
 type Kind = typeof kinds[number];
-type Scope = { companyId?: string; sourceKind?: AttentionSourceKind; sourceId?: string; issueId?: string };
+type Scope = AttentionRetentionScope;
 type Candidate = { sourceKind: Kind; sourceId: string; companyId: string; activityAt: string; deadlineAt: number; issueId: string | null };
 type Entry = Candidate & { id: string; dueAt: number; rootId: string; variant?: "owner" | "terminal" };
 type Cursor = { sourceKind: string; sourceId: string };
@@ -66,8 +66,9 @@ const sources: Record<Kind, SQL> = {
 export function attentionRetentionService(db: Db) {
   const cursors = new Map<string, Cursor>();
   async function candidates(database: Db, scope: Scope = {}, cursor?: Cursor, sourceId?: string): Promise<Candidate[]> {
+    const issueIds = scope.issueIds ?? (scope.issueId ? [scope.issueId] : []);
     const selected = kinds.filter(kind => (!scope.sourceKind || scope.sourceKind === kind)
-      && (!scope.issueId || !["budget_alert", "agent_error_alert"].includes(kind)));
+      && (!issueIds.length || !["budget_alert", "agent_error_alert"].includes(kind)));
     if (!selected.length) return [];
     const rows = await database.execute(sql`with source_candidates(source_kind, source_id, company_id, activity_at, issue_id) as (${sql.join(selected.map(kind => sources[kind]), sql` union all `)})
       select s.source_kind as "sourceKind", s.source_id as "sourceId", s.company_id as "companyId",
@@ -75,7 +76,7 @@ export function attentionRetentionService(db: Db) {
       from source_candidates s inner join companies c on c.id = s.company_id
       left join decision_retention r on r.company_id = s.company_id and r.source_kind = s.source_kind and r.source_id = s.source_id
       where c.status = 'active'
-        and (${scope.issueId ?? null}::text is null or s.issue_id = ${scope.issueId ?? null})
+        ${issueIds.length ? sql`and s.issue_id in (${sql.join(issueIds.map(id => sql`${id}`), sql`, `)})` : sql``}
         and (${scope.companyId ?? null}::uuid is null or s.company_id = ${scope.companyId ?? null}::uuid)
         and (${sourceId ?? scope.sourceId ?? null}::text is null or s.source_id = ${sourceId ?? scope.sourceId ?? null})
         and (s.source_kind = 'blocker_attention' or ((r.id is null or r.keep = false) and r.archived_at is null))
@@ -312,7 +313,8 @@ export function registerAttentionRetentionWork(coordinator: ReturnType<typeof cr
     matches: (entry, scope) => (!scope?.companyId || scope.companyId === entry.companyId)
       && (!scope?.sourceKind || scope.sourceKind === entry.sourceKind)
       && (!scope?.sourceId || scope.sourceId === entry.sourceId)
-      && (!scope?.issueId || scope.issueId === entry.issueId),
+      && (!scope?.issueId || scope.issueId === entry.issueId)
+      && (!scope?.issueIds?.length || entry.issueId !== null && scope.issueIds.includes(entry.issueId)),
     load: service.load, check: service.check,
   }, canRun);
 }
