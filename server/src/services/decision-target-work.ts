@@ -12,6 +12,7 @@ export function registerDecisionTargetWork(
     pausePassiveMaintenance: true,
     onSettled: service.decisionTargetsChanged,
     run: signal => canRun() ? service.sweepInvalidTargets(new Date(), signal) : Promise.resolve(),
-    hasPending: async () => service.hasDecisionTargetWork(),
+    hasPending: async () => canRun() && service.hasDecisionTargetWork(),
+    nextRunAt: () => service.hasDecisionTargetWork() ? Date.now() + 30_000 : null,
   });
 }
