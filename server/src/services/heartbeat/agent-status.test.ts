@@ -24,7 +24,7 @@ describePostgres("heartbeat agent status", () => {
 
   beforeAll(async () => {
     if (!external) database = await startEmbeddedPostgresTestDatabase("paperclip-agent-status-");
-    db = createDb(external ?? database!.connectionString);
+    db = createDb(external ?? database!.connectionString, { maxConnections: 6 });
     if (external) {
       db.$client.options.onnotice = () => {};
       await db.execute(sql`truncate companies cascade`);

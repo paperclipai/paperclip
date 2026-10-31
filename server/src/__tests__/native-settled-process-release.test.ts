@@ -66,7 +66,7 @@ suite("settled native run process identity", () => {
 
   beforeAll(async () => {
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("native-settled-process-");
-    db = createDb(external ?? temporary!.connectionString);
+    db = createDb(external ?? temporary!.connectionString, { maxConnections: 6 });
     if (external) await db.execute(sql`truncate companies cascade`);
     companyId = randomUUID();
     agentId = randomUUID();

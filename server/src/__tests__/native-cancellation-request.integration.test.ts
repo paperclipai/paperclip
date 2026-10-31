@@ -14,7 +14,7 @@ describe("atomic caller cancellation request ownership", () => {
     ({ cancelNativeSession } = await import("../services/native-runtime/native-session-executor.js"));
     const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_CANCELLATION_TEST_DATABASE_URL");
     if (!external) database = await startEmbeddedPostgresTestDatabase("caller-stop-");
-    db = createDb(external ?? database!.connectionString);
+    db = createDb(external ?? database!.connectionString, { maxConnections: 6 });
   }, 90_000);
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
   async function fixture() {
