@@ -87,11 +87,21 @@ the raw/prepared real-PostgreSQL calibration remains.
 
 Current assembled cases cover:
 
+- A fixture-only goal-control INSERT error that previously aborted actual boot.
+  With owner isolation, the goal row stays pending, a new real residual lease
+  obligation is discovered within one second of child time and is cleaned by its
+  separate owner, and ordinary attention ingestion still archives its source.
+  Native classification remains fail-closed.
 - Actual readiness while a fixture-owned PostgreSQL lock holds the real startup
   retention INSERT. Health becomes ready with active work and pending SQL;
   releasing the lock produces the archive and zero active work. Readiness alone
   therefore does not stand in for idle eligibility.
 - Disabled-heartbeat empty boot across two simulated hourly windows.
+- Actual worktree suppression with a committed residual obligation and no
+  recurring SQL over two minutes of child time. A normal operator settings
+  activation reconstructs that obligation and produces a durable cleanup result.
+  Activation uses the stored instance identity and timestamp; no direct worker
+  wake or safety-gate bypass is used.
 - Ordinary HTTP company/settings/completed-task creation, independent durable
   inspection, drain/resume and two additional hourly windows without owner work.
 - An ordinary HTTP issue insertion held by an isolated PostgreSQL lock while
