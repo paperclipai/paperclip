@@ -114,7 +114,7 @@ export function createToolProfileService(db: Db, now: () => Date) {
             eq(toolProfileEntries.profileId, profile.id),
           ),
         )
-        .orderBy(asc(toolProfileEntries.createdAt), asc(toolProfileEntries.id)),
+        .orderBy(asc(toolProfileEntries.createdAt)),
       db
         .select(profileReviewCatalogColumns)
         .from(toolCatalogEntries)
@@ -557,7 +557,7 @@ export function createToolProfileService(db: Db, now: () => Date) {
               eq(toolProfileEntries.profileId, existing.id),
             ),
           )
-          .orderBy(asc(toolProfileEntries.createdAt), asc(toolProfileEntries.id)),
+          .orderBy(asc(toolProfileEntries.createdAt)),
         db
           .select()
           .from(toolProfileBindings)
