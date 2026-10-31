@@ -11,7 +11,7 @@ import { agents, authUsers, authAccounts, companies, companyMemberships, createD
 import { documentService } from "../../services/documents.js";
 import { connectionIntentService } from "../../services/connection-intents.js";
 import { initializeRunIdentity } from "../../services/run-identity.js";
-import { startEmbeddedPostgresTestDatabase } from "./embedded-postgres.js";
+import { startRecoveryPostgres } from "./recovery-postgres.js";
 import { createApp } from "../../app.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
 import { createStorageService } from "../../storage/service.js";
@@ -30,8 +30,8 @@ export async function startRunnerApiTestServer(options: {
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "paperclip-api-eval-"));
   const temporary = options.databaseUrl
-    ? { connectionString: options.databaseUrl, cleanup: () => closeRegisteredClients(options.databaseUrl!) }
-    : await startEmbeddedPostgresTestDatabase("paperclip-api-eval-db-");
+    ? { connectionString: options.databaseUrl, cleanup: () => closeRegisteredClients(options.databaseUrl!, { scope: "database" }) }
+    : await startRecoveryPostgres("paperclip-api-eval-db-");
   if (options.databaseUrl) await applyPendingMigrations(options.databaseUrl);
   const db = createDb(temporary.connectionString);
   const storage = createStorageService(createLocalDiskStorageProvider(join(root, "storage")));

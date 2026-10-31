@@ -68,3 +68,15 @@ fingerprint, provider/model/build/database evidence, ordinal, usage, cost, priva
 and cleanup. The integrated source changes broad fingerprint closures; none of
 the older qualified passes is transferred to this head. No attempt budget is reset,
 and no live launch or publication authority comes from this source preservation.
+
+
+## Integration candidate, 2026-10-31
+
+This owned integration branch combines preserved source `e2b35be76f` with
+master `f2db909393`. The original preservation branch and its historical results
+remain unchanged. No historical pass transfers to this composed source.
+The frozen 244-case OpenCode catalog keeps its historical IDs and DeepSeek 1017
+model. The two shipped subscription aliases and the separate TestOps backlog cell
+remain selectable alongside it; they do not change the frozen denominator.
+The standalone aliases retain the current shipped 120-second turn limit.
+Catalog phase and attempt budgets remain separately declared by their fixtures.

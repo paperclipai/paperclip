@@ -17,11 +17,11 @@ const currentAllowance = (time = Date.now()): EvalOperatingOverhead => ({ ...all
 const runner = "ubuntu-latest";
 const modelIdentity = { executionId: "claude.local.fixture", attemptId: "attempt-1", phase: "agent" as const };
 
-it("keeps operating overhead inside the same cap through model completion and a journal restart", async () => {
+it.each(["aws-fleet", "local"] as const)("keeps %s overhead inside the same cap through model completion and a journal restart", async runnerKind => {
   const directory = await mkdtemp(path.join(tmpdir(), "eval-overhead-"));
   const file = path.join(directory, "ledger.jsonl");
   const limits: EvalSpendLimits = { campaignId: "fixture", maxUsd: "20", deadlineAt: "2099-01-01T00:00:00Z",
-    maxRequests: 10, maxConcurrent: 1, maxAttemptsPerExecution: 1, overhead: currentAllowance() };
+    maxRequests: 10, maxConcurrent: 1, maxAttemptsPerExecution: 1, overhead: { ...currentAllowance(), runner: runnerKind } };
   try {
     const ledger = await openEvalCostLedger(file, limits);
     try {
@@ -89,6 +89,7 @@ it("requires fresh reviewed allowances tied to the actual CI runner before sched
   expect(() => scheduledOperatingOverhead(undefined, runner, "20", now)).toThrow("Missing reviewed");
   expect(() => scheduledOperatingOverhead("not json", runner, "20", now)).toThrow("JSON");
   expect(() => scheduledOperatingOverhead(JSON.stringify(allowance()), runner, "20", now)).toThrow("runner");
+  expect(() => scheduledOperatingOverhead(JSON.stringify({ ...hosted, runner: "local" }), runner, "20", now)).toThrow("runner");
   expect(() => scheduledOperatingOverhead(raw, "runs-on/fleet=paperclip-public-pr-x64/env=public-ci", "20", now)).toThrow("runner");
   expect(() => scheduledOperatingOverhead(raw, "unrecognized", "20", now)).toThrow("runner");
   expect(() => scheduledOperatingOverhead(raw, runner, "20", Date.parse("2026-10-19T23:59:59Z"))).toThrow("needs review");

@@ -92,7 +92,7 @@ test('copied controller runs without source dependencies, retains native evidenc
   const hosted = await exec(process.execPath, ['--test', '--test-reporter=tap', join(source, 'hosted.test.mjs')], {
     cwd: root, env: { ...environment, PAPERCLIP_CONTROLLER_TEST_RUNTIME: join(directory, 'controlled-evals') }, timeout: 30000, maxBuffer: 1_048_576,
   });
-  assert.match(hosted.stdout, /# pass 6\b/);
+  assert.match(hosted.stdout, /# pass 7\b/);
 
 
   const cli = await exec(process.execPath, [join(directory, 'controlled-evals/archive.mjs'), 'report-attempts', join(root, 'empty-attempts')], {

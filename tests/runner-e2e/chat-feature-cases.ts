@@ -8,7 +8,8 @@ import type { RunnerProfileFixture, RunnerTaskFixture } from "./types.js";
 
 export const CHAT_FEATURE_SUITE = "chat-features";
 export const CHAT_FEATURE_BUDGET_CENTS = 500;
-export const CHAT_FEATURE_GRADER = "paperclip.chat-features.v1";
+export const CHAT_FEATURE_GRADER = "paperclip.chat-features.v2";
+export const CHAT_FEATURE_OPENCODE_MODEL = "openrouter/deepseek/deepseek-v4.1-flash-1017";
 export const CHAT_FEATURE_CASES = ["create-backlog", "delegate-announcement"] as const;
 export type ChatFeatureCase = typeof CHAT_FEATURE_CASES[number];
 export interface ChatScenario {
@@ -62,7 +63,7 @@ export function chatFeatureProfile(profile: RunnerProfileFixture): RunnerProfile
     return { ...payload, name: "CEO", title: "CEO", role: "ceo",
       capabilities: "Coordinates company work and delegates tasks to the team.",
       budgetMonthlyCents: CHAT_FEATURE_BUDGET_CENTS,
-      adapterConfig: { ...adapterConfig, timeoutSec: CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, ...(profile.provider === "codex" ? { modelReasoningEffort: "low" } : {}) },
+      adapterConfig: { ...adapterConfig, timeoutSec: profile.id === "runner-opencode" ? CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec : 120, ...(profile.provider === "codex" ? { modelReasoningEffort: "low" } : {}) },
       runtimeConfig: { ...(payload.runtimeConfig as Record<string, unknown>),
         heartbeat: { enabled: false, maxConcurrentRuns: 1, maxDailyRuns: 3, maxDailyCostCents: CHAT_FEATURE_BUDGET_CENTS } },
     };
@@ -72,7 +73,7 @@ export const chatFeatureTasks: readonly RunnerTaskFixture[] = CHAT_FEATURE_CASES
   id, label: id === "create-backlog" ? "Save a task for Morgan without starting it" : "Delegate an announcement and return its saved result",
   groups: ["chat"], flow: "agent_chat", workMode: "standard",
   expectedRunCount: id === "create-backlog" ? 1 : 3,
-  automaticRetryPolicy: "single_attempt", turnTimeoutMs: CHAT_NATIVE_TIMEOUT_POLICY.effectiveNativeTurnTimeoutMs,
+  automaticRetryPolicy: "single_attempt", turnTimeoutMs: 120_000,
   attemptTimeoutMs: { local: 420_000, daytona: 420_000 },
   expectedTerminalState: { issue: "in_review", run: "succeeded" },
   buildTitle: nonce => `Chat feature ${id} ${nonce}`,

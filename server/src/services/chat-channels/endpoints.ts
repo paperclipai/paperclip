@@ -1,3 +1,5 @@
+import { notifyChatCompanyAuthorityChange } from "../chat-run-milestone-notifications.js";
+import { chatConnectionTransport } from "./provider-catalog.js";
 import type { ConnectionManagementContext } from "../connection-management.js";
 import { slackSetupState } from "./slack/setup.js";
 import { assertChatExecutionDefaultsAccess } from "../chat-execution-defaults.js";
@@ -333,7 +335,7 @@ function providerSetupState(
         connectionKind: "managed",
         connectionPurpose: "channel",
         ownership: "customer",
-        transport: input.provider === "speko" ? "voice" : "chat_sdk",
+        transport: chatConnectionTransport(input.provider),
         authKind: "api_key",
         credentialPolicy: "shared",
         status: "draft",
@@ -453,6 +455,11 @@ function providerSetupState(
         await managementContext?.reauthorize();
       await db.transaction(async (tx) => {
           await credentialLease.assertOwned(tx);
+          if ((input.allowDirectMessages === true && !existing.endpoint.allowDirectMessages)
+            || (input.allowGroupChats === true && !existing.endpoint.allowGroupChats)
+            || (input.allowUnlinkedPeople === true && !existing.endpoint.allowUnlinkedPeople)) {
+            await notifyChatCompanyAuthorityChange(tx, { companyId: existing.endpoint.companyId });
+          }
           if (input.executionDefaults !== undefined) {
             await assertChatExecutionDefaultsAccess(db, {
               companyId: existing.endpoint.companyId,

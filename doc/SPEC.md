@@ -2,6 +2,15 @@
 
 Target specification for the Paperclip control plane. Living document — updated incrementally during spec interviews.
 
+Proactive in-app updates let an active standard task or routine publish to its
+agent's persistent conversation with the run's responsible human. The server
+derives the destination, enforces current authority and company-visible chat
+privacy, and persists an attributed, idempotent comment with source-task provenance.
+Unread state belongs to the viewing human. Sending is independent of task
+completion and chat execution; future messages remain possible after `/new`.
+The V1 contract is specified under experimental task-backed agent chat in
+`doc/SPEC-implementation.md`.
+
 Experimental standalone cases provide persistent structured work records that can
 exist independently of execution. Prompt-driven handoffs move their primary
 ordinary task between agents while retaining case data and history. Existing task
@@ -865,6 +874,14 @@ optionally classifies existing tool-result boundaries through a shared OpenRoute
 connection. Settings → Connections is permanent; valid model verdicts take
 precedence and dependency failures use the original built-in detector.
 
+
+### Personal workspace presentation experiments
+
+A person may opt into an experimental workspace in Settings and return to the
+classic workspace. The presentation choice belongs to the person across companies
+on an instance; it does not grant execution capabilities or change shared work.
+The concrete current contract is in `SPEC-implementation.md` under Personal
+experimental workspace preference.
 ## Agent connection administration (2026-10-13)
 
 Standard agents can configure connections through the same domain APIs used by the app, bounded by their grants and their responsible user's current authority. Fresh standard agents for default Operators can manage app/tool connections, chat/email channels, AI accounts and pools, profiles and gateways without additional grants. Existing grants are not backfilled; explicit restrictions persist. Gateway administration retains the responsible human's administrative permission and does not grant agents blanket `tools:admin`.

@@ -1,5 +1,5 @@
 import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approval-visibility.js";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -31,6 +31,8 @@ import { deriveProjectUrlKey } from "@paperclipai/shared";
 import type {
   AttentionDecisionVerb,
   AttentionFeed,
+  AttentionSummary,
+  AttentionTaskIndex,
   AttentionFeedQuery,
   AttentionDetailImage,
   AttentionItem,
@@ -56,7 +58,7 @@ import {
   BLOCKER_ATTENTION_MAX_NODES,
   issueService,
 } from "./issues.js";
-import { executionIssueCondition } from "./issue-visibility.js";
+import { executionIssueCondition, visibleIssueCondition } from "./issue-visibility.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
@@ -163,6 +165,8 @@ type AttentionListOptions = AttentionFeedQuery & {
   /** Internal-only escape hatch for callers that need one stable, unpaginated feed snapshot. */
   allowUnscopedAll?: boolean;
   excludeSources?: readonly AttentionSourceKind[];
+  /** Count the canonical complete set without card bodies or presentation reads. */
+  summaryOnly?: boolean;
 };
 
 type AttentionServiceOptions = {
@@ -554,7 +558,7 @@ function parseActivityBoundary(value: string | undefined, field: "activitySince"
   return parsed;
 }
 
-async function enrichAttentionItems(db: Db, companyId: string, items: AttentionItem[], now: number) {
+async function enrichAttentionItems(db: Db, companyId: string, items: AttentionItem[], now: number, includePresentation = true) {
   if (items.length === 0) return items;
   const sourceIds = [...new Set(items.map((item) => item.subject.id))];
   const queueRows = await db
@@ -605,7 +609,7 @@ async function enrichAttentionItems(db: Db, companyId: string, items: AttentionI
     ...items.map(readMetadataAgentId),
     ...triageRows.map((row) => row.setByAgentId),
   ].filter((value): value is string => Boolean(value)))];
-  const agentNameById = new Map(agentIds.length === 0 ? [] : await db
+  const agentNameById = new Map(!includePresentation || agentIds.length === 0 ? [] : await db
     .select({ id: agents.id, name: agents.name })
     .from(agents)
     .where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds)))
@@ -767,10 +771,14 @@ function collapsePendingConfirmationsToNewest<T extends {
   issueId: string;
   kind: string;
   createdAt: Date;
+  payload: unknown;
 }>(rows: T[]) {
+  // Quality gates bind independent outputs; a newer visual approval must not
+  // hide a still-pending copy approval (or affect its badge count).
+  const independent = (row: T) => Boolean(row.payload && typeof row.payload === "object" && "qualityReview" in row.payload && row.payload.qualityReview);
   const newestByGroup = new Map<string, T>();
   for (const row of rows) {
-    if (row.kind !== "request_confirmation") continue;
+    if (row.kind !== "request_confirmation" || independent(row)) continue;
     const groupKey = `${row.issueId}:${row.kind}`;
     const newest = newestByGroup.get(groupKey);
     if (
@@ -784,6 +792,7 @@ function collapsePendingConfirmationsToNewest<T extends {
 
   return rows.filter((row) => (
     row.kind !== "request_confirmation"
+    || independent(row)
     || newestByGroup.get(`${row.issueId}:${row.kind}`)?.id === row.id
   ));
 }
@@ -824,6 +833,7 @@ async function issueSummaryMap(
   companyId: string,
   issueIds: Array<string | null | undefined>,
   readCondition: SQL<boolean> = sql<boolean>`true`,
+  includeConversations = false,
 ) {
   const ids = [...new Set(issueIds.filter((value): value is string => Boolean(value)))];
   if (ids.length === 0) return new Map<string, IssueSummaryRow>();
@@ -856,7 +866,9 @@ async function issueSummaryMap(
     .where(and(
       eq(issues.companyId, companyId),
       inArray(issues.id, ids),
-      executionIssueCondition(),
+      includeConversations
+        ? or(executionIssueCondition(), and(visibleIssueCondition(), isNotNull(issues.conversationAgentId)))
+        : executionIssueCondition(),
       readCondition,
     ));
   return new Map(rows.map((row) => [row.id, {
@@ -1165,8 +1177,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
     Math.max(Math.trunc(serviceOptions.openDecisionLimit ?? OPEN_DECISION_DEFAULT_LIMIT), 1),
     OPEN_DECISION_MAX_LIMIT,
   );
-  return {
-    list: async (companyId: string, options: AttentionListOptions = {}): Promise<AttentionFeed> => {
+  async function list(companyId: string, options: AttentionListOptions = {}, questionIssueIds?: readonly string[]): Promise<AttentionFeed> {
       if (options.all && !options.queue && !options.allowUnscopedAll) {
         throw badRequest("all requires a queue filter");
       }
@@ -1179,6 +1190,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       ]);
       const includeDismissed = options.includeDismissed === true;
       const now = serviceOptions.now?.() ?? Date.now();
+      const summaryOnly = options.summaryOnly === true;
+      const loadImages = (...args: Parameters<typeof issueImageMap>) => summaryOnly
+        ? Promise.resolve(new Map<string, AttentionDetailImage[]>()) : issueImageMap(...args);
       const collected: AttentionItem[] = [];
 
       const add = (item: AttentionItem) => {
@@ -1187,7 +1201,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         collected.push({ ...item, dismissal });
       };
 
-      if (!options.excludeSources?.includes("approval")) {
+      if (!questionIssueIds && !options.excludeSources?.includes("approval")) {
         const pendingApprovals = await db
           .select({
             id: approvals.id,
@@ -1196,7 +1210,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             status: approvals.status,
             requestedByAgentId: approvals.requestedByAgentId,
             requestedByUserId: approvals.requestedByUserId,
-            payload: approvals.payload,
+            payload: summaryOnly ? sql<Record<string, unknown>>`'{}'::jsonb` : approvals.payload,
             createdAt: approvals.createdAt,
             updatedAt: approvals.updatedAt,
           })
@@ -1263,7 +1277,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           status: issueThreadInteractions.status,
           title: issueThreadInteractions.title,
           summary: issueThreadInteractions.summary,
-          payload: issueThreadInteractions.payload,
+          payload: summaryOnly ? sql<Record<string, unknown>>`jsonb_build_object('target', ${issueThreadInteractions.payload}->'target', 'qualityReview', ${issueThreadInteractions.payload}->'qualityReview')` : issueThreadInteractions.payload,
           addresseeAgentId: issueThreadInteractions.addresseeAgentId,
           addresseeUserId: issueThreadInteractions.addresseeUserId,
           createdByAgentId: issueThreadInteractions.createdByAgentId,
@@ -1278,6 +1292,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         .where(and(
           eq(issueThreadInteractions.companyId, companyId),
           inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
+          questionIssueIds ? inArray(issueThreadInteractions.issueId, [...questionIssueIds]) : undefined,
+          questionIssueIds ? eq(issueThreadInteractions.kind, "ask_user_questions") : undefined,
         ))
         .orderBy(desc(issueThreadInteractions.updatedAt), desc(issueThreadInteractions.id));
       // Addressee invokability needs the org graph; the audience line also needs
@@ -1307,23 +1323,26 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       );
       const visibleInteractionRows = collapsePendingConfirmationsToNewest(boardInteractionRows);
       const [interactionIssueMap, interactionImageMap, interactionPlanDocumentMap] = await Promise.all([
-        issueSummaryMap(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition),
-        issueImageMap(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition),
-        planDocumentMap(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition),
+        // A pending human request remains actionable in a persistent chat even
+        // though its idle container is intentionally absent from work queues.
+        issueSummaryMap(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition, true),
+        loadImages(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition),
+        summaryOnly ? Promise.resolve(new Map<string, PlanDocumentSummary>())
+          : planDocumentMap(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition),
       ]);
 
       for (const interaction of visibleInteractionRows) {
         const issue = interactionIssueMap.get(interaction.issueId) ?? null;
         if (!issue) continue;
         const payload = readRecord(interaction.payload);
-        const detail = interactionDetail({
+        const detail = summaryOnly ? null : interactionDetail({
           kind: interaction.kind,
           payload,
           issue,
           planDocument: interactionPlanDocumentMap.get(interaction.issueId) ?? null,
           images: issueImages(interactionImageMap, interaction.issueId),
         });
-        const isPlanTarget = detail.kind === "plan_approval";
+        const isPlanTarget = interaction.kind === "request_confirmation" && isPlanDocumentTarget(payload);
         const dedupKey = `interaction:${interaction.id}`;
         add(createItem({
           companyId,
@@ -1364,13 +1383,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      if (!questionIssueIds) {
       const openDecisionQuery = db.select({
         id: decisions.id,
         bundleId: decisions.bundleId,
         originAgentId: decisions.originAgentId,
         ruleKey: decisions.ruleKey,
         title: decisions.title,
-        body: decisions.body,
+        body: summaryOnly ? sql<string>`''` : decisions.body,
         status: decisions.status,
         expiresAt: decisions.expiresAt,
         originIssueId: decisions.originIssueId,
@@ -1501,7 +1521,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           recoveryRows.flatMap((row) => [row.sourceIssueId, row.recoveryIssueId]),
           readCondition,
         ),
-        issueImageMap(db, companyId, recoveryRows.map((row) => row.sourceIssueId), readCondition),
+        loadImages(db, companyId, recoveryRows.map((row) => row.sourceIssueId), readCondition),
       ]);
 
       for (const recovery of recoveryRows) {
@@ -1570,7 +1590,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const [blockedIssueSummaries, terminalBlockerSummaries, blockerImageMap, blockingIssues] = await Promise.all([
         issueSummaryMap(db, companyId, blockedIssues.map((issue) => issue.id), readCondition),
         issueSummaryMap(db, companyId, terminalBlockerIssueIds, readCondition),
-        issueImageMap(
+        loadImages(
           db,
           companyId,
           [...blockedIssues.map((issue) => issue.id), ...terminalBlockerIssueIds],
@@ -1711,7 +1731,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const [reviewAttentionByIssueId, reviewIssueMap, reviewImageMap] = await Promise.all([
         issueService(db).listReviewAttention(companyId, reviewRows),
         issueSummaryMap(db, companyId, reviewIssueIds, readCondition),
-        issueImageMap(db, companyId, reviewIssueIds, readCondition),
+        loadImages(db, companyId, reviewIssueIds, readCondition),
       ]);
 
       for (const review of reviewRows) {
@@ -1777,7 +1797,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           failedIssueIds,
           readCondition,
         ),
-        issueImageMap(db, companyId, failedIssueIds, readCondition),
+        loadImages(db, companyId, failedIssueIds, readCondition),
         listFailedRunsWithNewerRun(db, companyId, failedRows.map((row, index) => ({
           id: row.id,
           agentId: row.agentId,
@@ -1944,6 +1964,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      }
+
       const deduped = new Map<string, AttentionItem>();
       for (const item of collected) {
         const current = deduped.get(item.dedupKey);
@@ -1952,7 +1974,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       const collectedItems = [...deduped.values()].sort(compareAttentionItems);
       await decisionQueueService(db).materializeSeededQueues(companyId, collectedItems);
-      const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems, now);
+      const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems, now, !summaryOnly);
 
       const activitySince = parseActivityBoundary(options.activitySince, "activitySince");
       const activityUntil = parseActivityBoundary(options.activityUntil, "activityUntil");
@@ -1969,6 +1991,15 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         if (queueKey && !item.queues.some((queue) => queue.key === queueKey)) return false;
         return true;
       });
+
+      const countsBySourceKind = emptyCounts();
+      for (const item of visibleItems) countsBySourceKind[item.sourceKind] += 1;
+      const summary: AttentionSummary = {
+        companyId, generatedAt: new Date().toISOString(), totalCount: visibleItems.length,
+        deskBadgeCount: visibleItems.filter(item => isNewToday(item, now) || isDecideNow(item, now)).length,
+        countsBySourceKind,
+      };
+      if (summaryOnly) return { ...summary, nextCursor: null, items: visibleItems };
 
       const sort = options.sort ?? "activity";
       if (sort !== "activity" && sort !== "decide") throw badRequest("sort must be 'activity' or 'decide'");
@@ -2041,22 +2072,27 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           }
         }
       }
-      const countsBySourceKind = emptyCounts();
-      for (const item of rankedItems) countsBySourceKind[item.sourceKind] += 1;
-
-      return {
-        companyId,
-        generatedAt: new Date().toISOString(),
-        totalCount: rankedItems.length,
-        // Desk badge: distinct items that surfaced
-        // today OR carry an explicit decide-by deadline due today/past. Counted
-        // over the full ranked set (pre-pagination) so the sidebar badge stays
-        // company-wide accurate even on a small first page.
-        deskBadgeCount: rankedItems.filter((item) => isNewToday(item, now) || isDecideNow(item, now)).length,
-        nextCursor,
-        countsBySourceKind,
-        items,
-      };
+      return { ...summary, nextCursor, items };
+  }
+  return {
+    list: (companyId: string, options: AttentionListOptions = {}) => list(companyId, options),
+    taskQuestions: async (companyId: string, issueIds: readonly string[], options: { actor: AuthorizationActor; userId: string }): Promise<AttentionItem[]> => {
+      if (issueIds.length === 0) return [];
+      const feed = await list(companyId, { ...options, all: true, allowUnscopedAll: true }, issueIds);
+      return feed.items;
+    },
+    summary: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor"> = {}): Promise<AttentionSummary> => {
+      const { items: _items, nextCursor: _cursor, ...summary } = await list(companyId, {
+        ...options, all: true, allowUnscopedAll: true, summaryOnly: true,
+      });
+      return summary;
+    },
+    taskIndex: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor"> = {}): Promise<AttentionTaskIndex> => {
+      const { items, nextCursor: _cursor, ...summary } = await list(companyId, {
+        ...options, all: true, allowUnscopedAll: true, summaryOnly: true,
+      });
+      return { ...summary, taskIds: [...new Set(items.flatMap(item => item.relatedIssue
+        ? [item.relatedIssue.id] : item.subject.kind === "issue" ? [item.subject.id] : []))] };
     },
   };
 }

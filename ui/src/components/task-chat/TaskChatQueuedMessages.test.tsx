@@ -394,10 +394,35 @@ describe("TaskChatQueuedMessages", () => {
       ),
     ).toBeNull();
   });
-  it("hides Steer and Interrupt without a live target while leaving saved messages editable", () => {
-    render({ queue: { ...queue, targetRunId: null, protocol: "legacy", steeringDisposition: "unsupported" } });
+  it("keeps deferred sends visible and explains their current wait", async () => {
+    const saved = { ...queue, targetRunId: null, executionWait: { reason: "decision_pending", message: "Resolve the pending approval before sending." } };
+    const onInterrupt = vi.fn().mockResolvedValue(saved);
+    render({ queue: saved, onInterrupt });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')!.click(); });
     expect(container.textContent).toContain("First queued message");
-    expect(container.querySelector('[data-testid="task-chat-queued-interrupt-comment-1"]')).toBeNull();
+    expect(container.textContent).toContain(saved.executionWait.message);
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')?.disabled).toBe(false);
+  });
+  it("clears a deferred wait message when a refreshed queue finishes sending", async () => {
+    const saved = { ...queue, targetRunId: null, executionWait: { reason: "decision_pending", message: "Resolve the pending approval before sending." } };
+    render({ queue: saved, onInterrupt: vi.fn().mockResolvedValue(saved) });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')!.click(); });
+    expect(container.textContent).toContain(saved.executionWait.message);
+    render({ queue: { ...saved, queueId: null, entries: [], state: null, executionWait: null } });
+    await act(async () => {});
+    expect(container.textContent).not.toContain(saved.executionWait.message);
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+  });
+  it.each(["legacy", "paperclip_runner_v1"] as const)("sends a saved %s queue explicitly after Stop", async (protocol) => {
+    const onInterrupt = vi.fn().mockResolvedValue(undefined);
+    render({ queue: { ...queue, targetRunId: null, protocol, steeringDisposition: "temporarily_unavailable" }, onInterrupt });
+    expect(onInterrupt).not.toHaveBeenCalled();
+    const send = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]');
+    expect(send?.textContent).toBe("Send");
+    expect(send?.getAttribute("aria-label")).toBe("Send queued messages");
+    expect(send?.disabled).toBe(false);
+    await act(async () => { send!.click(); });
+    expect(onInterrupt).toHaveBeenCalledOnce();
     expect(container.querySelector('[data-testid="task-chat-queued-steer-comment-1"]')).toBeNull();
   });
 

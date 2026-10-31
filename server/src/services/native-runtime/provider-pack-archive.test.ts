@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { readProviderPackArchive, stageProviderPackArchive } from "./provider-pack-archive.js";
+import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 // @ts-expect-error Build-time script has no TypeScript declaration.
 import { createProviderPackArchive, createProviderPackLayers } from "../../../../scripts/create-provider-pack-archive.mjs";
 
@@ -90,6 +91,23 @@ it.skipIf(!tar || !hasZstd)("reuses only byte-matched image files, keeps modes, 
   expect(await fs.readlink(path.join(targetPath, "tool"))).toBe("bin/tool");
 });
 
+it.skipIf(!tar || !hasZstd)("stages a complete layered pack into a fresh nested runtime directory", async () => {
+  const { root, pack, archive } = await layeredFixture();
+  const remote = await runner(root);
+  const workspace = path.join(root, "workspace");
+  await fs.mkdir(workspace);
+  const targetPath = path.join(workspace, ".paperclip-runtime", "paperclip-runner", "provider-pack");
+  await expect(fs.lstat(path.dirname(targetPath))).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, reuseRoots: [pack] })).toBe(true);
+  expect(await fs.readFile(path.join(targetPath, "bin/large"))).toEqual(await fs.readFile(path.join(pack, "bin/large")));
+  expect(await fs.readFile(path.join(targetPath, "provider-pack.json"))).toEqual(await fs.readFile(path.join(pack, "provider-pack.json")));
+  expect(await fs.readlink(path.join(targetPath, "tool"))).toBe("bin/tool");
+  for (const directory of [targetPath, path.dirname(targetPath), path.dirname(path.dirname(targetPath))]) {
+    expect((await fs.stat(directory)).mode & 0o777).toBe(0o700);
+  }
+  expect((await fs.stat(path.join(targetPath, "bin/large"))).ino).not.toBe((await fs.stat(path.join(pack, "bin/large"))).ino);
+});
+
 it.skipIf(!tar || !hasZstd).each(["missing", "wrong-digest", "symlink", "ancestor-symlink"])("transfers a large layer when the image file is %s", async reason => {
   const { root, pack, archive } = await layeredFixture();
   const remote = await runner(root);
@@ -134,13 +152,18 @@ it.skipIf(!tar || !hasZstd)("rejects a corrupt missing layer before transfer and
   expect(remote.syncIn).not.toHaveBeenCalled();
 });
 
-it.skipIf(!tar || !hasZstd)("does not follow a layered target symlink or accept invalid reuse receipts", async () => {
+it.skipIf(!tar || !hasZstd).each(["directory", "file", "symlink"])("rejects an existing layered target %s or invalid reuse receipts", async kind => {
   const { root, archive } = await layeredFixture();
   const remote = await runner(root);
   const targetPath = path.join(root, "target"), other = path.join(root, "other");
-  await fs.mkdir(other); await fs.symlink(other, targetPath);
+  await fs.mkdir(other);
+  if (kind === "directory") await fs.mkdir(targetPath);
+  else if (kind === "file") await fs.writeFile(targetPath, "untouched");
+  else await fs.symlink(other, targetPath);
   await expect(stageProviderPackArchive({ archive, runner: remote, targetPath })).rejects.toThrow("runner_remote_provider_archive_reuse_failed");
   expect(await fs.readdir(other)).toEqual([]);
+  if (kind === "directory") expect(await fs.readdir(targetPath)).toEqual([]);
+  if (kind === "file") expect(await fs.readFile(targetPath, "utf8")).toBe("untouched");
   remote.execute.mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "[999999]", stderr: "", signal: null, pid: null, startedAt: null });
   await expect(stageProviderPackArchive({ archive, runner: remote, targetPath: `${targetPath}-2` })).rejects.toThrow("runner_remote_provider_archive_reuse_failed");
   expect(remote.syncIn).not.toHaveBeenCalled();
@@ -209,6 +232,54 @@ it("keeps the directory fallback when the remote has no zstd", async () => {
   const remote = { syncIn: vi.fn(), execute: vi.fn().mockResolvedValue({ exitCode: 127, timedOut: false }) };
   expect(await stageProviderPackArchive({ archive, runner: remote, targetPath: "/unused" })).toBe(false);
   expect(remote.syncIn).not.toHaveBeenCalled();
+});
+
+it.skipIf(!tar || !hasZstd).each(["v1", "v2"])("installs verified %s archive bytes without reading the unused expanded pack", async version => {
+  const { root, pack } = version === "v1" ? await fixture() : await layeredFixture();
+  const remote = await runner(root);
+  const targetPath = path.join(root, "uploaded");
+  const expected = await fs.readFile(path.join(pack, "bin/tool"));
+  // Only the archive is uploaded. The expanded tree is a different source,
+  // and deliberately no longer matches the bytes sealed in that archive.
+  await fs.writeFile(path.join(pack, "bin/tool"), "unused expanded bytes");
+  const verifyDirectory = vi.fn(() => { throw Error("expanded_directory_was_read"); });
+  const stageDirectory = vi.fn(async () => { throw Error("directory_was_uploaded"); });
+  const verifyUploaded = vi.fn(async () => {
+    expect(await fs.readFile(path.join(targetPath, "bin/tool"))).toEqual(expected);
+    expect(JSON.parse(await fs.readFile(path.join(targetPath, "provider-pack.json"), "utf8")).digest).toBe(digest);
+  });
+  await uploadVerifiedProviderPack({ root: pack, expectedDigest: digest, runner: remote, cwd: root,
+    targetPath, reuseRoots: [], verifyDirectory, stageDirectory, verifyUploaded });
+  expect(verifyDirectory).not.toHaveBeenCalled();
+  expect(stageDirectory).not.toHaveBeenCalled();
+  expect(verifyUploaded).toHaveBeenCalledOnce();
+});
+
+it.each(["absent", "unsupported"])("verifies directory bytes before fallback when the archive is %s", async mode => {
+  const { root, pack } = await fixture();
+  if (mode === "absent") await fs.unlink(`${pack}.archive.json`);
+  const remote = { syncIn: vi.fn(), execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "", stderr: "" }) };
+  // The capability probe fails; clearing the old pack succeeds.
+  remote.execute.mockResolvedValueOnce({ exitCode: 0, timedOut: false });
+  remote.execute.mockResolvedValue({ exitCode: 127, timedOut: false });
+  const stageDirectory = vi.fn(), verifyUploaded = vi.fn();
+  await expect(uploadVerifiedProviderPack({ root: pack, expectedDigest: digest, runner: remote, cwd: root,
+    targetPath: path.join(root, "uploaded"), reuseRoots: [], verifyDirectory: () => { throw Error("directory_digest_mismatch"); },
+    stageDirectory, verifyUploaded })).rejects.toThrow("directory_digest_mismatch");
+  expect(remote.syncIn).not.toHaveBeenCalled();
+  expect(stageDirectory).not.toHaveBeenCalled();
+  expect(verifyUploaded).not.toHaveBeenCalled();
+});
+
+it.skipIf(!tar || !hasZstd)("rejects an installed pack that fails final verification", async () => {
+  const { root, pack } = await fixture();
+  const remote = await runner(root), targetPath = path.join(root, "uploaded");
+  const verifyUploaded = vi.fn(async () => { throw Error("installed_digest_mismatch"); });
+  await expect(uploadVerifiedProviderPack({ root: pack, expectedDigest: digest, runner: remote, cwd: root,
+    targetPath, reuseRoots: [], verifyDirectory: () => {}, stageDirectory: async () => {}, verifyUploaded }))
+    .rejects.toThrow("installed_digest_mismatch");
+  expect(remote.syncIn).toHaveBeenCalledOnce();
+  expect(verifyUploaded).toHaveBeenCalledOnce();
 });
 
 it.skipIf(!tar || !hasZstd).each([

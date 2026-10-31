@@ -4,6 +4,7 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
+  ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
 import { putS3Multipart } from "./s3-multipart.js";
 import { withS3FailureDiagnostics } from "./s3-failure.js";
@@ -81,6 +82,33 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
   return {
     id: "s3",
 
+    async putObjectConditional(input) {
+      const output = await client.send(new PutObjectCommand({
+        Bucket: bucket,
+        Key: buildKey(prefix, input.objectKey),
+        Body: input.body,
+        ContentType: input.contentType,
+        ContentLength: input.contentLength,
+        IfMatch: input.ifMatch,
+        IfNoneMatch: input.ifNoneMatch,
+      }), { abortSignal: input.signal });
+      if (!output.ETag) throw new Error("Object storage did not return a publication ETag");
+      return { etag: output.ETag };
+    },
+
+    async listObjects(input) {
+      const keyPrefix = buildKey(prefix, input.prefix);
+      const output = await client.send(new ListObjectsV2Command({
+        Bucket: bucket, Prefix: keyPrefix,
+        ContinuationToken: input.continuationToken, MaxKeys: 1000,
+      }), { abortSignal: input.signal });
+      const strip = prefix ? prefix.length + 1 : 0;
+      return {
+        keys: (output.Contents ?? []).flatMap(object => object.Key ? [object.Key.slice(strip)] : []),
+        continuationToken: output.IsTruncated ? output.NextContinuationToken : undefined,
+      };
+    },
+
     async putObject(input) {
       const key = buildKey(prefix, input.objectKey);
       if (input.contentLength > 16 * 1024 * 1024) {
@@ -95,6 +123,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
           ContentType: input.contentType,
           ContentLength: input.contentLength,
         }),
+        { abortSignal: input.signal },
       ));
     },
 
@@ -158,6 +187,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
           Bucket: bucket,
           Key: key,
         }),
+        { abortSignal: input.signal },
       ));
     },
   };

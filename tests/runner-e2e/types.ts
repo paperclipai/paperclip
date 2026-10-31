@@ -3,6 +3,7 @@ export const CREDENTIAL_NAMES = [
   "ANTHROPIC_API_KEY",
   "OPENROUTER_API_KEY",
   "KIMI_MODEL_API_KEY",
+  "KIMI_API_KEY",
   "XAI_API_KEY",
   "GROK_AUTH_JSON",
   "CODEX_AUTH_JSON",
@@ -27,6 +28,7 @@ export type RunnerTaskFlow =
   | "repository_skills"
   | "provider_connection"
   | "github_review_journey"
+  | "antigravity_agent_journey"
   | "plan_task_guidance"
   | "blocker_guidance"
   | "public_mcp"
@@ -48,6 +50,7 @@ export type RunnerTaskFlow =
   | "pi_native"
   | "pi_controls"
   | "native_active_stop"
+  | "kimi_native_lifecycle"
   | "copilot_protection"
   | "native_provider_loss"
   | "cursor_native";
@@ -92,7 +95,7 @@ export interface RunnerProfileFixture {
       | "openrouter_rankings_snapshot";
     qualificationId: string;
   };
-  qualificationCandidate?: "cursor" | "copilot" | "pi";
+  qualificationCandidate?: "cursor" | "copilot" | "pi" | "kimi";
   ranking?: {
     rank: number;
     canonicalModelId: string;
@@ -208,6 +211,7 @@ export interface RunnerSuiteFixture {
   groups: readonly string[];
   profiles: readonly RunnerProfileFixture[];
   environments: readonly EnvironmentFixture[];
+  environmentOverrides?: Readonly<Record<string, Partial<Record<RunnerEnvironmentId, EnvironmentFixture>>>>;
   tasks: readonly RunnerTaskFixture[];
   excludedExecutionIds?: readonly string[];
   expectedMatrixSize: number;
@@ -326,6 +330,8 @@ export interface RunnerE2EResult {
   provider: string | null;
   model: string | null;
   runtimeMode: RunnerGeneration | "none";
+  /** Recorded application URL; retained by reviewed public evidence projections. */
+  targetUrl?: string;
   issueId?: string;
   issueIdentifier?: string | null;
   runIds?: string[];
@@ -367,8 +373,10 @@ export interface RunnerE2EResult {
   }>;
   productJourney?: import("./product-journeys/types.js").JourneyEvidence;
   firstTask?: import("./first-task-scoring.js").FirstTaskEvidence;
+  taskChat?: import("./task-chat.js").TaskChatEvidence;
   providerConnection?: import("./connection-evidence.js").ConnectionEvidence;
   githubReviewJourney?: import("./github-review-evidence.js").GitHubReviewJourneyEvidence;
+  antigravityJourney?: import("./antigravity-journey-evidence.js").AntigravityJourneyEvidence;
   completionQuality?: import("./completion-quality.js").CompletionQualityRecord[];
   firstTaskQuality?: import("./first-task-quality.js").FirstTaskQuality;
   /** External assistant API calls, separate from the team's heartbeat executions. */
@@ -479,6 +487,9 @@ export interface RunnerE2EHistoryExecution {
   caseId: string;
   provider: string | null;
   model: string | null;
+  /** Absent in older records; never infer the application from the worker. */
+  targetUrl?: string;
+  runtimeMode?: RunnerE2EResult["runtimeMode"];
   status: "passed" | "failed" | "incomplete";
   durationMs: number;
   attempt: number;
@@ -502,6 +513,8 @@ export interface RunnerE2EHistoryCampaign {
   billing: RunnerE2EAggregateBillingSummary;
   suites: RunnerE2ESuiteSummary[];
   executions: RunnerE2EHistoryExecution[];
+  /** A named case selection, independent of suite and deployment target. */
+  preset?: string;
 }
 
 export interface RunnerE2EHistoryIndex {

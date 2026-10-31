@@ -393,6 +393,8 @@
   --new-issue-visual-viewport-offset-top: 0px;
   --new-issue-dialog-top-gap: max(1rem, env(safe-area-inset-top));
   --new-issue-dialog-bottom-gap: max(1rem, env(safe-area-inset-bottom));
+  /* Connection banner offset: clear the notch/status bar under viewport-fit=cover. */
+  --connection-banner-top: calc(0.5rem + env(safe-area-inset-top, 0px));
   --mobile-entity-picker-visual-viewport-height: 100dvh;
   --mobile-entity-picker-backdrop: color-mix(in oklab, var(--foreground) 50%, transparent);
 
@@ -535,7 +537,6 @@
   --shadow-task-composer: 0 2px 8px -2px color-mix(in oklab, var(--foreground) 7%, transparent),
     0 12px 32px -8px color-mix(in oklab, var(--foreground) 12%, transparent);
   --profile-popover-width: 248px;
-  --profile-popover-min-height: 304px;
   --profile-popover-header-height: 76px;
   --profile-popover-row-height: 38px;
   --profile-popover-row-gap: 9px;
@@ -2548,6 +2549,12 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   text-decoration: none;
 }
 
+/* Document cards underline only their label span; the card itself must not
+   inherit the markdown link underline, or the label shows two lines. */
+.paperclip-markdown a[data-sidebar-document-link] {
+  text-decoration: none;
+}
+
 .paperclip-markdown a.paperclip-mention-chip[data-mention-kind="issue"] {
   border-color: color-mix(in oklab, var(--foreground) 14%, var(--border) 86%);
   background: color-mix(in oklab, var(--accent) 42%, transparent);
@@ -3293,6 +3300,26 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
    ── end allowlist ── */
 
 /* Agent settings composition, shared with Storybook. */
+.agent-yaml-editor .cm-editor {
+  height: var(--sz-480px);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  background: var(--background);
+  color: var(--foreground);
+}
+.agent-yaml-editor .cm-scroller { overflow: auto; }
+.agent-yaml-editor .cm-gutters {
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border-color: var(--border);
+}
+.agent-yaml-editor .cm-activeLine,
+.agent-yaml-editor .cm-activeLineGutter { background: var(--accent); }
+.agent-yaml-editor .cm-cursor { border-left-color: var(--foreground); }
+.agent-yaml-editor .cm-selectionBackground,
+.agent-yaml-editor .cm-focused .cm-selectionBackground { background: var(--accent); }
+.agent-yaml-editor .cm-focused { outline-color: var(--ring); }
+
 .agent-settings-form > .relative {
   @apply flex flex-col gap-8;
 }
@@ -3723,6 +3750,13 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   border-block: var(--task-row-rule-width) solid var(--task-row-rule-color);
 }
 .task-row-group + .task-row-group { border-top: 0; }
+.task-row-deferred {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto var(--task-row-height-comfortable);
+}
+.task-row-deferred[data-density="compact"] {
+  contain-intrinsic-block-size: auto var(--task-row-height-compact);
+}
 
 .task-row-stable, .task-row-skeleton {
   height: var(--task-row-height-comfortable);
@@ -4602,6 +4636,7 @@ html:has(.design-proposal-theme) [data-slot="card-title"] { color: var(--foregro
 /* Navigation and streamlined properties intentionally share this exact label
    recipe: sans, nano, normal, uppercase, 150% leading and 0.1em tracking. */
 html:has(.design-proposal-theme) :is([data-slot="sidebar-group-label"], [data-slot="property-section-label"][data-streamlined="true"]),
+.coordinator-sidebar [data-slot="sidebar-group-label"],
 html:has(.design-proposal-theme) .design-navigation-group-label {
   font-family: var(--font-sans);
   font-size: var(--text-nano);
@@ -4917,4 +4952,140 @@ html:has(.design-proposal-theme) [data-canonical-toolbar] .collection-toolbar-ta
   .artifact-tile:hover [data-artifact-spread="right"] {
     transform: rotate(calc(var(--artifact-base, 0deg) - 5deg));
   }
+}
+
+/* Coordinator workspace: the approved Precision palette with Editorial
+   reading rhythm. This scope leaves the classic interface and its tokens intact. */
+.coordinator-workspace {
+  --coordinator-body-size: var(--text-sm);
+  --coordinator-body-leading: var(--text-sm--line-height);
+  --coordinator-card-radius: 14px;
+  --coordinator-card-inset: calc(var(--spacing) * 7);
+  --coordinator-card-shadow: 0 5px 22px #00000008;
+  --coordinator-composer-shadow: 0 8px 30px #0000000a;
+  --background: #fafafa;
+  --foreground: #262626;
+  --card: #ffffff;
+  --card-foreground: var(--foreground);
+  --sidebar: #f1f1f1;
+  --sidebar-accent: #e3e3e3;
+  --sidebar-accent-foreground: #202020;
+  --border: #dedede;
+  --muted: #eeeeee;
+  --muted-foreground: #6d6d6d;
+  --accent: #ebebeb;
+  --accent-foreground: var(--foreground);
+  --bubble-human-bg: var(--liveness-blue);
+  --bubble-human-fg: var(--color-white);
+  --streamlined-task-detail-bg: var(--background);
+  --side-panel-bg: var(--card);
+  --side-panel-streamlined-tab-active-bg: var(--sidebar-accent);
+  --tc-shell-max-w: 58rem;
+  font-family: var(--font-sans);
+}
+.dark .coordinator-workspace {
+  --background: #191919;
+  --foreground: #ecece8;
+  --card: #222222;
+  --sidebar: #202020;
+  --sidebar-accent: #343432;
+  --sidebar-accent-foreground: #f1f1ed;
+  --border: #3a3a38;
+  --muted: #2a2a28;
+  --muted-foreground: #a5a5a0;
+  --accent: #30302e;
+  --bubble-human-bg: var(--liveness-blue);
+  --coordinator-card-shadow: 0 5px 22px #00000020;
+  --coordinator-composer-shadow: 0 8px 30px #00000026;
+}
+/* Reuse proposal geometry locally; the Coordinator navigation and conversation
+   hierarchy remain independent of the global Design Proposals theme. */
+html:not(.dark) .coordinator-workspace [data-sidebar-account] { background: var(--primary-sidebar-background); }
+html.dark .coordinator-workspace [data-sidebar-account] { background: var(--primary-sidebar-background); }
+.coordinator-sidebar, .coordinator-task-list {
+  --font-weight-medium: var(--font-weight-normal);
+  --font-mono: var(--font-paper-mono);
+}
+html:not(.dark) .coordinator-sidebar {
+  --design-sidebar-surface: var(--primary-sidebar-background);
+  --design-sidebar-item-foreground: color-mix(in oklab, var(--foreground) 80%, transparent);
+  --design-sidebar-item-highlight: var(--sidebar-accent);
+  --design-sidebar-item-active-foreground: var(--sidebar-accent-foreground);
+}
+.coordinator-workspace [data-conversation-text] { font-size: var(--coordinator-body-size); line-height: var(--coordinator-body-leading); }
+.coordinator-workspace [data-conversation-text="progress"] { font-size: var(--text-sm); line-height: var(--text-sm--line-height); }
+.coordinator-workspace [data-conversation-text] .paperclip-markdown { font-size: inherit; line-height: inherit; }
+.coordinator-workspace [data-conversation-text="human"] { background: var(--bubble-human-bg); color: var(--bubble-human-fg); }
+.coordinator-workspace [data-question-answer] { background: var(--card); }
+.dark .coordinator-workspace [data-question-answer] { background: var(--muted); }
+/* Only the composer surface obscures history; its surrounding dock is clear. */
+.coordinator-workspace [data-testid="task-chat-composer-dock"] {
+  flex-shrink: 0;
+  background: transparent;
+  backdrop-filter: none;
+  pointer-events: none;
+}
+.coordinator-workspace [data-testid="task-chat-composer-dock"] > * { pointer-events: auto; }
+@media (min-width: 768px) {
+  .coordinator-workspace [data-testid="task-chat-thread"] { position: relative; }
+  .coordinator-workspace [data-testid="task-chat-composer-dock"] { position: absolute; inset-inline: 0; bottom: 0; }
+  .coordinator-workspace [data-testid="task-chat-scroller"] > .paperclip-mobile-thread {
+    padding-bottom: calc(var(--task-composer-dock-height, 0px) + var(--spacing) * 4);
+  }
+  .coordinator-workspace [data-testid="task-chat-scroller"] ~ button {
+    bottom: calc(var(--task-composer-dock-height, 0px) + var(--spacing) * 3);
+  }
+}
+.coordinator-workspace [data-testid="task-chat-composer-dock"] > :last-child { border-radius: var(--coordinator-card-radius); }
+.coordinator-workspace [cmdk-root] { height: auto; flex: none; }
+.coordinator-workspace [cmdk-list] { flex: none; }
+.coordinator-decision-card { border: 1px solid var(--border); border-radius: var(--coordinator-card-radius, var(--radius-xl)); padding: var(--coordinator-card-inset, calc(var(--spacing) * 6)); background: var(--card); box-shadow: var(--coordinator-card-shadow); }
+.coordinator-decision-card > .rounded-lg { border: 0; padding: 0; background: transparent; box-shadow: none; }
+.coordinator-decision-card [data-testid="interaction-status-badge"], .coordinator-decision-card [data-testid="interaction-addressee-badge"] { display: none; }
+.coordinator-decision-card :is(h2,h3) { font-size: var(--text-lg); line-height: var(--text-lg--line-height); font-weight: var(--font-weight-medium); }
+.coordinator-decision-card :is(p, label) { font-size: var(--text-sm); line-height: var(--text-sm--line-height); }
+.coordinator-decision-card [data-decision-prompt] { font-size: var(--text-lg); line-height: var(--text-lg--line-height); font-weight: var(--font-weight-medium); }
+.coordinator-decision-card [id^="interaction-"]:focus { outline-color: var(--ring); }
+@media (max-width: 767px) {
+  .coordinator-workspace { --coordinator-card-inset: calc(var(--spacing) * 5); }
+}
+/* Coordinator commitments: event-triggered, bounded motion; settled content is
+   always usable. Values live here rather than in presentation components. */
+.coordinator-task-commitment {
+  --coordinator-task-arrive-duration: 880ms;
+  --coordinator-task-light-duration: 1400ms;
+  --coordinator-task-morph-duration: 480ms;
+  --coordinator-task-content-duration: 320ms;
+  --coordinator-task-ease: cubic-bezier(.22, .65, .3, 1);
+  --coordinator-task-arrive-distance: calc(var(--spacing) * 5);
+  --coordinator-task-radius: 14px;
+  --coordinator-task-light-cool: oklch(.65 .18 250);
+  --coordinator-task-light-warm: oklch(.76 .16 75);
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  isolation: isolate;
+  border: 1px solid var(--border);
+  border-radius: var(--coordinator-task-radius);
+  background: var(--card);
+}
+.coordinator-task-commitment-content { position: relative; min-width: 0; }
+.coordinator-decision-motion { border-radius: var(--coordinator-card-radius, var(--radius-xl)); box-shadow: var(--coordinator-card-shadow); }
+.coordinator-decision-motion > .coordinator-task-commitment-content > :is(.coordinator-decision-card, .coordinator-decision-receipt) { border: 0; box-shadow: none; }
+.coordinator-task-commitment[data-motion="arrive"] { animation: coordinator-task-arrive var(--coordinator-task-arrive-duration) var(--coordinator-task-ease) both; }
+.coordinator-task-light { display: none; position: absolute; inset: 1px; border-radius: inherit; overflow: hidden; pointer-events: none; }
+.coordinator-task-commitment[data-motion="gather"] > .coordinator-task-light { display: block; background: radial-gradient(ellipse at 25% 20%, color-mix(in oklab, var(--foreground) 8%, transparent), transparent 75%); animation: coordinator-task-gather var(--coordinator-task-light-duration) var(--coordinator-task-ease) both; }
+.coordinator-task-light::before { content: ""; position: absolute; inset: 0; background: linear-gradient(110deg, transparent 15%, color-mix(in oklab, var(--coordinator-task-light-cool) 18%, transparent) 37%, color-mix(in oklab, var(--foreground) 20%, transparent) 50%, color-mix(in oklab, var(--coordinator-task-light-warm) 18%, transparent) 63%, transparent 85%); animation: coordinator-task-light-pass var(--coordinator-task-light-duration) var(--coordinator-task-ease) both; }
+.coordinator-created-task, .coordinator-decision-receipt { display: flex; align-items: center; gap: calc(var(--spacing) * 3); padding: calc(var(--spacing) * 4); color: var(--foreground); transition: background-color var(--motion-fast, 120ms); }
+.coordinator-created-task:hover, .coordinator-decision-receipt:hover { background: var(--accent); }
+.coordinator-created-task:focus-visible, .coordinator-decision-receipt:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.coordinator-decision-receipt { border: 1px solid var(--border); border-radius: 14px; background: var(--card); padding-block: calc(var(--spacing) * 3); }
+@keyframes coordinator-task-arrive { from { opacity: 0; transform: translateY(var(--coordinator-task-arrive-distance)); } to { opacity: 1; transform: none; } }
+@keyframes coordinator-task-gather { from { opacity: 0; } 20%, 45% { opacity: 1; } to { opacity: 0; } }
+@keyframes coordinator-task-light-pass { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) {
+  .coordinator-task-commitment[data-motion] { animation: none; }
+  .coordinator-task-commitment > .coordinator-task-light { display: none; }
+  .coordinator-created-task, .coordinator-decision-receipt { transition: none; }
 }

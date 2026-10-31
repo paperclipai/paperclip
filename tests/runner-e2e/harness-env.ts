@@ -13,6 +13,7 @@ import type { MatrixExecution } from "./types.js";
 const DATABASE_KEYS = ["DATABASE_URL", "DATABASE_MIGRATION_URL"] as const;
 const AMBIENT_PAPERCLIP_CREDENTIAL_KEYS = [
   "PAPERCLIP_API_KEY",
+  "PAPERCLIP_ACPX_CANDIDATE_ADMISSION",
   "PAPERCLIP_AGENT_API_KEY",
   "PAPERCLIP_TASK_BRIDGE_TOKEN",
   "PAPERCLIP_E2E_GATEWAY_TOKEN",
@@ -36,7 +37,7 @@ const AMBIENT_EXTERNAL_STATE_KEYS = [
   "PAPERCLIP_STORAGE_S3_PREFIX",
   "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE",
 ] as const;
-const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|BRAINTRUST|DAYTONA|XAI|GROK|CURSOR|COPILOT|GITHUB|GH)(?:_|$)/;
+const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|BRAINTRUST|DAYTONA|XAI|GROK|KIMI|CURSOR|COPILOT|GITHUB|GH)(?:_|$)/;
 
 /** Vault SDK authority is never ambient chat input. An explicitly selected
  * server-only vault handoff supplies its own finite overrides after scrubbing. */
@@ -149,6 +150,11 @@ export function buildRunnerE2EProcessEnvironment(
   delete result[PUBLIC_ORIGIN_CONTROL_ENV]; delete result[PUBLIC_ORIGIN_RECEIPT_ENV];
   if (executions.some(execution => execution.suite.id === "chat-features")) scrubChatPrivateEnvironment(result, executions);
   else scrubChatPrivateEnvironment(result, []);
+  delete result.PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL;
+  // The supervisor's read-only recovery observer must use the same disposable
+  // instance key as the serving child, never a launching shell's vault key.
+  delete result.PAPERCLIP_SECRETS_MASTER_KEY;
+  delete result.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
   delete result.PAPERCLIP_E2E_GATEWAY_PHASE_PATH;
   delete result.PAPERCLIP_E2E_OTLP_RELAY_URL;
   delete result.PAPERCLIP_E2E_REMOTE_GATEWAY_ORIGIN;
@@ -158,11 +164,14 @@ export function buildRunnerE2EProcessEnvironment(
   // Discard ambient admission. Only explicit candidate cells authorize the
   // exact model in their isolated server; credentials still use company secrets.
   delete result.PAPERCLIP_RUNNER_ACPX_QUALIFICATION;
+  delete result.PAPERCLIP_ACPX_CANDIDATE_ADMISSION;
   const candidates = new Map<string, string>();
   for (const execution of executions) {
     const agent = execution.profile.qualificationCandidate;
     if (!agent) continue;
-    const admittedSuite = execution.suite.id === "extended-harnesses"
+    const admittedSuite = agent === "kimi"
+      ? execution.suite.id === "kimi-qualification" && execution.profile.id === "runner-acpx-kimi"
+      : execution.suite.id === "extended-harnesses"
       || execution.suite.id === "rich-acp-warm-continuity"
       || (execution.suite.id === "pi-native" && agent === "pi")
       || (execution.suite.id === "pi-controls" && agent === "pi")
@@ -175,6 +184,7 @@ export function buildRunnerE2EProcessEnvironment(
     if (QUALIFIED_ACPX_PROFILES[agent].qualificationStatus !== "pending") {
       continue;
     }
+    if (agent === "kimi") continue;
     const prior = candidates.get(agent);
     if (prior !== undefined && prior !== execution.profile.model) throw new Error("Conflicting candidate models");
     candidates.set(agent, execution.profile.model);
@@ -217,6 +227,7 @@ export function buildPaperclipServerEnvironment(
   scrubAmbientVaultEnvironment(result);
   delete result[PUBLIC_ORIGIN_CONTROL_ENV]; delete result[PUBLIC_ORIGIN_RECEIPT_ENV];
   delete result[PRIVATE_DIAGNOSTICS_ENV];
+  delete result.PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL;
   for (const key of Object.keys(result)) {
     if (PROVIDER_SECRET_KEY.test(key)) delete result[key];
   }
@@ -228,7 +239,7 @@ export function buildPaperclipServerEnvironment(
   ]) {
     delete result[key];
   }
-  for (const key of [...GENERATED_SERVER_SECRET_KEYS, ...installedCliKeys, ...installedDaytonaPluginKeys]) delete result[key];
+  for (const key of [...GENERATED_SERVER_SECRET_KEYS, ...installedCliKeys, ...installedDaytonaPluginKeys, "PAPERCLIP_RUNNER_E2E_UPGRADE_ARTIFACTS"]) delete result[key];
   Object.assign(result, overrides);
   delete result[PRIVATE_DIAGNOSTICS_ENV];
   return result;

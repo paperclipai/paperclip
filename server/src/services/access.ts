@@ -1,3 +1,10 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
+import { notifyChatCompanyAuthorityChange } from "./chat-run-milestone-notifications.js";
+import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
+import { notifyChatEndpointWork } from "./chat-work-notifications.js";
+import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -129,6 +136,7 @@ export function accessService(db: Db) {
     }> = [];
     let connectionRefs: Array<{
       id: string;
+      transport: typeof toolConnections.$inferSelect.transport;
       credentialRefs: typeof toolConnections.$inferSelect.credentialRefs;
       credentialSecretRefs: typeof toolConnections.$inferSelect.credentialSecretRefs;
     }> = [];
@@ -167,6 +175,7 @@ export function accessService(db: Db) {
         }).from(connectionGrants).where(eq(connectionGrants.companyId, companyId)),
         tx.select({
           id: toolConnections.id,
+          transport: toolConnections.transport,
           credentialRefs: toolConnections.credentialRefs,
           credentialSecretRefs: toolConnections.credentialSecretRefs,
         }).from(toolConnections).where(eq(toolConnections.companyId, companyId)),
@@ -323,6 +332,9 @@ export function accessService(db: Db) {
             && grant.credentialSecretRefs.length > 0
             && grant.credentialSecretRefs.every((ref) => !connectionSecretIdsToRemove.has(ref.secretId)),
           );
+          if (connection.transport === "chat_sdk") await notifyChatEndpointWork(tx, connection.id, companyId);
+          if (connection.transport === "voice") await notifyVoiceChange(tx, { kind: "connection", id: connection.id });
+          if (!hasUnaffectedActiveGrant) await notifyToolConnectionHealth(tx, { companyId, id: connection.id });
           await tx.update(toolConnections).set({
             credentialRefs,
             credentialSecretRefs,
@@ -546,6 +558,11 @@ export function accessService(db: Db) {
         data.membershipRole !== undefined ? data.membershipRole : existing.membershipRole;
       const nextStatus = data.status ?? existing.status;
 
+      if (existing.principalType === "user" && nextStatus === "active" && nextMembershipRole !== "viewer"
+        && (existing.status !== "active" || existing.membershipRole === "viewer")) {
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
+      }
+
       if (
         existing.principalType === "user" &&
         existing.status === "active" &&
@@ -725,6 +742,9 @@ export function accessService(db: Db) {
         eq(issues.assigneeUserId, existing.principalId),
         sql`${issues.status} not in ('done', 'cancelled')`,
       );
+      await notifyNativeStatusReassessment(tx, { companyId });
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       const resetInProgress = await tx
         .update(issues)
         .set({
@@ -737,6 +757,7 @@ export function accessService(db: Db) {
         })
         .where(and(assignedOpenIssueWhere, eq(issues.status, "in_progress")))
         .returning({ id: issues.id });
+      if (assignmentPatch.assigneeAgentId) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId });
       const reassigned = await tx
         .update(issues)
         .set(assignmentPatch)
@@ -878,6 +899,7 @@ export function accessService(db: Db) {
         const existingMembership = existingByCompany.get(companyId);
         if (existingMembership) {
           if (existingMembership.status !== "active") {
+            if (existingMembership.membershipRole !== "viewer") await notifyChatCompanyAuthorityChange(tx, { companyId });
             await tx
               .update(companyMemberships)
               .set({
@@ -889,6 +911,7 @@ export function accessService(db: Db) {
           }
           continue;
         }
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
         await tx.insert(companyMemberships).values({
           companyId,
           principalType: "user",
@@ -909,31 +932,43 @@ export function accessService(db: Db) {
     membershipRole: string | null = "member",
     status: "pending" | "active" | "suspended" = "active",
   ) {
-    const existing = await getMembership(companyId, principalType, principalId);
-    if (existing) {
-      if (existing.status !== status || existing.membershipRole !== membershipRole) {
-        const updated = await db
-          .update(companyMemberships)
-          .set({ status, membershipRole, updatedAt: new Date() })
-          .where(eq(companyMemberships.id, existing.id))
-          .returning()
-          .then((rows) => rows[0] ?? null);
-        return updated ?? existing;
+    return db.transaction(async tx => {
+      const existing = await tx.select().from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, principalType),
+        eq(companyMemberships.principalId, principalId),
+      )).for("update").then(rows => rows[0] ?? null);
+      if (existing) {
+        if (existing.status !== status || existing.membershipRole !== membershipRole) {
+          if (principalType === "user" && status === "active" && membershipRole !== "viewer"
+            && (existing.status !== "active" || existing.membershipRole === "viewer")) {
+            await notifyChatCompanyAuthorityChange(tx, { companyId });
+          }
+          const updated = await tx
+            .update(companyMemberships)
+            .set({ status, membershipRole, updatedAt: new Date() })
+            .where(eq(companyMemberships.id, existing.id))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          return updated ?? existing;
+        }
+        return existing;
       }
-      return existing;
-    }
 
-    return db
-      .insert(companyMemberships)
-      .values({
-        companyId,
-        principalType,
-        principalId,
-        status,
-        membershipRole,
-      })
-      .returning()
-      .then((rows) => rows[0]);
+      if (principalType === "user" && status === "active" && membershipRole !== "viewer") {
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
+      }
+      return tx
+        .insert(companyMemberships)
+        .values({
+          companyId,
+          principalType,
+          principalId,
+          status,
+          membershipRole,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+    });
   }
 
   async function setPrincipalGrants(
@@ -1113,6 +1148,11 @@ export function accessService(db: Db) {
       const nextMembershipRole =
         data.membershipRole !== undefined ? data.membershipRole : existing.membershipRole;
       const nextStatus = data.status ?? existing.status;
+
+      if (existing.principalType === "user" && nextStatus === "active" && nextMembershipRole !== "viewer"
+        && (existing.status !== "active" || existing.membershipRole === "viewer")) {
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
+      }
 
       if (
         existing.principalType === "user" &&

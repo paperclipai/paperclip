@@ -47,6 +47,13 @@ export class RunnerApi {
     return response.json() as Promise<T>;
   }
 
+  async bytes(path: string): Promise<Buffer> {
+    const response = await this.request.get(path, this.sessionOptions());
+    if (!response.ok()) throw new RunnerApiHttpError(response.status(), await failureMessage(response, "GET"));
+    return response.body();
+  }
+
+
   /** Repeated native observation reads retain explicit snapshots, without duplicating full DTO bodies in the browser trace. */
   async getRunObservation<T>(path: string, options?: { timeout: number }): Promise<T> {
     const url = new URL(path, this.baseURL);
@@ -153,14 +160,14 @@ export class RunnerApi {
 
   async delete(
     path: string,
-    options?: { allowNotFound?: boolean },
+    options?: { allowNotFound?: boolean; timeout?: number },
   ): Promise<void> {
     if (this.browserCookie) {
-      const response = await this.authenticatedResponse("DELETE", path); await response.body?.cancel();
+      const response = await this.authenticatedResponse("DELETE", path, undefined, options?.timeout === undefined ? undefined : { timeout: options.timeout }); await response.body?.cancel();
       if (response.ok || options?.allowNotFound && response.status === 404) return;
       throw new RunnerApiHttpError(response.status, `DELETE ${new URL(path, this.baseURL).pathname} returned ${response.status}; body withheld`);
     }
-    const response = await this.request.delete(path, this.sessionOptions());
+    const response = await this.request.delete(path, { ...this.sessionOptions(), timeout: options?.timeout });
     if (response.ok() || (options?.allowNotFound && response.status() === 404))
       return;
     throw new Error(await failureMessage(response, "DELETE"));

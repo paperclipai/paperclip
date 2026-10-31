@@ -28,7 +28,7 @@ export function gradeIntegratorSkillStudio(value: unknown) {
   const run = o.studioRuns[0];
   c.add("one-pinned-synthetic-test", o.studioRuns.length === 1 && !!run && run.companyId === o.companyId && run.skillId === before?.id && run.agentId === worker?.id
     && run.skillVersionId === before?.currentVersionId && run.skillVersion.id === before?.currentVersionId && run.inputId === input?.id && run.inputSnapshot === studioPageInput
-    && run.skillVersion.fileInventory.some(file => file.path === "SKILL.md" && file.content === before.markdown),
+    && run.skillVersion.fileInventory.some(file => file.path === "SKILL.md" && "content" in file && file.content === before.markdown),
   "Exactly one bounded test retains the actual selected writable revision and synthetic input bytes.");
   const native = run && o.runs.find(row => row.agentId === worker?.id && row.contextSnapshot?.issueId === run.issueId);
   c.add("actual-native-harness-completion", !!run && run.status === "succeeded" && !!native && native.runtimeMode === "native" && native.status === "succeeded"

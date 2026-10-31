@@ -14,6 +14,7 @@ import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+import { queuedInteractionId } from "./queued-interaction-response.js";
 import { childReviewOutcomes } from "./native-runtime/child-review-outcomes.js";
 import { isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js";
 import { githubRecoveryReceipts } from "./chat-channels/github/recovery-receipts.js";
@@ -416,7 +417,15 @@ export async function buildExecutionContinuation(input: {
     // Admission records the board operator's authority separately from the
     // message author. At dispatch, prove that exact queue was adopted by this
     // run; caller-supplied continuation context cannot grant this authority.
-    const continuationAuthorizations = reconciliations.map(row => object(row.evidence.explicitUserContinuation))
+    const queueIntentId = z.string().guid().safeParse(explicitContinuation.queuedCommentInterruptId);
+    const nativeQueuedContinuation = predecessor?.runtimeMode === "native" && ["cancelled", "failed"].includes(predecessor.status);
+    const [recordedQueue] = nativeQueuedContinuation && input.runId && queueIntentId.success ? await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.id, queueIntentId.data), eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.agentId, input.agentId), eq(agentWakeupRequests.status, "coalesced"),
+      eq(agentWakeupRequests.runId, input.runId), sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+    )) : [];
+    const continuationAuthorizations = [...reconciliations.map(row => object(row.evidence.explicitUserContinuation)),
+      ...(recordedQueue ? [object(object(recordedQueue.payload?.queuedCommentInterrupt).continuation)] : [])]
       .filter(value => value.previousRunId === explicitUserSource &&
         (!input.runId || value.runId === input.runId) &&
         value.commentId === explicitContinuation.commentId &&
@@ -451,6 +460,12 @@ export async function buildExecutionContinuation(input: {
           ? value.failedRunId === failedRunId && retryWakes.some(wake =>
               wake.runId === value.runId && wake.requestedByActorId === value.actorId &&
               priorRuns.some(run => run.id === wake.runId && run.retryOfRunId === failedRunId))
+          : value.interactionId
+          ? interactions.some(interaction => interaction.id === value.interactionId && interaction.id === triggerInteraction?.id &&
+              ["accepted", "answered", "rejected"].includes(interaction.status) &&
+              interruptQueues.some(queue => queue.id === value.queuedCommentInterruptId && queue.runId === value.runId &&
+                object(queue.payload?.queuedCommentInterrupt).actorId === value.actorId &&
+                queuedInteractionId(queue.payload) === interaction.id && queue.payload?.interactionStatus === interaction.status))
           : rows.some(comment => comment.id === value.commentId &&
               comment.authorType === "user" &&
               (!("commentUpdatedAt" in value || "commentBodyHash" in value || value.automaticRetry) || (

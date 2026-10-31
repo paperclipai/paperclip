@@ -1,3 +1,9 @@
+import { readNativeEventEvidenceOutcome } from "./native-runtime/evidence-classifier.js";
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
+import { isNativeResponseEvidence, notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
+import { isSafeNativeChatProgressEventType } from "./safe-native-chat-progress.js";
+import { notifyChatNativeProgress } from "./chat-native-progress-notifications.js";
+import { boundRunIssueIdSql } from "./run-task-binding.js";
 import { and, asc, eq, getTableColumns, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
@@ -68,7 +74,10 @@ export async function appendHeartbeatRunEvent(
   db: Db,
   input: AppendHeartbeatRunEventInput,
 ): Promise<AppendHeartbeatRunEventResult> {
-  if (!input.nativeSource && !input.retryExhaustion) {
+  const projectsReassessment = readNativeEventEvidenceOutcome(input.payload?.prpEvent) !== null;
+  const projectsProgress = isSafeNativeChatProgressEventType(input.eventType);
+  const projectsResponse = isNativeResponseEvidence(input.eventType, input.payload?.prpEvent);
+  if (!input.nativeSource && !input.retryExhaustion && !projectsProgress && !projectsResponse && !projectsReassessment) {
     const allocated = db.$with("allocated_run_event", {}).as(sql`
       update ${heartbeatRuns}
       set next_event_seq = ${heartbeatRuns.nextEventSeq} + 1,
@@ -94,7 +103,11 @@ export async function appendHeartbeatRunEvent(
   }
   return db.transaction(async (tx) => {
     const run = await tx
-      .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId })
+      .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+        // Only progress needs the task binding. Other native/recovery events
+        // must not read a potentially large context snapshot to append a log.
+        ...(projectsProgress || projectsResponse || projectsReassessment ? { runtimeMode: heartbeatRuns.runtimeMode } : {}),
+        ...(projectsProgress ? { issueId: boundRunIssueIdSql() } : {}) })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, input.runId))
       .for("update")
@@ -165,6 +178,15 @@ export async function appendHeartbeatRunEvent(
       }
     }
 
+    if (projectsReassessment && run.runtimeMode === "native") {
+      await notifyNativeStatusReassessment(tx, { companyId: run.companyId, runId: input.runId });
+    }
+    if (projectsProgress && run.runtimeMode === "native" && run.issueId) {
+      await notifyChatNativeProgress(tx, { companyId: run.companyId, issueId: run.issueId });
+    }
+    if (projectsResponse && run.runtimeMode === "native") {
+      await notifyNativeResponsePresentation(tx, { companyId: run.companyId, runId: input.runId });
+    }
     const seq = await allocateHeartbeatRunEventSeq(
       tx as unknown as Db,
       input.runId,

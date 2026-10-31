@@ -281,7 +281,8 @@ export function environmentRunOrchestrator(
     executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
     runnerTaskProjectIds?: readonly string[];
     /** Existing live runner recovery must use its original active lease, including ephemeral leases. */
-    reattachRemoteLease?: { leaseId: string; providerLeaseId: string; remoteCwd: string };
+    reattachRemoteLease?: { kind?: "sandbox"; leaseId: string; providerLeaseId: string; remoteCwd: string }
+      | { kind: "plugin_task"; leaseId: string };
     /** A new controller must stop the previous plugin task before allocating a replacement. */
     recoverPluginTask?: boolean;
   }): Promise<EnvironmentAcquisitionResult> {
@@ -330,15 +331,19 @@ export function environmentRunOrchestrator(
       // when the admitted per-turn policy deliberately disables reusable leases.
       const expected = input.reattachRemoteLease;
       const lease = await environmentsSvc.getLeaseById(expected.leaseId);
-      if (!lease || environment.driver !== "sandbox" ||
+      if (!lease ||
           lease.companyId !== input.companyId || lease.environmentId !== environment.id ||
           lease.heartbeatRunId !== input.heartbeatRunId || lease.issueId !== input.issueId ||
           lease.executionWorkspaceId !== (input.persistedExecutionWorkspace?.id ?? null) ||
           lease.metadata?.agentId !== input.agentId || lease.status !== "active" ||
           lease.releasedAt !== null || lease.cleanupStatus !== null ||
           (lease.expiresAt !== null && new Date(lease.expiresAt).getTime() <= Date.now()) ||
-          lease.provider !== environment.config.provider || lease.providerLeaseId !== expected.providerLeaseId ||
-          lease.metadata?.remoteCwd !== expected.remoteCwd) {
+          (expected.kind === "plugin_task"
+            ? environment.driver !== "plugin" || input.adapterType !== "paperclip_runner"
+              || lease.metadata?.runnerTaskLease !== true || lease.metadata?.runnerTaskDispatched !== true
+              || lease.metadata?.runnerTaskExecutionStopped === true
+            : environment.driver !== "sandbox" || lease.provider !== environment.config.provider
+              || lease.providerLeaseId !== expected.providerLeaseId || lease.metadata?.remoteCwd !== expected.remoteCwd)) {
         throw new Error("native_remote_recovery_lease_mismatch");
       }
       leaseRecord = { environment, lease, leaseContext: buildEnvironmentLeaseContext(input) };
@@ -673,6 +678,8 @@ export function environmentRunOrchestrator(
     failureReason?: string;
     /** Explicit Stop during adapter startup; never used for ordinary cleanup. */
     cancelActiveWork?: boolean;
+
+    respectCleanupDeadlines?: boolean;
     /** Explicit paperclip_runner resource lifecycle. Omitted for legacy adapters. */
     providerResourceDisposition?: ProviderResourceDisposition;
     nativeLifecycleTelemetry?: {
@@ -690,13 +697,15 @@ export function environmentRunOrchestrator(
 
     let releasedLeases: EnvironmentRuntimeLeaseRecord[];
     try {
-      releasedLeases = await environmentRuntime.releaseRunLeases(
+      const releaseArgs: Parameters<typeof environmentRuntime.releaseRunLeases> = [
         input.heartbeatRunId,
         status,
         (leaseId, error) => result.errors.push({ leaseId, error }),
         input.providerResourceDisposition,
-        ...(input.cancelActiveWork ? [true] as const : []),
-      );
+      ];
+      if (input.cancelActiveWork) releaseArgs[4] = true;
+      if (input.respectCleanupDeadlines) releaseArgs[5] = { respectCleanupDeadlines: true };
+      releasedLeases = await environmentRuntime.releaseRunLeases(...releaseArgs);
     } catch (err) {
       result.errors.push({ leaseId: "*", error: err });
       return result;

@@ -1108,11 +1108,13 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     await controllerLease.assertOwned();
     const remoteRecovery = runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner"
       ? runOptions.nativeRestartRecovery : null;
-    const recoveryWorkspace = remoteRecovery
+    const pluginRecovery = remoteRecovery?.remote.kind === "plugin_task" ? remoteRecovery.remote : null;
+    const sandboxRecovery = remoteRecovery && remoteRecovery.remote.kind !== "plugin_task" ? remoteRecovery.remote : null;
+    const recoveryWorkspace = sandboxRecovery
       ? readNativeWorkspaceSyncReference(parseObject(run.runnerProfileJson).nativeWorkspaceSync) : null;
-    if (remoteRecovery && (!recoveryWorkspace || remoteRecovery.runId !== run.id ||
-        recoveryWorkspace.providerLeaseId !== remoteRecovery.remote.providerLeaseId ||
-        recoveryWorkspace.remoteCwd !== remoteRecovery.remote.remoteCwd)) {
+    if (remoteRecovery && (remoteRecovery.runId !== run.id || (sandboxRecovery && (!recoveryWorkspace ||
+        recoveryWorkspace.providerLeaseId !== sandboxRecovery.providerLeaseId ||
+        recoveryWorkspace.remoteCwd !== sandboxRecovery.remoteCwd)))) {
       throw new Error("native_remote_recovery_lease_mismatch");
     }
     acquiredEnvironment = await timeWorkspace("workspace_environment_acquire", () => envOrchestrator.acquireForRun({
@@ -1132,10 +1134,10 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       agentId: agent.id,
       persistedExecutionWorkspace,
       executionWorkspaceSettings: environmentExecutionWorkspaceSettings,
-      ...(remoteRecovery && recoveryWorkspace ? { reattachRemoteLease: {
+      ...(pluginRecovery ? { reattachRemoteLease: pluginRecovery } : sandboxRecovery && recoveryWorkspace ? { reattachRemoteLease: {
         leaseId: recoveryWorkspace.leaseId,
-        providerLeaseId: remoteRecovery.remote.providerLeaseId,
-        remoteCwd: remoteRecovery.remote.remoteCwd,
+        providerLeaseId: sandboxRecovery.providerLeaseId,
+        remoteCwd: sandboxRecovery.remoteCwd,
       } } : {}),
     }));
     await controllerLease.assertOwned();

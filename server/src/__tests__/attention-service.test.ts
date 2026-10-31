@@ -7,7 +7,6 @@ import { eq, sql } from "drizzle-orm";
 import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
-  activityLog,
   agents,
   approvals,
   assets,
@@ -17,11 +16,8 @@ import {
   createDb,
   decisionQueueItems,
   decisionQueues,
-  decisionArchiveNotificationOutbox,
-  decisionRetention,
   decisions,
   decisionTriage,
-  decisionTriageEvents,
   documents,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -45,6 +41,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
 import { attentionService } from "../services/attention.js";
+import { decisionHistoryService } from "../services/decision-history.js";
 import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs.js";
 import { agentService } from "../services/agents.js";
 import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
@@ -69,35 +66,9 @@ describeEmbeddedPostgres("attention service", () => {
   }, 30_000);
 
   afterEach(async () => {
-    await db.delete(inboxDismissals);
-    await db.delete(decisionArchiveNotificationOutbox);
-    await db.delete(decisionRetention);
-    await db.delete(decisionTriageEvents);
-    await db.delete(decisionTriage);
-    await db.delete(decisionQueueItems);
-    await db.delete(decisionQueues);
-    await db.delete(decisions);
-    await db.delete(issueThreadInteractions);
-    await db.delete(issueApprovals);
-    await db.delete(issueAttachments);
-    await db.delete(issueDocuments);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(budgetIncidents);
-    await db.delete(budgetPolicies);
-    await db.delete(joinRequests);
-    await db.delete(invites);
-    await db.delete(issueRecoveryActions);
-    await db.delete(issueRelations);
-    await db.delete(activityLog);
-    await db.delete(approvals);
-    await db.delete(issues);
-    await db.delete(assets);
-    await db.delete(documents);
-    await db.delete(projectWorkspaces);
-    await db.delete(projects);
-    await db.delete(agents);
-    await db.delete(companies);
+
+
+    await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
   });
 
   afterAll(async () => {
@@ -269,6 +240,84 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.some((item) => item.subject.id === harnessIssueId)).toBe(false);
     expect(feed.countsBySourceKind.review ?? 0).toBe(0);
     expect(feed.items.flatMap((item) => item.queues).some((queue) => queue.key === "internal-review")).toBe(false);
+  });
+
+  it("includes existing pending chat questions and confirmations, then retains answered questions in history", async () => {
+    const { companyId, workerId } = await seedCompany("CHQ");
+    const issueId = randomUUID(), questionId = randomUUID(), confirmationId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, identifier: "CHQ-1", title: "Chat with Worker", status: "in_review",
+      conversationAgentId: workerId, conversationUserId: "board-user", conversationState: "waiting", assigneeAgentId: workerId,
+    });
+    await db.insert(issueThreadInteractions).values([
+      { id: questionId, companyId, issueId, kind: "ask_user_questions", status: "pending", title: "Choose the screen",
+        createdByAgentId: workerId, addresseeUserId: "board-user", effectiveResolverPolicy: "human_only",
+        payload: { version: 1, questions: [{ id: "screen", prompt: "Which screen should we redesign?", options: [], selectionMode: "single", required: true, allowOther: true }] } },
+      { id: confirmationId, companyId, issueId, kind: "request_confirmation", status: "pending", title: "Approve the plan",
+        createdByAgentId: workerId, addresseeUserId: "board-user", payload: { version: 1, prompt: "Approve this plan?" } },
+    ]);
+    const actor = { type: "board" as const, source: "session" as const, userId: "board-user", companyIds: [companyId] };
+    const options = { userId: actor.userId, actor };
+    const service = attentionService(db);
+    const feed = await service.list(companyId, options);
+    expect(feed.items.filter((item) => item.sourceKind === "issue_thread_interaction").map((item) => item.subject.id).sort())
+      .toEqual([questionId, confirmationId].sort());
+    expect(feed.items.find((item) => item.subject.id === questionId)).toMatchObject({
+      inlineResolvable: true,
+      relatedIssue: { id: issueId, identifier: "CHQ-1", href: "/CHQ/issues/CHQ-1" },
+      subject: { href: `/CHQ/issues/CHQ-1#interaction-${questionId}`, metadata: { kind: "ask_user_questions", issueId } },
+      detail: { kind: "questions", questionCount: 1, firstQuestionText: "Which screen should we redesign?" },
+      resolverAudience: { effectiveResolverPolicy: "human_only" },
+    });
+    expect(feed.countsBySourceKind.issue_thread_interaction).toBe(2);
+    expect(feed.countsBySourceKind.review).toBe(0);
+
+    await db.update(issueThreadInteractions).set({ status: "answered", resolvedAt: new Date(), resolvedByUserId: actor.userId,
+      result: { version: 1, answers: [{ questionId: "screen", optionIds: [], otherText: "Agent detail" }] } }).where(eq(issueThreadInteractions.id, questionId));
+    const after = await service.list(companyId, options);
+    expect(after.items.some((item) => item.subject.id === questionId)).toBe(false);
+    expect(after.countsBySourceKind.issue_thread_interaction).toBe(1);
+    const history = await decisionHistoryService(db).list(companyId, options);
+    expect(history.items).toEqual([expect.objectContaining({ sourceId: questionId, issueId, outcome: "answered", label: "Answers recorded" })]);
+  });
+
+  it("keeps chat attention company, issue visibility, and addressee filters while ignoring idle chats without requests", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("CHA");
+    const other = await seedCompany("CHB");
+    const scenarios = [
+      { user: "board-user", allowed: true },
+      { user: "other-user", addresseeUserId: "other-user" },
+      { user: "private-owner", visibility: "private", createdByUserId: "private-owner" },
+      { user: "hidden-owner", hiddenAt: new Date() },
+      { user: "harness-owner", harnessKind: "skill_test" },
+      { user: "agent-addressee", addresseeAgentId: reviewerId },
+      { user: "idle-owner", idle: true },
+      { user: "other-company", companyId: other.companyId, agentId: other.workerId },
+    ];
+    const expected: string[] = [];
+    for (const [index, scenario] of scenarios.entries()) {
+      const issueId = randomUUID(), interactionId = randomUUID();
+      const scopedCompanyId = scenario.companyId ?? companyId, agentId = scenario.agentId ?? workerId;
+      await db.insert(issues).values({
+        id: issueId, companyId: scopedCompanyId, identifier: `CH-${index}`, title: `Chat ${scenario.user}`, status: "in_review",
+        conversationAgentId: agentId, conversationUserId: scenario.user, conversationState: "waiting", assigneeAgentId: agentId,
+        visibility: scenario.visibility ?? "open", createdByUserId: scenario.createdByUserId,
+        hiddenAt: scenario.hiddenAt, harnessKind: scenario.harnessKind,
+      });
+      if (scenario.idle) continue;
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId, companyId: scopedCompanyId, issueId, kind: "ask_user_questions", status: "pending",
+        title: `Question ${scenario.user}`, createdByAgentId: agentId,
+        addresseeUserId: scenario.addresseeUserId ?? (scenario.addresseeAgentId ? null : "board-user"),
+        addresseeAgentId: scenario.addresseeAgentId,
+        payload: { version: 1, questions: [] },
+      });
+      if (scenario.allowed) expected.push(interactionId);
+    }
+    const actor = { type: "board" as const, source: "session" as const, userId: "board-user", companyIds: [companyId], ignoreInstanceAdmin: true };
+    const feed = await attentionService(db).list(companyId, { actor, userId: actor.userId });
+    expect(feed.items.filter((item) => item.sourceKind === "issue_thread_interaction").map((item) => item.subject.id)).toEqual(expected);
+    expect(feed.countsBySourceKind.review).toBe(0);
   });
 
   it("returns ranked decision-only items for every active source and excludes non-human or transient rows", async () => {
@@ -1357,6 +1406,22 @@ describeEmbeddedPostgres("attention service", () => {
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
     const interactionItems = feed.items.filter((item) => item.sourceKind === "issue_thread_interaction");
     const detailsByKind = new Map(interactionItems.map((item) => [item.detail?.kind, item]));
+    const summaryEvents: Array<Record<string, unknown>> = [], captureNow = Date.now();
+    const summaryCapture = createDatabaseResponseCapture({ start: captureNow - 100, end: captureNow + 59_000 }, event => summaryEvents.push(event));
+    installDatabaseResponseCapture(db, { documents, assets, issueAttachments }, summaryCapture);
+    try {
+      const summary = await attentionService(db).summary(companyId, { userId: "board-user" });
+      expect(summary.countsBySourceKind).toEqual(feed.countsBySourceKind);
+      expect(summary.totalCount).toBe(feed.totalCount);
+      const index = await attentionService(db).taskIndex(companyId, { userId: "board-user" });
+      expect(index.taskIds).toEqual([...new Set(feed.items.flatMap(item => item.relatedIssue ? [item.relatedIssue.id] : item.subject.kind === "issue" ? [item.subject.id] : []))]);
+      expect(index.totalCount).toBe(feed.totalCount);
+
+    } finally { summaryCapture.flush(); }
+    const cardReads = summaryEvents.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+      && ["documents", "assets", "issue_attachments"].includes(String(event.table)));
+    expect(cardReads).toEqual([]);
+
 
     const planItem = detailsByKind.get("plan_approval");
     expect(planItem?.subject.title).toBe("Plan approval - Approve launch plan");
@@ -1464,6 +1529,28 @@ describeEmbeddedPostgres("attention service", () => {
     expect(interactionIds).toContain(newerConfirmationId);
     expect(interactionIds).toContain(checkboxId);
     expect(interactionIds).not.toContain(olderConfirmationId);
+  });
+
+  it("retains every independently bound quality approval alongside the newest ordinary confirmation", async () => {
+    const { companyId, workerId } = await seedCompany("ATQ");
+    const issueId = await insertIssue({ companyId, identifier: "ATQ-1", title: "Review copy and visual", status: "in_review", assigneeAgentId: workerId });
+    const ids = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(issueThreadInteractions).values(ids.map((id, index) => ({
+      id, companyId, issueId, kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee", createdByAgentId: workerId,
+      payload: { version: 1, prompt: "Approve output?", ...(index < 2 ? { qualityReview: { key: index === 0 ? "copy" : "visual", requirementHash: "a".repeat(64) } } : {}) },
+      createdAt: new Date(Date.UTC(2026, 6, 9, 12, index)),
+    })));
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const interactions = feed.items.filter(item => item.sourceKind === "issue_thread_interaction");
+    expect(interactions.map(item => item.subject.id).sort()).toEqual([ids[0], ids[1], ids[3]].sort());
+    const summary = await attentionService(db).summary(companyId, { userId: "board-user" });
+    expect(summary.countsBySourceKind).toEqual(feed.countsBySourceKind);
+
+    // Resolving one output removes only that decision, leaving the other output
+    // and the ordinary confirmation independently actionable.
+    await db.update(issueThreadInteractions).set({ status: "accepted", resolvedAt: new Date() }).where(eq(issueThreadInteractions.id, ids[0]));
+    const remaining = await attentionService(db).list(companyId, { userId: "board-user" });
+    expect(remaining.items.filter(item => item.sourceKind === "issue_thread_interaction").map(item => item.subject.id).sort()).toEqual([ids[1], ids[3]].sort());
   });
 
   it("uses inbox_dismissals with attention-prefixed dedup keys and resurfaces newer activity", async () => {
@@ -1790,6 +1877,7 @@ describeEmbeddedPostgres("attention service", () => {
 
     await expect(attentionService(db).list(companyId, { userId: "board-user" }))
       .resolves.toMatchObject({ totalCount: 1 }); // agent_error_alert from seed
+    await expect(attentionService(db).summary(companyId, { userId: "board-user" })).resolves.toMatchObject({ totalCount: 1 });
     const hiddenFeed = await attentionService(db).list(companyId, { userId: "board-user", includeDismissed: true });
     expect(hiddenFeed.items.find((item) => item.dedupKey === `approval:${approvalId}`)?.dismissal)
       .toMatchObject({ kind: "snooze", isActive: true, snoozedUntil: "2099-01-02T00:00:00.000Z" });
@@ -1803,6 +1891,9 @@ describeEmbeddedPostgres("attention service", () => {
     const visibleApproval = visibleFeed.items.find((item) => item.dedupKey === `approval:${approvalId}`);
     expect(visibleApproval?.dismissal).toMatchObject({ kind: "snooze", isActive: false });
     expect(visibleApproval).toBeTruthy();
+    const summary = await attentionService(db).summary(companyId, { userId: "board-user" });
+    expect(summary.totalCount).toBe(visibleFeed.totalCount);
+
   });
 
   it("enriches, filters, paginates, snoozes, and ranks the decide-now feed", async () => {
@@ -2045,6 +2136,13 @@ describeEmbeddedPostgres("attention service", () => {
     expect(approvalRows.every((approval) => internalSnapshotIds.has(approval.id))).toBe(true);
     expect(internalSnapshot.items.length).toBeGreaterThan(100);
     expect(internalSnapshot.nextCursor).toBeNull();
+    const summary = await attentionService(db).summary(companyId, { userId: "board-user" });
+    expect(summary).toEqual({
+      companyId, generatedAt: expect.any(String), totalCount: internalSnapshot.totalCount,
+      deskBadgeCount: internalSnapshot.deskBadgeCount, countsBySourceKind: internalSnapshot.countsBySourceKind,
+    });
+    expect(JSON.stringify(summary).length).toBeLessThan(JSON.stringify(internalSnapshot).length / 10);
+
 
     await expect(attentionService(db).list(companyId, { userId: "board-user", all: true }))
       .rejects.toThrow("all requires a queue filter");
@@ -2098,6 +2196,10 @@ describeEmbeddedPostgres("attention service", () => {
       allowUnscopedAll: true,
     });
     expect(complete.items.filter((item) => item.sourceKind === "decision")).toHaveLength(2);
+    const summary = await svc.summary(companyId, { userId: "board-user" });
+    expect(summary.totalCount).toBe(complete.totalCount);
+    expect(summary.countsBySourceKind).toEqual(complete.countsBySourceKind);
+
     expect(complete.nextCursor).toBeNull();
   });
 
@@ -2213,6 +2315,18 @@ describeEmbeddedPostgres("attention service", () => {
       .get(`/api/companies/${companyId}/attention?includeDismissed=true&all=true`)
       .expect(200);
     expect(completeFeed.body.nextCursor).toBeNull();
+    const summary = await request(app(board)).get(`/api/companies/${companyId}/attention/summary`).expect(200);
+    expect(summary.body).not.toHaveProperty("items");
+    expect(summary.body.totalCount).toBe(completeFeed.body.totalCount);
+    const taskIndex = await request(app(board)).get(`/api/companies/${companyId}/attention/tasks`).expect(200);
+    expect(taskIndex.body).not.toHaveProperty("items");
+    expect(taskIndex.body.taskIds).toEqual([]);
+    await request(app(agent)).get(`/api/companies/${companyId}/attention/tasks`).expect(403);
+    await request(app({ ...board, source: "session", companyIds: [] })).get(`/api/companies/${companyId}/attention/tasks`).expect(403);
+
+    await request(app(agent)).get(`/api/companies/${companyId}/attention/summary`).expect(403);
+    await request(app({ ...board, source: "session", companyIds: [] })).get(`/api/companies/${companyId}/attention/summary`).expect(403);
+
     await request(app(board))
       .get(`/api/companies/${companyId}/attention?activitySince=yesterday`)
       .expect(400, { error: "activitySince must be an ISO timestamp" });
@@ -2249,6 +2363,10 @@ describeEmbeddedPostgres("attention service", () => {
 
     expect(feed.items.map((item) => item.subject.title)).not.toContain("Confidential review");
     expect(JSON.stringify(feed)).not.toContain(privateIssueId);
+    const summary = await attentionService(db).summary(companyId, { userId: actor.userId, actor });
+    expect(summary.totalCount).toBe(feed.totalCount);
+    expect(summary.countsBySourceKind).toEqual(feed.countsBySourceKind);
+
   });
 
   it("computes the aging shelf uniformly across approval, interaction, and review sources", async () => {

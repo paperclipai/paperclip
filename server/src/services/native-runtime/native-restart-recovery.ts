@@ -1,4 +1,14 @@
+import { NATIVE_RETAINED_OWNER_WAIT } from "./native-controller-recovery.js";
+import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
+import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
+import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
+import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
+import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
+import { hasNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader } from "./native-runner-checkpoint.js";
+import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 import { activeNativeExecutionRunIds, NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
 import {
@@ -7,7 +17,7 @@ import {
   recordNativeLocalProcessStop,
 } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -17,6 +27,7 @@ import {
   issues,
   nativeRunFinalizations,
 } from "@paperclipai/db";
+import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { getServerInfoSnapshot } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
@@ -24,6 +35,7 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 import { nativeRestartInterruptedTurnId, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
+import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
 
 export type NativeControllerIdentity = {
   bootId: string;
@@ -56,7 +68,10 @@ export type NativeRestartRecoveryClaim =
       providerAttempt: number;
       restartKind: NativeRestartKind;
       recoveryRequestId: string | null;
-      remote: { providerLeaseId: string; remoteCwd: string };
+      remote: { kind?: "sandbox"; providerLeaseId: string; remoteCwd: string }
+        | { kind: "plugin_task"; leaseId: string };
+      /** Discovery evidence only; executor revalidates the encrypted header. */
+      stagedAttachment?: Pick<NativeStagedAttachmentRecovery, "sourceIdentity" | "targetIdentity" | "templateDigest">;
     }
   | {
       kind: "resume_dead_runner";
@@ -83,6 +98,7 @@ export type NativeRestartRecoveryDisposition =
       kind: "awaiting_evidence" | "blocked" | "already_finalized";
       runId: string;
       reason: string;
+      retryAt?: Date;
     };
 
 export function nextNativeProviderAttempt(
@@ -180,8 +196,14 @@ export async function evaluateNativeControllerTakeover(input: {
   isProcessAlive?: (pid: number) => boolean;
   readProcessStartedAt?: (pid: number) => Promise<Date | null>;
   requireStoppedController?: boolean;
+  remoteLeaseFenced?: boolean;
 }): Promise<{ allowed: boolean; reason: string }> {
   const { owner, now } = input;
+  if (input.remoteLeaseFenced) {
+    return owner.leaseExpiresAt && owner.leaseExpiresAt > now
+      ? { allowed: false, reason: "remote_controller_lease_live" }
+      : { allowed: true, reason: "remote_controller_lease_released_or_expired" };
+  }
   const isAlive = input.isProcessAlive ?? processIsAlive;
   const readStartedAt = input.readProcessStartedAt ?? observedProcessStart;
   if ((!owner.leaseOwner || !owner.leaseExpiresAt) && !input.requireStoppedController) {
@@ -303,6 +325,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   checkpointIdentityMatches?: boolean;
   hasProviderEvidence: boolean;
   checkpointFailed?: boolean;
+  stagedAttachmentVerified?: boolean;
   providerAttempt?: number;
 }): {
   claimKind: NativeRestartRecoveryClaim["kind"] | null;
@@ -317,6 +340,9 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   // inspection; the executor must prove the original lease and authenticate
   // the surviving runner before it can resume delivery.
   if (input.remoteSandbox) {
+    if (input.stagedAttachmentVerified === true) {
+      return { claimKind: "reattach_remote_runner", reason: "staged_remote_attachment_requires_sandbox_verification" };
+    }
     if (input.unclaimedBootstrap === true && !input.hasCheckpoint && !input.hasProviderEvidence) {
       return { claimKind: "bootstrap_incomplete", reason: "remote_execution_never_claimed" };
     }
@@ -468,6 +494,10 @@ export async function claimNativeRestartRecoveries(input: {
   liveRunExecutions?: Pick<ReadonlySet<string>, "has">;
   now?: Date;
   limit?: number;
+  /** Called after each committed claim, before scanning the next candidate. */
+  onClaim?: (claim: NativeRestartRecoveryClaim, scope: {
+    companyId: string; issueId: string; controller: NativeControllerIdentity; remote: boolean;
+  }) => void;
   coordinatedPreviousController?: {
     pid: number;
     processStartedAt: Date | null;
@@ -493,6 +523,9 @@ export async function claimNativeRestartRecoveries(input: {
         eq(agents.adapterType, "paperclip_runner"),
         inArray(heartbeatRuns.status, ["running", "failed"]),
         isNull(nativeRunFinalizations.resultId),
+        // A pre-provider retained-owner wait belongs to normal same-run
+        // resumption, including when its deadline elapsed while we were down.
+        or(isNull(nativeRunFinalizations.failureCode), ne(nativeRunFinalizations.failureCode, NATIVE_RETAINED_OWNER_WAIT)),
         or(
           eq(nativeRunFinalizations.phase, "observed"),
           and(
@@ -515,6 +548,8 @@ export async function claimNativeRestartRecoveries(input: {
 
   const dispositions: NativeRestartRecoveryDisposition[] = [];
   for (const candidate of candidates) {
+    const now = input.now ?? new Date();
+    let claimScope: { companyId: string; issueId: string; controller: NativeControllerIdentity; remote: boolean } | undefined;
     // Set inside the transaction only when the write below genuinely
     // transitions the run into "failed". Read after the transaction
     // commits, so a rolled-back write never reports a false failure.
@@ -573,6 +608,9 @@ export async function claimNativeRestartRecoveries(input: {
           reason: "result_already_persisted",
         } as const;
       }
+      if (!input.liveRunExecutions?.has(row.run.id) && await retireSupersededNativeRetry(tx as unknown as Db, {
+        run: row.run, coordinator: row.coordinator, issueExecutionRunId: row.issueExecutionRunId, now,
+      })) return { kind: "blocked", runId: row.run.id, reason: "native_retry_superseded" } as const;
       if (row.issueExecutionRunId !== row.run.id) {
         return {
           kind: "blocked",
@@ -589,9 +627,21 @@ export async function claimNativeRestartRecoveries(input: {
         } as const;
       }
 
+      const profile = row.run.runnerProfileJson ?? {};
+      const remoteWorkspace = readNativeWorkspaceSyncReference(profile.nativeWorkspaceSync);
+      const [pluginTask] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+        eq(environmentLeases.companyId, row.run.companyId), eq(environmentLeases.heartbeatRunId, row.run.id),
+        sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`,
+      )).orderBy(desc(environmentLeases.createdAt)).limit(1);
+      const remoteSandbox = profile.nativeWorkspaceSync != null;
+      const remoteProcess = remoteSandbox || !!pluginTask;
+      const durableAuthority = (remoteWorkspace || pluginTask) && await hasNativeRunnerCheckpoint(tx, {
+        companyId: row.run.companyId, issueId: row.coordinator.issueId, runId: row.run.id,
+      });
       const takeover = await evaluateNativeControllerTakeover({
         owner: row.coordinator,
         now,
+        remoteLeaseFenced: Boolean(durableAuthority),
         coordinatedPreviousController:
           input.coordinatedPreviousController ?? null,
       });
@@ -630,19 +680,21 @@ export async function claimNativeRestartRecoveries(input: {
           kind: "awaiting_evidence",
           runId: row.run.id,
           reason: takeover.reason,
+          ...(durableAuthority && row.coordinator.leaseExpiresAt ? { retryAt: row.coordinator.leaseExpiresAt } : {}),
         } as const;
       }
 
-      const profile = row.run.runnerProfileJson ?? {};
-      const remoteWorkspace = readNativeWorkspaceSyncReference(
-        profile.nativeWorkspaceSync,
-      );
-      const [pluginTask] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
-        eq(environmentLeases.companyId, row.run.companyId), eq(environmentLeases.heartbeatRunId, row.run.id),
-        sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`,
-      )).limit(1);
-      const remoteSandbox = profile.nativeWorkspaceSync != null;
-      const remoteProcess = remoteSandbox || !!pluginTask;
+      // Only the classic remote path stages attachments. After the owner is
+      // eligible for takeover, inspect its bounded header even if activation
+      // already published a runtime snapshot. Never scan command/event payloads.
+      const stagedHeader = remoteWorkspace && !pluginTask && durableAuthority
+        ? await loadNativeRunnerCheckpointHeader(tx, {
+            companyId: row.run.companyId, issueId: row.coordinator.issueId, runId: row.run.id,
+          }) : null;
+      const stagedAttachment = stagedHeader ? await resolveNativeStagedAttachmentRecovery({
+        db: tx, currentRun: row.run, header: stagedHeader,
+      }) : null;
+
       const runnerPidAlive =
         !remoteProcess && processIsAlive(row.run.processPid);
       const runnerGroupAlive =
@@ -822,7 +874,7 @@ export async function claimNativeRestartRecoveries(input: {
       }
 
       const classification = classifyNativeRunnerRecoveryEvidence({
-        remoteSandbox,
+        remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority),
         unclaimedBootstrap,
         runnerPidAlive,
         runnerGroupAlive,
@@ -831,6 +883,7 @@ export async function claimNativeRestartRecoveries(input: {
         knownProviderProcessIdentityAmbiguous:
           providerProcesses.ambiguousLivePids.length > 0,
         hasCheckpoint,
+        stagedAttachmentVerified: stagedAttachment !== null,
         checkpointIdentityMatches:
           checkpointIdentityMatches &&
           (!remoteSandbox || remoteWorkspace !== null),
@@ -898,6 +951,11 @@ export async function claimNativeRestartRecoveries(input: {
               eq(nativeRunFinalizations.phase, row.coordinator.phase),
             ),
           );
+        await notifyExternalAgentSettlement(tx, { companyId: row.run.companyId, runId: row.run.id });
+        await notifyNativeEnvironmentSettlement(tx, { companyId: row.run.companyId, runId: row.run.id });
+        await notifyInstructionCollection(tx, { companyId: row.run.companyId, runId: row.run.id });
+        await notifyCancelledWorkspacePreservation(tx, { companyId: row.run.companyId, runId: row.run.id });
+        await notifyUnsafeWorkspaceExportRunChange(tx, row.run);
         const [updatedRun] = await tx
           .update(heartbeatRuns)
           .set({
@@ -915,6 +973,7 @@ export async function claimNativeRestartRecoveries(input: {
         if (updatedRun && isNewTerminalRunFailure(row.run, updatedRun)) {
           terminalRunToReport = updatedRun;
         }
+        await notifyNativeStatusReassessment(tx, { companyId: row.run.companyId, issueId: row.coordinator.issueId });
         await tx
           .update(issues)
           .set({ executionRunId: null, updatedAt: now })
@@ -960,6 +1019,7 @@ export async function claimNativeRestartRecoveries(input: {
             wakePolicy: null,
             supersedeOnIdentityChange: true,
           });
+        if (updatedRun) await preserveNativeFailedWorkspace(tx as unknown as Db, updatedRun);
         return { kind: "blocked", runId: row.run.id, reason } as const;
       }
 
@@ -990,7 +1050,9 @@ export async function claimNativeRestartRecoveries(input: {
         .set({
           phase: "observed",
           leaseOwner,
-          leaseExpiresAt: new Date(now.getTime() + 20 * 60_000),
+          // Cleanup and earlier candidates can outlive the batch observation.
+          // The owner row is locked: grant the full lease at this write.
+          leaseExpiresAt: sql`clock_timestamp() + ${durableAuthority ? REMOTE_CONTROLLER_LEASE_MS : 20 * 60_000} * interval '1 millisecond'`,
           controllerBootId: controller.bootId,
           controllerPid: controller.pid,
           controllerProcessStartedAt: controller.processStartedAt,
@@ -1059,6 +1121,7 @@ export async function claimNativeRestartRecoveries(input: {
         })
         .where(eq(heartbeatRuns.id, row.run.id));
 
+      claimScope = { companyId: row.run.companyId, issueId: row.coordinator.issueId, controller, remote: Boolean(durableAuthority) };
       const common = {
         runId: row.run.id,
         leaseOwner,
@@ -1071,7 +1134,11 @@ export async function claimNativeRestartRecoveries(input: {
         return {
           kind: claimKind,
           ...common,
-          remote: {
+          ...(stagedAttachment ? { stagedAttachment: {
+            sourceIdentity: stagedAttachment.sourceIdentity, targetIdentity: stagedAttachment.targetIdentity,
+            templateDigest: stagedAttachment.templateDigest,
+          } } : {}),
+          remote: pluginTask ? { kind: "plugin_task", leaseId: pluginTask.id } : {
             providerLeaseId: remoteWorkspace!.providerLeaseId,
             remoteCwd: remoteWorkspace!.remoteCwd,
           },
@@ -1095,6 +1162,7 @@ export async function claimNativeRestartRecoveries(input: {
     });
     if (terminalRunToReport)
       void reportRunFailure(input.db, terminalRunToReport);
+    if (claimScope && "leaseOwner" in disposition) input.onClaim?.(disposition, claimScope);
     dispositions.push(disposition);
   }
   return dispositions;

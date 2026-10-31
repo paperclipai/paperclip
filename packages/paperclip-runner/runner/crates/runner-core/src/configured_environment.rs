@@ -5,6 +5,7 @@ use std::process::Command;
 const MARKER: &str = "PAPERCLIP_CONFIGURED_ENV_KEYS";
 const RESERVED: &[&str] = &[
     "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG",
+    "PAPERCLIP_OBSERVABILITY_OPENCODE",
     "CLAUDE_CODE_ENABLE_TELEMETRY",
     "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
     "ENABLE_ENHANCED_TELEMETRY_BETA",
@@ -37,6 +38,8 @@ const RESERVED: &[&str] = &[
     "ANTHROPIC_AUTH_TOKEN",
     "AWS_BEARER_TOKEN_BEDROCK",
     "BASH_ENV",
+    "ZDOTDIR",
+    "GH_CONFIG_DIR",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "CODEX_API_KEY",
     "CODEX_HOME",
@@ -49,6 +52,7 @@ const RESERVED: &[&str] = &[
     "GITHUB_ENTERPRISE_TOKEN",
     "GITHUB_TOKEN",
     "HOME",
+    "KIMI_API_KEY",
     "NODE_OPTIONS",
     "NODE_PATH",
     "OPENAI_API_KEY",
@@ -97,6 +101,8 @@ const RESERVED: &[&str] = &[
     "PAPERCLIP_RUNTIME_SERVICES_JSON",
     "PAPERCLIP_RUNTIME_SERVICE_INTENTS_JSON",
     "PAPERCLIP_RUN_ID",
+    "PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT",
+    "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER",
     "PAPERCLIP_TASK_ID",
     "PAPERCLIP_WAKE_COMMENT_ID",
     "PAPERCLIP_WAKE_PAYLOAD_JSON",
@@ -196,9 +202,15 @@ mod tests {
             "not-json",
             "[1]",
             "[\"NODE_OPTIONS\"]",
+            "[\"BASH_ENV\"]",
+            "[\"ZDOTDIR\"]",
+            "[\"GH_CONFIG_DIR\"]",
             "[\"PAPERCLIP_API_KEY\"]",
             "[\"PAPERCLIP_RUNNER_BOOTSTRAP_TICKET\"]",
+            "[\"PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT\"]",
+            "[\"PAPERCLIP_RUNTIME_NOTIFICATION_HELPER\"]",
             "[\"OPENAI_API_KEY\"]",
+            "[\"KIMI_API_KEY\"]",
             "[\"LD_PRELOAD\"]",
             "[\"bad=name\"]",
             "[\"CUSTOM\",\"CUSTOM\"]",
@@ -215,6 +227,14 @@ mod tests {
             );
             assert_eq!(command.get_envs().count(), 0);
         }
+        let mut command = Command::new("unused");
+        assert!(apply_configured_environment(&mut command, |key| match key {
+            MARKER => Some("[\"KIMI_API_KEY\"]".into()),
+            "KIMI_API_KEY" => Some("selected-code-key".into()),
+            _ => None,
+        })
+        .is_err());
+        assert_eq!(command.get_envs().count(), 0);
         let mut command = Command::new("unused");
         assert!(
             apply_configured_environment(&mut command, |key| Some(if key == MARKER {

@@ -880,6 +880,22 @@ describe("live remote runner lease reattachment", () => {
     expect(result.leaseContext.executionWorkspaceId).toBe("ew-1");
     expect(result.environment.config.reuseLease).toBe(false);
   });
+  it.each(["active", "foreign-company", "revoked", "undispatched", "stopped"])("inspects the original plugin task lease (%s)", async state => {
+    mockGetEnvironment.mockResolvedValue(makeEnvironment("plugin"));
+    const lease = originalLease();
+    lease.metadata = { agentId: "agent-1", runnerTaskLease: true,
+      runnerTaskDispatched: state !== "undispatched", runnerTaskExecutionStopped: state === "stopped" };
+    if (state === "foreign-company") lease.companyId = "foreign";
+    if (state === "revoked") lease.status = "released";
+    mockGetLease.mockResolvedValue(lease);
+    const runtime = makeMockRuntime();
+    const acquired = environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun({
+      ...input, reattachRemoteLease: { kind: "plugin_task", leaseId: lease.id },
+    });
+    if (state === "active") await expect(acquired).resolves.toMatchObject({ lease });
+    else await expect(acquired).rejects.toThrow("native_remote_recovery_lease_mismatch");
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+  });
   it.each([
     { companyId: "foreign" }, { environmentId: "foreign" }, { heartbeatRunId: "another-run" },
     { issueId: "another-task" }, { executionWorkspaceId: "another-workspace" },

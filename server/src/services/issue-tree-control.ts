@@ -1,3 +1,8 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
+import { notifyChatResponseAvailability } from "./chat-response-availability.js";
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -995,10 +1000,17 @@ export function issueTreeControlService(db: Db) {
     const now = new Date();
     const releasedCancelHoldIds = activeCancelHolds.map((hold) => hold.id);
     const updatedIssues = await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       const restored: TreeStatusUpdateResult["updatedIssues"] = [];
       for (const [status, issueIdsForStatus] of issueIdsByStatus) {
         if (issueIdsForStatus.length === 0) continue;
-        for (const issueId of issueIdsForStatus) await notifyTerminalWorkspaceWork(tx, `issue:${issueId}`);
+        for (const issueId of issueIdsForStatus) {
+          await notifyNativeStatusReassessment(tx, { companyId, issueId });
+          await notifyTerminalWorkspaceWork(tx, `issue:${issueId}`);
+          await notifyChatResponseAvailability(tx, { companyId, issueId });
+          if (status === "blocked" || status === "in_review") await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId });
+        }
         const rows = await tx
           .update(issues)
           .set({
@@ -1198,28 +1210,31 @@ export function issueTreeControlService(db: Db) {
     const issueIds = treeIssues.map((issue) => issue.id);
     if (issueIds.length === 0) return [];
     const now = new Date();
-    return db
-      .update(agentWakeupRequests)
-      .set({
-        status: "cancelled",
-        finishedAt: now,
-        error: reason,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(agentWakeupRequests.companyId, companyId),
-          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
-          isNull(agentWakeupRequests.runId),
-          inArray(sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`, issueIds),
-        ),
-      )
-      .returning({
-        id: agentWakeupRequests.id,
-        agentId: agentWakeupRequests.agentId,
-        reason: agentWakeupRequests.reason,
-        payload: agentWakeupRequests.payload,
-      });
+    return db.transaction(async tx => {
+      await notifyChatInboundWakeNotices(tx, { companyId });
+      return tx
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: reason,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+            isNull(agentWakeupRequests.runId),
+            inArray(sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`, issueIds),
+          ),
+        )
+        .returning({
+          id: agentWakeupRequests.id,
+          agentId: agentWakeupRequests.agentId,
+          reason: agentWakeupRequests.reason,
+          payload: agentWakeupRequests.payload,
+        });
+    });
   }
 
   return {

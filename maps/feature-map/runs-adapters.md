@@ -40,6 +40,25 @@ The agent header has one Run now action. Administrators can enable
 Capture raw provider traces under the agent configuration’s Debugging section
 for future runs. The header shows Raw tracing on while that setting is enabled.
 
+Managed Git launchers let agents save local commits without a GitHub connection
+or manual author setup. Verify a fresh checkout and a second shell in the same
+workspace: both commits should use `Paperclip <noreply@paperclip.ing>` when no
+identity is configured. Repository and command settings override this default;
+an eligible managed identity still takes precedence. Inspect stored commit
+metadata and confirm the default did not change repository or host configuration.
+Repeat with unavailable GitHub access; authenticated operations must still obey
+the existing credential checks. The [launcher controls](../../packages/adapter-utils/src/github-launcher.test.ts)
+and [real-shell staging controls](../../packages/adapter-utils/src/github-launcher-environment.test.ts)
+cover this local behavior, separately from live cloud execution and GitHub writes.
+
+Native Runner agents wait for task-bound work. A generic heartbeat interval does
+not create a taskless run or put an otherwise ready agent into an error state.
+Assigned tasks, task monitors, routines and task-bound timer wakes keep their
+existing admission paths; Legacy adapter intervals remain supported. The
+[scheduler](../../server/src/services/heartbeat/scheduling.test.ts) and
+[queue](../../server/src/services/heartbeat/queue.test.ts) regressions exercise
+this boundary with PostgreSQL and synthetic execution, separately from live task acceptance.
+
 For latency diagnosis with an operator OTLP endpoint, search the hashed run ID
 without restricting the root span name. Compare workspace preparation with its
 `workspace_<step>` intervals. Measure controller readiness separately through
@@ -74,6 +93,49 @@ mutations. Qualify a useful model task separately from saving the account.
 
 ### `session`
 
+Recover an in-flight remote runner after controller restart, then let it finish
+with slow instruction collection. Send two follow-ups without resetting its
+session. Verify that completion does not detach the retained runner and that
+provider history survives with one turn per wake. Preparation must retain its
+lease until execution owns renewal; a genuine ownership loss must still detach.
+The [remote continuity regression](../../doc/testing-native-remote-continuity.md)
+uses a real Linux runner and deterministic provider. Live provider acceptance is
+a separate check.
+
+In a fresh sandbox workspace, fetch a different published branch with depth one,
+then save a local result and finish. Verify export imports the shallow history,
+retains host-only edits, and completes finalization without another provider turn.
+Repeat when the host already has that branch history; its ancestry must remain
+available. The filesystem sandbox regression covers transfer and merge behavior,
+not live provider acceptance.
+
+For a plugin computer, complete a task, let its warm session suspend, then send
+two follow-ups within the next warm window. Verify the first resumes the saved
+session and the second keeps the same provider history without an identity
+mismatch. After a fresh recovery into a repository-free directory, send another
+ordinary follow-up. Verify it retains that directory without Core Git worktree
+preparation. Explicit repository strategies and changed provider owners must
+remain denied. Executor and workspace-preparation regressions cover control
+behavior; they do not establish live provider acceptance.
+
+For a remote OpenCode agent configured with `per_turn`, complete a task, then
+send two follow-ups without resetting its session. Verify that each continuation
+restores its external controller checkpoint, retains provider context and saved
+files, and finishes with no stranded task lock. A missing checkpoint, an active
+prior owner or a mismatched session must still stop admission. The
+rejected active-owner attempt must not prevent a later continuation from reading
+the owner's newer completed checkpoint. The
+[executor controls](../../server/src/services/native-runtime/native-session-executor.test.ts)
+cover checkpoint restoration and its guards; real-provider acceptance remains
+separate evidence.
+
+After a completed warm turn, change an agent setting that invalidates its
+instruction copy, then send a follow-up. Verify the old runner suspends during
+preparation, saved files remain available, and the follow-up completes once.
+Repeat with an expired or foreign preparation owner and verify that execution
+stays held. The checkpoint integration regression covers the ownership boundary;
+a real provider run remains separate acceptance evidence.
+
 For a repository project that inherits storage-plugin defaults, run a task and
 send two follow-ups. Start with unset task workspace settings, then repeat with
 an explicit isolated mode or strategy. Binding must save `reuse_existing` and
@@ -95,6 +157,11 @@ reads the retained file and appends one new line. Verify a replacement sandbox,
 a new provider session, the exact file contents, successful finalization and no
 stranded task lock. Send another follow-up and verify ordinary session reuse.
 
+With external controller checkpoints enabled, also admit a fresh session on a
+reused sandbox lease. Verify startup from canonical controller evidence and
+reject a marker without a registered controller, changed identity or prior turn
+activity. An existing remote session directory must retain its recovery gate.
+
 Repeat without resetting the session: its replacement must restore verified
 history or remain blocked. Missing backup state must not silently start an
 existing session again. The [executor controls](../../server/src/services/native-runtime/native-session-executor.test.ts)
@@ -102,6 +169,15 @@ cover the bootstrap identity, activity and atomic directory claim; those
 controls do not establish live provider acceptance.
 
 ### `adapter-setup`
+
+Cloud-managed instances load adapters from the release image. Saved external
+registrations cannot replace built-ins or supply UI parser code. Install,
+reinstall, reload, remove, and override operations remain platform-managed.
+The [fixture loader controls](../../server/src/adapters/cloud-external-adapters.test.ts)
+exercise real packages, import side effects, both managed-instance signals and
+self-hosted compatibility. The [route authorization controls](../../server/src/__tests__/adapter-routes-authz.test.ts)
+check managed denials before package or registration access. These are local
+controls, not live Cloud provider qualification.
 
 Automated: [adapter validation routes](../../server/src/__tests__/agent-adapter-validation-routes.test.ts) and [model refresh](../../server/src/__tests__/adapter-model-refresh-routes.test.ts) cover server behavior.
 
@@ -117,6 +193,16 @@ version. Local, SSH and explicit custom commands retain operator management.
 Cloud onboarding must not offer shell commands the customer cannot run.
 
 Manual: Select the intended adapter and account, refresh model choices, and run its environment test. Save, reload, then execute a small task. Repeat with a deliberately unavailable account and verify the failure remains visible.
+
+The explicit-only [Antigravity agent journey](../../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+checks a saved personal subscription, prompt-free native Test and exact low model,
+then independently correlates two actual downloaded outputs, accepted/committed
+Done lineage, native conversation continuity and owned runtime retirement. Its
+first settlement is captured before follow-up reopening; a later coordinator
+assessment cannot erase that historical Done decision. A failed finish must not
+mark prior completed file operations failed. The current local macOS ARM64
+candidate scope leaves fresh authorization, remote targets and release
+qualification unproven.
 
 For Legacy Codex, assign a service secret such as `SLACK_BOT_TOKEN` through agent
 configuration and run a task that checks its presence without printing its value.
@@ -159,7 +245,12 @@ an explicit Paperclip request must give target-qualification guidance. Begin the
 ordinary task to exercise the existing lazy environment path. This live journey
 remains separate from the resolver's source controls.
 
-For sandbox defaults, follow the [environment probe](./execution-environments.md#environment-settings)
+Managed Cloud images default to Paperclip Runner without a saved platform
+qualification. A platform snapshot update must not change that default or
+require a separate qualification request before Test. Disabled or overridden
+adapters still restrict availability, and actual runtime startup can still fail.
+
+For other sandbox defaults, follow the [environment probe](./execution-environments.md#environment-settings)
 recipe first. Discovery/creation read company-bound immutable-image evidence
 without allocating a target. A mutable image or snapshot name does not establish
 native compatibility. Then test the actual selected runtime with its selected
@@ -180,7 +271,9 @@ cover ordering, failure drain and credential projection; they do not qualify a
 live response-time target.
 For native OpenCode with assigned connections, inspect the provider tool surface
 on both local and sandbox execution. It should contain bounded assigned-tool
-search/call schemas. Discover an allowed tool, call its returned alias, revoke
+search/call schemas. Confirm the search description states the 1–20 page limit
+and default of 5. Follow `nextOffset` to inspect later pages.
+Discover an allowed tool, call its returned alias, revoke
 its grant, and confirm discovery and execution enforce that revocation. Repeat
 in planning/ask mode with a write tool and confirm denial. The controller must
 retain the assigned gateway URL and token. An older direct-catalog OpenCode
@@ -255,7 +348,7 @@ revised-source live onboarding and follow-up proof.
   `/company/settings/connections` configures decision/fast-response models,
   not the general model-account library.
 
-- The run log is instance database data; it is not the opt-out first-party Telemetry system or operator-configured OpenTelemetry tracing.
+- Structured run events stay in the instance database. Optional stdout/stderr and raw trace payload storage can use S3; see [run evidence storage](../../doc/run-evidence-storage.md). Both are separate from first-party Telemetry and operator OpenTelemetry export.
 - Authentication/model discovery does not establish tool, image, steering, or resumption capability parity.
 - Use [recovery](./recovery.md) for interrupted runs and [execution environments](./execution-environments.md) for local/SSH/sandbox differences.
 
@@ -282,3 +375,21 @@ cleanup before hire and retains its unconfirmed recovery state.
 ### `delegated-configuration`
 
 See the canonical [delegated configuration guidance and acceptance evidence](connection-setup.md#delegated-configuration).
+
+### Kimi Code verification
+
+The qualified native Kimi profile uses `paperclipai runtime setup kimi` on Mac
+ARM64 or Linux x64, an exact typed model, and a `KIMI_API_KEY` company secret.
+Ordinary setup, hiring and Runtime Test require no candidate grant. Runtime Test
+queries the authenticated Code model catalog without inference. Existing legacy
+Kimi agents keep their saved runtime. Future pending profiles retain protected
+startup admission; saved agent configuration and public requests cannot grant it.
+
+Use the explicit `kimi-qualification` Product E2E suite for local and Daytona
+reply, semantic question/plan, file/download, Stop, and continuation cases.
+Verify the actual task result, persisted state and process cleanup. Run the
+ordinary New Agent draft → model/secret → Test → save/reopen → task journey
+through ordinary released selection. Native filesystem/shell tools are denied in read-only
+Kimi work; scoped Paperclip tools retain control-plane authorization. This recipe
+is a test path, not a statement that live acceptance passed. Current evidence:
+[Kimi release ledger](../../doc/plans/2026-10-28-kimi-code-runner-integration.md).
