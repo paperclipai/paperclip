@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, isPendingHumanReviewHold, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 import { buildExecutionPolicy } from "../../../ui/src/lib/issue-execution-policy.ts";
 
@@ -8,6 +8,41 @@ const qaAgentId = "22222222-2222-4222-8222-222222222222";
 const ctoAgentId = "33333333-3333-4333-8333-333333333333";
 const ctoUserId = "cto-user";
 const boardUserId = "board-user";
+
+describe("isPendingHumanReviewHold", () => {
+  const pendingReviewState = (participant: IssueExecutionState["currentParticipant"], overrides: Partial<IssueExecutionState> = {}) => ({
+    status: "pending",
+    currentStageId: "stage-1",
+    currentStageIndex: 0,
+    currentStageType: "review",
+    currentParticipant: participant,
+    returnAssignee: { type: "agent", agentId: coderAgentId, userId: null },
+    reviewRequest: null,
+    completedStageIds: [],
+    lastDecisionId: null,
+    lastDecisionOutcome: "changes_requested",
+    monitor: null,
+    changesRequestedCount: 3,
+    ...overrides,
+  } as IssueExecutionState);
+
+  it("recognizes a pending review held by a human participant", () => {
+    expect(isPendingHumanReviewHold(pendingReviewState({ type: "user", userId: boardUserId, agentId: null }))).toBe(true);
+  });
+
+  it("does not recognize an agent participant, a non-pending state, or another stage type", () => {
+    expect(isPendingHumanReviewHold(pendingReviewState({ type: "agent", agentId: coderAgentId, userId: null }))).toBe(false);
+    expect(isPendingHumanReviewHold(pendingReviewState(
+      { type: "user", userId: boardUserId, agentId: null },
+      { status: "changes_requested" },
+    ))).toBe(false);
+    expect(isPendingHumanReviewHold(pendingReviewState(
+      { type: "user", userId: boardUserId, agentId: null },
+      { currentStageType: "approval" },
+    ))).toBe(false);
+    expect(isPendingHumanReviewHold(null)).toBe(false);
+  });
+});
 
 describe("stripMonitorFromExecutionPolicy", () => {
   it.each([
