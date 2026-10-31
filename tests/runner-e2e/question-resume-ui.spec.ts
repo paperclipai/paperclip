@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { expect, test } from "@playwright/test";
 import { createServer, type ViteDevServer } from "../../ui/node_modules/vite/dist/node/index.js";
 import { answerResumeQuestionThroughUi } from "./question-resume-ui.js";
+import { chatQuestionPresentation } from "./chat-flow.js";
 
 let server: ViteDevServer;
 let origin: string;
@@ -72,9 +73,10 @@ for (const invalid of ["missing", "disabled", "legacy", "strict"] as const) {
       : { questionSet: { schema: "paperclip.question_set.v1", questions: [field] } } };
     await page.goto(origin);
     await page.waitForFunction(() => typeof (window as any).showQuestion === "function");
-    await page.evaluate(field => (window as any).showQuestion({ schema: "paperclip.question_set.v1", questions: [field] }), field);
+    const set = invalid === "legacy" ? chatQuestionPresentation(card.payload as any) : card.payload.questionSet;
+    await page.evaluate(set => (window as any).showQuestion(set), set);
     await expect(page.getByRole("radio", { name: "No reference", exact: true })).toBeVisible();
-    await expect(page.getByRole("radio", { name: "Other", exact: true })).toHaveCount(invalid === "legacy" || invalid === "strict" ? 1 : 0);
+    await expect(page.getByRole("radio", { name: "Other", exact: true })).toHaveCount(invalid === "strict" ? 1 : 0);
     await expect(answerResumeQuestionThroughUi(page, card, { text: "Use AMBERwritten.", ...(invalid === "strict" ? {} : { allowProviderCustomAnswer: true }) })).rejects.toThrow();
     expect(await page.evaluate(() => (window as any).submitted)).toBeUndefined();
   });

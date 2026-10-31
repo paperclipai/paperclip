@@ -73,6 +73,16 @@ describe("native question/resume path qualification", () => {
     expect(failed(r)).toEqual([]);
     expect(validResumeQuestionForm(r[1], question(r, 1), false)).toBe(false);
   });
+  it("rejects an inferred legacy freeText reference without a canonical question set", () => {
+    const r = writtenReference(recording(["provider", "provider"]));
+    for (const point of r.slice(1)) {
+      const payload = point.interactions[1].payload;
+      payload.questions = [{ id: "reference", prompt: "What reference should I include?", selectionMode: "single",
+        options: [{ id: "write", label: "Write reference", freeText: true }] }];
+      delete payload.questionSet;
+    }
+    expect(failed(r)).toContain("question-resume.forms");
+  });
   it.each(["missing-custom", "disabled-custom", "missing-options", "duplicate-options", "missing-option-id", "multi-select", "extra-question",
     "wrong-request", "foreign-source", "foreign-agent", "foreign-company", "semantic", "api"])("rejects an unverified written-reference form: %s", kind => {
     const r = writtenReference(recording(["provider", kind === "semantic" || kind === "api" ? kind : "provider"]));
