@@ -2529,6 +2529,14 @@ wake from a server-verified human card response references that entry in
 `humanResponses`, whose answer is already present in the current request context.
 Agent/tool outcomes and generated summaries are not promoted to human direction.
 
+Standing agent chats complete the current response stage. Each pending request
+keeps its criterion identity and source, with instructions to address it within
+that stage. Authorized chat actions require verified results. Delegation requires
+a verified handoff and a reply; the worker's task remains separate. An unavailable
+action requires a truthful limitation and supported handoff. Ordinary task
+contracts still require the requested work itself, and an admitted run retains
+its saved contract during recovery.
+
 These are model instructions, not additional execution or permission gates.
 Contracts reference the existing brief and answers instead of copying them again.
 Resumed sessions keep the existing message-delta path; fresh sessions receive the
