@@ -1,5 +1,5 @@
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
-import { requiresReviewAttention, terminalBlockerRequiresAttention, ATTENTION_AGENT_ERROR_STATUS } from "./attention-source-eligibility.js";
+import { recoveryActionAttentionCondition, requiresReviewAttention, terminalBlockerRequiresAttention, ATTENTION_AGENT_ERROR_STATUS } from "./attention-source-eligibility.js";
 import { attentionIssueCondition } from "./issue-visibility.js";
 import { issueService } from "./issues.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
@@ -188,7 +188,7 @@ export function decisionRetentionService(
     )).then((rows) => rows[0] ?? null);
   }
 
-  async function materializeSourceState(database: Db, input: { companyId: string; sourceKind: AttentionSourceKind; sourceId: string; actor: Pick<DecisionMutationActor, "userId"> }) {
+  async function materializeSourceState(database: Db, input: { companyId: string; sourceKind: AttentionSourceKind; sourceId: string; authActor: AuthorizationActor; actor: Pick<DecisionMutationActor, "userId"> }) {
     const tables: Record<AttentionSourceKind, string> = {
       approval: "approvals", join_request: "join_requests", decision: "decisions",
       issue_thread_interaction: "issue_thread_interactions", recovery_action: "issue_recovery_actions",
@@ -199,6 +199,25 @@ export function decisionRetentionService(
       eq(decisionRetention.companyId, input.companyId), eq(decisionRetention.sourceKind, input.sourceKind),
       eq(decisionRetention.sourceId, input.sourceId),
     )).then(rows => rows[0]);
+    if (input.sourceKind === "recovery_action") {
+      const [source] = await database.select().from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.sourceId),
+      )).for("update");
+      if (!source) throw notFound("Attention source not found");
+      if (!await existingState()) {
+        const [eligible] = await database.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+          .innerJoin(issues, and(eq(issues.id, issueRecoveryActions.sourceIssueId), eq(issues.companyId, issueRecoveryActions.companyId)))
+          .where(and(eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, source.id),
+            recoveryActionAttentionCondition(), attentionIssueCondition(false)));
+        if (!eligible || !await canReadDecisionSource(database, input.authActor, input.companyId, input.sourceKind, input.sourceId)) {
+          throw notFound("Attention source not found");
+        }
+      }
+      await decisionRetentionService(database).syncItems(input.companyId, [{
+        sourceKind: input.sourceKind, subject: { id: source.id }, activityAt: source.updatedAt.toISOString(),
+      }]);
+      return;
+    }
     if (input.sourceKind === "agent_error_alert") {
       const [source] = await database.select().from(agents).where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.sourceId))).for("update");
       if (!source || (!await existingState() && source.status !== ATTENTION_AGENT_ERROR_STATUS)) throw notFound("Attention source not found");

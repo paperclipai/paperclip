@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, decisionRetention, issueRelations, issues } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, decisionRetention, issueRecoveryActions, issueRelations, issues } from "@paperclipai/db";
 import type { AttentionSourceKind } from "@paperclipai/shared";
 import { attentionService } from "../services/attention.js";
 import { decisionRetentionService } from "../services/decision-retention.js";
+import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { issueService } from "../services/issues.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -40,6 +41,58 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const feed = await attentionService(db).list(companyId, { all: true, allowUnscopedAll: true, userId, excludeSources: ["approval", "join_request"] });
     return feed.items.some(item => item.sourceKind === sourceKind && item.subject.id === sourceId);
   }
+
+  it("cannot pre-archive an unseen agent recovery before ordinary retry exhaustion asks the board for help", async () => {
+    const row = await issue();
+    const owner = issueRecoveryActionService(db);
+    const input = { companyId, sourceIssueId: row.id, kind: "stranded_assigned_issue" as const,
+      ownerType: "agent" as const, ownerAgentId: agentId, cause: "fixture", fingerprint: "same-recovery",
+      nextAction: "Retry the existing work", maxAttempts: 2 };
+    const action = await owner.upsertSourceScoped(input);
+    expect(action).toMatchObject({ ownerType: "agent", status: "active" });
+    let rejected: unknown;
+    try { await decisionRetentionService(db).archive(mutation("recovery_action", action.id)); } catch (error) { rejected = error; }
+    const escalated = await owner.upsertSourceScoped(input);
+    expect(escalated).toMatchObject({ id: action.id, ownerType: "board", status: "escalated" });
+    expect(await visible("recovery_action", action.id)).toBe(true);
+    expect(rejected).toMatchObject({ status: 404 });
+    expect((await decisionRetentionService(db).getState(companyId, "recovery_action", action.id))?.archivedAt).toBeNull();
+  });
+
+  it.each(["system", "resolved", "hidden", "harness", "conversation", "other_company"] as const)(
+    "rejects first retention state for a currently ineligible recovery source: %s", async scenario => {
+      const foreignCompany = randomUUID();
+      if (scenario === "other_company") await db.insert(companies).values({ id: foreignCompany, name: "Foreign source", issuePrefix: `F${foreignCompany.slice(0, 6)}` });
+      const row = await issue({ companyId: scenario === "other_company" ? foreignCompany : companyId,
+        hiddenAt: scenario === "hidden" ? new Date() : null, harnessKind: scenario === "harness" ? "fixture" : null,
+        ...(scenario === "conversation" ? { conversationAgentId: agentId, conversationUserId: userId, assigneeAgentId: agentId, conversationState: "active", status: "in_progress" } : {}) });
+      const [action] = await db.insert(issueRecoveryActions).values({ companyId: row.companyId, sourceIssueId: row.id,
+        kind: "stranded_assigned_issue", cause: "fixture", fingerprint: scenario, nextAction: "Recover",
+        ownerType: scenario === "system" ? "system" : "board", status: scenario === "resolved" ? "resolved" : "active" }).returning();
+      await expect(decisionRetentionService(db).archive(mutation("recovery_action", action.id))).rejects.toMatchObject({ status: 404 });
+      expect(await db.select().from(decisionRetention).where(eq(decisionRetention.sourceId, action.id))).toEqual([]);
+    });
+
+  it("preserves existing recovery manual controls and legacy agent-owned TTL archival", async () => {
+    const row = await issue(), owner = issueRecoveryActionService(db), retention = decisionRetentionService(db);
+    const input = { companyId, sourceIssueId: row.id, kind: "stranded_assigned_issue" as const,
+      cause: "fixture", fingerprint: "known-recovery", nextAction: "Recover" };
+    const action = await owner.upsertSourceScoped({ ...input, ownerType: "board" });
+    expect(await visible("recovery_action", action.id)).toBe(true);
+    await owner.upsertSourceScoped({ ...input, ownerType: "agent", ownerAgentId: agentId });
+    expect((await retention.archive(mutation("recovery_action", action.id))).archivedAt).toBeInstanceOf(Date);
+    await retention.revive(mutation("recovery_action", action.id));
+    await retention.setKeep({ ...mutation("recovery_action", action.id), keep: true });
+    await retention.setKeep({ ...mutation("recovery_action", action.id), keep: false });
+    // An already materialized legacy row retains its existing TTL contract.
+    const activityAt = new Date(Date.now() - 100 * 86_400_000).toISOString();
+    await db.update(issueRecoveryActions).set({ updatedAt: new Date(activityAt) }).where(eq(issueRecoveryActions.id, action.id));
+    const states = await retention.syncItems(companyId, [{ sourceKind: "recovery_action", subject: { id: action.id }, activityAt }]);
+    const state = [...states.values()][0];
+    expect(await retention.autoArchive({ companyId, items: [{ sourceKind: "recovery_action", subject: { id: action.id }, activityAt,
+      keep: state.keep, archivedAt: null, retentionVersion: state.version }] })).toBe(1);
+    expect(await retention.getState(companyId, "recovery_action", action.id)).toMatchObject({ archivedReason: "idle_ttl" });
+  });
 
   it.each(["review", "blocker_attention"] as const)("cannot pre-archive a future %s before an ordinary transition makes it visible", async kind => {
     const row = await issue({ assigneeUserId: userId });
