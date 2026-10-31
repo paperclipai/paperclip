@@ -5021,11 +5021,9 @@ html:not(.dark) .coordinator-sidebar {
 .coordinator-workspace [data-testid="task-chat-composer-dock"] {
   flex-shrink: 0;
   background: var(--background);
-  border-radius: var(--coordinator-card-radius);
   backdrop-filter: none;
-  pointer-events: none;
+  pointer-events: auto;
 }
-.coordinator-workspace [data-testid="task-chat-composer-dock"] > * { pointer-events: auto; }
 @media (min-width: 768px) {
   .coordinator-workspace [data-testid="task-chat-thread"] { position: relative; }
   .coordinator-workspace [data-testid="task-chat-composer-dock"] { position: absolute; inset-inline: 0; bottom: 0; }
