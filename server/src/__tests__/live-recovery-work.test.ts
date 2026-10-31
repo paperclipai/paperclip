@@ -29,6 +29,7 @@ import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent
 import { issueTreeControlService } from "../services/issue-tree-control.js";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { issueService } from "../services/issues.js";
+import { readNativeLocalProcessStop } from "../services/native-local-process-stop.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { logger } from "../middleware/logger.js";
 
@@ -225,6 +226,22 @@ describe("residual recovery production matrix", () => {
     await vi.waitFor(async () => expect((await getRun(run.id)).processPid).toBeNull());
     expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, run.id),
       eq(heartbeatRunEvents.eventType, "native.local_process_stopped")))).toHaveLength(1);
+    await quiet();
+  });
+  it("preserves legacy null-birth recovery with exact server identity and an absent local PID group", async () => {
+    const f = await fixture();
+    const child = spawn(process.execPath, ["-e", "console.log('legacy-group-proof')"], { detached: true, stdio: "ignore" });
+    const pid = child.pid!; await once(child, "exit");
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      runtimeMode: "native", nativeIssueId: f.issue.id, status: "failed", finishedAt: new Date(),
+      processPid: pid, processGroupId: pid, runnerProfileJson: { sessionCheckpoint: { sessionId: "legacy-exact-session" } } }).returning();
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issue.id, runId: run.id, phase: "committed" });
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, agentId: f.agent.id, runId: run.id,
+      eventType: "native.process_identity_recorded", payload: { targetKind: "local", hostname: os.hostname(),
+        processPid: pid, processGroupId: pid } });
+    await start();
+    expect(await getRun(run.id)).toMatchObject({ processPid: null, processGroupId: null, processStartedAt: null });
+    expect(await readNativeLocalProcessStop(db, f.companyId, run.id)).toEqual({ processPid: pid, processGroupId: pid });
     await quiet();
   });
   it("releases remote process identity without local birth after the exact provider stop receipt", async () => {
