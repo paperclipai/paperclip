@@ -199,6 +199,34 @@ describe("isClaudeTransientUpstreamError", () => {
     );
   });
 
+  it("classifies the multi-word 'usage credit limit' wording as provider quota and extracts the dated retry time", () => {
+    const now = new Date("2026-10-10T12:00:00.000Z");
+    const errorMessage = "You've hit your usage credit limit · resets Oct 14, 5pm (Europe/Amsterdam)";
+
+    expect(isClaudeProviderQuotaError({ errorMessage })).toBe(true);
+    expect(extractClaudeRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-10-14T15:00:00.000Z",
+    );
+  });
+
+  it("classifies the 'You've reached your' wording as provider quota", () => {
+    expect(isClaudeProviderQuotaError({ errorMessage: "You've reached your Fable limit." })).toBe(true);
+    expect(
+      isClaudeProviderQuotaError({
+        errorMessage: "You've reached your usage credit limit · resets Oct 14, 5pm (Europe/Amsterdam)",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not classify ordinary prose that mentions a limit as provider quota", () => {
+    expect(
+      isClaudeProviderQuotaError({ errorMessage: "You've hit your stride on this limit problem." }),
+    ).toBe(false);
+    expect(
+      isClaudeProviderQuotaError({ errorMessage: "The user reached your limit of patience." }),
+    ).toBe(false);
+  });
+
   it("classifies the qualifier-less limit wording as provider quota and extracts the retry time", () => {
     // Current Claude CLI phrasing: no "session"/"usage" qualifier before "limit".
     const now = new Date("2026-08-28T22:30:00.000Z");
@@ -489,6 +517,42 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+
+  it("parses a dated reset hint (weekly and model limits) in its explicit timezone", () => {
+    const now = new Date("2026-10-10T12:00:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { errorMessage: "You've hit your weekly limit · resets Oct 14, 5pm (Europe/Amsterdam)" },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2026-10-14T15:00:00.000Z");
+  });
+
+  it("parses a dated reset hint with minutes", () => {
+    const now = new Date("2026-10-10T12:00:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { errorMessage: "You've hit your Opus limit · resets Oct 14, 5:30pm (Europe/Amsterdam)" },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2026-10-14T15:30:00.000Z");
+  });
+
+  it("treats a bare reset date as midnight in the hinted timezone", () => {
+    const now = new Date("2026-10-10T12:00:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { errorMessage: "You've hit your weekly limit · resets Oct 14 (Europe/Amsterdam)" },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2026-10-13T22:00:00.000Z");
+  });
+
+  it("rolls a dated reset forward a year when the date has already passed", () => {
+    const now = new Date("2026-12-20T12:00:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { errorMessage: "You've hit your weekly limit · resets Jan 5, 5pm (UTC)" },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2027-01-05T17:00:00.000Z");
   });
 });
 

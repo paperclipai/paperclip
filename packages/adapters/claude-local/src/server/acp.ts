@@ -340,11 +340,36 @@ export function classifyClaudeTerminalSessionFailure(
   };
 }
 
+/**
+ * Classify a thrown (untyped) turn error from its text. When the bridge
+ * does not use the typed session-failure channel, a provider limit arrives
+ * as a plain thrown error ("Internal error: You've hit your session limit
+ * · resets 5:10pm (Europe/Amsterdam)") and the typed classifier never
+ * runs. The quota wording match is the same strict matcher the typed path
+ * uses. See #15797.
+ */
+export function classifyClaudeTurnErrorText(
+  input: { message: string; causeMessage?: string | null },
+  now: Date,
+): AcpxTerminalFailureClassification | null {
+  const surface = {
+    errorMessage: [input.message, input.causeMessage].filter(Boolean).join("\n"),
+  };
+  if (!isClaudeProviderQuotaError(surface)) return null;
+  const retryNotBefore = extractClaudeRetryNotBefore(surface, now)?.toISOString();
+  return {
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    ...(retryNotBefore ? { retryNotBefore } : {}),
+  };
+}
+
 function withClaudeAcpDefaults(options: ClaudeAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveClaudeAcpBillingIdentity,
     prepareRemoteManagedHome: prepareClaudeRemoteManagedHome,
     classifyTerminalSessionFailure: classifyClaudeTerminalSessionFailure,
+    classifyTurnErrorText: classifyClaudeTurnErrorText,
     ...options,
     adapterType: "claude_local",
     moduleDir,
