@@ -181,6 +181,8 @@ async function sessionRetentionBlocker(
       id: heartbeatRuns.id,
       status: heartbeatRuns.status,
       finishedAt: heartbeatRuns.finishedAt,
+      incompleteRecovery: sql<boolean>`(${heartbeatRuns.runnerProfileJson}->'nativeControllerRecovery'->>'schema' = 'paperclip.native-controller-recovery.v1'
+        and ${heartbeatRuns.runnerProfileJson}->'nativeControllerRecovery'->'checkpoint' = 'null'::jsonb) is true`,
       issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}, ${heartbeatRuns.issueId})`,
     })
     .from(heartbeatRuns)
@@ -194,6 +196,7 @@ async function sessionRetentionBlocker(
   if (runs.some((run) => LIVE_RUN_STATUSES.includes(run.status) || !run.finishedAt)) {
     return { reason: "live_run" };
   }
+  if (runs.some(run => run.incompleteRecovery)) return { reason: "native_recovery_incomplete" };
   if (input.checkpoint && runs.some(run => run.finishedAt! >= input.closedBefore)) return { reason: "recent_run" };
   const issueIds = [...new Set(runs.map((run) => run.issueId).filter((id): id is string => Boolean(id)))];
   if (issueIds.length === 0) return { reason: "issue_unknown" };

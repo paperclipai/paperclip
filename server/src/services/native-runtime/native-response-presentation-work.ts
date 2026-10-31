@@ -56,6 +56,7 @@ export function nativeResponsePresentationWork(db: Db) {
   function register(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
     const worker = registerScopedDeadlineWork(coordinator, {
       queue: DELIVERY_QUEUES.nativeResponsePresentation,
+      concurrentChecks: { limit: 4, key: (entry: Entry) => `${entry.companyId}:${entry.issueId}` },
       decodeScope: (hint: string): NativeResponsePresentationScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
       matches: (entry: Entry, scope?: NativeResponsePresentationScope) => !scope || entry.companyId === scope.companyId && (!scope.issueId || entry.issueId === scope.issueId) && (!scope.runId || entry.id === scope.runId) && (!scope.agentId || entry.agentId === scope.agentId),
       load: (scope, signal) => load(scope, signal, canRun),
