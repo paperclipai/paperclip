@@ -73,8 +73,9 @@ export async function acknowledgedNativeApiStopExecutionHasStopped(db: Db, run: 
   const validated = validatePrpEvent(parseObject(terminal?.payload).prpEvent);
   if (!terminal || !validated.ok || terminal.sourcePayloadSha256 !== nativeSha256(validated.event)) return false;
   const event = validated.event, payload = parseObject(event.payload);
-  // Stop can join an already confirmed natural provider end. Preserve its
-  // cause; a synthetic local failure is not a remote termination receipt.
+  // Stop proves containment even when the provider ended before its intent
+  // was recorded. This latest bound turn must still be terminal; a later
+  // turn.started or synthetic local failure cannot prove provider termination.
   const errorCode = parseObject(payload.error).code;
   const confirmedTerminal = (terminal.eventType === "turn.interrupted" && payload.status === "interrupted")
     || (terminal.eventType === "turn.completed" && payload.status === "completed")
@@ -82,7 +83,7 @@ export async function acknowledgedNativeApiStopExecutionHasStopped(db: Db, run: 
       && payload.providerTerminalState === "completed" && payload.reason === "cancelled_after_provider_completed")
     || (terminal.eventType === "turn.failed" && payload.status === "failed" && typeof errorCode === "string"
       && ["cursor_cloud_error", "cursor_cloud_expired"].includes(errorCode));
-  return confirmedTerminal && terminal.agentId === run.agentId && terminal.createdAt.getTime() >= requestedAt &&
+  return confirmedTerminal && terminal.agentId === run.agentId &&
     event.schema === "paperclip.prp.event.v1" && [1, 2].includes(Number(event.schemaVersion)) &&
     terminal.protocolSchemaVersion === event.schemaVersion && event.eventType === terminal.eventType &&
     event.sourceKind === "runner" && event.runId === run.id && event.normalizedSessionId === run.nativeSessionId &&

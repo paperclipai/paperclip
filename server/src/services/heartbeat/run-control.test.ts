@@ -652,6 +652,8 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     "race_event_start", "race_profile_binding", "race_benign_event",
     "natural_completed", "natural_cancelled", "natural_error", "natural_expired",
     "mismatched_terminal_status", "local_failure", "unproven_cancelled",
+    "pre_stop_completed", "pre_stop_cancelled", "pre_stop_error", "pre_stop_expired", "pre_stop_interrupted",
+    "pre_stop_later_turn", "pre_stop_unproven",
   ] as const)("publishes an API-only native Stop only after its exact provider and controller stopped: %s", async proof => {
     const { company, agent } = await fixture();
     const [issue] = await db.insert(issues).values({ companyId: company.id, title: "API-only Stop", assigneeAgentId: agent.id }).returning();
@@ -686,25 +688,39 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
       heartbeatRunId: runId, provider: "local", status: "released", leasePolicy: "retain_on_failure",
       releasedAt: new Date(), cleanupStatus: "success" });
     if (proof !== "missing_terminal") {
-      const terminalType = proof === "natural_cancelled" || proof === "unproven_cancelled" ? "turn.cancelled"
-        : ["natural_error", "natural_expired", "local_failure"].includes(proof) ? "turn.failed"
-        : proof === "natural_completed" || proof === "mismatched_terminal_status" ? "turn.completed" : "turn.interrupted";
-      const terminalError = proof === "natural_error" ? { code: "cursor_cloud_error", message: "Cursor Cloud run failed" }
-        : proof === "natural_expired" ? { code: "cursor_cloud_expired", message: "Cursor Cloud run expired" }
-        : proof === "local_failure" ? { code: "process_lost", message: "Synthetic local process loss" } : null;
+      const preStop = proof.startsWith("pre_stop_");
+      const terminalProof = proof === "pre_stop_later_turn" || proof === "pre_stop_unproven" ? "natural_completed"
+        : preStop ? `natural_${proof.slice("pre_stop_".length)}` : proof;
+      const terminalAt = preStop ? new Date(Date.parse(recordedAt) - 1_000) : new Date();
+      const terminalType = terminalProof === "natural_cancelled" || terminalProof === "unproven_cancelled" ? "turn.cancelled"
+        : ["natural_error", "natural_expired", "local_failure"].includes(terminalProof) ? "turn.failed"
+        : terminalProof === "natural_completed" || terminalProof === "mismatched_terminal_status" ? "turn.completed" : "turn.interrupted";
+      const terminalError = terminalProof === "natural_error" ? { code: "cursor_cloud_error", message: "Cursor Cloud run failed" }
+        : terminalProof === "natural_expired" ? { code: "cursor_cloud_expired", message: "Cursor Cloud run expired" }
+        : terminalProof === "local_failure" ? { code: "process_lost", message: "Synthetic local process loss" } : null;
       const event = { schema: "paperclip.prp.event.v1", schemaVersion: 1, eventType: terminalType,
         sourceKind: "runner", sourceInstanceId: runnerId, sourceEventId: `${runnerId}:${runId}:1`, sourceSeq: 1,
         runId, turnId: "api-stop-turn", normalizedSessionId: proof === "foreign_terminal" ? randomUUID() : sessionId,
-        emittedAt: new Date().toISOString(), priority: 1,
-        payload: { status: proof === "mismatched_terminal_status" ? "interrupted" : terminalType.slice("turn.".length), error: terminalError,
-          ...(proof === "natural_cancelled" ? { providerTerminalState: "completed", reason: "cancelled_after_provider_completed" } : {}),
-          ...(proof === "unproven_cancelled" ? { providerTerminalState: "unknown", reason: "operator_cancel_requested" } : {}),
-          ...(proof === "unproven_terminal" ? { providerTerminalObserved: false } : {}) } };
+        emittedAt: terminalAt.toISOString(), priority: 1,
+        payload: { status: terminalProof === "mismatched_terminal_status" ? "interrupted" : terminalType.slice("turn.".length), error: terminalError,
+          ...(terminalProof === "natural_cancelled" ? { providerTerminalState: "completed", reason: "cancelled_after_provider_completed" } : {}),
+          ...(terminalProof === "unproven_cancelled" ? { providerTerminalState: "unknown", reason: "operator_cancel_requested" } : {}),
+          ...(proof === "unproven_terminal" || proof === "pre_stop_unproven" ? { providerTerminalObserved: false } : {}) } };
       await appendHeartbeatRunEvent(db, { companyId: company.id, agentId: agent.id, runId,
         eventType: event.eventType, payload: { prpEvent: event }, nativeSource: {
           sourceInstanceId: runnerId, sourceEventId: event.sourceEventId, sourceSeq: 1,
           protocolSchemaVersion: 1, canonicalPayload: event,
         } });
+      if (preStop) await db.update(heartbeatRunEvents).set({ createdAt: terminalAt }).where(eq(heartbeatRunEvents.runId, runId));
+      if (proof === "pre_stop_later_turn") {
+        const later = { ...event, eventType: "turn.started", sourceEventId: `${runnerId}:${runId}:2`, sourceSeq: 2,
+          turnId: "later-api-turn", emittedAt: new Date().toISOString(), payload: { status: "running" } };
+        await appendHeartbeatRunEvent(db, { companyId: company.id, agentId: agent.id, runId,
+          eventType: later.eventType, payload: { prpEvent: later }, nativeSource: {
+            sourceInstanceId: runnerId, sourceEventId: later.sourceEventId, sourceSeq: 2,
+            protocolSchemaVersion: 1, canonicalPayload: later,
+          } });
+      }
       if (["missing_hash", "wrong_hash", "malformed_terminal"].includes(proof)) {
         const malformed = { ...event, priority: undefined };
         await db.update(heartbeatRunEvents).set({
@@ -749,7 +765,8 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
       .resultJson?.executionCancellation).toMatchObject({ state: "acknowledged" });
     await control.acknowledgeRemoteStop(run.id, company.id);
     const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
-    const acknowledged = ["confirmed", "race_benign_event", "natural_completed", "natural_cancelled", "natural_error", "natural_expired"].includes(proof);
+    const acknowledged = ["confirmed", "race_benign_event", "natural_completed", "natural_cancelled", "natural_error", "natural_expired",
+      "pre_stop_completed", "pre_stop_cancelled", "pre_stop_error", "pre_stop_expired", "pre_stop_interrupted"].includes(proof);
     expect(stopped.resultJson?.executionCancellation).toMatchObject({ state: acknowledged ? "acknowledged" : "requested" });
     if (acknowledged) expect(stopped.resultJson?.executionCancellation).toMatchObject({ proof: "provider_api_stop_receipt" });
   });
