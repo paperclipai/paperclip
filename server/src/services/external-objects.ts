@@ -84,6 +84,7 @@ export interface ExternalObjectResolver {
   resolve(input: {
     companyId: string;
     object: ExternalObjectRecord;
+    signal?: AbortSignal;
   }): Promise<ExternalObjectResolveResult>;
 }
 

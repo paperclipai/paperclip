@@ -70,6 +70,13 @@ async function provider(
   return plugin;
 }
 
+export async function pluginWorkspaceSupportsMergeAncestry(db: Db, workers: WorkspaceWorkers | undefined, workspace: Workspace) {
+  const pluginId = readWorkspaceProviderBinding(workspace.metadata)?.pluginId;
+  if (!pluginId) return true;
+  const selected = await provider(db, workers, workspace.companyId, pluginId);
+  return selected.manifestJson.workspaceProvider?.supportsMergeAncestry !== false;
+}
+
 /** No paths or provider credentials are accepted from task callers. */
 export async function callWorkspaceProvider(
   db: Db,
