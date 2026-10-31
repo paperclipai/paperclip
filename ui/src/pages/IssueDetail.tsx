@@ -29,7 +29,7 @@ import { agentChatDraft } from "@/lib/agent-chat-draft";
 import { trackRecentProject } from "@/lib/recent-projects";
 import { Settings as ChatSettings } from "lucide-react";
 import { agentDetailHref } from "./agent-detail-navigation";
-import { ExecutionBlockerNotice } from "../components/ExecutionBlockerNotice";
+import { ExecutionBlockerNotice, hasExecutionBlockerNotice } from "../components/ExecutionBlockerNotice";
 import type { TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
 import { IssueCreatedFromNote } from "@/components/task-detail/IssueCreatedFromNote";
@@ -3414,6 +3414,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
   const issue = accessError ? undefined : queriedIssue ?? coreIssueQuery.data ?? conversation?.issue ?? draftIssue;
   const taskRetry = useTaskRetry(issue ?? undefined);
+  const executionBlockerNoticeVisible = hasExecutionBlockerNotice({ presentation: issue?.interruption,
+    optimistic: taskRetry.optimistic, takingLonger: taskRetry.takingLonger, error: taskRetry.error });
   const resolveWritableIssueId = async () => {
     if (!conversation) return issueId!;
     const resolved = await conversation.ensureIssue();
@@ -8027,7 +8029,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         issue={issue}
         workProducts={workProducts}
         checkError={checkIssueMonitorNow.error ? describeError(checkIssueMonitorNow.error, { action: "check the monitor" }).body : null}
-        onCheckNow={() => checkIssueMonitorNow.mutate()}
+        // While a failed attempt is shown, Retry (beside the composer) is the recovery action.
+        onCheckNow={executionBlockerNoticeVisible ? null : () => checkIssueMonitorNow.mutate()}
         checkingNow={checkIssueMonitorNow.isPending}
       />
 
@@ -8155,12 +8158,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             <WorkspaceExportRecovery key={`workspace-export:${issue.activeRecoveryAction?.id ?? issue.id}`}
               className={shellSectionClass}
               action={issue.activeRecoveryAction ?? null} />
-          )}
-          {resolvedDetailTab === "chat" && (
-            <ExecutionBlockerNotice className={shellSectionClass} presentation={issue.interruption}
-              issueId={issue.id} agentName={agentMap.get(issue.assigneeAgentId ?? "")?.name} projectName={issue.project?.name}
-              canRetry={canResolveBoardRecoveryAction} onRetry={taskRetry.retry}
-              optimistic={taskRetry.optimistic} takingLonger={taskRetry.takingLonger} error={taskRetry.error} />
           )}
 
           {issue.status === "in_review" && issue.externalConversationState === "waiting" && (
@@ -8597,7 +8594,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   onRefreshLatestComments={refetchLatestComments}
                   composerRef={commentComposerRef}
                   composerAccessory={
-                    hasVisibleMonitorSurface(issue) ? (
+                    // A failed attempt supersedes a waiting monitor: its Retry is the
+                    // action that can recover, so show it beside the composer instead.
+                    executionBlockerNoticeVisible ? (
+                      <ExecutionBlockerNotice className="rounded-lg border border-border bg-muted/30 px-3 py-2"
+                        presentation={issue.interruption} issueId={issue.id}
+                        agentName={agentMap.get(issue.assigneeAgentId ?? "")?.name} projectName={issue.project?.name}
+                        canRetry={canResolveBoardRecoveryAction} onRetry={taskRetry.retry}
+                        optimistic={taskRetry.optimistic} takingLonger={taskRetry.takingLonger} error={taskRetry.error} />
+                    ) : hasVisibleMonitorSurface(issue) ? (
                       <IssueMonitorComposerStrip
                         issue={issue}
                         workProducts={workProducts}

@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskInterruptionPresentation } from "@paperclipai/shared";
-import { ExecutionBlockerNotice } from "./ExecutionBlockerNotice";
+import { ExecutionBlockerNotice, hasExecutionBlockerNotice } from "./ExecutionBlockerNotice";
 
 const failed: TaskInterruptionPresentation = {
   intentId: "intent", responsibility: "system", state: "failed", nextRetryAt: null,
@@ -57,5 +57,15 @@ describe("ordinary task interruption", () => {
     await render(failed, { error: new Error("Your task access changed. Refresh the task.") });
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Your task access changed.");
     expect(container.querySelectorAll("button")).toHaveLength(1);
+  });
+  it("reports visibility so the composer slot can show it instead of a stale monitor", async () => {
+    for (const [state, options] of [
+      [failed, {}], [{ ...failed, state: "retry_scheduled" as const, nextRetryAt: "2026-10-20T00:00:30Z" }, {}],
+      [null, { takingLonger: true }], [null, { error: new Error("nope") }],
+      [{ ...failed, responsibility: "user" as const }, {}], [failed, { optimistic: true }], [null, {}],
+    ] as const) {
+      await render(state as TaskInterruptionPresentation, options);
+      expect(hasExecutionBlockerNotice({ presentation: state, ...options })).toBe(container.childElementCount > 0);
+    }
   });
 });
