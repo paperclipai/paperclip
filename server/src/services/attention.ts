@@ -1,4 +1,4 @@
-import { HUMAN_RECOVERY_OWNER_TYPES, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, readRunIssueId, listFailedRunsWithNewerRun, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
+import { recoveryActionAttentionCondition, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, readRunIssueId, listFailedRunsWithNewerRun, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
 import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approval-visibility.js";
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -107,7 +107,6 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
-const OPEN_RECOVERY_STATUSES = ["active", "escalated"] as const;
 const DETAIL_EXCERPT_LENGTH = 160;
 const DETAIL_IMAGE_LIMIT = 3;
 const OPEN_DECISION_DEFAULT_LIMIT = 500;
@@ -1413,8 +1412,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         .from(issueRecoveryActions)
         .where(and(
           eq(issueRecoveryActions.companyId, companyId),
-          inArray(issueRecoveryActions.status, [...OPEN_RECOVERY_STATUSES]),
-          inArray(issueRecoveryActions.ownerType, [...HUMAN_RECOVERY_OWNER_TYPES]),
+          recoveryActionAttentionCondition(),
         ))
         .orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id));
       const [recoveryIssueMap, recoveryImageMap] = await Promise.all([
