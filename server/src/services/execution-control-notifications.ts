@@ -1,3 +1,4 @@
+import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
@@ -8,6 +9,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork, type DeliveryQueue } from "./deliv
 export type ExecutionWorkScope = { companyId: string; agentId?: string; runId?: string; issueId?: string };
 
 export async function notifyExecutionRunWork(transaction: object, scope?: ExecutionWorkScope) {
+  if (scope) await notifyRoutineExecutionStatus(transaction, scope.issueId, scope.companyId);
   if (scope) {
     await notifyAttentionRetentionWork(transaction, scope);
     await notifyStatusCardIssueChange(transaction, scope.companyId);
@@ -28,6 +30,7 @@ export function writeExecutionControl<T>(
   scope: ExecutionWorkScope | undefined,
 ): Promise<T> {
   return db.transaction(async transaction => {
+    if (scope) await notifyRoutineExecutionStatus(transaction, scope.issueId, scope.companyId);
     if (scope) await notifyAttentionRetentionWork(transaction, scope);
     if (scope) await notifyStatusCardIssueChange(transaction, scope.companyId);
     await notifyRunDispatch(transaction, scope);

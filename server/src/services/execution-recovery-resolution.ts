@@ -1,3 +1,4 @@
+import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
@@ -596,6 +597,7 @@ export async function settleUnrecoverableExecutions(
           if (task.status !== "blocked") await notifyChatResponseAvailability(tx, { companyId: task.companyId, issueId: task.id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+          await notifyRoutineExecutionStatus(tx, task.id, task.companyId);
           const [projected] = await tx
             .update(issues)
             .set({
