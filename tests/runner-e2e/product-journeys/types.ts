@@ -2,7 +2,7 @@ import type { BrowserContext, Page } from "@playwright/test";
 import type { ConnectionApi } from "../connection-target.js";
 
 export type JourneyOutcome = "passed" | "failed" | "blocked" | "unsupported";
-export type JourneyId = "task-properties" | "task-create" | "project-task-context" | "ask-question" | "cloud-onboarding"
+export type JourneyId = "task-properties" | "task-create" | "project-task-context" | "task-document-persistence" | "ask-question" | "cloud-onboarding"
   | "question-answer-resume" | "task-search-filter" | "followup-while-running" | "plan-revise-accept" | "build-revise" | "protected-actions" | "create-skill-studio" | "stop-redirect";
 export type TargetMode = "managed-self-hosted" | "existing-cloud" | "new-cloud";
 export interface DeploymentIdentity {

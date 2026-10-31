@@ -7,7 +7,7 @@ and backup validation against a deterministic fake Codex process in Linux. It
 checks the same runner process identity and one provider process across three warm
 turns, provider history reuse, and verified suspension at idle close. Separate
 cases kill the actual controller process and recover the next turn. They reject
-a still-live controller and a replacement sandbox before reconnecting. Legacy
+a live execution lease and a replacement sandbox before reconnecting. Legacy
 checkpoints and changed process configuration require verified suspension and
 replacement, while preserving the conversation and starting each turn once.
 Recovery can restart a provider to refresh its tool contract; process reuse is
@@ -23,6 +23,39 @@ Buffered transport messages and close notifications can arrive synchronously on
 subscription. The controller must register the connection before subscribing so
 completed message processing can drain and the suspended session can retire.
 It does not qualify a live model or a sandbox provider API.
+
+The `diskless` and `diskless-per-turn` cases delete both native controller
+directories after A completes, continue in a separate B process, delete those
+directories after B completes, and continue in C. They use the production source
+selector and snapshot rebinder for per-turn admission, followed by the real
+native executor. They do not inject PRP files or edit leases to produce recovery.
+Warm mode verifies compatible process reuse; per-turn mode verifies the existing
+suspension and history-resume policy. These component tests preserve workspace
+and remote sandbox storage, and use one source revision in three processes.
+They do not qualify distinct application releases or complete webserver disk loss.
+
+`native-controller-recovery.integration.test.ts` separately verifies encrypted
+database discovery, one-source import, idempotency, live-owner waiting, corrupt
+bindings and paginated inventory. `native-session-resume-projection.test.ts`
+retains the 32-candidate and newer-progress barrier checks. Snapshot transaction
+counts and stale-generation rejection are exercised by the control-plane port
+tests; incomplete-publication retention is exercised by the expiration tests.
+
+The cold Codex transport regressions additionally retain a real provider event
+after completion, hold its persistence callback and require the original source
+tuple and Runner outbox to survive until acceptance. A separate case deletes the
+controller cache after its staged target is durably recorded and resumes through
+the same source before target attachment. Unknown semantic tails must stay held
+without target tool dispatch or a fabricated response. The staged restart helper
+and classifier tests cover target discovery before its first session snapshot,
+exact encrypted source/header/artifact bindings and the existing compatibility
+rebinder. Source accounting tests use real PostgreSQL to distinguish immutable
+receipt replay, equal finalized usage and late usage requiring reconciliation.
+Handoff crash tests must restore the exact queued command or authenticated
+receipt, reuse the verified physical Runner and preserve endpoint binding. Test
+both direct callbacks and the same guest listener when that ingress is enabled;
+changing an endpoint or losing physical proof must hold recovery.
+These component cases do not replace the normal three-controller Daytona gate.
 
 Per-turn plugin continuation uses a stopped checkpoint on a replacement lease.
 The executor tests cover Claude and Codex, including reopening blocked work.
@@ -151,13 +184,20 @@ local file becomes a marker that requires restoration from the external
 checkpoint before restart. Ordinary control changes do not rewrite a second
 local journal. The sandbox runner keeps its own journal.
 
-Checkpoint transactions share a separate pool capped at two connections per
+Checkpoint transactions share a separate pool capped at three connections per
 server database client. They queue without occupying the application pool or
 the existing lease-renewal pool. This can delay a control acknowledgement during
 a burst; it does not release that acknowledgement before its commit. The cost is
-up to two additional active database connections per instance, not per agent.
+up to three additional active database connections per instance, not per agent.
 There is no new SQL per text chunk or while idle, and the number of control
 transactions is unchanged. SQL cost collection must include the checkpoint pool.
+
+The cap follows a bounded 2 → 3 → 4 → 2 diagnostic: both cap-2 trials failed
+the existing burst-drain gate; 3 was the smallest tested passing cap. Retain
+those failures and the diagnostic separately. The subsequent native feature-cost
+comparison uses the common current DB factory and equal cap-3 policy for both
+variants, so its baseline is a controlled baseline rather than the unmodified
+historical cap-2 configuration. All existing benchmark gates remain unchanged.
 
 A sparse checkpoint is marked `checkpointEventPolicy: "control-v1"`. Its peer must
 advertise `recoveryCursorVersion: 1`. During reconnection the controller echoes the
@@ -270,8 +310,10 @@ adapters, database loss and destroyed sandboxes are outside this guarantee.
 
 The empty-controller-cache test uses a real Rust runner and scripted provider
 in separate directories, removes the controller directory, then restores solely
-from Postgres. It checks unchanged runner/provider process identities and one
-provider turn start. Build the host runner and fake provider first, then run:
+from Postgres. It waits for natural lease expiry and checks unchanged
+runner/provider process identities and one provider turn start. It explicitly
+restores the transport checkpoint, so it does not prove application startup
+discovery by itself. Build the host runner and fake provider first, then run:
 
 ```sh
 PAPERCLIP_TEST_CONTROLLER_OUTAGE_MS=300000 pnpm exec vitest run \
@@ -283,6 +325,85 @@ This is protocol and persistence evidence. The separate
 `everyday-workflows.runner-codex.daytona.recover-controller` Product E2E cell
 qualifies the actual Daytona/provider path, including completion and workspace
 finalization. Neither test substitutes for the other's failure boundary.
+
+The explicit `daytona-restart-continuity.runner-codex.daytona.recover-controller`
+cell fixes the outage at 300 seconds and adds a second replacement after
+completion. Its new turn executes the saved project through normal admission.
+The oracle compares hashed native/provider session identities and requires a new
+completed tool receipt and correct answer. An installed A/B/A artifact manifest
+uses the last replacement for this retained-session continuation/rollback check.
+The general everyday suite retains its 125-second default. These intervals are
+fault tests, not permitted HTTP deployment downtime. Both fixtures retain the
+workspace and remote sandbox; they do not prove whole-webserver disk loss.
+
+The dedicated suite's version 6 uses the existing reusable warm environment,
+with a 15-minute provider idle window and unchanged 60/300/420-second ownership,
+outage and reconnect limits. Its prior per-turn/no-reuse measurement failed
+retained native/provider identity and remains failed. The test retires the whole
+`runtime/paperclip-runner` directory, including provider failover-backup bytes.
+Per-turn application qualification after sandbox disposal and this disk loss
+therefore awaits the provider-backup owner's durable storage contract; logical
+native checkpoints do not replace provider history or weaken the identity oracle.
+
+The rollback reader must support both the recovery envelope and the settled PRP
+v2 idle goal suffix. Record its actual source commit and installed tree hash.
+An older reader rejecting that journal is an unsupported rollback, not a pass.
+A backported compatibility build is a development fixture until it is released;
+do not describe it as a previously published version. Distinct source-controller
+tests, compiled native-module tests, installed CLI startup and the full Product
+E2E journey provide different evidence and must retain those scope labels.
+
+## Database cost qualification
+
+`scripts/benchmark-native-controller-recovery.ts` compares a pinned source
+baseline with the candidate's real PRP writer, control-plane snapshot port and
+lease renewal. It uses identical fixtures with 300 controllers and 10,000 prior
+tasks, in baseline/candidate/candidate/baseline order. `steady` distributes control
+checkpoints; `burst` aligns them every five seconds. `pilot` checks instrumentation
+with ten controllers. No provider is called.
+
+Run on an otherwise idle disposable Linux Postgres cluster with
+`pg_stat_statements` preloaded and its extension available. Give Postgres and the
+Node client two CPUs and 1536 MiB each. Set these explicit inputs:
+
+```sh
+BENCH_DISPOSABLE_POSTGRES=1 \
+BENCH_DATABASE_URL=postgres://postgres:fixture-password@127.0.0.1:5432/postgres \
+BENCH_BASELINE_ROOT=/absolute/path/to/pinned-baseline \
+BENCH_REPORT_ROOT=/absolute/path/to/new-report-directory \
+BENCH_POSTGRES_CGROUP=/absolute/path/to/postgres-cgroup \
+node --import ./cli/node_modules/tsx/dist/loader.mjs \
+  scripts/benchmark-native-controller-recovery.ts steady
+```
+
+The baseline needs the same installed dependency versions and built workspace
+packages. It supplies the baseline writer, snapshot port and PRP controller;
+the request fixtures, renewal path and pool policy are common controls. When
+running an exported tree without Git metadata, supply its exact
+`BENCH_BASELINE_REVISION`, `BENCH_CANDIDATE_REVISION` and
+`BENCH_CANDIDATE_DIFF`. Record the export source and verify its bytes separately.
+Use a fresh report directory for every attempt. Only new random databases are
+created; successful trial databases are dropped, and the owned template remains
+for inspection until the disposable cluster is removed.
+
+The report counts SQL across all three pools, actual snapshot/PRP transactions,
+changed records/bytes, WAL, database CPU, sampled memory, pool admission,
+transaction latency and database request latency. Pool admission ends at
+connection assignment/BEGIN encoding; BEGIN response time is separate.
+Postgres execution time includes lock waits. A 25 ms observer uses PostgreSQL's
+`pg_locks.waitstart` to report duration bounds for observed lock episodes by pool.
+The pilot calibrates it against an intentional 250 ms row-lock wait. Short waits
+can be missed, and delayed samples widen the estimated upper bound. The nominal
+40 observer queries per second contribute to measured database CPU and statement
+statistics. Reports include actual sample counts, sampling gaps, CPU pressure,
+quota throttling and the measurement harness hash. They do not provide exact
+lock-exclusive SQL execution time or HTTP latency; this is component load
+qualification.
+
+Correctness and absolute gates must pass for acceptance.
+Dropped operations invalidate paired comparisons. The report retains failures
+and refuses an overall pass if p99, drain, throughput, memory, CPU or the 10%
+relative regression gate fails. Do not change pool limits to conceal a failure.
 
 ## Required native usage acceptance
 

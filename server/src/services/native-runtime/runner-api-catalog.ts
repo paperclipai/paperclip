@@ -41,6 +41,7 @@ function words(text: string): string[] {
 }
 
 function dedicatedTools(method: string, path: string): string[] {
+  if (method === "POST" && path === "/api/agents/me/chat/messages") return ["send_chat_message"];
   if (/\/companies\/\{[^}]+\}\/workflows$/.test(path)) return method === "GET" ? ["list_workflows"] : method === "POST" ? ["create_workflow"] : [];
   if (/\/workflows\/\{[^}]+\}$/.test(path)) return method === "GET" ? ["read_workflow"] : method === "PATCH" ? ["update_workflow"] : [];
   if (/\/issues\/\{[^}]+\}\/title$/.test(path) && method === "PUT") return ["set_task_title"];

@@ -16,6 +16,7 @@ const packageFiles = [
   "scripts/acpx-release-attestations.mjs", "scripts/generate-acpx-profiles.mjs",
   "src/providers/grok/launcher.cjs", "src/drivers/acpx/copilot-closure-pins.ts",
   "src/drivers/acpx/pi-closure-pins.ts", "src/drivers/acpx/pi-node-pins.ts",
+  "src/drivers/acpx/kimi-closure-pins.ts",
   "src/drivers/acpx/generated-profiles.ts", "runner/crates/runner-core/src/generated_acpx_profiles.rs",
 ];
 
@@ -37,7 +38,7 @@ const generate = (root, ...args) => spawnSync(process.execPath, [join(root, "scr
 
 test("every profile declares how its digest attests the upstream release", async () => {
   assert.deepEqual(Object.keys(ACPX_RELEASE_ATTESTATIONS).sort(), Object.keys(manifest.profiles).sort());
-  assert.deepEqual(COMPUTED.sort(), ["antigravity", "copilot", "cursor", "grok", "pi"]);
+  assert.deepEqual(COMPUTED.sort(), ["antigravity", "copilot", "cursor", "grok", "kimi", "pi"]);
   for (const agent of COMPUTED) {
     assert.equal(manifest.profiles[agent].commandDigest, (await acpxReleaseAttestation(agent, packageRoot)).commandDigest, agent);
   }
@@ -66,10 +67,11 @@ test("a relocated copy of the provider inputs computes the same attestations", a
 });
 
 test("the attestations bind no Paperclip source beyond the Grok launcher", async () => {
-  for (const agent of ["copilot", "pi"]) {
+  for (const agent of ["copilot", "pi", "kimi"]) {
     const { declaration } = await acpxReleaseAttestation(agent, packageRoot);
     assert.deepEqual(Object.keys(declaration).filter(key => /source/iu.test(key)), [], agent);
-    assert.deepEqual(Object.keys(declaration.closure).sort(), ["darwin-arm64", "darwin-x64", "linux-x64"]);
+    assert.deepEqual(Object.keys(declaration.closure).sort(), agent === "kimi"
+      ? ["darwin-arm64", "linux-x64"] : ["darwin-arm64", "darwin-x64", "linux-x64"]);
   }
 });
 
@@ -84,6 +86,10 @@ for (const [name, agents, edit] of [
   }],
   ["a Pi platform closure", ["pi"], root => {
     const path = join(root, "src/drivers/acpx/pi-closure-pins.ts");
+    writeFileSync(path, readFileSync(path, "utf8").replace(/"linux-x64": "[a-f0-9]{64}"/u, `"linux-x64": "${"0".repeat(64)}"`));
+  }],
+  ["a Kimi platform closure", ["kimi"], root => {
+    const path = join(root, "src/drivers/acpx/kimi-closure-pins.ts");
     writeFileSync(path, readFileSync(path, "utf8").replace(/"linux-x64": "[a-f0-9]{64}"/u, `"linux-x64": "${"0".repeat(64)}"`));
   }],
   ["the Grok launcher bytes", ["grok"], root => {

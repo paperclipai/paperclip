@@ -1014,6 +1014,80 @@ describe("New agent setup", () => {
     expect(api.hire.mock.calls[0][1].adapterConfig.env[key]).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
     expect(container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
   });
+  it("offers native Kimi separately from the existing legacy Kimi under a qualified release fixture", async () => {
+    const profile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(entry => entry.value === "kimi") as { qualified: boolean };
+    const previousQualified = profile.qualified;
+    profile.qualified = true;
+    try {
+      const setupId = "00000000-0000-4000-8000-000000000094";
+      state.params = new URLSearchParams({ name: "Atlas", adapterType: "process", setupAgentId: setupId });
+      api.get.mockResolvedValue({ id: setupId, companyId: "company-1", name: "Atlas", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, metadata: { setupAdapterPending: true }, pauseReason: "setup", status: "paused" });
+      await renderCurrentParams();
+      await settle();
+      expect(document.querySelector('input[name="new-agent-adapter"][value="kimi_local"]')).not.toBeNull();
+      const native = document.querySelector<HTMLInputElement>('input[name="new-agent-adapter"][value="kimi_runtime"]');
+      expect(native).not.toBeNull();
+      await act(async () => native!.click());
+      await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Configure agent")!.click());
+      await settle();
+      expect(api.update).toHaveBeenCalledWith(setupId, expect.objectContaining({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "kimi" } }), "company-1");
+      expect(state.navigate).toHaveBeenLastCalledWith(expect.stringContaining("runnerProvider=kimi"), { replace: true });
+    } finally { profile.qualified = previousQualified; }
+  });
+
+  it("keeps an unqualified native Kimi declaration behind qualification", async () => {
+    const profile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(entry => entry.value === "kimi") as { qualified: boolean };
+    const previousQualified = profile.qualified;
+    try {
+      profile.qualified = false;
+      await render("paperclip_runner", "kimi");
+      await fill("KIMI_API_KEY", "kimi-test-key");
+      await fill("Model", "explicit-kimi-model");
+      await click("Finish setup");
+      expect(api.testEnvironment).not.toHaveBeenCalled();
+      expect(api.hire).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Kimi Code is not enabled for production");
+    } finally { profile.qualified = previousQualified; }
+  });
+
+  it("saves and reopens native Kimi with its exact model and one organization secret under a qualified release fixture", async () => {
+    const profile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(entry => entry.value === "kimi") as { qualified: boolean };
+    const previousQualified = profile.qualified;
+    profile.qualified = true;
+    try {
+      await render("paperclip_runner", "kimi");
+      expect(container.querySelector('[aria-label="Kimi API model name"]')).toBeNull();
+      await click("Run test");
+      expect(api.testEnvironment).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Enter the exact Kimi model ID");
+      await fill("Model", "explicit-unlisted-kimi-model");
+      await fill("KIMI_API_KEY", "kimi-test-key");
+      await click("Run test");
+      expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "paperclip_runner", expect.objectContaining({
+        adapterConfig: expect.objectContaining({ provider: "acpx", acpxAgent: "kimi", model: "explicit-unlisted-kimi-model" }),
+        testCredentials: { KIMI_API_KEY: "kimi-test-key" },
+      }));
+      await click("Save & exit");
+      const setupId = api.create.mock.calls[0][1].setupId;
+      expect(api.update.mock.calls.at(-1)![1].adapterConfig).toMatchObject({
+        provider: "acpx", acpxAgent: "kimi", model: "explicit-unlisted-kimi-model",
+        env: { KIMI_API_KEY: { type: "secret_ref", secretId: "org-secret-1" } },
+      });
+      await act(async () => root.render(null));
+      cache.clear();
+      state.params = new URLSearchParams({ name: "Atlas", adapterType: "paperclip_runner", runnerProvider: "kimi", setupAgentId: setupId });
+      await renderCurrentParams();
+      await settle();
+      expect((container.querySelector('[aria-label="Model"]') as HTMLInputElement).value).toBe("explicit-unlisted-kimi-model");
+      expect(container.querySelector('[aria-label="KIMI_API_KEY"]')?.getAttribute("placeholder")).toBe("Using saved key");
+      await click("Finish setup");
+      expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        adapterType: "paperclip_runner", adapterConfig: expect.objectContaining({ provider: "acpx", acpxAgent: "kimi", model: "explicit-unlisted-kimi-model" }),
+      }));
+      expect(secrets.create).toHaveBeenCalledTimes(1);
+    } finally { profile.qualified = previousQualified; }
+  });
+
   it("defines a Kimi API model without overriding it with a CLI model alias", async () => {
     await render("kimi_local");
     await fill("KIMI_MODEL_API_KEY", "kimi-test-key");

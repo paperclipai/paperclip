@@ -7646,6 +7646,122 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
   }
 }, 30_000);
 
+it("recovers an active second warm business run with its opaque attachment identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-warm-second-active-"));
+  const firstRoot = join(root, "first-controller"), nextRoot = join(root, "next-controller");
+  const server = createServer();
+  let authority: DurablePrpControlPlane | null = null, generation = 0;
+  let checkpoint: durableControlPlane.DurablePrpCheckpoint | undefined;
+  const registered = new WeakSet<DurablePrpControlPlane>();
+  server.on("upgrade", (request, socket, head) => authority
+    ? authority.handleUpgrade(request, socket, "/runner", head) : socket.destroy());
+  await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing owned Runner route");
+  const registration = async (core: DurablePrpControlPlane) => {
+    if (!registered.has(core)) {
+      core.setCheckpointPersistence(async value => { checkpoint = value; });
+      registered.add(core);
+    }
+    authority = core; const current = ++generation;
+    return { connectUrl: `ws://127.0.0.1:${address.port}/runner`, release: async () => { if (generation === current) authority = null; } };
+  };
+  const initialIdentity = { runnerInstanceId: "runner-warm-second-active", environmentLeaseId: "lease-warm-second-active",
+    runId: "run-warm-first-healthy", normalizedSessionId: "session-warm-second-active", turnId: "turn-first", itemId: "item-first" };
+  const options = { runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(root, "--emit-tool-call", "--durable-tool-ids"), stateDirectory: firstRoot,
+    prpIdentity: initialIdentity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 }, controlPlaneRegistration: registration };
+  const first = createCapabilityRunnerdCodexTransport(options);
+  const within = async <T>(label: string, promise: Promise<T>) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`warm active recovery stage timed out: ${label}`)), 5_000); })]); }
+    finally { clearTimeout(timer); }
+  };
+  const waitComplete = async (transport: typeof first.transport) => {
+    for await (const notification of transport.notifications()) if (notification.method === "turn/completed") return;
+  };
+  let calls = 0, runnerPid: number | null = null, providerPid: number | null = null;
+  let recovered: ReturnType<typeof createCapabilityRunnerdCodexTransport> | undefined;
+  const result = { ok: true, task: { id: "task-1" } };
+  first.transport.setServerRequestHandler(async () => ++calls === 1
+    ? { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] }
+    : new Promise<Record<string, unknown>>(() => undefined));
+  try {
+    const opened = await within("first thread/start", first.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [{ name: "get_task_context", description: "Read current task",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false } }] }));
+    runnerPid = first.evidence().runnerPid;
+    providerPid = first.evidence().codexPid;
+    expect(providerPid).toEqual(expect.any(Number));
+    const providerStart = execFileSync("ps", ["-p", String(providerPid), "-o", "lstart="], { encoding: "utf8" }).trim();
+    const startedAt = first.transport.processInfo().startedAt;
+    const firstCompleted = waitComplete(first.transport);
+    await within("first turn/start", first.transport.request("turn/start", { input: [{ type: "text", text: "first healthy business run" }] }));
+    await within("healthy first turn completion", firstCompleted);
+    const attachment = { runId: "run-warm-second-active", turnId: `turn_attachment_${randomUUID()}`, itemId: `item_attachment_${randomUUID()}` };
+    await within("warm second business attachment", first.transport.attachRun!(attachment));
+    const active = await within("second active turn/start", first.transport.request("turn/start", { input: [{ type: "text", text: "second business run held at tool" }] }));
+    await vi.waitFor(() => expect(calls).toBe(2), { timeout: 5_000 });
+    const activeCore = authority!;
+    const savedIdentity = { ...activeCore.store.state.identity };
+    expect(savedIdentity).toEqual({ ...initialIdentity, ...attachment });
+    await activeCore.flushCheckpoint();
+    await within("controller detach", first.detachControllerForRestart());
+    expect(() => process.kill(runnerPid!, 0)).not.toThrow();
+    checkpoint!.restoreSessionDirectory(nextRoot);
+    const noSpawn = vi.fn(() => { throw new Error("Duplicate Runner launch"); });
+    const openedThread = opened.thread as Record<string, unknown>;
+    const activeTurn = active.turn as Record<string, unknown>;
+    expect(openedThread.id).toEqual(expect.any(String));
+    expect(activeTurn.id).toEqual(expect.any(String));
+    const shared = { ...options, stateDirectory: nextRoot,
+      resumeProviderSession: { driverSessionId: String(openedThread.id), providerSessionId: String(openedThread.sessionId) },
+      resumeActiveTurnId: String(activeTurn.id), runnerArtifact: readRunnerdArtifactBinding(options.runnerBinary),
+      runnerStateDirectory: join(firstRoot, "runner"), readRunnerState: async () => JSON.parse(await readFile(join(firstRoot, "runner/runner-state.json"), "utf8")),
+      prepareExternalRunnerState: async () => {}, archiveExternalRunnerState: async () => { throw new Error("Active authority must not rotate"); },
+      runnerProcessLauncher: noSpawn, adoptExistingRunner: { pid: runnerPid!, processGroupId: runnerPid, startedAt,
+        isAlive: () => { try { process.kill(runnerPid!, 0); return true; } catch { return false; } },
+        signal: (signal: NodeJS.Signals) => { try { process.kill(runnerPid!, signal); return true; } catch { return false; } } } };
+    // The old server's synthetic pair must continue failing the strict Runner guard.
+    const wrong = createCapabilityRunnerdCodexTransport({ ...shared, prpIdentity: { ...savedIdentity,
+      turnId: `turn-${attachment.runId}`, itemId: `item-${attachment.runId}` } });
+    await expect(wrong.transport.request("thread/read", {})).rejects.toThrow("PRP recovery identity does not match the durable session binding");
+    await wrong.detachControllerForRestart();
+    // Leave the pending tool outcome unknown. Reattachment must authenticate
+    // and preserve it without fabricating a receipt or redispatching its handler.
+    recovered = createCapabilityRunnerdCodexTransport({ ...shared, prpIdentity: savedIdentity });
+    await within("replacement thread/read", recovered.transport.request("thread/read", {}));
+    expect(recovered.evidence()).toMatchObject({ runnerPid, runnerExited: false });
+    expect(authority!.activeRunnerConnectionCount()).toBe(1);
+    expect(() => process.kill(providerPid!, 0)).not.toThrow();
+    expect(execFileSync("ps", ["-p", String(providerPid), "-o", "lstart="], { encoding: "utf8" }).trim()).toBe(providerStart);
+    expect(calls).toBe(2);
+    expect(authority!.store.state.commands.filter(command => command.type === "semantic_tool.result")).toHaveLength(0);
+    expect(recovered.transport.processInfo().startedAt).toBe(startedAt);
+    expect(authority!.store.state.identity).toEqual(savedIdentity);
+    expect(authority!.store.state.commands.filter(command => command.type === "turn.start")).toHaveLength(1);
+    expect(noSpawn).not.toHaveBeenCalled();
+  } catch (error) {
+    const saved = JSON.parse(await readFile(join(firstRoot, "runner/runner-state.json"), "utf8").catch(() => "{}"));
+    const stderr = await readFile(join(firstRoot, "diagnostics/runnerd.stderr.log"), "utf8").catch(() => "");
+    throw new Error(`${String(error)}; owned protocol evidence ${JSON.stringify({
+      transport: recovered?.evidence(), connections: authority?.activeRunnerConnectionCount(),
+      identity: authority?.store.state.identity, commands: authority?.store.state.commands.map(c => ({type:c.type,status:c.status})),
+      events: authority?.store.state.committedEvents.map(e => e.eventType).slice(-8),
+      runner: { lifecycle:saved.lifecycle, runId:saved.runId, turnId:saved.turnId, itemId:saved.itemId,
+        outbox:saved.outbox?.length }, stderr:stderr.slice(-1500),
+    })}`);
+  } finally {
+    await (recovered ? within("recovered cleanup", recovered.transport.close()).catch(() => undefined) : undefined);
+    await within("first cleanup", first.transport.close()).catch(() => undefined);
+    if (providerPid) { try { process.kill(providerPid, "SIGKILL"); } catch {} }
+    await (authority as DurablePrpControlPlane | null)?.stop();
+    if (runnerPid) { try { process.kill(-runnerPid, "SIGKILL"); } catch {} }
+    server.closeAllConnections();
+    if (server.listening) await new Promise<void>(done => server.close(() => done()));
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it("waits for a warm runner to re-authenticate before probing attachment readiness", async () => {
   const stateDirectory = await mkdtemp(
     join(tmpdir(), "runnerd-warm-reattach-before-probe-"),
@@ -8123,7 +8239,7 @@ it("still fails closed when a real close grace period cannot fit a durable suspe
   }
 }, 30_000);
 
-it("cold-restores a suspended provider session under its durable run binding", async () => {
+it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accounting-rejected"] as const)("cold-restores a suspended provider session under its durable run binding (pending tail: %s)", async (pendingTail) => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-cold-attach-"));
   const tracePath = join(stateDirectory, "provider-trace.ndjson");
   const skillRoot = join(stateDirectory, "runtime-skill");
@@ -8216,14 +8332,57 @@ it("cold-restores a suspended provider session under its durable run binding", a
     throw new Error("cold attach fixture did not return a provider thread");
   }
 
+  // Model a retained provider-owned suffix: rotation must deliver and durably
+  // accept it before attempting run.attach, rather than dropping or ACKing it.
+  const retainedDelta = "cold-recovery-retained-tail";
+  if (pendingTail) {
+    const providerFile = join(stateDirectory, "runner", "codex-provider-state.json");
+    const provider = JSON.parse(await readFile(providerFile, "utf8"));
+    expect(provider.pendingEvents).toEqual([]);
+    provider.pendingEvents.push({
+      executorEventId: `codex_provider_${String(provider.nextProviderEventSeq++).padStart(16, "0")}`,
+      eventType: pendingTail === "unknown-semantic" ? "semantic_tool.input" : "usage.reported",
+      priority: "p0",
+      payload: pendingTail === "unknown-semantic" ? { semantic_tool: {
+        schema: "paperclip.prp.semantic_tool.v1", schemaVersion: 1, phase: "input",
+        callId: "unknown-source-call", operationId: "get_task_context", input: {}, idempotencyKey: null,
+        correlation: { runId: baseIdentity.runId, normalizedSessionId: baseIdentity.normalizedSessionId,
+          turnId: baseIdentity.turnId, itemId: baseIdentity.itemId },
+        content: { digest: `sha256:${createHash("sha256").update("{}").digest("hex")}`, redactionDisposition: "digest_only", references: [] },
+      } } : { provider: "codex", kind: "usage", delta: retainedDelta,
+        providerTurnId: provider.completed_provider_turn_id, runDelta: { inputTokens: 20, outputTokens: 2 },
+        runDeltaAvailable: true, runDeltaBasis: "run" },
+    });
+    await writeFile(providerFile, JSON.stringify(provider));
+  }
+  const retainedEvents: PrpEvent[] = [];
+  let releaseRetained!: () => void, retainedEntered!: () => void;
+  const retainedAccepted = new Promise<void>(done => { releaseRetained = done; });
+  const retainedAdmission = new Promise<void>(done => { retainedEntered = done; });
   const secondIdentity = {
     ...baseIdentity,
     runId: "run-cold-second",
     turnId: "turn-cold-second",
     itemId: "item-cold-second",
   };
-  const rotated = createCapabilityRunnerdCodexTransport({
+  let stagedCheckpoint: durableControlPlane.DurablePrpCheckpoint | undefined;
+  let rejectStagedCommit = pendingTail === "restart-before-bootstrap";
+  const rotatedOptions = {
     ...options,
+    onStagedRunAttachment: pendingTail === "restart-before-bootstrap" ? async (authority: DurablePrpControlPlane) => {
+      authority.setCheckpointPersistence(async checkpoint => {
+        stagedCheckpoint = checkpoint;
+        if (rejectStagedCommit) throw new Error("fixture lost controller after durable intent");
+      });
+    } : undefined,
+    onRecoveryAccountingEvent: pendingTail ? async (event: PrpEvent) => {
+      if (event.payload.delta === retainedDelta) {
+        retainedEvents.push(structuredClone(event));
+        retainedEntered();
+        if (pendingTail === "accounting-rejected") throw new Error("source accounting receipt unavailable");
+        await retainedAccepted;
+      }
+    } : undefined,
     environment: { ...options.environment, PAPERCLIP_GITHUB_BROKER_TOKEN: "test-run-B-capability" },
     codexArgs: options.codexArgs.map((arg) => arg.replace('/run/A', '/run/B')),
     resumeDynamicTools: dynamicTools,
@@ -8232,14 +8391,81 @@ it("cold-restores a suspended provider session under its durable run binding", a
       criterionIds: ["criterion-second"],
     },
     prpIdentity: secondIdentity,
-  });
-  rotated.transport.setServerRequestHandler(async () => ({
-    success: true,
-    contentItems: [],
-  }));
+  };
+  let rotated = createCapabilityRunnerdCodexTransport(rotatedOptions);
+  if (pendingTail === "restart-before-bootstrap") {
+    await expect(rotated.transport.request("thread/read", {})).rejects.toThrow("fixture lost controller after durable intent");
+    expect(rotated.evidence().runnerPid).toBeNull();
+    expect(stagedCheckpoint?.runId).toBe(secondIdentity.runId);
+    expect([...stagedCheckpoint!.records].filter(([key]) => key.startsWith("command:")).map(([, value]) => JSON.parse(value).type)).not.toContain("run.attach");
+    await rotated.detachControllerForRestart().catch(() => undefined);
+    rejectStagedCommit = false;
+    await rm(join(stateDirectory, "control-plane"), { recursive: true, force: true });
+    stagedCheckpoint!.restoreSessionDirectory(stateDirectory);
+    rotated = createCapabilityRunnerdCodexTransport(rotatedOptions);
+  }
+  const currentHandler = vi.fn(async () => ({ success: true, contentItems: [] }));
+  rotated.transport.setServerRequestHandler(currentHandler);
+  if (pendingTail === "accounting-rejected") {
+    const reading = rotated.transport.request("thread/read", {});
+    void reading.catch(() => undefined);
+    try {
+      await Promise.race([retainedAdmission, reading]);
+      const source = JSON.parse(await readFile(join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8"));
+      expect(source.identity).toEqual(baseIdentity);
+      expect(source.stagedRunAttachment.targetIdentity).toEqual(secondIdentity);
+      expect(source.commands.some((command: { type: string }) => command.type === "run.attach")).toBe(false);
+      const retainedRunner = JSON.parse(await readFile(join(stateDirectory, "runner", "runner-state.json"), "utf8"));
+      expect(retainedRunner.outbox.some((entry: { envelope: { payload: PrpEvent } }) =>
+        entry.envelope.payload.sourceEventId === retainedEvents[0]!.sourceEventId)).toBe(true);
+      expect(currentHandler).not.toHaveBeenCalled();
+    } finally {
+      await expect(rotated.transport.close()).rejects.toMatchObject({ code: "native_session_close_unrecoverable" });
+      await expect(reading).rejects.toThrow();
+      await releaseMaterializedNativeRuntimeSkills(join(stateDirectory, "codex-home", "skills"));
+      await rm(stateDirectory, { recursive: true, force: true });
+    }
+    return;
+  }
+  if (pendingTail === "unknown-semantic") {
+    try {
+      await expect(rotated.transport.request("thread/read", {})).rejects.toThrow("native_runner_source_semantic_reconciliation_required");
+      expect(currentHandler).not.toHaveBeenCalled();
+      const retained = JSON.parse(await readFile(join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8"));
+      expect(retained.identity).toEqual(baseIdentity);
+      expect(retained.stagedRunAttachment.targetIdentity).toEqual(secondIdentity);
+      expect(retained.commands.some((command: { type: string }) => ["run.attach", "semantic_tool.result"].includes(command.type))).toBe(false);
+      expect(retained.committedEvents.some((event: PrpEvent) => event.eventType === "semantic_tool.input")).toBe(true);
+    } finally {
+      await expect(rotated.transport.close()).rejects.toMatchObject({ code: "native_session_close_unrecoverable" });
+      await releaseMaterializedNativeRuntimeSkills(join(stateDirectory, "codex-home", "skills"));
+      await rm(stateDirectory, { recursive: true, force: true });
+    }
+    return;
+  }
   try {
-    const read = await rotated.transport.request("thread/read", {});
+    const reading = rotated.transport.request("thread/read", {});
+    void reading.catch(() => undefined);
+    if (pendingTail) {
+      await Promise.race([retainedAdmission, reading]);
+      const retainedRunner = JSON.parse(await readFile(join(stateDirectory, "runner", "runner-state.json"), "utf8"));
+      expect(retainedRunner.outbox.some((entry: { envelope: { payload: PrpEvent } }) =>
+        entry.envelope.payload.sourceEventId === retainedEvents[0]!.sourceEventId)).toBe(true);
+      const retainedCore = stagedCheckpoint ? {
+        identity: JSON.parse(stagedCheckpoint.records.get("header")!).state.identity,
+        commands: [...stagedCheckpoint.records].filter(([key]) => key.startsWith("command:")).map(([, value]) => JSON.parse(value)),
+      } : JSON.parse(await readFile(join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8"));
+      expect(retainedCore.identity).toEqual(baseIdentity);
+      expect(retainedCore.commands.some((command: { type: string }) => command.type === "run.attach")).toBe(false);
+    }
+    releaseRetained();
+    const read = await reading;
+    expect(retainedEvents).toHaveLength(pendingTail ? 1 : 0);
+    if (pendingTail) expect(retainedEvents[0]).toMatchObject({
+      runId: baseIdentity.runId, turnId: baseIdentity.turnId, itemId: baseIdentity.itemId,
+    });
     const persistedProvider = JSON.parse(await readFile(join(stateDirectory, "runner", "codex-provider-state.json"), "utf8"));
+    expect(persistedProvider.pendingEvents).toEqual([]);
     expect(persistedProvider.config.args.join("\n")).toContain('/run/B');
     expect(JSON.stringify(persistedProvider)).not.toContain("test-run-B-capability");
     expect(read.thread).toMatchObject({
@@ -8256,8 +8482,14 @@ it("cold-restores a suspended provider session under its durable run binding", a
     expect(rotated.evidence().diagnostics).toContain(
       "runnerd attached the durable provider session to a fresh PRP run authority",
     );
-    expect(await stat(join(stateDirectory, "authority-epochs"))).toBeDefined();
+    if (pendingTail) {
+      const target = stagedCheckpoint ? JSON.parse(stagedCheckpoint.records.get("header")!).state
+        : JSON.parse(await readFile(join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8"));
+      expect(target.stagedRunAttachment).toBeUndefined();
+      expect(target.completedWarmTransition.receipt).toMatchObject({ oldIdentity: baseIdentity, newIdentity: secondIdentity });
+    } else expect(await stat(join(stateDirectory, "authority-epochs"))).toBeDefined();
   } finally {
+    releaseRetained();
     await rotated.transport.close();
   }
   const requestFrames = (await readFile(tracePath, "utf8"))
@@ -8292,6 +8524,12 @@ it("cold-restores a suspended provider session under its durable run binding", a
         params: expect.objectContaining({ threadId: firstProviderThread.id }),
       }),
     );
+  }
+
+  if (pendingTail) {
+    await releaseMaterializedNativeRuntimeSkills(join(stateDirectory, "codex-home", "skills"));
+    await rm(stateDirectory, { recursive: true, force: true });
+    return;
   }
 
   // A remote process owner keeps runner-state outside the controller's local

@@ -9,6 +9,8 @@ import {
   lstat,
 } from "node:fs/promises";
 import path from "node:path";
+import type { RunnerE2EResult } from "./types.js";
+import { assertRunnerE2EResultsPath } from "./results-root.js";
 import {
   assertSecretFree,
   findSecretLeak,
@@ -270,4 +272,34 @@ export async function packageEvidence(input: {
   );
   files.push("evidence-manifest.json");
   return { files, leaks, missing };
+}
+
+export async function publishRunnerE2EAttemptEvidence(input: {
+  result: RunnerE2EResult;
+  privateDir: string;
+  uploadDir: string;
+  resultsRoot: string;
+  secrets: readonly string[];
+}): Promise<RunnerE2EResult> {
+  let result = input.result;
+  const resultPath = path.join(input.privateDir, "result.json");
+  const writeResult = () => writeFile(resultPath,
+    `${JSON.stringify(sanitizeJson(result, input.secrets), null, 2)}\n`, "utf8");
+  await assertRunnerE2EResultsPath(input.resultsRoot, input.uploadDir);
+  await writeResult();
+  const evidence = await packageEvidence({ ...input, expectPassScreenshot: result.status === "passed" });
+  if (evidence.leaks.length > 0 || evidence.missing.length > 0) {
+    result = {
+      ...result,
+      status: "failed",
+      failureClass: evidence.leaks.length > 0 ? "secret_leak" : "permanent_infrastructure",
+      error: evidence.leaks.length > 0
+        ? `Secret leak rejected from evidence: ${evidence.leaks.map(leak => leak.file).join(", ")}`
+        : `Required evidence missing: ${evidence.missing.join(", ")}`,
+    };
+    await writeResult();
+    await assertRunnerE2EResultsPath(input.resultsRoot, input.uploadDir);
+    await packageEvidence({ ...input, expectPassScreenshot: false });
+  }
+  return result;
 }
