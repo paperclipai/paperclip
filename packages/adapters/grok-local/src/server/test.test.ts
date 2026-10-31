@@ -291,6 +291,31 @@ describe("grok_local testEnvironment", () => {
     expect(result.status).toBe("pass");
   });
 
+  it("probes the environment's workspace, not the host cwd configured on the agent", async () => {
+    prepareRuntimeMock.mockResolvedValueOnce({ assetDirs: { home: "/remote/assets/home" }, restoreWorkspace: async () => {} });
+    runProcessMock
+      .mockResolvedValueOnce({ exitCode: 0, signal: null, timedOut: false, stdout: "You are logged in with grok.com.\n\nDefault model: grok-4\n\nAvailable models:\n  * grok-4", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, signal: null, timedOut: false, stdout: [JSON.stringify({ type: "text", data: "hello" }), JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "s", requestId: "r" })].join("\n"), stderr: "" });
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "grok_local",
+      config: { command: "grok", cwd: "/Users/host/project", managedAiConnection: { provider: "xai" } },
+      executionTarget: { kind: "remote", transport: "ssh", remoteCwd: "/remote/workspace" } as never,
+    });
+
+    expect(ensureDirectoryMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.anything(),
+      "/remote/workspace",
+      expect.anything(),
+    );
+    expect(prepareRuntimeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceRemoteDir: "/remote/workspace" }),
+    );
+    expect(result.status).toBe("pass");
+  });
+
   it("reports a failed runtime preparation as a check instead of crashing", async () => {
     prepareRuntimeMock.mockRejectedValueOnce(
       new Error("Workspace ignore scan failed: git-ignore-scan-failed"),
