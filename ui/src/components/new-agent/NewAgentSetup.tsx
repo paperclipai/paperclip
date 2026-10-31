@@ -16,7 +16,7 @@ import {
   setupEfforts,
   setupProviderKeys,
 } from "@/lib/agent-setup-fields";
-import { testAgentSetup } from "@/lib/test-agent-setup";
+import { describeSetupFailure, testAgentSetup } from "@/lib/test-agent-setup";
 import { needsClaudeSetupQualification, qualifyClaudeSetup } from "@/lib/qualify-claude-setup";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { isNewAgentAdapterAllowed } from "@/lib/new-agent-adapters";
@@ -1084,19 +1084,7 @@ function Setup({
                         });
                         return true;
                       }}
-                      testError={
-                        error ??
-                        (
-                          result?.checks.find(
-                            (check) => check.level === "error",
-                          ) ??
-                          result?.checks.find(
-                            (check) =>
-                              (check.code.includes("hello_probe") || check.code.startsWith("environment_agent_")) &&
-                              check.level === "warn",
-                          )
-                        )?.message
-                      }
+                      testError={error ?? describeSetupFailure(result?.checks)}
                       onConnected={(next) => {
                         void saveDraft(next).then(() => {
                           setConnection(next);

@@ -3,6 +3,7 @@ import type {
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
+import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
 import {
   asString,
   parseObject,
@@ -64,10 +65,35 @@ function commandLooksLike(command: string, expected: string): boolean {
   return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
 }
 
+// Codex prints backend failures as one JSON error line, sometimes prefixed
+// with "ERROR: ", e.g. {"type":"error","status":400,"error":{"message":"…"}}.
+// Return the provider's message so the check detail is readable text.
+function codexErrorLineMessage(line: string): string | null {
+  const json = line.replace(/^ERROR:\s*/i, "").trim();
+  if (!json.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(json) as { type?: unknown; message?: unknown; error?: unknown };
+    if (parsed.type !== "error") return null;
+    const nested = parsed.error;
+    const message =
+      nested && typeof nested === "object" && typeof (nested as { message?: unknown }).message === "string"
+        ? (nested as { message: string }).message
+        : typeof nested === "string"
+          ? nested
+          : typeof parsed.message === "string"
+            ? parsed.message
+            : null;
+    return message?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 function summarizeProbeDetail(stdout: string, stderr: string, parsedError: string | null): string | null {
-  const raw = parsedError?.trim() || firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);
-  if (!raw) return null;
-  const clean = raw.replace(/\s+/g, " ").trim();
+  const first = parsedError?.trim() || firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);
+  if (!first) return null;
+  const raw = codexErrorLineMessage(first) ?? first;
+  const clean = redactDiagnosticText(raw).replace(/\s+/g, " ").trim();
   const max = 240;
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
