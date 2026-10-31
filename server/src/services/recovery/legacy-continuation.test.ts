@@ -49,4 +49,28 @@ describe("legacy continuation authority", () => {
   it("leaves native finalization to its own authority", () => {
     expect(decideLegacyContinuation({ ...input, run: { ...input.run, runtimeMode: "native" } }).kind).toBe("skip");
   });
+  it("gives a run with no legacy markers the documented five-attempt budget", () => {
+    // Such a run has spent nothing under the legacy scheme, so the legacy
+    // cap must not apply to it through the episode fallback.
+    expect(legacyDispositionEpisode({ id: "run-1" }))
+      .toMatchObject({ id: "run-1", attempt: 0, maxAttempts: 5 });
+    expect(legacyDispositionEpisode({ id: "run-1", contextSnapshot: {} }))
+      .toMatchObject({ id: "run-1", attempt: 0, maxAttempts: 5 });
+    expect(legacyDispositionEpisode({ id: "run-1", contextSnapshot: { issueId: "issue" }, continuationAttempt: 0 }))
+      .toMatchObject({ id: "run-1", attempt: 0, maxAttempts: 5 });
+  });
+  it("keeps the budget a persisted episode record was written with", () => {
+    expect(legacyDispositionEpisode({ id: "old", contextSnapshot: { legacyDispositionEpisode: { id: "ep", attempt: 1, maxAttempts: 2 } } }))
+      .toMatchObject({ id: "ep", attempt: 1, maxAttempts: 2 });
+    expect(legacyDispositionEpisode({ id: "new", contextSnapshot: { legacyDispositionEpisode: { id: "ep", attempt: 1, maxAttempts: 5 } } }))
+      .toMatchObject({ id: "ep", attempt: 1, maxAttempts: 5 });
+  });
+  it("still derives an episode for marked or partly spent pre-upgrade runs", () => {
+    expect(legacyDispositionEpisode({ id: "old", contextSnapshot: { dispositionRepairFingerprint: "old-episode" } }))
+      .toMatchObject({ id: "old-episode", attempt: 0, maxAttempts: 2 });
+    expect(legacyDispositionEpisode({ id: "old", contextSnapshot: { livenessContinuationSourceRunId: "source-run" } }))
+      .toMatchObject({ id: "source-run", attempt: 0, maxAttempts: 2 });
+    expect(legacyDispositionEpisode({ id: "old", continuationAttempt: 1 }))
+      .toMatchObject({ id: "old", attempt: 1, maxAttempts: 2 });
+  });
 });
