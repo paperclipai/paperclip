@@ -3,6 +3,7 @@ import { StringDecoder } from "node:string_decoder";
 import { heartbeatRunEvents, type Db } from "@paperclipai/db";
 import { validatePrpEvent, type PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { nativeSha256 } from "./canonical.js";
+import type { RunLogHandle, RunLogStore } from "../run-log-store.js";
 
 export function formatNativeRunLogEvent(event: PrpEvent) {
   return `${JSON.stringify({ type: "paperclip.prp.event", event })}\n`;
@@ -77,14 +78,49 @@ async function sourcePage(
   });
 }
 
-export function createNativeRunLogCoverageVerifier(db: Db, companyId: string, runId: string) {
+function matchPublishedImageOmissions(source: unknown, published: unknown): unknown {
+  if (Array.isArray(source))
+    return source.map((value, index) => matchPublishedImageOmissions(value,
+      Array.isArray(published) ? published[index] : undefined));
+  if (!source || typeof source !== "object") return source;
+  const original = source as Record<string, unknown>;
+  const existing = published && typeof published === "object"
+    ? published as Record<string, unknown> : {};
+  const result = Object.fromEntries(Object.entries(original).map(([key, value]) =>
+    [key, matchPublishedImageOmissions(value, existing[key])]));
+  const imageSource = original.source as Record<string, unknown> | undefined;
+  const publishedSource = existing.source as Record<string, unknown> | undefined;
+  if (original.type === "image" && imageSource?.type === "base64" &&
+    typeof imageSource.data === "string" && typeof publishedSource?.data === "string") {
+    const marker = /^\[omitted base64 image data: ([0-9]+) chars\]$/.exec(publishedSource.data);
+    if (marker && marker[1] === String(imageSource.data.length) && imageSource.data.length >= 1024 &&
+      /^[A-Za-z0-9+/=]+$/.test(imageSource.data)) {
+      // The existing scrubber depends on serialized key order, which JSONB
+      // does not retain. Honor only an omission already present at this path;
+      // published raw data still has to match the source exactly.
+      result.source = { ...(result.source as Record<string, unknown>), data: publishedSource.data };
+    }
+  }
+  return result;
+}
+
+export function createNativeRunLogCoverageVerifier(
+  db: Db,
+  companyId: string,
+  runId: string,
+  options?: {
+    allowSourceSuffix?: boolean;
+    redactChunk?: (chunk: string) => string;
+    signal?: AbortSignal;
+  },
+) {
   const decoder = new StringDecoder("utf8");
   let text = "",
     cursor = 0;
   let page: Awaited<ReturnType<typeof sourcePage>> = [];
   const unproven = () => new Error("native_log_source_coverage_unproven");
   async function next() {
-    if (!page.length) page = await sourcePage(db, companyId, runId, cursor);
+    if (!page.length) page = await sourcePage(db, companyId, runId, cursor, undefined, options?.signal);
     return page[0];
   }
   async function line(value: string) {
@@ -96,10 +132,18 @@ export function createNativeRunLogCoverageVerifier(db: Db, companyId: string, ru
     } catch {
       throw unproven();
     }
-    if (typeof chunk !== "string" || !chunk.startsWith('{"type":"paperclip.prp.event"')) return;
+    if (typeof chunk !== "string") throw unproven();
+    let envelope: { type?: unknown; event?: unknown };
+    try {
+      envelope = JSON.parse(chunk);
+    } catch {
+      if (chunk.includes('"paperclip.prp.event"')) throw unproven();
+      return;
+    }
+    if (envelope?.type !== "paperclip.prp.event") return;
     let event: PrpEvent;
     try {
-      const parsed = validatePrpEvent(JSON.parse(chunk).event);
+      const parsed = validatePrpEvent(envelope.event);
       if (!parsed.ok) throw unproven();
       event = parsed.event;
     } catch {
@@ -117,6 +161,17 @@ export function createNativeRunLogCoverageVerifier(db: Db, companyId: string, ru
       event.eventType !== expected.event.eventType
     )
       throw unproven();
+    if (options?.redactChunk) {
+      // JSONB reorders object keys. Compare the complete redacted event
+      // semantically while retaining the original published bytes.
+      try {
+        const expectedEnvelope = JSON.parse(options.redactChunk(formatNativeRunLogEvent(expected.event)));
+        if (nativeSha256(event) !== nativeSha256(matchPublishedImageOmissions(expectedEnvelope.event, event)))
+          throw unproven();
+      } catch {
+        throw unproven();
+      }
+    }
     cursor = expected.cursor;
     page.shift();
   }
@@ -133,10 +188,46 @@ export function createNativeRunLogCoverageVerifier(db: Db, companyId: string, ru
     async finish() {
       text += decoder.end();
       if (text) await line(text);
-      if (await next()) throw unproven();
+      if (!options?.allowSourceSuffix && await next()) throw unproven();
       return cursor;
     },
   };
+}
+
+/** Prove the published source prefix before replaying an incomplete native log. */
+export async function nativeRunLogPrefixCursor(input: {
+  db: Db;
+  companyId: string;
+  runId: string;
+  store: Partial<Pick<RunLogStore, "read">>;
+  handle: RunLogHandle;
+  redactChunk: (chunk: string) => string;
+  signal?: AbortSignal;
+}) {
+  const bytes = input.handle.initialBytes ?? 0;
+  const watermark = input.handle.initialSourceCursor ?? 0;
+  if (!bytes && !watermark) return 0;
+  const unproven = () => new Error("native_log_source_coverage_unproven");
+  if (!input.store.read || !Number.isSafeInteger(bytes) || bytes < 0) throw unproven();
+  const verifier = createNativeRunLogCoverageVerifier(input.db, input.companyId, input.runId, {
+    allowSourceSuffix: true,
+    redactChunk: input.redactChunk,
+    signal: input.signal,
+  });
+  let offset = 0;
+  while (offset < bytes) {
+    input.signal?.throwIfAborted();
+    const page = await input.store.read(input.handle, {
+      offset, limitBytes: Math.min(256_000, bytes - offset), signal: input.signal,
+    });
+    const content = Buffer.from(page.content);
+    if (!content.length || offset + content.length > bytes) throw unproven();
+    await verifier.write(content);
+    offset += content.length;
+  }
+  const cursor = await verifier.finish();
+  if (watermark > cursor) throw unproven();
+  return cursor;
 }
 
 export function createNativeRunLogExporter(input: {
