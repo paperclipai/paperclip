@@ -700,7 +700,7 @@ jobs:
         run: |
           node packages/paperclip-runner/scripts/stage-release-runner-binaries.mjs record "$SOURCE_SHA" "$TARGET" \
             packages/paperclip-runner/dist/bin/paperclip-runnerd "$RUNNER_TEMP/runner-release/$TARGET"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: ${{ steps.identity.outputs.artifact_prefix }}-${{ matrix.target }}
           path: ${{ runner.temp }}/runner-release/
@@ -725,7 +725,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/release-provider-packs/$TARGET"
           cp "$pack/provider-pack.json" "$RUNNER_TEMP/release-provider-packs/$TARGET/provider-pack.json"
           tar -C "$pack" -czf "$RUNNER_TEMP/release-provider-packs/$TARGET/provider-pack.tar.gz" .
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: startsWith(matrix.target, 'linux-') && steps.identity.outputs.provider_pack_artifact_prefix != ''
         with:
           name: ${{ steps.identity.outputs.provider_pack_artifact_prefix }}-${{ matrix.target }}

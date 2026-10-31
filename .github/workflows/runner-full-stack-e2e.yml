@@ -277,7 +277,7 @@ jobs:
 
       - name: Upload resolved target lockfile
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-e2e-target-pnpm-lock-${{ github.run_id }}-${{ github.run_attempt }}
           path: pnpm-lock.yaml
@@ -732,7 +732,7 @@ jobs:
         run: node tests/runner-e2e/artifact-budget.mjs check build runner-e2e-build-bundle.tar.gz runner-e2e-build-bundle.tar.gz.sha256
 
       - name: Upload immutable shared campaign outputs
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ steps.build_artifact_name.outputs.name }}
           path: |
@@ -870,7 +870,7 @@ jobs:
 
       - name: Upload immutable remote provider pack
         if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ steps.provider_pack_artifact_name.outputs.name }}
           path: |
@@ -1331,7 +1331,7 @@ jobs:
 
       - name: Upload nonprivate packaged cell evidence
         if: always() && needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions' && steps.manual_cell_route.outputs.route == 'actions'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-e2e-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.executionId }}
           path: tests/runner-e2e/results/
@@ -1879,7 +1879,7 @@ jobs:
 
       - name: Upload nonprivate merged report
         if: always() && needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-e2e-report-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-e2e-merged-report/
@@ -1902,7 +1902,7 @@ jobs:
 
       - name: Retain report availability for the schedule monitor
         if: always() && needs.catalog.outputs.operations_cadence != '' && steps.private_report.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-e2e-report-${{ github.run_id }}-${{ github.run_attempt }}
           path: private-report-status.json
