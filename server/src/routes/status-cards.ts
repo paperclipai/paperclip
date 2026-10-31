@@ -10,9 +10,11 @@ import {
   writeStatusCardSummarySchema,
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import { authorizationDeniedDetails, issueReadSqlCondition } from "../services/authorization.js";
 import { accessService, heartbeatService, instanceSettingsService, issueService, logActivity, statusCardService } from "../services/index.js";
+import { resolveActiveIssueRunFor } from "../services/issue-active-run.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 
@@ -22,7 +24,8 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
   const settings = instanceSettingsService(db);
   const service = statusCardService(db);
   const issueSvc = issueService(db);
-  const heartbeat = opts.heartbeat ?? heartbeatService(db);
+  const runs = heartbeatService(db);
+  const heartbeat = opts.heartbeat ?? runs;
 
   async function assertStatusCardsEnabled() {
     const experimental = await settings.getExperimental();
@@ -81,12 +84,43 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     });
   }
 
+  async function stopGenerationRun(
+    req: Request,
+    generationIssue: { id: string; assigneeAgentId: string | null; executionRunId: string | null } | null,
+    reason: string,
+  ) {
+    if (!generationIssue) return;
+    const run = await resolveActiveIssueRunFor(runs, generationIssue);
+    if (!run) return;
+    const actor = getActorInfo(req);
+    try {
+      const cancelled = await runs.cancelRun(run.id, reason);
+      if (cancelled) {
+        await logActivity(db, {
+          companyId: cancelled.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "heartbeat.cancelled",
+          entityType: "heartbeat_run",
+          entityId: cancelled.id,
+          issueId: generationIssue.id,
+          details: { agentId: cancelled.agentId, source: "status_card_generation_cancelled", issueId: generationIssue.id },
+        });
+      }
+    } catch (err) {
+      logger.warn({ err, runId: run.id, issueId: generationIssue.id }, "failed to cancel run for cancelled status-card generation task");
+    }
+  }
+
   async function enqueueCompile(req: Request, cardId: string) {
     const actor = getActorInfo(req);
-    const result = await service.requestCompile(cardId, {
+    const { cancelledGenerationIssue, ...result } = await service.requestCompile(cardId, {
       agentId: actor.actorType === "agent" ? actor.actorId : null,
       userId: actor.actorType === "user" ? actor.actorId : null,
     });
+    await stopGenerationRun(req, cancelledGenerationIssue, "Superseded by a newer status-card compile");
     if (!result.alreadyGenerating) {
       try {
         await queueIssueAssignmentWakeup({
@@ -185,10 +219,11 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     await assertCanManageCard(req, card);
     assertAgentPromptLimit(req, req.body.interestPrompt);
     const actor = getActorInfo(req);
-    const updated = await service.update(card, req.body, {
+    const { card: updated, cancelledGenerationIssue } = await service.update(card, req.body, {
       agentId: actor.actorType === "agent" ? actor.actorId : null,
       userId: actor.actorType === "user" ? actor.actorId : null,
     });
+    await stopGenerationRun(req, cancelledGenerationIssue, "Status card archived");
     const compile = req.body.interestPrompt !== undefined ? await enqueueCompile(req, card.id) : null;
     const restore = req.body.archived === false && card.archivedAt && updated.queries.length > 0 && !updated.generatingIssueId
       ? await enqueueRefresh(req, card.id, true, "restore")
