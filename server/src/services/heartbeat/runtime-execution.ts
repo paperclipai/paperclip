@@ -801,7 +801,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       });
       const runtimeToolDelivery =
         adapter.runtimeToolDelivery ?? "invocation_context";
-      if (runtimeTools && runtimeToolDelivery === "native_mcp") {
+      if (runtimeTools && runtimeToolDelivery === "native_mcp" && issueRef) {
         runtimeMcpServers.unshift({
           name: "Paperclip connections",
           url: runtimeTools.mcpEndpoint,
