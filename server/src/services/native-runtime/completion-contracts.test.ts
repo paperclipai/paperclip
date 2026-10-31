@@ -11,6 +11,38 @@ import {
 } from "./completion-contracts.js";
 
 describe("buildNativeCompletionContract", () => {
+  it("scopes standing-chat criteria to the response while preserving every current request and source", () => {
+    const issue = { id: "chat", title: "Chat with CEO", description: null, conversationAgentId: "ceo" };
+    const comments = [
+      { id: "operator-request", body: "Restart this instance." },
+      { id: "handoff-request", body: "Have Morgan draft the update and send it here when finished." },
+    ];
+    const pending = nativeCompletionRequestsWithSources(comments);
+    const contract = buildNativeCompletionContract(issue, { immediateRequests: pending.requests, humanResponseId: "answer" });
+    expect(contract.objective).toMatch(/conversation response/i);
+    expect(contract.objective).toMatch(/verified|verify/i);
+    expect(contract.objective).toMatch(/delegated/i);
+    expect(contract.objective).toMatch(/unavailable/i);
+    expect(contract.criteria.map(row => row.id)).toEqual(["pending_comment_1", "pending_comment_2", "human_response"]);
+    for (const [index, comment] of comments.entries()) {
+      const requirement = contract.criteria[index]!.requirement;
+      expect(requirement).not.toBe(comment.body);
+      expect(requirement).toContain(comment.body);
+      expect(requirement).toMatch(/current authorized conversation response/i);
+      expect(requirement.split(comment.body)).toHaveLength(2);
+    }
+    expect(contract.criteria[2]!.requirement).toContain('"answer"');
+    expect(buildNativeCompletionContractSources({ issue, immediateRequests: pending.requests, immediateRequestSources: pending.sources }))
+      .toEqual(comments.map((comment, index) => ({ id: `pending_comment_${index + 1}`, source: nativeCompletionSource("comment", comment.id, comment.body) })));
+  });
+
+  it.each([undefined, null])("keeps an ordinary task's action criterion strict even with a chat-like title (%s)", (conversationAgentId) => {
+    const issue = { title: "Chat with CEO", description: null, conversationAgentId };
+    const request = "Restart this instance.";
+    expect(buildNativeCompletionContract(issue, { immediateRequest: request }).criteria)
+      .toEqual([{ id: "objective", requirement: request }]);
+  });
+
   it("uses the task description as the single initial criterion", () => {
     expect(buildNativeCompletionContract({
       title: "Ship the runner",
