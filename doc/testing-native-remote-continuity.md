@@ -184,13 +184,20 @@ local file becomes a marker that requires restoration from the external
 checkpoint before restart. Ordinary control changes do not rewrite a second
 local journal. The sandbox runner keeps its own journal.
 
-Checkpoint transactions share a separate pool capped at two connections per
+Checkpoint transactions share a separate pool capped at three connections per
 server database client. They queue without occupying the application pool or
 the existing lease-renewal pool. This can delay a control acknowledgement during
 a burst; it does not release that acknowledgement before its commit. The cost is
-up to two additional active database connections per instance, not per agent.
+up to three additional active database connections per instance, not per agent.
 There is no new SQL per text chunk or while idle, and the number of control
 transactions is unchanged. SQL cost collection must include the checkpoint pool.
+
+The cap follows a bounded 2 → 3 → 4 → 2 diagnostic: both cap-2 trials failed
+the existing burst-drain gate; 3 was the smallest tested passing cap. Retain
+those failures and the diagnostic separately. The subsequent native feature-cost
+comparison uses the common current DB factory and equal cap-3 policy for both
+variants, so its baseline is a controlled baseline rather than the unmodified
+historical cap-2 configuration. All existing benchmark gates remain unchanged.
 
 A sparse checkpoint is marked `checkpointEventPolicy: "control-v1"`. Its peer must
 advertise `recoveryCursorVersion: 1`. During reconnection the controller echoes the

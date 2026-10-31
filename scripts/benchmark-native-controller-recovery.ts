@@ -932,7 +932,7 @@ try {
         postgresMemoryLimitMiB: 1536,
         mainPool: 10,
         livenessPool: 2,
-        candidateCheckpointPool: 2,
+        candidateCheckpointPool: 3,
       },
       workload: {
         mode,
@@ -943,7 +943,8 @@ try {
         controlPayloadBytes: 4096,
         phaseSeconds: 65,
         snapshotTransactionsPerControl: 1,
-        baselineCheckpointPool: 2,
+        baselineCheckpointPool: 3,
+        baselinePoolPolicy: "Controlled baseline uses the common current DB factory's checkpoint cap of 3; this is not the unmodified historical cap-2 baseline.",
         baselineRenewalIntervalSeconds: 20,
         candidateRenewalIntervalSeconds: 20,
         historicalIssues: 10000,
