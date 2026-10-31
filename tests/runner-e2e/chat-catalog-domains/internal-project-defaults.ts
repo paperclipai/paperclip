@@ -40,7 +40,7 @@ export function projectReadCalls(events: unknown[], runId: string, projectId: st
       const input = item.input as Record<string, unknown> | undefined;
       if (input?.apiPayloadRedacted === true && input.apiPayloadSha256 === digest) inputs.add(item.id);
     }
-    if (event.eventType === "item.started" && item.type === "tool_use" && item.name === "list_projects") listInputs.add(item.id);
+    if (event.eventType === "item.started" && ["tool_use", "tool_call"].includes(String(item.type)) && item.name === "list_projects") listInputs.add(item.id);
     if (event.eventType === "item.completed" && item.type === "tool_result" && item.tool_use_id === item.id && item.is_error !== true) {
       const result = item.result as Record<string, unknown> | undefined;
       if (result?.apiOperationId === "GET /api/projects/{id}" && result.status === 200 && result.ok === true) results.add(item.id);
@@ -96,7 +96,7 @@ function defaults(): ChatCatalogCase {
     for (const scope of [{ scopeType: "company", scopeId: ctx.input.fixtures.company.id }, ...[worker, futureWorker].map(row => ({ scopeType: "agent", scopeId: row.id }))])
       await ctx.input.api.post(`${root}/budgets/policies`, { ...scope, amount: 500, hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
     const holdDeadlineAt = ctx.observationDeadlineAt!;
-    gate = await startNativeRunBriefGate(worker.id, holdDeadlineAt);
+    gate = await startNativeRunBriefGate(worker.id, holdDeadlineAt, ctx.input.privateSecrets);
     const t = await task(ctx, "Active launch research", p.id, { status: "todo", assigneeAgentId: worker.id, description: `Read the pending Website Brief by running this native shell command with a ${Math.max(1, holdDeadlineAt - Date.now())} ms tool timeout. Wait for its actual result before proceeding. Do not change this brief or other tasks. Command: ${gate.command}` });
     const held = await pollUntil({ label: "Real prior active Launch checkout", deadlineAt: Date.now() + 150000,
       load: async () => ({ task: await ctx.input.api.get<Entity & { executionRunId?: string }>(`/api/issues/${t.id}`), runs: await ctx.allRuns() }),
