@@ -497,7 +497,7 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const [agent] = await server.db.select().from(agents).where(eq(agents.id, fixture.agentId));
     const context = structuredClone(run.contextSnapshot ?? {});
     await prepareHeartbeatTaskContext(server.db, { run, agent,
-      task: { issueRef: issue, issueContext: null, wakeCommentContext: null, context, taskSession: null },
+      task: { issueRef: issue, issueContext: null, context, taskSession: null },
       policy: { recovering: true, trustPreset: { kind: "standard" }, experimentalInstanceSettings: {} },
       services: { issuesSvc: { getAncestors: async () => [] },
         getPinnedSkillTestContext: createHeartbeatRunPreparation(server.db).getPinnedSkillTestContext },

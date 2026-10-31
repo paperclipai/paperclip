@@ -86,7 +86,7 @@ internal traceability tag.
   moves them to the versioned name
 - canaries, nightlies, and betas never create GitHub Releases
 - canaries, nightlies, and betas never require changelog generation
-- Docker `:latest` moves only on stable releases; master builds publish
+- Docker `:latest` moves only on stable releases; canary dispatches promote
   `:canary`, nightly builds `:nightly`, and beta builds `:beta`
 
 ## TL;DR
@@ -310,12 +310,12 @@ The workflow:
 
 ## Docker Image Tags
 
-[`docker.yml`](../.github/workflows/docker.yml) publishes both the self-hosted
-image and the `-cloud` variant with the same lane mapping:
+[`docker.yml`](../.github/workflows/docker.yml) publishes the standard image:
 
 | Build ref | Tags |
 | --- | --- |
-| `master` push | `:canary`, `:sha-<short>` |
+| `master` push | `:sha-<short>`, `:sha-<full>` |
+| `canary/v*` dispatch | `:sha-<short>`, then `:canary` for the current npm canary |
 | `nightly/v*` tag | `:nightly`, `:sha-<short>` |
 | `beta/v*` tag | `:beta`, `:sha-<short>` |
 | `v*` tag (stable) | `:latest`, `:YYYY.MDD.P`, `:YYYY.MDD`, `:sha-<short>` |
@@ -324,6 +324,21 @@ Lane tags are pushed by release workflows using `GITHUB_TOKEN`, and GitHub
 suppresses push-triggered workflow runs for those pushes. The release jobs
 therefore dispatch `docker.yml` explicitly at the new tag ref; the tag
 mapping keys off `github.ref` either way.
+
+Canary dispatches first look up the full-SHA master image. Reuse requires a
+valid multi-platform index with both `linux/amd64` and `linux/arm64`, a matching
+registry digest, and signed provenance from this repository's `docker.yml`
+on `master` at the exact source commit. The image is retagged by immutable
+digest. This preserves the original build inputs and skips both native builds
+and the manifest merge. A missing full-SHA image runs the normal build instead;
+registry errors or invalid provenance fail the run. Rerun after the master
+image's attestation finishes if the image became visible before its proof.
+
+Both paths retain the serialized promotion that resolves the current npm
+`canary` dist-tag before moving Docker `:canary`. Nightly, beta, stable, and
+master builds retain their existing build paths. Downstream image builds can
+continue to consume the signed full-SHA master image independently of npm
+canary publication.
 
 The Docker build matrix and the release preview image builder configure
 BuildKit to check `mirror.gcr.io` for Docker Hub images first. This covers
