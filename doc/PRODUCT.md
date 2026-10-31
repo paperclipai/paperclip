@@ -184,6 +184,16 @@ Source feeds and project task lists retain their existing access rules.
 
 Company skills are shared operating capabilities, not privileged objects by default. Every authenticated agent in a company can create, import, install, edit, update, test, reset, and remove that company's skills unless the company has configured an explicit restriction.
 
+Paperclip-managed skills are immutable saved versions. Studio and API authoring
+publish complete content before acknowledging a save; stale edits return a version
+conflict and Studio retains the draft. Installed repository skills use the same
+version-based reads and execution selection. Web-server files are disposable caches
+and staging, so compatible replacement servers can read, edit and deliver protected
+versions from the same database and remote object storage. Explicit linked-local
+sources retain local behavior. Active or recovering run pins prevent deletion even
+after an agent detaches the skill. See [ephemeral-server skills](skill-ephemeral-web-servers.md)
+for conversion, compatibility and qualification boundaries.
+
 The governing rule is: **skill permissions are opt-in restrictions, not opt-in capabilities**. Missing skill grants never create a denial in an otherwise unconfigured company, and ordinary skill work does not require board confirmation, a draft-only workflow, or an activation approval.
 
 Core Paperclip owns the skill runtime, company-boundary enforcement, policy evaluation contract, API denials, validation, path containment, secret redaction, and activity logging. Those safety invariants cannot be disabled by policy. Open-by-default skill work never authorizes arbitrary host-path reads, unsafe executable content, or policy edits: local imports and scans must stay within Paperclip-known workspace or managed-skill roots, remote sources must resolve to validated immutable content, and platform safety denials must stay distinct from optional administrative restrictions. Paperclip EE may provide detailed administration for per-agent, per-role, per-action, per-source, and protected-skill rules, but EE is not required to use skills and is not an enforcement boundary. Without EE, companies remain open by default and any already-configured restrictions continue to be enforced by core.
@@ -347,6 +357,14 @@ allocation retains one selected number and individually enabled groups.
 See [iMessage Photon](connections/IMESSAGE-PHOTON.md) for the implementation
 contract, setup, recovery, boundaries, and qualification status.
 ### Experimental persistent agent conversations
+
+Agents can deliver proactive task and routine results into their own chat with
+the task's responsible human. A morning PR digest arrives as an agent message
+with a source-task link and unread indicators, even before the first human
+message. The person can reply using the digest as context. Publishing a message
+and completing work are separate actions; sending never starts or interrupts a
+chat turn. Delivery obeys membership, run authority and task privacy, and stays
+behind the Agent Chat setting. This version delivers in-app only.
 
 Agent Chat is an opt-in core task presentation (`enableAgentChat`, off by default). Each person has one persistent task-backed conversation per agent and company, with ordinary company task visibility. The shared task composer, transcript, tools, files, and document panel remain the interaction surface. Agents clarify goals and hand substantial execution to linked, assigned tasks; a reply ends a turn without completing the conversation. `/new` starts fresh provider context in the same conversation while preserving visible history and artifacts. Healthy idle conversations wait for a message and do not count as unfinished execution work. See `doc/plans/2026-09-10-agent-chat.md` for the implementation contract.
 

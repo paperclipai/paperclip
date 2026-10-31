@@ -62,6 +62,14 @@ authority as company-agent API access.
 Gaps: Instance start/stop and task workspace start/stop are different capabilities.
 Local service control is not agent company authority.
 
+Historical Cloud sandbox cleanup remains server-owned. Cleanup-only absence
+reads authenticate the tenant host with its server capability; they expose no
+new board or agent endpoint. Their signed scope cannot authorize task recovery.
+[Runtime and idle-gate regressions](../../server/src/__tests__/historical-cleanup-verification.test.ts)
+cover reconciliation, while [receipt checks](../../server/src/services/sandbox-absence-proof.test.ts)
+cover signature, identity, freshness and separation from recovery authority.
+These checks do not establish a deployed sleep/wake result.
+
 ## `configuration`
 
 Capability ID: `instance-operations/configuration`.

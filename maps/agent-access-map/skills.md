@@ -29,6 +29,15 @@ covers separate actors and revoked project access; the
 [package regression](../../server/src/__tests__/skill-package-store.test.ts) covers
 company isolation and warm-cache behavior. This does not claim live agent qualification.
 
+Managed ownership remains in the existing `workspace` policy category. Immutable
+content references do not grant authority: publication rechecks policy and source
+access, and delivery/recovery rechecks the company's skill visibility. File reads
+and mutations return `versionId`; content requests may supply `expectedVersionId`
+and receive `409` on a stale base. Existing idempotent agent receipt shapes remain.
+Detached assignments do not release active/recovering execution pins. These are
+source-reviewed contracts; the independent-process board fixture is not agent
+credential or hosted Runner qualification.
+
 ## `discovery`
 
 Capability ID: `skills/discovery`.
@@ -209,6 +218,20 @@ remaining operations before qualifying the whole capability.
 Gaps: No dedicated native orchestration binding; generic REST calls retain
 skills.test policy, task-assignment authorization, responsible-user intersection and
 admitted skill-test JWT scope.
+
+Studio's `skill_test` work mode is admitted through native Runner selection and
+preserved in execution input. The admitted task-bound scope restricts REST and
+native authorization, including after task-mode edits and recovery. Native tools
+allow only the harness task and admitted skills. Task creation, company browsing,
+connectors and assigned MCP tools are unavailable; native mutation receipts recheck
+the scope before replay or effects.
+Preparation reads the pinned version from the durable test row, replaces ordinary
+assignments, and enforces current skill access. Required environment skills retain
+their owner policy; a shadowed test pin fails explicitly. Recovery preserves the
+admitted selection. Preconfigured Runner homes reject managed Studio delivery.
+The [execution configuration regression](../../server/src/__tests__/heartbeat-execution-configuration.test.ts)
+covers unassigned historical pins, Beta skills disabled, revoked access, recovery,
+unchanged agent assignments, and assembled heartbeat dispatch.
 
 Project-source API additions: GET `/api/companies/{companyId}/skill-sources/project-repositories`,
 POST `/api/companies/{companyId}/skill-sources/adopt-project` with `workspaceId`, and

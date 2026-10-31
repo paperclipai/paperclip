@@ -311,7 +311,8 @@ installation journey or a paid provider task on ARM64.
 Automatic creation selects legacy execution when a Linux host has musl, unknown
 libc, or a measured GNU libc version below the baseline. Existing agents retain
 their stored runner. Windows, 32-bit ARM, and Alpine/musl native qualification
-remain deferred.
+remain deferred. The `Runner Windows` workflow builds and tests the Rust
+workspace on Windows x64. It does not qualify Windows agent runs.
 
 Native release jobs cache Cargo dependencies per platform and OS baseline,
 including compiler, lockfile, and external generated-contract inputs. Workspace

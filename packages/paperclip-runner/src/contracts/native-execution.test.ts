@@ -567,34 +567,34 @@ describe("NativeExecutionInputV2 planning", () => {
   });
 });
 
-describe("NativeExecutionInputV2 ask mode", () => {
-  it("round-trips ask mode as a default execution without planning context", () => {
+describe.each(["ask", "skill_test"])("NativeExecutionInputV2 %s mode", (workMode) => {
+  it("round-trips the restricted mode as a default execution without planning context", () => {
     const parsed = parseNativeExecutionInput({
       ...input,
       schema: "paperclip.native-execution-input.v2",
       executionMode: "default",
-      task: { ...input.task, workMode: "ask" },
+      task: { ...input.task, workMode },
       planningContext: null,
     });
     expect(parsed).toMatchObject({
       schema: "paperclip.native-execution-input.v2",
       executionMode: "default",
-      task: { workMode: "ask" },
+      task: { workMode },
     });
     expect(buildNativeModelEnvelope(parsed)).toMatchObject({
       schema: "paperclip.native-model-envelope.v2",
-      task: { workMode: "ask" },
+      task: { workMode },
       executionMode: "default",
       planningContext: null,
     });
   });
 
-  it("rejects plan execution for ask mode", () => {
+  it("rejects plan execution for the restricted mode", () => {
     expect(() => parseNativeExecutionInput({
       ...input,
       schema: "paperclip.native-execution-input.v2",
       executionMode: "plan",
-      task: { ...input.task, workMode: "ask" },
+      task: { ...input.task, workMode },
       planningContext: {
         documentId: null,
         baseRevisionId: null,

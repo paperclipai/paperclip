@@ -26,6 +26,7 @@ never start a server or depend on a tenant filesystem.
 | `task-create` | Company and signed-in board user | Create a task through the shared production composer, assign it to yourself, reopen and reload it, verify the saved prompt and no agent work |
 | `project-task-context` | Company, signed-in board user, task-write capability; no model runs | Create a project and a self-assigned task with the project selected through the production dialogs. Reopen the project, open its task, reload both, and verify exact saved company, project, prompt, assignment, standard work mode and zero runs |
 | `ask-question` | Company, configured agent capability, positive model allowance and exactly one permitted work run | Reuse the existing cross-model Ask question prompt; require one successful run with matching company/task/agent/model/environment, one saved exact answer, and visible readback after reload |
+| `question-answer-resume` | Native agent; up to three work runs | Reuse the classic two-question story: answer a choice and a free-text question through the browser, verify each native continuation, then read the exact saved answers in an agent-authored task document after reload |
 | `task-properties` | Company, signed-in board user, task-write capability, prepared run-owned backlog task | Open its properties, assign it to the signed-in user, reload, check both UI and saved assignment; verify no agent run |
 | `task-search-filter` | Company, signed-in board user, task-write capability; zero model runs | Search three owned target/control tasks through the task list, require exact matching identities, filter Backlog to exclude the completed control, reload and return from the exact saved task with search/filter context intact |
 | `plan-revise-accept` | Native agent; three work runs | Reuse the classic Plan story: canonical draft, browser revision request, new revision-bound confirmation, approval and exact saved final response |
@@ -33,7 +34,21 @@ never start a server or depend on a tenant filesystem.
 | `protected-actions` | Native agent; four work runs; authenticated reachable review-service fixture | Approve one action and decline another on separate owned tasks; verify zero calls before either decision, one after approval, zero after decline and a truthful saved explanation |
 | `create-skill-studio` | Native agent with skill-write permission; one work run | Create a uniquely named company skill, open its activity card, edit in Studio, reload and verify task-card readback |
 | `stop-redirect` | Native agent; three work runs; qualified Docker oracle | Download a verified checkpoint, Stop an active revision, require native cancellation acknowledgement, submit a new direction once and verify completion without original-run activity |
+| `followup-while-running` | Native agent; a maximum of two work runs | Save a follow-up while an independently observed native shell command is still active, then require one attributed final reply with the late requirement after reload; in-turn steering and one normal successor are accepted |
 | `cloud-onboarding` | Signed-in admitted Cloud account; fresh workspace; qualified bounded provider route | Create workspace in the portal, connect API key and native Codex agent in the wizard, complete a task, download and independently check its artifact |
+
+The question-resumption journey uses the same natural-language scenario, browser
+answer helper and behavioral grader as the classic `question-resume` suite. Native
+provider questions can stay in one run; durable native questions create one exactly bound
+continuation each. Creation must have an applied semantic receipt or a completed native
+API mutation receipt with the original card, exact scope, form and idempotency key.
+An API receipt must retain its creation identity unchanged after the answer. A form or
+run count alone is never provenance. A target declares a three-run maximum and positive model allowance,
+and a passing receipt must contain one to three attributed native runs. Other journeys
+retain their exact run-count requirements. Both real board answers, no premature
+output, the sole document's agent/company/task ownership and its reloaded revision
+are independently checked. The private provider owns authentication, setup, accounting
+and cleanup. Local calibration is not deployed-target qualification.
 
 The shared Studio helper waits for the original saved file body before typing.
 An editor control can mount before the file query completes; editing that empty
@@ -70,8 +85,12 @@ Unexpected browser/API errors retain only a closed `task_search_<stage>_failed`
 code. Stage names come from the journey source; raw exception text, URLs, form
 values, and response bodies are not added to reporting. Existing owned evidence
 failures keep their specific codes and the screenshot privacy guard stays in place.
-It does not depend on row order or an otherwise empty company. This selection is
-manual until a separate target owner records a fresh pass and admits it to a daily
+It does not depend on row order or an otherwise empty company. The browser reads
+the visible links together. Per-row indexed locators can disappear
+while a search replaces the old collection; a detached snapshot is retried within
+the existing poll deadline. Duplicates, unknown destinations, and extra controls
+remain evidence failures. This does not add a journey retry or extend its timeout.
+The selection stays manual until a separate target owner records a fresh pass and admits it to a daily
 plan; adding the shared journey does not qualify any deployed target.
 
 Supported acquisitions are managed self-hosted (`local`), registered existing
@@ -209,6 +228,37 @@ When the QA adapter explicitly selects terminal-history retention, it terminates
 its disposable agent, makes owned tasks terminal, verifies no active runs, retains
 the records for decision-history integrity, and releases both QA leases. This is
 reported as retained data, rather than confirmed deletion.
+
+## Active follow-up
+
+The `followup-while-running` story uses the same ordinary task composer and saved
+reply observer on managed self-hosted and attached Cloud targets. The initial
+request includes one bounded `sleep 90` command. It supplies no changed launch
+day or final marker. The observer requires a valid running native turn and a
+pending named builtin command or process execution before sending the follow-up.
+Paperclip semantic tools, including completion/block/progress calls, cannot
+satisfy this boundary even if a provider labels them builtin execute or wraps
+their names with a native prefix. Unnamed or ambiguous builtin calls fail closed.
+The observed older PRP v1 builtin `bash` shape is also supported when its
+operation is `unknown` and `readOnly` is explicitly false; other unknown
+operations cannot satisfy the boundary. If all owned work settles before an
+active boundary is observed, the journey fails immediately rather than polling
+until the campaign deadline.
+The same command must remain active after exactly one user message is saved.
+The task page and composer are ready before observing the boundary, so navigation is outside the
+submission window. The longer bounded command leaves room for remote persistence.
+Merely observing a running heartbeat or waiting for a fixed interval cannot satisfy the boundary.
+
+The late message changes the launch day and supplies a unique final marker.
+The independent oracle requires the expected reply from one bound native run,
+one or two successful work runs in total, an empty saved-message queue, Done,
+and visible readback after reload. A provider can steer the original turn or
+queue one normal successor; retries, duplicate replies and unrelated work fail.
+Source/model/environment checks and full usage collection remain required.
+Only the closed boundary receipt and attributed final reply are retained in the
+private story directory. No local workspace path or provider-side fixture hook
+is required. The registered source and unit calibration do not qualify a live
+Cloud target; admission to scheduled testing requires its own fresh pass.
 
 ## Evidence and lifecycle
 
