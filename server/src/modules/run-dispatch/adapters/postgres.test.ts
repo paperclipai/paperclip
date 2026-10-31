@@ -22,6 +22,7 @@ import {
   issueDocuments,
   issueRelations,
   issueRecoveryActions,
+  issueThreadInteractions,
   issueTreeHolds,
   issues,
   nativeRunFinalizations,
@@ -1206,6 +1207,132 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         outcome: "cancelled",
         errorCode: "issue_assignee_changed",
       });
+    });
+
+    it.each([
+      { label: "keeps a pending interaction addressed to the run agent", expected: "not_stale" },
+      { label: "cancels once the interaction is answered", status: "accepted", expected: "cancelled" },
+      { label: "cancels an interaction addressed to another agent", addressee: "assignee", expected: "cancelled" },
+      { label: "cancels an interaction on another issue", otherIssue: true, expected: "cancelled" },
+      { label: "cancels an interaction in another company", otherCompany: true, expected: "cancelled" },
+      { label: "cancels a different wake reason", wakeReason: "issue_assigned", expected: "cancelled" },
+      { label: "cancels a wake without an interaction id", omitInteractionId: true, expected: "cancelled" },
+    ])("$label for a non-assignee addressee", async (testCase) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const assigneeAgentId = randomUUID();
+      await seedAgent({ id: assigneeAgentId, companyId, name: "AssigneeCoder" });
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId });
+      let interactionIssueId = issueId;
+      if (testCase.otherIssue) {
+        interactionIssueId = randomUUID();
+        await seedIssue({ companyId, issueId: interactionIssueId, status: "in_progress", assigneeAgentId });
+      }
+      const interactionCompanyId = testCase.otherCompany
+        ? (await seedCompanyAndAgent()).companyId
+        : companyId;
+      const interactionId = randomUUID();
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId: interactionCompanyId,
+        issueId: interactionIssueId,
+        kind: "ask_user_questions",
+        status: testCase.status ?? "pending",
+        addresseeAgentId: testCase.addressee === "assignee" ? assigneeAgentId : agentId,
+        payload: { version: 1, questions: [] },
+      });
+      const runId = await seedRun({
+        companyId,
+        agentId,
+        contextSnapshot: {
+          issueId,
+          wakeReason: testCase.wakeReason ?? "interaction_pending",
+          ...(testCase.omitInteractionId ? {} : { interactionId }),
+        },
+      });
+
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId,
+        companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+
+      expect(outcome.outcome).toBe(testCase.expected);
+      if (testCase.expected === "cancelled") {
+        expect(outcome).toMatchObject({ errorCode: "issue_assignee_changed" });
+      }
+    });
+
+    it.each([
+      { label: "keeps the addressee's interaction wake", expected: "not_stale" },
+      { label: "cancels once the interaction is answered", status: "accepted", errorCode: "issue_assignee_changed" },
+      { label: "cancels when the interaction addresses the participant", addressee: "participant", errorCode: "issue_assignee_changed" },
+      { label: "cancels a non-participant wake without an interaction", wakeReason: "issue_commented", errorCode: "issue_assignee_changed" },
+      { label: "cancels the assignee's wake when it is not the addressee", runAgent: "assignee", addressee: "participant", errorCode: "issue_review_participant_changed" },
+    ])("$label while the task is in review", async (testCase) => {
+      const { companyId, agentId: addresseeAgentId } = await seedCompanyAndAgent();
+      const participantAgentId = randomUUID();
+      await seedAgent({ id: participantAgentId, companyId, name: "ReviewerAgent", role: "qa" });
+      const assigneeAgentId = randomUUID();
+      await seedAgent({ id: assigneeAgentId, companyId, name: "AssigneeCoder" });
+      const issueId = randomUUID();
+      await seedIssue({
+        companyId,
+        issueId,
+        status: "in_review",
+        assigneeAgentId,
+        executionState: {
+          status: "pending",
+          currentStageId: randomUUID(),
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: participantAgentId, userId: null },
+          returnAssignee: { type: "agent", agentId: assigneeAgentId, userId: null },
+          reviewRequest: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      });
+      const runAgentId = testCase.runAgent === "assignee" ? assigneeAgentId : addresseeAgentId;
+      const interactionId = randomUUID();
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: testCase.status ?? "pending",
+        addresseeAgentId: testCase.addressee === "participant" ? participantAgentId : runAgentId,
+        payload: { version: 1, questions: [] },
+      });
+      const runId = await seedRun({
+        companyId,
+        agentId: runAgentId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          interactionId,
+          interactionKind: "ask_user_questions",
+          sourceCommentId: null,
+          sourceRunId: null,
+          wakeReason: testCase.wakeReason ?? "interaction_pending",
+          source: "issue.interaction.created",
+        },
+      });
+
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId,
+        companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+
+      if (testCase.errorCode) {
+        expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: testCase.errorCode });
+      } else {
+        expect(outcome.outcome).toBe("not_stale");
+      }
     });
 
     it(
