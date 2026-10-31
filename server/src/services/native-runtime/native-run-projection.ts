@@ -138,7 +138,7 @@ export async function projectCommittedRun(input: {
     await notifyCancelledWorkspacePreservation(tx, { companyId: input.run.companyId, runId: input.run.id });
     await notifyUnsafeWorkspaceExportRunChange(tx, input.run);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
-    await notifyExecutionRunWork(tx);
+    await notifyExecutionRunWork(tx, { companyId: input.run.companyId });
     await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     const [after] = await tx
       .update(heartbeatRuns)

@@ -983,7 +983,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               eq(heartbeatRuns.id, run.id),
               eq(heartbeatRuns.status, "running"),
             ),
-          ));
+          ), { companyId: run.companyId });
         const workspaceFinalizeStatus = hasWorkspaceRestoreFailure(adapterResult.resultJson) ? "failed" : "succeeded";
         await recordWorkspaceFinalize(workspaceFinalizeStatus);
         if (adapterResult.nativeFinalization) {
@@ -1063,7 +1063,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           eq(heartbeatRuns.id, run.id),
           eq(heartbeatRuns.status, "running"),
         ),
-      ));
+      ), { companyId: run.companyId });
     if (
       issueRef &&
       context.resumeSessionGoalHeartbeat === true &&

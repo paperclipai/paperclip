@@ -330,6 +330,10 @@ persisted cancellations of parked retries through the normal guarded cancellatio
 path if the original owner stops or its final database write fails. They preserve
 the original cancellation request and never start a provider turn for that work.
 
+Replaying an audited native Stop also fences a later same-run retry. It preserves
+the original intent and acknowledgement. That retry fence does not prove that
+the provider stopped or that workspace cleanup finished.
+
 Recovery instructions in a wake describe only an active or escalated recovery
 action. Resolving or cancelling that action removes its repair instructions from
 subsequent wakes, so the original worker can resume the task. This prompt change
