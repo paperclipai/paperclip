@@ -494,3 +494,25 @@ volume-free webserver deployment.
 The delivery endpoint is reviewed implementation with required checks and live
 Daytona workspace proof. Production volume removal remains in the broader
 zero-downtime deployment plan.
+
+
+## 8. Controller integration and default enrollment (2026-10-31)
+
+PR #18343 merged as `492d537340`. Integrate its retained-controller discovery,
+staged attachment, task-session publication and strict qualification before
+changing the workspace default. The delivery target remains PR #18403; this is
+not authorization to deploy or remove a production volume.
+
+| Required outcome | Current evidence | Remaining gate / owner |
+| --- | --- | --- |
+| Active and retained native continuity with remote files | Separate storage cold restore and controller-component proofs passed on their recorded revisions. | Run the combined native Codex/Daytona cell on integrated source, with the five-minute outage, queued turn, second cache-loss replacement and useful retained follow-up. Root owns live acceptance. |
+| No old controller workspace or original allocation required for restore | Prior actual Daytona/S3 proof passed at `59a0f12806`. | Repeat the independent file/Git oracle on final integrated source. Verification setup owns isolated resources and cleanup. |
+| Eligible new workspaces use remote storage by default | Previously opt-in. | Set schema, catalog and settings defaults together; prove the full cell without enabling the flag in its fixture. Preserve explicit opt-outs, existing host authority and unconfigured self-hosted compatibility. Storage owner implements and verifies. |
+| Existing remote authority stays durable | Epoch/writer/publication and migration regressions passed previously. | Re-run relevant real-Postgres races and preparation controls with the merged recovery owner. Never fall back after enrollment or after allocation starts. |
+| Reviewable final change | Prior 59a head had complete CI and review. | Final-source typecheck/build, complete CI partitions, review findings resolved, accurate qualification record and independently confirmed owned-resource removal. |
+
+The combined cell keeps the existing native/provider/process, lease, receipt,
+accounting and finalization oracles. The post-C browser Files check remains
+required by this workspace cell. A failed browser recovery is retained as a
+failure, rather than being waived using the controller-only API qualification.
+The prior failed attempts and their scopes remain historical evidence.

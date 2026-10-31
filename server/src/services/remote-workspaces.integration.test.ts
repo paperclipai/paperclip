@@ -445,6 +445,34 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(() => shouldUseRemoteWorkspaces({ adapterType: "codex_local", environmentDriver: "sandbox", experimentalEnabled: false, existingWorkspace: reserved })).toThrow("native sandbox");
   });
 
+  it("keeps enrollment conditional while enrolled authority fails closed when persistence disappears", async () => {
+    const candidate = { adapterType: "paperclip_runner", environmentDriver: "sandbox", experimentalEnabled: true };
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+    expect(shouldUseRemoteWorkspaces(candidate)).toBe(true);
+    expect(shouldUseRemoteWorkspaces({ ...candidate, experimentalEnabled: false })).toBe(false);
+    expect(shouldUseRemoteWorkspaces({ ...candidate, existingWorkspace: { metadata: {} } })).toBe(false);
+    const reserved = await reserve({ kind: "empty" });
+    const before = (await workspace(reserved.id)).metadata;
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "local_disk");
+    expect(shouldUseRemoteWorkspaces(candidate)).toBe(false);
+    expect(shouldUseRemoteWorkspaces({ ...candidate, existingWorkspace: reserved })).toBe(true);
+    const localStorage = createStorageService(createLocalDiskStorageProvider(path.join(root, "local-only")));
+    await expect(reserveRemoteWorkspace({ db, storage: localStorage, companyId: ids.company,
+      issueId: ids.issue, runId: ids.run, agentId: ids.agent, environmentId: ids.environment,
+      projectId: null, projectWorkspaceId: null, existingWorkspaceId: reserved.id, source: { kind: "empty" } }))
+      .rejects.toMatchObject({ details: { code: "remote_workspace_persistence_unavailable" } });
+    expect((await workspace(reserved.id)).metadata).toEqual(before);
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+    vi.stubEnv("DATABASE_URL", "");
+    expect(shouldUseRemoteWorkspaces(candidate)).toBe(false);
+    expect(shouldUseRemoteWorkspaces({ ...candidate, existingWorkspace: reserved })).toBe(true);
+    vi.stubEnv("DATABASE_URL", databaseUrl!);
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "");
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", path.join(root, "missing-stable-key"));
+    expect(shouldUseRemoteWorkspaces(candidate)).toBe(false);
+    expect(shouldUseRemoteWorkspaces({ ...candidate, existingWorkspace: reserved })).toBe(true);
+  });
+
   it("selects Git credentials with the current run's agent, responsible user, and task", async () => {
     await db.update(heartbeatRuns).set({ responsibleUserId: "synthetic-current-user" }).where(eq(heartbeatRuns.id, ids.run));
     const contexts: unknown[] = [];

@@ -2601,13 +2601,18 @@ See [the layer architecture](plans/2026-10-09-task-workspaces.md) for resolution
 
 ### Experimental native remote workspace authority (2026-10-30)
 
-The off-by-default managed feature `remoteWorkspaceStorageEnabled` lets native
-Paperclip Runner tasks use a sandbox as their working-file authority. External
+The managed feature `remoteWorkspaceStorageEnabled` defaults on for Cloud and
+self-hosted instances. New native Paperclip Runner sandbox workspaces use remote
+authority automatically when durable storage is configured and their fresh
+source is supported. Existing host workspaces and configured local folders keep
+their legacy path until explicitly imported. An explicit stored `false` disables
+new enrollment; managed configuration can override the stored choice. External
 PostgreSQL records workspace identity, location, writer epoch, and the committed
 saved version; S3 holds encrypted portable snapshots. A stable deployment
 encryption key is required. The webserver uses disposable transfer/restore
-scratch instead of a durable task checkout. Local execution retains its existing
-path, and existing local workspaces require an explicit, verified import.
+scratch instead of a durable task checkout. New workspaces without these
+prerequisites retain the legacy path. The local, SSH, and plugin environment
+drivers, legacy adapters, and Dot retain their existing behavior.
 
 One writer owns a logical workspace. Preparation establishes a saved baseline;
 finalization saves supported changes before settling persistence. A webserver
@@ -2624,7 +2629,8 @@ explicit concurrent shared writers, and custom cleanup/teardown commands on
 remote close. Manual workspace runtime commands, jobs, and services are also
 unsupported in V1 and must fail before local filesystem work. Agent tasks remain
 the supported command path. Disabling new enrollment preserves existing authority
-and recovery.
+and recovery. An enrolled workspace whose persistence prerequisites are lost
+must fail admission rather than fall back to a controller checkout.
 This feature does not remove the instance volume or qualify HTTP traffic drain,
 active provider handoff, or other instance data paths. See
 [setup/import](DEVELOPING.md#experimental-native-remote-workspace-storage) and the

@@ -686,11 +686,10 @@ export async function runEverydayFlow(input: Input) {
     }
     if (remoteWorkspaceStorage) {
       if (project) throw new Error("Remote workspace storage qualification requires a projectless task");
-      await api.patch("/api/instance/settings/experimental", { remoteWorkspaceStorageEnabled: true });
       const settings = await api.get<Row>("/api/instance/settings/experimental");
       check("remote-workspace-feature-enabled", settings.remoteWorkspaceStorageEnabled === true,
-        "The ordinary instance settings API enables remote workspace storage before task creation.");
-      if (settings.remoteWorkspaceStorageEnabled !== true) throw new Error("Remote workspace storage was not enabled");
+        "The ordinary instance settings API resolves remote workspace storage as enabled by default before task creation.");
+      if (settings.remoteWorkspaceStorageEnabled !== true) throw new Error("Remote workspace storage was not enabled by default");
     }
     if (!remoteWorkspaceStorage && !project && !caseId.startsWith("service-") && !decliningConnection && !providerChoice) {
       project = await api.post(
@@ -996,6 +995,14 @@ export async function runEverydayFlow(input: Input) {
             ev.remoteRestart ??= { before, expectedReplacements: input.restartCount ?? 1, replacements: [] };
             await input.evidence(`remote-restart-${restartIndex + 1}-before.json`, before);
           } else ev.allowedInterruptedRuns.push(active.id);
+          if (remoteWorkspaceStorage && restartIndex === 0) {
+            const probe = await api.get<{ upgradeReadiness: NonNullable<RemoteWorkspaceStorageEvidence["upgradeReadiness"]> }>("/api/instance/task-drain?upgradeReadiness=1");
+            const { version, activeRuns, recoverableRuns, truncated } = probe.upgradeReadiness;
+            ev.remoteWorkspaceStorage!.upgradeReadiness = { version, activeRuns, recoverableRuns, truncated };
+            await input.evidence("remote-workspace-upgrade-readiness.json", ev.remoteWorkspaceStorage!.upgradeReadiness);
+            const upgrade = gradeRemoteWorkspaceStorage(ev.remoteWorkspaceStorage!).find(item => item.id === "remote-workspace-upgrade-recoverable")!;
+            if (!upgrade.passed) throw new Error(upgrade.detail);
+          }
           const outage = await input.restart(requireRemoteRestart ? { companyId: fixtures.company.id, issueId: parent!.id, runId: active.id } : undefined, controllerOutage?.holdMs);
           if (requireRemoteRestart) ev.remoteRestart!.outage = outage || undefined;
           note("controller-restarted");

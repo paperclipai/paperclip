@@ -51,19 +51,29 @@ export function shouldUseRemoteWorkspaces(input: {
   if (enrolled && (input.adapterType !== "paperclip_runner" || input.environmentDriver !== "sandbox")) {
     throw conflict("This workspace requires its native sandbox execution environment.", { code: "remote_workspace_execution_required" });
   }
-  return enrolled || (input.experimentalEnabled && input.adapterType === "paperclip_runner" && input.environmentDriver === "sandbox");
+  if (enrolled) return true;
+  // Existing host authority changes only through the explicit import workflow.
+  if (input.existingWorkspace || !input.experimentalEnabled || input.adapterType !== "paperclip_runner"
+    || input.environmentDriver !== "sandbox") return false;
+  return configuredRemoteWorkspacePersistence() !== null;
 }
 
-export function assertRemoteWorkspacePersistence(storage: StorageService = getStorageService()) {
+function configuredRemoteWorkspacePersistence(storage?: StorageService) {
   const config = loadConfig();
   const databaseUrl = config.databaseUrl?.trim();
   const keyFilePath = process.env.PAPERCLIP_SECRETS_MASTER_KEY?.trim() ? null : config.secretsMasterKeyFilePath;
-  if (storage.provider !== "s3" || !databaseUrl || !/^postgres(?:ql)?:\/\//.test(databaseUrl)
+  if ((storage?.provider ?? config.storageProvider) !== "s3" || !databaseUrl || !/^postgres(?:ql)?:\/\//.test(databaseUrl)
     || (keyFilePath !== null && !existsSync(keyFilePath))) {
-    throw conflict("Remote workspace storage requires external Postgres, object storage, and a stable configured encryption key.",
-      { code: "remote_workspace_persistence_unavailable" });
+    return null;
   }
   return { databaseUrl, keyFilePath };
+}
+
+export function assertRemoteWorkspacePersistence(storage: StorageService = getStorageService()) {
+  const persistence = configuredRemoteWorkspacePersistence(storage);
+  if (!persistence) throw conflict("Remote workspace storage requires external Postgres, object storage, and a stable configured encryption key.",
+    { code: "remote_workspace_persistence_unavailable" });
+  return persistence;
 }
 
 function reference(workspaceId: string, authority: RemoteWorkspaceAuthority, state: "prepared" | "saved"): RemoteWorkspaceRunReference {

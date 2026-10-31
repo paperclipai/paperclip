@@ -233,10 +233,12 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         { reason: "remote_workspace_migration_in_progress" });
     }
   }
-  const remoteAuthority = !isDotRun && shouldUseRemoteWorkspaces({
+  const enrolledRemoteAuthority = readRemoteWorkspaceAuthority((reusableExistingExecutionWorkspace ?? existingExecutionWorkspace)?.metadata) !== null;
+  let remoteAuthority = !isDotRun && shouldUseRemoteWorkspaces({
     adapterType: agent.adapterType,
     environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
-    experimentalEnabled: resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled,
+    experimentalEnabled: resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled && Boolean(issueId && issueRef)
+      && !projectExecutionWorkspacePolicy?.storageProviderPluginId,
     existingWorkspace: reusableExistingExecutionWorkspace ?? existingExecutionWorkspace,
   });
   const assertRemotePreparationOwned = run.runtimeMode === "native" ? () => assertNativeSessionPreparationAuthority({
@@ -247,26 +249,10 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       providerAttempt: runOptions.nativeRestartRecovery.providerAttempt,
     } : {}),
   }) : () => controllerLease.assertOwned();
-  if (remoteAuthority) await assertRemotePreparationOwned();
+  if (enrolledRemoteAuthority) await assertRemotePreparationOwned();
   if (remoteAuthority && (!issueId || !issueRef)) throw new WorkspaceValidationFailure(
     "Remote workspace storage requires a task.", { reason: "remote_workspace_task_required" });
-  if (remoteAuthority && effectiveExecutionWorkspaceMode === "shared_workspace" && resolveSharedWorkspaceConcurrency({
-    projectPolicy: projectExecutionWorkspacePolicy, issueSettings: issueExecutionWorkspaceSettings,
-  }) === "allow") throw new WorkspaceValidationFailure(
-    "Remote workspace storage requires one active writer per workspace.", { reason: "remote_workspace_concurrent_writers_unsupported" });
-  const remoteFresh = remoteAuthority && fresh ? await readFreshWorkspaceReadiness(db, run) : null;
-  if (remoteAuthority && fresh && (remoteFresh?.mode !== "fresh_isolated_workspace"
-    || input.task.freshWorkspace?.mode !== "fresh_isolated_workspace"
-    || remoteFresh.retryIntentId !== input.task.freshWorkspace.retryIntentId
-    || remoteFresh.sourceRunId !== input.task.freshWorkspace.sourceRunId)) {
-    throw new WorkspaceValidationFailure("The committed fresh workspace recovery authorization changed.",
-      { reason: "remote_workspace_fresh_authorization_changed" });
-  }
-  const remoteFreshBinding = remoteFresh?.mode === "fresh_isolated_workspace"
-    ? (await db.select({ workspaceId: issues.executionWorkspaceId, revision: issues.workspaceBindingRevision }).from(issues)
-      .where(and(eq(issues.companyId, agent.companyId), eq(issues.id, issueId!))))[0] : null;
-  if (remoteFresh && !remoteFreshBinding) throw new Error("remote_workspace_task_binding_missing");
-  const remoteSourceState: { value: Awaited<ReturnType<typeof resolveRemoteWorkspaceSource>> | null } = { value: null };
+  const remoteSourceState: { value: Extract<Awaited<ReturnType<typeof resolveRemoteWorkspaceSource>>, { authority: "remote" }> | null } = { value: null };
   const pluginConfig = parseObject(selectedEnvironmentForConfig?.config);
   if (fresh && !isDotRun && pluginTaskWorkspace) {
     const plugin = typeof pluginConfig.pluginKey === "string" ? await pluginRegistryService(db).getByKey(pluginConfig.pluginKey) : null;
@@ -286,10 +272,6 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     }
   }
   const workspaceServices = parseObject(mergedConfig.workspaceRuntime).services;
-  if (remoteAuthority && Array.isArray(workspaceServices) && workspaceServices.length > 0) {
-    throw new WorkspaceValidationFailure("Remote workspace storage does not support Core workspace services.",
-      { reason: "remote_workspace_runtime_services_unsupported" });
-  }
   if (pluginTaskWorkspace && Array.isArray(workspaceServices) && workspaceServices.length > 0) {
     throw new WorkspaceValidationFailure("The selected plugin environment does not support Core workspace services.",
       { reason: "plugin_workspace_services_unsupported" });
@@ -322,12 +304,12 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     resolveWorkspace: async () => {
       if (remoteAuthority) {
         const strategy = parseObject(mergedConfig.workspaceStrategy);
-        remoteSourceState.value = await resolveRemoteWorkspaceSource(db, {
+        const sourceState = await resolveRemoteWorkspaceSource(db, {
           companyId: agent.companyId, issueId: issueId!, agentId: agent.id, runId: run.id,
           responsibleUserId, projectId: issueRef!.projectId,
           projectWorkspaceId: issueRef!.projectWorkspaceId, selection: input.task.workspaceSelection,
           existingWorkspace: fresh ? null : reusableExistingExecutionWorkspace ?? existingExecutionWorkspace,
-          taskDirectory: useIsolatedTaskDirectory,
+          taskDirectory: useIsolatedTaskDirectory, automaticEnrollment: !enrolledRemoteAuthority,
           ref: readNonEmptyString(strategy.baseRef),
           branchMode: readNonEmptyString(strategy.existingBranch) ? "existing" : "create",
           branchName: readNonEmptyString(strategy.existingBranch) ??
@@ -336,17 +318,28 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
                   issue: issueRef, agent, projectId: issueRef!.projectId, repoRef: null,
                 })) : null),
         });
-        const source = remoteSourceState.value!.source;
-        return {
-          cwd: reusableExistingExecutionWorkspace?.cwd ?? `/workspaces/${run.id}`,
-          source: "task_session" as const,
-          projectId: remoteSourceState.value!.projectId, workspaceId: remoteSourceState.value!.projectWorkspaceId,
-          repoUrl: source.kind === "git" ? source.repoUrl : null,
-          repoRef: source.kind === "git" ? source.ref : null,
-          workspaceHints: [], warnings: remoteSourceState.value.warnings ?? [], baseCwdFallback: false,
-          materializationFailures: [], additionalWorkspaces: [],
-          referencedProjectFailures: remoteSourceState.value.referencedProjectFailures ?? [],
-        };
+        if (sourceState.authority === "host") remoteAuthority = false;
+        else {
+          remoteSourceState.value = sourceState;
+          if (!enrolledRemoteAuthority) await assertRemotePreparationOwned();
+          if (effectiveExecutionWorkspaceMode === "shared_workspace" && resolveSharedWorkspaceConcurrency({
+            projectPolicy: projectExecutionWorkspacePolicy, issueSettings: issueExecutionWorkspaceSettings,
+          }) === "allow") throw new WorkspaceValidationFailure(
+            "Remote workspace storage requires one active writer per workspace.", { reason: "remote_workspace_concurrent_writers_unsupported" });
+          if (Array.isArray(workspaceServices) && workspaceServices.length > 0) throw new WorkspaceValidationFailure(
+            "Remote workspace storage does not support Core workspace services.", { reason: "remote_workspace_runtime_services_unsupported" });
+          const source = sourceState.source;
+          return {
+            cwd: reusableExistingExecutionWorkspace?.cwd ?? `/workspaces/${run.id}`,
+            source: "task_session" as const,
+            projectId: remoteSourceState.value!.projectId, workspaceId: remoteSourceState.value!.projectWorkspaceId,
+            repoUrl: source.kind === "git" ? source.repoUrl : null,
+            repoRef: source.kind === "git" ? source.ref : null,
+            workspaceHints: [], warnings: remoteSourceState.value.warnings ?? [], baseCwdFallback: false,
+            materializationFailures: [], additionalWorkspaces: [],
+            referencedProjectFailures: remoteSourceState.value.referencedProjectFailures ?? [],
+          };
+        }
       }
       if (isDotRun) {
         // This is private controller storage, never a provider filesystem.
@@ -475,6 +468,18 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         : workspace;
     },
   }));
+  const remoteFresh = remoteAuthority && fresh ? await readFreshWorkspaceReadiness(db, run) : null;
+  if (remoteAuthority && fresh && (remoteFresh?.mode !== "fresh_isolated_workspace"
+    || input.task.freshWorkspace?.mode !== "fresh_isolated_workspace"
+    || remoteFresh.retryIntentId !== input.task.freshWorkspace.retryIntentId
+    || remoteFresh.sourceRunId !== input.task.freshWorkspace.sourceRunId)) {
+    throw new WorkspaceValidationFailure("The committed fresh workspace recovery authorization changed.",
+      { reason: "remote_workspace_fresh_authorization_changed" });
+  }
+  const remoteFreshBinding = remoteFresh?.mode === "fresh_isolated_workspace"
+    ? (await db.select({ workspaceId: issues.executionWorkspaceId, revision: issues.workspaceBindingRevision }).from(issues)
+      .where(and(eq(issues.companyId, agent.companyId), eq(issues.id, issueId!))))[0] : null;
+  if (remoteFresh && !remoteFreshBinding) throw new Error("remote_workspace_task_binding_missing");
   const hostProvisionDriver = selectedEnvironmentForConfig?.driver ?? lowTrustPreflightEnvironmentDriver;
   let providerFresh: PluginFreshWorkspace | undefined;
   let previousProviderWorkspaceId: string | null = null;
@@ -677,7 +682,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       agentId: agent.id,
     },
   );
-  if (freshNeedsSeed && issueId && !pluginPrepared && !pluginTaskWorkspace) {
+  if (freshNeedsSeed && issueId && !pluginPrepared && !pluginTaskWorkspace && !remoteAuthority) {
     await controllerLease.assertOwned();
     const verifySourceAccess = async () => {
       await assertTaskWorkspaceExecutionAccess(db, {

@@ -23,6 +23,7 @@ export interface RemoteWorkspaceStorageEvidence {
   initial?: RemoteWorkspaceStorageCheckpoint;
   final?: RemoteWorkspaceStorageCheckpoint;
   browserReadPhases: string[];
+  upgradeReadiness?: { version: number; activeRuns: number; recoverableRuns: number; truncated: boolean };
 }
 
 export function isRemoteWorkspaceStorageExecution(execution: MatrixExecution): boolean {
@@ -57,6 +58,13 @@ export function gradeRemoteWorkspaceStorage(evidence: RemoteWorkspaceStorageEvid
       detail: "The same remote workspace retains its generated untracked reference through controller replacement and later native admission." },
     { id: "remote-workspace-browser-read", passed: ["before-restart", "after-restart"].every(phase => evidence.browserReadPhases.includes(phase)),
       detail: "Ordinary browser file navigation renders the independently read workspace reference before and after controller replacement." },
+    { id: "remote-workspace-upgrade-recoverable", passed: Boolean(evidence.upgradeReadiness
+      && evidence.upgradeReadiness.version === 1 && evidence.upgradeReadiness.truncated === false
+      && Number.isSafeInteger(evidence.upgradeReadiness.activeRuns)
+      && Number.isSafeInteger(evidence.upgradeReadiness.recoverableRuns)
+      && evidence.upgradeReadiness.activeRuns >= 1 && evidence.upgradeReadiness.recoverableRuns >= 1
+      && evidence.upgradeReadiness.recoverableRuns <= evidence.upgradeReadiness.activeRuns),
+      detail: "The ordinary instance upgrade probe recognizes an active remote workspace execution as recoverable before controller replacement." },
   ];
 }
 

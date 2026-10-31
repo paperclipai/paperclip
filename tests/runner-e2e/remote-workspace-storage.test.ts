@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runnerMatrix } from "./catalog.js";
 import { controllerOutageForExecution } from "./controller-outage.js";
+import { retainedControllerFollowupTransport } from "./retained-controller-continuation.js";
 import { assertIsolatedServerEnvironment, buildPaperclipServerEnvironment } from "./harness-env.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import { gradeRemoteWorkspaceStorage, remoteWorkspaceProofDigest, remoteWorkspaceStorageServerEnvironment,
@@ -15,7 +16,8 @@ function goodEvidence(): RemoteWorkspaceStorageEvidence {
     runSaveState: "saved", authoritySchema: "paperclip.remote-workspace.v1", authorityDirty: false,
     authorityWriter: null, providerType: "cloud_sandbox", proofSha256: "a".repeat(64), fileSource: "live" };
   return { initial: point, final: { ...point, runId: id("4"), snapshotId: id("5"), runSnapshotId: id("5") },
-    browserReadPhases: ["before-restart", "after-restart"] };
+    browserReadPhases: ["before-restart", "after-restart"],
+    upgradeReadiness: { version: 1, activeRuns: 1, recoverableRuns: 1, truncated: false } };
 }
 
 describe("remote workspace Product E2E qualification", () => {
@@ -23,7 +25,16 @@ describe("remote workspace Product E2E qualification", () => {
     const cells = selectRunnerExecutions(parseRunnerSelectors(["--suite", REMOTE_WORKSPACE_STORAGE_SUITE]));
     expect(cells.map(row => row.id)).toEqual([executionId]);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(row => row.suite.id === REMOTE_WORKSPACE_STORAGE_SUITE)).toBe(false);
-    expect(controllerOutageForExecution(cells[0]!, {})).toEqual({ signal: "SIGKILL", holdMs: 1000 });
+    expect(controllerOutageForExecution(cells[0]!, {})).toEqual({ signal: "SIGKILL", holdMs: 300_000 });
+    expect(() => controllerOutageForExecution(cells[0]!, { PAPERCLIP_RUNNER_E2E_CONTROLLER_OUTAGE_MS: "1000" })).toThrow("shorter");
+    expect(cells[0]!.task.expectedRunCount).toBe(4);
+    expect(cells[0]!.suite.definitionMetadata).toMatchObject({ version: 2, retainedControllerContinuation: true,
+      retainedControllerFollowupTransport: "task_comment_api", autoStopIntervalMinutes: 15 });
+    expect(retainedControllerFollowupTransport(cells[0]!)).toBe("task_comment_api");
+    const environment = cells[0]!.environment.buildEnvironment({ executionId: "synthetic",
+      daytonaImage: `fixture/runner@sha256:${"a".repeat(64)}`,
+      secretRefs: { DAYTONA_API_KEY: { type: "secret_ref", secretId: id("9"), version: "latest" } } });
+    expect(environment.config).toMatchObject({ autoStopInterval: 15, reuseLease: true, runnerLifecycleMode: "warm" });
     const agent = cells[0]!.profile.buildAgent({ environmentId: id("9"), environmentFixtureId: "daytona", workspacePath: "/unavailable-host-folder",
       secretRefs: { OPENAI_API_KEY: { type: "secret_ref", secretId: id("8"), version: "latest" } }, executionId: "synthetic" });
     expect((agent.adapterConfig as Record<string, unknown>).cwd).toBeUndefined();
@@ -47,6 +58,18 @@ describe("remote workspace Product E2E qualification", () => {
     const noBrowser = goodEvidence();
     noBrowser.browserReadPhases = ["before-restart"];
     expect(gradeRemoteWorkspaceStorage(noBrowser).find(check => check.id === "remote-workspace-browser-read")?.passed).toBe(false);
+    for (const upgradeReadiness of [undefined, { version: 1, activeRuns: 1, recoverableRuns: 0, truncated: false },
+      { version: 1, activeRuns: 1, recoverableRuns: 1, truncated: true },
+      ...[{ version: 1, activeRuns: 1, recoverableRuns: 1 },
+        { version: 1, activeRuns: "1", recoverableRuns: 1, truncated: false },
+        { version: 1, activeRuns: 1, recoverableRuns: "1", truncated: false },
+        { version: 1, activeRuns: 1, recoverableRuns: 2, truncated: false },
+        { version: 1, activeRuns: 1.5, recoverableRuns: 1, truncated: false },
+        { version: 1, activeRuns: 1, truncated: false }]
+        .map(value => value as unknown as NonNullable<RemoteWorkspaceStorageEvidence["upgradeReadiness"]>)]) {
+      expect(gradeRemoteWorkspaceStorage({ ...goodEvidence(), upgradeReadiness })
+        .find(check => check.id === "remote-workspace-upgrade-recoverable")?.passed).toBe(false);
+    }
   });
 
   it("checks the synthetic reference format before retaining its digest", () => {

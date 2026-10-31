@@ -84,10 +84,10 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
   },
   remoteWorkspaceStorageEnabled: {
     title: "Remote workspace storage",
-    description: "Keep native sandbox working files remote and save verified workspace snapshots in object storage.",
+    description: "Keep eligible new native sandbox workspaces remote when durable storage is configured, and save verified snapshots in object storage.",
     tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enableIsolatedWorkspacesByDefault: {
     title: "Isolated Workspaces By Default",

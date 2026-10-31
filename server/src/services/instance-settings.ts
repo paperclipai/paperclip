@@ -244,7 +244,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableAiConnectionRouters: parsed.data.enableAiConnectionRouters ?? false,
       enableManagedSandboxOnly: parsed.data.enableManagedSandboxOnly ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
-      remoteWorkspaceStorageEnabled: parsed.data.remoteWorkspaceStorageEnabled ?? false,
+      remoteWorkspaceStorageEnabled: parsed.data.remoteWorkspaceStorageEnabled ?? true,
       enableIsolatedWorkspacesByDefault: parsed.data.enableIsolatedWorkspacesByDefault ?? false,
       enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? true,
       enableStreamlinedUi: parsed.data.enableStreamlinedUi ?? true,
@@ -299,7 +299,11 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableAiConnectionRouters: false,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
-    remoteWorkspaceStorageEnabled: false,
+    // An unrelated malformed field must not erase an explicit enrollment opt-out.
+    remoteWorkspaceStorageEnabled: !(
+      raw !== null && typeof raw === "object" && !Array.isArray(raw)
+      && "remoteWorkspaceStorageEnabled" in raw && raw.remoteWorkspaceStorageEnabled === false
+    ),
     enableIsolatedWorkspacesByDefault: false,
     enableStreamlinedLeftNavigation: true,
     enableStreamlinedUi: true,

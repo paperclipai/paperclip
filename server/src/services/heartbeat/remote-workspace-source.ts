@@ -11,19 +11,23 @@ import { isMultiProjectWorkspaceSyncEnabled, isMultiProjectWorkspaceSyncRemoteEn
   resolveRunReferencedProjects, WorkspaceValidationFailure, type ResolvedWorkspaceForRun } from "./workspaces.js";
 import type { HeartbeatWorkspacePreparationInput } from "./workspace-preparation.js";
 
-function assertRemoteRepositorySource(repoUrl: string) {
+function remoteRepositorySource(repoUrl: string): boolean {
   const value = repoUrl.trim();
-  let networkUrl = false;
+  if (!value || /[\x00-\x1f\x7f]/.test(value)) throw new WorkspaceValidationFailure(
+    "The repository source is invalid.", { reason: "remote_workspace_source_invalid" });
+  if (/^[a-z]:/i.test(value) || /^file:/i.test(value)) return false;
   try {
     const parsed = new URL(value);
-    networkUrl = ["https:", "http:", "ssh:", "git:", "git+ssh:"].includes(parsed.protocol) && Boolean(parsed.hostname);
-  } catch { /* Git also accepts scp-style SSH sources. */ }
-  const scpSource = !value.includes("://") && !/^file:/i.test(value) && !/^[a-z]:/i.test(value)
-    && /^(?:[^@:/\s]+@)?(?:\[[a-f\d:]+\]|[a-z\d.-]+):[^:\s][^\r\n]*$/i.test(value);
-  if (!networkUrl && !scpSource) throw new WorkspaceValidationFailure(
-    "Import local repository folders before using them as remote workspace sources.",
-    { reason: "remote_workspace_local_source_requires_import" });
+    if (["https:", "http:", "ssh:", "git:", "git+ssh:"].includes(parsed.protocol) && parsed.hostname) return true;
+  } catch { /* Git also accepts scp-style SSH sources and local paths. */ }
+  if (!value.includes("://") && /^(?:[^@:/\s]+@)?(?:\[[a-f\d:]+\]|[a-z\d.-]+):[^:\s][^\r\n]*$/i.test(value)) return true;
+  if (!/^[a-z][a-z\d+.-]*:/i.test(value)) return false;
+  throw new WorkspaceValidationFailure("The repository source is invalid.", { reason: "remote_workspace_source_invalid" });
 }
+
+type RemoteWorkspaceSourceResolution = { authority: "remote"; source: RemoteWorkspaceSource;
+  projectId: string | null; projectWorkspaceId: string | null; warnings?: string[];
+  referencedProjectFailures?: ResolvedWorkspaceForRun["referencedProjectFailures"] } | { authority: "host" };
 
 /** Resolve an authorized source without materializing any controller directory. */
 export async function resolveRemoteWorkspaceSource(db: Db, input: {
@@ -37,11 +41,11 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
   selection?: TaskWorkspaceIntent | null;
   existingWorkspace?: HeartbeatWorkspacePreparationInput["reuse"]["existingExecutionWorkspace"];
   taskDirectory?: boolean;
+  automaticEnrollment?: boolean;
   ref?: string | null;
   branchName?: string | null;
   branchMode?: "create" | "existing";
-}): Promise<{ source: RemoteWorkspaceSource; projectId: string | null; projectWorkspaceId: string | null;
-  warnings?: string[]; referencedProjectFailures?: ResolvedWorkspaceForRun["referencedProjectFailures"] }> {
+}): Promise<RemoteWorkspaceSourceResolution> {
   const selected = await assertTaskWorkspaceExecutionAccess(db, {
     type: "agent", source: "agent_jwt", companyId: input.companyId,
     agentId: input.agentId, runId: input.runId,
@@ -50,12 +54,17 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
     ...(!input.selection && input.existingWorkspace ? { workspaceId: input.existingWorkspace.id } : {}),
     ...(input.selection ? { persistedSelection: input.selection.selection } : {}),
   });
+  const hostSource = (): { authority: "host" } => {
+    if (input.automaticEnrollment) return { authority: "host" };
+    throw new WorkspaceValidationFailure("Import local repository folders before using them as remote workspace sources.",
+      { reason: "remote_workspace_local_source_requires_import" });
+  };
   const withReferences = async (base: RemoteWorkspaceSource, anchorProjectId: string | null,
-    sourceId: string | null) => {
+    sourceId: string | null): Promise<RemoteWorkspaceSourceResolution> => {
     const extra: NonNullable<RemoteWorkspaceSource["repositories"]> =
       (base.repositories ?? []).filter(repository => !repository.readOnly);
-    if (base.kind === "git") assertRemoteRepositorySource(base.repoUrl);
-    for (const repository of extra) assertRemoteRepositorySource(repository.repoUrl);
+    if (base.kind === "git" && !remoteRepositorySource(base.repoUrl)) return hostSource();
+    for (const repository of extra) if (!remoteRepositorySource(repository.repoUrl)) return hostSource();
     const referenced = isMultiProjectWorkspaceSyncEnabled() ? await resolveRunReferencedProjects(input.issueId, anchorProjectId, {
       companyId: input.companyId,
       actor: { type: "agent", source: "agent_jwt", companyId: input.companyId,
@@ -71,13 +80,14 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
       throw new WorkspaceValidationFailure("This remote runtime cannot safely provide read-only project folders.",
         { reason: "remote_workspace_readonly_sources_unsupported" });
     }
-    return { source: { ...base, ...(extra.length ? { repositories: extra } : { repositories: undefined }) },
+    return { authority: "remote", source: { ...base, ...(extra.length ? { repositories: extra } : { repositories: undefined }) },
       projectId: anchorProjectId, projectWorkspaceId: sourceId,
       warnings: referenced.warnings, referencedProjectFailures: referenced.failures };
   };
   const existing = readRemoteWorkspaceAuthority(input.existingWorkspace?.metadata);
   if (existing) return withReferences(existing.source, input.existingWorkspace!.projectId,
     input.existingWorkspace!.projectWorkspaceId);
+  if (input.existingWorkspace && input.automaticEnrollment) return { authority: "host" };
   if (input.existingWorkspace) throw new WorkspaceValidationFailure(
     "The existing workspace must be imported before it can use remote workspace storage.",
     { reason: "remote_workspace_migration_required" });
@@ -98,11 +108,6 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
       { reason: "remote_workspace_source_unavailable" });
     return withReferences({ kind: "empty" }, null, null);
   }
-  if (source.cwd && source.cwd !== "/__paperclip_repo_only__") throw new WorkspaceValidationFailure(
-    "Import the configured local folder before using it as a remote workspace.",
-    { reason: "remote_workspace_local_source_requires_import" });
-  if (!source.repoUrl) throw new WorkspaceValidationFailure(
-    "The selected workspace has no repository URL.", { reason: "remote_workspace_source_unavailable" });
   // Recheck authorization against the concrete configured source; the earliest
   // project default may have been selected after the initial task read.
   await assertTaskWorkspaceExecutionAccess(db, {
@@ -112,6 +117,11 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
   }, input.companyId, { issueId: input.issueId,
     ...(selected.source ? { projectWorkspaceId: source.id } : {}),
   });
+  if (source.sourceType === "remote_managed") return hostSource();
+  if (source.cwd && source.cwd !== "/__paperclip_repo_only__") return hostSource();
+  if (!source.repoUrl) throw new WorkspaceValidationFailure(
+    "The selected workspace has no repository URL.", { reason: "remote_workspace_source_unavailable" });
+  if (!remoteRepositorySource(source.repoUrl)) return hostSource();
   const sameProject = await db.select().from(projectWorkspaces).where(and(
     eq(projectWorkspaces.companyId, input.companyId), eq(projectWorkspaces.projectId, source.projectId),
   )).orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
@@ -119,9 +129,9 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
   const identities = new Set([projectRepositoryIdentity(source.repoUrl)]);
   for (const repository of sameProject) {
     if (!repository.repoUrl || identities.has(projectRepositoryIdentity(repository.repoUrl))) continue;
-    if (repository.cwd && repository.cwd !== "/__paperclip_repo_only__") throw new WorkspaceValidationFailure(
-      "Import configured local repository folders before using remote workspace storage.",
-      { reason: "remote_workspace_local_source_requires_import" });
+    if (repository.sourceType === "remote_managed") return hostSource();
+    if (repository.cwd && repository.cwd !== "/__paperclip_repo_only__") return hostSource();
+    if (!remoteRepositorySource(repository.repoUrl)) return hostSource();
     identities.add(projectRepositoryIdentity(repository.repoUrl));
     repositories.push({ id: repository.id, relativePath: `.paperclip-repositories/${managedProjectCheckoutName({
       id: repository.id, repoUrl: repository.repoUrl, repoRef: repository.repoRef,

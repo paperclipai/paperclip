@@ -1,25 +1,11 @@
 import path from "node:path";
-import { createHash } from "node:crypto";
 import { readFile, realpath, stat, writeFile } from "node:fs/promises";
 
 const CONTROLLER_DATABASE_OWNER_FILE = ".runner-e2e-controller-owner.json";
 
-export function controllerFixtureDatabaseName(temporaryRoot: string) {
-  return `paperclip_e2e_${createHash("sha256").update(temporaryRoot).digest("hex").slice(0, 24)}`;
-}
-
-export function isOwnedLoopbackDatabase(connectionString: string, temporaryRoot: string) {
-  try {
-    const url = new URL(connectionString);
-    return ["postgres:", "postgresql:"].includes(url.protocol) && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
-      && url.search === "" && url.pathname === `/${controllerFixtureDatabaseName(temporaryRoot)}`;
-  } catch { return false; }
-}
-
 /** Written only after the supervisor has started this fixture's Postgres. */
 export async function recordControllerDatabaseOwnership(input: {
   configPath: string; temporaryRoot: string; dataDirectory: string; connectionString: string;
-  loopbackDatabase?: boolean;
   externalDatabaseName?: string;
 }) {
   const temporaryRoot = await realpath(input.temporaryRoot);
@@ -28,7 +14,7 @@ export async function recordControllerDatabaseOwnership(input: {
     throw new Error("Controller database path escaped its fixture-owned root");
   }
   await writeFile(path.join(dataDirectory, CONTROLLER_DATABASE_OWNER_FILE), JSON.stringify({
-    version: input.externalDatabaseName || input.loopbackDatabase ? 2 : 1, externalDatabaseName: input.externalDatabaseName,
+    version: input.externalDatabaseName ? 2 : 1, externalDatabaseName: input.externalDatabaseName,
     configPath: await realpath(input.configPath), temporaryRoot,
     dataDirectory, connectionString: input.connectionString,
   }), { mode: 0o600 });
@@ -99,12 +85,10 @@ export async function assertEmbeddedDatabaseIsolation(
       const owner = JSON.parse(await readFile(path.join(directory, CONTROLLER_DATABASE_OWNER_FILE), "utf8"));
       const port = config.database.embeddedPostgresPort;
       const connection = new URL(config.database.connectionString!);
-      const external = owner.version === 2 && connection.search === ""
+      const external = owner.version === 2 && /^runner_e2e_[a-f0-9]{32}$/.test(owner.externalDatabaseName)
         && ["postgres:", "postgresql:"].includes(connection.protocol)
         && ["127.0.0.1", "localhost", "[::1]"].includes(connection.hostname)
-        && (owner.externalDatabaseName === undefined
-          ? isOwnedLoopbackDatabase(config.database.connectionString!, root)
-          : /^runner_e2e_[a-f0-9]{32}$/.test(owner.externalDatabaseName) && connection.pathname === `/${owner.externalDatabaseName}`);
+        && connection.pathname === `/${owner.externalDatabaseName}`;
       const embedded = owner.version === 1 && Number.isInteger(port) && Number(port) > 0 && Number(port) <= 65535
         && config.database.connectionString === `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`
         && (await stat(path.join(directory, "PG_VERSION"))).isFile();

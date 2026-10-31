@@ -4,6 +4,9 @@ The explicit `remote-workspace-storage` cell snapshots only its synthetic
 projectless task folder in an owned disposable sandbox. Its prompt creates a
 small Python project, local Git history without a remote, and an untracked random
 reference. Provider credentials and agent homes remain outside that folder.
+The ordinary settings read must report remote storage enabled by default; the
+workflow does not opt itself in. Its five-minute active outage and later completed-session
+replacement retain the existing native identity and no-replay checks.
 The server's S3 override is admitted only for this suite and only from explicit
 `PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_*` configuration, with a unique instance
 prefix. Ambient storage settings remain stripped and rejected for other suites.

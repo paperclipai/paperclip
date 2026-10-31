@@ -1606,20 +1606,27 @@ separate changes.
 
 ### Experimental native remote workspace storage
 
-`experimental.remoteWorkspaceStorageEnabled` is a managed feature, off by default.
-It enrolls new task workspaces using Paperclip Runner and the sandbox environment
-driver. Local execution keeps its existing workspace path. Enrolled workspaces
-continue to require their native sandbox environment when the flag is turned off;
-disabling the flag does not move their files back to the webserver.
+`experimental.remoteWorkspaceStorageEnabled` is a managed feature, on by default
+for Cloud and self-hosted instances. New Paperclip Runner sandbox workspaces
+enroll automatically when durable storage is configured and the fresh source is
+supported. Existing host workspaces and configured local folders retain their
+legacy behavior until explicitly imported; the default does not convert them.
+The local, SSH, and plugin environment drivers, legacy adapters, and Dot keep
+their existing paths.
+An explicit stored `false` disables new enrollment, and a managed setting takes
+precedence over the stored choice. Enrolled workspaces retain remote authority
+when enrollment is disabled; losing a storage prerequisite fails their admission
+instead of falling back to a controller checkout.
 
 This mode requires an external PostgreSQL `DATABASE_URL`, configured S3 storage,
 and the same encryption master key on every replacement server. The managed
 profile requires `PAPERCLIP_SECRETS_MASTER_KEY` as described above. Self-hosted
-instances may instead preserve their configured
+instances may instead preserve their existing configured
 `PAPERCLIP_SECRETS_MASTER_KEY_FILE` across replacements. An embedded database,
 local-disk object storage, or a newly generated replacement key cannot provide
-this durability contract. Validate S3 put/read/delete and database access with
-the deployment credentials before enrollment.
+this durability contract. New workspaces continue through the legacy path when
+these prerequisites are absent. Validate S3 put/read/delete and database access
+with the deployment credentials before enrollment.
 
 The sandbox holds current working files. PostgreSQL records its location,
 writer epoch, and committed snapshot; encrypted immutable snapshots live in S3.
@@ -1650,9 +1657,9 @@ import. An interrupted apply retains its journal and admission hold; retry the
 same command to reconcile it before starting another writer.
 
 Supported sources include empty task folders, repository URLs, and managed
-mutable repositories from the same project. Configured local folders must be
-imported first. V1 rejects read-only cross-project referenced folders and custom
-cleanup/teardown commands on remote close. Automatic Core services, manual workspace jobs, services,
+mutable repositories from the same project. Configured local folders use the
+legacy path until imported. V1 rejects read-only cross-project referenced folders
+and custom cleanup/teardown commands on remote close. Automatic Core services, manual workspace jobs, services,
 and runtime commands are also rejected before any local directory access; run
 those commands through an agent task. One writer owns each logical
 workspace; separate workspaces can run concurrently. The Files panel identifies

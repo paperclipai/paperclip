@@ -1190,6 +1190,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     definitionMetadata: { version: 2, scheduling: "explicit-only", controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15,
       retainedControllerContinuation: true, retainedControllerFollowupTransport: "task_comment_api",
       maximumAttemptsPerCell: 1, budgetMonthlyCents: 1000, instructions: "production", remoteWorkspaceStorage: true,
+      upgradeReadiness: "active-remote-workspace-recoverable-before-sigkill",
       grading: "same-active-execution-committed-snapshots-browser-files-and-post-controller-native-continuation",
       source: "projectless-synthetic-files-and-model-created-git", authentication: "api-key", stagingQualification: false },
   },

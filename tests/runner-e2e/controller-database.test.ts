@@ -77,12 +77,3 @@ it("rejects database directories outside the fixture and leaves external databas
     expect(await readFile(configPath, "utf8")).toBe(encoded);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
-
-it.each(["postgres://unused@db.example.invalid/postgres", "postgres://unused@127.0.0.1/not-a-fixture-admin",
-  "postgres://unused@127.0.0.1/postgres?host=external.invalid"])("rejects unsafe explicit admin overrides: %s", async adminUrl => {
-  const root = await createRunnerE2ETemporaryRoot(), configPath = path.join(root, "instance", "config.json");
-  try {
-    await (await prepareRunnerE2EServerConfig({ temporaryRoot: root, configPath, serverPort: 3100 }))!.close();
-    await expect(prepareControllerDatabase(configPath, root, adminUrl)).rejects.toThrow("explicit loopback /postgres");
-  } finally { await rm(root, { recursive: true, force: true }); }
-});

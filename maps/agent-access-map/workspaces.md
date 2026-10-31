@@ -62,10 +62,16 @@ revision; superseded retries fail while current-choice retries remain idempotent
 Binding revisions and request keys fence retries;
 selection applies at the next normal admission without interrupting a live run.
 
-With experimental `remoteWorkspaceStorageEnabled`, native Paperclip Runner
-sandbox tasks reserve a company/task-bound remote authority through existing
-admission. Existing enrolled workspaces keep that authority when new enrollment
-is disabled. Current authorization and responsible-user checks still apply;
+The managed `remoteWorkspaceStorageEnabled` setting defaults on for Cloud and
+self-hosted instances. New native Paperclip Runner sandbox workspaces with
+supported fresh sources reserve company/task-bound remote authority through
+existing admission only when durable Postgres, S3, and a stable key are configured.
+Existing host workspaces and configured local folders stay on the legacy path
+until an explicit import. Stored `false` disables new enrollment unless managed
+configuration overrides it. Enrolled workspaces keep remote authority when new
+enrollment is disabled, and missing persistence prerequisites fail admission
+without a controller checkout fallback. Current authorization and responsible-user
+checks still apply;
 read-only cross-project referenced folders and explicitly concurrent shared
 writers are rejected. Managed mutable same-project repositories are supported.
 Importing an existing local task folder is an operator source-checkout command,
