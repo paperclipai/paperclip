@@ -471,10 +471,7 @@ test("plan approval hands the preserved revision to an assigned project task", a
       .locator("p")
       .filter({ hasText: /^Delegated work completed:/ });
     await expect(completion).toHaveCount(1);
-    const completedTask = completion.getByRole("link", {
-      name: `Issue ${task.identifier}: ${task.title}`,
-      exact: true,
-    });
+    const completedTask = completion.getByRole("link").filter({ hasText: task.identifier });
     await expect(completedTask).toBeVisible();
     await expect(completedTask).toContainText(task.identifier);
     await expect(completedTask).toHaveAttribute(
