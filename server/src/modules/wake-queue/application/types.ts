@@ -45,6 +45,8 @@ export type IssueSnapshot = {
   originKind: string | null;
   monitorNextCheckAt: Date | null;
   executionState: Record<string, unknown> | null;
+  /** When the issue last reached `done`; used to reject stale pre-done resume wakes. */
+  completedAt: Date | null;
   /** Carried so the routine-env and responsible-user reader ports can use this
    * transaction-scoped snapshot instead of reading the issue again. */
   responsibleUserId: string | null;

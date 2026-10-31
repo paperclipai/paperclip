@@ -789,6 +789,354 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     }
   });
 
+  it("reclaims a post-done workspace_validation race as false_positive instead of board-orphan park", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const priorRunId = randomUUID();
+    const failedRunId = randomUUID();
+    const priorFinishedAt = new Date("2026-10-19T21:30:07.465Z");
+    const failedStartedAt = new Date("2026-10-19T21:30:08.040Z");
+
+    await db.insert(heartbeatRuns).values({
+      id: priorRunId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      startedAt: new Date("2026-10-19T21:20:00.000Z"),
+      finishedAt: priorFinishedAt,
+      livenessReason: "Issue is done",
+      contextSnapshot: { issueId: sourceIssue.id, taskId: sourceIssue.id },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: failedRunId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "timer",
+      status: "failed",
+      errorCode: "workspace_validation_failed",
+      error: "git_worktree_not_reusable: not_registered",
+      startedAt: failedStartedAt,
+      finishedAt: new Date("2026-10-19T21:30:08.500Z"),
+      contextSnapshot: {
+        issueId: sourceIssue.id,
+        taskId: sourceIssue.id,
+        wakeReason: "issue_commented",
+        wakeCommentId: randomUUID(),
+      },
+      resultJson: {
+        workspaceValidation: {
+          reason: "git_worktree_not_reusable",
+          fingerprint: "git_worktree_not_reusable:not_registered",
+        },
+      },
+    });
+
+    const latestRun = {
+      id: failedRunId,
+      agentId: coderId,
+      status: "failed" as const,
+      error: "git_worktree_not_reusable: not_registered",
+      errorCode: "workspace_validation_failed",
+      contextSnapshot: {
+        issueId: sourceIssue.id,
+        taskId: sourceIssue.id,
+        wakeReason: "issue_commented",
+      },
+      livenessState: "failed" as const,
+      startedAt: failedStartedAt,
+      createdAt: failedStartedAt,
+      resultJson: {
+        workspaceValidation: {
+          reason: "git_worktree_not_reusable",
+          fingerprint: "git_worktree_not_reusable:not_registered",
+        },
+      },
+    };
+
+    const updated = await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "done",
+      latestRun,
+      recoveryCause: "workspace_validation_failed",
+    });
+
+    expect(updated).toMatchObject({ id: sourceIssue.id, status: "done" });
+    const [issueRow] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(issueRow?.status).toBe("done");
+
+    const actionRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(actionRows).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+
+    const reclaimActivities = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityId, sourceIssue.id),
+          eq(activityLog.action, "issue.updated"),
+        ),
+      );
+    expect(
+      reclaimActivities.some((row) => {
+        const details = row.details as Record<string, unknown> | null;
+        return (
+          details?.source === "recovery.reclaim_post_terminal_workspace_validation" &&
+          details?.outcome === "false_positive" &&
+          details?.priorSucceededRunId === priorRunId
+        );
+      }),
+    ).toBe(true);
+  });
+
+  it("does not reclaim workspace_validation when the issue is already cancelled", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const priorRunId = randomUUID();
+    const failedRunId = randomUUID();
+    const priorFinishedAt = new Date("2026-10-19T21:30:07.465Z");
+    const failedStartedAt = new Date("2026-10-19T21:30:08.040Z");
+
+    await db
+      .update(issues)
+      .set({ status: "cancelled" })
+      .where(eq(issues.id, sourceIssue.id));
+    const [cancelledIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+
+    await db.insert(heartbeatRuns).values({
+      id: priorRunId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      startedAt: new Date("2026-10-19T21:20:00.000Z"),
+      finishedAt: priorFinishedAt,
+      livenessReason: "Issue is done",
+      contextSnapshot: { issueId: sourceIssue.id, taskId: sourceIssue.id },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: failedRunId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "timer",
+      status: "failed",
+      errorCode: "workspace_validation_failed",
+      error: "git_worktree_not_reusable: not_registered",
+      startedAt: failedStartedAt,
+      finishedAt: new Date("2026-10-19T21:30:08.500Z"),
+      contextSnapshot: {
+        issueId: sourceIssue.id,
+        taskId: sourceIssue.id,
+        wakeReason: "issue_commented",
+      },
+      resultJson: {
+        workspaceValidation: {
+          reason: "git_worktree_not_reusable",
+          fingerprint: "git_worktree_not_reusable:not_registered",
+        },
+      },
+    });
+
+    const updated = await recovery.escalateStrandedAssignedIssue({
+      issue: cancelledIssue!,
+      previousStatus: "done",
+      latestRun: {
+        id: failedRunId,
+        agentId: coderId,
+        status: "failed" as const,
+        error: "git_worktree_not_reusable: not_registered",
+        errorCode: "workspace_validation_failed",
+        contextSnapshot: {
+          issueId: sourceIssue.id,
+          taskId: sourceIssue.id,
+          wakeReason: "issue_commented",
+        },
+        livenessState: "failed" as const,
+        startedAt: failedStartedAt,
+        createdAt: failedStartedAt,
+        resultJson: {
+          workspaceValidation: {
+            reason: "git_worktree_not_reusable",
+            fingerprint: "git_worktree_not_reusable:not_registered",
+          },
+        },
+      },
+      recoveryCause: "workspace_validation_failed",
+    });
+
+    expect(updated).toBeNull();
+    const [issueRow] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(issueRow?.status).toBe("cancelled");
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+
+    const reclaimActivities = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityId, sourceIssue.id),
+          eq(activityLog.action, "issue.updated"),
+        ),
+      );
+    expect(
+      reclaimActivities.some((row) => {
+        const details = row.details as Record<string, unknown> | null;
+        return details?.source === "recovery.reclaim_post_terminal_workspace_validation";
+      }),
+    ).toBe(false);
+  });
+
+  it("does not reclaim workspace_validation when the prior succeeded run never finished the issue", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const priorRunId = randomUUID();
+    const failedRunId = randomUUID();
+    const priorFinishedAt = new Date("2026-10-19T21:30:07.465Z");
+    const failedStartedAt = new Date("2026-10-19T21:30:08.040Z");
+
+    await db.insert(heartbeatRuns).values({
+      id: priorRunId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      startedAt: new Date("2026-10-19T21:20:00.000Z"),
+      finishedAt: priorFinishedAt,
+      livenessReason: "advanced",
+      contextSnapshot: { issueId: sourceIssue.id, taskId: sourceIssue.id },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: failedRunId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "timer",
+      status: "failed",
+      errorCode: "workspace_validation_failed",
+      error: "git_worktree_not_reusable: not_registered",
+      startedAt: failedStartedAt,
+      finishedAt: new Date("2026-10-19T21:30:08.500Z"),
+      contextSnapshot: {
+        issueId: sourceIssue.id,
+        wakeReason: "issue_commented",
+        wakeCommentId: randomUUID(),
+      },
+      resultJson: {
+        workspaceValidation: { reason: "git_worktree_not_reusable", fingerprint: "x" },
+      },
+    });
+
+    const updated = await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: failedRunId,
+        agentId: coderId,
+        status: "failed",
+        error: "git_worktree_not_reusable: not_registered",
+        errorCode: "workspace_validation_failed",
+        contextSnapshot: { issueId: sourceIssue.id, wakeReason: "issue_commented" },
+        livenessState: "failed",
+        startedAt: failedStartedAt,
+        createdAt: failedStartedAt,
+        resultJson: {
+          workspaceValidation: { reason: "git_worktree_not_reusable", fingerprint: "x" },
+        },
+      },
+      recoveryCause: "workspace_validation_failed",
+    });
+
+    expect(updated).toMatchObject({ id: sourceIssue.id, status: "blocked" });
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      kind: "workspace_validation",
+      status: "active",
+      ownerType: "board",
+      cause: "workspace_validation_failed",
+    });
+  });
+
+  it("does not reclaim workspace_validation for a reopen wake after prior done", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const priorRunId = randomUUID();
+    const failedRunId = randomUUID();
+    const priorFinishedAt = new Date("2026-10-19T21:30:07.465Z");
+    const failedStartedAt = new Date("2026-10-19T22:00:00.000Z");
+
+    await db.insert(heartbeatRuns).values({
+      id: priorRunId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      startedAt: new Date("2026-10-19T21:20:00.000Z"),
+      finishedAt: priorFinishedAt,
+      livenessReason: "Issue is done",
+      contextSnapshot: { issueId: sourceIssue.id, taskId: sourceIssue.id },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: failedRunId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "assignment",
+      status: "failed",
+      errorCode: "workspace_validation_failed",
+      error: "git_worktree_not_reusable: not_registered",
+      startedAt: failedStartedAt,
+      finishedAt: new Date("2026-10-19T22:00:01.000Z"),
+      contextSnapshot: {
+        issueId: sourceIssue.id,
+        wakeReason: "issue_status_changed",
+      },
+      resultJson: {
+        workspaceValidation: { reason: "git_worktree_not_reusable", fingerprint: "x" },
+      },
+    });
+
+    const updated = await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "todo",
+      latestRun: {
+        id: failedRunId,
+        agentId: coderId,
+        status: "failed",
+        error: "git_worktree_not_reusable: not_registered",
+        errorCode: "workspace_validation_failed",
+        contextSnapshot: { issueId: sourceIssue.id, wakeReason: "issue_status_changed" },
+        livenessState: "failed",
+        startedAt: failedStartedAt,
+        createdAt: failedStartedAt,
+        resultJson: {
+          workspaceValidation: { reason: "git_worktree_not_reusable", fingerprint: "x" },
+        },
+      },
+      recoveryCause: "workspace_validation_failed",
+    });
+
+    expect(updated).toMatchObject({ id: sourceIssue.id, status: "blocked" });
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(actions[0]).toMatchObject({
+      kind: "workspace_validation",
+      status: "active",
+      ownerType: "board",
+    });
+  });
+
   // Model the production payload: `requestedRef` keeps the operator spelling,
   // and the fingerprint carries the canonical remote ref. Two equivalent
   // spellings of one remote branch share `identityRef`, so they share one

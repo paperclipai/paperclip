@@ -616,10 +616,14 @@ export function decideQueuedRunStaleness(
   }
 
   const requiresInProgress = facts.retryReasonKind === "max_turn_continuation";
+  // Comment presence alone must not revive a terminal task. Only an explicit
+  // resume intent (or a verified onboarding handoff report) may bypass; stale
+  // pre-done comment wakes otherwise dispatch into a released worktree and
+  // board-park the already-complete leaf.
   const statusOutcome = decideIssueStatus({
     status: facts.issueStatus,
     requiresInProgress,
-    terminalBypass: facts.resumeIntent || facts.wakeCommentIdPresent || (
+    terminalBypass: facts.resumeIntent || (
       facts.isCompletedOnboardingHandoffWake === true &&
       facts.wakeReason === "issue_children_completed" && facts.issueStatus === "done"
     ),

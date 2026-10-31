@@ -428,3 +428,38 @@ export function decideReleaseRecovery(facts: ReleaseRecoveryFacts): ReleaseRecov
 
   return { kind: "queue_recovery" };
 }
+
+export type TerminalDeferredWakeReopenFacts = {
+  issueStatus: string;
+  assigneeAgentId: string | null;
+  wakeAgentId: string;
+  requestedByActorType: string | null;
+  wakeReason: string | null;
+  resumeIntent: boolean;
+  queuedCommentCount: number;
+  allSelfAuthored: boolean;
+  hasCommentCreatedAfter: boolean;
+};
+
+/**
+ * Whether a deferred wake against a terminal issue should reopen it before
+ * promotion. Agent resumeIntent alone is not enough — at least one deferred
+ * comment must have been created after completion.
+ */
+export function decideTerminalDeferredWakeReopen(
+  facts: TerminalDeferredWakeReopenFacts,
+): boolean {
+  const agentResumeAfterCompletion =
+    facts.issueStatus === "done" &&
+    facts.wakeAgentId === facts.assigneeAgentId &&
+    facts.requestedByActorType === "agent" &&
+    facts.resumeIntent &&
+    facts.queuedCommentCount > 0 &&
+    facts.hasCommentCreatedAfter;
+  return (
+    !facts.allSelfAuthored &&
+    (facts.requestedByActorType === "user" ||
+      facts.wakeReason === "issue_reopened_via_comment" ||
+      agentResumeAfterCompletion)
+  );
+}
