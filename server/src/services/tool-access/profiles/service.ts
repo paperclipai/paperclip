@@ -192,10 +192,10 @@ export function createToolProfileService(db: Db, now: () => Date) {
       .filter(Boolean) as ToolProfileNewToolReviewItem[];
     const nowAt = now();
     let createdEntries: ToolProfileEntry[] = [];
-    if (allowTools.length > 0) {
-      const rows = await db.transaction(async (tx) => {
-        await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
-        return tx
+    await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+      if (allowTools.length > 0) {
+        const rows = await tx
           .insert(toolProfileEntries)
           .values(
             allowTools.map((tool) => ({
@@ -209,30 +209,30 @@ export function createToolProfileService(db: Db, now: () => Date) {
             })),
           )
           .returning();
-      });
-      createdEntries = rows.map(toProfileEntry);
-    }
+        createdEntries = rows.map(toProfileEntry);
+      }
 
-    await db
-      .update(toolCatalogEntries)
-      .set({
-        reviewedAt: nowAt,
-        reviewedByAgentId:
-          actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
-        reviewedByUserId:
-          connectionActorUserId(actor),
-        updatedAt: nowAt,
-      })
-      .where(
-        and(
-          eq(toolCatalogEntries.companyId, profile.companyId),
-          inArray(toolCatalogEntries.id, decisionIds),
-        ),
-      );
-    await db
-      .update(toolProfiles)
-      .set({ newToolsReviewedAt: nowAt, updatedAt: nowAt })
-      .where(eq(toolProfiles.id, profile.id));
+      await tx
+        .update(toolCatalogEntries)
+        .set({
+          reviewedAt: nowAt,
+          reviewedByAgentId:
+            actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
+          reviewedByUserId:
+            connectionActorUserId(actor),
+          updatedAt: nowAt,
+        })
+        .where(
+          and(
+            eq(toolCatalogEntries.companyId, profile.companyId),
+            inArray(toolCatalogEntries.id, decisionIds),
+          ),
+        );
+      await tx
+        .update(toolProfiles)
+        .set({ newToolsReviewedAt: nowAt, updatedAt: nowAt })
+        .where(eq(toolProfiles.id, profile.id));
+    });
 
     return {
       profile: await profileDetails(profile.id, profile.companyId),

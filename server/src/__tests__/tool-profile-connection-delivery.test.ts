@@ -53,14 +53,15 @@ describePostgres("bare tool profile writes notify the connection delivery worker
     await db.insert(toolProfileEntries).values({ companyId: f.companyId, profileId: scoped!.id, selectorType: "catalog_entry", catalogEntryId: sibling!.id, connectionId: f.connection.id });
     delivery = await startConnectionDelivery(db);
     for (const produce of [
-      () => toolAccessService(db).createProfile(f.companyId, { profileKey: "unbound", name: "Unbound", defaultAction: "allow", entries: [] }),
+      () => toolAccessService(db).createProfile(f.companyId, { profileKey: "unbound", name: "Unbound", defaultAction: "allow",
+        entries: [{ selectorType: "catalog_entry", catalogEntryId: f.tool.id, connectionId: f.connection.id }] }),
       () => toolAccessService(db).reviewProfileNewTools(scoped!.id, { decisions: [{ catalogEntryId: f.tool.id, decision: "allow" }] }),
     ]) {
       const baseline = delivery.sweeps;
       await produce();
       await delivery.settle(baseline + 1);
     }
-    expect(await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.catalogEntryId, f.tool.id))).toHaveLength(1);
+    expect(await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.catalogEntryId, f.tool.id))).toHaveLength(2);
     await expectNoDurableEffect();
   });
 
