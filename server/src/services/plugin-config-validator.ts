@@ -12,6 +12,18 @@ import Ajv, { type ErrorObject } from "ajv";
 import addFormats from "ajv-formats";
 import type { JsonSchema } from "@paperclipai/shared";
 
+/**
+ * Keywords the plugin settings form (`ui/src/components/JsonSchemaForm.tsx`)
+ * reads from `instanceConfigSchema`. They only change how the form looks, so
+ * Ajv treats them as annotations. Keep this list in sync with the form.
+ */
+export const PLUGIN_CONFIG_FORM_KEYWORDS = [
+  "x-paperclip-advanced",
+  "x-paperclip-group",
+  "x-paperclip-itemLabel",
+  "x-paperclip-itemSummary",
+] as const;
+
 export interface ConfigValidationResult {
   valid: boolean;
   errors?: { field: string; message: string }[];
@@ -38,6 +50,7 @@ export function validateInstanceConfig(
   // hold a Paperclip secret UUID rather than a raw value. The format is a UI
   // hint only — UUID validation happens in the secrets handler at resolve time.
   ajv.addFormat("secret-ref", { validate: () => true });
+  ajv.addVocabulary([...PLUGIN_CONFIG_FORM_KEYWORDS]);
   const validate = ajv.compile(schema);
   const valid = validate(configJson);
 
