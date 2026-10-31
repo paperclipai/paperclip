@@ -281,6 +281,62 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(acquire).not.toHaveBeenCalled();
   });
 
+  it.each(["configured-folder", "explicit-task-directory", "enrolled-remote"] as const)(
+    "preserves effective configured cwd authority for %s", async scenario => {
+      const { input, source, issue, envOrchestrator } = await fixture();
+      configureRemotePersistence();
+      await writeFile(join(source, "unpublished.txt"), "configured folder work\n");
+      await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, issue.id));
+      input.task.issueRef = { ...issue, projectId: null, projectWorkspaceId: null };
+      input.task.context = { issueId: issue.id };
+      input.config.mergedConfig = { cwd: source };
+      await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, input.agent.id));
+      input.agent.adapterType = "paperclip_runner";
+      const [savedEnvironment] = await db.insert(environments).values({ name: `Configured cwd ${randomUUID()}`,
+        driver: "sandbox", status: "active", config: { provider: "daytona" } }).returning();
+      input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
+        id: savedEnvironment.id, driver: "sandbox", config: { provider: "daytona" } };
+      input.environment.selectedEnvironmentId = savedEnvironment.id;
+      expect(input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled).toBe(true);
+      if (scenario === "explicit-task-directory") {
+        input.task.workspaceSelection = { version: 1, source: "explicit", selection: { kind: "task_directory" } };
+        await db.update(issues).set({ workspaceSelection: input.task.workspaceSelection }).where(eq(issues.id, issue.id));
+        input.policy.useIsolatedTaskDirectory = true;
+      }
+      let enrolledId: string | undefined;
+      if (scenario === "enrolled-remote") {
+        enrolledId = randomUUID();
+        const [workspace] = await db.insert(executionWorkspaces).values({ id: enrolledId, companyId: issue.companyId,
+          sourceIssueId: issue.id, name: "Existing remote workspace", cwd: `/workspaces/${enrolledId}`,
+          providerType: "cloud_sandbox", strategyType: "project_primary", mode: "shared_workspace", status: "active",
+          metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: null,
+            source: { kind: "empty" }, location: null, writerRunId: null, dirty: false } } }).returning();
+        await db.update(issues).set({ executionWorkspaceId: workspace.id }).where(eq(issues.id, issue.id));
+        input.task.issueRef.executionWorkspaceId = workspace.id;
+        input.reuse.existingExecutionWorkspace = toExecutionWorkspace(workspace);
+        input.reuse.reusableExistingExecutionWorkspace = toExecutionWorkspace(workspace);
+        input.reuse.requestedShouldReuseExisting = true;
+        input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled = false;
+      }
+      const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun");
+      const acquire = vi.spyOn(envOrchestrator, "acquireForRun").mockRejectedValue(new Error("configured cwd acquisition boundary"));
+      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("configured cwd acquisition boundary");
+      expect(acquire).toHaveBeenCalledOnce();
+      const [workspace] = await db.select().from(executionWorkspaces);
+      if (scenario === "configured-folder") {
+        expect(resolve).toHaveBeenCalledOnce();
+        expect(workspace).toMatchObject({ providerType: "local_fs", cwd: source });
+        expect(workspace.metadata?.remoteWorkspace).toBeUndefined();
+      } else {
+        expect(resolve).not.toHaveBeenCalled();
+        expect(workspace).toMatchObject({ providerType: "cloud_sandbox" });
+        expect(workspace.metadata?.remoteWorkspace).toMatchObject({ source: { kind: "empty" }, writerRunId: input.run.id });
+        if (enrolledId) expect(workspace.id).toBe(enrolledId);
+      }
+      expect(await readFile(join(source, "unpublished.txt"), "utf8")).toBe("configured folder work\n");
+    },
+  );
+
   it.each(["file:///tmp/repository", "/tmp/repository", "../repository", "C:\\work\\repository", "C:repository"])(
     "auto-enrollment leaves local repository source %s on the host authority", async repoUrl => {
       const { input, issue, envOrchestrator } = await fixture();

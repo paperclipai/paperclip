@@ -41,6 +41,7 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
   selection?: TaskWorkspaceIntent | null;
   existingWorkspace?: HeartbeatWorkspacePreparationInput["reuse"]["existingExecutionWorkspace"];
   taskDirectory?: boolean;
+  configuredCwd?: string | null;
   automaticEnrollment?: boolean;
   ref?: string | null;
   branchName?: string | null;
@@ -94,6 +95,7 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
   if (input.taskDirectory || input.selection?.selection.kind === "task_directory") {
     return withReferences({ kind: "empty" }, null, null);
   }
+  if (input.configuredCwd) return hostSource();
   const projectId = selected.task.projectId;
   const sourceId = input.selection?.selection.kind === "configured_source"
     ? input.selection.selection.projectWorkspaceId : selected.source?.id ?? selected.task.projectWorkspaceId;

@@ -310,6 +310,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           projectWorkspaceId: issueRef!.projectWorkspaceId, selection: input.task.workspaceSelection,
           existingWorkspace: fresh ? null : reusableExistingExecutionWorkspace ?? existingExecutionWorkspace,
           taskDirectory: useIsolatedTaskDirectory, automaticEnrollment: !enrolledRemoteAuthority,
+          configuredCwd: readNonEmptyString(mergedConfig.cwd),
           ref: readNonEmptyString(strategy.baseRef),
           branchMode: readNonEmptyString(strategy.existingBranch) ? "existing" : "create",
           branchName: readNonEmptyString(strategy.existingBranch) ??
