@@ -7937,6 +7937,40 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(JSON.stringify(getConnectableAppDefinition(slug))).toBe(definitionBefore);
   });
 
+  it("requests the managed connector return URI with the enrolled loopback origin", async () => {
+    // The POST /tools/apps/connect route advertises `localhost` for DCR
+    // interoperability. Cloud only accepts the exact loopback origin the
+    // instance enrolled, so the session return URI must use `127.0.0.1` here.
+    const company = await createCompany(db);
+    const userId = `enrolled-loopback-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const actor = { actorType: "user" as const, actorId: userId };
+    const connector = fakeGmailConnector(company.id, userId);
+    const signing = generateKeyPairSync("ed25519");
+    const sealing = generateKeyPairSync("x25519");
+    vi.stubEnv("PAPERCLIP_AUTH_PUBLIC_BASE_URL", "http://127.0.0.1:3100");
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_BASE_URL", "https://my.paperclip.app");
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT", "production");
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID", "inst-enrolled-loopback-regression");
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY", signing.privateKey.export({ type: "pkcs8", format: "pem" }).toString());
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY", sealing.privateKey.export({ type: "pkcs8", format: "pem" }).toString());
+    invalidatePaperclipCloudConnectorCapabilities();
+    try {
+      const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "gmail", connectionMethodKey: "paperclip-draft", grantKind: "user", name: "Enrolled loopback return",
+      }, actor);
+      await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "http://localhost:3100/api/tools/oauth/callback", actor,
+      });
+      expect(connector.startAuthorization).toHaveBeenCalledWith(expect.objectContaining({
+        returnUri: "http://127.0.0.1:3100/api/tools/oauth/cloud-connector/callback",
+      }));
+    } finally {
+      invalidatePaperclipCloudConnectorCapabilities();
+    }
+  });
+
   it.each(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS)("connects advertised Workspace %s with a Cloud-delivered environment identity", async (profile) => {
     const slug = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].appSlug;
     const methodKey = getConnectableAppDefinition(slug)!.methods.find((method) => method.connectorProfile === profile)!.key;

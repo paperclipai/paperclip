@@ -37,27 +37,14 @@ import {
 } from "./paperclip-cloud-connector.js";
 import { paperclipCloudConnectorEnrollmentStatus } from "./paperclip-cloud-connector-enrollment.js";
 import { pollGitHubBotCloudSetupEvents } from "./chat-github-cloud-ingress.js";
+import { enrolledBrowserOrigin } from "./enrolled-browser-origin.js";
 
 /** Loopback aliases are equivalent locally, but Cloud requires the approved exact origin. */
 export function githubWizardBrowserOrigin(
   value: string | null,
   enrolledOrigins: string[],
 ): string | null {
-  if (!value) return value;
-  const loopback = (url: URL) =>
-    url.protocol === "http:" &&
-    ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-  const exactOrigin = (url: URL) =>
-    !url.username && !url.password && !url.search && !url.hash && url.pathname === "/";
-  const current = new URL(value);
-  if (!exactOrigin(current)) return value;
-  if (!loopback(current) || enrolledOrigins.includes(current.origin)) return value;
-  for (const candidate of enrolledOrigins) {
-    const approved = new URL(candidate);
-    if (loopback(approved) && approved.port === current.port && exactOrigin(approved))
-      return approved.origin;
-  }
-  return value;
+  return enrolledBrowserOrigin(value, enrolledOrigins);
 }
 
 const hash = (value: string) =>
