@@ -675,6 +675,22 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(wakeup).toHaveBeenCalledOnce();
   });
 
+  it("labels an interval writeback by its refresh deadline despite earlier membership expiry", async () => {
+    const target = await issueService(db).create(companyId, { title: "Interval blocker", status: "blocked", priority: "medium" });
+    const updatedAt = new Date(Date.now() - 59 * 60_000);
+    await db.update(issues).set({ updatedAt }).where(eq(issues.id, target.id));
+    compiledQuery = companySearchQuerySchema.parse({ scope: "issues", status: ["blocked"], updatedWithin: "1h" });
+    let membership: Date | null = null;
+    await companySearch.companySearchService(db).search(companyId, compiledQuery, {
+      issueResultsOnly: true, onNextMembershipChange: at => { membership = at; },
+    });
+    expect(membership).toEqual(new Date(updatedAt.getTime() + 3_600_001));
+    const created = await card("interval");
+    expect(created.nextEvalAt).toEqual(new Date(created.lastGeneratedAt!.getTime() + 15 * 60_000));
+    expect(created.nextEvalAt!.getTime()).toBeGreaterThan(updatedAt.getTime() + 3_600_001);
+    expect(created.nextEvalReason).toBe("refresh");
+  });
+
   it("uses expiry of an off-page candidate to refresh offset-ranked query membership", async () => {
     const now = new Date();
     const tasks = await Promise.all((["critical", "high", "medium"] as const).map(priority => issueService(db).create(companyId, {
