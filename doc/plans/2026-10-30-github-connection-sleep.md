@@ -114,3 +114,28 @@ concurrent replay, signed callbacks, outer commit/rollback, drain/resume, startu
 wiring in both scheduler branches, credential backoff and changed deadlines.
 Cloud acceptance uses its actual broker/store/notifier boundaries and a controlled
 HTTP tenant. These tests do not establish a deployed fleet rollout or cost savings.
+
+## Enrollment after worker startup
+
+The event owner resolves the current connector only when a delivery or setup pass
+is admitted. A service created before self-host enrollment can therefore use a
+later completed enrollment without being recreated. The full normalized identity
+and target configuration keys the connector cache, preserving negotiated event
+wake support while it is unchanged. An absent identity clears the cache; a
+replacement identity or changed key creates a new connector. Explicitly injected
+connectors keep their original lifetime.
+
+Enrollment does not add a timer, database scan or network probe. An ordinary
+credential/configuration producer, authenticated control wake or active setup
+request admits the next pass. Unconfigured passes return before owner SQL or
+HTTP. A pass already in flight keeps its connector for that lease and its matching
+acknowledgment; identity discovery never changes authority halfway through a pass.
+
+The real PostgreSQL/loopback regression starts the registered owner unenrolled,
+completes the canonical signed enrollment flow, then applies and acknowledges an
+encrypted installation event. Removing the identity parks the same owner, and a
+second enrollment proves the replacement signing/sealing identity is used. Each
+applied installation update has one bounded empty follow-up from its credential
+hint; the test joins that saved deadline once before checking 25-minute SQL/HTTP
+quiet windows. This is process-local enrollment recovery, not a deployed Cloud
+rollout or a new cancellation policy.
