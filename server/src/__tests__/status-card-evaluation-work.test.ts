@@ -1,12 +1,13 @@
 import { budgetService } from "../services/budgets.js";
 import { documentService } from "../services/documents.js";
+import { projectService } from "../services/projects.js";
 import * as companySearch from "../services/company-search.js";
 import { setImmediate as immediate } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { activityLog, agentWakeupRequests, agents, approvals, budgetIncidents, budgetPolicies, costEvents, companies, companyMemberships, createDb, documents, withDedicatedDbConnection,
-  heartbeatRuns, instanceSettings, issueComments, issues, statusCards, statusCardUpdates, documentRevisions } from "@paperclipai/db";
+  heartbeatRuns, instanceSettings, issueComments, issueWorkProducts, issues, projects, statusCards, statusCardUpdates, documentRevisions } from "@paperclipai/db";
 import { companySearchQuerySchema, statusCardRefreshPolicySchema } from "@paperclipai/shared";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -60,7 +61,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.delete(agentWakeupRequests); await db.delete(statusCardUpdates); await db.delete(statusCards);
     await db.delete(documentRevisions); await db.delete(documents); await db.delete(activityLog);
     await db.delete(issueComments); await db.delete(issues); await db.delete(heartbeatRuns);
-    await db.delete(instanceSettings); await db.delete(agents); await db.delete(companyMemberships); await db.delete(companies);
+    await db.delete(instanceSettings); await db.delete(projects); await db.delete(agents); await db.delete(companyMemberships); await db.delete(companies);
   });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
   async function start(service = statusCardEvaluationService(db, { wakeup })) {
@@ -120,6 +121,38 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await start(); await quiet();
     await card("manual"); await card("reactive"); await quiet();
     await instanceSettingsService(db).updateExperimental({ enableStatusCards: false }); await quiet();
+    expect(errors).toEqual([]);
+  });
+
+  it("keeps mixed-search card preview, startup and ordinary issue delivery on issue-only pages", async () => {
+    const target = await issueService(db).create(companyId, { title: "Launch blocker", status: "blocked", priority: "medium" });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const project = await projectService(db).create(companyId, { name: "Launch project" });
+    await db.insert(agents).values({ companyId, name: "Launch agent", role: "general", status: "idle", adapterType: "process" });
+    const holder = await issueService(db).create(companyId, { title: "Artifact holder", status: "todo", priority: "medium" });
+    await db.insert(issueWorkProducts).values({ companyId, issueId: holder.id, type: "artifact", provider: "paperclip",
+      title: "Launch artifact", status: "ready" });
+    compiledQuery = companySearchQuerySchema.parse({ q: "launch", scope: "all", sort: "updated", limit: 1 });
+    const created = await card();
+    expect(Object.keys(created.fingerprint!)).toEqual([target.id]);
+    const cards = statusCardService(db);
+    const [preview] = await cards.dryRun(created);
+    expect(preview!.result.results.map(row => row.id)).toEqual([target.id]);
+    await start(); await quiet();
+    await issueService(db).update(target.id, { status: "done" });
+    await settled();
+    const pending = (await cards.getById(created.id))!;
+    expect(pending.pendingChangeCount).toBe(1);
+    await vi.advanceTimersByTimeAsync(Math.max(0, pending.nextEvalAt!.getTime() - Date.now()));
+    await settled();
+    const generating = (await cards.getById(created.id))!;
+    expect(wakeup).toHaveBeenCalledOnce();
+    await writeback(created.id, generating.generatingIssueId!); await quiet();
+    await projectService(db).update(project.id, { name: "Launch project renamed" });
+    const updated = (await cards.getById(created.id))!;
+    expect((await cards.dryRun(updated))[0]!.result.results.map(row => row.id)).toEqual([target.id]);
+    expect(updated.fingerprint![target.id]!.status).toBe("done");
+    await quiet();
     expect(errors).toEqual([]);
   });
 

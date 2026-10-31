@@ -163,6 +163,18 @@ Refresh decisions use the card's PostgreSQL row revision as a private compare-an
 
 Company source hints do not preempt a future deadline owned by a failed evaluation (`retry`). Membership and policy deadlines remain eligible for source-driven rechecks, and actual due retries still run. An explicit policy edit can replace the retry through the existing card mutation path. Real PostgreSQL regressions hold the actual search while committing an ordinary policy edit, then verify the saved interval still fires. Persistent search failures stay quiet through issue hints and restart, retry at their saved deadline, and recover through an ordinary policy edit.
 
+Card queries request the search owner's internal `issueResultsOnly` capability.
+Nonissue result branches and their counts are excluded before pagination, so
+project, agent or artifact changes cannot evict a watched issue from a bounded
+page. This corrects the former accidental competition with results that cards
+discarded after pagination. The saved query's text scope is unchanged: `all`
+still matches issues through their comments and documents, and explicit comments
+or documents scopes retain their task matches. Issue filters, privacy, tenant
+boundaries, facets and membership-expiry deadlines remain search-owned. Card
+preview, visibility counts, generation and writeback all use the same restriction.
+Normal company search keeps its mixed result kinds by default. No extra
+project/agent/artifact wake fanout or public query syntax is introduced.
+
 A losing refresh cancels only an unclaimed task. It locks the exact company task
 in the canonical issue-first order, checks its generation ledger, and preserves
 terminal state and timestamps. Successful summary writeback records that ledger
