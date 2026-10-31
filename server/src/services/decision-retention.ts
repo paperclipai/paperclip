@@ -1,4 +1,8 @@
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
+import { requiresReviewAttention, terminalBlockerRequiresAttention, ATTENTION_AGENT_ERROR_STATUS } from "./attention-source-eligibility.js";
+import { attentionIssueCondition } from "./issue-visibility.js";
+import { issueService } from "./issues.js";
+import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { notifyRetentionWork } from "./retention-work-notifications.js";
 import { decisionArchiveDeliveryService, type ArchiveNotificationBatch } from "./decision-archive-delivery.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -184,17 +188,56 @@ export function decisionRetentionService(
     )).then((rows) => rows[0] ?? null);
   }
 
-  async function materializeSourceState(database: Db, input: { companyId: string; sourceKind: AttentionSourceKind; sourceId: string }) {
+  async function materializeSourceState(database: Db, input: { companyId: string; sourceKind: AttentionSourceKind; sourceId: string; actor: Pick<DecisionMutationActor, "userId"> }) {
     const tables: Record<AttentionSourceKind, string> = {
       approval: "approvals", join_request: "join_requests", decision: "decisions",
       issue_thread_interaction: "issue_thread_interactions", recovery_action: "issue_recovery_actions",
       failed_run: "heartbeat_runs", productivity_review: "issues", blocker_attention: "issues", review: "issues",
       budget_alert: "budget_incidents", agent_error_alert: "agents",
     };
-    if (input.sourceKind === "blocker_attention") {
+    const existingState = () => database.select({ id: decisionRetention.id }).from(decisionRetention).where(and(
+      eq(decisionRetention.companyId, input.companyId), eq(decisionRetention.sourceKind, input.sourceKind),
+      eq(decisionRetention.sourceId, input.sourceId),
+    )).then(rows => rows[0]);
+    if (input.sourceKind === "agent_error_alert") {
+      const [source] = await database.select().from(agents).where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.sourceId))).for("update");
+      if (!source || (!await existingState() && source.status !== ATTENTION_AGENT_ERROR_STATUS)) throw notFound("Attention source not found");
+      await decisionRetentionService(database).syncItems(input.companyId, [{
+        sourceKind: input.sourceKind, subject: { id: input.sourceId }, activityAt: source.updatedAt.toISOString(),
+      }]);
+      return;
+    }
+    if (["review", "blocker_attention", "productivity_review"].includes(input.sourceKind)) {
       const [source] = await database.select().from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.sourceId))).for("update");
       if (!source) throw notFound("Attention source not found");
-      const activityAt = source.unblockDescriptor?.owner === "board" && isProspectiveBlockedTransition(source)
+      if (!await existingState()) {
+        const [visible] = await database.select({ id: issues.id }).from(issues).where(and(
+          eq(issues.companyId, input.companyId), eq(issues.id, source.id), attentionIssueCondition(false),
+        ));
+        let eligible = false;
+        if (visible && input.sourceKind === "review" && source.status === "in_review") {
+          const [pendingApproval] = await database.select({ id: approvals.id }).from(issueApprovals)
+            .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId)).where(and(
+              eq(issueApprovals.companyId, input.companyId), eq(approvals.companyId, input.companyId),
+              eq(issueApprovals.issueId, source.id), eq(approvals.status, "pending"),
+            )).limit(1);
+          const state = parseIssueExecutionState(source.executionState);
+          const attention = await issueService(database).listReviewAttention(input.companyId, [source]);
+          eligible = requiresReviewAttention({
+            hasHumanParticipant: state?.status === "pending" && state.currentParticipant?.type === "user",
+            hasUserAssignee: Boolean(source.assigneeUserId), hasPendingApproval: Boolean(pendingApproval),
+            stalled: attention.get(source.id)?.state === "stalled",
+          });
+        } else if (visible && input.sourceKind === "blocker_attention" && source.status === "blocked") {
+          const owner = source.unblockDescriptor?.owner;
+          const ownsDescriptor = owner === "board" || (owner && "userId" in owner && owner.userId === input.actor.userId);
+          const attention = (await issueService(database).listBlockerAttention(input.companyId, [source])).get(source.id);
+          eligible = Boolean(ownsDescriptor && isProspectiveBlockedTransition(source))
+            || (terminalBlockerRequiresAttention(attention) && (attention.terminalBlockerIssueId ?? source.id) === source.id);
+        }
+        if (!eligible) throw notFound("Attention source not found");
+      }
+      const activityAt = input.sourceKind === "blocker_attention" && source.unblockDescriptor?.owner === "board" && isProspectiveBlockedTransition(source)
         ? source.blockedTransitionAt : source.updatedAt;
       await decisionRetentionService(database).syncItems(input.companyId, [{
         sourceKind: input.sourceKind, subject: { id: input.sourceId }, activityAt: activityAt.toISOString(),

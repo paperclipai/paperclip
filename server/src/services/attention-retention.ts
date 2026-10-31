@@ -235,7 +235,11 @@ export function attentionRetentionService(db: Db) {
           where company_id = ${candidate.companyId}::uuid and id = ${row.id}::uuid`) as unknown as Array<{ at: string; due: string }>)[0];
         activityAt = activity.at; dueAt = Number(activity.due);
       } else {
-        const attention = evidence ? evidence.blockers.get(row.id) : (await issueService(database).listBlockerAttention(candidate.companyId, [row])).get(row.id);
+        const fresh = evidence ? undefined : await issueService(database).listBlockerAttentionBatch(candidate.companyId, [row]);
+        // A bounded graph cannot establish absence of live work beyond its frontier.
+        // Keep unknown roots visible; a later source change can revalidate them.
+        if (fresh?.deferredRootIds.has(row.id)) return null;
+        const attention = evidence ? evidence.blockers.get(row.id) : fresh!.attention.get(row.id);
         if (!terminalBlockerRequiresAttention(attention)) return null;
         sourceId = attention.terminalBlockerIssueId ?? row.id;
         if (lock && sourceId !== candidate.sourceId) await database.execute(sql`select id from issues
