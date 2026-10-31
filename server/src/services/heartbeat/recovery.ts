@@ -2056,13 +2056,12 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       );
     });
 
-    // A retryable native run can retain process identifiers from the failed
-    // attempt. Inspect them before the recovery claim: a live identifier is
-    // unowned and blocks recovery, while identifiers that are all dead can be
-    // cleared with a compare-and-set so the explicit retryable failure becomes
-    // claimable in this same sweep.
+    // Retryable runs can retain process identifiers from the failed attempt.
+    // Only verified local identities may be checked and cleared on this host.
+    // Due remote retries instead re-enter the existing restart-recovery owner,
+    // which verifies the saved checkpoint, controller lease, and remote target.
     const retryableNativeProcesses = await db
-      .select({ run: heartbeatRuns })
+      .select({ run: heartbeatRuns, nextAttemptAt: nativeRunFinalizations.nextAttemptAt })
       .from(heartbeatRuns)
       .innerJoin(
         nativeRunFinalizations,
@@ -2077,13 +2076,27 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         ),
       );
     const claimableNativeRunIds = new Set<string>();
-    for (const { run } of retryableNativeProcesses) {
+    const remoteRetryRunIds: string[] = [];
+    for (const { run, nextAttemptAt } of retryableNativeProcesses) {
       if (isNativeRunnerOwnershipHeld(run)) continue;
       if (!run.processPid && !run.processGroupId) {
         claimableNativeRunIds.add(run.id);
         continue;
       }
-      if (!await nativeProcessIsLocal(run)) continue;
+      if (!await nativeProcessIsLocal(run)) {
+        if (nextAttemptAt && nextAttemptAt > now) continue;
+        if (activeRunExecutions.has(run.id) || runningProcesses.has(run.id)) continue;
+        if (parseObject(run.runnerProfileJson).nativeWorkspaceSync != null) {
+          remoteRetryRunIds.push(run.id);
+        } else {
+          const [taskLease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+            eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+            sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`,
+          )).limit(1);
+          if (taskLease) remoteRetryRunIds.push(run.id);
+        }
+        continue;
+      }
       const processPidAlive =
         !!run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive =
@@ -2128,6 +2141,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       });
       if (cleared) claimableNativeRunIds.add(cleared.id);
     }
+
+    const remoteRetryClaims = remoteRetryRunIds.length
+      ? (await recoverNativeRunsAfterRestart(now, remoteRetryRunIds)).claims
+      : [];
 
     const executingRun = (runId: string) => activeRunExecutions.has(runId) || runningProcesses.has(runId);
     if (!settledProcessesDiscovered) {
@@ -2176,7 +2193,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             return [];
           });
     const resumedRunIds = new Set(
-      nativeResumeClaims.map((claim) => claim.runId),
+      [...nativeResumeClaims, ...remoteRetryClaims].map((claim) => claim.runId),
     );
 
     // A terminal issue transition writes this intent in the same transaction
