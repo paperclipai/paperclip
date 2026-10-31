@@ -47,7 +47,7 @@ try {
   const server = await startServer();
   const app = server.server.listeners("request")[0] as unknown as { locals: { paperclipDb: Db } };
   process.send?.({ kind: "ready", port: server.listenPort });
-  process.on("message", async (message: { id: number; command: string; ms?: number; issueUpdate?: { id: string; status: "done" }; publication?: { companyId: string; scopeDigest: string; backupRoot: string; pendingRoot: string } }) => {
+  process.on("message", async (message: { id: number; command: string; ms?: number; issueUpdate?: { id: string; status: "done" }; orphanLease?: { companyId: string }; publication?: { companyId: string; scopeDigest: string; backupRoot: string; pendingRoot: string } }) => {
     try {
       if (message.command === "snapshot" || message.command === "advance" || message.command === "drain" || message.command === "resume" || message.command === "freeze" || message.command === "realtime") {
         if (message.command === "freeze" && bootClock) { clearRealInterval(bootClock); bootClock = realInterval(() => mock.timers.tick(0), 10); }
@@ -60,6 +60,17 @@ try {
         if (message.command === "resume") stopTaskDrain();
         if (fakeClock) mock.timers.tick(0);
         process.send?.({ id: message.id, kind: "snapshot", idle: idleWorkSnapshot(), startup: getStartupRecoveryState(), outgoingHttpRequests, network: network(), now: Date.now() });
+      } else if (message.command === "createOrphanLease") {
+        if (!message.orphanLease) throw new Error("Missing orphan lease fixture");
+        const { environmentLeases } = await import("@paperclipai/db");
+        const { writeEnvironmentCleanup } = await import("../../../services/environment-cleanup-notifications.js");
+        const old = new Date(Date.now() - 6 * 60_000);
+        const companyId = message.orphanLease.companyId;
+        const [lease] = await writeEnvironmentCleanup(app.locals.paperclipDb, tx => tx.insert(environmentLeases).values({
+          companyId, provider: "local", providerLeaseId: null, status: "active", leasePolicy: "ephemeral", metadata: { driver: "local" },
+          acquiredAt: old, lastUsedAt: old, createdAt: old, updatedAt: old,
+        }).returning(), { companyId });
+        process.send?.({ id: message.id, kind: "leaseCreated", leaseId: lease!.id });
       } else if (message.command === "updateIssue") {
         if (!message.issueUpdate) throw new Error("Missing issue update");
         const { issueService } = await import("../../../services/issues.js");

@@ -1,6 +1,6 @@
 import { createCipheriv, createHash, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, randomUUID, sign, verify } from "node:crypto";
 import { createServer } from "node:http";
-import { agents, agentApiKeys, agentTaskSessions, authUsers, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, issues, issueThreadInteractions, toolApplications, toolConnections } from "@paperclipai/db";
+import { agents, agentApiKeys, agentSessionGoalActions, agentTaskSessions, authUsers, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, issues, issueThreadInteractions, toolApplications, toolConnections } from "@paperclipai/db";
 import { access, mkdir, readdir, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -65,6 +65,100 @@ describe("assembled maintenance server production wiring", () => {
         repeatedQueries: repeated.length, repeated: receipt(repeated), initialFrames, finalFrames: server.proxy.frames, outgoingHttpRequests: 0 }, null, 2));
     } finally { await server.stop(); }
   }, 150_000);
+  it("reconstructs residual work from a normal scheduler-admission change after suppression", async () => {
+    await clearDatabase();
+    const server = await startMaintenanceServer(databaseUrl!, { clock: true, suppressed: true });
+    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+    try {
+      await server.settled();
+      const company = await server.api<{ id: string }>("POST", "/companies", { name: "Admission reconstruction" });
+      const { leaseId } = await server.createOrphanLease(company.id);
+      await server.advance(1_000); await settleClock(server);
+      const [suppressed] = await fixture.$client`select status, cleanup_status from environment_leases where id=${leaseId}`;
+      expect(suppressed).toMatchObject({ status: "active", cleanup_status: null });
+      const baseline = server.proxy.queries.length, before = await server.snapshot();
+      for (let step = 0; step < 4; step++) { await server.advance(30_000); await server.settled(10); }
+      expect(server.proxy.queries.length).toBe(baseline);
+      expect((await server.snapshot()).outgoingHttpRequests).toBe(before.outgoingHttpRequests);
+      await server.api("PATCH", "/instance/settings/experimental", { enableWorktreeRunExecution: true });
+      await server.advance(1_000); await settleClock(server);
+      const [admitted] = await fixture.$client`select experimental from instance_settings where singleton_key='default'`;
+      expect(admitted!.experimental).toMatchObject({ enableWorktreeRunExecution: true,
+        worktreeRunExecutionActivatedAt: expect.any(String), worktreeRunExecutionActivationInstanceId: "maintenance-test" });
+      const [reconstructed] = await fixture.$client`select status, failure_reason, cleanup_status from environment_leases where id=${leaseId}`;
+      expect(reconstructed).toMatchObject({ status: "expired", failure_reason: "pending_cleanup_retry", cleanup_status: "success" });
+      await server.advance(30_000); await settleClock(server);
+      const [cleaned] = await fixture.$client`select status, cleanup_status from environment_leases where id=${leaseId}`;
+      expect(cleaned).toMatchObject({ status: "expired", cleanup_status: "success" });
+      await writeFile(path.join(server.directory, "admission-measurement.json"), JSON.stringify({ phase: "ordinary-settings-admission-reconstruction",
+        companyId: company.id, leaseId, suppressed, suppressedClockMs: 120_000, suppressedQueries: 0,
+        admitted: admitted!.experimental, reconstructed, cleaned, frames: server.proxy.frames,
+        boundary: "actual suppressed runtime, committed environment-cleanup ingress, normal operator activation; no direct worker wake or safety-gate bypass",
+      }, null, 2));
+    } finally { await server.stop(); await fixture.$client.end(); }
+  }, 150_000);
+
+  it("isolates a real goal-startup write failure and still registers residual and attention owners", async () => {
+    await clearDatabase();
+    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+    const companyId = randomUUID(), agentId = randomUUID(), userId = randomUUID(), issueId = randomUUID(), requestId = randomUUID();
+    await fixture.insert(authUsers).values({ id: userId, name: "Goal control owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await fixture.insert(companies).values({ id: companyId, name: "Startup failure isolation", issuePrefix: "MFI", defaultResponsibleUserId: userId });
+    await fixture.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
+    await fixture.insert(agents).values({ id: agentId, companyId, name: "Goal owner", adapterType: "codex_local", status: "idle", lifecycleState: "ready" });
+    await fixture.insert(issues).values({ id: issueId, companyId, title: "Retained terminal goal task", status: "done", assigneeAgentId: agentId, responsibleUserId: userId });
+    const [session] = await fixture.insert(agentTaskSessions).values({ companyId, agentId, taskKey: issueId, adapterType: "codex_local" }).returning();
+    const [action] = await fixture.insert(agentSessionGoalActions).values({ companyId, sessionId: session!.id, requestId,
+      action: "clear", payloadJson: { requestId, action: "clear" }, status: "pending" }).returning();
+    await fixture.$client.unsafe(`create or replace function maintenance_fail_goal_startup() returns trigger language plpgsql as $$begin
+      if new.reason = 'goal_control' then raise exception 'maintenance_goal_startup_injected'; end if; return new; end$$`);
+    await fixture.$client.unsafe(`create trigger maintenance_fail_goal_startup before insert on agent_wakeup_requests for each row execute function maintenance_fail_goal_startup()`);
+    let server: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
+    try {
+      server = await startMaintenanceServer(databaseUrl!, { clock: true });
+      await settleClock(server);
+      expect((await server.snapshot()).startup.phase).toBe("ready");
+      expect(server.output).toContain("maintenance_goal_startup_injected");
+      const [retained] = await fixture.$client`select status from agent_session_goal_actions where id=${action!.id}`;
+      expect(retained!.status).toBe("pending");
+      const [failedWake] = await fixture.$client`select count(*)::integer as count from agent_wakeup_requests where reason='goal_control'`;
+      expect(failedWake!.count).toBe(0);
+      const start = (await server.snapshot()).now;
+      const { leaseId } = await server.createOrphanLease(companyId);
+      let discovered: Record<string, unknown> | undefined;
+      for (let step = 0; step < 10; step++) {
+        await server.advance(1_000); await delay(50);
+        [discovered] = await fixture.$client`select status, failure_reason, provider, provider_lease_id from environment_leases where id=${leaseId}`;
+        if (discovered?.status === "pending_cleanup") break;
+      }
+      expect(discovered).toMatchObject({ status: "pending_cleanup", failure_reason: "orphaned_active_lease_recovered", provider: "local", provider_lease_id: null });
+      const elapsedClockMs = (await server.snapshot()).now - start;
+      expect(elapsedClockMs).toBeLessThan(30_000);
+      await server.advance(30_000); await settleClock(server);
+      const [lease] = await fixture.$client`select status, cleanup_status, provider, provider_lease_id from environment_leases where id=${leaseId}`;
+      expect(lease).toMatchObject({ status: "expired", cleanup_status: "success", provider: "local", provider_lease_id: null });
+      await fixture.$client.unsafe(`create or replace function maintenance_age_isolation_attention() returns trigger language plpgsql as $$begin
+        if new.title = 'Attention after goal failure' then new.updated_at = now() - interval '91 days'; end if; return new; end$$`);
+      await fixture.$client.unsafe(`create trigger maintenance_age_isolation_attention before insert on issue_thread_interactions for each row execute function maintenance_age_isolation_attention()`);
+      const issue = await server.api<{ id: string }>("POST", `/companies/${companyId}/issues`, { title: "Independent attention owner", status: "todo" });
+      const card = await server.api<{ id: string }>("POST", `/issues/${issue.id}/interactions`, { kind: "request_confirmation", title: "Attention after goal failure",
+        resolverPolicy: "human_only", continuationPolicy: "none", payload: { version: 1, prompt: "Choose a color?" } });
+      await server.advance(1_000); await settleClock(server);
+      const [archived] = await fixture.$client`select archived_reason, archived_at is not null as archived from decision_retention where source_id=${card.id}`;
+      expect(archived).toMatchObject({ archived_reason: "idle_ttl", archived: true });
+      await writeFile(path.join(server.directory, "startup-failure-measurement.json"), JSON.stringify({ phase: "actual-goal-startup-failure-isolation",
+        companyId, actionId: action!.id, retained, failedWake, leaseId, discovered, lease, elapsedClockMs, archived, frames: server.proxy.frames,
+        boundary: "fixture-only conditional goal_control INSERT failure; actual native classification untouched; actual environment cleanup ingress and ordinary attention HTTP producer",
+      }, null, 2));
+    } finally {
+      await fixture.$client.unsafe("drop trigger if exists maintenance_fail_goal_startup on agent_wakeup_requests").catch(() => {});
+      await fixture.$client.unsafe("drop function if exists maintenance_fail_goal_startup()").catch(() => {});
+      await fixture.$client.unsafe("drop trigger if exists maintenance_age_isolation_attention on issue_thread_interactions").catch(() => {});
+      await fixture.$client.unsafe("drop function if exists maintenance_age_isolation_attention()").catch(() => {});
+      await server?.stop(); await fixture.$client.end();
+    }
+  }, 150_000);
+
   it("exposes readiness while real deferred housekeeping is held and settles its work after release", async () => {
     await clearDatabase();
     const fixture = createDb(databaseUrl!, { maxConnections: 1 });
@@ -610,12 +704,26 @@ describe("assembled maintenance server production wiring", () => {
       const [projected] = await fixture.$client`select rr.company_id, rr.status, rr.completed_at is not null as completed,
         i.status as issue_status from routine_runs rr join issues i on i.id=rr.linked_issue_id where rr.id=${run.id}`;
       expect(projected).toMatchObject({ company_id: companyId, status: "completed", completed: true, issue_status: "done" });
+      const restoredRun = await server.api<{ id: string; linkedIssueId: string }>("POST", `/routines/${routine.id}/run`, {
+        source: "manual", idempotencyKey: randomUUID(),
+      });
+      const cancel = await server.api<{ hold: { id: string } }>("POST", `/issues/${restoredRun.linkedIssueId}/tree-holds`, { mode: "cancel", reason: "Ordinary cancel before restore" });
+      await server.advance(1_000); await settleClock(server);
+      const [cancelled] = await fixture.$client`select status from routine_runs where id=${restoredRun.id}`;
+      expect(cancelled!.status).toBe("failed");
+      await server.api("POST", `/issues/${restoredRun.linkedIssueId}/tree-holds`, { mode: "restore", reason: "Ordinary restore" });
+      await server.advance(1_000); await settleClock(server);
+      const [restored] = await fixture.$client`select rr.status, rr.completed_at, rr.failure_reason, i.status as issue_status
+        from routine_runs rr join issues i on i.id=rr.linked_issue_id where rr.id=${restoredRun.id}`;
+      expect(restored).toMatchObject({ status: "issue_created", completed_at: null, failure_reason: null, issue_status: "todo" });
+      const [cancelHold] = await fixture.$client`select status from issue_tree_holds where id=${cancel.hold.id}`;
+      expect(cancelHold!.status).toBe("released");
       const [executions] = await fixture.$client`select count(*)::integer as count from heartbeat_runs where company_id=${companyId}`;
       expect(executions!.count).toBe(0);
       expect(storageRequests).toEqual([]);
       await writeFile(path.join(server.directory, "routine-measurement.json"), JSON.stringify({
         phase: "ordinary-routine-service-completion-during-drain", completionBoundary: "actual issueService.update with runtime-owned DB; excludes redundant route projection hook", companyId, routineId: routine.id, runId: run.id,
-        before, drained, projected, executions: executions!.count, storageRequests,
+        before, drained, projected, restoredRun, cancelled, restored, cancelHold, executions: executions!.count, storageRequests,
         suppression: "PAPERCLIP_IN_WORKTREE; actual production policy", frames: server.proxy.frames,
       }, null, 2));
     } finally {
