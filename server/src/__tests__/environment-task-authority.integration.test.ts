@@ -6,6 +6,7 @@ import { resolvePluginTaskResume } from "../services/environment-task-runtime.js
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { NativeExecutionContext } from "../services/native-runtime/native-execution-context.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -19,6 +20,44 @@ databaseSuite("environment task lease authority", () => {
     stopDb = started.stop; db = createDb(started.connectionString);
   });
   afterAll(async () => { await stopDb?.(); });
+
+  it("replaces a stopped warm candidate within its tracked startup context", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), environmentId = randomUUID(), pluginId = randomUUID(), runId = randomUUID(), leaseId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Warm candidate", issuePrefix: `T${companyId.slice(0, 7).replace(/-/g, "").toUpperCase()}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Fixture", adapterType: "paperclip_runner" });
+    await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "fixture-warm-replacement", version: "1", status: "ready",
+      manifestJson: { capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey: "tasks", supportsTasks: true }] } as never });
+    await db.insert(environments).values({ id: environmentId, companyId, name: "Fixture", driver: "plugin",
+      config: { pluginKey: pluginId, driverKey: "tasks", driverConfig: {} } });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "manual", status: "running" });
+    await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, heartbeatRunId: runId,
+      provider: "plugin:fixture:tasks", providerLeaseId: "stopped-task", status: "active", leasePolicy: "reuse_by_environment",
+      metadata: { driver: "plugin", pluginId, pluginKey: pluginId, driverKey: "tasks", runnerTaskLease: true, runnerTaskReused: true } });
+    const calls: string[] = [];
+    const workers = { getWorker: () => ({ supportedMethods: ["environmentTask", "environmentAcquireLease"] }),
+      call: async (_plugin: string, method: string, params: any, _timeout?: number, _sink?: unknown, settled?: () => void) => {
+        calls.push(method === "environmentTask" ? params.operation.kind : method);
+        try {
+          if (method === "environmentAcquireLease") return { providerLeaseId: "replacement-task" };
+          if (params.operation.kind === "status") return { kind: "status", taskId: params.taskId, phase: "completed", executionStopped: true };
+          if (params.operation.kind === "describe") return { kind: "description", taskId: params.taskId,
+            runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` }, executionContextVersion: 1 };
+          return { kind: "accepted", taskId: params.taskId };
+        } finally { settled?.(); }
+      },
+    } as unknown as PluginWorkerManager;
+    const context = new NativeExecutionContext({ binding: { companyId, agentId, runId } } as never, 1_000);
+    try {
+      await expect(environmentRuntimeService(db, { pluginWorkerManager: workers }).task({ companyId, leaseId,
+        operation: { kind: "describe" }, executionContext: context })).resolves.toMatchObject({ kind: "description", taskId: "replacement-task" });
+      expect(calls).toEqual(["status", "status", "complete", "environmentAcquireLease", "describe"]);
+      expect(context.pending).toBe(false);
+      const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
+      expect(lease.providerLeaseId).toBe("replacement-task");
+      expect(lease.metadata?.runnerTaskReused).toBe(false);
+      expect(JSON.stringify(lease.metadata)).not.toContain(context.id);
+    } finally { context.finish(); }
+  });
 
   it("authorizes a new task lease only after scoped prior execution has stopped", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), environmentId = randomUUID(), pluginId = randomUUID();

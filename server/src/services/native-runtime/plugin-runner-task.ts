@@ -6,6 +6,7 @@ import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-co
 import { RUNNER_PRP_PROTOCOL_MIN, RUNNER_PRP_PROTOCOL_MAX, type RunnerProcessHandle, type RunnerProcessLaunchSpec,
   type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerLaunchPreparer, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
+import type { NativeExecutionContext } from "./native-execution-context.js";
 
 export async function verifyPluginRunnerTaskReattachment(
   task: (operation: unknown) => Promise<unknown>, identity: unknown,
@@ -27,6 +28,7 @@ export async function verifyPluginRunnerTaskReattachment(
  * No provider pid is treated as a local pid. Only executionStopped settles it.
  */
 export function createPluginRunnerTaskOwner(input: {
+  executionContext?: NativeExecutionContext;
   task: (operation: unknown) => Promise<unknown>;
   projectIds: readonly string[];
   harness: string;
@@ -76,6 +78,21 @@ export function createPluginRunnerTaskOwner(input: {
     }
     return result;
   };
+  let removeStartupAbort = () => {};
+  const bindStartupAbort = () => {
+    removeStartupAbort();
+    const context = input.executionContext;
+    if (!context) return;
+    const abort = () => {
+      if (input.executionContext !== context || !context.active) return;
+      stopRequested = true;
+      void call({ kind: "stop" }).catch(rejectFailure);
+    };
+    context.signal.addEventListener("abort", abort, { once: true });
+    removeStartupAbort = () => context.signal.removeEventListener("abort", abort);
+    if (context.signal.aborted) abort();
+  };
+  bindStartupAbort();
   const checkProjectAuth = async (configurationId:string) => {
     if (input.projectAuthCheckVersion !== 1) throw new Error("Plugin Runner managed project authentication validation unavailable");
     const provider = input.harness === "codex" ? "openai" : input.harness === "claude" ? "anthropic" : input.harness;
@@ -341,6 +358,7 @@ export function createPluginRunnerTaskOwner(input: {
           JSON.stringify(input.projectIds) !== JSON.stringify(next.projectIds)) throw new Error("Plugin warm task cannot be rebound");
       input = next;
       released = false;
+      bindStartupAbort();
     },
   };
 

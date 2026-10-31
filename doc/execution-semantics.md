@@ -1863,6 +1863,55 @@ That is the execution contract Paperclip should present to operators.
 
 ### Cancellation during native startup
 
+A retained Codex or Claude session uses the same Core-owned startup context
+for local execution and plugin execution. Core retains the selected native
+execution input. Provider, model, instructions, skills and tool selection remain
+in that input and its existing Runner launch requirements. Provider configuration defaults
+changed after selection apply to later runs. A configuration edit does not hold
+startup open or delay its commit.
+
+This context starts after the existing controller claim and before retained
+session inspection. Its deadline is the smaller of the existing 30-second warm
+startup budget and the controller's remaining confirmed ownership budget. Fresh
+launches, checkpoint recovery, Pi and other providers retain their existing
+budgets. Inspection of a warm candidate can discover a stopped task and acquire
+a replacement within this bound. Once Core rejects reuse, the later cold launch
+uses its existing budget. The context adds no database operation to local startup.
+
+A compatible plugin receives an optional transient transport projection. It
+contains an attempt ID, an absolute deadline, plugin-owned instance secrets and
+the company transport configuration. Core reads this transport once for the
+attempt. It does not put transport secrets in lease metadata, checkpoints or run
+results. The existing warm-identity update records only a run ID, context ID and
+deadline before the plugin receives a preparation request. The
+plugin uses the existing Core-selected Runner requirements, verifies its actual
+guest resources, and does not repeat Core's eligibility decision. Generic plugin
+runtime reads remain fresh. Older plugins use their existing path without this
+projection or the new startup deadline.
+
+Cancellation aborts compatible plugin startup I/O and prevents later provider
+dispatch. The initial capability lookup retains its legacy read path and can
+finish after the caller stops waiting. Already accepted remote requests can still
+commit. A caller timeout or deadline
+does not prove that its worker or remote process stopped. Core retains its
+startup responsibility until the actual worker reply or the deadline. A worker
+that remains unsettled then requests audited cancellation and automatic cleanup
+through the existing control queues. Normal Stop joins this work. Cleanup must
+retire the exact physical task, verify that its process and preparation writes
+stopped, and drain accepted host handlers before releasing resources. A process
+stop alone is insufficient. The compatible backend fences later writes to a
+retired physical task; retries allocate a new task ID. Missing proof or an
+unreachable backend leaves visible cleanup pending and automatic retries.
+
+Restart recovery uses the preparation breadcrumb only while the current run has
+no first session checkpoint and the prior controller and context deadlines have
+expired. It queues cleanup rather than replaying a provider. A completed result
+or a newer owner wins. The existing adopted-authentication and chat-workspace
+ownership holds retain their separate behavior. The startup budget does not bound
+the duration of remote cleanup. Existing Stop receipts and process cleanup still gate
+destructive lifecycle or binding changes. Operator plugin restarts and external
+machine changes can still interrupt startup.
+
 Cancellation records a preparation fence while holding the run row lock. Native
 runtime selection checks that fence, the running status, and the current startup
 controller lease in the same transaction that creates the native coordinator.

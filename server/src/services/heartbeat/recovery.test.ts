@@ -168,13 +168,13 @@ describe("heartbeat recovery module callbacks", () => {
     expect(database.access).not.toHaveBeenCalled();
   });
 
-  it("persists an authentication ownership hold before its event without terminating or retrying", async () => {
+  it.each(["adopted_runner_authentication_timeout"] as const)("persists a %s ownership hold before its event without terminating or retrying", async reason => {
     const database = guardedDatabase();
     const deps = callbacks(database.db);
     const run = { id: "run", runtimeMode: "native", status: "running" } as Run;
     const blocked = { ...run, nativePhase: "terminal_failure", errorCode: NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE };
     deps.setRunStatusFromLive.mockResolvedValue({ updated: true, run: blocked });
-    expect(await createHeartbeatRecovery(database.db, deps).markNativeOwnershipUnverified(run, { reason: "adopted_runner_authentication_timeout" })).toBe(blocked);
+    expect(await createHeartbeatRecovery(database.db, deps).markNativeOwnershipUnverified(run, { reason })).toBe(blocked);
     expect(deps.setRunStatusFromLive).toHaveBeenCalledWith("run", "running", ["running"], expect.objectContaining({ nativePhase: "terminal_failure" }));
     expect(deps.appendRunEvent).toHaveBeenCalledAfter(deps.setRunStatusFromLive);
     expect(deps.cancelHeartbeatNativeRun).not.toHaveBeenCalled();

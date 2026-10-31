@@ -22,17 +22,20 @@ import { hasLiveLegacyController } from "./legacy-controller-lease.js";
 import { reportRunFailure } from "./run-failure-report.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
 import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
+import { NATIVE_STARTUP_CLEANUP_PENDING } from "./native-runtime/native-startup-cleanup.js";
 
 /** Only newly recorded control deadlines are eligible. Upgrades never replay ambiguous historical runs. */
 export async function reconcileAbandonedExecutionControl(
   db: Db,
   now = new Date(),
+  options: { startupCleanup?: (scope: { companyId: string; runId: string }) => Promise<unknown> } = {},
 ) {
   const nativeDue = await db
     .select({
       runId: nativeRunFinalizations.runId,
       issueId: nativeRunFinalizations.issueId,
       companyId: nativeRunFinalizations.companyId,
+      failureCode: nativeRunFinalizations.failureCode,
     })
     .from(nativeRunFinalizations)
     .where(
@@ -78,6 +81,10 @@ export async function reconcileAbandonedExecutionControl(
     while (nextCandidate < due.length) {
       const candidate = due[nextCandidate++]!;
       try {
+        if (nativeDue.find(row => row.runId === candidate.runId)?.failureCode === NATIVE_STARTUP_CLEANUP_PENDING) {
+          if (options.startupCleanup) await options.startupCleanup({ companyId: candidate.companyId, runId: candidate.runId });
+          continue;
+        }
         // Set inside the transaction only when the write below genuinely
         // transitions the run into "failed". Read after the transaction
         // commits, so a rolled-back write never reports a false failure.
