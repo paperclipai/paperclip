@@ -330,9 +330,9 @@ export function githubConnectionEventService(
         // Lifecycle webhooks carry IDs, not the user token’s complete repository view.
         // Discard the snapshot until Refresh access verifies it again.
         accessRevision: randomUUID(),
-        ...(unavailable ? { bindingSync: {
+        ...(unavailable || github.bindingSync || !github.installationIds.includes(binding.installationId) ? { bindingSync: {
           id: randomUUID(), removeInstallationIds: [...new Set([
-            ...(github.bindingSync?.removeInstallationIds ?? []), binding.installationId,
+            ...(github.bindingSync?.removeInstallationIds ?? []), ...(unavailable ? [binding.installationId] : []),
           ])].filter(id => !installationIds.includes(id)),
         } } : {}),
         repositories: undefined,
