@@ -412,6 +412,15 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     expect(await exists(session.current)).toBe(false);
   });
 
+  it("retains incomplete native snapshot publications even after the issue closes", async () => {
+    const session = await seedSession({ finalization: { phase: "committed" } });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeControllerRecovery: {
+      schema: "paperclip.native-controller-recovery.v1", checkpoint: null,
+    } } }).where(eq(heartbeatRuns.id, session.runId));
+    expect(await service().tick()).toMatchObject({ expired: 0, skipped: { native_recovery_incomplete: 1 } });
+    expect(await exists(session.current)).toBe(true);
+  });
+
   it.each([
     ["committed", "resuming_session"],
     ["terminal_failure", "blocked"],
