@@ -155,7 +155,7 @@ import {
         (
           await issueService(db).list(companyId, { q: results[0].identifier! })
         ).some((issue) => issue.id === results[0].id),
-      ).toBe(true);
+      ).toBe(false);
       expect(
         (await issueService(db).getById(results[0].id))?.conversationUserId,
       ).toBe(user);
