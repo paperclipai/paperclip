@@ -4252,6 +4252,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   workspace: {
     id: string;
     companyId: string;
+    mode?: string;
     cwd: string | null;
     providerType: string;
     providerRef: string | null;
@@ -4276,6 +4277,14 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   runCleanupCommands?: boolean;
   forceWorktreeRemoval?: boolean;
 }) {
+  if (input.workspace.mode === "shared_workspace") {
+    return {
+      cleanedPath: null,
+      cleaned: true,
+      warnings: [],
+    };
+  }
+
   if (input.workspace.providerType === "plugin") throw new Error("Managed workspace cleanup requires its storage plugin");
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
@@ -8309,6 +8318,45 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
         executionWorkspaceId: input.executionWorkspaceId,
       });
     }
+  }
+}
+
+/**
+ * Stops the services that an execution workspace session owns and that no live run leases.
+ * Project-owned services keep running: they belong to the project workspace, not to one
+ * session. A service that a newer session reuses keeps its original executionWorkspaceId,
+ * so its active lease is what keeps it running here.
+ */
+export async function stopIdleSessionRuntimeServicesForExecutionWorkspace(input: {
+  db: Db;
+  executionWorkspaceId: string;
+}) {
+  const ownedBySession = (scopeType: string) => scopeType !== "project_workspace";
+  const stoppable = new Set<string>();
+  const leased = new Set<string>();
+  for (const record of runtimeServicesById.values()) {
+    if (record.executionWorkspaceId !== input.executionWorkspaceId || !ownedBySession(record.scopeType)) continue;
+    if (record.leaseRunIds.size > 0) leased.add(record.id);
+    else stoppable.add(record.id);
+  }
+  const persisted = await input.db
+    .select({ id: workspaceRuntimeServices.id, scopeType: workspaceRuntimeServices.scopeType })
+    .from(workspaceRuntimeServices)
+    .where(
+      and(
+        eq(workspaceRuntimeServices.executionWorkspaceId, input.executionWorkspaceId),
+        inArray(workspaceRuntimeServices.status, ["provisioning", "starting", "running"]),
+      ),
+    );
+  for (const row of persisted) {
+    if (ownedBySession(row.scopeType) && !leased.has(row.id)) stoppable.add(row.id);
+  }
+  for (const runtimeServiceId of stoppable) {
+    await stopRuntimeServicesForExecutionWorkspace({
+      db: input.db,
+      executionWorkspaceId: input.executionWorkspaceId,
+      runtimeServiceId,
+    });
   }
 }
 

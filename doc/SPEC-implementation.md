@@ -759,6 +759,9 @@ Side effects:
 - entering `in_progress` sets `started_at` if null
 - entering `done` sets `completed_at`
 - entering `cancelled` sets `cancelled_at`
+- a terminal issue keeps its shared execution workspace sessions until the terminal workspace reaper archives them, after the reaper cooldown and after every issue in its tree is closed and no other open issue uses the session; only the session records change, and the project workspace on disk is never deleted
+- a new shared session for an issue archives the shared sessions of earlier runs on that issue, except sessions that a queued or running heartbeat still uses
+- isolated execution workspaces stay with the terminal workspace reaper, which archives and cleans them after the work is merged
 
 V1 non-terminal liveness rule:
 

@@ -21,6 +21,7 @@ import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLeg
 import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement } from "./heartbeat/process-settlement.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
+import { executionWorkspaceLifecycleService } from "./execution-workspace-lifecycle.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
@@ -938,6 +939,7 @@ export function heartbeatService(
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db, { pluginWorkerManager: options.pluginWorkerManager });
+  const executionWorkspaceLifecycle = executionWorkspaceLifecycleService(db);
   const environmentsSvc = environmentService(db);
   const environmentRuntime =
     options.environmentRuntime ??
@@ -2735,6 +2737,7 @@ export function heartbeatService(
           workspaceWorkers: options.pluginWorkerManager,
           envOrchestrator,
           executionWorkspacesSvc,
+          executionWorkspaceLifecycle,
           workspaceOperationsSvc,
           resolveWorkspaceForRun,
           resolveReusedGitWorkspaceAnchor,

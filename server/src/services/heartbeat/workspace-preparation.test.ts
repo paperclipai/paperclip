@@ -17,6 +17,7 @@ import { registerServerAdapter, getServerAdapter, type AdapterExecutionContext }
 import { environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { environmentService } from "../environments.js";
 import { executionWorkspaceService, toExecutionWorkspace } from "../execution-workspaces.js";
+import { executionWorkspaceLifecycleService } from "../execution-workspace-lifecycle.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { workspaceOperationService } from "../workspace-operations.js";
 import { nativeWorkspaceSyncInternals, prepareNativeWorkspaceSync } from "../native-runtime/native-workspace-sync.js";
@@ -631,6 +632,41 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(input.nativeRunnerPreparationSpans.map(span => span.name)).toEqual(["environment.acquire", "environment.workspace.realize"]);
     expect(input.nativeRunnerPreparationSpans.every(span => span.parentName === "task.provider_session")).toBe(true);
     expect(input.controllerLease.assertOwned).toHaveBeenCalledTimes(2);
+  });
+
+  async function insertAgedSharedSession(issue: typeof issues.$inferSelect, cwd: string) {
+    const [session] = await db.insert(executionWorkspaces).values({ companyId: issue.companyId, projectId: issue.projectId!, projectWorkspaceId: issue.projectWorkspaceId,
+      sourceIssueId: issue.id, mode: "shared_workspace", strategyType: "project_primary", name: "Earlier run session", status: "active", cwd,
+      providerType: "local_fs", lastUsedAt: new Date(Date.now() - 60 * 60_000) }).returning();
+    return session!;
+  }
+
+  it("archives the shared sessions of earlier runs after binding the final shared session", async () => {
+    const { input, source, issue } = await fixture();
+    const earlier = await insertAgedSharedSession(issue, source);
+    input.services.executionWorkspaceLifecycle = executionWorkspaceLifecycleService(db);
+    const result = await prepareHeartbeatWorkspace(db, input);
+    const current = result.persistedExecutionWorkspace!;
+    expect(current).toMatchObject({ mode: "shared_workspace" });
+    expect(current.id).not.toBe(earlier.id);
+    expect((await readIssue(issue.id)).executionWorkspaceId).toBe(current.id);
+    const statuses = new Map((await db.select({ id: executionWorkspaces.id, status: executionWorkspaces.status }).from(executionWorkspaces)).map(row => [row.id, row.status]));
+    expect(statuses.get(earlier.id)).toBe("archived");
+    expect(statuses.get(current.id)).toBe("active");
+  });
+
+  it("keeps preparing the run when archiving earlier shared sessions fails", async () => {
+    const { input, source, issue } = await fixture();
+    const earlier = await insertAgedSharedSession(issue, source);
+    const archive = vi.fn(async () => { throw new Error("archive unavailable"); });
+    input.services.executionWorkspaceLifecycle = { archiveSupersededSharedSessionsForIssue: archive };
+    const result = await prepareHeartbeatWorkspace(db, input);
+    const current = result.persistedExecutionWorkspace!;
+    expect(archive).toHaveBeenCalledWith(expect.objectContaining({ companyId: issue.companyId, issueId: issue.id, keepWorkspaceId: current.id }));
+    expect(result.executionWorkspace.cwd).toBe(source);
+    expect((await readIssue(issue.id)).executionWorkspaceId).toBe(current.id);
+    expect(await leases(input.run.id)).toMatchObject([{ status: "active", executionWorkspaceId: current.id }]);
+    expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, earlier.id)))[0]?.status).toBe("active");
   });
 
   it("records workspace steps around real persistence before environment acquisition", async () => {
