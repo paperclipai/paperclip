@@ -5,9 +5,17 @@ let fixture: CollectionFixture;
 let otherCompanyId: string;
 test.beforeAll(async ({ request }) => {
   fixture = await collectionFixture(request);
-  const response = await request.post("/api/companies", { data: { name: "Other collection organization" } });
-  expect(response.ok()).toBeTruthy();
-  otherCompanyId = (await response.json()).id;
+  expect(fixture.otherCompanyId).toBeTruthy();
+  otherCompanyId = fixture.otherCompanyId!;
+});
+
+test("repeated fixture setup retains both companies without growing the instance", async ({ request }) => {
+  const before = await (await request.get("/api/companies")).json();
+  const again = await collectionFixture(request);
+  const after = await (await request.get("/api/companies")).json();
+  expect(again.company.id).toBe(fixture.company.id);
+  expect(again.otherCompanyId).toBe(otherCompanyId);
+  expect(after.map((company: { id: string }) => company.id).sort()).toEqual(before.map((company: { id: string }) => company.id).sort());
 });
 for (const route of ["issues", "inbox/mine"]) test(`${route} leaves task-detail code out of collection startup`, async ({ page }) => {
   await coordinatorPreference(page);
