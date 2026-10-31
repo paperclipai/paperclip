@@ -146,9 +146,6 @@ async function hashFile(filePath: string): Promise<string> {
 
 const isVanishedEntry = (error: unknown) => (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
 
-// Captures can run while another writer changes the tree, e.g. a baseline
-// walk racing a restore's `.paperclip-merge-*` rename. An entry removed after
-// it was listed is absent from the snapshot. The root must still exist.
 async function* walkDirectory(
   root: string, exclude: readonly string[], ignored: ReturnType<typeof workspacePathMatcher>, relative = "",
 ): AsyncGenerator<[string, SnapshotEntry]> {

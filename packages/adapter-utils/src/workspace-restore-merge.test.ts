@@ -184,9 +184,6 @@ describe("workspace restore merge", () => {
   });
 
   describe("entries removed by a concurrent writer during capture", () => {
-    // Another restore into the same workspace renames its
-    // `.paperclip-merge-*` temporary files into place while this walk runs.
-    // Each case removes the entry at the exact interruption point.
     async function captureWhileRemoving(
       removeAt: "before-lstat" | "after-lstat",
       setup: (rootDir: string) => Promise<string>,
