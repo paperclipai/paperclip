@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import {
   appendExcerpt,
   boundHeartbeatRunEventPayloadForStorage,
   compactRunLogChunk,
+  redactCanonicalNativeRunLogChunk,
 } from "./run-log.js";
 
 describe("heartbeat run-log excerpts", () => {
@@ -171,5 +173,42 @@ describe("heartbeat run-log chunk formatting", () => {
     expect(compacted).not.toContain("fixture-secret-token");
     expect(compacted).toContain("[omitted base64 image data: 70000 chars]");
     expect(compacted).not.toContain("[paperclip truncated");
+  });
+});
+
+describe("complete canonical native log privacy", () => {
+  it.each([false, true])("keeps structured bytes and applies complete-value secrets, images, and username masking: %s", enabled => {
+    const identity = createAgentIdentityRedactor("fixture-configured-private-canary");
+    const envelope = { type: "paperclip.prp.event", event: {
+      schema: "paperclip.prp.event.v1", schemaVersion: 1, eventType: "item.delta",
+      payload: { header: 'Authorization: Bearer fixture-bearer-canary', api_key: "fixture-api-canary",
+        text: 'quoted "fixture-configured-private-canary" by fixture-operator',
+        image: { source: { data: "A".repeat(70000), type: "base64" }, type: "image" },
+        parts: Array.from({ length: 20 }, () => "full content ".repeat(400)),
+      },
+    } };
+    const chunk = redactCanonicalNativeRunLogChunk(JSON.stringify(envelope), {
+      redactIdentity: identity.redact, currentUser: { enabled, userNames: ["fixture-operator"], homeDirs: [] },
+    });
+    const result = JSON.parse(chunk).event;
+    expect(result.schema).toBe(envelope.event.schema);
+    expect(result.payload.header).toBe("Authorization: ***REDACTED***");
+    expect(result.payload.api_key).toBe("***REDACTED***");
+    expect(result.payload.text).toContain('quoted "***REDACTED***" by ');
+    expect(result.payload.text.includes("fixture-operator")).toBe(!enabled);
+    expect(result.payload.parts).toEqual(envelope.event.payload.parts);
+    expect(result.payload.image.source.data).toBe("[omitted base64 image data: 70000 chars]");
+    for (const secret of ["fixture-configured-private-canary", "fixture-bearer-canary", "fixture-api-canary"])
+      expect(chunk).not.toContain(secret);
+    expect(chunk).not.toContain("data:image");
+    expect(chunk.length).toBeGreaterThan(64 * 1024);
+    expect(chunk).not.toContain("[paperclip truncated");
+  });
+
+  it("rejects malformed owned envelopes instead of treating them as coverage-preserving diagnostics", () => {
+    const options = { redactIdentity: <T>(value: T) => value, currentUser: { enabled: false } };
+    for (const chunk of ['{"type":"paperclip.prp.event",', '{"type":"diagnostic","event":{}}',
+      '{"type":"paperclip.prp.event","event":[]}'])
+      expect(() => redactCanonicalNativeRunLogChunk(chunk, options)).toThrow();
   });
 });

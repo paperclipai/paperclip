@@ -6,7 +6,7 @@ import type { createAgentIdentityRedactor } from "../agent-identity-redaction.js
 import { touchHeartbeatRunRuntimeStatus } from "../heartbeat-run-runtime-status.js";
 import { publishLiveEvent } from "../live-events.js";
 import { isRunLogStoreType, type RunLogHandle, type RunLogStore } from "../run-log-store.js";
-import { appendExcerpt, compactRunLogChunk } from "./run-log.js";
+import { appendExcerpt, canonicalNativeRunLogRedactionForms, compactRunLogChunk, redactCanonicalNativeRunLogChunk } from "./run-log.js";
 import { createNativeRunLogExporter, nativeRunLogPrefixCursor } from "../native-runtime/native-run-log-export.js";
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import {
@@ -20,6 +20,7 @@ export const ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS = 60 * 1000;
 export const ACTIVE_RUN_LOG_RUNTIME_STATUS_REFRESH_INTERVAL_MS = 5 * 1000;
 
 type Run = typeof heartbeatRuns.$inferSelect;
+type CanonicalNativeLog = { kind: "canonical_native"; sourceCursor: number };
 
 export interface HeartbeatRunOutputInput {
   run: Run;
@@ -157,11 +158,15 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       stream: "stdout" | "stderr",
       chunk: string,
       waitForCommit = true,
-      sourceCursor?: number,
+      source?: CanonicalNativeLog,
     ) => {
-      const sanitizedChunk = compactRunLogChunk(
-        redactCurrentUserText(chunk, currentUserRedactionOptions),
-      );
+      const sourceCursor = source?.sourceCursor;
+      const sanitizedChunk = source?.kind === "canonical_native"
+        ? redactCanonicalNativeRunLogChunk(chunk, {
+            redactIdentity: identityRedactor.redact,
+            currentUser: currentUserRedactionOptions,
+          })
+        : compactRunLogChunk(redactCurrentUserText(chunk, currentUserRedactionOptions));
       if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
       if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
       const ts = new Date().toISOString();
@@ -178,7 +183,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
           ts,
           seq: chunkSeq,
           sourceCursor,
-          preservesSourceCoverage: sourceCursor !== undefined || !nativeLooking,
+          preservesSourceCoverage: source?.kind === "canonical_native" || !nativeLooking,
         };
         committed = runLogStore.enqueue
           ? (await runLogStore.enqueue(handle, event)).committed
@@ -261,10 +266,9 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
         db, companyId: run.companyId, runId, store: runLogStore, handle: handle!,
         // Verify the two supported historical username-masking settings. Keep
         // the full private-data projection here; compaction is proved separately.
-        redactChunks: (chunk) => [false, true].map(enabled => compactRunLogChunk(
-          redactCurrentUserText(identityRedactor.redact(chunk), { ...currentUserRedactionOptions, enabled }),
-          Number.MAX_SAFE_INTEGER,
-        )),
+        redactChunks: (chunk) => canonicalNativeRunLogRedactionForms(chunk, {
+          redactIdentity: identityRedactor.redact, currentUser: currentUserRedactionOptions,
+        }),
       });
       return createNativeRunLogExporter({
         db,
@@ -274,9 +278,9 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
         enqueue: (cursor, chunk) =>
           appendIdentityRedactedLog(
             "stdout",
-            identityRedactor.chunk("stdout", chunk),
+            chunk,
             false,
-            cursor,
+            { kind: "canonical_native", sourceCursor: cursor },
           ),
         flush: () => runLogStore.flush!(handle!),
       });

@@ -5,10 +5,10 @@ import {
   nativeRunFinalizations,
   type Db,
 } from "@paperclipai/db";
-import { redactCurrentUserText, type CurrentUserRedactionOptions } from "../../log-redaction.js";
+import type { CurrentUserRedactionOptions } from "../../log-redaction.js";
 import type { RunLogHandle, RunLogReadOptions, RunLogStore } from "../run-log-store.js";
 import { instanceSettingsService } from "../instance-settings.js";
-import { compactRunLogChunk } from "../heartbeat/run-log.js";
+import { canonicalNativeRunLogRedactionForms, redactCanonicalNativeRunLogChunk } from "../heartbeat/run-log.js";
 import { beginIdleTrackedWork } from "../task-admission.js";
 import { agentIdentityService } from "../agent-identity.js";
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
@@ -151,10 +151,9 @@ export async function recoverSettledNativeRunLog(
     try {
       lastSourceCursor = await nativeRunLogPrefixCursor({
         db, companyId, runId, store, handle, signal,
-        redactChunks: (chunk) => [false, true].map(enabled => compactRunLogChunk(
-          redactCurrentUserText(identityRedactor.redact(chunk), { ...redaction, enabled }),
-          Number.MAX_SAFE_INTEGER,
-        )),
+        redactChunks: (chunk) => canonicalNativeRunLogRedactionForms(chunk, {
+          redactIdentity: identityRedactor.redact, currentUser: redaction,
+        }),
       });
       const exporter = createNativeRunLogExporter({
         db,
@@ -169,9 +168,9 @@ export async function recoverSettledNativeRunLog(
             seq: ++sequence,
             sourceCursor,
             preservesSourceCoverage: true,
-            chunk: compactRunLogChunk(
-              redactCurrentUserText(identityRedactor.chunk("stdout", chunk), redaction),
-            ),
+            chunk: redactCanonicalNativeRunLogChunk(chunk, {
+              redactIdentity: identityRedactor.redact, currentUser: redaction,
+            }),
           });
           receipts.push(
             receipt.committed.catch((error) => {

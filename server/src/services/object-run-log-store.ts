@@ -3,9 +3,10 @@ import { createHash, randomUUID } from "node:crypto";
 import type { StorageProvider } from "../storage/types.js";
 import type { RunLogStore, RunLogHandle, RunLogBeginInput } from "./run-log-store.js";
 import { createObjectByteJournal, ObjectJournalSourcePrefixProofUnavailableError, type ObjectJournalWriter } from "./object-byte-journal.js";
+import { MAX_RUN_LOG_RECORD_BYTES } from "./run-log-record-limits.js";
 
 const MAX_SEGMENT_BYTES = 1024 * 1024;
-const MAX_PENDING_BYTES = 8 * MAX_SEGMENT_BYTES;
+const MAX_PENDING_BYTES = MAX_RUN_LOG_RECORD_BYTES;
 const MAX_READ_BYTES = 4 * MAX_SEGMENT_BYTES;
 export interface ObjectRunLogStoreOptions {
   provider: StorageProvider;
@@ -106,8 +107,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
     }
     if (state.flushing) {
       await state.flushing;
-      if (state.pending.length) return flush(state);
-      return;
+      return flush(state);
     }
     if (state.failure) throw state.failure;
     if (!state.pending.length) return;
