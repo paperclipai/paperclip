@@ -127,6 +127,7 @@ import type {
   IssueReviewAttentionPath,
   IssueBlockedInboxAttention,
   IssueBlockedInboxIssueRef,
+  IssueBlockedInboxOwner,
   IssueRelationIssueSummary,
   IssueWatchdogSummary,
   LowTrustBoundary,
@@ -140,6 +141,7 @@ import {
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
   isAgentCreatedIssue,
+  isAgentInvokable,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
@@ -5663,10 +5665,81 @@ function compareBlockedInboxRows(
   return right.id.localeCompare(left.id);
 }
 
+function blockedChainOwner(
+  row: IssueRow,
+  terminalBlockerIssueId: string | null | undefined,
+  issuesById: Map<string, IssueRow>,
+  readableIssueIds: Set<string>,
+  interactionByIssueId: Map<string, BlockedInboxInteractionRow>,
+  approvalByIssueId: Map<string, BlockedInboxApprovalRow>,
+): IssueBlockedInboxOwner {
+  const unknown: IssueBlockedInboxOwner = {
+    type: "unknown",
+    agentId: null,
+    userId: null,
+    label: null,
+  };
+  const terminal = terminalBlockerIssueId
+    ? issuesById.get(terminalBlockerIssueId)
+    : undefined;
+  if (terminalBlockerIssueId && (!terminal || !readableIssueIds.has(terminalBlockerIssueId))) {
+    return unknown;
+  }
+  const actor = terminal ?? row;
+  const agent = (agentId: string): IssueBlockedInboxOwner => ({
+    type: "agent",
+    agentId,
+    userId: null,
+    label: null,
+  });
+  const user = (userId: string): IssueBlockedInboxOwner => ({
+    type: "user",
+    agentId: null,
+    userId,
+    label: null,
+  });
+  const board: IssueBlockedInboxOwner = {
+    type: "board",
+    agentId: null,
+    userId: null,
+    label: "Board",
+  };
+  if (interactionByIssueId.has(actor.id) || approvalByIssueId.has(actor.id)) {
+    return board;
+  }
+  const hasMonitor = Boolean(
+    actor.monitorNextCheckAt && actor.monitorNextCheckAt.getTime() > Date.now(),
+  );
+  if (
+    actor.status === "blocked" &&
+    !hasMonitor &&
+    externalWaitFromDescription(actor.description)
+  ) {
+    return { type: "external", agentId: null, userId: null, label: null };
+  }
+  const descriptorOwner =
+    actor.status === "blocked" ? actor.unblockDescriptor?.owner : undefined;
+  if (descriptorOwner === "board") return board;
+  if (descriptorOwner && "agentId" in descriptorOwner) return agent(descriptorOwner.agentId);
+  if (descriptorOwner && "userId" in descriptorOwner) return user(descriptorOwner.userId);
+  if (actor.status === "in_review") {
+    const participant = parseObject(actor.executionState).currentParticipant;
+    if (participant && typeof participant === "object" && !Array.isArray(participant)) {
+      const { agentId, userId } = participant as Record<string, unknown>;
+      if (typeof agentId === "string") return agent(agentId);
+      if (typeof userId === "string") return user(userId);
+    }
+  }
+  if (actor.assigneeAgentId) return agent(actor.assigneeAgentId);
+  if (actor.assigneeUserId) return user(actor.assigneeUserId);
+  return unknown;
+}
+
 async function listIssueBlockedInboxAttentionMap(
   dbOrTx: any,
   companyId: string,
   issueRows: BlockedInboxIssueRow[],
+  readCondition?: SQL<boolean>,
 ): Promise<Map<string, IssueBlockedInboxAttention>> {
   const rowIssueIds = [...new Set(issueRows.map((row) => row.id))];
   const result = new Map<string, IssueBlockedInboxAttention>();
@@ -5675,7 +5748,10 @@ async function listIssueBlockedInboxAttentionMap(
   const [graphIssueRows, graphRelationRows, companyAgentRows] =
     await Promise.all([
       dbOrTx
-        .select()
+        .select({ ...getTableColumns(issues), ownerReadable: readCondition
+          ? inArray(issues.id, dbOrTx.select({ id: issues.id }).from(issues)
+              .where(and(eq(issues.companyId, companyId), readCondition)))
+          : sql<boolean>`true` })
         .from(issues)
         .where(
           and(
@@ -5711,6 +5787,10 @@ async function listIssueBlockedInboxAttentionMap(
         .where(eq(agents.companyId, companyId)),
     ]);
 
+  const readableIssueIds = new Set<string>(
+    graphIssueRows.filter((issue: IssueRow & { ownerReadable: boolean }) => issue.ownerReadable === true)
+      .map((issue: IssueRow) => issue.id),
+  );
   const graphIssues = graphIssueRows as IssueRow[];
   const graphRelations = graphRelationRows as Array<{
     companyId: string;
@@ -6284,19 +6364,42 @@ async function listIssueBlockedInboxAttentionMap(
       (blockerState?.state === "needs_attention" ||
         blockerState?.state === "stalled")
     ) {
+      const owner = blockedChainOwner(
+        row,
+        blockerState.terminalBlockerIssueId,
+        issuesById,
+        readableIssueIds,
+        interactionByIssueId,
+        approvalByIssueId,
+      );
+      const ownerAgent = owner.agentId
+        ? companyAgents.find((candidate) => candidate.id === owner.agentId)
+        : undefined;
+      const ownerCannotRun =
+        owner.type === "agent" &&
+        (!ownerAgent ||
+          !isAgentInvokable({ agent: ownerAgent, agents: companyAgents }));
       result.set(
         row.id,
         attentionBase({
           state: "needs_attention",
-          reason: "blocked_chain_stalled",
-          severity: "high",
+          reason: ownerCannotRun
+            ? "blocked_by_uninvokable_assignee"
+            : "blocked_chain_stalled",
+          severity: ownerCannotRun ? "critical" : "high",
           stoppedSinceAt: row.updatedAt,
-          owner: { type: "unknown", agentId: null, userId: null, label: null },
-          action: {
-            label: "Inspect blocker chain",
-            detail:
-              "Inspect the stalled blocker or review leaf and make the next owner/action explicit.",
-          },
+          owner,
+          action: ownerCannotRun
+            ? {
+                label: "Assign active owner",
+                detail:
+                  "The next owner of this blocker chain cannot run. Assign an active owner or replace the blocker.",
+              }
+            : {
+                label: "Inspect blocker chain",
+                detail:
+                  "Inspect the stalled blocker or review leaf and make the next owner/action explicit.",
+              },
           sourceIssue: source,
           sampleIssueIdentifier:
             blockerState.sampleStalledBlockerIdentifier ??
@@ -6545,7 +6648,7 @@ async function listBlockedInboxIssues(
     blockedByMapForIssues(dbOrTx, companyId, issueIds),
     listIssueBlockerAttentionMap(dbOrTx, companyId, withRuns),
     listIssueReviewAttentionMap(dbOrTx, companyId, withRuns),
-    listIssueBlockedInboxAttentionMap(dbOrTx, companyId, withRuns),
+    listIssueBlockedInboxAttentionMap(dbOrTx, companyId, withRuns, filters?.readCondition),
     includeLiveDescendantSummary
       ? liveDescendantCountMapForIssues(dbOrTx, companyId, issueIds)
       : Promise.resolve(new Map<string, number>()),
@@ -6669,7 +6772,7 @@ async function countBlockedInboxIssues(
   if (rows.length === 0) return 0;
 
   const blockedInboxAttentionByIssueId =
-    await listIssueBlockedInboxAttentionMap(dbOrTx, companyId, rows);
+    await listIssueBlockedInboxAttentionMap(dbOrTx, companyId, rows, filters?.readCondition);
   const rawSearchInput = filters?.q?.trim() ?? "";
   const rawSearch = rawSearchInput.toLowerCase();
   const commentSearchMatchIssueIds = new Set<string>();
@@ -8428,7 +8531,7 @@ export function issueService(db: Db) {
         filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueBlockerAttention>()) : listIssueBlockerAttentionMap(db, companyId, withRuns),
         filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueReviewAttention>()) : listIssueReviewAttentionMap(db, companyId, withRuns),
         includeBlockedInboxAttention
-          ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns)
+          ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns, filters?.readCondition)
           : Promise.resolve(new Map<string, IssueBlockedInboxAttention>()),
       ]);
 
