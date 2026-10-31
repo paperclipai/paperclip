@@ -795,8 +795,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     for (const retry of retries) {
       // Accepted chat work waits for the flag's committed eligibility signal.
       // Public Retry still rejects new requests while the feature is disabled.
-      if (retry.conversationAgentId && !chatEnabled) continue;
       await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(eq(agentWakeupRequests.id, retry.id));
+      if (retry.conversationAgentId && !chatEnabled) continue;
       await resumeTaskRetry(retry.companyId, retry.id).catch(err => {
         scope.onError?.(err); logger.warn({ err, requestId: retry.id }, "Task retry dispatch deferred");
       });
