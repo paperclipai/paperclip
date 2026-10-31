@@ -35,10 +35,11 @@ import type { ConnectionManagementContext } from "./connection-management.js";
 //     testable.
 
 import { randomBytes } from "node:crypto";
-import { and, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { adapterAuthSessions } from "@paperclipai/db";
 import type { AgentAdapterType } from "@paperclipai/shared";
+import { redactSensitiveText } from "../redaction.js";
 
 // The setup-token login flow supports only the `claude_local` adapter. The
 // unified `adapter_auth_sessions` table also holds the Codex device-login rows,
@@ -232,6 +233,11 @@ export interface SetupTokenCleanupRecord {
   leaseId: string;
   deadline: number;
   state: SetupTokenSessionState;
+  // The login method discriminator. The setup-token flow never sets it (null),
+  // while a local terminal sign-in sets `local_subscription`. The reaper only
+  // owns null rows; the local-login service owns the rest, including their
+  // on-disk sign-in home.
+  connectionMethod?: string | null;
   // The claim-consumption marker. It is null while a `stored` claim is live. The
   // create path sets it one time when it consumes the claim.
   boundAt: number | null;
@@ -311,11 +317,24 @@ export interface SetupTokenCleanupStore {
 
 /** The counts one reaper sweep produced over the durable cleanup store. */
 export interface SetupTokenReapResult {
-  /** The reapable records whose lease released and whose row cleared. */
+  /** The reapable records whose sandbox lease released and whose row cleared.
+   * A record with no bound lease is cleared without a release and is not
+   * counted here. */
   released: number;
   /** The reapable records whose lease release failed. The row stays for a retry. */
   failed: number;
 }
+
+// A provider teardown can refuse a well-formed lease id permanently. Retry a few
+// times, warn once at the cap, then stop logging — but never abandon the live
+// lease. Process-local on purpose: a restart may clear whatever made the
+// provider reject it, so the counter resets and the sweep tries fresh again.
+const SETUP_TOKEN_RELEASE_ATTEMPT_CAP = 5;
+
+// Keyed by the row's public session id (unique per row), not the lease id, so a
+// lease-free row (`leaseId === ""`) does not share its logging budget with every
+// other lease-free row in the same sweep.
+const setupTokenReleaseAttempts = new Map<string, number>();
 
 /**
  * The shared setup-token reap logic. It reads the durable store and releases any
@@ -338,18 +357,60 @@ export async function reapSetupTokenLeases(
   let released = 0;
   let failed = 0;
   for (const record of records) {
+    // A local terminal sign-in row carries `local_subscription` and owns its own
+    // on-disk sign-in home. The local-login service removes that home using the
+    // row id; clearing the row here first would strand the directory and any
+    // credentials written there. Leave those rows to the local-login reaper.
+    if (record.connectionMethod === "local_subscription") {
+      continue;
+    }
     try {
-      await deps.leases.releaseById(record.leaseId);
+      // A session that never bound a provider lease has no sandbox to tear
+      // down. Its lease id is the empty fallback, and releasing it would throw,
+      // leaving the durable row to be reaped again forever. Clear it directly.
+      if (record.leaseId) {
+        await deps.leases.releaseById(record.leaseId);
+      }
       await deps.store.remove({
         sessionId: record.sessionId,
         companyId: record.companyId,
         ownerUserId: record.ownerUserId,
         adapterType: record.adapterType,
       });
-      released += 1;
-    } catch {
+      // A successful sweep resets the backoff counter for this row so a
+      // transient provider rejection does not leave it permanently quiet.
+      setupTokenReleaseAttempts.delete(record.sessionId);
+      // `released` counts only a lease that was actually torn down. A record
+      // with no bound lease is cleared without a release and is not a lease
+      // release, so it stays out of this count.
+      if (record.leaseId) {
+        released += 1;
+      }
+    } catch (error) {
       failed += 1;
-      log("[paperclip] Setup-token reaper: a lease release failed; it stays retryable.");
+      const attempts = (setupTokenReleaseAttempts.get(record.sessionId) ?? 0) + 1;
+      setupTokenReleaseAttempts.set(record.sessionId, attempts);
+      // The cause is a provider/DB teardown rejection that can carry a
+      // credential, a signed URL, or a full response body. Redact secrets and
+      // strip control characters before it reaches the log, then truncate so a
+      // stack never reaches the log.
+      const cause = error instanceof Error ? error.message : String(error);
+      const safeCause = redactSensitiveText(cause)
+        .replace(/[\u0000-\u001f\u007f]+/g, " ")
+        .slice(0, 200);
+      if (attempts <= SETUP_TOKEN_RELEASE_ATTEMPT_CAP) {
+        log(
+          `[paperclip] Setup-token reaper: lease release failed ` +
+            `(attempt ${attempts}/${SETUP_TOKEN_RELEASE_ATTEMPT_CAP}) ` +
+            `for session ${record.sessionId}, lease ${record.leaseId}, environment ${record.environmentId}, adapter ${record.adapterType}, state ${record.state}: ${safeCause}`,
+        );
+        if (attempts === SETUP_TOKEN_RELEASE_ATTEMPT_CAP) {
+          log(
+            `[paperclip] Setup-token reaper: lease ${record.leaseId} has failed ${SETUP_TOKEN_RELEASE_ATTEMPT_CAP} release attempts; ` +
+              `the row stays retryable but logging is suppressed until a release succeeds.`,
+          );
+        }
+      }
     }
   }
   return { released, failed };
@@ -1468,6 +1529,7 @@ function toCleanupRecord(row: AdapterAuthSessionRow): SetupTokenCleanupRecord {
     adapterType: row.adapterType,
     environmentId: row.environmentId,
     leaseId: row.providerLeaseId ?? "",
+    connectionMethod: row.connectionMethod,
     // The setup-token flow always writes an expiry, so a null value means a
     // corrupt row. Treat it as already expired, so the reaper reclaims it.
     deadline: row.expiresAt ? row.expiresAt.getTime() : 0,
@@ -1589,6 +1651,11 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
         .where(
           and(
             eq(adapterAuthSessions.adapterType, SETUP_TOKEN_ADAPTER_TYPE),
+            // Local terminal sign-ins carry `local_subscription` and own their
+            // on-disk home, so the local-login reaper owns them. `is distinct
+            // from` also keeps the null rows (no AI connection) and the
+            // "subscription" rows (a setup-token flow that also created an AI
+            // connection) reapable.
             sql`${adapterAuthSessions.connectionMethod} is distinct from 'local_subscription'`,
             or(
               inArray(adapterAuthSessions.status, [...SETUP_TOKEN_TERMINAL_STATES]),
@@ -1641,9 +1708,13 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
     },
 
     async findActiveDurable(key, now): Promise<SetupTokenCleanupRecord | null> {
-      // The active slot cap is one row per company, owner, and adapter, so at
-      // most one row can match. The scan filters by the setup-token adapter, so
-      // it never reads a Codex device-login row on the shared table.
+      // The active slot cap only covers the active states, so a terminal-adjacent
+      // row (e.g. `stored` or `cleanup_pending`) can coexist with another
+      // non-terminal row for the same company, owner, and adapter. Order
+      // newest-first so the durable fallback returns the most recent claim
+      // deterministically, not whichever row the planner happened to scan first.
+      // The scan filters by the setup-token adapter, so it never reads a Codex
+      // device-login row on the shared table.
       const rows = await db
         .select()
         .from(adapterAuthSessions)
@@ -1652,10 +1723,16 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
             eq(adapterAuthSessions.companyId, key.companyId),
             eq(adapterAuthSessions.startedByUserId, key.ownerUserId),
             eq(adapterAuthSessions.adapterType, key.adapterType as AgentAdapterType),
+            // Local terminal sign-ins share this adapter type but are owned by
+            // the local-login flow, not the setup-token flow. `is distinct from`
+            // keeps the null rows and "subscription" rows active while excluding
+            // `local_subscription`.
+            sql`${adapterAuthSessions.connectionMethod} is distinct from 'local_subscription'`,
             notInArray(adapterAuthSessions.status, [...SETUP_TOKEN_TERMINAL_STATES]),
             gt(adapterAuthSessions.expiresAt, new Date(now)),
           ),
         )
+        .orderBy(desc(adapterAuthSessions.createdAt), desc(adapterAuthSessions.publicSessionId))
         .limit(1);
       const row = rows[0];
       return row ? toCleanupRecord(row) : null;

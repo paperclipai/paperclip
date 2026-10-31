@@ -1,10 +1,10 @@
 import { writeExecutionControl } from "../services/execution-control-notifications.js";
 import { reconcileSafeNativeReplacements } from "../services/native-runtime/native-safe-replacement.js";
-import { localAiLoginService } from "../services/local-ai-login.js";
+import { localAiLoginService, TERMINAL_RETENTION_MS } from "../services/local-ai-login.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, applyPendingMigrations } from "@paperclipai/db";
+import { adapterAuthSessions, agentWakeupRequests, agents, companies, createDb, environments, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, applyPendingMigrations } from "@paperclipai/db";
 import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -187,6 +187,28 @@ describe.skipIf(!support.supported)("execution-control durable work", () => {
     await registerExecutionControlWork(c, Object.values(schedule).map((next, i) => ({ queue: topics[i]!, run: runs[i]!, next }))).ready;
     await quiet(c);
   });
+  it("schedules reclamation of a terminal local sign-in row with no expiry", async () => {
+    const schedule = executionControlSchedule(observed);
+    expect(await schedule.localLogin()).toBeNull();
+
+    // A terminal local sign-in row has `expires_at = NULL`, so the expiry scan
+    // alone would schedule no future run. The reclamation deadline must still
+    // wake the worker to delete the row once `finished_at + retention` passes.
+    const environmentId = randomUUID();
+    await db.insert(environments).values({
+      id: environmentId, name: `sandbox-${environmentId.slice(0, 8)}`, driver: "sandbox", status: "active",
+      config: { provider: "fake" }, createdAt: new Date(), updatedAt: new Date(),
+    });
+    const finishedAt = new Date(Date.now() - 1_000);
+    await db.insert(adapterAuthSessions).values({
+      id: randomUUID(), publicSessionId: randomUUID(), companyId, environmentId,
+      adapterType: "claude_local", startedByUserId: "local-owner", connectionMethod: "local_subscription",
+      status: "timed_out", expiresAt: null, providerLeaseId: null, finishedAt,
+    });
+
+    expect(await schedule.localLogin()).toBe(finishedAt.getTime() + TERMINAL_RETENTION_MS);
+  });
+
   it("schedules only a current unfinished workspace recovery and becomes quiet with retained history", async () => {
     const run = await runRow("failed");
     const state = createSystemRecovery(run.id);

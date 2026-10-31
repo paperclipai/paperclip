@@ -1,10 +1,11 @@
 import { nextWorkspaceRecoveryAt } from "./system-recovery.js";
-import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { adapterAuthSessions, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { type DeliveryQueue } from "./delivery-work-notifications.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./execution-control-deadline.js";
 import { obsoleteExecutionConversationHold, unresolvedExecutionDispositions } from "./execution-recovery-resolution.js";
+import { TERMINAL_LOCAL_STATES, TERMINAL_RETENTION_MS } from "./local-ai-login.js";
 import { nativeReplacementPending } from "./native-runtime/native-safe-replacement.js";
 
 export function registerExecutionControlWork(
@@ -96,10 +97,27 @@ export function executionControlSchedule(db: Db) {
       return conversation.length || execution.length ? retry() : null;
     },
     async localLogin() {
-      const rows = await db.select({ at: adapterAuthSessions.expiresAt }).from(adapterAuthSessions).where(and(
-        eq(adapterAuthSessions.connectionMethod, "local_subscription"), isNotNull(adapterAuthSessions.expiresAt),
-      )).orderBy(asc(adapterAuthSessions.expiresAt)).limit(1);
-      return deadline([rows[0]?.at]);
+      // Two deadlines wake this worker: the next live attempt's expiry, and the
+      // next terminal row's reclamation. The reclamation deadline matters because
+      // a terminal row has `expires_at = NULL`, so the expiry scan alone would
+      // return no future run and the row could linger until another login or a
+      // restart.
+      const [expiring, reclaiming] = await Promise.all([
+        db.select({ at: adapterAuthSessions.expiresAt }).from(adapterAuthSessions).where(and(
+          eq(adapterAuthSessions.connectionMethod, "local_subscription"), isNotNull(adapterAuthSessions.expiresAt),
+        )).orderBy(asc(adapterAuthSessions.expiresAt)).limit(1),
+        db.select({ finishedAt: adapterAuthSessions.finishedAt }).from(adapterAuthSessions).where(and(
+          eq(adapterAuthSessions.connectionMethod, "local_subscription"),
+          isNull(adapterAuthSessions.expiresAt),
+          isNull(adapterAuthSessions.providerLeaseId),
+          inArray(adapterAuthSessions.status, [...TERMINAL_LOCAL_STATES]),
+          isNotNull(adapterAuthSessions.finishedAt),
+        )).orderBy(asc(adapterAuthSessions.finishedAt)).limit(1),
+      ]);
+      const reclaimAt = reclaiming[0]?.finishedAt
+        ? new Date(reclaiming[0].finishedAt.getTime() + TERMINAL_RETENTION_MS)
+        : null;
+      return deadline([expiring[0]?.at, reclaimAt]);
     },
   };
 }
