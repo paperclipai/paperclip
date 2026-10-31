@@ -1,3 +1,5 @@
+import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
+import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { notifyRunDispatch } from "../run-dispatch-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -222,7 +224,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   publishRunLifecyclePluginEvent: (run: HeartbeatRun) => void;
   cancelRunInternal: (runId: string, reason?: string, options?: { errorCode?: string }) => Promise<unknown>;
   cancelActiveForAgentInternal: (agentId: string, reason: string) => Promise<unknown>;
-  resumeExecutionWaitComments: () => Promise<unknown>;
+  resumeExecutionWaitComments: (scope?: DeferredReceiptRecoveryOptions) => Promise<unknown>;
   resumeQueuedCommentInterrupt: (companyId: string, queueId: string) => Promise<unknown>;
   resumeSavedLegacyComments: (companyId: string, queueId: string) => Promise<unknown>;
   formatIssueIdentifierLink: (identifier: string | null, fallback: string) => string;
@@ -1851,13 +1853,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     return cancelled;
   }
 
-  async function resumeQueuedRuns() {
+  async function resumeDeferredExecutionReceipts(scope: DeferredReceiptRecoveryOptions = {}) {
     if ((await getSchedulingSuppression()).suppressed) return;
-    await resumeExecutionWaitComments();
+    await resumeExecutionWaitComments(scope);
     const cutoff = await getWorktreeExecutionCutoff();
     const pendingInterrupts = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
       .from(agentWakeupRequests).innerJoin(companies, eq(companies.id, agentWakeupRequests.companyId))
-      .where(and(eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      .where(and(scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
+        scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
         eq(companies.status, "active"),
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null`,
         lte(agentWakeupRequests.updatedAt, new Date(Date.now() - 30_000)),
@@ -1868,6 +1872,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
       ));
       await resumeQueuedCommentInterrupt(wake.companyId, wake.id).catch(err => {
+        scope.onError?.(err);
         logger.warn({ err, queueId: wake.id }, "failed to resume interrupted comment queue");
       });
     }
@@ -1881,7 +1886,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         or(eq(issues.assigneeAgentId, agentWakeupRequests.agentId),
           sql`${agentWakeupRequests.payload} #>> '{_paperclipWakeContext,wakeReason}' = 'issue_comment_mentioned'`)))
       .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
-      .where(and(eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      .where(and(scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
+        scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
         isNull(issues.executionRunId),
         or(and(
           sql`jsonb_typeof(${agentWakeupRequests.payload} #> '{_paperclipWakeContext,wakeCommentIds}') = 'array'`,
@@ -1920,7 +1927,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       if (latest.runtimeMode !== "legacy" && latest.runtimeMode !== "native") continue;
       if (wake.idempotencyKey?.startsWith("chat-inbound:")) {
         await resumeDeferredChatWake(db, { companyId: wake.companyId, agentId: wake.agentId,
-          issueId: String(wake.payload?.issueId), requestId: wake.id }).catch(() => {
+          issueId: String(wake.payload?.issueId), requestId: wake.id }).catch(err => {
+          scope.onError?.(err);
           logger.warn({ requestId: wake.id }, "saved chat source could not resume after recovery");
         });
         continue;
@@ -1932,6 +1940,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           latest.errorCode === "execution_reconciliation_required";
         if ((latest.status !== "cancelled" || cancelledAdmission) && await getExecutionBlocker(db, wake.companyId, String(wake.payload?.issueId))) {
           await resumeSavedLegacyComments(wake.companyId, wake.id).catch(err => {
+            scope.onError?.(err);
             logger.warn({ err, queueId: wake.id }, "failed to deliver saved legacy comment after recovery stopped");
           });
         }
@@ -1939,6 +1948,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       await releaseIssueExecutionAndPromote(latest, { suppressImmediateRecovery: true, resumeStrandedQueue: true }).then(() => {
         if (latest.runtimeMode === "native") releasedNativeSources.add(releaseSource);
       }).catch(err => {
+        scope.onError?.(err);
         logger.warn({ err, queueId: wake.id }, "failed to promote stranded comments");
       });
     }
@@ -1956,6 +1966,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       ))
       .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
       .where(and(
+        scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
+        scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
         eq(agentWakeupRequests.status, "deferred_issue_execution"),
         eq(heartbeatRuns.status, "cancelled"),
         eq(heartbeatRuns.runtimeMode, "legacy"),
@@ -1964,10 +1976,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       ));
     for (const run of interruptedQueues) {
       await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true }).catch((err) => {
+        scope.onError?.(err);
         logger.error({ err, runId: run.id }, "failed to retry interrupted comment queue");
       });
     }
 
+  }
+
+  async function resumeQueuedRuns() {
+    await resumeDeferredExecutionReceipts();
     await resumeQueuedRunsAfterDrain();
   }
 
@@ -3413,6 +3430,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             if (durableRequest || wakeCommentId ||
                 hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
                 readNonEmptyString(enrichedContextSnapshot.nativeStatusWakeIntentId)) {
+              await notifyDeferredExecutionWork(tx, { companyId: agent.companyId });
               await tx.insert(agentWakeupRequests).values({
                 ...durableReceiptFields,
                 companyId: agent.companyId, agentId, source, triggerDetail, reason,
@@ -4030,6 +4048,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 }));
             }
             if (followUp) {
+              if (!followUp.consumed) await notifyDeferredExecutionWork(tx, { companyId: agent.companyId });
               const assignmentId = followUp.assignmentId;
               const pending = followUp.consumed ? undefined : pendingFollowUps.find(wake =>
                 wake.payload?.[followUpPayloadKey] === assignmentId &&
@@ -4768,6 +4787,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       companyId?: string;
       limit?: number;
       staleClaimMs?: number;
+      requestId?: string;
+      onDeferredDeadline?: (at: number) => void;
+      onError?: (error: unknown) => void;
     } = {},
   ) {
     const now = new Date();
@@ -4780,6 +4802,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           input.companyId
             ? eq(agentWakeupRequests.companyId, input.companyId)
             : undefined,
+          input.requestId ? eq(agentWakeupRequests.id, input.requestId) : undefined,
           eq(agentWakeupRequests.requestedByActorType, "system"),
           eq(agentWakeupRequests.requestedByActorId, "native-status-committer"),
           inArray(agentWakeupRequests.status, ["queued", "claimed"]),
@@ -4856,6 +4879,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         candidate.claimedAt &&
         now.getTime() - candidate.claimedAt.getTime() < staleClaimMs
       ) {
+        input.onDeferredDeadline?.(candidate.claimedAt.getTime() + staleClaimMs);
         deferred += 1;
         continue;
       }
@@ -5030,6 +5054,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         if (wakeRun) dispatched += 1;
         else deferred += 1;
       } catch (error) {
+        input.onError?.(error);
         await db
           .update(agentWakeupRequests)
           .set({
@@ -5073,6 +5098,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     withChatControlRecoveryGate,
     trackWakeup,
     resumeQueuedRuns,
+    resumeDeferredExecutionReceipts,
     resumeQueuedRunsAfterDrain,
     parseHeartbeatPolicy,
     nextTimerHeartbeatAt,

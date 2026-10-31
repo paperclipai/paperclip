@@ -1,3 +1,4 @@
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
@@ -7629,6 +7630,7 @@ export function issueService(db: Db) {
     }
 
     await notifyIssueRecovery(dbOrTx, { companyId });
+    await notifyDeferredExecutionEligibility(dbOrTx, { companyId });
     await dbOrTx
       .delete(issueRelations)
       .where(
@@ -10612,6 +10614,7 @@ export function issueService(db: Db) {
         }
         if (values.monitorNextCheckAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyRunDispatch(tx, { companyId: values.companyId });
+        await notifyDeferredExecutionEligibility(tx, { companyId: values.companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
         const [issue] = await tx.insert(issues).values(values).returning();
         await attachOwnedDraftImages(tx, issue, issue.description, { userId: issueData.createdByUserId, agentId: issueData.createdByAgentId });
@@ -11503,6 +11506,7 @@ export function issueService(db: Db) {
           || patch.executionState !== undefined || patch.executionRunId !== undefined || patch.checkoutRunId !== undefined
           || blockedByIssueIds !== undefined) {
           await notifyRunDispatch(tx, { companyId: receiptExisting.companyId });
+          await notifyDeferredExecutionEligibility(tx, { companyId: receiptExisting.companyId });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
         }
         if (patch.monitorNextCheckAt !== undefined || (receiptExisting.monitorNextCheckAt &&
@@ -11968,6 +11972,7 @@ export function issueService(db: Db) {
           await notifyDecisionTargetIssueRemoval(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
           await notifyRunDispatch(tx, owner ? { companyId: owner.companyId } : undefined);
+          if (owner) await notifyDeferredExecutionEligibility(tx, owner);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           removedIssue = await tx
             .delete(issues)
@@ -12097,6 +12102,7 @@ export function issueService(db: Db) {
       const updated = await db.transaction(async tx => {
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyRunDispatch(tx, { companyId: issueCompany.companyId });
+        await notifyDeferredExecutionEligibility(tx, { companyId: issueCompany.companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
         return tx
           .update(issues)
@@ -12227,6 +12233,7 @@ export function issueService(db: Db) {
           const adopted = await db.transaction(async tx => {
             await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
             await notifyRunDispatch(tx, { companyId: issueCompany.companyId });
+            await notifyDeferredExecutionEligibility(tx, { companyId: issueCompany.companyId });
             await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
             return tx
               .update(issues)
@@ -12483,6 +12490,7 @@ export function issueService(db: Db) {
         await notifyNativeStatusReassessment(tx, { companyId: existing.companyId, issueId: id });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyRunDispatch(tx, { companyId: existing.companyId });
+        await notifyDeferredExecutionEligibility(tx, { companyId: existing.companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
         const updated = await tx
           .update(issues)
@@ -12544,6 +12552,7 @@ export function issueService(db: Db) {
         }
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyRunDispatch(tx, { companyId: existing.companyId });
+        await notifyDeferredExecutionEligibility(tx, { companyId: existing.companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
         const updated = await tx
           .update(issues)

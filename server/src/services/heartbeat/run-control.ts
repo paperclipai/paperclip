@@ -1,3 +1,4 @@
+import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { observeStoppedWorkspaceRecovery } from "../workspace-recovery.js";
 import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellation-notifications.js";
 import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
@@ -777,21 +778,25 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       idempotencyKey: `task-retry-dispatch:${wake.id}` }, wake.id);
   }
 
-  async function resumeExecutionWaitComments() {
+  async function resumeExecutionWaitComments(scope: DeferredReceiptRecoveryOptions = {}) {
     if ((await getSchedulingSuppression()).suppressed) return;
-    await reconcileTaskChatRetryReceipts(db);
+    await reconcileTaskChatRetryReceipts(db, scope);
     const retries = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
       .from(agentWakeupRequests).innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
         sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
         eq(issues.assigneeAgentId, agentWakeupRequests.agentId)))
       .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
-      .where(and(eq(agentWakeupRequests.reason, "task_retry"), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      .where(and(scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
+        scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
+        eq(agentWakeupRequests.reason, "task_retry"), eq(agentWakeupRequests.status, "deferred_issue_execution"),
         sql`${agentWakeupRequests.payload}->'taskRetry'->>'chatActionId' is null`,
         notInArray(issues.status, ["done", "cancelled"])))
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
     for (const retry of retries) {
       await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(eq(agentWakeupRequests.id, retry.id));
-      await resumeTaskRetry(retry.companyId, retry.id).catch(err => logger.warn({ err, requestId: retry.id }, "Task retry dispatch deferred"));
+      await resumeTaskRetry(retry.companyId, retry.id).catch(err => {
+        scope.onError?.(err); logger.warn({ err, requestId: retry.id }, "Task retry dispatch deferred");
+      });
     }
     const waits = await db.select({ wake: agentWakeupRequests })
       .from(agentWakeupRequests)
@@ -799,7 +804,9 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
         eq(issues.assigneeAgentId, agentWakeupRequests.agentId)))
       .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
-      .where(and(exists(db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+      .where(and(scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
+        scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
+        exists(db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
         eq(issueRecoveryActions.companyId, issues.companyId), eq(issueRecoveryActions.sourceIssueId, issues.id),
         executionBlockerPredicate(),
       ))), eq(agentWakeupRequests.status, "deferred_issue_execution"),
@@ -831,11 +838,13 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       if (!run || run.companyId !== wake.companyId || run.agentId !== wake.agentId) continue;
       if (canContinueCancelledRun(run)) {
         await resumeSavedComments(wake.companyId, wake.id).catch(err => {
+          scope.onError?.(err);
           logger.warn({ err, runId: run.id }, "failed to resume saved input after provider cancellation");
         });
         continue;
       }
       await resumeRemoteStopComments(run, wake.id).catch(err => {
+        scope.onError?.(err);
         logger.warn({ err, runId: run.id }, "failed to resume saved execution-wait message");
       });
     }
