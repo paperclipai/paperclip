@@ -11,6 +11,7 @@ import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from 
 import { materializeManagedProjectWorkspace } from "./managed-repository-checkout.js";
 import { promisify } from "node:util";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
+import { GIT_NULL_DEVICE } from "./git-null-device.js";
 import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
 import { recordedIsolatedRemoteSource, verifiedRecordedIsolatedRemoteSource, materializeIsolatedRemoteWorkspaceSource } from "./isolated-remote-workspace-source.js";
 import { findRegenerableWorkspaceDirs } from "./workspace-compaction.js";
@@ -140,7 +141,7 @@ export async function verifyRemoteGitCommit(repoUrl: string, commit: string, res
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-proof-"));
   try {
     const auth = await resolveGitAuth(repoUrl);
-    const env = { ...process.env, ...auth?.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull };
+    const env = { ...process.env, ...auth?.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE };
     const options = { timeout: 60_000, signal, maxBuffer: 1024 * 1024, env };
     await execFile("git", ["init", "--bare", temporary], options);
     await execFile("git", [...auth?.configArgs ?? [], "-C", temporary, "fetch", "--no-tags", "--no-recurse-submodules", "--depth=1", "--", repoUrl, commit], options);
@@ -157,7 +158,7 @@ async function stockGitFiles() {
     const files = new Map<string, Buffer>();
     try {
       await execFile("git", ["init", "--bare", root], { timeout: 10_000,
-        env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull } });
+        env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE } });
       for (const name of ["description", "info/exclude", ...(await fs.readdir(path.join(root, "hooks"))).map(name => `hooks/${name}`)]) {
         files.set(name, await fs.readFile(path.join(root, name)));
       }
@@ -417,7 +418,7 @@ async function commitsMissingUpstream(checkout: string, localTips: string[], rep
   const store = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-checkout-proof-"));
   try {
     const options = { timeout: 120_000, signal, maxBuffer: 16 * 1024 * 1024, cwd: os.tmpdir(),
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull } };
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE } };
     await execFile("git", ["init", "--bare", "--quiet", store], options);
     const common = (await gitCacheCommand(checkout, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal)).trim();
     await fs.writeFile(path.join(store, "objects", "info", "alternates"), `${path.join(await fs.realpath(common), "objects")}\n`);
@@ -752,7 +753,7 @@ export async function ensureSavedGitCommit(cwd: string, repoUrl: string, commit:
   if (await gitCacheCommand(cwd, ["cat-file", "-e", `${commit}^{commit}`]).then(() => true, () => false)) return;
   try {
     const auth = await resolveGitAuth(repoUrl);
-    await execFile("git", [...auth?.configArgs ?? [], "-c", `core.hooksPath=${os.devNull}`, "-C", cwd, "fetch", "--no-tags", "--no-recurse-submodules", "--", repoUrl, commit], {
+    await execFile("git", [...auth?.configArgs ?? [], "-c", `core.hooksPath=${GIT_NULL_DEVICE}`, "-C", cwd, "fetch", "--no-tags", "--no-recurse-submodules", "--", repoUrl, commit], {
       timeout: 60_000, maxBuffer: 1024 * 1024, env: { ...process.env, ...auth?.env, GIT_TERMINAL_PROMPT: "0" },
     });
     if ((await gitCacheCommand(cwd, ["rev-parse", `${commit}^{commit}`])).trim() !== commit) throw new GitCacheRestorationFailure();
