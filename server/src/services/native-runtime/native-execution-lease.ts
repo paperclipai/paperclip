@@ -84,9 +84,10 @@ type RenewalInput = {
   db: Db; runId: string; companyId: string; issueId: string;
   leaseOwner: string; attempt: number; controller: NativeControllerIdentity;
   remote?: boolean;
+  confirmedDeadline?: number;
   onLost: () => Promise<unknown>;
 };
-export interface NativeExecutionLeaseRenewal { stop(): Promise<void>; }
+export interface NativeExecutionLeaseRenewal { stop(): Promise<void>; remainingMs(): number; }
 
 // Preparation and execution share one renewal timer. Each caller releases its
 // own reference; the final release drains any SQL already in flight.
@@ -94,6 +95,7 @@ const renewals = new WeakMap<Db, Map<string, {
   input: RenewalInput; references: number; timer: ReturnType<typeof setInterval>;
   pending: Promise<void>; busy: boolean; lost: Error | null;
   deadline: ReturnType<typeof setTimeout>; loss: Promise<unknown>;
+  confirmedDeadline: number;
 }>>();
 
 export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): NativeExecutionLeaseRenewal {
@@ -131,6 +133,7 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
           // or recreate a timer after the final caller has stopped.
           if (state!.lost || state!.references === 0) return;
           clearTimeout(state!.deadline);
+          state!.confirmedDeadline = confirmedDeadline;
           state!.deadline = deadline(confirmedDeadline - performance.now());
         })
         .catch((error: unknown) => {
@@ -144,13 +147,14 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
     };
     const timer = setInterval(renew, input.remote ? REMOTE_CONTROLLER_LEASE_MS / 3 : NATIVE_SESSION_EXECUTION_LEASE_RENEW_INTERVAL_MS);
     timer.unref?.();
+    const confirmedDeadline = input.confirmedDeadline ?? performance.now() + ttlMs;
     state = { input, references: 1, timer, pending: Promise.resolve(), busy: false, lost: null,
-      deadline: deadline(ttlMs), loss: Promise.resolve() };
+      deadline: deadline(confirmedDeadline - performance.now()), confirmedDeadline, loss: Promise.resolve() };
     owners.set(input.leaseOwner, state);
   }
   const owned = state;
   let stopped = false;
-  return { stop: async () => {
+  return { remainingMs: () => owned.lost ? 0 : Math.max(0, owned.confirmedDeadline - performance.now()), stop: async () => {
     if (!stopped) {
       stopped = true;
       if (--owned.references === 0) {
