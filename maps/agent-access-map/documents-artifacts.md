@@ -37,12 +37,16 @@ API: `present` — representative operation IDs:
 - `GET /api/issues/{id}/documents`.
 - `PUT /api/issues/{id}/documents/{key}`.
 - `POST /api/issues/{id}/documents/{key}/revisions/{revisionId}/restore`.
+- `DELETE /api/issues/{id}/documents/{key}`.
 
 Agent access: `available` — Native list/read/write documents; other-task bridge; REST /
 CLI / MCP.
 
 Policy: Task/resource visibility, mutation/checkout ownership, revision/lock guards and
-permitted deliverable context.
+permitted deliverable context. Delete is board-only except for the conversation agent
+of a board conversation (`issue.conversationAgentId` equals the acting agent), which
+also passes mutation/checkout ownership and permitted deliverable context; other
+agents' conversations and regular tasks, even for their assignee, stay denied.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L10299) at
 the reviewed commit above.

@@ -13,6 +13,7 @@ const mockDocumentsService = vi.hoisted(() => ({
   listIssueDocuments: vi.fn(),
   listIssueDocumentRevisions: vi.fn(),
   restoreIssueDocumentRevision: vi.fn(),
+  deleteIssueDocument: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -400,5 +401,80 @@ describe("issue document revision routes", () => {
 
     expect(res.status).toBe(400);
     expect(mockDocumentsService.restoreIssueDocumentRevision).not.toHaveBeenCalled();
+  });
+  describe("document deletion", () => {
+    const conversationAgent = {
+      type: "agent",
+      agentId: "agent-1",
+      companyId,
+      source: "agent_key",
+    } as Express.Request["actor"];
+
+    function mockIssue(conversationAgentId: string | null, assigneeAgentId = "agent-1") {
+      mockIssueService.getById.mockResolvedValue({
+        id: issueId,
+        companyId,
+        identifier: "PAP-881",
+        title: "Chat with agent",
+        status: "todo",
+        assigneeAgentId,
+        conversationAgentId,
+        conversationUserId: conversationAgentId ? "board-user" : null,
+      });
+      mockDocumentsService.deleteIssueDocument.mockResolvedValue(planDocument);
+    }
+
+    it("lets the conversation agent delete a document of its own conversation", async () => {
+      mockIssue("agent-1");
+      const res = await request(await createApp(conversationAgent)).delete(`/api/issues/${issueId}/documents/plan`);
+
+      expect(res.status).toBe(200);
+      expect(mockDocumentsService.deleteIssueDocument).toHaveBeenCalledWith(issueId, "plan");
+    });
+
+    it("blocks status-only recovery runs of the conversation agent from deleting documents", async () => {
+      mockIssue("agent-1");
+      const res = await request(await createApp(
+        { ...conversationAgent, runId: "run-1", source: "agent_jwt" } as Express.Request["actor"],
+        createRunContextDb({
+          recoveryIntent: "status_only",
+          allowDeliverableWork: false,
+          allowDocumentUpdates: false,
+          resumeRequiresNormalModel: true,
+        }),
+      )).delete(`/api/issues/${issueId}/documents/plan`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("Status-only recovery runs cannot update issue documents");
+      expect(mockDocumentsService.deleteIssueDocument).not.toHaveBeenCalled();
+    });
+
+    it("denies the conversation agent when the issue is owned by another agent", async () => {
+      mockIssue("agent-1", "agent-2");
+      mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
+        allowed: action !== "tasks:manage_active_checkouts",
+      }));
+      const res = await request(await createApp(conversationAgent)).delete(`/api/issues/${issueId}/documents/plan`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+      expect(mockDocumentsService.deleteIssueDocument).not.toHaveBeenCalled();
+    });
+
+    it("still requires board authentication on another agent's conversation", async () => {
+      mockIssue("agent-2");
+      const res = await request(await createApp(conversationAgent)).delete(`/api/issues/${issueId}/documents/plan`);
+
+      expect(res.status).toBe(403);
+      expect(mockDocumentsService.deleteIssueDocument).not.toHaveBeenCalled();
+    });
+
+    it("still requires board authentication on a regular task, even for its assignee", async () => {
+      mockIssue(null);
+      const res = await request(await createApp(conversationAgent)).delete(`/api/issues/${issueId}/documents/plan`);
+
+      expect(res.status).toBe(403);
+      expect(mockDocumentsService.deleteIssueDocument).not.toHaveBeenCalled();
+    });
   });
 });
