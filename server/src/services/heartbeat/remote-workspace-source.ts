@@ -61,11 +61,15 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
       { reason: "remote_workspace_local_source_requires_import" });
   };
   const withReferences = async (base: RemoteWorkspaceSource, anchorProjectId: string | null,
-    sourceId: string | null): Promise<RemoteWorkspaceSourceResolution> => {
+    sourceId: string | null, savedSource = false): Promise<RemoteWorkspaceSourceResolution> => {
     const extra: NonNullable<RemoteWorkspaceSource["repositories"]> =
       (base.repositories ?? []).filter(repository => !repository.readOnly);
-    if (base.kind === "git" && !remoteRepositorySource(base.repoUrl)) return hostSource();
-    for (const repository of extra) if (!remoteRepositorySource(repository.repoUrl)) return hostSource();
+    // A verified saved archive owns these files after import. Its original Git
+    // source remains an identity and need not be reachable from the new sandbox.
+    if (!savedSource) {
+      if (base.kind === "git" && !remoteRepositorySource(base.repoUrl)) return hostSource();
+      for (const repository of extra) if (!remoteRepositorySource(repository.repoUrl)) return hostSource();
+    }
     const referenced = isMultiProjectWorkspaceSyncEnabled() ? await resolveRunReferencedProjects(input.issueId, anchorProjectId, {
       companyId: input.companyId,
       actor: { type: "agent", source: "agent_jwt", companyId: input.companyId,
@@ -87,7 +91,7 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
   };
   const existing = readRemoteWorkspaceAuthority(input.existingWorkspace?.metadata);
   if (existing) return withReferences(existing.source, input.existingWorkspace!.projectId,
-    input.existingWorkspace!.projectWorkspaceId);
+    input.existingWorkspace!.projectWorkspaceId, existing.snapshotId !== null);
   if (input.existingWorkspace && input.automaticEnrollment) return { authority: "host" };
   if (input.existingWorkspace) throw new WorkspaceValidationFailure(
     "The existing workspace must be imported before it can use remote workspace storage.",

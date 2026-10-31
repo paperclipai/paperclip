@@ -175,7 +175,7 @@ export async function uploadWorkspaceSnapshot(input: {
 
 /** Authentication finishes in private scratch before any plaintext is published. */
 export async function loadWorkspaceSnapshotArchive(input: {
-  storage: StorageService; reference: WorkspaceSnapshotRef; targetPath: string; signal?: AbortSignal;
+  storage: StorageService; reference: WorkspaceSnapshotRef; targetPath: string; signal?: AbortSignal; temporaryParent?: string;
 }): Promise<void> {
   input.signal?.throwIfAborted();
   const ref = input.reference; validateReference(ref);
@@ -183,7 +183,7 @@ export async function loadWorkspaceSnapshotArchive(input: {
   if (wrapped.schema !== KEY_SCHEMA || wrapped.companyId !== ref.companyId || wrapped.workspaceId !== ref.workspaceId
     || wrapped.id !== ref.id || wrapped.generation !== ref.generation || !/^[a-f0-9]{64}$/.test(wrapped.plaintextSha256 ?? "")
     || !Number.isSafeInteger(wrapped.plaintextBytes) || wrapped.plaintextBytes < 0) failure("key_binding_invalid");
-  const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-decrypt-"));
+  const scratch = await mkdtemp(path.join(input.temporaryParent ?? os.tmpdir(), "pc-workspace-decrypt-"));
   try {
     input.signal?.throwIfAborted();
     const ciphertext = path.join(scratch, "ciphertext"), plaintext = path.join(scratch, "plaintext");

@@ -1656,6 +1656,10 @@ local-disk object storage, or a newly generated replacement key cannot provide
 this durability contract. New workspaces continue through the legacy path when
 these prerequisites are absent. Validate S3 put/read/delete and database access
 with the deployment credentials before enrollment.
+Snapshot expiry also needs `s3:ListBucketVersions` on the bucket and
+`s3:DeleteObjectVersion` on the snapshot object prefix. S3-compatible endpoints
+must support version listing. Retention verifies that every version and delete
+marker is gone. Denied permissions and object locks keep a retry obligation.
 
 The sandbox holds current working files. PostgreSQL records its location,
 writer epoch, and committed snapshot; encrypted immutable snapshots live in S3.

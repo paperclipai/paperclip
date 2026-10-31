@@ -31,7 +31,8 @@ import { readFreshWorkspaceReadiness } from "../fresh-workspace-continuation.js"
 import { createSystemRecovery } from "../system-recovery-state.js";
 import { isolatedRemoteSourcePath } from "../isolated-remote-workspace-source.js";
 import { cleanupExecutionWorkspaceArtifacts } from "../workspace-runtime.js";
-import { buildProjectMentionHref } from "@paperclipai/shared";
+import { buildProjectMentionHref, readRemoteWorkspaceAuthority } from "@paperclipai/shared";
+import { migrateRemoteWorkspace } from "../remote-workspace-migration.js";
 import { trace } from "@opentelemetry/api";
 import { effectiveProjectWorkspacePolicy } from "../project-workspace-provider.js";
 import { resolveExecutionWorkspaceMode, buildExecutionWorkspaceAdapterConfig } from "../execution-workspace-policy.js";
@@ -336,6 +337,68 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       expect(await readFile(join(source, "unpublished.txt"), "utf8")).toBe("configured folder work\n");
     },
   );
+
+  it.each(["path", "file-url"] as const)("resumes an imported %s Git source from saved authority after its host files disappear", async sourceKind => {
+    const { input, source, issue, envOrchestrator } = await fixture();
+    configureRemotePersistence();
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY = "72".repeat(32);
+    const upstream = join(home, `import-upstream-${randomUUID()}`);
+    await execFile("git", ["clone", "--bare", source, upstream]);
+    const repoUrl = sourceKind === "path" ? upstream : pathToFileURL(upstream).href;
+    await execFile("git", ["-C", source, "remote", "add", "origin", repoUrl]);
+    await writeFile(join(source, "unsaved.txt"), "imported untracked work\n");
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, input.run.id));
+    const [original] = await db.insert(executionWorkspaces).values({ companyId: issue.companyId,
+      sourceIssueId: issue.id, projectId: issue.projectId, projectWorkspaceId: issue.projectWorkspaceId,
+      name: "Imported Git workspace", cwd: source, providerRef: source, repoUrl, baseRef: "main", branchName: "main",
+      providerType: "local_fs", strategyType: "project_primary", mode: "shared_workspace", status: "active" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: original.id }).where(eq(issues.id, issue.id));
+    const storage = createStorageService(createLocalDiskStorageProvider(join(home, `import-objects-${randomUUID()}`)));
+    await expect(migrateRemoteWorkspace({ db, storage, companyId: issue.companyId, workspaceId: original.id, apply: true }))
+      .resolves.toMatchObject({ applied: true });
+    const [imported] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, original.id));
+    const saved = readRemoteWorkspaceAuthority(imported.metadata)!;
+    expect(saved).toMatchObject({ source: { kind: "git", repoUrl, ref: "main", branchName: "main" },
+      snapshotId: expect.any(String), location: null, dirty: false, writerRunId: null });
+    await rm(source, { recursive: true });
+    await rm(upstream, { recursive: true });
+
+    const [next] = await db.insert(heartbeatRuns).values({ companyId: issue.companyId, agentId: input.agent.id,
+      issueId: issue.id, scopeKind: "issue", status: "running", runtimeMode: "legacy" }).returning();
+    input.run = next;
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, input.agent.id));
+    input.agent.adapterType = "paperclip_runner";
+    const [environment] = await db.insert(environments).values({ name: `Imported source ${randomUUID()}`,
+      driver: "sandbox", status: "active", config: { provider: "daytona" } }).returning();
+    input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
+      id: environment.id, driver: "sandbox", config: { provider: "daytona" } };
+    input.environment.selectedEnvironmentId = environment.id;
+    input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled = false;
+    input.task.issueRef = { ...issue, executionWorkspaceId: imported.id };
+    input.reuse.existingExecutionWorkspace = toExecutionWorkspace(imported);
+    input.reuse.reusableExistingExecutionWorkspace = toExecutionWorkspace(imported);
+    input.reuse.requestedShouldReuseExisting = true;
+    input.reuse.workspaceReuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({ issueExecutionWorkspaceId: imported.id,
+      issueExecutionWorkspacePreference: null, existingExecutionWorkspaceStatus: imported.status });
+    const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun");
+    const hostSeed = vi.spyOn(freshWorkspaceSeed, "materializeFreshWorkspaceSeed");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun").mockImplementation(async args => {
+      expect(args.persistedExecutionWorkspace).toMatchObject({ id: imported.id, providerType: "cloud_sandbox" });
+      const [reserved] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, imported.id));
+      expect(readRemoteWorkspaceAuthority(reserved.metadata)).toMatchObject({
+        snapshotId: saved.snapshotId, source: saved.source,
+      });
+      throw new Error("imported saved authority reached remote acquisition");
+    });
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("imported saved authority reached remote acquisition");
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(hostSeed).not.toHaveBeenCalled();
+    const [after] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, imported.id));
+    expect(readRemoteWorkspaceAuthority(after.metadata)).toMatchObject({ snapshotId: saved.snapshotId, source: saved.source });
+    await expect(access(source)).rejects.toThrow();
+    await expect(access(upstream)).rejects.toThrow();
+  });
 
   it.each(["file:///tmp/repository", "/tmp/repository", "../repository", "C:\\work\\repository", "C:repository"])(
     "auto-enrollment leaves local repository source %s on the host authority", async repoUrl => {

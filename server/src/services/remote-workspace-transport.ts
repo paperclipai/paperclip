@@ -19,7 +19,10 @@ export function requireRemoteWorkspaceTarget(target: AdapterExecutionTarget | nu
 async function command(target: RemoteWorkspaceTarget, args: string[], env?: Record<string, string>, timeoutMs = 300_000) {
   const result = await target.runner!.execute({ command: "node", args, cwd: target.remoteCwd,
     env: { NODE_OPTIONS: "", NODE_PATH: "", ...env }, timeoutMs, bypassSession: true });
-  if (result.exitCode !== 0 || result.timedOut) throw new Error("remote_workspace_operation_failed");
+  if (result.exitCode !== 0 || result.timedOut) {
+    const gitOperation = "remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace";
+    throw new Error(!result.timedOut && result.stderr.trim() === gitOperation ? gitOperation : "remote_workspace_operation_failed");
+  }
   return result.stdout;
 }
 
@@ -107,7 +110,7 @@ export function remoteWorkspaceRepositoryPath(remoteRoot: string, repository: {
 
 export async function prepareRemoteRepository(input: {
   target: RemoteWorkspaceTarget; remoteCwd: string; repoUrl: string; ref: string | null;
-  pinnedCommit?: string; verifyOnly?: boolean; resolveGitAuth: GitRemoteAuthProvider;
+  pinnedCommit?: string; verifyOnly?: boolean; savedArchive?: boolean; resolveGitAuth: GitRemoteAuthProvider;
 }) {
   const script = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process');const {promisify}=require('node:util');const exec=promisify(cp.execFile);
   (async()=>{const [root,raw]=process.argv.slice(1),input=JSON.parse(raw);const noConfig={GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_SYSTEM:'/dev/null',GIT_CONFIG_COUNT:'0',GIT_CONFIG_PARAMETERS:'',GIT_TEMPLATE_DIR:'',GIT_ASKPASS:'',SSH_ASKPASS:''};
@@ -119,11 +122,13 @@ export async function prepareRemoteRepository(input: {
    if(!entry.isDirectory()||entry.isSymbolicLink()||await fs.realpath(parent)!==parent)throw Error('unsafe_repository_parent');}
   const existing=await fs.lstat(root).catch(e=>{if(e.code==='ENOENT')return null;throw e});
   if(existing){if(!existing.isDirectory()||existing.isSymbolicLink())throw Error('unsafe_repository')}
-  else{if(input.verifyOnly)throw Error('repository_missing');if(input.probeOnly){process.stdout.write(JSON.stringify({cloneRequired:true}));return;}await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,root],{env:cloneEnv});
+  else{if(input.verifyOnly||input.savedArchive)throw Error('repository_missing');if(input.probeOnly){process.stdout.write(JSON.stringify({cloneRequired:true}));return;}await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,root],{env:cloneEnv});
    if(input.ref)await exec('git',['-c','core.hooksPath=/dev/null','-C',root,'checkout','--detach',input.ref],opts);}
   const git=async args=>(await exec('git',['-c','core.hooksPath=/dev/null','-C',root,...args],opts)).stdout.trim();
   if(await fs.realpath(root)!==root)throw Error('unsafe_repository');
-  const origin=await git(['remote','get-url','origin']);if(origin!==input.repoUrl)throw Error('repository_origin_changed');
+  const hasOrigin=(await git(['remote'])).split('\n').includes('origin');
+  const origin=hasOrigin?await git(['remote','get-url','origin']):null;
+  if(origin!==input.repoUrl&&!(input.savedArchive&&origin===null))throw Error('repository_origin_changed');
   const head=await git(['rev-parse','HEAD']);if(input.pinnedCommit)await git(['cat-file','-e',input.pinnedCommit+'^{commit}']);
   const branch=await git(['symbolic-ref','--short','-q','HEAD']).catch(()=>null);process.stdout.write(JSON.stringify({cwd:root,pinnedCommit:input.pinnedCommit||head,branchName:branch}));
   })().catch(()=>{process.stderr.write('remote_workspace_repository_failed');process.exitCode=1});`;
@@ -179,25 +184,45 @@ export async function captureRemoteWorkspaceArchive(input: {
   target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string;
 }) {
   const staged = await installArchiveHelper(input.target, input.remoteCwd, input.operationId);
-  // A completed immutable export belongs to this operation and survives controller loss.
-  const capture = String.raw`const fs=require('node:fs/promises'),cp=require('node:child_process');const {promisify}=require('node:util');(async()=>{
-   const [helper,root,archive,receipt]=process.argv.slice(1);let result;
-   try{const st=await fs.lstat(receipt);if(!st.isFile()||st.isSymbolicLink()||st.nlink!==1||st.size>16384)throw Error('unsafe_receipt');result=JSON.parse(await fs.readFile(receipt,'utf8'))}catch(e){if(e.code!=='ENOENT')throw e;
-    await fs.rm(archive,{force:true});
-    const r=await promisify(cp.execFile)(process.execPath,[helper,'capture',root,archive],{maxBuffer:1048576});result=JSON.parse(r.stdout);
-    const temp=receipt+'.'+require('node:crypto').randomUUID()+'.tmp';await fs.writeFile(temp,JSON.stringify(result),{mode:0o600,flag:'wx'});await fs.rename(temp,receipt);}
-   process.stdout.write(JSON.stringify(result));
-  })().catch(()=>{process.stderr.write('remote_workspace_capture_failed');process.exitCode=1});`;
-  const receipt = JSON.parse(await command(input.target, ["-e", capture, staged.helper, input.remoteCwd, staged.archive, staged.receipt])) as {
-    manifestDigest: string; sha256: string; byteSize: number; entries: number;
+  // Publish the archive and receipt as one immutable directory. Concurrent
+  // invocations own separate attempts; no invocation unlinks another's archive.
+  const capture = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process');const {promisify}=require('node:util');(async()=>{
+   const [helper,root,directory]=process.argv.slice(1),canonical=path.join(directory,'captured');
+   const readPair=async(dir,layout,required)=>{
+    const st=await fs.lstat(dir).catch(e=>{if(e.code==='ENOENT')return null;throw e});if(!st)return null;
+    if(!st.isDirectory()||st.isSymbolicLink()||await fs.realpath(dir)!==dir)throw Error('unsafe_capture');
+    const receipt=path.join(dir,'receipt.json'),archive=path.join(dir,'workspace.pcws');
+    const receiptStat=await fs.lstat(receipt).catch(e=>{if(!required&&e.code==='ENOENT')return null;throw e});if(!receiptStat)return null;
+    const archiveStat=await fs.lstat(archive);
+    if(!receiptStat.isFile()||receiptStat.isSymbolicLink()||receiptStat.nlink!==1||receiptStat.size>16384
+     ||!archiveStat.isFile()||archiveStat.isSymbolicLink()||archiveStat.nlink!==1)throw Error('unsafe_capture');
+    const result=JSON.parse(await fs.readFile(receipt,'utf8'));if(archiveStat.size!==result.byteSize)throw Error('invalid_capture');
+    return {...result,layout};
+   };
+   let result=await readPair(canonical,'captured',true)??await readPair(directory,'legacy',false),attempt;
+   try{if(!result){
+    attempt=await fs.mkdtemp(path.join(directory,'capture-'));
+    const archive=path.join(attempt,'workspace.pcws'),receipt=path.join(attempt,'receipt.json');
+    const captured=await promisify(cp.execFile)(process.execPath,[helper,'capture',root,archive],{maxBuffer:1048576});
+    await fs.writeFile(receipt,JSON.stringify(JSON.parse(captured.stdout)),{mode:0o600,flag:'wx'});
+    await readPair(attempt,'captured',true);
+    try{await fs.rename(attempt,canonical);attempt=undefined}catch(e){if(!['EEXIST','ENOTEMPTY'].includes(e.code))throw e;}
+    result=await readPair(canonical,'captured',true);if(!result)throw Error('capture_missing');
+   }process.stdout.write(JSON.stringify(result));}finally{if(attempt)await fs.rm(attempt,{recursive:true,force:true});}
+  })().catch(error=>{
+   const gitOperation='remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace';
+   process.stderr.write(typeof error?.stderr==='string'&&error.stderr.trim()===gitOperation?gitOperation:'remote_workspace_capture_failed');process.exitCode=1;
+  });`;
+  const { layout, ...receipt } = JSON.parse(await command(input.target, ["-e", capture, staged.helper, input.remoteCwd, staged.directory])) as {
+    manifestDigest: string; sha256: string; byteSize: number; entries: number; layout: "legacy" | "captured";
   };
-  if (!/^[a-f0-9]{64}$/.test(receipt.manifestDigest) || !/^[a-f0-9]{64}$/.test(receipt.sha256)
+  if (!["legacy", "captured"].includes(layout) || !/^[a-f0-9]{64}$/.test(receipt.manifestDigest) || !/^[a-f0-9]{64}$/.test(receipt.sha256)
     || !Number.isSafeInteger(receipt.byteSize) || receipt.byteSize <= 0) throw new Error("remote_workspace_capture_receipt_invalid");
   const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-upload-"));
   const archivePath = path.join(root, "workspace.pcws");
   try {
     await input.target.runner!.syncOut!([{ operationId: input.operationId,
-      files: [{ kind: "file", sourcePath: staged.archive, targetPath: archivePath }],
+      files: [{ kind: "file", sourcePath: layout === "captured" ? path.posix.join(staged.directory, "captured", "workspace.pcws") : staged.archive, targetPath: archivePath }],
     }]);
     const hash = createHash("sha256"); let bytes = 0;
     for await (const chunk of createReadStream(archivePath)) { hash.update(chunk); bytes += chunk.length; }

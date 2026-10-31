@@ -2636,12 +2636,35 @@ the supported command path. Disabling new enrollment preserves existing authorit
 and recovery. An enrolled workspace whose persistence prerequisites are lost
 must fail admission rather than fall back to a controller checkout.
 
+An imported saved Git workspace can resume from its saved files after its old
+local repository is removed. Local repository paths remain invalid for new
+remote acquisition. Saves reject unfinished Git operations, including rebase,
+cherry-pick, revert, merge, and bisect. The source files remain protected. Finish
+or abort the Git operation before saving. V1 does not claim a complete saved
+copy while these continuation records cannot be restored safely.
+
 Saved-copy browsing restores and verifies the complete archive for each request.
-V1 has no shared extraction cache. Large saved workspaces can therefore need
+Availability batches share one verified access per execution workspace within
+the request and allow at most eight remote workspace accesses. Each path still
+checks current authority. V1 has no extraction cache across requests. Large saved workspaces can therefore need
 substantial transfer time and temporary disk space for each browse request.
+Saved Files access admits at most two open extractions per process. It limits an
+encrypted archive to 512 MiB, its manifest to 4 MiB, and extraction to 10,000
+entries. It reserves at most 2 GiB of temporary space across those accesses and
+checks free disk space with a 256 MiB margin. Capacity failures stop before an
+object download. Cleanup releases capacity after it removes the owned files.
+These limits apply to saved-copy file access. Agent workspace saves and restores
+retain their existing archive limits.
 Each managed repository preparation also saves a complete workspace archive.
 These saves preserve each preparation boundary; V1 does not combine them or use
 incremental uploads.
+
+Snapshot retention removes all stored object versions and delete markers before
+it records deletion. S3 credentials need `s3:ListBucketVersions` and
+`s3:DeleteObjectVersion`, in addition to normal object access. S3-compatible
+endpoints must support object-version listing. Permission errors
+and object locks retain the cleanup obligation for retry. Other storage deletes
+keep their existing behavior unless they explicitly request all versions.
 
 Ordinary sandbox Runner tasks retain the existing API upload restriction:
 `call_api` cannot read a workspace file through `files[].path`. Use

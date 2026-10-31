@@ -1,5 +1,7 @@
 import { and, asc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { executionWorkspaceSnapshots, executionWorkspaces, heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
+import { readRemoteWorkspaceAuthority, type EnvironmentLease } from "@paperclipai/shared";
+import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import type { StorageService } from "../storage/types.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -129,7 +131,7 @@ export function remoteWorkspaceSnapshotRetentionService(db: Db, options: {
         }
         for (const key of keys) {
           signal?.throwIfAborted();
-          await options.storage.deleteObject(claimed.companyId, key, { signal });
+          await options.storage.deleteObject(claimed.companyId, key, { signal, allVersions: true });
           if ((await options.storage.headObject(claimed.companyId, key, { signal })).exists) throw new Error("snapshot_object_still_present");
         }
         await db.update(executionWorkspaceSnapshots).set({ status: "deleted", deleteAfter: null, lastError: null, updatedAt: at })
@@ -174,4 +176,27 @@ export function registerRemoteWorkspaceSnapshotRetentionWork(
       next = result.truncated ? Date.now() + 1000 : await service.nextDeadlineAt(); },
     hasPending: async () => false, nextRunAt: () => next,
   });
+}
+
+/** Called in the lease-release transaction; an absent PID/timeout grants no authority. */
+export async function clearRemoteWorkspaceLocationForReleasedLease(input: { db: Db | Tx; lease: EnvironmentLease }) {
+  if (!hasRemoteTerminationReceipt(input.lease)
+    || (input.lease.metadata?.remoteExecutionTermination as { state?: unknown } | undefined)?.state !== "destroyed") return;
+  const workspaces = await input.db.select().from(executionWorkspaces).where(and(
+    eq(executionWorkspaces.companyId, input.lease.companyId),
+    sql`${executionWorkspaces.metadata}->'remoteWorkspace'->'location'->>'leaseId' = ${input.lease.id}`,
+  )).for("update");
+  for (const workspace of workspaces) {
+    const authority = readRemoteWorkspaceAuthority(workspace.metadata);
+    if (!authority?.location || authority.dirty || !authority.snapshotId || authority.writerRunId
+      || authority.location.providerLeaseId !== input.lease.providerLeaseId || authority.location.environmentId !== input.lease.environmentId) continue;
+    const [saved] = await input.db.select({ id: executionWorkspaceSnapshots.id }).from(executionWorkspaceSnapshots).where(and(
+      eq(executionWorkspaceSnapshots.companyId, workspace.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id),
+      eq(executionWorkspaceSnapshots.id, authority.snapshotId), eq(executionWorkspaceSnapshots.status, "committed")));
+    if (!saved) continue;
+    await notifyRemoteWorkspaceSnapshots(input.db, `workspace:${workspace.id}`);
+    await input.db.update(executionWorkspaces).set({ metadata: { ...workspace.metadata, remoteWorkspace: { ...authority, location: null } }, updatedAt: new Date() })
+      .where(and(eq(executionWorkspaces.id, workspace.id),
+        sql`${executionWorkspaces.metadata}->'remoteWorkspace' = ${JSON.stringify(authority)}::jsonb`));
+  }
 }

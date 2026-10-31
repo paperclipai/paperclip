@@ -30,6 +30,15 @@ describe("portable remote workspace archives", () => {
     await restoreRemoteWorkspaceArchive({ archivePath: snapshot.archivePath, targetDir, expectedManifestDigest: snapshot.manifestDigest });
     return targetDir;
   }
+  async function sourceBytes(directory: string): Promise<string> {
+    const entries: unknown[] = [];
+    for (const name of (await fs.readdir(directory)).sort()) {
+      const target = path.join(directory, name), stat = await fs.lstat(target);
+      entries.push([name, stat.mode & 0o777, stat.isDirectory() ? await sourceBytes(target)
+        : stat.isSymbolicLink() ? await fs.readlink(target) : createHash("sha256").update(await fs.readFile(target)).digest("hex")]);
+    }
+    return JSON.stringify(entries);
+  }
   it("restores binary files, empty entries, executable modes and confined symlinks without its source", async () => {
     const cwd = await source();
     await fs.mkdir(path.join(cwd, "empty")); await fs.writeFile(path.join(cwd, "empty-file"), "");
@@ -47,6 +56,28 @@ describe("portable remote workspace archives", () => {
   it("round trips an empty workspace", async () => {
     const snapshot = await capture(await source()); const restored = await restore(snapshot);
     expect(await fs.readdir(restored)).toEqual([]);
+  });
+  it("rejects a Files entry limit before extraction while ordinary restores keep their full contents", async () => {
+    const cwd = await source(); await fs.writeFile(path.join(cwd, "first.txt"), "first\n"); await fs.writeFile(path.join(cwd, "second.txt"), "second\n");
+    const snapshot = await capture(cwd), targetDir = path.join(root, "limited");
+    await expect(restoreRemoteWorkspaceArchive({ archivePath: snapshot.archivePath, targetDir,
+      expectedManifestDigest: snapshot.manifestDigest, maxEntries: 1 })).rejects.toThrow("remote_workspace_archive_entry_limit");
+    await expect(fs.access(targetDir)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await fs.readdir(root)).filter(name => name.startsWith(".workspace-restore-"))).toEqual([]);
+    const restored = await restore(snapshot);
+    expect(await fs.readFile(path.join(restored, "first.txt"), "utf8")).toBe("first\n");
+    expect(await fs.readFile(path.join(restored, "second.txt"), "utf8")).toBe("second\n");
+  });
+  it("checks a Files manifest byte cap before allocating or reading its body", async () => {
+    const archivePath = path.join(root, "oversized-manifest.pcws"), targetDir = path.join(root, "limited-manifest");
+    const length = Buffer.alloc(4); length.writeUInt32BE(1024);
+    await fs.writeFile(archivePath, Buffer.concat([Buffer.from("PCWS1\n"), length]));
+    await expect(restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: "a".repeat(64), maxManifestBytes: 16 }))
+      .rejects.toThrow("remote_workspace_archive_manifest_too_large");
+    await expect(fs.access(targetDir)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await fs.readdir(root)).filter(name => name.startsWith(".workspace-restore-"))).toEqual([]);
+    await expect(restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: "a".repeat(64) }))
+      .rejects.toThrow("remote_workspace_archive_truncated");
   });
   it("does not publish an empty archive when restoration was already canceled", async () => {
     const snapshot = await capture(await source()), targetDir = path.join(root, "canceled");
@@ -102,6 +133,73 @@ describe("portable remote workspace archives", () => {
     expect((await fs.lstat(path.join(restored, ".git"))).isDirectory()).toBe(true);
     await expect(fs.access(path.join(restored, ".git", "objects", "info", "alternates"))).rejects.toMatchObject({ code: "ENOENT" });
     await git(restored, "fsck", "--full", "--no-dangling");
+  });
+  it.each(["rebase-merge", "rebase-apply", "linked-rebase", "sequencer", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"])(
+    "rejects a real unfinished %s operation without changing its source or publishing an archive", async operation => {
+      let cwd = await source(); await git(cwd, "init", "-q", "-b", "main");
+      await fs.writeFile(path.join(cwd, "work.txt"), "base\n"); await git(cwd, "add", "."); await git(cwd, "commit", "-qm", "base");
+      await git(cwd, "checkout", "-qb", "feature");
+      await fs.writeFile(path.join(cwd, "work.txt"), "feature\n"); await git(cwd, "commit", "-qam", "feature change");
+      const first = await git(cwd, "rev-parse", "HEAD");
+      await fs.writeFile(path.join(cwd, "later.txt"), "remaining sequence step\n"); await git(cwd, "add", "."); await git(cwd, "commit", "-qm", "later change");
+      const second = await git(cwd, "rev-parse", "HEAD");
+      await git(cwd, "checkout", "-q", "main");
+      await fs.writeFile(path.join(cwd, "work.txt"), "main\n"); await git(cwd, "commit", "-qam", "main change");
+      let command: string[];
+      if (operation === "linked-rebase") {
+        const linked = path.join(root, "linked"); await git(cwd, "worktree", "add", "-q", linked, "feature"); cwd = linked;
+      }
+      if (operation.includes("rebase")) {
+        await git(cwd, "checkout", "-q", "feature");
+        command = ["rebase", operation === "rebase-apply" ? "--apply" : "--merge", "main"];
+      } else if (operation === "sequencer") command = ["cherry-pick", first, second];
+      else if (operation === "CHERRY_PICK_HEAD") command = ["cherry-pick", first];
+      else if (operation === "REVERT_HEAD") command = ["revert", "--no-edit", first];
+      else command = ["merge", "--no-edit", "feature"];
+      await expect(git(cwd, ...command)).rejects.toThrow();
+      const gitDir = await git(cwd, "rev-parse", "--absolute-git-dir");
+      const stateName = operation === "linked-rebase" ? "rebase-merge" : operation;
+      await fs.access(path.join(gitDir, stateName));
+      const before = await git(cwd, "status", "--porcelain=v2");
+      const index = await fs.readFile(path.join(gitDir, "index"));
+      const work = await fs.readFile(path.join(cwd, "work.txt"));
+      const state = (await fs.readdir(gitDir)).sort();
+      const bytes = await sourceBytes(cwd), administration = await sourceBytes(gitDir);
+      await expect(capture(cwd)).rejects.toThrow("remote_workspace_archive_git_operation_in_progress");
+      expect(await sourceBytes(cwd)).toBe(bytes);
+      expect(await sourceBytes(gitDir)).toBe(administration);
+      expect(await git(cwd, "status", "--porcelain=v2")).toBe(before);
+      expect(await fs.readFile(path.join(gitDir, "index"))).toEqual(index);
+      expect(await fs.readFile(path.join(cwd, "work.txt"))).toEqual(work);
+      expect((await fs.readdir(gitDir)).sort()).toEqual(state);
+      await fs.access(path.join(gitDir, stateName));
+      await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+      if (operation === "sequencer") {
+        const helper = path.join(root, "helper.cjs"); await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+        await expect(execute(process.execPath, [helper, "capture", cwd, path.join(root, "remote.pcws")], { env }))
+          .rejects.toMatchObject({ stderr: expect.stringContaining("remote_workspace_archive_git_operation_in_progress") });
+        await expect(fs.access(path.join(root, "remote.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await sourceBytes(cwd)).toBe(bytes);
+      }
+      const abort = operation.includes("rebase") ? "rebase" : operation === "MERGE_HEAD" ? "merge"
+        : operation === "REVERT_HEAD" ? "revert" : "cherry-pick";
+      await git(cwd, abort, "--abort");
+      const head = await git(cwd, "rev-parse", "HEAD"), status = await git(cwd, "status", "--porcelain=v2");
+      const restored = await restore(await capture(cwd));
+      expect(await git(restored, "rev-parse", "HEAD")).toBe(head);
+      expect(await git(restored, "status", "--porcelain=v2")).toBe(status);
+    },
+  );
+  it("rejects an unfinished bisect without discarding its portable selection history", async () => {
+    const cwd = await source(); await git(cwd, "init", "-q", "-b", "main");
+    for (const value of ["base", "middle", "bad"]) {
+      await fs.writeFile(path.join(cwd, "work.txt"), `${value}\n`); await git(cwd, "add", "."); await git(cwd, "commit", "-qm", value);
+    }
+    await git(cwd, "bisect", "start", "HEAD", "HEAD~2");
+    const bytes = await sourceBytes(cwd);
+    await expect(capture(cwd)).rejects.toThrow("remote_workspace_archive_git_operation_in_progress");
+    expect(await sourceBytes(cwd)).toBe(bytes);
+    await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("rejects an external symlink before creating an archive", async () => {
     const cwd = await source(); await fs.symlink("../outside", path.join(cwd, "unsafe"));

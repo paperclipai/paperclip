@@ -8,9 +8,10 @@ import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import request from "supertest";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, companySecrets, companySecretBindings, createDb, environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, plugins, secretAccessEvents, workspaceOperations, type Db } from "@paperclipai/db";
+import { agents, companies, companySecrets, companySecretBindings, createDb, environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, plugins, projects, projectWorkspaces, secretAccessEvents, workspaceOperations, type Db } from "@paperclipai/db";
 import { INSPECTION_AUDIENCE, INSPECTION_HEADER, INSPECTION_PERMIT_TYPE, parseInspectionQuery, type InspectionQuery, type InspectionPermit, type RemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { errorHandler } from "../middleware/index.js";
+import { notFound, unprocessable } from "../errors.js";
 import { fileResourceRoutes } from "../routes/file-resources.js";
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 import { createRemoteWorkspaceFiles, REMOTE_WORKSPACE_FILES_SCRIPT } from "../services/remote-workspace-files.js";
@@ -23,9 +24,20 @@ import { captureRemoteWorkspaceDirectory } from "../services/remote-workspace-sn
 import { beginWorkspaceSnapshot, uploadWorkspaceSnapshot } from "../services/remote-workspace-snapshot-storage.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
+import { createSavedWorkspaceLoader } from "../services/remote-workspaces.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const execFileAsync = promisify(execFile);
+const decryptCleanupFault = vi.hoisted(() => ({ error: undefined as Error | undefined, path: undefined as string | undefined }));
+vi.mock("node:fs/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, async rm(target: Parameters<typeof actual.rm>[0], options: Parameters<typeof actual.rm>[1]) {
+    if (decryptCleanupFault.error && String(target).includes("pc-workspace-decrypt-")) {
+      const error = decryptCleanupFault.error; decryptCleanupFault.error = undefined; decryptCleanupFault.path = String(target); throw error;
+    }
+    return actual.rm(target, options);
+  } };
+});
 const externalDatabase = process.env.PAPERCLIP_TEST_DATABASE_URL?.trim();
 const support = externalDatabase ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeDatabase = support.supported ? describe : describe.skip;
@@ -311,6 +323,114 @@ describeDatabase("remote workspace ordinary file routes", () => {
       { workspace: "execution", path: "docs/result.md" })).rejects.toMatchObject({ status: 422, details: { code: "file_changed" } });
   });
 
+  async function savedFileFixture() {
+    const f = await fixture(), storageRoot = await fs.mkdtemp(path.join(os.tmpdir(), "saved-file-budget-"));
+    directories.push(storageRoot);
+    const storage = createStorageService(createLocalDiskStorageProvider(path.join(storageRoot, "objects")));
+    const archivePath = path.join(storageRoot, "saved.pcws"), archive = await captureRemoteWorkspaceDirectory({ cwd: f.root, archivePath });
+    const [operation] = await db.insert(workspaceOperations).values({ companyId: f.ids.company,
+      executionWorkspaceId: f.ids.workspace, phase: "synthetic_file_budget" }).returning();
+    const snapshot = await beginWorkspaceSnapshot(db, { companyId: f.ids.company, workspaceId: f.ids.workspace,
+      operationId: operation!.id, generation: 1, epoch: 1 });
+    const saved = await uploadWorkspaceSnapshot({ db, storage, companyId: f.ids.company, workspaceId: f.ids.workspace,
+      snapshotId: snapshot.id, archivePath, manifestDigest: archive.manifestDigest });
+    await db.update(executionWorkspaceSnapshots).set({ status: "committed" }).where(eq(executionWorkspaceSnapshots.id, snapshot.id));
+    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...f.authority, location: null, snapshotId: snapshot.id } } })
+      .where(eq(executionWorkspaces.id, f.ids.workspace));
+    return { ...f, storage, saved, input: { companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId: snapshot.id } };
+  }
+
+  it("shares fail-fast saved Files admission across loader instances until owned cleanup completes", async () => {
+    const f = await savedFileFixture(), availableBytes = async () => 8n * 1024n ** 3n;
+    const first = createSavedWorkspaceLoader(db, f.storage, { availableBytes });
+    const second = createSavedWorkspaceLoader(db, f.storage, { availableBytes });
+    const third = createSavedWorkspaceLoader(db, f.storage, { availableBytes });
+    const opened: Array<{ root: string; cleanup(): Promise<void> }> = [];
+    const getObject = vi.spyOn(f.storage, "getObject");
+    try {
+      opened.push(await first(f.input)); opened.push(await second(f.input));
+      expect(opened[0]!.root).not.toBe(opened[1]!.root);
+      getObject.mockClear();
+      await expect(third(f.input)).rejects.toMatchObject({ status: 422, details: { code: "workspace_unavailable" } });
+      expect(getObject).not.toHaveBeenCalled();
+      await opened[0]!.cleanup(); await opened[0]!.cleanup();
+      await expect(fs.stat(opened[0]!.root)).rejects.toMatchObject({ code: "ENOENT" });
+      opened.push(await third(f.input));
+      expect(getObject).toHaveBeenCalledTimes(1);
+    } finally { await Promise.all(opened.map(access => access.cleanup())); getObject.mockRestore(); }
+  });
+
+  it("bounds reserved scratch bytes across saved Files loader instances", async () => {
+    const f = await savedFileFixture(), options = { availableBytes: async () => 8n * 1024n ** 3n,
+      limits: { maxScratchBytes: 180 * 1024 * 1024 } };
+    const first = createSavedWorkspaceLoader(db, f.storage, options), second = createSavedWorkspaceLoader(db, f.storage, options);
+    const access = await first(f.input), getObject = vi.spyOn(f.storage, "getObject");
+    try {
+      await expect(second(f.input)).rejects.toMatchObject({ status: 422, details: { code: "workspace_unavailable" } });
+      expect(getObject).not.toHaveBeenCalled();
+    } finally { await access.cleanup(); getObject.mockRestore(); }
+    const next = await second(f.input); await next.cleanup();
+  });
+
+  it.each(["archive", "disk"] as const)("rejects saved Files %s bounds before object retrieval and releases admission", async bound => {
+    const f = await savedFileFixture(), getObject = vi.spyOn(f.storage, "getObject");
+    if (bound === "archive") await db.update(executionWorkspaceSnapshots).set({ byteSize: 512 * 1024 * 1024 + 1 })
+      .where(eq(executionWorkspaceSnapshots.id, f.saved.id));
+    const load = createSavedWorkspaceLoader(db, f.storage, { availableBytes: async () => bound === "disk" ? 0n : 8n * 1024n ** 3n });
+    try {
+      await expect(load(f.input)).rejects.toMatchObject({ status: 422, details: { code: bound === "archive" ? "too_large" : "workspace_unavailable" } });
+      expect(getObject).not.toHaveBeenCalled();
+    } finally {
+      await db.update(executionWorkspaceSnapshots).set({ byteSize: f.saved.byteSize }).where(eq(executionWorkspaceSnapshots.id, f.saved.id));
+      getObject.mockRestore();
+    }
+    const next = await createSavedWorkspaceLoader(db, f.storage, { availableBytes: async () => 8n * 1024n ** 3n })(f.input);
+    await next.cleanup();
+  });
+
+  it.each(["entries", "manifest"] as const)("rejects excessive saved Files %s before extraction and cleans the reserved archive", async bound => {
+    const f = await savedFileFixture(), options = { availableBytes: async () => 8n * 1024n ** 3n };
+    await expect(createSavedWorkspaceLoader(db, f.storage, { ...options, limits: bound === "entries" ? { maxEntries: 1 } : { maxManifestBytes: 1 } })(f.input))
+      .rejects.toMatchObject({ status: 422, details: { code: "too_large" } });
+    const opened: Array<{ root: string; cleanup(): Promise<void> }> = [];
+    try {
+      const load = createSavedWorkspaceLoader(db, f.storage, options);
+      opened.push(await load(f.input)); opened.push(await load(f.input));
+      expect(await fs.readFile(path.join(opened[0]!.root, "docs", "result.md"), "utf8")).toBe("Remote useful result\n");
+    } finally { await Promise.all(opened.map(access => access.cleanup())); }
+  });
+
+  it("preserves object failures while releasing saved Files admission for the next copies", async () => {
+    const f = await savedFileFixture(), original = new Error("synthetic object retrieval failed");
+    const options = { availableBytes: async () => 8n * 1024n ** 3n };
+    await expect(createSavedWorkspaceLoader(db, { ...f.storage, getObject: async () => { throw original; } }, options)(f.input)).rejects.toBe(original);
+    const opened: Array<{ cleanup(): Promise<void> }> = [];
+    try {
+      const load = createSavedWorkspaceLoader(db, f.storage, options);
+      opened.push(await load(f.input)); opened.push(await load(f.input));
+    } finally { await Promise.all(opened.map(access => access.cleanup())); }
+  });
+
+  it("owns failed decrypt cleanup beneath the Files reservation before releasing capacity", async () => {
+    const f = await savedFileFixture(), original = new Error("synthetic decrypt cleanup failed");
+    const load = createSavedWorkspaceLoader(db, f.storage, { availableBytes: async () => 8n * 1024n ** 3n });
+    const opened: Array<{ cleanup(): Promise<void> }> = [];
+    decryptCleanupFault.error = original; decryptCleanupFault.path = undefined;
+    try {
+      await expect(load(f.input)).rejects.toBe(original);
+      const failed = decryptCleanupFault.path!;
+      expect(path.basename(path.dirname(failed))).toMatch(/^pc-workspace-files-/);
+      await expect(fs.stat(failed)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.stat(path.dirname(failed))).rejects.toMatchObject({ code: "ENOENT" });
+      opened.push(await load(f.input)); opened.push(await load(f.input));
+    } finally {
+      decryptCleanupFault.error = undefined;
+      await Promise.all(opened.map(access => access.cleanup()));
+      if (decryptCleanupFault.path) await fs.rm(decryptCleanupFault.path, { recursive: true, force: true });
+      decryptCleanupFault.path = undefined;
+    }
+  });
+
   it("reads saved content after explicit location release, with no provider call", async () => {
     const f = await fixture();
     const snapshotId = randomUUID();
@@ -326,6 +446,182 @@ describeDatabase("remote workspace ordinary file routes", () => {
     expect(cleanup).toHaveBeenCalledTimes(1);
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.syncOut).not.toHaveBeenCalled();
+  });
+
+  it("shares one verified saved extraction across 100 availability paths and removes it after the request", async () => {
+    const f = await fixture();
+    const storageRoot = await fs.mkdtemp(path.join(os.tmpdir(), "availability-saved-"));
+    directories.push(storageRoot);
+    const paths = Array.from({ length: 100 }, (_, index) => `docs/result-${index}.md`);
+    await Promise.all(paths.map(file => fs.writeFile(path.join(f.root, file), `Result ${file}\n`)));
+    const storage = createStorageService(createLocalDiskStorageProvider(path.join(storageRoot, "objects")));
+    const archivePath = path.join(storageRoot, "saved.pcws");
+    const archive = await captureRemoteWorkspaceDirectory({ cwd: f.root, archivePath });
+    const [operation] = await db.insert(workspaceOperations).values({ companyId: f.ids.company,
+      executionWorkspaceId: f.ids.workspace, phase: "synthetic_saved_fixture" }).returning();
+    const snapshot = await beginWorkspaceSnapshot(db, { companyId: f.ids.company, workspaceId: f.ids.workspace,
+      operationId: operation!.id, generation: 1, epoch: 1 });
+    await uploadWorkspaceSnapshot({ db, storage, companyId: f.ids.company, workspaceId: f.ids.workspace,
+      snapshotId: snapshot.id, archivePath, manifestDigest: archive.manifestDigest });
+    await db.update(executionWorkspaceSnapshots).set({ status: "committed" }).where(eq(executionWorkspaceSnapshots.id, snapshot.id));
+    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...f.authority, location: null, snapshotId: snapshot.id } } })
+      .where(eq(executionWorkspaces.id, f.ids.workspace));
+    const loadSavedWorkspace = vi.fn(createSavedWorkspaceLoader(db, storage));
+    const remoteFiles = createRemoteWorkspaceFiles(db, { loadSavedWorkspace });
+    const service = workspaceFileResourceService(db, undefined, { remoteFiles });
+
+    const result = await service.availability(f.ids.issue, { queries: paths.map(file => ({ workspace: "execution", path: file })) });
+
+    expect(result.results).toHaveLength(100);
+    expect(result.results.every(item => item.openable && item.resource?.source?.kind === "saved")).toBe(true);
+    expect(loadSavedWorkspace).toHaveBeenCalledTimes(1);
+    for (const loaded of loadSavedWorkspace.mock.results) {
+      const saved = await loaded.value;
+      await expect(fs.stat(saved.root)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    await service.availability(f.ids.issue, { queries: [{ workspace: "execution", path: paths[0]! }] });
+    expect(loadSavedWorkspace).toHaveBeenCalledTimes(2);
+    expect(f.execute).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it.each(["null", "rejected", "unavailable"] as const)("shares a %s remote open across availability paths", async state => {
+    const f = await fixture();
+    const original = new Error("saved storage unavailable");
+    const open = vi.fn(async () => {
+      if (state === "rejected") throw original;
+      if (state === "unavailable") throw unprocessable("Workspace files are unavailable", { code: "workspace_unavailable" });
+      return null;
+    });
+    const result = workspaceFileResourceService(db, undefined, { remoteFiles: { open } }).availability(f.ids.issue,
+      { queries: Array.from({ length: 20 }, (_, index) => ({ workspace: "execution", path: `result-${index}.md` })) });
+    if (state === "rejected") await expect(result).rejects.toBe(original);
+    else {
+      const results = (await result).results;
+      expect(results).toHaveLength(20);
+      if (state === "unavailable") expect(results.every(item => item.unavailableReason === "workspace_unavailable")).toBe(true);
+    }
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it("drains started availability checks before closing shared access and preserves the original error", async () => {
+    const f = await fixture();
+    let releaseSlow!: () => void;
+    let announceSlow!: () => void;
+    let announceError!: () => void;
+    const slow = new Promise<void>(resolve => { releaseSlow = resolve; });
+    const slowStarted = new Promise<void>(resolve => { announceSlow = resolve; });
+    const errorThrown = new Promise<void>(resolve => { announceError = resolve; });
+    const original = new Error("availability read failed");
+    const close = vi.fn(async () => { throw new Error("cleanup also failed"); });
+    let slowFinished = false;
+    const open = vi.fn(async () => ({
+      source: { kind: "saved" as const, snapshotId: randomUUID(), savedAt: "2026-10-30T12:00:00.000Z" },
+      stat: async (relativePath: string) => {
+        if (relativePath === "error.md") {
+          await slowStarted;
+          announceError();
+          throw original;
+        }
+        announceSlow();
+        await slow;
+        slowFinished = true;
+        return { kind: "file" as const, relativePath, byteSize: 1, modifiedAt: null, text: true };
+      },
+      read: vi.fn(), list: vi.fn(), download: vi.fn(), close,
+    }));
+    const pending = workspaceFileResourceService(db, undefined, { remoteFiles: { open } }).availability(f.ids.issue,
+      { queries: [{ workspace: "execution", path: "error.md" }, { workspace: "execution", path: "slow.md" }] });
+    const observed = pending.catch(error => error);
+    try {
+      await errorThrown;
+      await new Promise(resolve => setImmediate(resolve));
+      expect(close).not.toHaveBeenCalled();
+      expect(slowFinished).toBe(false);
+    } finally { releaseSlow(); }
+    expect(await observed).toBe(original);
+    expect(slowFinished).toBe(true);
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps denied availability paths ahead of opening a remote workspace", async () => {
+    const f = await fixture();
+    const open = vi.fn();
+    const result = await workspaceFileResourceService(db, undefined, { remoteFiles: { open } }).availability(f.ids.issue,
+      { queries: [".env", ".git/config", "../escape"].map(file => ({ workspace: "execution", path: file })) });
+    expect(result.results.every(item => !item.openable)).toBe(true);
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("isolates availability task access from a project workspace with the same UUID", async () => {
+    const f = await fixture();
+    const projectId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId: f.ids.company, name: "Remote project" });
+    await db.insert(projectWorkspaces).values({ id: f.ids.workspace, companyId: f.ids.company, projectId,
+      name: "Project root", sourceType: "remote_managed", isPrimary: true });
+    await db.update(issues).set({ projectId, projectWorkspaceId: f.ids.workspace }).where(eq(issues.id, f.ids.issue));
+    const close = vi.fn(async () => {});
+    const stat = vi.fn(async (relativePath: string) => ({ kind: "file" as const, relativePath, byteSize: 1, modifiedAt: null, text: true }));
+    const open = vi.fn(async () => ({ source: { kind: "live" as const, snapshotId: null, savedAt: null },
+      stat, read: vi.fn(), list: vi.fn(), download: vi.fn(), close }));
+    const result = await workspaceFileResourceService(db, undefined, { remoteFiles: { open } }).availability(f.ids.issue,
+      { queries: [{ workspace: "execution", path: "result.md" }, { workspace: "project", path: "result.md" }] });
+    expect(result.results.map(item => item.resource?.kind)).toEqual(["file", "remote_resource"]);
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(stat).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("attempts every availability accessor close even when an earlier close fails", async () => {
+    const f = await fixture();
+    const otherWorkspace = randomUUID();
+    await db.insert(executionWorkspaces).values({ id: otherWorkspace, companyId: f.ids.company, mode: "isolated_workspace",
+      strategyType: "project_primary", providerType: "cloud_sandbox", name: "Other task root", sourceIssueId: f.ids.issue });
+    const cleanupFailure = new Error("first scratch cleanup failed");
+    const closeFirst = vi.fn(async () => { throw cleanupFailure; });
+    const closeOther = vi.fn(async () => {});
+    const open = vi.fn(async ({ workspaceId }: { workspaceId: string }) => ({
+      source: { kind: "live" as const, snapshotId: null, savedAt: null },
+      stat: async (relativePath: string) => {
+        if (workspaceId === f.ids.workspace) throw notFound("Workspace file not found");
+        return { kind: "file" as const, relativePath, byteSize: 1, modifiedAt: null, text: true };
+      },
+      read: vi.fn(), list: vi.fn(), download: vi.fn(), close: workspaceId === f.ids.workspace ? closeFirst : closeOther,
+    }));
+    await expect(workspaceFileResourceService(db, undefined, { remoteFiles: { open } }).availability(f.ids.issue,
+      { queries: [{ workspace: "auto", path: "one.md" }, { workspace: "auto", path: "two.md" }] })).rejects.toBe(cleanupFailure);
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(closeFirst).toHaveBeenCalledTimes(1);
+    expect(closeOther).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks saved authority for each availability stat on a shared accessor", async () => {
+    const f = await fixture();
+    const snapshotId = randomUUID();
+    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...f.authority, location: null, snapshotId } } })
+      .where(eq(executionWorkspaces.id, f.ids.workspace));
+    const cleanup = vi.fn(async () => {});
+    const loadSavedWorkspace = vi.fn(async () => ({ root: f.root, savedAt: "2026-10-30T12:00:00.000Z", cleanup }));
+    const actual = createRemoteWorkspaceFiles(db, { loadSavedWorkspace });
+    let changed!: () => void;
+    const authorityChanged = new Promise<void>(resolve => { changed = resolve; });
+    const open = vi.fn(async (input: Parameters<typeof actual.open>[0]) => {
+      const access = (await actual.open(input))!;
+      return { ...access, stat: async (relativePath: string) => {
+        if (relativePath === "docs/after.md") await authorityChanged;
+        const entry = await access.stat(relativePath);
+        await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...f.authority, location: null, snapshotId, epoch: 2 } } })
+          .where(eq(executionWorkspaces.id, f.ids.workspace));
+        changed();
+        return entry;
+      } };
+    });
+    const result = await workspaceFileResourceService(db, undefined, { remoteFiles: { open } }).availability(f.ids.issue,
+      { queries: [{ workspace: "execution", path: "docs/result.md" }, { workspace: "execution", path: "docs/after.md" }] });
+    expect(result.results[0]!.openable).toBe(true);
+    expect(result.results[1]!.unavailableReason).toBe("workspace_changed");
+    expect(loadSavedWorkspace).toHaveBeenCalledTimes(1);
+    expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
   it.each(["confirmed_stop", "unknown_stop", "dirty", "foreign_receipt"])(

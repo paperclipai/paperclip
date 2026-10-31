@@ -11,6 +11,8 @@ async function workspaceArchive(input: {
   expectedManifestDigest?: string;
   exclude?: string[];
   signal?: AbortSignal;
+  maxEntries?: number;
+  maxManifestBytes?: number;
 }): Promise<{ schema: "paperclip.remote-workspace-archive.v1"; manifestDigest: string; byteSize: number; sha256: string; entries: number }> {
   const fs = await import("node:fs/promises");
   const { createReadStream } = await import("node:fs");
@@ -103,6 +105,21 @@ async function workspaceArchive(input: {
     }
     return retained;
   };
+  const assertGitOperationComplete = async (repo: string) => {
+    const gitDir = (await git(repo, ["rev-parse", "--absolute-git-dir"])).trim();
+    // A mirror plus the selected index is not a portable continuation of an
+    // unfinished Git operation. Never acknowledge a copy that drops its todo,
+    // scripts, autostash, or operation-only object references. Inspect the
+    // selected worktree's administration directory without following links.
+    for (const name of ["rebase-merge", "rebase-apply", "sequencer", "MERGE_HEAD", "CHERRY_PICK_HEAD",
+      "REVERT_HEAD", "REBASE_HEAD", "MERGE_AUTOSTASH", "BISECT_START"]) {
+      const state = await fs.lstat(path.join(gitDir, name)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        return null;
+      });
+      if (state) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+    }
+  };
   const directories: string[] = [];
   const excludedPaths = new Set<string>();
   const walk = async (root: string, copyTo?: string, skipGit = false) => {
@@ -177,6 +194,7 @@ async function workspaceArchive(input: {
       const repositories = [...new Set(directories)];
       const gitSignatures = new Map<string, string>();
       const signature = async (repo: string, settings?: Awaited<ReturnType<typeof portableGitSettings>>) => {
+        await assertGitOperationComplete(repo);
         const index = (await git(repo, ["rev-parse", "--path-format=absolute", "--git-path", "index"])).trim();
         const indexHash = await hashFile(index).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : Promise.reject(error));
         return JSON.stringify([await git(repo, ["status", "--porcelain=v2", "-z", "--untracked-files=no"]), await git(repo, ["for-each-ref", "--format=%(objectname) %(refname)"]), await git(repo, ["symbolic-ref", "-q", "HEAD"]).catch(() => git(repo, ["rev-parse", "HEAD"])), indexHash, settings ?? await portableGitSettings(repo)]);
@@ -222,6 +240,7 @@ async function workspaceArchive(input: {
       directories.length = 0;
       const after = await walk(root, undefined, true);
       if (JSON.stringify(before) !== JSON.stringify(after)) fail("changed");
+      for (const relative of repositories) await assertGitOperationComplete(path.join(root, relative));
       const entries = await walk(tree);
       // Keep private staging writable for cleanup; the manifest preserves the
       // source modes and restoration applies them only after writing children.
@@ -244,6 +263,8 @@ async function workspaceArchive(input: {
     } finally { await fs.rm(scratch, { recursive: true, force: true }); }
   }
   if (!input.targetDir || !/^[a-f0-9]{64}$/.test(input.expectedManifestDigest ?? "")) fail("restore_binding_invalid");
+  if (input.maxEntries !== undefined && (!Number.isSafeInteger(input.maxEntries) || input.maxEntries < 0)) fail("restore_binding_invalid");
+  if (input.maxManifestBytes !== undefined && (!Number.isSafeInteger(input.maxManifestBytes) || input.maxManifestBytes < 0)) fail("restore_binding_invalid");
   const archive = await fs.open(input.archivePath, "r");
   let staging: string | undefined;
   const stagedDirectories: string[] = [];
@@ -252,12 +273,13 @@ async function workspaceArchive(input: {
     if ((await archive.read(prefix, 0, prefix.length, 0)).bytesRead !== prefix.length || !prefix.subarray(0, magic.length).equals(magic)) fail("invalid_header");
     check();
     const manifestSize = prefix.readUInt32BE(magic.length);
-    if (manifestSize > 64 * 1024 * 1024) fail("manifest_too_large");
+    if (manifestSize > 64 * 1024 * 1024 || input.maxManifestBytes !== undefined && manifestSize > input.maxManifestBytes) fail("manifest_too_large");
     const bytes = Buffer.alloc(manifestSize);
     if ((await archive.read(bytes, 0, manifestSize, prefix.length)).bytesRead !== manifestSize) fail("truncated");
     check();
     const manifest = JSON.parse(bytes.toString("utf8")) as { schema: string; entries: Entry[] };
     if (manifest.schema !== schema || !Array.isArray(manifest.entries) || manifestHash(manifest) !== input.expectedManifestDigest) fail("manifest_mismatch");
+    if (input.maxEntries !== undefined && manifest.entries.length > input.maxEntries) fail("entry_limit");
     const kinds = new Map<string, string>(); let bodySize = 0;
     for (const entry of manifest.entries) {
       check();
@@ -319,7 +341,7 @@ export function captureRemoteWorkspaceDirectory(input: { cwd: string; archivePat
   return workspaceArchive({ ...input, kind: "capture" });
 }
 
-export function restoreRemoteWorkspaceArchive(input: { archivePath: string; targetDir: string; expectedManifestDigest: string; signal?: AbortSignal }) {
+export function restoreRemoteWorkspaceArchive(input: { archivePath: string; targetDir: string; expectedManifestDigest: string; signal?: AbortSignal; maxEntries?: number; maxManifestBytes?: number }) {
   return workspaceArchive({ ...input, kind: "restore" });
 }
 

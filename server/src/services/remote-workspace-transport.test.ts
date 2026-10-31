@@ -186,6 +186,131 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     } finally { await captured.cleanup(); }
   });
 
+  it("publishes one complete capture pair when the same operation starts simultaneously", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "simultaneously captured work\n");
+    const barrier = path.join(scratch, "capture-start-barrier"); await fs.mkdir(barrier);
+    const { remote, execute } = target(), run = execute.getMockImplementation()!;
+    execute.mockImplementation(async input => {
+      const args = input.args ?? [];
+      if (args[4]?.endsWith("archive.cjs") && args[5]) {
+        // Hold the actual codec subprocesses until both captures have started.
+        // The codec and all archive writes still run unchanged on real files.
+        const body = Buffer.from(args[5], "base64").toString("utf8");
+        const controlled = `const barrierFs=require('node:fs/promises');(async()=>{
+          const barrier=${JSON.stringify(barrier)};await barrierFs.writeFile(barrier+'/'+process.pid,'ready');
+          const until=Date.now()+10000;while((await barrierFs.readdir(barrier)).length<2){
+            if(Date.now()>until)throw Error('capture barrier timed out');await new Promise(resolve=>setTimeout(resolve,5));}
+          ${body}
+        })().catch(error=>{process.stderr.write(error.message);process.exitCode=1});`;
+        return run({ ...input, args: [...args.slice(0, 5), Buffer.from(controlled).toString("base64")] });
+      }
+      return run(input);
+    });
+    const operationId = randomUUID();
+    const outcomes = await Promise.allSettled([0, 1].map(() => captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId })));
+    const completed = outcomes.flatMap(result => result.status === "fulfilled" ? [result.value] : []);
+    try {
+      expect(outcomes.map(result => result.status)).toEqual(["fulfilled", "fulfilled"]);
+      expect(await fs.readdir(barrier)).toHaveLength(2);
+      expect(completed[0]!.manifestDigest).toBe(completed[1]!.manifestDigest);
+      expect(completed[0]!.sha256).toBe(completed[1]!.sha256);
+      for (const saved of completed) expect(createHash("sha256").update(await fs.readFile(saved.archivePath)).digest("hex")).toBe(saved.sha256);
+      const directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
+      expect((await fs.readdir(directory)).filter(name => name.startsWith("capture-"))).toEqual([]);
+      await fs.writeFile(path.join(workspace, "saved.txt"), "later work must not replace a completed capture\n");
+      const replay = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId });
+      try { expect(replay.sha256).toBe(completed[0]!.sha256); }
+      finally { await replay.cleanup(); }
+    } finally { await Promise.all(completed.map(saved => saved.cleanup())); }
+  }, 15_000);
+
+  it("recaptures after an abandoned partial attempt without unlinking unknown staging", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "work after interrupted capture\n");
+    const operationId = randomUUID(), directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
+    const abandoned = path.join(directory, "capture-abandoned"); await fs.mkdir(abandoned, { recursive: true });
+    const legacy = path.join(directory, "workspace.pcws"), partial = path.join(abandoned, "workspace.pcws");
+    await fs.writeFile(legacy, "unknown old in-progress archive\n"); await fs.writeFile(partial, "abandoned partial archive\n");
+    const { remote } = target();
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId });
+    try {
+      expect(await fs.readFile(legacy, "utf8")).toBe("unknown old in-progress archive\n");
+      expect(await fs.readFile(partial, "utf8")).toBe("abandoned partial archive\n");
+      expect((await fs.readdir(directory)).filter(name => name.startsWith("capture-"))).toEqual(["capture-abandoned"]);
+      await fs.writeFile(path.join(workspace, "saved.txt"), "newer work\n");
+      const replay = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId });
+      try { expect(replay.sha256).toBe(captured.sha256); }
+      finally { await replay.cleanup(); }
+    } finally { await captured.cleanup(); }
+  });
+
+  it("prefers the canonical capture and reads a completed legacy pair without replacing it", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "immutable completed capture\n");
+    const operationId = randomUUID(), directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
+    const { remote } = target();
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId });
+    try {
+      const canonical = path.join(directory, "captured"), archive = path.join(directory, "workspace.pcws"), receipt = path.join(directory, "receipt.json");
+      const legacyReceipt = { ...JSON.parse(await fs.readFile(path.join(canonical, "receipt.json"), "utf8")),
+        layout: "untrusted-layout", archivePath: path.join(scratch, "untrusted-source") };
+      await fs.writeFile(receipt, JSON.stringify(legacyReceipt));
+      await fs.writeFile(archive, "corrupt legacy bytes ignored when canonical exists\n");
+      const canonicalReplay = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId });
+      try { expect(canonicalReplay.sha256).toBe(captured.sha256); }
+      finally { await canonicalReplay.cleanup(); }
+      await fs.copyFile(path.join(canonical, "workspace.pcws"), archive);
+      await fs.rm(canonical, { recursive: true });
+      await fs.writeFile(path.join(workspace, "saved.txt"), "later uncaptured work\n");
+      const fallback = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId });
+      try { expect(fallback.sha256).toBe(captured.sha256); }
+      finally { await fallback.cleanup(); }
+      expect(await fs.readFile(receipt, "utf8")).toBe(JSON.stringify(legacyReceipt));
+      expect(createHash("sha256").update(await fs.readFile(archive)).digest("hex")).toBe(captured.sha256);
+      expect(await fs.lstat(canonical).catch(() => null)).toBeNull();
+      await fs.writeFile(receipt, "invalid completed receipt\n");
+      await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId }))
+        .rejects.toThrow("remote_workspace_operation_failed");
+      expect(await fs.readFile(receipt, "utf8")).toBe("invalid completed receipt\n");
+      expect(createHash("sha256").update(await fs.readFile(archive)).digest("hex")).toBe(captured.sha256);
+      expect(await fs.lstat(canonical).catch(() => null)).toBeNull();
+    } finally { await captured.cleanup(); }
+  });
+
+  it("rejects a preexisting canonical capture symlink without touching its target", async () => {
+    const operationId = randomUUID(), directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
+    const outside = path.join(scratch, "outside-capture"); await fs.mkdir(outside); await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(path.join(outside, "workspace.pcws"), "outside archive sentinel\n");
+    await fs.symlink(outside, path.join(directory, "captured"));
+    const { remote } = target();
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId }))
+      .rejects.toThrow("remote_workspace_operation_failed");
+    expect(await fs.readFile(path.join(outside, "workspace.pcws"), "utf8")).toBe("outside archive sentinel\n");
+    expect(await fs.readdir(outside)).toEqual(["workspace.pcws"]);
+  });
+
+  it("preserves only the fixed unfinished Git operation diagnostic across capture commands", async () => {
+    await git(workspace, "init", "--initial-branch=main");
+    await fs.writeFile(path.join(workspace, "work.txt"), "base\n"); await git(workspace, "add", "."); await git(workspace, "commit", "-m", "base");
+    await git(workspace, "checkout", "-b", "feature");
+    await fs.writeFile(path.join(workspace, "work.txt"), "feature\n"); await git(workspace, "commit", "-am", "feature");
+    await git(workspace, "checkout", "main");
+    await fs.writeFile(path.join(workspace, "work.txt"), "main\n"); await git(workspace, "commit", "-am", "main");
+    await expect(git(workspace, "merge", "--no-edit", "feature")).rejects.toThrow();
+    const { remote, execute } = target();
+    const gitOperation = "remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace";
+    const operationId = randomUUID();
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId })).rejects.toThrow(gitOperation);
+    const directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
+    for (const name of ["workspace.pcws", "receipt.json"]) await expect(fs.access(path.join(directory, name))).rejects.toMatchObject({ code: "ENOENT" });
+    const failure = { exitCode: 1, stdout: "", stderr: `${gitOperation}\nSYNTHETIC_PRIVATE_PATH_OR_CREDENTIAL`,
+      timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() };
+    execute.mockResolvedValueOnce(failure);
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(/^remote_workspace_operation_failed$/);
+    execute.mockResolvedValueOnce({ ...failure, timedOut: true, stderr: gitOperation });
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(/^remote_workspace_operation_failed$/);
+  });
+
   it("never follows a preexisting snapshot receipt temporary symlink", async () => {
     await fs.writeFile(path.join(workspace, "result.txt"), "synthetic saved result\n");
     const operationId = randomUUID();
@@ -277,6 +402,44 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     await expect(prepareRemoteRepository({ ...input, repoUrl: `${origin}-foreign` })).rejects.toThrow("remote_workspace_operation_failed");
     expect(resolveGitAuth).not.toHaveBeenCalled();
     expect(await fs.readFile(path.join(root, "unsaved.txt"), "utf8")).toBe("preserve local work\n");
+  });
+
+  it.each(["path", "file-url"] as const)("verifies an archived secondary %s repository after its local origin disappears", async sourceKind => {
+    const origin = await repository(), { remote } = target();
+    const repoUrl = sourceKind === "path" ? origin : pathToFileURL(origin).href;
+    const root = path.join(workspace, "secondary");
+    const prepared = await prepareRemoteRepository({ target: remote, remoteCwd: root, repoUrl,
+      ref: "HEAD", resolveGitAuth: async () => null });
+    await fs.writeFile(path.join(root, "source.txt"), "staged imported work\n");
+    await git(root, "add", "source.txt");
+    await fs.writeFile(path.join(root, "source.txt"), "unstaged imported work\n");
+    await fs.writeFile(path.join(root, "untracked.txt"), "untracked imported work\n");
+    const status = (await git(root, "status", "--porcelain=v2")).stdout;
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      await fs.rm(root, { recursive: true });
+      await fs.rm(origin, { recursive: true });
+      const restoredRoot = path.join(scratch, "saved-root");
+      const restored = await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: restoredRoot,
+        archivePath: captured.archivePath, manifestDigest: captured.manifestDigest, restorationIdentity: "c".repeat(64) });
+      await cleanupRemoteWorkspaceArchive({ target: remote, remoteCwd: restored.stagingRoot, operationId: restored.operationId });
+      const secondary = path.join(restoredRoot, "secondary");
+      expect((await git(secondary, "remote")).stdout.trim()).toBe("");
+      const resolveGitAuth = vi.fn(async () => { throw new Error("original Git source is unavailable"); });
+      const input = { target: remote, remoteCwd: secondary, repoUrl, ref: "HEAD",
+        pinnedCommit: prepared.pinnedCommit, savedArchive: true, resolveGitAuth };
+      await expect(prepareRemoteRepository(input)).resolves.toEqual({ ...prepared, cwd: secondary });
+      expect((await git(secondary, "status", "--porcelain=v2")).stdout).toBe(status);
+      expect(await fs.readFile(path.join(secondary, "source.txt"), "utf8")).toBe("unstaged imported work\n");
+      await expect(prepareRemoteRepository({ ...input, savedArchive: false })).rejects.toThrow("remote_workspace_operation_failed");
+      await expect(prepareRemoteRepository({ ...input, pinnedCommit: "0".repeat(40) })).rejects.toThrow("remote_workspace_operation_failed");
+      const missing = path.join(restoredRoot, "missing");
+      await expect(prepareRemoteRepository({ ...input, remoteCwd: missing })).rejects.toThrow("remote_workspace_operation_failed");
+      expect(await fs.lstat(missing).catch(() => null)).toBeNull();
+      await git(secondary, "remote", "add", "origin", "https://example.invalid/foreign.git");
+      await expect(prepareRemoteRepository(input)).rejects.toThrow("remote_workspace_operation_failed");
+      expect(resolveGitAuth).not.toHaveBeenCalled();
+    } finally { await captured.cleanup(); }
   });
 
   it("keeps the preparation pin and later agent commits across the next admission", async () => {

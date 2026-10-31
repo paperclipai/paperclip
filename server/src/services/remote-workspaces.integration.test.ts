@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { activityLog, agents, agentWakeupRequests, applyPendingMigrations, closeRegisteredClients, companies, createDb, environmentLeases, environments,
@@ -16,8 +17,8 @@ import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.j
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import type { StorageService } from "../storage/types.js";
 import { createSavedWorkspaceLoader, prepareRemoteWorkspace, readRemoteWorkspaceAuthority,
-  clearRemoteWorkspaceLocationForReleasedLease, reserveRemoteWorkspace, saveRemoteWorkspace, shouldUseRemoteWorkspaces } from "./remote-workspaces.js";
-import { createRemoteWorkspaceGitAuth } from "./remote-workspace-git-auth.js";
+  clearRemoteWorkspaceLocationForReleasedLease, createRemoteWorkspaceGitAuth, prepareRemoteWorkspaceRepository,
+  reserveRemoteWorkspace, saveRemoteWorkspace, shouldUseRemoteWorkspaces } from "./remote-workspaces.js";
 import type { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { reconcileSafeNativeReplacements } from "./native-runtime/native-safe-replacement.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -29,6 +30,7 @@ import { preserveOrphanedNativeWorkspace } from "./native-runtime/native-failed-
 import { terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { legacyControllerClaim, renewLegacyControllerLease } from "./legacy-controller-lease.js";
+import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 import { registerRemoteWorkspaceSnapshotRetentionWork, remoteWorkspaceSnapshotRetentionService } from "./remote-workspace-snapshot-retention.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 
@@ -146,6 +148,74 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect((await fs.stat(path.join(restored.remoteRoot, "empty-folder"))).isDirectory()).toBe(true);
     const browse = await createSavedWorkspaceLoader(db, storage)({ companyId: ids.company, workspaceId: reserved.id, snapshotId: saved.snapshotId });
     try { expect(await fs.readFile(path.join(browse.root, "report.md"), "utf8")).toContain("useful saved result"); } finally { await browse.cleanup(); }
+  }, 60_000);
+
+  it.each(["path", "file-url"] as const)("cold restores an imported secondary %s repository and acquires only a new descriptor", async sourceKind => {
+    const origin = path.join(root, "import-origin"), original = path.join(root, "old-checkout");
+    await fs.mkdir(origin); await fs.mkdir(original);
+    const git = (cwd: string, ...args: string[]) => exec("git", ["-C", cwd, "-c", "user.name=Import fixture", "-c", "user.email=import@example.invalid", ...args]);
+    await git(origin, "init", "--initial-branch=main");
+    await fs.writeFile(path.join(origin, "code.txt"), "saved secondary baseline\n");
+    await git(origin, "add", "."); await git(origin, "commit", "-m", "Import baseline");
+    const repoUrl = sourceKind === "path" ? origin : pathToFileURL(origin).href;
+    await git(original, "clone", repoUrl, "secondary");
+    await fs.writeFile(path.join(original, "secondary", "untracked.txt"), "imported secondary work\n");
+    const pinnedCommit = (await git(origin, "rev-parse", "HEAD")).stdout.trim();
+    const repository = { id: randomUUID(), relativePath: "secondary", repoUrl, ref: "HEAD", pinnedCommit };
+    const source = { kind: "empty" as const, repositories: [repository] };
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, ids.run));
+    const [local] = await db.insert(executionWorkspaces).values({ companyId: ids.company, sourceIssueId: ids.issue,
+      mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", name: "Imported secondary",
+      cwd: original, providerRef: original }).returning();
+    await db.update(issues).set({ executionWorkspaceId: local.id }).where(eq(issues.id, ids.issue));
+    await migrateRemoteWorkspace({ db, storage, companyId: ids.company, workspaceId: local.id, source, apply: true });
+    const imported = readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!;
+    expect(imported.source).toEqual(source);
+    await fs.rm(original, { recursive: true }); await fs.rm(origin, { recursive: true });
+
+    // This descriptor was not in the committed import. It must still use normal
+    // acquisition rather than treating a missing directory as saved bytes.
+    const newOrigin = path.join(root, "new-origin"); await fs.mkdir(newOrigin);
+    await git(newOrigin, "init", "--initial-branch=main");
+    await fs.writeFile(path.join(newOrigin, "new.txt"), "newly acquired work\n");
+    await git(newOrigin, "add", "."); await git(newOrigin, "commit", "-m", "New source");
+    const added = { id: randomUUID(), relativePath: "new-repository", repoUrl: newOrigin, ref: "HEAD" };
+    const nextRun = randomUUID(), nextLease = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRun, companyId: ids.company, agentId: ids.agent, nativeIssueId: ids.issue,
+      runtimeMode: "native", status: "running" });
+    await db.insert(environmentLeases).values({ id: nextLease, companyId: ids.company, environmentId: ids.environment,
+      heartbeatRunId: nextRun, issueId: ids.issue, provider: "daytona", providerLeaseId: `allocation-${nextLease}`, status: "active" });
+    const reserved = await reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue, runId: nextRun,
+      agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null,
+      existingWorkspaceId: local.id, source });
+    const next = (await db.select().from(environmentLeases).where(eq(environmentLeases.id, nextLease)))[0]! as EnvironmentLease;
+    const remote = await target("import-restored-sandbox");
+    const restored = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: nextRun, lease: next, target: remote,
+      source: { ...source, repositories: [repository, added] } });
+    const secondary = path.join(restored.remoteRoot, "secondary");
+    expect((await git(secondary, "rev-parse", "HEAD")).stdout.trim()).toBe(pinnedCommit);
+    expect((await git(secondary, "remote")).stdout.trim()).toBe("");
+    expect(await fs.readFile(path.join(secondary, "untracked.txt"), "utf8")).toBe("imported secondary work\n");
+    expect(await fs.readFile(path.join(restored.remoteRoot, added.relativePath, "new.txt"), "utf8")).toBe("newly acquired work\n");
+    expect(readRemoteWorkspaceAuthority(restored.workspace.metadata)).toMatchObject({ source, snapshotId: imported.snapshotId });
+    const resolveGitAuth = vi.fn(async () => null);
+    const admission = { db, storage, workspace: restored.workspace, runId: nextRun, lease: restored.lease, target: remote,
+      repository: { ...repository, ref: null }, resolveGitAuth };
+    // Registered admission encodes the stored default HEAD as null. It must
+    // verify the same saved descriptor without changing the source identity.
+    await expect(prepareRemoteWorkspaceRepository(admission)).resolves.toMatchObject({ cwd: secondary, pinnedCommit });
+    const beforeChanged = readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!;
+    await expect(prepareRemoteWorkspaceRepository({ ...admission,
+      workspace: await workspace(local.id), repository: { ...repository, ref: null, repoUrl: newOrigin } }))
+      .rejects.toThrow("remote_workspace_operation_failed");
+    expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)).toEqual(beforeChanged);
+    expect(resolveGitAuth).not.toHaveBeenCalled();
+    const newRepository = { ...added, id: randomUUID(), relativePath: "wrapper-new", ref: null };
+    await expect(prepareRemoteWorkspaceRepository({ ...admission, workspace: await workspace(local.id), repository: newRepository }))
+      .resolves.toMatchObject({ cwd: path.join(restored.remoteRoot, "wrapper-new") });
+    expect(resolveGitAuth).toHaveBeenCalledOnce();
+    expect(await fs.readFile(path.join(restored.remoteRoot, "wrapper-new", "new.txt"), "utf8")).toBe("newly acquired work\n");
+    expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.source).toEqual(source);
   }, 60_000);
 
   it.runIf(process.platform !== "win32" && process.getuid?.() !== 0)("cleans saved reads with read-only folders without changing modes or following symlinks", async () => {

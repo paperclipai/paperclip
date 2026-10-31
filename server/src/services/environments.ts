@@ -1,5 +1,5 @@
 import { createReusableLeaseHandoff, preserveReusableLeaseHandoff, withoutReusableLeaseHandoff } from "./environment-lease-handoff.js";
-import { clearRemoteWorkspaceLocationForReleasedLease } from "./remote-workspace-locations.js";
+import { clearRemoteWorkspaceLocationForReleasedLease } from "./remote-workspace-snapshot-retention.js";
 import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";

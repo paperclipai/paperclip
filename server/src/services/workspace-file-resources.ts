@@ -34,6 +34,7 @@ export const WORKSPACE_FILE_LIST_DEFAULT_LIMIT = 25;
 export const WORKSPACE_FILE_LIST_MAX_LIMIT = 100;
 export const WORKSPACE_FILE_LIST_MAX_SCANNED_ENTRIES = 5_000;
 export const WORKSPACE_FILE_AVAILABILITY_CONCURRENCY = 8;
+const MAX_AVAILABILITY_REMOTE_WORKSPACES = 8;
 const MAX_RELATIVE_PATH_BYTES = 4096;
 const TEXT_SNIFF_BYTES = 4096;
 const MAX_LIST_DEPTH = 20;
@@ -277,14 +278,21 @@ function unavailableAvailabilityResult(
 async function mapWithConcurrency<T, R>(items: T[], concurrency: number, mapper: (item: T) => Promise<R>) {
   const results = new Array<R>(items.length);
   let nextIndex = 0;
+  let failure: { error: unknown } | undefined;
   async function worker() {
-    while (nextIndex < items.length) {
+    while (nextIndex < items.length && !failure) {
       const index = nextIndex;
       nextIndex += 1;
-      results[index] = await mapper(items[index]!);
+      try {
+        results[index] = await mapper(items[index]!);
+      } catch (error) {
+        failure ??= { error };
+      }
     }
   }
+  // Every started mapper must settle before its request-owned resources close.
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  if (failure) throw failure.error;
   return results;
 }
 
@@ -1078,16 +1086,17 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor,
     };
   }
 
-  async function resolveRemote(candidate: WorkspaceCandidate, normalized: NormalizedPath, directory: boolean) {
+  async function resolveRemote(candidate: WorkspaceCandidate, normalized: NormalizedPath, directory: boolean,
+    requestAccess?: (candidate: WorkspaceCandidate) => Promise<RemoteWorkspaceFileAccess | null>) {
     throwIfDenied(normalized.segments);
-    const access = await remoteAccess(candidate);
+    const access = await (requestAccess ?? remoteAccess)(candidate);
     if (!access) return null;
     try {
       const entry = await access.stat(normalized.relativePath);
       if (directory && entry.kind !== "directory") throw unprocessable("Workspace path is not a directory", { code: "not_directory" });
       if (!directory && entry.kind !== "file") throw unprocessable("Workspace file is not a regular file", { code: "not_regular_file" });
       return remoteEntryResource(candidate, entry, access);
-    } finally { await access.close(); }
+    } finally { if (!requestAccess) await access.close(); }
   }
 
   async function visibleCandidates(candidates: WorkspaceCandidate[], skipDeniedSources = false, task?: IssueRow) {
@@ -1371,8 +1380,22 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor,
       ? await sameCompanyProjectWorkspaceCandidates(issue, new Set(initialCandidates.map((candidate) => candidate.workspaceId)))
       : [];
     const explicitTargets = await loadAvailabilityTargets(issue, queries);
+    const remoteAccesses = new Map<string, Promise<RemoteWorkspaceFileAccess | null>>();
+    const requestAccess = (candidate: WorkspaceCandidate) => {
+      // UUIDs can be equal across workspace tables; project roots never borrow task access.
+      if (!options.remoteFiles || candidate.workspaceKind !== "execution_workspace") return Promise.resolve(null);
+      const key = `${candidate.companyId}:${candidate.workspaceId}`;
+      const existing = remoteAccesses.get(key);
+      if (existing) return existing;
+      if (remoteAccesses.size >= MAX_AVAILABILITY_REMOTE_WORKSPACES) {
+        throw unprocessable("Too many remote workspaces in one availability request", { code: "workspace_unavailable" });
+      }
+      const access = remoteAccess(candidate);
+      remoteAccesses.set(key, access);
+      return access;
+    };
 
-    const results = await mapWithConcurrency(
+    const outcome = await mapWithConcurrency(
       queries,
       WORKSPACE_FILE_AVAILABILITY_CONCURRENCY,
       async (item): Promise<WorkspaceFileAvailabilityResult> => {
@@ -1398,7 +1421,7 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor,
           for (const candidate of candidates) {
             if (candidate.remote) {
               try {
-                const resource = await resolveRemote(candidate, item.normalizedPath, item.directory);
+                const resource = await resolveRemote(candidate, item.normalizedPath, item.directory, requestAccess);
                 if (resource) return availabilityResult(item.query, resource);
               } catch (error) {
                 if (!hasExplicitTarget && item.query.workspace === "auto" && isHttpStatus(error, 404)) {
@@ -1451,9 +1474,16 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor,
           return unavailableAvailabilityResult(item.query, reason);
         }
       },
-    );
+    ).then(results => ({ results }), (error: unknown) => ({ error }));
 
-    return { kind: "workspace_file_availability", results };
+    const opened = await Promise.allSettled(remoteAccesses.values());
+    const closed = await Promise.allSettled(opened.map(async result => {
+      if (result.status === "fulfilled") await result.value?.close();
+    }));
+    if ("error" in outcome) throw outcome.error;
+    const cleanupFailure = closed.find(result => result.status === "rejected");
+    if (cleanupFailure?.status === "rejected") throw cleanupFailure.reason;
+    return { kind: "workspace_file_availability", results: outcome.results };
   }
 
   async function resolve(issueId: string, input: {
