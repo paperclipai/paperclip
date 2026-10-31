@@ -83,6 +83,7 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   let worker: ReturnType<typeof registerSkillVersionRetentionWork> | undefined;
   let admitted = true;
+  const passes = new Set<Promise<unknown>>();
   afterEach(async () => {
     worker?.unsubscribe();
     await coordinator?.stop();
@@ -157,11 +158,17 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
     return dir;
   }
 
-  async function startRetention(graceMs = 20_000, service = skillVersionRetentionService(db, { graceMs })) {
+  async function startRetention(graceMs = 20_000, service = skillVersionRetentionService(db, { graceMs }), clock: { shouldAdvanceTime?: boolean; now?: number } = {}) {
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select 1`)));
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true, ...clock });
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => admitted, canReconcile: () => true,
       onError: error => { throw error; } });
+    const register = coordinator.register.bind(coordinator);
+    coordinator.register = (queue, task) => register(queue, { ...task, run: signal => {
+      const pass = task.run(signal); passes.add(pass);
+      void pass.then(() => passes.delete(pass), () => passes.delete(pass));
+      return pass;
+    } });
     worker = registerSkillVersionRetentionWork(coordinator, service, () => admitted);
     await worker.ready;
     return service;
@@ -577,7 +584,6 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
   it("keeps directory pages moving while another company's grace deadline is due", async () => {
     const dueCompany = await createCompany(), pagedCompany = await createCompany();
     const dueSkill = await createSkill(dueCompany, 2), pagedSkill = await createSkill(pagedCompany, 1);
-    const expiring = await writeSnapshot(dueCompany, dueSkill.skillId, dueSkill.versionIds[0]!, 0);
     const parent = path.join(resolveCompanySkillVersionsRoot(pagedCompany), pagedSkill.skillId);
     await fs.mkdir(parent, { recursive: true });
     for (let index = 0; index < 410; index++) await fs.mkdir(path.join(parent, `operator-${index}`));
@@ -588,7 +594,27 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
       if (id === pagedCompany) pageTimes.push(Date.now());
       return prune(id, options);
     };
-    await startRetention(5000, service); await settled();
+    const expiring = await writeSnapshot(dueCompany, dueSkill.skillId, dueSkill.versionIds[0]!, 0);
+    const completeIo = async (work: Promise<unknown>) => {
+      let done = false;
+      void work.then(() => { done = true; }, () => { done = true; });
+      while (!done) {
+        if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
+        await realDelay(0);
+      }
+      await work;
+    };
+    const accessedAt = (await lastUsedAt(skillVersionCachePaths(dueCompany, dueSkill.skillId, dueSkill.versionIds[0]!).access))!;
+    await completeIo(startRetention(5000, service, { shouldAdvanceTime: false, now: accessedAt }));
+    expect(await exists(expiring)).toBe(true);
+    // Keep virtual time fixed during real I/O; measure scheduler fairness,
+    // independent of filesystem latency and CI CPU scheduling.
+    while (coordinator!.nextWakeAt() !== null) {
+      await vi.advanceTimersByTimeAsync(Math.max(0, coordinator!.nextWakeAt()! - Date.now()));
+      await completeIo(Promise.all([...passes]));
+      await realDelay(0);
+      expect(idleWorkSnapshot().active).toBe(0);
+    }
     expect(pageTimes.length).toBeGreaterThan(5);
     expect(Math.max(...pageTimes.slice(1).map((at, index) => at - pageTimes[index]!))).toBeLessThan(3000);
     expect(await exists(expiring)).toBe(false); await quiet();
