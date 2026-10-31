@@ -110,6 +110,21 @@ describe("persisted Git workspace source", () => {
     } } });
   });
 
+  it("accepts an origin that differs from the saved repository only by a .git suffix or trailing slash", async () => {
+    for (const origin of ["https://example.invalid/original", "https://example.invalid/original/", "https://example.invalid/original.git/"]) {
+      const { original, input } = await fixture();
+      await exec("git", ["-C", original, "remote", "set-url", "origin", origin]);
+      expect(await resolvePersistedGitWorkspaceSource(input)).toBe(original);
+    }
+  });
+
+  it("accepts a saved repository URL without .git when the origin keeps it", async () => {
+    const { original, input } = await fixture();
+    expect(await resolvePersistedGitWorkspaceSource({
+      ...input, workspace: { ...input.workspace, repoUrl: "https://example.invalid/original" },
+    })).toBe(original);
+  });
+
   it("rejects changed origin identity even at the recorded managed path", async () => {
     const { original, input } = await fixture();
     await exec("git", ["-C", original, "remote", "set-url", "origin", "https://example.invalid/other.git"]);
