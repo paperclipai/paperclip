@@ -118,6 +118,11 @@ if (Object.keys(sortedOptDeps).length > 0) {
   publishPkg.optionalDependencies = sortedOptDeps;
 }
 
+const cliPackageBundleDependencies = ["postgres"].filter((name) => sortedDeps[name] !== undefined);
+if (cliPackageBundleDependencies.length > 0) {
+  publishPkg.bundleDependencies = cliPackageBundleDependencies;
+}
+
 const output = JSON.stringify(publishPkg, null, 2) + "\n";
 const [outputFlag, outputPath, ...extraArgs] = process.argv.slice(2);
 if (extraArgs.length || (outputFlag !== undefined && (outputFlag !== "--output" || !outputPath))) {

@@ -294,7 +294,15 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
         await runCommand("corepack", ["pnpm", "--dir", workspacePackage.dir, "pack", "--pack-destination", stagingRoot], { cwd: checkoutPath, env: buildEnv({ PAPERCLIP_RELEASE_REUSE_UI_DIST: "1" }), maxBuffer: 32 * 1024 * 1024 });
       }
     }
-    await runCommand("npm", ["pack", "--pack-destination", stagingRoot], { cwd: path.join(checkoutPath, "cli"), env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
+    const cliDir = path.join(checkoutPath, "cli");
+    const cliPackageJson = JSON.parse(fs.readFileSync(path.join(cliDir, "package.json"), "utf8")) as { bundleDependencies?: string[]; bundledDependencies?: string[] };
+    if ((cliPackageJson.bundleDependencies ?? cliPackageJson.bundledDependencies ?? []).length > 0) {
+      const stagedCli = path.join(stagingRoot, "cli-package");
+      await runCommand(process.execPath, [path.join(checkoutPath, "scripts", "prepare-bundled-package.mjs"), cliDir, stagedCli], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
+      await runCommand("npm", ["pack", stagedCli, "--pack-destination", stagingRoot], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
+    } else {
+      await runCommand("npm", ["pack", "--pack-destination", stagingRoot], { cwd: cliDir, env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
+    }
     const tarballs = fs.readdirSync(stagingRoot).filter((entry) => entry.endsWith(".tgz"));
     const cliTarball = tarballs.find((entry) => entry === `paperclipai-${metadata.version}.tgz`);
     const workspaceTarballs = tarballs.filter((entry) => entry !== cliTarball);

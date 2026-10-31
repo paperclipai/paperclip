@@ -35,7 +35,8 @@
     "dist"
   ],
   "bundleDependencies": [
-    "embedded-postgres"
+    "embedded-postgres",
+    "postgres"
   ],
   "scripts": {
     "check:migrations": "tsx src/check-migration-numbering.ts && tsx src/check-migration-safety.ts",

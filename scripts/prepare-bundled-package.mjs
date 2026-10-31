@@ -354,6 +354,18 @@ export function selectBundledDependencyPatches(
   return selectedPatches;
 }
 
+export function pinPatchedBundledDependencies(installManifest, bundledDependencies, patchedDependencies) {
+  const result = structuredClone(installManifest);
+  for (const packageName of new Set(bundledDependencies)) {
+    const versions = Object.keys(patchedDependencies)
+      .filter(specifier => patchedDependencyPackageName(specifier) === packageName)
+      .map(specifier => specifier.slice(packageName.length + 1));
+    if (versions.length !== 1 || !versions[0] || typeof result.dependencies?.[packageName] !== "string") continue;
+    result.dependencies[packageName] = versions[0];
+  }
+  return result;
+}
+
 export function applyBundledDependencyPatches(destinationDir, bundledDependencies, sourceRoot = repoRoot) {
   const rootPackage = JSON.parse(readFileSync(resolve(sourceRoot, "package.json"), "utf8"));
   const patchedDependencies = rootPackage.pnpm?.patchedDependencies ?? {};
@@ -401,7 +413,10 @@ export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = 
   const { installManifest, profiles } = configureBundledProviderOverrides(
     createBundledInstallManifest(publishManifest, bundledDependencies), bundledDependencies, rootPackage, profileData,
   );
-  writeFileSync(deployedPackagePath, `${JSON.stringify(installManifest, null, 2)}\n`);
+  const pinnedInstallManifest = pinPatchedBundledDependencies(
+    installManifest, bundledDependencies, rootPackage.pnpm?.patchedDependencies ?? {},
+  );
+  writeFileSync(deployedPackagePath, `${JSON.stringify(pinnedInstallManifest, null, 2)}\n`);
 
   execFileSync(
     "npm",
