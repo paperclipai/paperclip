@@ -837,7 +837,7 @@ export function connectionIntentService(db: Db) {
         state: "ready",
         connectionId: ready.id,
         interactionId: null,
-        instruction: isRemoteMcpConnectorId(app.slug) ? aggregatorContinuationInstruction(app.slug, upstreamService?.name ?? "The requested app") : options.purpose === "channel" ? "An active AgentMail inbox is assigned to you. Use agentmail_inboxes to read its address; do not request another connection." : options.purpose === "ai" ? `${app.name} authentication is available for the next execution.` : `${app.name} is connected. Use its installed tools; a native continuation will refresh tools if needed.`,
+        instruction: isRemoteMcpConnectorId(app.slug) ? aggregatorContinuationInstruction(app.slug, upstreamService?.name ?? "The requested app") : options.purpose === "channel" ? "An active AgentMail inbox is assigned to you. Use agentmail_inboxes to read its address; do not request another connection." : options.purpose === "ai" ? `${app.name} authentication is available for the next execution.` : `${app.name} is connected. Use its installed tools.`,
       };
     }
     // Missing profile entries can be reviewed in a scoped access card. Acceptance

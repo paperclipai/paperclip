@@ -539,10 +539,6 @@ export async function createApp(
   app.use("/api/customer-success/v1", customerSuccessRoutes(db, opts.storageService));
   app.use(museTransportRoutes(db, opts.authPublicBaseUrl));
   app.use(publicMcpIngress);
-  // Connection-intent tools carry their own short-lived, run-bound bearer and
-  // must be reachable by remote adapters that intentionally do not receive an
-  // agent API key. Every request revalidates the active heartbeat row.
-  app.use(runtimeConnectionIntentRoutes(db));
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
   let lifecyclePluginsReady = false;
@@ -550,6 +546,10 @@ export async function createApp(
   const connectionIntentHeartbeat = heartbeatService(db, {
     pluginWorkerManager: workerManager,
   });
+  // Connection-intent tools carry their own short-lived, run-bound bearer and
+  // must be reachable by remote adapters that intentionally do not receive an
+  // agent API key. Every request revalidates the active heartbeat row.
+  app.use(runtimeConnectionIntentRoutes(db, connectionIntentHeartbeat));
   const chatChannels = chatChannelService(db, {
     allowLocalVoiceBoard: opts.deploymentMode === "local_trusted",
     deferWebhookProcessing: true,
