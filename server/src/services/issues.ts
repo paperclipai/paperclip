@@ -3417,6 +3417,7 @@ type IssueBlockerAttentionNode = {
   executionRunId?: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  monitorNextCheckAt?: Date | null;
 };
 type IssueBlockerAttentionInputNode = Pick<
   IssueBlockerAttentionNode,
@@ -3428,6 +3429,7 @@ type IssueBlockerAttentionInputNode = Pick<
   | "status"
   | "assigneeAgentId"
   | "assigneeUserId"
+  | "monitorNextCheckAt"
 > & { executionRunId?: string | null };
 
 type IssueBlockerAttentionEdge = {
@@ -3633,6 +3635,8 @@ type IssueRelationSummaryRow = {
   priority: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  executionPolicy?: unknown;
+  monitorNextCheckAt?: Date | null;
 };
 
 function summarizeIssueRelationRow(
@@ -3646,6 +3650,8 @@ function summarizeIssueRelationRow(
     priority: row.priority as IssueRelationIssueSummary["priority"],
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
+    executionPolicy: (row.executionPolicy ?? null) as IssueRelationIssueSummary["executionPolicy"],
+    monitorNextCheckAt: row.monitorNextCheckAt ?? null,
   };
 }
 
@@ -3761,6 +3767,8 @@ async function terminalExplicitBlockersByRoot(
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          executionPolicy: issues.executionPolicy,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -3882,6 +3890,7 @@ async function listIssueBlockerAttentionMap(
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -3906,6 +3915,7 @@ async function listIssueBlockerAttentionMap(
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
         })
         .from(issues)
         .where(
@@ -3961,6 +3971,7 @@ async function listIssueBlockerAttentionMap(
           executionRunId: row.executionRunId,
           assigneeAgentId: row.assigneeAgentId,
           assigneeUserId: row.assigneeUserId,
+          monitorNextCheckAt: row.monitorNextCheckAt,
         });
         nextFrontier.add(row.blockerIssueId);
       }
@@ -4266,8 +4277,11 @@ async function listIssueBlockerAttentionMap(
       };
     }
     if (node.status === "in_review") {
+      const hasFutureMonitor = Boolean(
+        node.monitorNextCheckAt && node.monitorNextCheckAt.getTime() > Date.now(),
+      );
       const hasWaitingPath =
-        activeIssueIds.has(node.id) || Boolean(node.assigneeUserId);
+        activeIssueIds.has(node.id) || Boolean(node.assigneeUserId) || hasFutureMonitor;
       if (hasWaitingPath) {
         return {
           covered: true,
@@ -5250,6 +5264,8 @@ async function blockedByMapForIssues(
         priority: issues.priority,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
+        executionPolicy: issues.executionPolicy,
+        monitorNextCheckAt: issues.monitorNextCheckAt,
       })
       .from(issueRelations)
       .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -5264,15 +5280,7 @@ async function blockedByMapForIssues(
     for (const row of rows) {
       const blockedBy = map.get(row.currentIssueId);
       if (!blockedBy) continue;
-      blockedBy.push({
-        id: row.relatedId,
-        identifier: row.identifier,
-        title: row.title,
-        status: row.status as IssueRelationIssueSummary["status"],
-        priority: row.priority as IssueRelationIssueSummary["priority"],
-        assigneeAgentId: row.assigneeAgentId,
-        assigneeUserId: row.assigneeUserId,
-      });
+      blockedBy.push(summarizeIssueRelationRow(row));
     }
   }
 
@@ -7453,6 +7461,8 @@ export function issueService(db: Db) {
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          executionPolicy: issues.executionPolicy,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -7473,6 +7483,8 @@ export function issueService(db: Db) {
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          executionPolicy: issues.executionPolicy,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
