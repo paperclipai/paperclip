@@ -32,3 +32,23 @@ Project budget admission locks and re-reads the company-scoped project before pu
 Native receipt checks share an opaque dispatcher created by the existing queue owner for exactly one bounded worker pass. Its canonical company/agent/issue/review scope map is the same map used by the manual dispatcher; the native worker explicitly admits at most100due entries per pass, matching the existing default batch while retaining company fairness. The next pass creates a fresh map. This restores same-pass grouping without introducing global or cross-invocation deduplication, changing claim authority, or consuming later notices. Each receipt still re-reads its own moved claim/error deadline before dispatch.
 
 Actual PostgreSQL controls reconstruct two saved native intents into one dispatch and shared run with real process stdout, cover the100-intent boundary, and keep another issue and company separate. A real issue-row lock holds the first admission while a separate transaction commits a new notice whose requestedAt is explicitly older than admission. The fixed current batch cannot consume that new identity; a fresh pass creates a distinct run, preserving the late notice even though its ordering metadata is old. Once all executions and stored deadlines settle,25virtual minutes produce zero driver SQL. The canonical dispatch body, including parsing, claims, deterministic receipt recovery and error handling, is unchanged apart from moving its map into the owner-created batch closure.
+
+
+### Browser fixture producer boundary
+
+The legacy recovery browser fixture used to insert a deferred request through a
+separate SQL connection after server startup, then wait for the removed poll.
+That is neither saved startup history nor a supported in-process producer. The
+automatic browser case now seeds while the company is paused, verifies the saved
+request and sole failed source run, and reactivates through the ordinary company
+API. No Retry or duplicate message is sent. It requires exactly one new run,
+one persisted agent response, the original queued comment in the process prompt,
+and the response after page reload. Startup reconstruction remains covered by
+the PostgreSQL case that persists history before worker registration.
+
+The corrected automatic path passes three consecutive built-UI/browser runs
+(2.1 minutes total). All six legacy continuation browser paths pass together
+(1.6 minutes), including task/inbox Retry, Retry after reload, ordinary message,
+queued Retry and automatic reactivation. The fixture also reads the configured
+external PostgreSQL connection when present, so local proof can reuse a dedicated
+test database instead of starting another database process.

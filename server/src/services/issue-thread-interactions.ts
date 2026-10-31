@@ -2278,10 +2278,12 @@ export function issueThreadInteractionService(
     input: AcceptIssueThreadInteraction;
     actor: InteractionActor;
     mutationOptions?: InteractionResolutionMutationOptions;
+    signal?: AbortSignal;
   }): Promise<{
     interaction: IssueThreadInteraction;
     continuationIssue: IssueWakeTarget | null;
   }> {
+    args.signal?.throwIfAborted();
     const expired = await expireStaleRequestConfirmationTarget(db, {
       row: args.current,
       actor: args.actor,
@@ -2324,6 +2326,7 @@ export function issueThreadInteractionService(
         .for("update")
         .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
 
+      args.signal?.throwIfAborted();
       if (!issueContext || issueContext.companyId !== args.issue.companyId) {
         throw notFound("Issue not found");
       }
@@ -2376,6 +2379,7 @@ export function issueThreadInteractionService(
           : undefined;
 
       if (lockedCurrent.kind === "request_confirmation") await notifyToolProjectionForInteractions(tx, lockedCurrent.companyId, [lockedCurrent.id]);
+      args.signal?.throwIfAborted();
       const [updated] = await tx
         .update(issueThreadInteractions)
         .set({
@@ -2547,6 +2551,7 @@ export function issueThreadInteractionService(
         });
       }
 
+      args.signal?.throwIfAborted();
       return {
         interaction: acceptedInteraction,
         continuationIssue,
@@ -3103,6 +3108,7 @@ export function issueThreadInteractionService(
           resolved = await acceptRequestConfirmation({
             issue: candidate.issue,
             current: candidate.interaction,
+            signal,
             input: {},
             actor: {
               systemId: "system:pr-merged",
