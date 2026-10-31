@@ -1,4 +1,7 @@
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
@@ -759,6 +762,8 @@ export function issueTreeControlService(db: Db) {
       const releaseReason = input.reason ?? "Subtree resume applied.";
 
       const { hold: resumeHold } = await db.transaction(async (tx) => {
+        await notifyIssueRecovery(tx, { companyId });
+        await notifyDeferredExecutionEligibility(tx, { companyId });
         const [createdHold] = await tx
           .insert(issueTreeHolds)
           .values({
@@ -837,6 +842,8 @@ export function issueTreeControlService(db: Db) {
     }
 
     const { hold, members } = await db.transaction(async (tx) => {
+      await notifyIssueRecovery(tx, { companyId });
+      await notifyDeferredExecutionEligibility(tx, { companyId });
       const [createdHold] = await tx
         .insert(issueTreeHolds)
         .values({
@@ -1001,6 +1008,7 @@ export function issueTreeControlService(db: Db) {
     const now = new Date();
     const releasedCancelHoldIds = activeCancelHolds.map((hold) => hold.id);
     const updatedIssues = await db.transaction(async (tx) => {
+      await notifyDeferredExecutionEligibility(tx, { companyId });
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       const restored: TreeStatusUpdateResult["updatedIssues"] = [];
@@ -1013,6 +1021,7 @@ export function issueTreeControlService(db: Db) {
           await notifyChatResponseAvailability(tx, { companyId, issueId });
           if (status === "blocked" || status === "in_review") await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId });
         }
+        await notifyStatusCardIssueChange(tx, companyId);
         const rows = await tx
           .update(issues)
           .set({
@@ -1179,7 +1188,10 @@ export function issueTreeControlService(db: Db) {
       throw conflict("Issue tree hold is already released");
     }
 
-    const [updated] = await db
+    const [updated] = await db.transaction(async tx => {
+      await notifyIssueRecovery(tx, { companyId });
+      await notifyDeferredExecutionEligibility(tx, { companyId });
+      return tx
       .update(issueTreeHolds)
       .set({
         status: "released",
@@ -1197,6 +1209,7 @@ export function issueTreeControlService(db: Db) {
       })
       .where(and(eq(issueTreeHolds.id, holdId), eq(issueTreeHolds.companyId, companyId)))
       .returning();
+    });
 
     const members = await db
       .select()

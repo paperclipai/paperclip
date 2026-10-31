@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
 import { notifyDecisionTargetIssueRemoval } from "./decision-targets.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -1949,6 +1950,7 @@ export function routineService(
         if (createdIssue) {
           await notifyApprovalWork(txDb, createdIssue.companyId);
           await notifyDecisionTargetIssueRemoval(txDb, createdIssue.id);
+          await notifyStatusCardIssueChange(txDb, createdIssue.companyId);
           await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
         }
         const failureReason = error instanceof Error ? error.message : String(error);

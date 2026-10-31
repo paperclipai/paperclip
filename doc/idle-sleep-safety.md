@@ -101,6 +101,17 @@ The manager permits at most two outstanding inspection RPCs across workers.
 Caller timeouts retain their slots until the actual worker reply or exit;
 timeouts cannot accumulate additional provider reads in later sweeps.
 
+If a failed ephemeral lease has no usable local inspection path, a managed
+Daytona instance can ask Cloud for a cleanup-only absence receipt. Cloud checks
+the stack's historical credential organization and reads the exact allocation
+with its manager credential. Only confirmed absence can produce a signed receipt
+bound to the stack, company, environment, lease, provider handle and nullable run.
+The separate cleanup type and audience cannot authorize run recovery. Older
+Cloud servers, unsupported providers, invalid signatures, changed organizations
+and failed reads leave the lease unresolved. Existing bounded cleanup batches
+and retry deadlines own these reads; no new idle polling is added. An explicit
+local provider observation is retained rather than replaced by this fallback.
+
 Host-owned verification metadata binds the company, environment, resource,
 provider handle, optional run, and exact row version. Concurrent resume,
 replacement, cleanup, or configuration changes invalidate verification.
