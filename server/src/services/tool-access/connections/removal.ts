@@ -1,4 +1,5 @@
 import { notifyVoiceChange } from "../../voice/voice-recovery-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
 import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { toConnection } from "./projection.js";
@@ -238,6 +239,7 @@ async function removeConnection(
     return chatCredentialMutationLease(db)(endpoint, async lease => {
       await db.transaction(async tx => {
         await lease.assertOwned(tx);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
         await tx.update(chatEndpoints).set({ status: "archived", updatedAt: new Date() }).where(eq(chatEndpoints.id, endpoint.id));
         await tx.update(toolConnections).set({ status: "archived", enabled: false, updatedAt: new Date() }).where(eq(toolConnections.id, connection.id));
       });
@@ -273,24 +275,27 @@ async function removeConnection(
       );
     const grantsToRevoke = grantRows.filter((row) => row.status !== "revoked");
     if (grantsToRevoke.length > 0) {
-      await db
-        .update(connectionGrants)
-        .set({
-          status: "revoked",
-          isDefault: false,
-          revokedAt: now,
-          revokedByAgentId:
-            binding.actorType === "agent" ? binding.actorId : null,
-          revokedByUserId:
-            binding.actorType === "user" ? binding.actorId : null,
-          updatedAt: now,
-        })
-        .where(
-          inArray(
-            connectionGrants.id,
-            grantsToRevoke.map((row) => row.id),
-          ),
-        );
+      await db.transaction(async tx => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+        await tx
+          .update(connectionGrants)
+          .set({
+            status: "revoked",
+            isDefault: false,
+            revokedAt: now,
+            revokedByAgentId:
+              binding.actorType === "agent" ? binding.actorId : null,
+            revokedByUserId:
+              binding.actorType === "user" ? binding.actorId : null,
+            updatedAt: now,
+          })
+          .where(
+            inArray(
+              connectionGrants.id,
+              grantsToRevoke.map((row) => row.id),
+            ),
+          );
+      });
     }
     let externalCredentialCleanup: ToolConnectionRemovalSummary["externalCredentialCleanup"] =
       null;
@@ -351,15 +356,18 @@ async function removeConnection(
       )
       .returning({ id: companySecretBindings.id });
 
-    const removedInstalls = await db
-      .delete(toolConnectionInstalls)
-      .where(
-        and(
-          eq(toolConnectionInstalls.companyId, connection.companyId),
-          eq(toolConnectionInstalls.connectionId, connection.id),
-        ),
-      )
-      .returning({ id: toolConnectionInstalls.id });
+    const removedInstalls = await db.transaction(async tx => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+      return tx
+        .delete(toolConnectionInstalls)
+        .where(
+          and(
+            eq(toolConnectionInstalls.companyId, connection.companyId),
+            eq(toolConnectionInstalls.connectionId, connection.id),
+          ),
+        )
+        .returning({ id: toolConnectionInstalls.id });
+    });
 
     // The app-managed profile exists only to carry this connection's action
     // selection, so it goes with the connection. Operator-authored profiles that
@@ -383,6 +391,7 @@ async function removeConnection(
     let gatewaySessionsRevoked = 0;
     if (appProfile) {
       appProfileEntriesRemoved = await db.transaction(async tx => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
         await tx.select({ id: toolProfiles.id }).from(toolProfiles)
           .where(and(eq(toolProfiles.companyId, connection.companyId), eq(toolProfiles.id, appProfile.id)))
           .for("no key update");
@@ -541,6 +550,7 @@ async function removeConnection(
       .returning({ id: connectionTokenIssuances.id });
 
     const archived = await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
       if (connection.transport === "chat_sdk") await notifyChatEndpointWork(tx, connection.id, connection.companyId);
           if (connection.transport === "voice") await notifyVoiceChange(tx, { kind: "connection", id: connection.id });
       await notifyToolConnectionHealth(tx, connection);
