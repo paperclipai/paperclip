@@ -1,3 +1,4 @@
+import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
@@ -1226,6 +1227,11 @@ export function issueTreeControlService(db: Db) {
     if (issueIds.length === 0) return [];
     const now = new Date();
     return db.transaction(async tx => {
+      const affected = await tx.select({ agentId: agentWakeupRequests.agentId }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, companyId), inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+        isNull(agentWakeupRequests.runId), inArray(sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`, issueIds),
+      )).for("update");
+      for (const agentId of new Set(affected.map(wake => wake.agentId))) await notifyStrandedAgentStatus(tx, { companyId, agentId });
       await notifyChatInboundWakeNotices(tx, { companyId });
       return tx
         .update(agentWakeupRequests)

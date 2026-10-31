@@ -78,12 +78,12 @@ export async function appendHeartbeatRunEvent(
   db: Db,
   input: AppendHeartbeatRunEventInput,
 ): Promise<AppendHeartbeatRunEventResult> {
-  const projectsRecovery = ["native.process_start_requested", "native.process_identity_recorded", "native.local_process_stopped"].includes(input.eventType);
   const projectsRetention = input.eventType === "lifecycle" && Boolean(input.message?.startsWith(RETRY_EXHAUSTION_MESSAGE_PREFIX));
+  const projectsRecovery = ["native.process_start_requested", "native.process_identity_recorded", "native.local_process_stopped"].includes(input.eventType);
   const projectsReassessment = readNativeEventEvidenceOutcome(input.payload?.prpEvent) !== null;
   const projectsProgress = isSafeNativeChatProgressEventType(input.eventType);
   const projectsResponse = isNativeResponseEvidence(input.eventType, input.payload?.prpEvent);
-  if (!input.nativeSource && !input.retryExhaustion && !projectsProgress && !projectsResponse && !projectsReassessment && !projectsRetention && !projectsRecovery) {
+  if (!input.nativeSource && !input.retryExhaustion && !projectsProgress && !projectsResponse && !projectsReassessment && !projectsRecovery && !projectsRetention) {
     const allocated = db.$with("allocated_run_event", {}).as(sql`
       update ${heartbeatRuns}
       set next_event_seq = ${heartbeatRuns.nextEventSeq} + 1,

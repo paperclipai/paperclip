@@ -1,4 +1,4 @@
-import { notifyActiveRunSilence, notifyLiveRunRecovery } from "../../../services/live-run-recovery-notifications.js";
+import { notifyActiveRunSilence, notifyLiveRunRecovery, notifyLiveResourceRecovery } from "../../../services/live-run-recovery-notifications.js";
 import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
@@ -350,6 +350,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
 
     const transactionResult = await db.transaction(async (tx) => {
       await notifyLiveRunRecovery(tx, input.run);
+      await notifyLiveResourceRecovery(tx, input.run);
       await notifyInstructionCollection(tx, { companyId, runId: input.run.id });
       await notifyExternalAgentSettlement(tx, { companyId, runId: input.run.id });
       await notifyCancelledWorkspacePreservation(tx, { companyId, runId: input.run.id });

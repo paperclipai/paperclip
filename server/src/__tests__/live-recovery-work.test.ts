@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { setImmediate as immediate } from "node:timers/promises";
+import { setImmediate as immediate, setTimeout as realDelay } from "node:timers/promises";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, createDb, closeLivenessDb, closeCheckpointDb,
-  heartbeatRuns, heartbeatRunEvents, nativeRunFinalizations, environmentLeases, issueThreadInteractions,
-  issueRecoveryActions, issues, activityLog } from "@paperclipai/db";
+  heartbeatRuns, heartbeatRunEvents, nativeRunFinalizations, environmentLeases, issueThreadInteractions, applyPendingMigrations,
+  issueRecoveryActions, issues, activityLog, agentWakeupRequests } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -23,7 +23,13 @@ import { createHeartbeatRunOutput } from "../services/heartbeat/run-output.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { persistActivity } from "../services/activity-log.js";
+import { accountRunCost } from "../services/run-cost-accounting.js";
+import { createHeartbeatLifecycle } from "../services/heartbeat/run-lifecycle.js";
+import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
+import { issueTreeControlService } from "../services/issue-tree-control.js";
+import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { issueService } from "../services/issues.js";
+import { logger } from "../middleware/logger.js";
 
 vi.setConfig({ testTimeout: 90_000 });
 describe("residual recovery production matrix", () => {
@@ -39,6 +45,7 @@ describe("residual recovery production matrix", () => {
   beforeAll(async () => {
     const external = resolveExternalTestDatabaseUrl("PAPERCLIP_LIVE_RECOVERY_TEST_DATABASE_URL");
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("live-recovery-");
+    else await applyPendingMigrations(external);
     db = createDb(external ?? temporary!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
   });
@@ -51,7 +58,7 @@ describe("residual recovery production matrix", () => {
     coordinator.register = (queue, task) => { deadlines.set(queue, () => task.nextRunAt?.() ?? null); return register(queue, { ...task, onSettled: hints => { timeline.push(["settled", queue, Date.now(), [...hints ?? []]]); task.onSettled?.(hints); }, run: signal => {
       timeline.push(["pass", queue, Date.now()]);
       const pass = Promise.resolve(task.run(signal)); passes.add(pass);
-      void pass.then(() => passes.delete(pass), () => passes.delete(pass)); return pass;
+      void pass.then(() => { timeline.push(["finished", queue, Date.now()]); passes.delete(pass); }, () => passes.delete(pass)); return pass;
     } }); };
   });
   afterEach(async () => {
@@ -101,7 +108,7 @@ describe("residual recovery production matrix", () => {
     const quietAt = Date.now();
     if (vi.isFakeTimers()) await advance(31_000);
     else await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 35_000 });
-    console.info("quiet-drain", JSON.stringify({ quietAt, now: Date.now(), active: idleWorkSnapshot().active, next: [...deadlines].map(([q, at]) => [q, at()]), timeline }));
+    console.info("quiet-drain", JSON.stringify({ quietAt, now: Date.now(), active: idleWorkSnapshot().active, next: [...deadlines].map(([q, at]) => [q, at()]), passes: Object.fromEntries([...deadlines.keys()].map(queue => [queue, timeline.filter(event => Array.isArray(event) && event[0] === "pass" && event[1] === queue).length])), settled: timeline.filter(event => Array.isArray(event) && event[0] === "settled") }));
     await vi.waitFor(() => { expect(coordinator.nextWakeAt(), JSON.stringify([...deadlines].map(([name, at]) => [name, at()]))).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
     const queries: string[] = [], prior = db.$client.options.debug;
     db.$client.options.debug = (_connection, query) => { queries.push(query); };
@@ -303,6 +310,8 @@ describe("residual recovery production matrix", () => {
       controllerBootId: randomUUID(), controllerLeaseExpiresAt: expiry }).returning();
     await db.insert(activityLog).values({ companyId: f.companyId, actorType: "agent", actorId: f.agent.id,
       agentId: f.agent.id, runId: target.id, entityType: "issue", entityId: source.id, action: "issue.updated", details: { status: "done" } });
+    const broad = await recoveryService(db, { enqueueWakeup: heartbeat.wakeup }).scanSilentActiveRuns({ companyId: f.companyId });
+    expect(broad.scanned).toBe(100); expect((await getRun(target.id)).status).toBe("running");
     await start(); await advance(31_000);
     await vi.waitFor(async () => expect((await getRun(target.id)).status).toBe("succeeded"));
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.status, "running"))).toHaveLength(suppressed.length);
@@ -364,6 +373,89 @@ describe("residual recovery production matrix", () => {
     });
     await quiet();
   });
+  async function preparedOrphan() {
+    const f = await fixture(), old = new Date(Date.now() - 6 * 60_000);
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      status: "failed", runtimeMode: "native", nativeIssueId: f.issue.id, issueId: f.issue.id,
+      finishedAt: old, updatedAt: old }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId,
+      heartbeatRunId: run.id, issueId: f.issue.id, status: "active", provider: "daytona",
+      providerLeaseId: `sandbox-${run.id}`, metadata: { driver: "sandbox", remoteCwd: "/workspace" }, updatedAt: old }).returning();
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceSync: {
+      schema: "paperclip.native-workspace-sync/v3", state: "prepared", descriptorSha256: "a".repeat(64),
+      baselineSha256: "b".repeat(64), finalHostSha256: null, workspaceId: randomUUID(), leaseId: lease.id,
+      providerLeaseId: lease.providerLeaseId, remoteCwd: "/workspace", resourceDisposition: "destroy",
+    } } }).where(eq(heartbeatRuns.id, run.id));
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issue.id,
+      runId: run.id, phase: "terminal_failure", recoveryState: "blocked" });
+    return { f, run, lease };
+  }
+  it.each(["task lock", "statement timeout"])("retries workspace preservation after real PostgreSQL %s without a producer mutation", async kind => {
+    const { f, run, lease } = await preparedOrphan();
+    const warnings = vi.spyOn(logger, "warn");
+    let retryAt = 0;
+    if (kind === "statement timeout") {
+      await db.execute(sql`create sequence live_preservation_slow_once`);
+      await db.execute(sql.raw(`create function live_preservation_slow_once() returns trigger language plpgsql as $$
+        begin if new.id = '${run.id}'::uuid and new.result_json->>'workspaceRestoreFailure' = 'restore_failed'
+          and nextval('live_preservation_slow_once') = 1 then perform pg_sleep(16); end if; return new; end $$`));
+      await db.execute(sql`create trigger live_preservation_slow_once before update on heartbeat_runs for each row execute function live_preservation_slow_once()`);
+      extraStops.push(async () => {
+        await db.execute(sql`drop trigger if exists live_preservation_slow_once on heartbeat_runs`);
+        await db.execute(sql`drop function if exists live_preservation_slow_once()`);
+        await db.execute(sql`drop sequence if exists live_preservation_slow_once`);
+      });
+    }
+    let release!: () => void, locked!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { locked = resolve; });
+    const lock = kind === "task lock" ? db.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, f.issue.id)).for("update");
+      locked(); await held;
+    }) : Promise.resolve();
+    if (kind !== "task lock") locked();
+    try {
+      await ready; await start();
+      expect((await getRun(run.id)).resultJson).toBeNull();
+      expect((await getLease(lease.id)).status).toBe("active");
+      expect(warnings).toHaveBeenCalledWith(expect.objectContaining({ runId: run.id,
+        code: kind === "task lock" ? "55P03" : "57014" }), expect.any(String));
+      retryAt = deadlines.get("orphan-active-leases")!()!;
+      expect(retryAt).toBeGreaterThan(Date.now());
+      expect(retryAt).toBeLessThanOrEqual(Date.now() + 30_000);
+      if (kind === "task lock") expect(retryAt).toBe(Date.now() + 30_000);
+    } finally { release(); await lock; }
+    await advance(retryAt - Date.now() - 1); expect((await getRun(run.id)).resultJson).toBeNull();
+    await advance(1);
+    await vi.waitFor(async () => expect((await getRun(run.id)).resultJson).toMatchObject({
+      workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: { leaseIds: [lease.id] },
+    }));
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.runId, run.id),
+      eq(activityLog.action, "issue.workspace_recovery_required")))).toHaveLength(1);
+    expect(await getLease(lease.id)).toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure" });
+    await quiet();
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.runId, run.id),
+      eq(activityLog.action, "issue.workspace_recovery_required")))).toHaveLength(1);
+  });
+  it.each(["company", "claim", "manual"])("parks workspace preservation authority gates without timeout retries: %s", async gate => {
+    const { f, run, lease } = await preparedOrphan();
+    if (gate === "company") {
+      const other = await fixture();
+      await db.update(environmentLeases).set({ companyId: other.companyId }).where(eq(environmentLeases.id, lease.id));
+    } else if (gate === "claim") {
+      await db.update(nativeRunFinalizations).set({ leaseOwner: "another-workspace-owner",
+        leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, run.id));
+    } else {
+      await db.update(nativeRunFinalizations).set({ phase: "observed", recoveryState: "blocked" })
+        .where(eq(nativeRunFinalizations.runId, run.id));
+    }
+    await start();
+    expect((await getRun(run.id)).resultJson).toBeNull();
+    expect((await getLease(lease.id)).status).toBe("active");
+    expect(deadlines.get("orphan-active-leases")!()).toBeNull();
+    expect(await db.select().from(activityLog).where(eq(activityLog.action, "issue.workspace_recovery_required"))).toEqual([]);
+    await quiet();
+  });
   it("retains failed orphan work with bounded backoff after a real PostgreSQL write failure", async () => {
     const f = await fixture(), old = new Date(Date.now() - 6 * 60_000);
     const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, status: "active", provider: "local", updatedAt: old }).returning();
@@ -387,9 +479,10 @@ describe("residual recovery production matrix", () => {
   });
   it("parks suppressed worktree recovery without probes and reconstructs it on the committed feature change", async () => {
     const f = await fixture(), old = new Date(Date.now() - 6 * 60_000);
-    const settings = instanceSettingsService(db);
+    const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "live-recovery-worktree" };
+    const settings = instanceSettingsService(db, { runtimeEnv });
     await settings.updateExperimental({ enableWorktreeRunExecution: false });
-    heartbeat = heartbeatService(db, { runtimeEnv: { PAPERCLIP_IN_WORKTREE: "true" } });
+    heartbeat = heartbeatService(db, { runtimeEnv });
     const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, status: "active", provider: "local", updatedAt: old }).returning();
     await start(); expect((await getLease(lease.id)).status).toBe("active"); await quiet();
     try {
@@ -397,6 +490,70 @@ describe("residual recovery production matrix", () => {
       await advance(1_000);
       await vi.waitFor(async () => expect((await getLease(lease.id)).status).toBe("pending_cleanup"));
     } finally { await settings.updateExperimental({ enableWorktreeRunExecution: false }); }
+    await quiet();
+  });
+  it.each(["agent", "hold"] as const)("revalidates parked native session work on ordinary %s eligibility", async gate => {
+    const f = await fixture(), tree = issueTreeControlService(db);
+    const lifecycleWorker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runHost: async () => "complete", runPlugin: async () => "complete" });
+    extraStops.push(() => lifecycleWorker.stop());
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.issue.id));
+    const actor = { actorType: "user" as const, actorId: f.actorId, userId: f.actorId };
+    const hold = gate === "hold" ? await tree.createHold(f.companyId, f.issue.id, { mode: "pause", actor }) : null;
+    if (gate === "agent") { await createAgentLifecycle(db).pauseAgent(f.agent.id); await lifecycleWorker.process(f.agent.id); }
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      status: "failed", runtimeMode: "native", nativeIssueId: f.issue.id, contextSnapshot: { issueId: f.issue.id },
+      finishedAt: new Date(), errorCode: "saved_native_failure" }).returning();
+    await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, f.issue.id));
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issue.id, runId: run.id,
+      phase: "retryable_failure", nextAttemptAt: new Date(Date.now() - 1_000) });
+    await start(); await quiet();
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0].phase).toBe("retryable_failure");
+    const before = timeline.filter(event => Array.isArray(event) && event[0] === "finished" && event[1] === "native-process-sessions").length;
+    if (gate === "agent") { await createAgentLifecycle(db).resumeAgent(f.agent.id); await lifecycleWorker.process(f.agent.id); }
+    else await tree.releaseHold(f.companyId, f.issue.id, hold!.hold.id, { actor, reason: "Resume native recovery" });
+    await advance(1_000);
+    const deadline = performance.now() + 5_000;
+    while (timeline.filter(event => Array.isArray(event) && event[0] === "finished" && event[1] === "native-process-sessions").length <= before && performance.now() < deadline)
+      await realDelay(5);
+    expect(timeline.filter(event => Array.isArray(event) && event[0] === "finished" && event[1] === "native-process-sessions").length).toBeGreaterThan(before);
+    const expectedPhase = gate === "agent" ? "retryable_failure" : "terminal_failure";
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0].phase).toBe(expectedPhase);
+    if (gate === "agent") expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].status).toBe("blocked");
+    expect((await getRun(run.id)).errorCode).toBe("saved_native_failure");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+    await quiet();
+  });
+  it("discovers an active lease from the ordinary terminal run commit before any lease write", async () => {
+    const f = await fixture(), old = new Date(Date.now() - 6 * 60_000);
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      status: "running", runtimeMode: "legacy", startedAt: new Date(), updatedAt: new Date(),
+      controllerBootId: legacyControllerBootId, controllerLeaseExpiresAt: new Date(Date.now() + 60 * 60_000) }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: run.id,
+      status: "active", provider: "local", updatedAt: old }).returning();
+    await start(); expect(deadlines.get("orphan-active-leases")!()).toBeNull();
+    const ended = await terminalizeLegacyExecution({ db, run, status: "failed", patch: { finishedAt: new Date(), errorCode: "owner_process_failure" } });
+    expect(ended?.status).toBe("failed"); expect((await getLease(lease.id)).status).toBe("active");
+    await advance(1_000);
+    await vi.waitFor(async () => expect((await getLease(lease.id)).status).toBe("pending_cleanup"));
+    await quiet();
+  });
+  it.each(["accounting", "wake", "assignment_cancel"] as const)("settles parked agent status when its last %s receipt commits", async receipt => {
+    const f = await fixture(), old = new Date(Date.now() - 6 * 60_000);
+    await db.update(agents).set({ status: "running", updatedAt: old }).where(eq(agents.id, f.agent.id));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      status: "succeeded", finishedAt: old, costAccountingPending: receipt === "accounting",
+      usageJson: { accountingProviderWorkStarted: false } }).returning();
+    const [wake] = receipt !== "accounting" ? await db.insert(agentWakeupRequests).values({ companyId: f.companyId,
+      agentId: f.agent.id, runId: run.id, status: "claimed", source: "automation", reason: "fixture-last-receipt",
+      requestedByActorType: receipt === "assignment_cancel" ? "user" : "system", requestedByActorId: f.actorId, payload: { issueId: f.issue.id } }).returning() : [];
+    await start(); await quiet();
+    expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0].status).toBe("running");
+    if (receipt === "accounting") expect(await accountRunCost(db, run.id)).toBe(true);
+    else if (receipt === "assignment_cancel") await issueService(db).update(f.issue.id, { assigneeAgentId: null, assigneeUserId: f.actorId });
+    else await createHeartbeatLifecycle(db, {} as Parameters<typeof createHeartbeatLifecycle>[1])
+      .setWakeupStatus(wake.id, "completed", { finishedAt: new Date() });
+    await advance(1_000);
+    await vi.waitFor(async () => expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0].status).toBe("idle"));
     await quiet();
   });
   it("retains first producer debt during drain and warm standby, then resumes without duplicate cleanup", async () => {

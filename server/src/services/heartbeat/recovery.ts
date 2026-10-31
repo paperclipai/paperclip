@@ -1496,6 +1496,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     backoffMs: number;
     companyId?: string;
     leaseId?: string;
+    onDeferredDeadline?: (at: number) => void;
   }): Promise<{ recovered: number }> {
     const cutoff = new Date(Date.now() - opts.backoffMs);
 
@@ -1528,7 +1529,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       if (await nativeWorkspaceExportPendingForLease(db, lease)) {
         if (lease.heartbeatRunId && !activeRunExecutions.has(lease.heartbeatRunId)
           && !adapterExecutionControls.has(lease.heartbeatRunId)
-          && await preserveOrphanedNativeWorkspace(db, lease)) recovered += 1;
+          && await preserveOrphanedNativeWorkspace(db, lease, { onDeferredDeadline: opts.onDeferredDeadline })) recovered += 1;
         if (!opts.leaseId) await deferOrphanedActiveLease(lease.id);
         continue;
       }
@@ -2081,6 +2082,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
               runtimeEnv.PAPERCLIP_INSTANCE_ID?.trim() || "paperclip-heartbeat",
             now,
             runIds: [...claimableNativeRunIds],
+            deferIneligible: !scope.runId,
+            onError: scope.onError,
             dispatch: (claim) => {
               const execution = executeRun(claim.runId, {
                 nativeLeaseOwner: claim.leaseOwner,

@@ -91,7 +91,7 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
 }
 
 export async function preserveOrphanedNativeWorkspace(db: Db, lease: Pick<typeof environmentLeases.$inferSelect,
-  "companyId" | "heartbeatRunId">): Promise<boolean> {
+  "companyId" | "heartbeatRunId">, options: { onDeferredDeadline?: (at: number) => void } = {}): Promise<boolean> {
   if (!lease.heartbeatRunId) return false;
   const [run] = await db.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, lease.companyId), eq(heartbeatRuns.id, lease.heartbeatRunId),
@@ -105,6 +105,7 @@ export async function preserveOrphanedNativeWorkspace(db: Db, lease: Pick<typeof
     if (error instanceof NativeWorkspaceFinalizationBusyError) return false;
     const code = retentionContentionCode(error);
     if (!code) throw error;
+    options.onDeferredDeadline?.(Date.now() + 30_000);
     logger.warn({ runId: run.id, code }, "Native workspace retention is waiting for its current owner");
     return false;
   }

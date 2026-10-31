@@ -1,4 +1,5 @@
-import { notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
+import { notifyStrandedAgentStatus, notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
+import { finishedIdleWake } from "./idle-work-proof.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
@@ -11529,6 +11530,15 @@ export function issueService(db: Db) {
           // Invalidate human direction at the common assignment boundary, including
           // plugin/service writes that do not go through HTTP run cancellation.
           // Keep the requester attribution for audit; cancellation revokes its use.
+          const affectedWakes = await tx.select({ agentId: agentWakeupRequests.agentId }).from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.companyId, receiptExisting.companyId), eq(agentWakeupRequests.requestedByActorType, "user"),
+            sql`(${sql.raw(finishedIdleWake("agent_wakeup_requests"))}) IS NOT TRUE`,
+            sql`coalesce(${agentWakeupRequests.payload}->>'issueId', ${agentWakeupRequests.payload}->>'taskId',
+              ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'issueId',
+              ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'taskId') = ${id}`,
+          )).for("update");
+          for (const agentId of new Set<string>(affectedWakes.map((wake: { agentId: string }) => wake.agentId)))
+            await notifyStrandedAgentStatus(tx, { companyId: receiptExisting.companyId, agentId });
           await notifyChatInboundWakeNotices(tx, { companyId: receiptExisting.companyId });
           await tx.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date() })
             .where(and(eq(agentWakeupRequests.companyId, receiptExisting.companyId),
