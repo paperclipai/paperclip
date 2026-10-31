@@ -143,6 +143,11 @@ that slow workspace restoration does not turn the task Blocked. Try a later edit
 from the outgoing run and verify rejection. Repeat a board
 reassignment and confirm that the outgoing run still stops.
 
+For staged reviews, approve through PATCH and through an approval comment, including
+an intermediate stage that stays In review. Each decision must have one required
+comment and one linked `issue.updated` activity. Route fault tests cover rollback;
+this is source/test coverage, not a live acceptance result.
+
 Manual: Add a comment and edit authorized properties. Reload and verify history, actor, and values. Complete a disposable task and inspect its deliverable; reopen through an available action and confirm the next execution follows current policy.
 
 Manual: Ask a standard native agent to schedule a future check on its current

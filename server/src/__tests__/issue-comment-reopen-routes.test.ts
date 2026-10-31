@@ -3,7 +3,8 @@ import request from "supertest";
 import { getTableName } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError, unprocessable } from "../errors.js";
-import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
+import type { LogActivityInput } from "../services/activity-log.js";
+import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.js";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -48,9 +49,9 @@ const mockAgentService = vi.hoisted(() => ({
   resolveByReference: vi.fn(),
 }));
 
-const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockLogActivity = vi.hoisted(() => vi.fn(async (_db: unknown, _input: LogActivityInput, _publications?: unknown[]) => undefined));
 const mockSyncCommentReferences = vi.hoisted(() => vi.fn(async () => undefined));
-const mockTxInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
+const mockTxInsertValues = vi.hoisted(() => vi.fn(async (_row: Record<string, unknown>) => undefined));
 const mockTxInsert = vi.hoisted(() =>
   vi.fn(() => ({ values: mockTxInsertValues })),
 );
@@ -2968,6 +2969,151 @@ describe("issue comment reopen routes", () => {
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 
+  describe("decision audit contract", () => {
+    async function fixture(stageCount = 1, failure?: "comment" | "activity", redactedBody?: string) {
+      const reviewer = "33333333-3333-4333-8333-333333333333";
+      const policy = (await normalizePolicy({ stages: Array.from({ length: stageCount }, (_, index) => ({
+        id: index === 0 ? "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" : "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        type: "review", participants: [{ type: "agent", agentId: reviewer }],
+      })) }))!;
+      const initial = createReviewIssue(policy, reviewer);
+      const executionState: unknown = initial.executionState;
+      let committed = { issue: { ...initial, executionState },
+        comments: [] as Array<{ id: string; body: string }>,
+        decisions: [] as Array<Record<string, unknown>>, activities: [] as LogActivityInput[] };
+      let pending = committed;
+      mockDb.transaction.mockImplementation(async callback => {
+        pending = structuredClone(committed);
+        const result = await callback(mockTx);
+        committed = pending;
+        return result;
+      });
+      mockIssueService.getById.mockImplementation(async () => committed.issue);
+      mockIssueService.getByIdForUpdate.mockImplementation(async () => pending.issue);
+      mockIssueService.update.mockImplementation(async (_id, patch, tx) => {
+        const store = tx === mockTx ? pending : committed;
+        store.issue = { ...store.issue, ...patch };
+        return store.issue;
+      });
+      mockIssueService.addComment.mockImplementation(async (_id, body, _actor, _options, tx) => {
+        if (failure === "comment") throw new Error("injected comment failure");
+        const store = tx === mockTx ? pending : committed;
+        const comment = { id: `comment-${store.comments.length + 1}`, body: redactedBody ?? body };
+        store.comments.push(comment);
+        return { ...comment, issueId: initial.id, companyId: initial.companyId, createdAt: new Date() };
+      });
+      mockTxInsertValues.mockImplementation(async row => { pending.decisions.push(row); });
+      mockLogActivity.mockImplementation(async (tx, entry) => {
+        if (entry.action !== "issue.updated") return;
+        if (failure === "activity") throw new Error("injected activity failure");
+        (tx === mockTx ? pending : committed).activities.push(entry);
+      });
+      return {
+        initial, read: () => committed,
+        send: async (method: "patch" | "post", status = "done", attachmentIds?: string[], body = "  kind: review\ndecision: approved  ") => {
+          const state = parseIssueExecutionState(committed.issue.executionState);
+          const agentId = state?.status === "pending" ? reviewer : "22222222-2222-4222-8222-222222222222";
+          const app = await installActor(createApp(), { type: "agent", agentId, companyId: "company-1", source: "agent_key", runId: "review-run" });
+          return method === "patch"
+            ? request(app).patch(`/api/issues/${initial.id}`).send({ status, comment: body, attachmentIds })
+            : request(app).post(`/api/issues/${initial.id}/comments`).send({ body, attachmentIds });
+        },
+      };
+    }
+
+    it.each(["patch", "post"] as const)("links the final %s decision once", async method => {
+      const f = await fixture();
+      const res = await f.send(method);
+      expect(res.status).toBe(method === "patch" ? 200 : 201);
+      const { issue, comments, decisions, activities } = f.read();
+      expect([comments.length, decisions.length, activities.length]).toEqual([1, 1, 1]);
+      expect(issue.status).toBe("done");
+      expect(comments[0].body.trim()).toBe(decisions[0].body);
+      expect(activities[0]).toMatchObject({ actorType: "agent", agentId: "33333333-3333-4333-8333-333333333333", runId: "review-run",
+        details: { decision: { id: decisions[0].id, previousDecisionId: null, commentId: comments[0].id,
+          source: method === "patch" ? "patch" : "comment_auto_approval", outcome: "approved",
+          issueId: issue.id, stageId: f.initial.executionState.currentStageId,
+          stageType: "review", participant: f.initial.executionState.currentParticipant },
+          changes: { status: { from: "in_review", to: "done" }, executionState: { from: f.initial.executionState, to: issue.executionState } } } });
+    });
+
+    it.each(["patch", "post"] as const)("uses the saved comment body for a redacted %s decision", async method => {
+      const savedBody = "kind: review\ndecision: approved\nsummary: <redacted>";
+      const f = await fixture(1, undefined, savedBody);
+      expect((await f.send(method, "done", undefined, "kind: review\ndecision: approved\nsummary: private reviewer")).status).toBe(method === "patch" ? 200 : 201);
+      expect(f.read().comments[0].body).toBe(savedBody);
+      expect(f.read().decisions[0].body).toBe(savedBody);
+    });
+
+    it.each([["patch", "patch"], ["post", "patch"], ["patch", "post"], ["post", "post"]] as const)(
+      "chains intermediate and final %s/%s decisions", async (first, second) => {
+        const f = await fixture(2);
+        expect((await f.send(first)).status).toBe(first === "patch" ? 200 : 201);
+        expect(f.read().issue.status).toBe("in_review");
+        expect(f.read().activities).toHaveLength(1);
+        expect(f.read().activities[0].details?.changes).not.toHaveProperty("status");
+        expect((await f.send(second)).status).toBe(second === "patch" ? 200 : 201);
+        const { comments, decisions, activities } = f.read();
+        expect([comments.length, decisions.length, activities.length]).toEqual([2, 2, 2]);
+        expect(activities[1].details).toMatchObject({ decision: { id: decisions[1].id, previousDecisionId: decisions[0].id, commentId: comments[1].id },
+          changes: { executionState: { from: { lastDecisionId: decisions[0].id }, to: { lastDecisionId: decisions[1].id } } } });
+      },
+    );
+
+    it.each(["patch", "post"] as const)("rolls back %s when comment or activity persistence fails", async method => {
+      for (const failure of ["comment", "activity"] as const) {
+        const f = await fixture(1, failure);
+        expect((await f.send(method)).status).toBe(500);
+        expect(f.read()).toEqual({ issue: f.initial, comments: [], decisions: [], activities: [] });
+      }
+    });
+
+    it.each(["patch", "post"] as const)("preserves ordinary %s comments without a decision link", async method => {
+      const f = await fixture();
+      expect((await f.send(method, "in_review", undefined, "ordinary comment")).status).toBe(method === "patch" ? 200 : 201);
+      expect(f.read().decisions).toHaveLength(0);
+      expect(f.read().comments).toHaveLength(1);
+      expect(f.read().issue.executionState).toEqual(f.initial.executionState);
+      for (const activity of f.read().activities) expect(activity.details).not.toHaveProperty("decision");
+    });
+
+    it.each(["patch", "post"] as const)("rejects a %s decision if the locked transition inputs changed", async method => {
+      const f = await fixture();
+      mockIssueService.getByIdForUpdate.mockResolvedValue({ ...f.initial, executionState: {
+        ...f.initial.executionState, lastDecisionId: "99999999-9999-4999-8999-999999999999",
+      } });
+      expect((await f.send(method)).status).toBe(409);
+      expect(f.read()).toEqual({ issue: f.initial, comments: [], decisions: [], activities: [] });
+    });
+
+    it("keeps changes-requested and resubmitted decisions in the same chain", async () => {
+      const f = await fixture();
+      expect((await f.send("patch", "in_progress")).status).toBe(200);
+      expect([f.read().comments.length, f.read().decisions.length, f.read().activities.length]).toEqual([1, 1, 1]);
+      expect(f.read().comments[0].body.trim()).toBe(f.read().decisions[0].body);
+      expect(f.read().activities[0].details).toMatchObject({
+        decision: { id: f.read().decisions[0].id, commentId: f.read().comments[0].id, previousDecisionId: null, outcome: "changes_requested" },
+        changes: { executionState: { from: f.initial.executionState, to: f.read().issue.executionState } },
+      });
+      const previousId = f.read().decisions[0].id;
+      expect((await f.send("patch")).status).toBe(200);
+      expect(f.read().decisions).toHaveLength(1);
+      expect((await f.send("post")).status).toBe(201);
+      const { comments, decisions, activities } = f.read();
+      expect(activities.at(-1)?.details).toMatchObject({ decision: { previousDecisionId: previousId, id: decisions[1].id, outcome: "approved", commentId: comments[2].id } });
+      expect(decisions).toHaveLength(2);
+    });
+
+    it("keeps attachments on the linked PATCH decision comment", async () => {
+      const f = await fixture();
+      const attachments = ["cccccccc-cccc-4ccc-8ccc-cccccccccccc"];
+      expect((await f.send("patch", "done", attachments)).status).toBe(200);
+      expect(mockIssueService.addComment).toHaveBeenCalledWith(f.initial.id, expect.any(String), expect.anything(),
+        expect.objectContaining({ attachmentIds: attachments }), mockTx);
+      expect(f.read().activities[0].details).toHaveProperty("decision.commentId", f.read().comments[0].id);
+    });
+  });
+
   it("writes decision ids into executionState and inserts the decision inside the transaction", async () => {
     const policy = await normalizePolicy({
       stages: [
@@ -3000,6 +3146,9 @@ describe("issue comment reopen routes", () => {
       },
     };
     mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.addComment.mockImplementation(async (_id, body) => ({
+      id: "comment-1", issueId: issue.id, companyId: issue.companyId, body, createdAt: new Date(),
+    }));
     mockIssueService.update.mockImplementation(
       async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
         ...issue,
@@ -3683,6 +3832,7 @@ describe("issue comment reopen routes", () => {
             _previous: { status: "in_review" },
           }),
         }),
+        expect.any(Array),
       );
     });
   });
