@@ -1,3 +1,4 @@
+import { PersistedExecutionWaitRefusal } from "../deferred-execution-wait.js";
 import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
@@ -105,7 +106,11 @@ export function registerDeferredReceiptWork(
           onError: error => { errors.push(error); },
         });
         else if (kind === "task_chat") await owner.settleTaskChat(scope);
-        else await owner.resume({ ...scope, onError: error => { errors.push(error); } });
+        else {
+          const failed = (error: unknown) => { if (!(error instanceof PersistedExecutionWaitRefusal)) errors.push(error); };
+          try { await owner.resume({ ...scope, onError: failed }); }
+          catch (error) { failed(error); }
+        }
         if (errors.length) throw new AggregateError(errors, `Deferred receipt ${entry.id} could not settle`);
         return next === null ? null : { ...entry, dueAt: next };
       },
