@@ -113,6 +113,38 @@ describe("BreadcrumbBar", () => {
     container.remove();
   });
 
+  it.each([
+    { mobile: false, taskDetailLayout: false },
+    { mobile: true, taskDetailLayout: false },
+    { mobile: false, taskDetailLayout: true },
+    { mobile: true, taskDetailLayout: true },
+  ])("links the agent avatar and name to the profile (%j)", async ({ mobile, taskDetailLayout }) => {
+    viewport.isMobile = mobile;
+    function AgentBreadcrumb() {
+      const { setBreadcrumbs } = useBreadcrumbs();
+      useEffect(() => {
+        setBreadcrumbs([{
+          label: "Assistant",
+          href: "/agents/assistant/overview",
+          leading: <span aria-label="Agent avatar">A</span>,
+          leadingKey: "assistant-avatar",
+          trailing: <a href="/agents/assistant/runtime">Settings</a>,
+          trailingKey: "assistant-settings",
+        }]);
+      }, [setBreadcrumbs]);
+      return <BreadcrumbBar taskDetailLayout={taskDetailLayout} />;
+    }
+    await act(async () => root.render(<BreadcrumbProvider><AgentBreadcrumb /></BreadcrumbProvider>));
+    const profile = container.querySelector<HTMLAnchorElement>('a[href="/agents/assistant/overview"]');
+    expect(profile?.textContent).toBe("AAssistant");
+    expect(profile?.querySelector('[aria-label="Agent avatar"]')).not.toBeNull();
+    expect(profile?.closest('[aria-disabled="true"]')).toBeNull();
+    expect(profile?.querySelector("a")).toBeNull();
+    if (taskDetailLayout) {
+      expect(container.querySelector('a[href="/agents/assistant/runtime"]')).not.toBeNull();
+    }
+  });
+
   it("keeps a single task breadcrumb compact with adjacent identity and settings action", async () => {
     const configure = vi.fn();
     function AgentBreadcrumb() {
