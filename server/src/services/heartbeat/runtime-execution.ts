@@ -265,6 +265,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           localAgentJwtScope,
         )
       : null;
+  if (authToken) identityRedactor.register(authToken);
   if (
     nativeRuntimeResolution.kind === "legacy" &&
     adapter.supportsLocalAgentJwt &&
