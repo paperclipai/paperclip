@@ -1,6 +1,6 @@
 # Issue recovery without periodic scans
 
-The issue recovery owners reconstruct their current obligations once at startup. Committing source writes invalidate only their company. The coordinator keeps scopes, per-issue deadlines, and per-entry failures in memory. Its pending check does not query the database.
+The issue recovery owners reconstruct their current obligations once at startup. Ordinary comment writes invalidate only the affected issue for assignment and lock recovery. Lifecycle, graph, run, configuration and eligibility changes invalidate their company. The coordinator keeps scopes, per-issue deadlines, and per-entry failures in memory. Its pending check does not query the database.
 
 | Owner | Durable truth and producer boundary | Deadline or event | Exit |
 | --- | --- | --- | --- |
@@ -10,6 +10,10 @@ The issue recovery owners reconstruct their current obligations once at startup.
 | Resolved dependency | Blocked assigned issues and company-scoped blocker relations; blocker status or relation changes through issue service and import; run/control and pause gate changes | The committing change. A failed enqueue retains that issue with error backoff. | Existing idempotent wake, live path, unresolved dependency or deliberate self-block. |
 | Task watchdog | Active issue watchdogs and their current source subtree; normal watchdog upsert/disable; issue/comment/document/work-product and wait changes | Exact source creation plus the existing 15-second first-run grace. An incomplete scan retains the watchdog with error backoff. | Live path, open/reviewed reusable review, disabled configuration, or ineligible source. |
 | Stale issue lock | Existing checkout/execution run references; issue and run lifecycle changes | A committing ownership change, or the fresh owning controller's saved lease expiry. | No stale reference, a valid owner, or the existing guarded terminalization and lock clear. |
+
+Local comment hints do not broaden into an assignment check for every open task. A real PostgreSQL regression starts with1,000 open assigned issues, writes one comment through `issueService.addComment`, and observes exactly one assignment check; a subsequent company eligibility notification still checks all1,000. Restoring the previous comment hint makes that same regression check all1,000 after the comment. The test substitutes the expensive assignment decision only to count its invocations; it uses the real transaction, notification, coordinator and paged SQL. Separate producer acceptance cases exercise real recovery decisions and process execution.
+
+Parent/descendant disposition repair and shared execution references make status and run changes broader than a comment. Their existing notification boundaries deliberately retain company scope. Orphan blockers, active recovery actions, resolved dependencies and watchdogs also keep their company/subtree duties; an issue comment does not drop those independent obligations. The scope serializer selects known primitive fields and never serializes an entire insert or update object.
 
 Reconstruction uses keyset pages of at most100rows. Repeated company hints coalesce reconstruction for30seconds. Already-known entry deadlines preempt that spacing without an early probe on each comment. Scheduling suppression is read once per pass. A failed read keeps scoped backoff debt. The two subsidiary company repairs do not run inside the per-issue loop. Legacy direct aggregate API calls retain both repairs.
 
