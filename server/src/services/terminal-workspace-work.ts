@@ -13,7 +13,7 @@ export function registerTerminalWorkspaceWork(
     sweepTerminalWorkspaces(
       limit?: number,
       signal?: AbortSignal,
-      options?: { compact?: boolean },
+      options?: { compact?: boolean; allowRemoteDeliveryChecks?: boolean },
     ): Promise<{ checked: number }>;
     nextTerminalWorkspaceSweepAt(): Promise<number | null>;
     hasTerminalWorkspaceSweepContinuation(): boolean;
@@ -33,9 +33,9 @@ export function registerTerminalWorkspaceWork(
     run: signal => {
       recovered = false;
       next = Date.now() + TERMINAL_WORKSPACE_RETRY_MS;
-      const compact = startupSweepStarted;
+      const startup = !startupSweepStarted;
       startupSweepStarted = true;
-      return service.sweepTerminalWorkspaces(50, signal, { compact });
+      return service.sweepTerminalWorkspaces(50, signal, { compact: !startup, allowRemoteDeliveryChecks: !startup });
     },
     hasPending: async () => {
       if (!canRun()) next = Date.now() + TERMINAL_WORKSPACE_RETRY_MS;
