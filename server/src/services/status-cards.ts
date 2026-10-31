@@ -643,14 +643,17 @@ export function statusCardService(
       ? membershipAt : interval;
   }
 
-  async function requestRefresh(cardId: string, input: {
+  async function refreshCurrentCard(cardId: string, input: {
     full?: boolean;
     trigger?: "manual" | "interval" | "reactive" | "restore";
     actor?: StatusCardActor;
     now?: Date;
-  } = {}) {
-    const card = await getById(cardId);
-    if (!card) throw notFound("Status card not found");
+  } = {}, superseded = false) {
+    const [source] = await db.select({ card: statusCards, revision: sql<string>`${statusCards}.xmin::text` })
+      .from(statusCards).where(eq(statusCards.id, cardId));
+    if (!source) throw notFound("Status card not found");
+    const { card, revision } = source;
+    const currentRevision = sql`${statusCards}.xmin::text = ${revision}`;
     if (card.archivedAt) throw unprocessable("Archived status cards cannot be refreshed");
     if (card.queries.length === 0) throw conflict("Compile the status-card query before refreshing it");
     if (card.generatingIssueId) {
@@ -663,6 +666,10 @@ export function statusCardService(
     }
 
     const now = input.now ?? new Date();
+    if (superseded && input.trigger !== undefined && input.trigger !== "manual" && input.trigger !== "restore"
+      && (card.refreshPolicy.mode === "manual" || (card.refreshPolicy.mode === "interval" && card.nextEvalAt && card.nextEvalAt > now))) {
+      return { card, generatingIssue: null, alreadyGenerating: false, enqueued: false };
+    }
     let membershipAt: Date | null = null;
     const snapshot = await executeQueries(card, {}, at => { if (at && (!membershipAt || at < membershipAt)) membershipAt = at; });
     const fingerprint = buildStatusCardFingerprint(snapshot);
@@ -679,8 +686,9 @@ export function statusCardService(
         state: "active",
         nextEvalAt,
         nextEvalReason: nextEvalAt ? card.refreshPolicy.mode === "reactive" ? "membership" : "refresh" : null,
-      }).where(eq(statusCards.id, card.id)).returning());
-      return { card: next!, generatingIssue: null, alreadyGenerating: false, enqueued: false };
+      }).where(and(eq(statusCards.id, card.id), currentRevision)).returning());
+      if (!next) return undefined;
+      return { card: next, generatingIssue: null, alreadyGenerating: false, enqueued: false };
     }
 
     const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
@@ -712,8 +720,9 @@ export function statusCardService(
           completedUpdateTimes: recent.filter(row => row.kind !== "compile" && row.finishedAt).map(row => row.startedAt),
           tokensToday: Number(daily[0]?.tokens ?? 0),
         }),
-      }).where(eq(statusCards.id, card.id)).returning());
-      return { card: next!, generatingIssue: null, alreadyGenerating: false, enqueued: false };
+      }).where(and(eq(statusCards.id, card.id), currentRevision)).returning());
+      if (!next) return undefined;
+      return { card: next, generatingIssue: null, alreadyGenerating: false, enqueued: false };
     }
 
     const history = await listUpdates(card.id);
@@ -765,13 +774,14 @@ export function statusCardService(
       nextEvalAt,
       nextEvalReason: nextEvalAt ? card.refreshPolicy.mode === "reactive" ? "membership" : "refresh" : null,
       failureReason: null,
-    }).where(and(eq(statusCards.id, card.id), isNull(statusCards.archivedAt), or(isNull(statusCards.generatingIssueId), priorGenerationPredicate))).returning());
+    }).where(and(eq(statusCards.id, card.id), isNull(statusCards.archivedAt), currentRevision, or(isNull(statusCards.generatingIssueId), priorGenerationPredicate))).returning());
     if (!next) {
       const winner = await getById(card.id);
       if (!winner?.generatingIssueId) {
         if (!TERMINAL_ISSUE_STATUSES.has(generationIssue!.status)) {
           await issuesSvc().update(generationIssue!.id, { status: "cancelled" });
         }
+        if (winner && !winner.archivedAt) return undefined;
         throw conflict("Status-card refresh claim was lost");
       }
       if (generationIssue!.id !== winner.generatingIssueId && !TERMINAL_ISSUE_STATUSES.has(generationIssue!.status)) {
@@ -794,6 +804,14 @@ export function statusCardService(
     return { card: next, generatingIssue: generationIssue!, alreadyGenerating: deduplicated, enqueued: true, kind, changes };
   }
 
+  async function requestRefresh(cardId: string, input: Parameters<typeof refreshCurrentCard>[1] = {}) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const result = await refreshCurrentCard(cardId, input, attempt > 0);
+      if (result) return result;
+    }
+    throw conflict("Status-card refresh was superseded by concurrent edits");
+  }
+
   async function tickDueStatusCards(now = new Date(), reactiveCompanies?: ReadonlySet<string> | "changed", reconstruct = false) {
     const changedScope = reactiveCompanies === "changed" ? sql`true` : reactiveCompanies?.size
       ? inArray(statusCards.companyId, [...reactiveCompanies]) : sql`false`;
@@ -811,7 +829,9 @@ export function statusCardService(
       .innerJoin(companies, eq(companies.id, statusCards.companyId))
       .where(and(eq(companies.status, "active"), isNull(statusCards.archivedAt), isNull(statusCards.generatingIssueId),
         or(and(isNotNull(statusCards.nextEvalAt), lte(statusCards.nextEvalAt, now)),
-          and(reactiveScope, ne(statusCards.state, "error"), ne(statusCards.state, "compiling"), sql`${statusCards.refreshPolicy}->>'mode' = 'reactive'`, sql`jsonb_array_length(${statusCards.queries}) > 0`))))
+          and(reactiveScope,
+            or(isNull(statusCards.nextEvalReason), ne(statusCards.nextEvalReason, "retry"), isNull(statusCards.nextEvalAt), lte(statusCards.nextEvalAt, now)),
+            ne(statusCards.state, "error"), ne(statusCards.state, "compiling"), sql`${statusCards.refreshPolicy}->>'mode' = 'reactive'`, sql`jsonb_array_length(${statusCards.queries}) > 0`))))
       .then(rows => rows.map(row => row.card));
     const enqueued: Array<{ cardId: string; generatingIssue: typeof issues.$inferSelect }> = [];
     let evaluated = 0;
