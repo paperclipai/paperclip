@@ -1,4 +1,5 @@
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
@@ -40,6 +41,7 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   await issueThreadInteractionService(tx).cancelPendingForDeletedAddressee(companyId, id);
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+  await notifyStatusCardIssueChange(tx, companyId);
   await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
   await tx
     .update(issues)

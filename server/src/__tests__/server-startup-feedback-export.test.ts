@@ -1,4 +1,5 @@
 import { attentionRetentionService } from "../services/attention-retention.js";
+import { statusCardEvaluationService, registerStatusCardEvaluationWork } from "../services/status-card-evaluation.js";
 import { nativeHarnessBackupExpirationService } from "../services/native-runtime/native-harness-backup-expiration.js";
 import { skillVersionRetentionService } from "../services/skill-version-retention.js";
 import { approvalQueueSeedingService } from "../services/approval-queue-seeding-work.js";
@@ -135,6 +136,9 @@ const {
     })),
     reconcileHotRestartAdoption: vi.fn(async () => ({ mode: "none" })),
     reapOrphanedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
+    registerIssueStateRecoveryWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerDeferredReceiptWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerRunDispatchWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     registerScheduledRetryCancellationWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     registerStoppedInstructionCollectionWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     registerRetainedNativeSessionCleanupWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve(), stop: vi.fn() })),
@@ -533,6 +537,13 @@ vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
   validateNativeQuestionResponseInput: vi.fn(),
 }));
 
+vi.mock("../services/status-card-evaluation.js", () => ({
+  statusCardEvaluationService: vi.fn(() => ({ run: vi.fn(async () => {}), next: vi.fn(async () => null), changed: vi.fn() })),
+  registerStatusCardEvaluationWork: vi.fn((_coordinator, service, canRun) => ({
+    ready: canRun() ? service.run(new AbortController().signal) : Promise.resolve(), wake: vi.fn(), stop: vi.fn(async () => {}),
+  })),
+}));
+
 vi.mock("../services/secret-proposals.js", () => ({
   createSecretProposalsService: vi.fn(() => ({
     expiryDeadlines: vi.fn(async () => []),
@@ -796,6 +807,28 @@ describe("startServer feedback export wiring", () => {
     expect(deliveryWorkErrors.filter(error => error.queue === DELIVERY_QUEUES.skillVersionRetention)).toEqual([]);
   });
 
+  it.each([false, true])("registers status-card evaluation only with maintenance and never ticks it from the heartbeat loop (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled, heartbeatSchedulerIntervalMs: 1000 }));
+    let tick: (() => void) | undefined;
+    const timer = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void, interval: number) => {
+      if (interval === 1000) tick = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      await startServer(); await settleStartupHousekeeping();
+      expect(registerStatusCardEvaluationWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+      expect(statusCardEvaluationService).toHaveBeenCalledTimes(enabled ? 1 : 0);
+      if (enabled) {
+        const service = vi.mocked(statusCardEvaluationService).mock.results.at(-1)!.value;
+        expect(service.run).toHaveBeenCalledOnce();
+        expect(tick).toBeDefined();
+        for (let i = 0; i < 3; i++) { tick!(); await settleStartupHousekeeping(); }
+        expect(service.run).toHaveBeenCalledOnce();
+      }
+      expect(deliveryWorkErrors.filter(error => error.queue === DELIVERY_QUEUES.statusCardEvaluation)).toEqual([]);
+    } finally { timer.mockRestore(); }
+  });
+
   it.each([false, true])("registers response recovery and its shutdown subscription only when maintenance is enabled (%s)", async enabled => {
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
     await startServer(); await settleStartupHousekeeping();
@@ -927,6 +960,21 @@ describe("startServer feedback export wiring", () => {
     await startServer(); await settleStartupHousekeeping();
     expect(heartbeatServiceMock.registerCapturedInstructionCommitWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
     if (enabled) expect(heartbeatServiceMock.registerCapturedInstructionCommitWork.mock.calls[0][1]()).toBe(true);
+  });
+
+  it.each([false, true])("registers retry and queued dispatch only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerIssueStateRecoveryWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(heartbeatServiceMock.registerRunDispatchWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(heartbeatServiceMock.registerDeferredReceiptWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(heartbeatServiceMock.resumeQueuedRuns).not.toHaveBeenCalled();
+    if (enabled) {
+      const [coordinator, admitted] = heartbeatServiceMock.registerRunDispatchWork.mock.calls[0];
+      const app = await createAppMock.mock.results.at(-1)!.value;
+      expect(coordinator).toBe(app.locals.deliveryWork);
+      expect(admitted()).toBe(true);
+    }
   });
 
   it.each([false, true])("registers retry cancellation recovery only when maintenance is enabled (%s)", async enabled => {
@@ -1333,13 +1381,14 @@ describe("startServer feedback export wiring", () => {
       await startServer();
       await settleStartupHousekeeping();
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
-      expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(1);
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).not.toHaveBeenCalled();
       expect(intervalCallback).not.toBeNull();
       intervalCallback?.();
       await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(2);
-      expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenLastCalledWith({ staleThresholdMs: 300_000, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true, skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true, skipObsoletePolicyReviews: true, skipAutomaticCompletionReviews: true, skipUnsafeWorkspaceExports: true, skipNativePendingEffects: true, skipNativeResponsePresentation: true, skipNativeReviewResponse: true, skipNativeStatusReassessment: true, skipRetainedNativeSessionCleanup: true, skipNativeWorkspaceFinalization: true, skipNativeResultCommit: true, skipNativeRunProjection: true, skipNativeRecoveryNotices: true, skipExternalConversationSettlement: true, skipExternalAgentSettlement: true, skipNativeEnvironmentSettlement: true });
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenLastCalledWith({ staleThresholdMs: 300_000, skipNativeStatusWakeIntents: true, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true, skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true, skipObsoletePolicyReviews: true, skipAutomaticCompletionReviews: true, skipUnsafeWorkspaceExports: true, skipNativePendingEffects: true, skipNativeResponsePresentation: true, skipNativeReviewResponse: true, skipNativeStatusReassessment: true, skipRetainedNativeSessionCleanup: true, skipNativeWorkspaceFinalization: true, skipNativeResultCommit: true, skipNativeRunProjection: true, skipNativeRecoveryNotices: true, skipExternalConversationSettlement: true, skipExternalAgentSettlement: true, skipNativeEnvironmentSettlement: true });
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
+      expect(heartbeatServiceMock.promoteDueScheduledRetries).not.toHaveBeenCalled();
       expect(retiredDetector).not.toHaveBeenCalled();
     } finally {
       delete (runtime as Partial<typeof runtime>).reconcileProductivityReviews;

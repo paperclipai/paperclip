@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyIssueReviewState } from "./issue-review-state-notifications.js";
 import { notifyChatConfirmationResolution } from "./chat-confirmation-notifications.js";
@@ -376,7 +377,7 @@ type ResolvedInteractionResult = {
 };
 
 type IssueThreadInteractionRow = typeof issueThreadInteractions.$inferSelect;
-type IssueTouchDb = Pick<Db, "update">;
+type IssueTouchDb = Pick<Db, "update" | "transaction">;
 
 function isNativeCompletionReview(
   row: Pick<IssueThreadInteractionRow, "kind" | "payload">,
@@ -801,11 +802,11 @@ function hydrateInteraction(
   }
 }
 
-async function touchIssue(db: IssueTouchDb, issueId: string) {
-  await db
-    .update(issues)
-    .set({ updatedAt: new Date() })
-    .where(eq(issues.id, issueId));
+async function touchIssue(db: IssueTouchDb, issueId: string, companyId: string) {
+  await db.transaction(async tx => {
+    await notifyStatusCardIssueChange(tx, companyId);
+    await tx.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, issueId));
+  });
 }
 
 function isTerminalIssueStatus(status: string) {
@@ -2013,7 +2014,7 @@ async function expireStaleRequestConfirmationTarget(
         "Interaction has already been resolved",
       );
     }
-    await touchIssue(tx, args.row.issueId);
+    await touchIssue(tx, args.row.issueId, args.row.companyId);
     const expired = hydrateInteraction(updated);
     await enqueueTerminalIssueInteractionChatPublications(tx, expired);
     return expired;
@@ -2468,7 +2469,7 @@ export function issueThreadInteractionService(
           };
         }
       } else {
-        await touchIssue(tx, args.issue.id);
+        await touchIssue(tx, args.issue.id, args.issue.companyId);
       }
 
       // Snapshot the continuation target only after every lifecycle mutation
@@ -2682,7 +2683,7 @@ export function issueThreadInteractionService(
           tx,
         );
       } else {
-        await touchIssue(tx, args.issue.id);
+        await touchIssue(tx, args.issue.id, args.issue.companyId);
       }
       await enqueueTerminalIssueInteractionChatPublications(
         tx as unknown as Db,
@@ -2864,7 +2865,7 @@ export function issueThreadInteractionService(
             await enqueueTerminalIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(previous));
           }
         }
-        await touchIssue(tx, issue.id);
+        await touchIssue(tx, issue.id, issue.companyId);
         inserted = true;
         await enqueueIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(row));
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
@@ -2908,7 +2909,7 @@ export function issueThreadInteractionService(
         )
         .returning();
       if (!updated) throw interactionAlreadyResolvedError();
-      await touchIssue(db, issue.id);
+      await touchIssue(db, issue.id, issue.companyId);
       return hydrateInteraction(updated) as ConnectionIntentInteraction;
     },
     resolveConnectionIntent: async (
@@ -2972,7 +2973,7 @@ export function issueThreadInteractionService(
         return row;
       });
       if (!updated) throw interactionAlreadyResolvedError();
-      await touchIssue(db, issue.id);
+      await touchIssue(db, issue.id, issue.companyId);
       const interaction = hydrateInteraction(
         updated,
       ) as ConnectionIntentInteraction;
@@ -3351,7 +3352,7 @@ export function issueThreadInteractionService(
           })
           .where(eq(issueThreadInteractions.id, current.id))
           .returning();
-        await touchIssue(tx, issue.id);
+        await touchIssue(tx, issue.id, issue.companyId);
         return row;
       });
       return hydrateInteraction(updated);
@@ -3414,10 +3415,8 @@ export function issueThreadInteractionService(
         if (updated) cancelled.push(updated);
       }
 
-      for (const issueId of new Set(
-        cancelled.map((interaction) => interaction.issueId),
-      )) {
-        await touchIssue(db, issueId);
+      for (const [issueId, companyId] of new Map(cancelled.map(interaction => [interaction.issueId, interaction.companyId]))) {
+        await touchIssue(db, issueId, companyId);
       }
       await emitResolvedInteractionsTelemetry(db, cancelled);
       return cancelled;
@@ -3506,10 +3505,8 @@ export function issueThreadInteractionService(
       }
 
       if (expired.length > 0) {
-        for (const issueId of new Set(
-          expired.map((interaction) => interaction.issueId),
-        )) {
-          await touchIssue(db, issueId);
+        for (const [issueId, companyId] of new Map(expired.map(interaction => [interaction.issueId, interaction.companyId]))) {
+          await touchIssue(db, issueId, companyId);
         }
         await emitResolvedInteractionsTelemetry(db, expired);
       }
@@ -4052,7 +4049,7 @@ export function issueThreadInteractionService(
         return interaction;
       }
 
-      await touchIssue(db, issue.id);
+      await touchIssue(db, issue.id, issue.companyId);
       if (superseded.length > 0) {
         await emitResolvedInteractionsTelemetry(
           db,
@@ -4357,7 +4354,7 @@ export function issueThreadInteractionService(
           .where(eq(issueThreadInteractions.id, interactionId))
           .returning();
 
-        await touchIssue(tx, issue.id);
+        await touchIssue(tx, issue.id, issue.companyId);
         await mutationOptions.afterResolveInTransaction?.(tx, hydrateInteraction(updated));
         await enqueueTerminalIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(updated));
         current.status = updated.status;
@@ -4549,7 +4546,7 @@ export function issueThreadInteractionService(
           throw interactionAlreadyResolvedError();
         }
 
-        await touchIssue(tx, issue.id);
+        await touchIssue(tx, issue.id, issue.companyId);
         await mutationOptions.afterResolveInTransaction?.(tx, hydrateInteraction(updated));
         if (complete) await enqueueTerminalIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(updated));
         return {
@@ -4622,7 +4619,7 @@ export function issueThreadInteractionService(
         throw interactionAlreadyResolvedError();
       }
 
-      await touchIssue(db, issue.id);
+      await touchIssue(db, issue.id, issue.companyId);
       const rejected = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, rejected);
       return rejected;
@@ -4720,7 +4717,7 @@ export function issueThreadInteractionService(
       }
 
       if (expired.length > 0) {
-        await touchIssue(db, issue.id);
+        await touchIssue(db, issue.id, issue.companyId);
         await emitResolvedInteractionsTelemetry(db, expired);
       }
       return expired;
@@ -4952,7 +4949,7 @@ export function issueThreadInteractionService(
       }
 
       if (expired.length > 0) {
-        await touchIssue(db, issue.id);
+        await touchIssue(db, issue.id, issue.companyId);
         await emitResolvedInteractionsTelemetry(db, expired);
       }
       return expired;
@@ -5049,7 +5046,7 @@ export function issueThreadInteractionService(
       }
 
       if (expired.length > 0) {
-        await touchIssue(db, issue.id);
+        await touchIssue(db, issue.id, issue.companyId);
         await emitResolvedInteractionsTelemetry(db, expired);
       }
       return expired;
@@ -5189,7 +5186,7 @@ export function issueThreadInteractionService(
         if (updated) expired.push(hydrateInteraction(updated));
       }
       if (expired.length > 0) {
-        await touchIssue(db, issue.id);
+        await touchIssue(db, issue.id, issue.companyId);
         await emitResolvedInteractionsTelemetry(db, expired);
       }
       return expired;
@@ -5294,7 +5291,7 @@ export function issueThreadInteractionService(
         return row;
       });
 
-      await touchIssue(db, issue.id);
+      await touchIssue(db, issue.id, issue.companyId);
       const withdrawn = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, withdrawn);
       return withdrawn;
@@ -5417,7 +5414,7 @@ export function issueThreadInteractionService(
         return row;
       });
 
-      await touchIssue(db, issue.id);
+      await touchIssue(db, issue.id, issue.companyId);
       const answered = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, answered);
       return answered;
@@ -5553,7 +5550,7 @@ export function issueThreadInteractionService(
         return row;
       });
 
-      await touchIssue(db, issue.id);
+      await touchIssue(db, issue.id, issue.companyId);
       const skipped = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, skipped);
       return skipped;
@@ -5630,7 +5627,7 @@ export function issueThreadInteractionService(
         return row;
       });
 
-      await touchIssue(db, issue.id);
+      await touchIssue(db, issue.id, issue.companyId);
       const cancelled = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, cancelled);
       return cancelled;

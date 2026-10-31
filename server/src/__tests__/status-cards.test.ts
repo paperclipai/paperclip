@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
@@ -37,7 +38,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_STATUS_CARDS_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 type Db = ReturnType<typeof createDb>;
@@ -79,8 +81,8 @@ describeEmbeddedPostgres("status card routes", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-status-cards-");
-    db = createDb(tempDb.connectionString);
+    if (!externalDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-status-cards-");
+    db = createDb(externalDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 6 });
   }, 20_000);
 
   afterEach(async () => {
@@ -100,6 +102,7 @@ describeEmbeddedPostgres("status card routes", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -189,6 +192,7 @@ describeEmbeddedPostgres("status card routes", () => {
       .send({ title: "Launch health", titlePinned: true });
     expect(patched.status).toBe(200);
     expect(patched.body).toMatchObject({ title: "Launch health", titlePinned: true });
+    expect(patched.body).not.toHaveProperty("nextEvalReason");
 
     const scheduled = await request(app)
       .patch(`/api/status-cards/${created.body.id}`)
@@ -1149,6 +1153,7 @@ describeEmbeddedPostgres("status card routes", () => {
     });
     expect(summaryWrite.status).toBe(200);
     expect(summaryWrite.body.card).toMatchObject({ state: "active", queryVersion: 1, generatingIssueId: null });
+    expect(summaryWrite.body.card).not.toHaveProperty("nextEvalReason");
     expect(summaryWrite.body.document.latestBody).toContain("**Decide:**");
     expect(await db.select().from(statusCardUpdates).then((rows) => rows.find((row) => row.kind === "full"))).toMatchObject({ status: "ok", finishedAt: expect.any(Date), inputTokens: 5200, outputTokens: 980 });
 

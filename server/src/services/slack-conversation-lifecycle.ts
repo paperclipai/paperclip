@@ -1,4 +1,5 @@
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
@@ -135,6 +136,7 @@ export async function settleExternalConversation(db: Db, companyId: string, issu
     await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId });
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+    await notifyStatusCardIssueChange(tx, companyId);
     await tx.update(issues).set({ status: "in_review", updatedAt: new Date() })
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
     activity = (await persistActivity(tx as unknown as Db, {
