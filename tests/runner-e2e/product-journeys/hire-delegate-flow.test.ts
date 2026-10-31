@@ -173,14 +173,15 @@ it("ends a missing saved result at the original deadline without a click or repl
     { id: "review", identifier: "QA-2", title: "Saved review" }, Date.now() + 10)).toBe(false);
 });
 
-it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activity-linked", "foreign-run", "contradictory-run", "extra-run", "fallback", "fallback-changed"])("re-reads %s callback task state while preserving strict scope and seven-run accounting", async snapshot => {
-  const fallback = snapshot.startsWith("fallback");
+it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activity-linked", "foreign-run", "contradictory-run", "extra-run", "fallback", "fallback-changed", "fallback-subscription", "fallback-subscription-wrong-method"])("re-reads %s callback task state while preserving strict scope and seven-run accounting", async snapshot => {
+  const fallback = snapshot.startsWith("fallback"), subscription = snapshot.startsWith("fallback-subscription");
+  const provider = subscription ? "codex" : "opencode", accountProvider = subscription ? "openai" : "openrouter", method = subscription ? "subscription" : "api_key";
   const campaignId = "journey-1-deadbeef", names = hireDelegateNames(campaignId), binding = fallback
-    ? { provider: "openrouter", method: "api_key", mode: "delegated", connectionId: "approved", grantId: "grant" } : { connectionId: "approved" };
+    ? { provider: accountProvider, method, mode: "delegated", connectionId: "approved", grantId: "grant" } : { connectionId: "approved" };
   const lead = { id: "lead", companyId: "company", name: `Lead ${campaignId}`, permissions: { canCreateAgents: true },
     adapterConfig: { model: "fixed-model" }, runtimeConfig: { aiConnection: binding } };
   const hired = { ...lead, id: "hired", name: names.hire, reportsTo: "lead", adapterType: "paperclip_runner" };
-  if (fallback) Object.assign(hired, { runtimeConfig: { aiConnection: { provider: "openrouter", method: "api_key", mode: "responsible_user" } } });
+  if (fallback) Object.assign(hired, { runtimeConfig: { aiConnection: { provider: accountProvider, method: "api_key", mode: "responsible_user" } } });
   const chat = { id: "chat", companyId: "company", title: `Chat with ${lead.name}`, assigneeAgentId: "lead", conversationAgentId: "lead",
     conversationUserId: "user", createdByUserId: "user", status: "in_review", conversationState: "waiting" };
   const runs: Row[] = [], tasks: Row[] = [], comments: Row[] = [], activity: Row[] = [], stages: number[] = [];
@@ -189,8 +190,9 @@ it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activit
   const run = (id: string, issueId: string, agentId: string, metadata: Row = {}) => {
     const value = { id, companyId: "company", agentId, issueId, status: "succeeded", runtimeMode: "native",
       contextSnapshot: { issueId, paperclipEnvironment: { id: "environment" }, aiConnection: fallback
-        ? { ...binding, mode: agentId === "lead" ? "delegated" : "responsible_user", responsibleUserId: "user" } : binding, ...metadata },
-      runnerProfileJson: { nativeExecutionInput: { provider: { kind: "opencode", model: "fixed-model" } } } };
+        ? { ...binding, ...(snapshot === "fallback-subscription-wrong-method" && agentId !== "lead" ? { method: "api_key" } : {}),
+          mode: agentId === "lead" ? "delegated" : "responsible_user", responsibleUserId: "user" } : binding, ...metadata },
+      runnerProfileJson: { nativeExecutionInput: { provider: { kind: provider, model: "fixed-model" } } } };
     runs.push(value); return value;
   };
   const audit = (action: string, entityId: string) => activity.push({ companyId: "company", actorType: "agent", actorId: "lead", agentId: "lead", runId: `lead-${sent}`, action, entityId, entityType: action.startsWith("agent.") ? "agent" : "issue" });
@@ -219,7 +221,7 @@ it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activit
     if (route === "/api/agents/lead") return lead;
     if (route === "/api/companies/company/chats/lead") return sent ? chat : null;
     if (route === "/api/companies/company/ai-connections") return { currentUserId: "user", connections: [{ companyId: "company", id: "approved", grantId: "grant",
-      provider: "openrouter", method: "api_key", ownership: "personal", ownerUserId: "user", isDefault: true, status: "connected" }] };
+      provider: accountProvider, method, ownership: "personal", ownerUserId: "user", isDefault: true, status: "connected" }] };
     if (route.endsWith("/installs")) return { connectionId: "approved", installs: [{ companyId: "company", targetType: "agent", targetId: "hired" }] };
     if (route === "/api/agents/hired") return hired;
     if (route === "/api/companies/company/agents") return sent ? [lead, hired] : [lead];
@@ -266,14 +268,15 @@ it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activit
     ? { async evaluateAll() { return ["/QA/issues/QA-2"]; } } : { first() { return { async click() {} }; } }; } };
   const page = { async goto() {}, async reload() {}, locator() { return reply; }, getByTestId() { return { getByRole() { return {}; } }; } };
   const context = { api, page, user: { id: "user" }, company: { id: "company", issuePrefix: "QA" },
-    agent: { id: "lead", model: "fixed-model", provider: "opencode", runtimeMode: "native" }, environmentId: "environment" } as unknown as JourneyContext;
+    agent: { id: "lead", model: "fixed-model", provider, runtimeMode: "native" }, environmentId: "environment" } as unknown as JourneyContext;
   const evidence = { checks: [] } as unknown as JourneyEvidence, owned: Row[] = [];
   const directory = await mkdtemp(path.join(os.tmpdir(), "hire-completion-")); directories.push(directory);
   const execution = hireDelegateReuse(context, { async own(row: Row) { owned.push(row); } } as unknown as TargetSession, campaignId, evidence,
     { deadlineAt: Date.now() + 10_000, directory, capture: async () => {} });
-  if (["foreign", "wrong-author", "foreign-run", "contradictory-run", "extra-run", "fallback-changed"].includes(snapshot)) {
+  if (["foreign", "wrong-author", "foreign-run", "contradictory-run", "extra-run", "fallback-changed", "fallback-subscription-wrong-method"].includes(snapshot)) {
     const code = snapshot === "foreign" ? "hire_resource_scope_mismatch" : snapshot === "wrong-author" ? "hire_completion_reply_mismatch"
-      : snapshot === "extra-run" ? "hire_requested_turn_mismatch" : snapshot === "fallback-changed" ? "hire_native_binding_mismatch" : "hire_run_scope_mismatch";
+      : snapshot === "extra-run" ? "hire_requested_turn_mismatch" : snapshot === "fallback-changed" ? "hire_native_binding_mismatch"
+        : snapshot === "fallback-subscription-wrong-method" ? "hire_run_credential_mismatch" : "hire_run_scope_mismatch";
     await expect(execution).rejects.toMatchObject({ code });
     expect(sendChatMessage).toHaveBeenCalledTimes(["extra-run", "fallback-changed"].includes(snapshot) ? 3 : 2);
     if (snapshot === "fallback-changed") { expect(stages).toEqual([0, 1, 4]); expect(runs).toHaveLength(7); }

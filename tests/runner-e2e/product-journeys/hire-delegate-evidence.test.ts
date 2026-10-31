@@ -79,6 +79,32 @@ describe("deployment hiring qualification", () => {
       Object.assign(listed, before.listed); Object.assign(selected, before.listed.connections[0]); listed.connections = [selected]; Object.assign(installed, before.installed);
     }
   });
+  it("distinguishes the subscription hire placeholder from the approved resolved native method", async () => {
+    const f = fixture(), binding = { provider: "openai", method: "subscription", mode: "delegated",
+      connectionId: "00000000-0000-4000-8000-000000000001", grantId: "00000000-0000-4000-8000-000000000002" };
+    const placeholder = defaultAiConnectionForHire("paperclip_runner", { provider: "codex", model: "fixed-model" }, binding);
+    expect(placeholder).toEqual({ provider: "openai", method: "api_key", mode: "responsible_user" });
+    const selected = { id: binding.connectionId, grantId: binding.grantId, companyId: scope.companyId, provider: binding.provider,
+      method: binding.method, ownership: "personal", ownerUserId: "user", isDefault: true, status: "connected" };
+    const installed = { connectionId: binding.connectionId, installs: [{ companyId: scope.companyId, targetType: "agent", targetId: f.agent.id }] };
+    const api = { async get<T>(route: string): Promise<T> { return (route.endsWith("/installs") ? installed : { currentUserId: "user", connections: [selected] }) as T; } };
+    const input = { companyId: scope.companyId, responsibleUserId: "user", binding, hiredId: f.agent.id };
+    const connectionChoice = await readHireConnectionChoice(api, input);
+    const scoped = { ...scope, provider: "codex", connectionBinding: binding, connectionChoice };
+    const hired = { ...f.agent, runtimeConfig: { aiConnection: placeholder } };
+    expect(() => assertHireBinding(scoped, [hired])).not.toThrow();
+    expect(() => assertHireBinding({ ...scoped, connectionChoice: { ...connectionChoice!, grantId: "unapproved" } }, [hired])).toThrow("hire_native_binding_mismatch");
+    for (const altered of [{ ...placeholder, provider: "anthropic" }, { ...placeholder, mode: "delegated" }, { ...placeholder, method: "subscription" }]) {
+      expect(() => assertHireBinding(scoped, [{ ...hired, runtimeConfig: { aiConnection: altered } }])).toThrow("hire_native_binding_mismatch");
+    }
+    selected.grantId = "unapproved";
+    await expect(readHireConnectionChoice(api, input)).rejects.toMatchObject({ code: "hire_connection_choice_mismatch" });
+    const run = { ...f.taskRun, runnerProfileJson: { nativeExecutionInput: { provider: { kind: "codex", model: scope.model } } },
+      contextSnapshot: { ...f.taskRun.contextSnapshot, aiConnection: { ...binding, mode: "responsible_user", responsibleUserId: "user" } } };
+    expect(() => assertHireRuns(scoped, hired.id, [f.task], [run])).not.toThrow();
+    expect(() => assertHireRuns(scoped, hired.id, [f.task], [{ ...run,
+      contextSnapshot: { ...run.contextSnapshot, aiConnection: { ...run.contextSnapshot.aiConnection, method: "api_key" } } }])).toThrow("hire_run_credential_mismatch");
+  });
   it("requires actual execution attribution to keep the approved credential and responsible user", () => {
     const f = fixture(), connectionChoice = { connectionId: "approved", grantId: "grant", provider: "openrouter", method: "api_key", responsibleUserId: "user" };
     const scoped = { ...scope, connectionChoice }, run = { ...f.taskRun, contextSnapshot: { ...f.taskRun.contextSnapshot,

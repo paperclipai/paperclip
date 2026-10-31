@@ -68,7 +68,9 @@ the exact approved connection and grant, connected and owned by that user.
 After hiring it independently checks the exact child installation. The underlying
 connection's creator is not the owner of the user's default selection. Missing,
 different or ambiguous authority fails closed; no credential, default or grant is
-changed. Every successful native run must also retain the approved connection,
+changed. A responsible-user hire stores the canonical `api_key` placeholder even
+when the approved default uses a subscription. The resolved native method must
+still match that independently approved default. Every successful native run must also retain the approved connection,
 grant and responsible-user attribution in its canonical execution metadata.
 Those references are compared privately and omitted from observation evidence.
 The first independently approved child binding becomes an immutable expected

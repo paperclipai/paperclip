@@ -45,7 +45,7 @@ function approvedFallback(scope: HireScope, hiredBinding: unknown) {
   return binding?.mode === "delegated" && choice && choice.connectionId === binding.connectionId && choice.grantId === binding.grantId
     && choice.provider === binding.provider && choice.method === binding.method && typeof choice.responsibleUserId === "string"
     && Boolean(choice.responsibleUserId) && isDeepStrictEqual(hiredBinding,
-      { provider: choice.provider, method: choice.method, mode: "responsible_user" });
+      { provider: choice.provider, method: "api_key", mode: "responsible_user" });
 }
 export const hireRunIssueId = (run: Row) => run.issueId ?? run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId;
 
