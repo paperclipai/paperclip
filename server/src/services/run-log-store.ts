@@ -7,13 +7,21 @@ import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import type { StorageProvider } from "../storage/types.js";
+import { createObjectRunLogStore } from "./object-run-log-store.js";
+import { resolveRunEvidenceStorage } from "./run-evidence-storage.js";
 
-export type RunLogStoreType = "local_file";
+export type RunLogStoreType = "local_file" | "s3_segments";
+export function isRunLogStoreType(value: unknown): value is RunLogStoreType {
+  return value === "local_file" || value === "s3_segments";
+}
 
 export interface RunLogHandle {
   store: RunLogStoreType;
   logRef: string;
   attemptId?: string;
+  initialBytes?: number;
+  initialSequence?: number;
+  initialSourceCursor?: number;
 }
 
 export interface RunLogReadOptions {
@@ -50,15 +58,24 @@ export interface RunLogBeginInput {
   // began this log, so no durable prefix can exist to restore. Omitted means
   // the run may be a retry or recovery and the durable mirror is checked.
   newRun?: boolean;
+
+  assertWriterAuthority?: () => Promise<void>;
+  previousStore?: RunLogStoreType;
+  signal?: AbortSignal;
 }
 
 export interface RunLogStore {
   begin(input: RunLogBeginInput): Promise<RunLogHandle>;
   append(
     handle: RunLogHandle,
-    event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string; seq?: number },
+    event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string; seq?: number; sourceCursor?: number },
   ): Promise<number>;
-  finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
+  enqueue?(
+    handle: RunLogHandle,
+    event: Parameters<RunLogStore["append"]>[1],
+  ): Promise<{ committed: Promise<number> }>;
+  flush?(handle: RunLogHandle): Promise<void>;
+  finalize(handle: RunLogHandle, options?: { computeDigest?: boolean }): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
   // Optional so existing fakes/fixtures keep compiling: uploads every dirty
   // in-flight mirror immediately (graceful-shutdown path). No-op when the
@@ -509,7 +526,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
 // NOT redirect the product's workspace/file storage (smaller blast radius).
 // Unset RUN_LOG_S3_BUCKET -> no mirror -> local-only (safe degrade). Creds come
 // from the standard AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY chain.
-function resolveRunLogS3(): DurableRunLogStoreOptions["s3"] {
+export function resolveRunLogS3(): DurableRunLogStoreOptions["s3"] {
   const bucket = process.env.RUN_LOG_S3_BUCKET?.trim();
   if (!bucket) return undefined;
   const provider = createS3StorageProvider({
@@ -538,7 +555,40 @@ let cachedStore: RunLogStore | null = null;
 export function getRunLogStore() {
   if (cachedStore) return cachedStore;
   const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
-  cachedStore = createDurableRunLogStore({ basePath, s3: resolveRunLogS3() });
+  const local = createDurableRunLogStore({ basePath, s3: resolveRunLogS3() });
+  const s3 = resolveRunEvidenceStorage();
+  const external = s3 ? createObjectRunLogStore({
+    provider: s3.provider, keyPrefix: s3.keyPrefix || "run-logs",
+    assertWriterAuthority: async input => {
+      if (!input.assertWriterAuthority) throw new Error("Object run logs require admitted writer authority");
+      await input.assertWriterAuthority();
+    },
+  }) : null;
+  const writer = external ?? local;
+  cachedStore = {
+    begin: input => {
+      if (input.previousStore === "local_file") return local.begin(input);
+      if (input.previousStore === "s3_segments") {
+        if (!external) throw new Error("Object run log storage is not configured");
+        return external.begin(input);
+      }
+      return writer.begin(input);
+    },
+    append: (handle, event) => handle.store === "s3_segments" ? external!.append(handle, event) : local.append(handle, event),
+    enqueue: (handle, event) => handle.store === "s3_segments"
+      ? external!.enqueue!(handle, event)
+      : Promise.resolve({ committed: local.append(handle, event) }),
+    flush: async handle => { if (handle.store === "s3_segments") await external!.flush!(handle); },
+    finalize: (handle, options) => handle.store === "s3_segments" ? external!.finalize(handle, options) : local.finalize(handle),
+    read: (handle, opts) => {
+      if (handle.store === "s3_segments") {
+        if (!external) throw new Error("Object run log storage is not configured");
+        return external.read(handle, opts);
+      }
+      return local.read(handle, opts);
+    },
+    flushInflightMirrors: async () => { await Promise.all([local.flushInflightMirrors?.(), external?.flushInflightMirrors?.()]); },
+  };
   return cachedStore;
 }
 
@@ -548,4 +598,22 @@ export function getRunLogStore() {
 // created or in-flight mirroring is off.
 export async function flushInFlightRunLogMirrors(): Promise<void> {
   await cachedStore?.flushInflightMirrors?.();
+}
+
+
+export async function openLegacyRunLogForMigration(logRef: string) {
+  const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+  const file = resolveWithin(basePath, logRef);
+  try {
+    const stat = await fs.stat(file);
+    if (!stat.isFile()) throw new Error("Legacy run log is not a regular file");
+    return { stream: createReadStream(file), bytes: stat.size, source: "local" as const };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const config = resolveRunLogS3();
+  if (!config) throw notFound("Legacy run log not found");
+  const key = `${config.keyPrefix?.replace(/\/+$/, "") || "run-logs"}/${logRef}`;
+  const object = await config.provider.getObject({ objectKey: key, signal: AbortSignal.timeout(30_000) });
+  return { stream: object.stream, bytes: object.contentLength, source: "mirror" as const };
 }

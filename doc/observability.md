@@ -254,6 +254,17 @@ It does not extend an earlier execution attempt or include time waiting for
 the background worker to run. Retries have separate roots. A check that finds
 no eligible work can end without a restore child.
 
+`task.response_presentation` owns recovery of an already committed native reply.
+It starts a separate linked root because deferred presentation can run after the
+execution attempt and workspace finalization have ended. Worker discovery for
+a specific run and worker checks include candidate reads under
+`response.resolve`. Each discovery or check owns its root; direct recovery and
+its worker check share one root when nested. `response.transaction`
+includes the recovery transaction; `response.transaction.entry` measures entry
+into its callback, including connection acquisition. These spans retain only the
+same hashed run ID and never capture reply content. A successful task status is
+separate from the time the reply is saved.
+
 These spans exist before provider dispatch, including setup failures. Preparation phases have
 only the existing `paperclip.task.run.run_id` attribute: the first 12 hexadecimal
 characters of the run UUID's SHA-256 hash. Failed operations set error status
@@ -316,6 +327,14 @@ with one child span per phase: `legacy_workspace_exports`,
 once known, `paperclip.native_reconciliation.candidates` (a count). A failed
 pass marks the pass span and the phase that was running with an error status.
 Faster passes record nothing.
+
+Heartbeat configuration preparation overlaps independent reads. Skill preparation
+runs alongside connector assignments; standing connection instructions wait for
+assignment catalog repairs, but can overlap the skill branch. These spans can
+finish out of order. Do not add their durations as serial elapsed time. The
+historical `skills.prepare` span ends when the skill branch settles, rather than
+when its concurrent branches finish. Each preparation attempt settles its started
+branches before it returns an error or releases acquired credentials.
 
 ### Detailed execution phases
 
@@ -641,7 +660,8 @@ Without an OTLP endpoint, tracing remains silent and does not export data.
 
 The run link in Honeycomb matches `task.provider_session` for native runs, `task.run` for legacy adapters,
 `task.execution_attempt` for server preparation and settlement, and
-`task.workspace_finalization` for deferred native copyback. It retains the exact hashed run-ID and service filters and groups by trace ID. The URL builder uses Honeycomb’s supported `in` operator for the four root names; see the [query specification](https://github.com/honeycombio/honeycomb-mcp#query-specification-for-run_query). This changes only the query link. The operator endpoint gate and span attribute allowlist remain unchanged.
+`task.workspace_finalization` for deferred native copyback and `task.response_presentation`
+for committed native reply recovery. It retains the exact hashed run-ID and service filters and groups by trace ID. The URL builder uses Honeycomb’s supported `in` operator for the five root names; see the [query specification](https://github.com/honeycombio/honeycomb-mcp#query-specification-for-run_query). This changes only the query link. The operator endpoint gate and span attribute allowlist remain unchanged.
 
 The canonical lifecycle is:
 

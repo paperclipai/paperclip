@@ -8,7 +8,7 @@ import { gradeConnectionGuidanceDecline, hasConnectionGuidanceDeclineReply, expl
 import { expect, type Page } from "@playwright/test";
 import { runnerApiToolsEnabled } from "../../server/src/services/native-runtime/runner-api-rollout.js";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -26,6 +26,7 @@ import { hasPersistedSource, isSavedSourceCheckpoint } from "./everyday-interrup
 import { collectRunEvents } from "./run-observations.js";
 import { gradeRemoteRestart, observeRemoteRestartBoundary, projectRemoteRestartEvents, projectRemoteRestartRun, waitForRemoteRestartBoundary, type RemoteRestartEvidence } from "./everyday-remote-restart.js";
 import { controllerOutageForExecution, type ControllerOutageReceipt } from "./controller-outage.js";
+import { gradeRetainedControllerContinuation, retainedControllerRun, retainedControllerFollowupTransport, submitRetainedControllerComment, onePersistedRetainedControllerComment } from "./retained-controller-continuation.js";
 import { setupAggregatorFixture } from "./aggregator-fixture.js";
 import { gradeProviderChoice, gradeProviderOutcome, requireProviderAccessCard } from "./connection-routing-evidence.js";
 import { setupConnectionReview } from "./connection-reviews.js";
@@ -44,6 +45,8 @@ import {
   storyLifecycleChecks,
   storyRepliesConsumed,
   storyHasAgentReply,
+  storyAgentReplyMatches,
+  retainedControllerReplyMatcher,
   storyHasPendingHumanInteraction,
   storyReviewContinuationTimeoutDetail,
   storyHasStrandedBlockedLeaf,
@@ -59,6 +62,7 @@ import {
   type StoryCheck,
   type StoryIssue,
   type StoryRun,
+  type StoryReplyExpectation,
 } from "./everyday-observations.js";
 
 type Row = Record<string, any>;
@@ -187,6 +191,8 @@ export async function runEverydayFlow(input: Input) {
   let providerAccessDecision: { id: string; connectionId: string } | undefined;
   let stoppedWorkspace: Record<string, string> | undefined;
   let settledAgentReply: Row | undefined;
+  let postControllerApiFollowup = false;
+  let retainedFollowupCommentId: string | undefined;
   let reviewHandoffBoundary: {
     childId: string;
     assigneeAgentId: string | null | undefined;
@@ -280,7 +286,7 @@ export async function runEverydayFlow(input: Input) {
       ),
     ];
   }
-  async function reply(message: string, target: StoryIssue = parent!) {
+  async function reply(message: string, target: StoryIssue = parent!, transport: "browser" | "task_comment_api" = "browser") {
     const priorFailures = ev.checks.filter((c) => !c.passed);
     if (priorFailures.length)
       throw new Error(
@@ -288,7 +294,9 @@ export async function runEverydayFlow(input: Input) {
       );
     const before = await api.get<Row[]>(`/api/issues/${target.id}/comments`);
     lastSubmissionAt = Date.now();
-    await submitTaskReply(page, message);
+    const submitted = transport === "task_comment_api"
+      ? await submitRetainedControllerComment(api, target.id, message, randomUUID())
+      : (await submitTaskReply(page, message), undefined);
     const after = await pollUntil({
       label: "one persisted user reply",
       deadlineAt: Date.now() + 30_000,
@@ -303,11 +311,12 @@ export async function runEverydayFlow(input: Input) {
     );
     check(
       `reply-${ev.timeline.length}-stored-once`,
-      added.length === 1,
-      "A composer submission creates exactly one user message.",
+      transport === "task_comment_api" ? onePersistedRetainedControllerComment({ added, commentId: submitted?.id ?? "", body: message }) : added.length === 1,
+      transport === "task_comment_api" ? "The production comment API creates exactly one matching user message." : "A composer submission creates exactly one user message.",
     );
     submittedCommentIds.push(...added.map((c) => c.id));
-    note("composer-message-persisted", {
+    if (submitted) retainedFollowupCommentId = submitted.id;
+    note(transport === "task_comment_api" ? "task-api-message-persisted" : "composer-message-persisted", {
       issueId: target.id,
       commentIds: added.map((c) => c.id),
     });
@@ -324,7 +333,7 @@ export async function runEverydayFlow(input: Input) {
       sameConnections: false,
     };
   }
-  async function settled(expectedAgentReply?: string) {
+  async function settled(expectedAgentReply?: StoryReplyExpectation, readback: "browser" | "api" = "browser") {
     const settledState = await pollUntil({
       label: `everyday ${caseId} settled`,
       deadlineAt: input.deadlineAt,
@@ -389,16 +398,14 @@ export async function runEverydayFlow(input: Input) {
     if (expectedAgentReply) {
       const issue = settledState.issues.find((candidate) => candidate.id === parent?.id);
       const reply = issue?.comments?.find(
-        (comment) =>
-          comment.authorAgentId === fixtures.agent.id &&
-          String(comment.body ?? "").includes(expectedAgentReply),
+        (comment) => storyAgentReplyMatches(comment, fixtures.agent.id, expectedAgentReply),
       );
       if (reply) {
         // Keep the exact snapshot that satisfied the readiness predicate. A
         // later refresh may return a newer projection and must not change the
         // evidence used by the assertion below.
         settledAgentReply = { ...reply };
-        note("expected-agent-reply-visible-at-settlement", {
+        note(readback === "api" ? "expected-agent-reply-persisted-at-settlement" : "expected-agent-reply-visible-at-settlement", {
           issueId: issue?.id,
           commentId: reply.id,
           authorAgentId: reply.authorAgentId,
@@ -407,14 +414,16 @@ export async function runEverydayFlow(input: Input) {
         });
       }
     }
-    await openParent();
-    await expect(
-      page.getByTestId("issue-detail-header").getByRole("button", {
-        name: "Change status (current: Done)",
-        exact: true,
-      }),
-    ).toBeVisible();
-    note("all-tasks-done");
+    if (readback === "browser") {
+      await openParent();
+      await expect(
+        page.getByTestId("issue-detail-header").getByRole("button", {
+          name: "Change status (current: Done)",
+          exact: true,
+        }),
+      ).toBeVisible();
+    }
+    note("all-tasks-done", { readback });
   }
   async function downloadDelegated(
     mode: "base" | "separator" | "max-length",
@@ -574,6 +583,7 @@ export async function runEverydayFlow(input: Input) {
       "everyday-delivery.ts",
       "everyday-observations.ts",
       "everyday-remote-restart.ts",
+      "retained-controller-continuation.ts",
       "controller-outage.ts",
       "controller-recovery-observer.ts",
       "upgrade-artifacts.ts",
@@ -1440,13 +1450,39 @@ export async function runEverydayFlow(input: Input) {
           artifactGradeModeForPhase("reviewed-delivery"),
           "reviewed-delivery",
         );
-    } else if (caseId === "recover-controller")
+    } else if (caseId === "recover-controller") {
       await download(
         parent!.id,
         artifactGradeModeForPhase("recovered-delivery"),
         "recovered-delivery",
       );
-    else if (caseId === "stop-redirect")
+      if (execution.suite.definitionMetadata?.retainedControllerContinuation === true) {
+        const prior = ev.runs.filter(run => run.status === "succeeded" && run.agentId === fixtures.agent.id)
+          .sort((a, b) => Date.parse(b.finishedAt ?? "") - Date.parse(a.finishedAt ?? ""))[0];
+        if (!prior) throw new Error("Retained continuation requires a completed source run");
+        const before = retainedControllerRun(prior), priorIds = new Set(ev.runs.map(run => run.id));
+        const outage = await input.restart();
+        const followupTransport = retainedControllerFollowupTransport(execution);
+        postControllerApiFollowup = followupTransport === "task_comment_api";
+        if (!postControllerApiFollowup) await openParent();
+        note("retained-controller-followup-entry", { transport: followupTransport,
+          browserNavigationVerified: !postControllerApiFollowup });
+        const requestedAt = new Date().toISOString(), marker = `CONTINUED_${nonce}`;
+        const expectedReply = retainedControllerReplyMatcher(marker);
+        await reply(`Run the existing delivered slugify.py on "  Queue--Ready!!  " with --separator _ and --max-length 7. Report its output after the marker ${marker}. Use the saved project; do not rebuild it.`, parent!, followupTransport);
+        await settled(expectedReply, postControllerApiFollowup ? "api" : "browser");
+        const after = ev.runs.filter(run => !priorIds.has(run.id) && run.status === "succeeded" && run.agentId === fixtures.agent.id)
+          .sort((a, b) => Date.parse(b.finishedAt ?? "") - Date.parse(a.finishedAt ?? ""))[0];
+        if (!after) throw new Error("Retained continuation produced no new successful run");
+        const events = await collectRunEvents<Row>((afterSeq, limit) => api.get(`/api/heartbeat-runs/${after.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
+        const evidence = { before, after: retainedControllerRun(after), outage: outage || undefined, requestedAt,
+          followupTransport, followupCommentId: retainedFollowupCommentId,
+          completedTool: events.some(row => row.payload?.prpEvent?.eventType === "tool.execution.completed" && row.payload.prpEvent.payload?.status === "completed"),
+          usefulReply: storyAgentReplyMatches(settledAgentReply, fixtures.agent.id, expectedReply) };
+        ev.checks.push(...gradeRetainedControllerContinuation(evidence));
+        await input.evidence("retained-controller-continuation.json", evidence);
+      }
+    } else if (caseId === "stop-redirect")
       check(
         "new-direction-delivered",
         settledAgentReply?.authorAgentId === fixtures.agent.id &&
@@ -1480,7 +1516,7 @@ export async function runEverydayFlow(input: Input) {
         ev.issues.find((i) => i.id === parent!.id)!.documents = bodies;
       }
     }
-    await page.reload();
+    if (!postControllerApiFollowup) await page.reload();
     await refresh();
     check(
       "submitted-replies-consumed",
@@ -1575,25 +1611,30 @@ export async function runEverydayFlow(input: Input) {
       ),
       "No completion confirmation or unanswered interaction remains.",
     );
-    if (providerChoice || nativeProviderCase) await openParent();
-    else {
-      await waitForTaskIdentity(page, taskUrl(parent!), parent!.identifier ?? parent!.id);
-      await waitForTaskChatRendered(page);
+    if (!postControllerApiFollowup) {
+      if (providerChoice || nativeProviderCase) await openParent();
+      else {
+        await waitForTaskIdentity(page, taskUrl(parent!), parent!.identifier ?? parent!.id);
+        await waitForTaskChatRendered(page);
+      }
+      const latestAgentComment = ev.issues
+        .find((i) => i.id === parent!.id)
+        ?.comments?.filter((c: Row) => c.authorAgentId)
+        .at(-1);
+      if (latestAgentComment && !providerChoice && !nativeProviderCase) {
+        const response = page.locator(`[id="comment-${latestAgentComment.id}"]`);
+        await expect(response).toBeVisible();
+        await response.scrollIntoViewIfNeeded();
+      }
+      await input.capture(
+        "final-state",
+        "Finished everyday workflow",
+        "final-state.png",
+      );
+    } else {
+      note("final-state-api-readback", { browserNavigationVerified: false, renderedStatusVerified: false });
+      await input.capture("final-state", "Browser state retained after API-verified native continuation; browser reconnection unqualified", "final-state.png");
     }
-    const latestAgentComment = ev.issues
-      .find((i) => i.id === parent!.id)
-      ?.comments?.filter((c: Row) => c.authorAgentId)
-      .at(-1);
-    if (latestAgentComment && !providerChoice && !nativeProviderCase) {
-      const response = page.locator(`[id="comment-${latestAgentComment.id}"]`);
-      await expect(response).toBeVisible();
-      await response.scrollIntoViewIfNeeded();
-    }
-    await input.capture(
-      "final-state",
-      "Finished everyday workflow",
-      "final-state.png",
-    );
     const failed = ev.checks.filter((c) => !c.passed);
     if (failed.length)
       throw new Error(

@@ -25,7 +25,7 @@ export const cloudRuntimeConfigSchema = z.object({
   backup: databaseBackupConfigSchema.strict(),
   storage: storageConfigSchema.extend({
     localDisk: storageLocalDiskConfigSchema.strict(),
-    s3: storageS3ConfigSchema.extend({ endpoint: publicUrl.optional() }).strict(),
+    s3: storageS3ConfigSchema.extend({ bucket: z.string().trim().min(1), endpoint: publicUrl.optional() }).strict(),
   }).strict(),
   secrets: secretsConfigSchema.extend({
     localEncrypted: secretsLocalEncryptedConfigSchema.strict(),

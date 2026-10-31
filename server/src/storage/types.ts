@@ -43,6 +43,16 @@ export interface StorageProvider {
   getObject(input: GetObjectInput): Promise<GetObjectResult>;
   headObject(input: GetObjectInput): Promise<HeadObjectResult>;
   deleteObject(input: GetObjectInput): Promise<void>;
+
+  putObjectConditional?(input: PutObjectInput & (
+    | { ifNoneMatch: "*"; ifMatch?: never }
+    | { ifMatch: string; ifNoneMatch?: never }
+  )): Promise<{ etag: string }>;
+
+  listObjects?(input: { prefix: string; continuationToken?: string; signal?: AbortSignal }): Promise<{
+    keys: string[];
+    continuationToken?: string;
+  }>;
 }
 
 export type PutFileInput = {

@@ -123,7 +123,8 @@ describeEmbeddedPostgres("plugin-managed skills", () => {
       name: "plugin-managed-skills-test-wiki-maintainer",
       slug: "plugin-managed-skills-test-wiki-maintainer",
       key: "plugin/paperclip-managed-skills-test/wiki-maintainer",
-      sourceType: "catalog",
+      sourceType: "managed",
+      sourceLocator: null,
       fileInventory: expect.arrayContaining([
         expect.objectContaining({ path: "SKILL.md", kind: "skill" }),
         expect.objectContaining({ path: "references/wiki-style.md", kind: "reference" }),

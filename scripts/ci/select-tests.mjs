@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { refineTestPlan, selectionDurations } from "./test-selection-plan.mjs";
 import { productInputs } from "../../.github/scripts/ci-inputs.mjs";
 import { mergeDiff } from "../../.github/scripts/ci-diff.mjs";
+import { selectProjects } from "./select-projects.mjs";
 
 export function selectionEligibility(plan) {
   if (plan?.version !== 1 || plan.mode !== "enabled" || plan.forceReason) return "Full/shadow/forced task plan";
@@ -13,8 +14,11 @@ export function selectionEligibility(plan) {
   const changed = productInputs(plan.changed);
   if (!changed.length) return "Documentation-only diff";
   for (const file of changed) {
+    // Business modules can contain "config"/"setup" in their names. The graph
+    // separately tracks actual setup and configuration dependencies.
     if (!/^(?:ui\/src|server\/src|cli\/src|packages\/.+\/src)\/.+\.[cm]?[jt]sx?$/.test(file)
-      || /(?:config|setup)|\.d\.[cm]?ts$/i.test(file) || file.split("/").includes("..")) return `Broad input: ${file}`;
+      || /(?:^|\/)(?:vite|vitest)\.(?:config|setup)\.[cm]?[jt]sx?$|\.d\.[cm]?ts$/i.test(file)
+      || file.split("/").includes("..")) return `Broad input: ${file}`;
     try {
       if (!lstatSync(file).isFile()) return `Non-regular source: ${file}`;
     } catch { return `Deleted or missing source: ${file}`; }
@@ -40,9 +44,13 @@ export async function createTestSelection(plan, head) {
     if (plan.jobs[job].run) for (const entry of plan.jobs[job].matrix.include) groups.add(entry.group ?? "serialized");
   }
   groups.delete("general-chat"); // Keep its line sharding and DB ownership intact.
-  const owners = {}, projects = new Set();
+  const owners = {}, projects = new Set(), inventories = new Map();
+  const inventoryFor = group => {
+    if (!inventories.has(group)) inventories.set(group, runnerInventory(group));
+    return inventories.get(group);
+  };
   for (const group of groups) {
-    const inventory = runnerInventory(group);
+    const inventory = inventoryFor(group);
     if (group === "serialized" || group === "general-server-without-chat") {
       owners[group] = { "@paperclipai/server": group === "serialized"
         ? inventory.selectedSerializedSuites : inventory.selectedGeneralServerSuites };
@@ -52,12 +60,10 @@ export async function createTestSelection(plan, head) {
       for (const project of inventory.workspaceProjects) projects.add(project);
     }
   }
-  const { selectProjectTests } = await import("./vitest-selection-graph.mjs");
-  const graphs = [];
   const changed = productInputs(plan.changed);
-  for (const project of projects) {
-    const graph = await selectProjectTests({ project, changed, onlyOwnChanges: true });
-    graphs.push(graph);
+  const graphs = await selectProjects({ projects: [...projects], changed });
+  for (const graph of graphs) {
+    const { project } = graph;
     console.log(`${project}: ${graph.selected.length}/${graph.inventory.length} files, ${graph.alwaysRun.length} retained conservatively, ${graph.seconds.toFixed(1)}s`);
     for (const owner of Object.values(owners)) if (owner[project] === null) owner[project] = graph.inventory;
   }
@@ -65,8 +71,8 @@ export async function createTestSelection(plan, head) {
   for (const file of changed) assert.ok(covered.has(file), `Change outside the resolved test graphs: ${file}`);
   const server = graphs.find((graph) => graph.project === "@paperclipai/server");
   if (server) {
-    const general = runnerInventory("general-server-without-chat");
-    const native = runnerInventory("general-server-native-runner");
+    const general = inventoryFor("general-server-without-chat");
+    const native = inventoryFor("general-server-native-runner");
     assert.deepEqual([...general.selectedGeneralServerSuites, ...general.selectedSerializedSuites,
       ...native.selectedGeneralServerSuites, "server/src/__tests__/chat-channels.integration.test.ts"].sort(),
     server.inventory, "Server inventory must be completely covered by existing lane ownership");

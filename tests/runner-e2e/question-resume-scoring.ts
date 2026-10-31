@@ -3,14 +3,33 @@ import type { ContinuationCheckpoint } from "./continuation-scoring.js";
 import { isSingleClaudeQuestion } from "./runtime-question-readiness.js";
 
 type Row = Record<string, any>;
-export type QuestionPath = "provider" | "semantic";
+export type QuestionPath = "provider" | "semantic" | "api";
 const nonempty = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0;
 const questions = (c?: ContinuationCheckpoint): Row[] =>
   (c?.interactions ?? []).filter((i: any) => i.kind === "ask_user_questions") as Row[];
 export const resumeQuestionFields = (i?: Row): Row[] =>
   Array.isArray(i?.payload?.questionSet?.questions) ? i.payload.questionSet.questions : [];
 
-/** Classify by server-owned identities and the applied semantic receipt. A
+function nativeApiQuestionReceipt(run: Row | undefined, question: Row) {
+  const hash = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+  return Object.entries(run?.resultJson?.apiToolReceipts ?? {}).find(([key, value]) => {
+    const receipt = value as Row, original = receipt?.result?.data;
+    return hash(key) && hash(receipt?.digest) && receipt?.state === "completed"
+      && receipt.operationId === "POST /api/issues/{id}/interactions" && receipt.result?.operationId === receipt.operationId
+      && receipt.result.ok === true && receipt.result.status === 201 && original?.status === "pending"
+      && original.kind === "ask_user_questions" && original.createdByUserId === null && question.createdByUserId === null
+      && sameQuestion(original, question);
+  });
+}
+
+function sameNativeApiQuestionReceipt(before: ContinuationCheckpoint | undefined, after: ContinuationCheckpoint | undefined, question?: Row) {
+  if (!question) return false;
+  const receipt = nativeApiQuestionReceipt(before?.runs.find(run => run.id === question.sourceRunId), question);
+  return !!receipt && isDeepStrictEqual(receipt,
+    nativeApiQuestionReceipt(after?.runs.find(run => run.id === question.sourceRunId), question));
+}
+
+/** Classify by server-owned identities and an applied native mutation receipt. A
  * missing receipt is unknown, never inferred from form shape or run count. */
 export function questionPath(checkpoint: ContinuationCheckpoint | undefined, i?: Row): QuestionPath | null {
   if (!checkpoint || !i || !nonempty(i.id) || !nonempty(i.sourceRunId) || !nonempty(i.idempotencyKey)) return null;
@@ -29,11 +48,13 @@ export function questionPath(checkpoint: ContinuationCheckpoint | undefined, i?:
   }
   const receipt = run.resultJson?.semanticToolReceipts?.[i.idempotencyKey];
   const created = receipt?.result?.interaction;
-  return run.status === "succeeded" && i.continuationPolicy === "wake_assignee" &&
+  if (run.status !== "succeeded" || i.continuationPolicy !== "wake_assignee") return null;
+  if (
     receipt?.operationId === "request_human_input" && receipt.result?.disposition === "applied" &&
     created?.id === i.id && created?.sourceRunId === run.id && created?.issueId === i.issueId &&
     created?.companyId === i.companyId && created?.kind === "ask_user_questions" &&
-    isDeepStrictEqual(created?.payload?.questionSet, i.payload?.questionSet) ? "semantic" : null;
+    isDeepStrictEqual(created?.payload?.questionSet, i.payload?.questionSet)) return "semantic";
+  return nativeApiQuestionReceipt(run, i) ? "api" : null;
 }
 
 export function validResumeQuestionForm(checkpoint: ContinuationCheckpoint, i: Row, choice: boolean): boolean {
@@ -62,14 +83,15 @@ export function questionResumedOnce(before: ContinuationCheckpoint | undefined, 
       before.runs.some(r => !after.runs.some(n => n.id === r.id))) return false;
   if (path === "provider") return next.length === 0 &&
     after.runs.some(r => r.id === i.sourceRunId && ["running", "succeeded"].includes(r.status));
-  if (path !== "semantic" || next.length !== 1) return false;
+  if ((path !== "semantic" && path !== "api") || next.length !== 1) return false;
+  if (path === "api" && !sameNativeApiQuestionReceipt(before, after, i)) return false;
   const context = next[0].contextSnapshot;
   return context?.issueId === i.issueId && context?.sourceRunId === i.sourceRunId &&
     context?.interactionId === i.id && context?.interactionKind === "ask_user_questions" &&
     context?.interactionStatus === "answered";
 }
 
-/** Behavioral qualification supports either valid native path. It does not
+/** Behavioral qualification supports each verified native path. It does not
  * replace the separate documentation-placement/semantic-tool qualification. */
 export function gradeQuestionResume(checkpoints: ContinuationCheckpoint[], marker: string) {
   const initial = checkpoints.find(c => c.phase === "initial");
@@ -112,8 +134,9 @@ export function gradeQuestionResume(checkpoints: ContinuationCheckpoint[], marke
       detail: "The real board answer must remain bound to the unchanged question, with no fabricated or substituted response.",
     }, {
       id: `question-resume.${answer}.path`,
-      passed: questionResumedOnce(before, after, i),
-      detail: `Observed path: ${questionPath(before, i) ?? "unknown"}; provider answers resume the same run; semantic answers require one exactly bound response wake.`,
+      passed: questionResumedOnce(before, after, i) &&
+        (questionPath(before, i) !== "api" || sameNativeApiQuestionReceipt(before, final, i)),
+      detail: `Observed path: ${questionPath(before, i) ?? "unknown"}; provider answers resume the same run; durable native questions require one exactly bound response wake.`,
     });
   }
   checks.push({

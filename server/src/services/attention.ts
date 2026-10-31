@@ -1177,8 +1177,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
     Math.max(Math.trunc(serviceOptions.openDecisionLimit ?? OPEN_DECISION_DEFAULT_LIMIT), 1),
     OPEN_DECISION_MAX_LIMIT,
   );
-  const service = {
-    list: async (companyId: string, options: AttentionListOptions = {}): Promise<AttentionFeed> => {
+  async function list(companyId: string, options: AttentionListOptions = {}, questionIssueIds?: readonly string[]): Promise<AttentionFeed> {
       if (options.all && !options.queue && !options.allowUnscopedAll) {
         throw badRequest("all requires a queue filter");
       }
@@ -1202,7 +1201,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         collected.push({ ...item, dismissal });
       };
 
-      if (!options.excludeSources?.includes("approval")) {
+      if (!questionIssueIds && !options.excludeSources?.includes("approval")) {
         const pendingApprovals = await db
           .select({
             id: approvals.id,
@@ -1293,6 +1292,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         .where(and(
           eq(issueThreadInteractions.companyId, companyId),
           inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
+          questionIssueIds ? inArray(issueThreadInteractions.issueId, [...questionIssueIds]) : undefined,
+          questionIssueIds ? eq(issueThreadInteractions.kind, "ask_user_questions") : undefined,
         ))
         .orderBy(desc(issueThreadInteractions.updatedAt), desc(issueThreadInteractions.id));
       // Addressee invokability needs the org graph; the audience line also needs
@@ -1382,6 +1383,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      if (!questionIssueIds) {
       const openDecisionQuery = db.select({
         id: decisions.id,
         bundleId: decisions.bundleId,
@@ -1962,6 +1964,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      }
+
       const deduped = new Map<string, AttentionItem>();
       for (const item of collected) {
         const current = deduped.get(item.dedupKey);
@@ -2069,18 +2073,22 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }
       }
       return { ...summary, nextCursor, items };
-    },
-  };
+  }
   return {
-    ...service,
+    list: (companyId: string, options: AttentionListOptions = {}) => list(companyId, options),
+    taskQuestions: async (companyId: string, issueIds: readonly string[], options: { actor: AuthorizationActor; userId: string }): Promise<AttentionItem[]> => {
+      if (issueIds.length === 0) return [];
+      const feed = await list(companyId, { ...options, all: true, allowUnscopedAll: true }, issueIds);
+      return feed.items;
+    },
     summary: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor"> = {}): Promise<AttentionSummary> => {
-      const { items: _items, nextCursor: _cursor, ...summary } = await service.list(companyId, {
+      const { items: _items, nextCursor: _cursor, ...summary } = await list(companyId, {
         ...options, all: true, allowUnscopedAll: true, summaryOnly: true,
       });
       return summary;
     },
     taskIndex: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor"> = {}): Promise<AttentionTaskIndex> => {
-      const { items, nextCursor: _cursor, ...summary } = await service.list(companyId, {
+      const { items, nextCursor: _cursor, ...summary } = await list(companyId, {
         ...options, all: true, allowUnscopedAll: true, summaryOnly: true,
       });
       return { ...summary, taskIds: [...new Set(items.flatMap(item => item.relatedIssue

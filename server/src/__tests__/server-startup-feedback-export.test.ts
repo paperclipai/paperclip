@@ -1,3 +1,4 @@
+import { statusCardEvaluationService, registerStatusCardEvaluationWork } from "../services/status-card-evaluation.js";
 import { nativeHarnessBackupExpirationService } from "../services/native-runtime/native-harness-backup-expiration.js";
 import { skillVersionRetentionService } from "../services/skill-version-retention.js";
 import { approvalQueueSeedingService } from "../services/approval-queue-seeding-work.js";
@@ -134,6 +135,9 @@ const {
     })),
     reconcileHotRestartAdoption: vi.fn(async () => ({ mode: "none" })),
     reapOrphanedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
+    registerIssueStateRecoveryWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerDeferredReceiptWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerRunDispatchWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     registerScheduledRetryCancellationWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     registerStoppedInstructionCollectionWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     registerRetainedNativeSessionCleanupWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve(), stop: vi.fn() })),
@@ -527,6 +531,13 @@ vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
   validateNativeQuestionResponseInput: vi.fn(),
 }));
 
+vi.mock("../services/status-card-evaluation.js", () => ({
+  statusCardEvaluationService: vi.fn(() => ({ run: vi.fn(async () => {}), next: vi.fn(async () => null), changed: vi.fn() })),
+  registerStatusCardEvaluationWork: vi.fn((_coordinator, service, canRun) => ({
+    ready: canRun() ? service.run(new AbortController().signal) : Promise.resolve(), wake: vi.fn(), stop: vi.fn(async () => {}),
+  })),
+}));
+
 vi.mock("../services/secret-proposals.js", () => ({
   createSecretProposalsService: vi.fn(() => ({
     expiryDeadlines: vi.fn(async () => []),
@@ -614,6 +625,70 @@ describe("startServer feedback export wiring", () => {
     process.env.BETTER_AUTH_SECRET = "test-secret";
   });
 
+
+  it("refuses invalid cloud bootstrap prerequisites before signing, DB creation, or HTTP setup", async () => {
+    const realConfig = await vi.importActual<typeof import("../config.js")>("../config.js");
+    const originalHome = process.env.PAPERCLIP_HOME;
+    const originalManaged = process.env.PAPERCLIP_MANAGED_CONFIG;
+    const originalStorage = process.env.PAPERCLIP_STORAGE_PROVIDER;
+    const tempHome = mkdtempSync(path.join(tmpdir(), "paperclip-cloud-refusal-"));
+    process.env.PAPERCLIP_HOME = tempHome;
+    process.env.PAPERCLIP_MANAGED_CONFIG = JSON.stringify({
+      v: 1, mode: "cloud", catalogVersion: "2026.720.0", features: {}, plugins: { autoInstall: [] },
+    });
+    process.env.PAPERCLIP_STORAGE_PROVIDER = "s3";
+    delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
+    cloudRuntimeStartupMocks.bootstrap.mockImplementationOnce(realConfig.loadCloudBootstrapConfig);
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", undefined);
+    vi.stubEnv("DATABASE_URL", buildTestConfig().databaseUrl);
+    try {
+      await expect(startServer()).rejects.toThrow(/stable PAPERCLIP_SECRETS_MASTER_KEY/);
+      expect(createDbMock).not.toHaveBeenCalled();
+      expect(createAppMock).not.toHaveBeenCalled();
+      expect(existsSync(path.join(tempHome, "instances"))).toBe(false);
+    } finally {
+      if (originalHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = originalHome;
+      if (originalManaged === undefined) delete process.env.PAPERCLIP_MANAGED_CONFIG;
+      else process.env.PAPERCLIP_MANAGED_CONFIG = originalManaged;
+      if (originalStorage === undefined) delete process.env.PAPERCLIP_STORAGE_PROVIDER;
+      else process.env.PAPERCLIP_STORAGE_PROVIDER = originalStorage;
+      vi.unstubAllEnvs();
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
+
+  it("rejects missing effective Cloud storage after the snapshot and before local signing mutations", async () => {
+    const realConfig = await vi.importActual<typeof import("../config.js")>("../config.js");
+    const { setCloudRuntimeConfigSnapshot } = await import("../services/cloud-runtime-config-snapshot.js");
+    const tempHome = mkdtempSync(path.join(tmpdir(), "paperclip-cloud-storage-refusal-"));
+    vi.stubEnv("PAPERCLIP_HOME", tempHome);
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "2026.720.0", features: {}, plugins: { autoInstall: [] } }));
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "12345678901234567890123456789012");
+    vi.stubEnv("DATABASE_URL", buildTestConfig().databaseUrl);
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+    vi.stubEnv("PAPERCLIP_STORAGE_S3_BUCKET", undefined);
+    vi.stubEnv("PAPERCLIP_DECISION_SIGNING_SECRET", undefined);
+    cloudRuntimeStartupMocks.initialize.mockImplementationOnce(async () => {
+      setCloudRuntimeConfigSnapshot({ version: 1, revision: 0, config: null });
+      return null;
+    });
+    loadConfigMock.mockImplementationOnce(realConfig.loadConfig);
+    try {
+      await expect(startServer()).rejects.toThrow(/PAPERCLIP_STORAGE_S3_BUCKET/);
+      expect(createDbMock).toHaveBeenCalled();
+      expect(cloudRuntimeStartupMocks.initialize).toHaveBeenCalledOnce();
+      expect(cloudRuntimeStartupMocks.telemetry).not.toHaveBeenCalled();
+      expect(createAppMock).not.toHaveBeenCalled();
+      expect(existsSync(path.join(tempHome, "instances"))).toBe(false);
+    } finally {
+      setCloudRuntimeConfigSnapshot(null);
+      vi.unstubAllEnvs();
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
   it("awaits saved Cloud configuration before telemetry, authentication and app construction", async () => {
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "startup-test-token");
     vi.stubEnv("HOST", "0.0.0.0");
@@ -672,6 +747,7 @@ describe("startServer feedback export wiring", () => {
     } finally { vi.unstubAllEnvs(); }
   });
 
+
   it.each([false, true])("registers runner evidence independently from the backup scan (%s)", async enabled => {
     loadConfigMock.mockReturnValue(buildTestConfig({ nativeHarnessBackupExpirationEnabled: enabled }));
     await startServer(); await settleStartupHousekeeping();
@@ -697,6 +773,12 @@ describe("startServer feedback export wiring", () => {
     expect(deliveryWorkErrors.filter(error => error.queue === DELIVERY_QUEUES.nativeRunnerEvidenceRetention)).toEqual([]);
   });
 
+  it.each([false, true])("registers trace retention independently of heartbeat scheduling (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(deliveryWorkRegisterMock.mock.calls.filter(([queue]) => queue === DELIVERY_QUEUES.providerTraceRetention)).toHaveLength(1);
+  });
+
   it.each([false, true])("registers skill cache retention only when enabled (%s)", async enabled => {
     loadConfigMock.mockReturnValue(buildTestConfig({ skillVersionRetentionEnabled: enabled }));
     await startServer(); await settleStartupHousekeeping();
@@ -717,6 +799,28 @@ describe("startServer feedback export wiring", () => {
     } finally { pending.resolve([]); await settleStartupHousekeeping(); }
     expect(idleWorkSnapshot().active).toBe(0);
     expect(deliveryWorkErrors.filter(error => error.queue === DELIVERY_QUEUES.skillVersionRetention)).toEqual([]);
+  });
+
+  it.each([false, true])("registers status-card evaluation only with maintenance and never ticks it from the heartbeat loop (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled, heartbeatSchedulerIntervalMs: 1000 }));
+    let tick: (() => void) | undefined;
+    const timer = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void, interval: number) => {
+      if (interval === 1000) tick = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      await startServer(); await settleStartupHousekeeping();
+      expect(registerStatusCardEvaluationWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+      expect(statusCardEvaluationService).toHaveBeenCalledTimes(enabled ? 1 : 0);
+      if (enabled) {
+        const service = vi.mocked(statusCardEvaluationService).mock.results.at(-1)!.value;
+        expect(service.run).toHaveBeenCalledOnce();
+        expect(tick).toBeDefined();
+        for (let i = 0; i < 3; i++) { tick!(); await settleStartupHousekeeping(); }
+        expect(service.run).toHaveBeenCalledOnce();
+      }
+      expect(deliveryWorkErrors.filter(error => error.queue === DELIVERY_QUEUES.statusCardEvaluation)).toEqual([]);
+    } finally { timer.mockRestore(); }
   });
 
   it.each([false, true])("registers response recovery and its shutdown subscription only when maintenance is enabled (%s)", async enabled => {
@@ -850,6 +954,21 @@ describe("startServer feedback export wiring", () => {
     await startServer(); await settleStartupHousekeeping();
     expect(heartbeatServiceMock.registerCapturedInstructionCommitWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
     if (enabled) expect(heartbeatServiceMock.registerCapturedInstructionCommitWork.mock.calls[0][1]()).toBe(true);
+  });
+
+  it.each([false, true])("registers retry and queued dispatch only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerIssueStateRecoveryWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(heartbeatServiceMock.registerRunDispatchWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(heartbeatServiceMock.registerDeferredReceiptWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(heartbeatServiceMock.resumeQueuedRuns).not.toHaveBeenCalled();
+    if (enabled) {
+      const [coordinator, admitted] = heartbeatServiceMock.registerRunDispatchWork.mock.calls[0];
+      const app = await createAppMock.mock.results.at(-1)!.value;
+      expect(coordinator).toBe(app.locals.deliveryWork);
+      expect(admitted()).toBe(true);
+    }
   });
 
   it.each([false, true])("registers retry cancellation recovery only when maintenance is enabled (%s)", async enabled => {
@@ -1169,7 +1288,8 @@ describe("startServer feedback export wiring", () => {
   it("refuses startup when an explicit decision signing secret is too short", async () => {
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "too-short";
     await expect(startServer()).rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET must be at least 32 characters");
-    expect(loadConfigMock).not.toHaveBeenCalled();
+    expect(createDbMock).not.toHaveBeenCalled();
+    expect(createAppMock).not.toHaveBeenCalled();
   });
 
   it("passes the feedback export service into createApp so pending traces flush in runtime", async () => {
@@ -1249,13 +1369,14 @@ describe("startServer feedback export wiring", () => {
       await startServer();
       await settleStartupHousekeeping();
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
-      expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(1);
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).not.toHaveBeenCalled();
       expect(intervalCallback).not.toBeNull();
       intervalCallback?.();
       await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(2);
-      expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenLastCalledWith({ staleThresholdMs: 300_000, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true, skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true, skipObsoletePolicyReviews: true, skipAutomaticCompletionReviews: true, skipUnsafeWorkspaceExports: true, skipNativePendingEffects: true, skipNativeResponsePresentation: true, skipNativeReviewResponse: true, skipNativeStatusReassessment: true, skipRetainedNativeSessionCleanup: true, skipNativeWorkspaceFinalization: true, skipNativeResultCommit: true, skipNativeRunProjection: true, skipNativeRecoveryNotices: true, skipExternalConversationSettlement: true, skipExternalAgentSettlement: true, skipNativeEnvironmentSettlement: true });
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenLastCalledWith({ staleThresholdMs: 300_000, skipNativeStatusWakeIntents: true, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true, skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true, skipObsoletePolicyReviews: true, skipAutomaticCompletionReviews: true, skipUnsafeWorkspaceExports: true, skipNativePendingEffects: true, skipNativeResponsePresentation: true, skipNativeReviewResponse: true, skipNativeStatusReassessment: true, skipRetainedNativeSessionCleanup: true, skipNativeWorkspaceFinalization: true, skipNativeResultCommit: true, skipNativeRunProjection: true, skipNativeRecoveryNotices: true, skipExternalConversationSettlement: true, skipExternalAgentSettlement: true, skipNativeEnvironmentSettlement: true });
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
+      expect(heartbeatServiceMock.promoteDueScheduledRetries).not.toHaveBeenCalled();
       expect(retiredDetector).not.toHaveBeenCalled();
     } finally {
       delete (runtime as Partial<typeof runtime>).reconcileProductivityReviews;
