@@ -11,6 +11,7 @@ export const DELIVERY_QUEUES = {
   externalConversationSettlement: "external-conversation-settlement",
   nativeRecoveryNotices: "native-recovery-notices",
   nativeEnvironmentSettlement: "native-environment-settlement",
+  executionHandoff: "execution-handoff",
   nativeRunProjection: "native-run-projection",
   nativeResultCommit: "native-result-commit",
   nativeWorkspaceFinalization: "native-workspace-finalization",

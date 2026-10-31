@@ -1890,6 +1890,11 @@ async function startServerWithDatabaseTeardown(
       trackHeartbeatSchedulerWork(worker.ready);
     }
     if (config.heartbeatSchedulerEnabled) {
+      const worker = heartbeat.registerExecutionHandoffWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
+      trackHeartbeatSchedulerWork(worker.ready);
+    }
+    if (config.heartbeatSchedulerEnabled) {
       const worker = heartbeat.registerNativeRunProjectionWork(deliveryWork,
         () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
 

@@ -47,6 +47,15 @@ Manual: Block one task on another, finish the prerequisite, and observe the depe
 
 Automated: [execution policy](../../server/src/__tests__/issue-execution-policy.test.ts), [tree control](../../server/src/__tests__/issue-tree-control-service.test.ts), and [signoff browser suite](../../tests/e2e/signoff-policy.spec.ts) target these layers. A linked suite is not a claim that its current run is green.
 
+The [handoff cleanup regression](../../server/src/__tests__/heartbeat-handoff-execution-wait.test.ts)
+targets reviewer admission while the cancelled executor still owns a lease,
+cleanup failure, duplicate wakes, obsolete stages and restart reconstruction.
+It also targets ordinary release at daily-limit, company/subtree pause and budget
+gates, nullable assignment actors, and retirement of obsolete work while paused.
+Retired receipts clear their retry deadlines and stop background reads.
+Wake diagnostics retain this handoff as `execution_owner_active` until cleanup
+permits ordinary admission. This regression does not prove a live provider journey.
+
 Manual: Complete implementation under a review-required policy and confirm it waits for the required review outcome. Exercise rejection and later approval. Pause the parent while child work is pending, then verify resumption respects budget and ownership gates.
 
 Resume removes the pause without changing task status. Its wake count includes only

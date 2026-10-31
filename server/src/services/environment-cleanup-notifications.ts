@@ -4,6 +4,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 
 export async function notifyEnvironmentCleanup(transaction: object, scope?: NativeEnvironmentSettlementScope): Promise<void> {
   await notifyNativeEnvironmentSettlement(transaction, scope);
+  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.executionHandoff, scope?.companyId ?? "*");
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.environmentCleanup);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.historicalCleanup);
 }
