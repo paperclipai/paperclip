@@ -328,6 +328,10 @@ function runCancellationFenceSql(input: {
     jsonb_build_object('startupCancellation', ${startupFence})`;
 }
 
+/** Leave an in-flight admission time to finish before reconsidering its wake.
+ * The gate itself is re-read each pass, so this only avoids needless churn. */
+const READMIT_EXECUTION_WAIT_AFTER_MS = 60_000;
+
 /** Run control binds cancellation, resource release, and saved-input resumption. */
 export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunControlDependencies) {
   const {
@@ -775,6 +779,122 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         responsibleUserId: intent.actorId },
       issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
       idempotencyKey: `task-retry-dispatch:${wake.id}` }, wake.id);
+  }
+
+  /**
+   * Re-admit a wake that was parked by a gate which has since disappeared.
+   *
+   * `resumeExecutionWaitComments` only sees waits backed by a recovery action.
+   * A conversation-ownership gate has none: `getExecutionBlocker` returns it
+   * with `recoveryActionId: null`, decided purely by the liveness of the former
+   * owner's process. That process exits seconds after its run row is finalized,
+   * and nothing re-reads the gate afterwards, so the wake keeps
+   * `deferred_issue_execution` for the life of the task while the task itself
+   * sits in `todo` looking like ordinary queued work.
+   *
+   * This pass hands such a wake back to ordinary admission once the gate is
+   * demonstrably gone: the same call the original trigger made, with the same
+   * payload, context and actor. Every admission check still applies, including
+   * the gate itself, so nothing here grants a run that admission would refuse.
+   */
+  async function readmitUnblockedExecutionWaits() {
+    if ((await getSchedulingSuppression()).suppressed) return;
+    const parked = await db.select({ wake: agentWakeupRequests })
+      .from(agentWakeupRequests)
+      .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
+        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+        eq(issues.assigneeAgentId, agentWakeupRequests.agentId)))
+      .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
+      .where(and(
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        sql`${agentWakeupRequests.payload}->'executionWait' is not null`,
+        sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+        // Chat-inbound wakes have their own resume path. Filtering them here,
+        // not in the loop, keeps them from holding the scan window.
+        sql`coalesce(${agentWakeupRequests.idempotencyKey}, '') not like 'chat-inbound:%'`,
+        // Only the gate that leaves no recovery action behind. A wait backed by
+        // a recovery action is `resumeExecutionWaitComments`'s to resume, and
+        // its action is the record of work this pass must not step over.
+        sql`${agentWakeupRequests.payload}->'executionWait'->>'recoveryActionId' is null`,
+        // A live holder of the execution lock is the gate itself, not a stale
+        // receipt. Only a fully released task is reconsidered here.
+        isNull(issues.executionRunId),
+        notInArray(issues.status, ["done", "cancelled"]),
+        lte(agentWakeupRequests.updatedAt, new Date(Date.now() - READMIT_EXECUTION_WAIT_AFTER_MS)),
+      ))
+      .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
+    const seen = new Set<string>();
+    for (const { wake } of parked) {
+      const payload = parseObject(wake.payload);
+      const issueId = readNonEmptyString(payload.issueId);
+      if (!issueId) continue;
+      const taskKey = `${wake.agentId}:${issueId}`;
+      const firstForTask = !seen.has(taskKey);
+      seen.add(taskKey);
+      // Claim the receipt by its own age, exactly as `resumeExecutionWaitComments`
+      // does, so a concurrent pass cannot promote the same wake. The claim also
+      // advances the scan cursor before the gate is read: a wake whose gate is
+      // still up, or a duplicate behind it, moves to the back of the queue
+      // instead of holding this bounded window, which spans every company,
+      // and starving a later wake whose gate has cleared. The receipt stays
+      // held until admission answers: an interrupted server leaves the wake
+      // queued for a later pass, never silently retired.
+      const [claimed] = await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
+        eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, wake.companyId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        lte(agentWakeupRequests.updatedAt, new Date(Date.now() - READMIT_EXECUTION_WAIT_AFTER_MS)),
+      )).returning({ id: agentWakeupRequests.id });
+      if (!claimed) continue;
+      // One re-admission per task per pass: the queued run it produces serves
+      // every wake parked behind the same gate.
+      if (!firstForTask) continue;
+      if (await getExecutionBlocker(db, wake.companyId, issueId)) continue;
+      const context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
+      // The wait itself is a receipt of the old gate, never wake input.
+      const { executionWait: _retiredWait, ...wakePayload } = payload;
+      // An interrupted server can leave the replacement wake committed and this
+      // receipt still held. The replacement carries this key, so a later pass
+      // recognises the work as already admitted and only retires the receipt.
+      // Without this read, a second run could start for the same wake.
+      const readmitKey = `execution-wait-readmit:${wake.id}`;
+      const [alreadyAdmitted] = await db.select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, wake.companyId),
+          eq(agentWakeupRequests.agentId, wake.agentId),
+          eq(agentWakeupRequests.idempotencyKey, readmitKey),
+        )).limit(1);
+      try {
+        if (!alreadyAdmitted) await enqueueWakeup(wake.agentId, {
+          source: (wake.source ?? "automation") as WakeupOptions["source"],
+          triggerDetail: (wake.triggerDetail ?? undefined) as WakeupOptions["triggerDetail"],
+          reason: readNonEmptyString(context.wakeReason) ?? wake.reason,
+          payload: wakePayload, contextSnapshot: context,
+          requestedByActorType: (wake.requestedByActorType ?? undefined) as WakeupOptions["requestedByActorType"],
+          requestedByActorId: wake.requestedByActorId,
+          // Selection read the task outside the admission lock. Admission must
+          // refuse a task that closed or changed hands in between.
+          issueStateGuard: { assigneeAgentId: wake.agentId,
+            statuses: ["todo", "in_progress", "in_review", "blocked"] },
+          idempotencyKey: readmitKey,
+        });
+      } catch (err) {
+        // The receipt is still held, so a later pass reconsiders this wake.
+        logger.warn({ err, wakeId: wake.id }, "failed to re-admit an unblocked execution wait");
+        continue;
+      }
+      // Admission has answered, with a run, a skip, or a fresh receipt of its
+      // own. Retire this one so the next pass reads the new answer.
+      await db.update(agentWakeupRequests).set({
+        status: "skipped", finishedAt: new Date(), updatedAt: new Date(),
+        payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}',
+          coalesce(${agentWakeupRequests.payload}->'executionWait', '{}'::jsonb) || ${JSON.stringify({
+            reason: "readmitted", message: "The execution gate cleared; this wake re-entered admission.",
+          })}::jsonb)`,
+      }).where(and(
+        eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, wake.companyId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      ));
+    }
   }
 
   async function resumeExecutionWaitComments() {
@@ -1731,6 +1851,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     resumeRemoteStopComments,
     cancelRunInternal,
     resumeExecutionWaitComments,
+    readmitUnblockedExecutionWaits,
     resumeQueuedCommentInterrupt,
     resumeSavedLegacyComments: resumeSavedComments,
     resumeTaskRetry,
