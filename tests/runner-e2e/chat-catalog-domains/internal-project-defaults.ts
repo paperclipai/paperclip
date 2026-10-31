@@ -6,7 +6,7 @@ import { collectRunEvents } from "../run-observations.js";
 import type { ChatCatalogCase } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
 import { fixtureWorker, makeDefinition } from "./internal-definition.js";
-import { NATIVE_BRIEF_HOLD_MS, startNativeRunBriefGate } from "./internal-native-run-brief.js";
+import { startNativeRunBriefGate } from "./internal-native-run-brief.js";
 import { checks, entity, goal, observation, observeInternal, project, sameTask, task, type Entity, type InternalObservation } from "./internal-support.js";
 interface DefaultsObservation extends InternalObservation { futureContext: { project?: Entity; goal?: Entity }; futureComments: Entity[]; futureProjectReads?: { runId: string; projectId: string; callId: string }[] }
 interface PreparedAgent extends Entity { lifecycleState?: string; adapterConfig?: { timeoutSec?: number } }
@@ -15,9 +15,9 @@ export function gradeProjectDefaultsSetup(value: { lead: PreparedAgent; future: 
   const ready = (agent: PreparedAgent) => agent.lifecycleState === "ready" && ["idle", "active"].includes(agent.status ?? "");
   c.add("lead-ready", ready(value.lead) && value.lead.adapterConfig?.timeoutSec === CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, "The canonical lead is independently ready under the production-default native timeout policy and unchanged finite scenario budget.");
   c.add("future-worker-ready", ready(value.future) && value.future.adapterConfig?.timeoutSec === CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, "The future-context worker is independently ready under the production-default native timeout policy and unchanged finite scenario budget.");
-  c.add("existing-work-actively-owned", value.held.lifecycleState === "ready" && value.held.status === "running" && value.held.adapterConfig?.timeoutSec === 420
+  c.add("existing-work-actively-owned", value.held.lifecycleState === "ready" && value.held.status === "running" && value.held.adapterConfig?.timeoutSec === CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec
     && value.task.assigneeAgentId === value.held.id && value.task.executionRunId === value.activeRunId && value.runs.some(run => run.id === value.activeRunId && run.agentId === value.held.id && run.status === "running")
-    && value.gateCalls.some(call => call.workerBound === true && call.workerId === value.held.id), "Only the deliberately waiting prerequisite has the declared 420-second timeout, spanning the subsequent bounded 150+180-second stages with exact live ownership and an owned native brief-read receipt.");
+    && value.gateCalls.some(call => call.workerBound === true && call.workerId === value.held.id), "The prerequisite uses the same production native timeout policy; its brief read is bounded by the unchanged original observation clock, with exact live ownership and a worker-bound receipt.");
   return c.result();
 }
 function canonical(value: unknown): string { if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`; if (value && typeof value === "object") return `{${Object.entries(value).filter(([, v]) => v !== undefined).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`; return JSON.stringify(value) ?? "null"; }
@@ -79,21 +79,18 @@ function defaults(): ChatCatalogCase {
   let gate: Awaited<ReturnType<typeof startNativeRunBriefGate>> | undefined;
   const base = makeDefinition("projects.project-defaults", async ctx => {
     const worker = await fixtureWorker(ctx); const futureWorker = await fixtureWorker(ctx); await ctx.input.api.patch(`/api/agents/${futureWorker.id}`, { name: "Riley" });
-    const original = await ctx.input.api.get<PreparedAgent>(`/api/agents/${worker.id}`);
-    await ctx.input.api.patch(`/api/agents/${worker.id}`, { adapterConfig: { ...original.adapterConfig, timeoutSec: 420 } });
-    await pollUntil({ label: "Declared long-wait prerequisite configuration ready", deadlineAt: Date.now() + 45000,
-      load: () => ctx.input.api.get<PreparedAgent>(`/api/agents/${worker.id}`), accept: row => row.lifecycleState === "ready" && row.adapterConfig?.timeoutSec === 420 });
     const p = await project(ctx); const g = await goal(ctx, "Growth: reach 1,000 signups");
     const checklist = await task(ctx, "Accessibility checklist", p.id, { description: "All Launch work must support keyboard navigation, sufficient color contrast, and explicitly labeled controls." });
     const root = `/api/companies/${ctx.input.fixtures.company.id}`;
     for (const scope of [{ scopeType: "company", scopeId: ctx.input.fixtures.company.id }, ...[worker, futureWorker].map(row => ({ scopeType: "agent", scopeId: row.id }))])
       await ctx.input.api.post(`${root}/budgets/policies`, { ...scope, amount: 500, hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
-    gate = await startNativeRunBriefGate(worker.id);
-    const t = await task(ctx, "Active launch research", p.id, { status: "todo", assigneeAgentId: worker.id, description: `Read the pending Website Brief by running this native shell command with a ${NATIVE_BRIEF_HOLD_MS} ms tool timeout. Wait for its actual result before proceeding. Do not change this brief or other tasks. Command: ${gate.command}` });
+    const holdDeadlineAt = ctx.observationDeadlineAt!;
+    gate = await startNativeRunBriefGate(worker.id, holdDeadlineAt);
+    const t = await task(ctx, "Active launch research", p.id, { status: "todo", assigneeAgentId: worker.id, description: `Read the pending Website Brief by running this native shell command with a ${Math.max(1, holdDeadlineAt - Date.now())} ms tool timeout. Wait for its actual result before proceeding. Do not change this brief or other tasks. Command: ${gate.command}` });
     const held = await pollUntil({ label: "Real prior active Launch checkout", deadlineAt: Date.now() + 150000,
       load: async () => ({ task: await ctx.input.api.get<Entity & { executionRunId?: string }>(`/api/issues/${t.id}`), runs: await ctx.allRuns() }),
       accept: row => gate!.calls.length > 0 && row.runs.length === 1 && row.runs[0]?.status === "running" && row.task.executionRunId === row.runs[0]?.id });
-    await ctx.input.evidence("chat-catalog-project-defaults-prerequisite-timeout.json", { heldWorkerId: worker.id, heldWorkerTimeoutSec: 420, canonicalTimeoutSec: CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, futureWorkerTimeoutSec: CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, canonicalStageBoundMs: 150000, futureProbeBoundMs: 180000, attemptBoundMs: 660000 });
+    await ctx.input.evidence("chat-catalog-project-defaults-prerequisite-timeout.json", { heldWorkerId: worker.id, heldWorkerTimeoutSec: CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, holdDeadlineAt, remainingHoldBudgetMs: Math.max(0, holdDeadlineAt - Date.now()), canonicalTimeoutSec: CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, futureWorkerTimeoutSec: CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, authoredLegacyCanonicalStageMs: 150000, authoredLegacyFutureProbeStageMs: 180000, attemptBoundMs: 660000 });
     return { project: p, goal: g, checklist, task: held.task, worker, futureWorker, activeRunId: held.runs[0]!.id, originalEnv: (p as Entity & { env?: unknown }).env ?? null };
   }, gradeProjectDefaults);
   return { ...base, expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 660000, runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },

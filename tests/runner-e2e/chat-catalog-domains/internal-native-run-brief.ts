@@ -2,11 +2,11 @@ import { createServer, type ServerResponse } from "node:http";
 import { listenOnFetchAllowedPort } from "../../e2e/fetch-allowed-port.js";
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-export const NATIVE_BRIEF_HOLD_MS = 420_000;
 
 /** Keep a real prerequisite worker active without the app gateway's short call deadline. */
-export async function startNativeRunBriefGate(workerId: string) {
+export async function startNativeRunBriefGate(workerId: string, deadlineAt: number) {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(workerId)) throw new Error("Invalid prerequisite worker identity");
+  if (!Number.isFinite(deadlineAt) || deadlineAt <= Date.now()) throw new Error("Original prerequisite observation deadline is exhausted or missing");
   const route = `/website-brief/${workerId}`;
   const calls: Array<{ workerId: string; workerBound: boolean; receivedAt: string }> = [];
   const pending = new Set<ServerResponse>();
@@ -23,7 +23,7 @@ export async function startNativeRunBriefGate(workerId: string) {
     else { pending.add(response); response.once("close", () => pending.delete(response)); }
   });
   const port = await listenOnFetchAllowedPort(server);
-  const script = `const response = await fetch(${JSON.stringify(`http://127.0.0.1:${port}${route}`)}, {signal: AbortSignal.timeout(${NATIVE_BRIEF_HOLD_MS})}); if (!response.ok) throw new Error("Website brief read failed"); process.stdout.write(await response.text());`;
+  const script = `const response = await fetch(${JSON.stringify(`http://127.0.0.1:${port}${route}`)}, {signal: AbortSignal.timeout(Math.max(1, ${deadlineAt} - Date.now()))}); if (!response.ok) throw new Error("Website brief read failed"); process.stdout.write(await response.text());`;
   return {
     calls,
     command: `exec ${quote(process.execPath)} --input-type=module --eval ${quote(script)}`,
