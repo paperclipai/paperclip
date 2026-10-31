@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 /** This contract deliberately has no narrative, liveness label or progress count. */
 export interface LegacyContinuationInput {
-  run: { id: string; companyId: string; agentId: string; status: string; runtimeMode?: string | null };
+  run: { id: string; companyId: string; agentId: string; status: string; runtimeMode?: string | null; contextSnapshot?: unknown };
   issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null; assigneeUserId?: string | null } | null;
   agent: { id: string; companyId: string; status: string } | null;
   episode: LegacyDispositionEpisode;
@@ -62,6 +62,7 @@ export function legacyDispositionFingerprint(companyId: string, issueId: string,
 export function decideLegacyContinuation(input: LegacyContinuationInput):
   | { kind: "skip"; reason: string }
   | { kind: "exhausted"; attempt: number; maxAttempts: number }
+  | { kind: "continue_source_work"; idempotencyKey: string }
   | { kind: "enqueue"; nextAttempt: number; idempotencyKey: string; instruction: string } {
   const { run, issue, agent, gates, episode } = input;
   if (run.runtimeMode === "native") return { kind: "skip", reason: "native_finalization" };
@@ -76,6 +77,17 @@ export function decideLegacyContinuation(input: LegacyContinuationInput):
     [gates.conversation, "conversation"],
     [!gates.agentInvokable || ["paused", "terminated", "pending_approval"].includes(agent.status), "agent_not_invokable"],
   ] as const) if (blocked) return { kind: "skip", reason };
+  // This is an ordinary source-work turn, not another attempt in the legacy
+  // repair episode. Leaving the issue open must not exhaust the repair quota.
+  if (record(run.contextSnapshot).legacyDispositionSourceContinuation === true) {
+    return { kind: "skip", reason: "ordinary_source_continuation" };
+  }
+  if (episode.attempt > 0 && issue.status === "todo") {
+    return {
+      kind: "continue_source_work",
+      idempotencyKey: `issue_disposition_repair:${issue.id}:${legacyDispositionFingerprint(run.companyId, issue.id, run.agentId, episode.id)}:source_continuation`,
+    };
+  }
   if (episode.attempt >= episode.maxAttempts) return { kind: "exhausted", attempt: episode.attempt, maxAttempts: episode.maxAttempts };
   const nextAttempt = episode.attempt + 1;
   return {
