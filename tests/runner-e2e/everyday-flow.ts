@@ -1515,7 +1515,10 @@ export async function runEverydayFlow(input: Input) {
           browserNavigationVerified: !postControllerApiFollowup });
         const requestedAt = new Date().toISOString(), marker = `CONTINUED_${nonce}`;
         const expectedReply = retainedControllerReplyMatcher(marker);
-        await reply(`Run the existing delivered slugify.py on "  Queue--Ready!!  " with --separator _ and --max-length 7. Report its output after the marker ${marker}. Use the saved project; do not rebuild it.`, parent!, followupTransport);
+        const reportInstruction = remoteWorkspaceStorage
+          ? `Reply with exactly one plain-text line: ${marker} followed by one space and the command's actual output. Add no Markdown, code fences, punctuation, labels, or explanatory prose.`
+          : `Report its output after the marker ${marker}.`;
+        await reply(`Run the existing delivered slugify.py on "  Queue--Ready!!  " with --separator _ and --max-length 7. ${reportInstruction} Use the saved project; do not rebuild it.`, parent!, followupTransport);
         await settled(expectedReply, postControllerApiFollowup ? "api" : "browser");
         const after = ev.runs.filter(run => !priorIds.has(run.id) && run.status === "succeeded" && run.agentId === fixtures.agent.id)
           .sort((a, b) => Date.parse(b.finishedAt ?? "") - Date.parse(a.finishedAt ?? ""))[0];

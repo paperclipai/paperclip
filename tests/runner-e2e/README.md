@@ -67,6 +67,8 @@ native admission must keep the same workspace and reference while publishing a
 new saved version. The active revision survives a five-minute controller outage;
 after completion, a second replacement must admit a useful fourth native turn
 through the ordinary task-comment API with the same native and provider session.
+That request specifies one plain-text line containing its marker, one space, and
+the command's actual output; the expected output stays private to the evaluator.
 The browser then reads the saved reference through Files again. This is same-task
 continuation, not a separate-task sharing test. The ordinary original-process/lease,
 receipt-prefix, queued-message, artifact, and strict retained-session oracles still apply.
