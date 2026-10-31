@@ -93,6 +93,10 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
+When an agent creates a subtask or follow-up task, its source task's feed shows
+a linked card at creation time with the current title, task number, and status.
+The Tasks tab keeps the full relationship list.
+
 Automatic monitor checks pause when a task is blocked. A person can use Check now
 to request one check of a retained monitor through normal execution admission.
 Dependencies, recovery, pause, budgets and ownership still apply. Provider-usage
