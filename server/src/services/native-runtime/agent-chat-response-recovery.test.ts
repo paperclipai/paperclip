@@ -135,11 +135,11 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
       }
       await projectAndDefer(false);
       await vi.waitFor(async () => expect(await comments(f.runId)).toHaveLength(1), { timeout: 5000 });
+      await quiet();
       const [comment] = await comments(f.runId);
       expect(comment).toMatchObject({ body: f.reply, authorAgentId: f.agentId, createdByRunId: f.runId });
       expect(await issue(f.issueId)).toMatchObject({ status: "in_review", conversationState: "waiting" });
       expect(await outbox.delivery()).toMatchObject({ status: "delivered", targetRunId: f.runId, attempts: 0, responseCommentId: comment.id });
-      await quiet();
       const settledQueries = queries;
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
       await vi.advanceTimersByTimeAsync(60_000);
