@@ -47,6 +47,7 @@ function memory() {
   };
   return {
     provider,
+    objects,
     puts: () => puts,
     offline: (value: boolean) => {
       unavailable = value;
@@ -62,6 +63,46 @@ const event = (seq: number) => ({
 });
 
 describe("S3 run log store", () => {
+  it("binds source proof to exact immutable bytes and invalidates it on ordinary appends", async () => {
+    const m = memory(), options = { provider: m.provider, keyPrefix: "logs", flushMs: 1,
+      assertWriterAuthority: async () => undefined };
+    const store = createObjectRunLogStore(options), handle = await store.begin(input);
+    expect(handle.initialSourcePrefixVerified).toBe(false);
+    await store.recordVerifiedSourcePrefix!(handle, 0);
+    await store.append(handle, { ...event(1), sourceCursor: 2, preservesSourceCoverage: true });
+    await store.finalize(handle);
+    const replacement = createObjectRunLogStore(options), verified = await replacement.begin(input);
+    expect(verified.initialSourceCursor).toBe(2);
+    expect(verified.initialSourcePrefixVerified).toBe(true);
+    const head = JSON.parse([...m.objects].find(([key]) => key.endsWith("/head.json"))![1].toString());
+    expect(Object.keys(head).sort()).toEqual([
+      "cleanupAfter", "closed", "deleted", "end", "generation", "owner", "root", "roots", "sequence", "sourceCursor", "v",
+    ]);
+    // An older/generic caller cannot carry the attestation across new bytes,
+    // even when it reuses the old max cursor or calls its payload a diagnostic.
+    await replacement.append(verified, { ...event(2), sourceCursor: 2,
+      chunk: '{"type":"paperclip.prp.event","event":{"duplicate":true}}' });
+    await replacement.finalize(verified);
+    const legacy = await store.begin(input);
+    expect(legacy.initialSourceCursor).toBe(2);
+    expect(legacy.initialSourcePrefixVerified).toBe(false);
+    await store.finalize(legacy);
+  });
+
+  it("fails closed when an existing exact-prefix proof is malformed or changed", async () => {
+    const m = memory(), options = { provider: m.provider, keyPrefix: "logs", flushMs: 1,
+      assertWriterAuthority: async () => undefined };
+    const store = createObjectRunLogStore(options), handle = await store.begin(input);
+    await store.recordVerifiedSourcePrefix!(handle, 0);
+    await store.append(handle, { ...event(1), sourceCursor: 2, preservesSourceCoverage: true });
+    await store.finalize(handle);
+    const proofs = [...m.objects.keys()].filter(key => key.includes("/objects/source-prefix-proof-v1-"));
+    expect(proofs.length).toBeGreaterThan(0);
+    for (const key of proofs) m.objects.set(key, Buffer.from('{"schema":"changed-proof"}'));
+    await expect(createObjectRunLogStore(options).begin(input))
+      .rejects.toThrow("object_journal_source_prefix_proof_invalid");
+  });
+
   it("batches concurrent appends, confirms durability, and resumes offsets/sequence on a replacement", async () => {
     const m = memory(),
       options = {

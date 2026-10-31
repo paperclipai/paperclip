@@ -22,6 +22,8 @@ export interface RunLogHandle {
   initialBytes?: number;
   initialSequence?: number;
   initialSourceCursor?: number;
+  /** Exact immutable prefix has a durable source-coverage proof, not just a max cursor. */
+  initialSourcePrefixVerified?: boolean;
 }
 
 export interface RunLogReadOptions {
@@ -68,13 +70,17 @@ export interface RunLogStore {
   begin(input: RunLogBeginInput): Promise<RunLogHandle>;
   append(
     handle: RunLogHandle,
-    event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string; seq?: number; sourceCursor?: number },
+    event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string; seq?: number; sourceCursor?: number;
+      /** Caller proved this is ordered canonical output or a non-native diagnostic. */
+      preservesSourceCoverage?: boolean },
   ): Promise<number>;
   enqueue?(
     handle: RunLogHandle,
     event: Parameters<RunLogStore["append"]>[1],
   ): Promise<{ committed: Promise<number> }>;
   flush?(handle: RunLogHandle): Promise<void>;
+  /** Record the caller's complete ordered source-prefix proof without changing log bytes. */
+  recordVerifiedSourcePrefix?(handle: RunLogHandle, sourceCursor: number): Promise<void>;
   finalize(handle: RunLogHandle, options?: { computeDigest?: boolean }): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
   // Optional so existing fakes/fixtures keep compiling: uploads every dirty

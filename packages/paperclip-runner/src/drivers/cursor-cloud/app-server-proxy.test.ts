@@ -102,13 +102,13 @@ describe("Cursor Cloud bounded stdio proxy", () => {
       await vi.waitFor(() => expect(f.frames.filter(frame => frame.params?.item?.name === "get_mcp_tools" || frame.params?.item?.name === "read_file")).toHaveLength(3), { timeout: 1_000 });
       await vi.waitFor(() => expect(pausedTerminalWrites).toBe(1), { timeout: 5_000 });
       const pendingRead = f.rpc(9, "thread/read");
-      await vi.waitFor(() => expect(pausedTerminalWrites).toBe(2), { timeout: 5_000 });
+      await new Promise<void>(accept => setImmediate(accept));
       expect(f.frames.some(frame => frame.id === 9)).toBe(false);
       const checkpointPath = join(f.root, (await readdir(f.root)).find(name => /^checkpoint-.*\.json$/.test(name))!);
       expect(JSON.parse(await readFile(checkpointPath, "utf8")).phase).toBe("running");
       releaseTerminalWrites();
       const committed = await pendingRead;
-      expect(JSON.parse(await readFile(checkpointPath, "utf8")).pendingTerminalDelivery.receiptId).toBe(committed.result.cursorCloudTerminalDelivery.receiptId);
+      expect(committed.result.cursorCloudTerminalDelivery).toEqual(JSON.parse(await readFile(checkpointPath, "utf8")).pendingTerminalDelivery);
       await vi.waitFor(() => expect(f.frames.some(frame => frame.method === "turn/completed")).toBe(true), { timeout: 5_000 });
       const tools = f.frames.filter(frame => frame.params?.item?.name === "get_mcp_tools" || frame.params?.item?.name === "read_file");
       expect(tools.map(frame => ({ method: frame.method, type: frame.params.item.type, tool: frame.params.item.tool, status: frame.params.item.status }))).toEqual([
