@@ -1541,7 +1541,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       // A provider resource id names one physical sandbox. A different lease
       // row can still hold that same resource in a live status, so this sweep
       // must not tear down a sandbox that a different lease still owns.
-      if (lease.provider && lease.providerLeaseId) {
+      if (lease.provider && lease.providerLeaseId && lease.provider !== "ssh") {
         const [otherOwner] = await db
           .select({ id: environmentLeases.id })
           .from(environmentLeases)

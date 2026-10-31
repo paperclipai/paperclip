@@ -1201,6 +1201,12 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
       return await environmentsSvc.releaseLease(input.lease.id, input.status);
     },
 
+    async retryPendingSandboxTeardown({ lease }) {
+      if (lease.provider !== "ssh") {
+        throw new Error("SSH lease cleanup cannot release another provider's resource.");
+      }
+    },
+
     async realizeWorkspace(input) {
       const record = buildWorkspaceRealizationRecordFromDriverInput({
         environment: input.environment,
