@@ -153,3 +153,42 @@ EMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&redirect_uri=https%3A%2
 Fcallback&response_type=code&scope=user%3Ainference&state=Xy7Kd2Pq9Rn4Vb8Lf1Mw6Zc3Hj0Tg5Us
 Paste code here if prompted >
 ```
+
+## Re-characterization on Claude Code 2.1.304 (2026-10-20)
+
+- Re-characterized: 2026-10-20
+- Claude Code: `2.1.304`
+- Environment: real pseudo-terminal at 200 and 60 columns.
+- Safety: no real authorization URL, browser code, or token is recorded here.
+
+The URL preamble, the OSC 8 URL block, and the prompt line are unchanged from
+`2.1.226`. The words still use Cursor Horizontal Absolute (`ESC[<n>G`) spacing.
+A tool that removes these sequences without a space shows glued words such as
+`Pastecodehereifprompted>`. The real PTY bytes keep the word gaps.
+
+The copy hint that `2.1.291` added (see #15550) still sits between the URL
+block and the prompt:
+
+```text
+Browser didn't open? Use the url below to sign in (c to copy)
+<REDACTED_AUTHORIZATION_URL>
+
+Hold Shift while selecting to use your terminal's native copy
+
+
+Paste code here if prompted >
+```
+
+At 60 columns the hint wraps: `copy` moves to its own line. The parser skips
+the lines that together form the exact hint text, then binds the prompt.
+
+The success screen keeps the anchors in
+[`setup-token-success.md`](./setup-token-success.md). The live run printed
+`Your OAuth token (valid for 1 year):` and
+`Store this token securely. You won't be able to see it again.` with an ASCII
+apostrophe. The screen moves between rows with Cursor Down (`ESC[<n>B`) and a
+carriage return, not a line feed.
+
+The characterization harness now stops on the bytes `prompted`. The prompt
+words are separate CSI-positioned writes, so the full phrase never appears as
+one byte run.
