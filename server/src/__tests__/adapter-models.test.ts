@@ -74,6 +74,11 @@ describe("adapter model listing", () => {
     expect(models.some((model) => model.id === "claude-opus-5")).toBe(true);
     expect(models).toContainEqual({ id: "claude-opus-5-5", label: "Claude Opus 5.5" });
     expect(models).toContainEqual({ id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5" });
+    expect(models).toContainEqual({ id: "claude-haiku-5-5", label: "Claude Haiku 5.5" });
+    const haikuIndex = models.findIndex((model) => model.id === "claude-haiku-5-5");
+    const olderHaikuIndex = models.findIndex((model) => model.id === "claude-haiku-4-5");
+    expect(haikuIndex).toBeGreaterThan(models.findIndex((model) => model.id === "claude-sonnet-5-5"));
+    expect(olderHaikuIndex).toBeGreaterThan(haikuIndex);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -145,6 +150,7 @@ describe("adapter model listing", () => {
     ["claude-fable-5-1", "Claude Fable 5.1"],
     ["claude-opus-5-5", "Claude Opus 5.5"],
     ["claude-sonnet-5-5", "Claude Sonnet 5.5"],
+    ["claude-haiku-5-5", "Claude Haiku 5.5"],
   ])("does not duplicate %s when discovery returns the identical ID", async (id, displayName) => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
     vi.spyOn(globalThis, "fetch").mockResolvedValue({
@@ -172,10 +178,13 @@ describe("adapter model listing", () => {
     expect(models[0]?.id).toBe("us.anthropic.claude-fable-5-1");
     expect(models.map((model) => model.id)).toEqual(expect.arrayContaining([
       "us.anthropic.claude-opus-5-5", "us.anthropic.claude-opus-5", "us.anthropic.claude-sonnet-5-5",
-      "us.anthropic.claude-sonnet-5", "us.anthropic.claude-fable-5-1", "us.anthropic.claude-opus-4-7",
-      "us.anthropic.claude-sonnet-4-6",
+      "us.anthropic.claude-haiku-5-5", "us.anthropic.claude-sonnet-5", "us.anthropic.claude-fable-5-1",
+      "us.anthropic.claude-opus-4-7", "us.anthropic.claude-sonnet-4-6",
+      "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     ]));
+    expect(models).toContainEqual({ id: "us.anthropic.claude-haiku-5-5", label: "Bedrock Haiku 5.5" });
     expect(models.some((model) => model.id === "claude-sonnet-5-5")).toBe(false);
+    expect(models.some((model) => model.id === "claude-haiku-5-5")).toBe(false);
     expect(models.map((model) => model.id)).not.toEqual(expect.arrayContaining(["us.anthropic.claude-opus-4-8-v1"]));
     expect(models.some((model) => model.id === "claude-fable-5-1")).toBe(false);
     expect(fetchSpy).not.toHaveBeenCalled();
