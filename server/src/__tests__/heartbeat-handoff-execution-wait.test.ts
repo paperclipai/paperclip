@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, environmentLeases, heartbeatRuns, issues, issueTreeHolds } from "@paperclipai/db";
-import { heartbeatService } from "../services/heartbeat.js";
+import { agents, agentWakeupRequests, companies, createDb, environmentLeases, heartbeatRuns, issueRelations, issues, issueTreeHolds } from "@paperclipai/db";
+import { filterZombieCoalesceTarget, heartbeatService, mergeCoalescedContextSnapshot } from "../services/heartbeat.js";
 import { handoffWakeWork } from "../services/heartbeat/handoff-wake.js";
-import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
+import { createHeartbeatQueue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake } from "../services/heartbeat/queue.js";
 import type { WakeupOptions } from "../services/heartbeat/run-preparation.js";
 import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
 import { environmentService } from "../services/environments.js";
@@ -13,8 +13,9 @@ import { evaluateAgentInvokabilityFromDb } from "../services/agent-invokability.
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { budgetService } from "../services/budgets.js";
 import { issueTreeControlService } from "../services/issue-tree-control.js";
-import { createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
-import { createReleaseIssueExecution } from "../modules/wake-queue/application/use-cases.js";
+import { issueService } from "../services/issues.js";
+import { createAdmissionTransactionScope, createPostgresWakeQueueAdapter, createWakeAdmissionReader, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
+import { createAdmitWakeBehindIssueExecution, createReleaseIssueExecution } from "../modules/wake-queue/application/use-cases.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -74,6 +75,65 @@ describe.skipIf(!support.supported)("handoff execution waits", () => {
     };
     return { companyId, agentId, reviewerId, issueId, run, lease, wake, requests, successors, recover, release, drain, work, deps };
   }
+
+  it("settles the saved handoff when an existing run absorbs it and never resumes it after that run finishes", async () => {
+    const f = await fixture();
+    await f.wake();
+    const [saved] = await f.requests();
+    await f.release();
+    const [existing] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.reviewerId,
+      status: "queued", contextSnapshot: { issueId: f.issueId } }).returning();
+    f.deps.wakeQueue.createAdmissionTransactionScope.mockImplementation(createAdmissionTransactionScope);
+    f.deps.wakeQueue.admitWakeBehindIssueExecution.mockImplementation(createAdmitWakeBehindIssueExecution({
+      reader: createWakeAdmissionReader(), writer: createWakeAdmissionWriter(),
+      helpers: { filterZombieCoalesceTarget, mergeCoalescedContextSnapshot,
+        shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake },
+    }));
+
+    await f.recover();
+    expect((await f.requests()).find(row => row.id === saved.id)).toMatchObject({
+      status: "coalesced", runId: existing.id, finishedAt: expect.any(Date),
+    });
+    expect(await f.work().load(f.companyId)).toHaveLength(0);
+    expect(await f.successors()).toEqual([expect.objectContaining({ id: existing.id, status: "queued" })]);
+    const receipts = await f.requests();
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, existing.id));
+    await Promise.all([f.recover(), f.recover()]);
+    expect(await f.requests()).toEqual(receipts);
+    await f.wake();
+    expect(await f.requests()).toHaveLength(receipts.length);
+    expect(await f.successors()).toEqual([expect.objectContaining({ id: existing.id, status: "succeeded" })]);
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps one recoverable handoff receipt through dependency retries and admits it once the dependency resolves", async () => {
+    const f = await fixture();
+    await f.wake();
+    const [saved] = await f.requests();
+    const [blocker] = await db.insert(issues).values({ companyId: f.companyId, title: "Unfinished prerequisite", status: "in_progress" }).returning();
+    await db.insert(issueRelations).values({ companyId: f.companyId, issueId: blocker.id, relatedIssueId: f.issueId, type: "blocks" });
+    f.deps.issuesSvc.listDependencyReadiness.mockImplementation(issueService(db).listDependencyReadiness);
+    await f.release();
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await f.recover();
+      expect(await f.requests()).toEqual([expect.objectContaining({ id: saved.id, status: "deferred_issue_execution",
+        reason: "issue_dependencies_blocked", runId: null, finishedAt: null,
+        payload: expect.objectContaining({ executionWait: expect.objectContaining({ unresolvedBlockerIssueIds: [blocker.id] }) }),
+      })]);
+      expect(await f.work().load(f.companyId)).toHaveLength(1);
+      expect(await f.successors()).toHaveLength(0);
+    }
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, blocker.id));
+    await Promise.all([f.recover(), f.recover()]);
+    await f.recover();
+    const runs = await f.successors();
+    expect(runs).toHaveLength(1);
+    expect(await f.requests()).toEqual([expect.objectContaining({ id: saved.id, status: "queued", runId: runs[0].id,
+      reason: "execution_review_requested", finishedAt: null })]);
+    expect(await f.work().load(f.companyId)).toHaveLength(0);
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
 
   it("retains the handoff through ordinary release at the daily limit, then admits exactly one successor", async () => {
     const f = await fixture();

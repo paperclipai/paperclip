@@ -3851,10 +3851,21 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             !blockedInteractionWake
           ) {
             if (caseRequest) waitForCaseAdmission("issue_dependencies_blocked", "Case handoff is waiting for task dependencies to resolve");
+            const condition = { unresolvedBlockerIssueIds: [...dependencyReadiness.unresolvedBlockerIssueIds].sort() };
+            if (resumedHandoff) {
+              await tx.update(agentWakeupRequests).set({
+                reason: "issue_dependencies_blocked",
+                payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}', ${JSON.stringify(condition)}::jsonb)`,
+                updatedAt: new Date(),
+              }).where(and(eq(agentWakeupRequests.id, executionWaitRequestId!),
+                eq(agentWakeupRequests.companyId, agent.companyId), eq(agentWakeupRequests.agentId, agentId),
+                eq(agentWakeupRequests.status, "deferred_issue_execution")));
+              return { kind: "deferred" as const };
+            }
             await recordExecutionWait(tx as unknown as Db, {
               issueId: issue.id,
               coalesce: coalesceExecutionWait,
-              condition: { unresolvedBlockerIssueIds: [...dependencyReadiness.unresolvedBlockerIssueIds].sort() },
+              condition,
               request: {
                 ...durableReceiptFields,
                 companyId: agent.companyId,
@@ -4134,6 +4145,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             );
 
             if (admission.kind === "coalesced") {
+              if (resumedHandoff) {
+                await tx.update(agentWakeupRequests).set({
+                  status: "coalesced", runId: activeExecutionRun.id, reason: "issue_execution_same_name",
+                  error: null, finishedAt: new Date(), updatedAt: new Date(),
+                }).where(and(eq(agentWakeupRequests.id, executionWaitRequestId!),
+                  eq(agentWakeupRequests.companyId, agent.companyId), eq(agentWakeupRequests.agentId, agentId),
+                  eq(agentWakeupRequests.status, "deferred_issue_execution")));
+              }
               return {
                 kind: "coalesced" as const,
                 run: admission.run as typeof heartbeatRuns.$inferSelect,
