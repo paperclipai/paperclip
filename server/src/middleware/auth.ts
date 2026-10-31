@@ -237,7 +237,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    // Run ids are heartbeat run UUIDs. A non-UUID value would be inserted
+    // into UUID-typed foreign key columns downstream (activity log,
+    // comments) and fail with Postgres 22P02, so drop it at the boundary
+    // and treat the request as not run-scoped. See #5229.
+    const runIdHeaderRaw = req.header("x-paperclip-run-id");
+    const runIdHeader = isUuidLike(runIdHeaderRaw) ? runIdHeaderRaw?.trim() : undefined;
 
     const authHeader = req.header("authorization");
     const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
