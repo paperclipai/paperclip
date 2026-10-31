@@ -4,6 +4,10 @@
       "title": "Opret din første virksomhed",
       "description": "Kom i gang ved at oprette en virksomhed.",
       "newCompany": "Ny virksomhed"
+    },
+    "language": {
+      "switchTo": "Switch language to {{language}}",
+      "description": "Change the interface language."
     }
   }
 }

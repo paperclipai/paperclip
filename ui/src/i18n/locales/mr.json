@@ -4,6 +4,10 @@
       "title": "तुमची पहिली कंपनी तयार करा",
       "description": "कंपनी तयार करून सुरुवात करा.",
       "newCompany": "नवीन कंपनी"
+    },
+    "language": {
+      "switchTo": "Switch language to {{language}}",
+      "description": "Change the interface language."
     }
   }
 }
