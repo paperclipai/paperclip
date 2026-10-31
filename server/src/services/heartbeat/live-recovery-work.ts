@@ -25,16 +25,7 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
   function register(queue: DeliveryQueue, kind: RunKind | "orphanLease" | "shutdown" | "agent") {
     const cursors = new Map<string, string>();
     let enabled = false;
-    return registerScopedDeadlineWork<Entry, Scope>(coordinator, {
-      queue,
-      reconstructionIntervalMs: 30_000,
-      beforePass: async () => { enabled = await owner.enabled(); },
-      decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint),
-      matches: (entry, scope) => !scope || entry.companyId === scope.companyId && (
-        kind === "agent" ? !scope.agentId || entry.id === scope.agentId
-          : kind === "orphanLease" || kind === "shutdown" ? (!scope.leaseId || entry.id === scope.leaseId) && (!scope.runId || entry.runId === scope.runId)
-            : !scope.runId || entry.id === scope.runId),
-      load: async scope => {
+    async function load(scope?: Scope) {
         const key = scope ? JSON.stringify({ companyId: scope.companyId, runId: scope.runId,
           leaseId: scope.leaseId, agentId: scope.agentId }) : "*";
         if (!enabled) { cursors.delete(key); return []; }
@@ -89,9 +80,26 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
         const complete = rows.length < 100;
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
         return { complete, rows };
-      },
+    }
+    return registerScopedDeadlineWork<Entry, Scope>(coordinator, {
+      queue,
+      reconstructionIntervalMs: 30_000,
+      beforePass: async () => { enabled = await owner.enabled(); },
+      decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint),
+      matches: (entry, scope) => !scope || entry.companyId === scope.companyId && (
+        kind === "agent" ? !scope.agentId || entry.id === scope.agentId
+          : kind === "orphanLease" || kind === "shutdown" ? (!scope.leaseId || entry.id === scope.leaseId) && (!scope.runId || entry.runId === scope.runId)
+            : !scope.runId || entry.id === scope.runId),
+      load,
       check: async entry => {
         if (!enabled) return null;
+        const currentScope = { companyId: entry.companyId,
+          ...(kind === "agent" ? { agentId: entry.id } : kind === "orphanLease" || kind === "shutdown"
+            ? { leaseId: entry.id } : { runId: entry.id }) };
+        const loaded = await load(currentScope);
+        const current = (Array.isArray(loaded) ? loaded : loaded.rows).find(row => row.id === entry.id);
+        if (!current) return null;
+        if (current.dueAt > Date.now()) return current;
         let next: number | null = null;
         const errors: unknown[] = [];
         const scope: CheckScope = { companyId: entry.companyId,
@@ -102,6 +110,11 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
         };
         await owner[kind](scope);
         if (errors.length) throw new AggregateError(errors, `Recovery obligation ${entry.id} failed`);
+        if (kind === "native") {
+          const refreshed = await load(currentScope);
+          const remaining = (Array.isArray(refreshed) ? refreshed : refreshed.rows).find(row => row.id === entry.id);
+          if (remaining && remaining.dueAt > Date.now()) next = next === null ? remaining.dueAt : Math.min(next, remaining.dueAt);
+        }
         return next === null ? null : { ...entry, dueAt: next };
       },
     }, canRun);

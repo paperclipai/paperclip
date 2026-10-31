@@ -1,8 +1,21 @@
+import { and, eq, sql } from "drizzle-orm";
+import { environmentLeases } from "@paperclipai/db";
+import { notifyLiveResourceRecovery } from "./live-run-recovery-notifications.js";
 import { notifyNativeEnvironmentSettlement, type NativeEnvironmentSettlementScope } from "./native-environment-settlement-notifications.js";
 import type { Db } from "@paperclipai/db";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 export async function notifyEnvironmentCleanup(transaction: object, scope?: NativeEnvironmentSettlementScope): Promise<void> {
+  await notifyLiveResourceRecovery(transaction, scope);
+  if (scope?.runId && typeof (transaction as Db).select === "function") {
+    const peers = await (transaction as Db).select({ id: environmentLeases.id, companyId: environmentLeases.companyId,
+      runId: environmentLeases.heartbeatRunId }).from(environmentLeases).where(and(eq(environmentLeases.status, "active"),
+      sql`exists (select 1 from environment_leases changed where changed.company_id = ${scope.companyId}
+        and changed.heartbeat_run_id = ${scope.runId} and changed.provider_lease_id is not null
+        and changed.provider = ${environmentLeases.provider} and changed.provider_lease_id = ${environmentLeases.providerLeaseId})`));
+    for (const peer of peers) await notifyDeliveryWork(transaction, DELIVERY_QUEUES.orphanActiveLeases,
+      JSON.stringify({ companyId: peer.companyId, leaseId: peer.id }));
+  }
   await notifyNativeEnvironmentSettlement(transaction, scope);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.environmentCleanup);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.historicalCleanup);

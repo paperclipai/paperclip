@@ -1,3 +1,4 @@
+import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
@@ -178,6 +179,7 @@ export async function releaseSettledNativeRunProcess(db: Db, runId: string, opti
         return "pending";
       }
     }
+    await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id, agentId: run.agentId });
     await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId: run.id });
     await tx.update(heartbeatRuns).set({
       processPid: null, processGroupId: null, processStartedAt: null, updatedAt: new Date(),

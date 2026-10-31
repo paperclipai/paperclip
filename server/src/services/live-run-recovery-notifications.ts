@@ -23,3 +23,8 @@ export async function notifyLiveResourceRecovery(tx: object, scope?: LiveResourc
     DELIVERY_QUEUES.strandedAgentStatus, DELIVERY_QUEUES.settledNativeProcesses])
     await notifyDeliveryWork(tx, queue, hint);
 }
+
+export async function notifyStrandedAgentStatus(tx: object, scope: { companyId: string; agentId: string }) {
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.strandedAgentStatus,
+    JSON.stringify({ companyId: scope.companyId, agentId: scope.agentId }));
+}

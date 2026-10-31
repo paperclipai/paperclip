@@ -1,3 +1,4 @@
+import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifySkillVersionPinChange } from "./skill-version-retention-notifications.js";
@@ -85,6 +86,7 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
       existing.adapterConfig,
     );
   }
+  await notifyStrandedAgentStatus(db, { companyId: existing.companyId, agentId: existing.id });
   await notifyRunDispatch(db, { companyId: existing.companyId });
   await notifyDeferredExecutionEligibility(db, { companyId: existing.companyId });
   if (normalizedPatch.runtimeConfig !== undefined || normalizedPatch.reportsTo !== undefined) {

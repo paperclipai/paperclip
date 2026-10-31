@@ -1,3 +1,4 @@
+import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import type { Db } from "@paperclipai/db";
 import { livenessDb, nativeRunFinalizations } from "@paperclipai/db";
 import { and, eq, gt, sql } from "drizzle-orm";
@@ -53,6 +54,7 @@ async function renewNativeSessionExecutionLeaseDeadline(
     // but conservatively include UPDATE/commit response time without assuming
     // that this server's wall clock agrees with the database's clock.
     confirmedDeadline = performance.now() + leaseTtlMs;
+    await notifyLiveRunRecovery(tx, { companyId: input.companyId, runId: input.runId });
     return tx.update(nativeRunFinalizations)
       .set({
         leaseExpiresAt: sql`clock_timestamp() + (${leaseTtlMs} * interval '1 millisecond')`,

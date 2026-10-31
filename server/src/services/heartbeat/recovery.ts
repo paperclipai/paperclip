@@ -1,3 +1,4 @@
+import { registerLiveRecoveryWork } from "./live-recovery-work.js";
 import { nativeEnvironmentSettlementDisposition, nativeEnvironmentSettlementWork } from "../native-runtime/native-environment-settlement-work.js";
 import { nativeWorkspaceFinalizationWork } from "../native-runtime/native-workspace-finalization-work.js";
 import { attemptNativeWorkspaceFinalization } from "../native-runtime/native-workspace-finalizer.js";
@@ -18,7 +19,7 @@ import {
   hasStopOnlyCleanup,
   settleStopOnlyCleanup,
 } from "../sandbox-stop-and-retain.js";
-import { discoverSettledNativeRunProcesses, recordNativeLocalProcessStop, retryPendingSettledNativeRunProcesses } from "../native-local-process-stop.js";
+import { discoverSettledNativeRunProcesses, recordNativeLocalProcessStop, releaseSettledNativeRunProcess, retryPendingSettledNativeRunProcesses } from "../native-local-process-stop.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import {
   legacyControllerBootId,
@@ -2010,6 +2011,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           eq(heartbeatRuns.runtimeMode, "native"),
           eq(nativeRunFinalizations.phase, "retryable_failure"),
           isNull(nativeRunFinalizations.resultId),
+          sql`${heartbeatRuns.contextSnapshot}->'nativeQuestionCancellation' is null`,
         ),
       );
     const claimableNativeRunIds = new Set<string>();
@@ -2260,6 +2262,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       nativeControllerLeaseExpiresAt,
       nativeWorkspaceFinalizationPending,
     } of activeRuns) {
+      if (parseObject(run.contextSnapshot).nativeQuestionCancellation) continue;
       // Native recovery owns these dispositions. Its writes happened after this
       // inventory was read; do not reap or overwrite them using the old row.
       if (remoteRecoveryRunIds.has(run.id)) continue;
@@ -2329,10 +2332,16 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           processPidAlive: nativeProcessPidAlive,
           processGroupAlive: nativeProcessGroupAlive,
         });
+        if (nativeControllerLeaseExpiresAt && nativeControllerLeaseExpiresAt > now)
+          scope.onDeferredDeadline?.(nativeControllerLeaseExpiresAt.getTime());
         continue;
       }
       if (resumedRunIds.has(run.id)) continue;
-      if (locallyTracked) continue;
+      if (locallyTracked) {
+        if (!activeRunExecutions.has(run.id) && !runningProcesses.has(run.id) && nativeControllerLeaseExpiresAt)
+          scope.onDeferredDeadline?.(nativeControllerLeaseExpiresAt.getTime());
+        continue;
+      }
       const legacyLease = await liveLegacyControllerExpiresAt(db, run);
       if (legacyLease) { scope.onDeferredDeadline?.(legacyLease.getTime()); continue; }
 
@@ -2674,7 +2683,28 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  function registerResidualRecoveryWork(coordinator: Parameters<typeof registerLiveRecoveryWork>[1],
+    canRun: () => boolean, enabled: () => Promise<boolean>) {
+    return registerLiveRecoveryWork(db, coordinator, {
+      native: scope => resumeRetryableNativeProcessSessions(scope),
+      question: recoverQuestionCancellationRequests,
+      active: scope => recoverActiveExecutions(scope),
+      settled: async scope => {
+        if (!scope.runId || activeRunExecutions.has(scope.runId) || runningProcesses.has(scope.runId)
+          || adapterExecutionControls.has(scope.runId)) return;
+        await releaseSettledNativeRunProcess(db, scope.runId, scope);
+      },
+      orphanLease: scope => sweepOrphanedActiveLeases({ ...scope, backoffMs: 5 * 60_000 }),
+      shutdown: scope => sweepLegacyShutdownWorkspaceSettlements(db, new Date(), scope),
+      agent: scope => createHeartbeatAgentStatus(db).reconcileStrandedAgentStatuses(() => new Set([
+        ...activeRunExecutions, ...runningProcesses.keys(), ...adapterExecutionControls.keys(),
+      ]), scope),
+      enabled,
+    }, canRun);
+  }
+
   return {
+    registerResidualRecoveryWork,
     registerRetainedNativeSessionCleanupWork: retainedNativeCleanup.register,
     registerNativeWorkspaceFinalizationWork: nativeWorkspaceFinalization.register,
     registerNativeEnvironmentSettlementWork: nativeEnvironmentSettlement.register,

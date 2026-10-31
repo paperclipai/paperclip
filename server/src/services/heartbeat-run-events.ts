@@ -1,3 +1,4 @@
+import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
 import { readNativeEventEvidenceOutcome } from "./native-runtime/evidence-classifier.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { isNativeResponseEvidence, notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
@@ -74,10 +75,11 @@ export async function appendHeartbeatRunEvent(
   db: Db,
   input: AppendHeartbeatRunEventInput,
 ): Promise<AppendHeartbeatRunEventResult> {
+  const projectsRecovery = ["native.process_start_requested", "native.process_identity_recorded", "native.local_process_stopped"].includes(input.eventType);
   const projectsReassessment = readNativeEventEvidenceOutcome(input.payload?.prpEvent) !== null;
   const projectsProgress = isSafeNativeChatProgressEventType(input.eventType);
   const projectsResponse = isNativeResponseEvidence(input.eventType, input.payload?.prpEvent);
-  if (!input.nativeSource && !input.retryExhaustion && !projectsProgress && !projectsResponse && !projectsReassessment) {
+  if (!input.nativeSource && !input.retryExhaustion && !projectsProgress && !projectsResponse && !projectsReassessment && !projectsRecovery) {
     const allocated = db.$with("allocated_run_event", {}).as(sql`
       update ${heartbeatRuns}
       set next_event_seq = ${heartbeatRuns.nextEventSeq} + 1,
@@ -116,6 +118,8 @@ export async function appendHeartbeatRunEvent(
     if (!run || run.companyId !== input.companyId || run.agentId !== input.agentId) {
       throw new Error("heartbeat_run_event_binding_mismatch");
     }
+
+    if (projectsRecovery) await notifyLiveRunRecovery(tx, input);
 
     if (input.retryExhaustion && !input.nativeSource) {
       // The run lock also serializes concurrent recovery checks across server
