@@ -11,6 +11,12 @@ function currentOwner(client: QueryClient): string | undefined {
   return session === undefined ? undefined : session?.user?.id ?? session?.session?.userId ?? "signed-out";
 }
 
+/** A successful sign-out ends pending work even if the first session never loaded. */
+export function invalidateAccountScope(client: QueryClient) {
+  const account = accounts.get(client);
+  if (account) account.generation += 1;
+}
+
 export function bindAccount(client: QueryClient) {
   let account = accounts.get(client);
   if (!account) {
