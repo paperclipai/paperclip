@@ -1771,7 +1771,13 @@ remain unchanged after the answer. Both durable paths require one new response
 wake bound to that interaction and source run. Missing, pending, foreign or
 mismatched receipts fail; form shape and run counts cannot replace them. Only a verified provider
 choice may carry the adapter's optional Other field. A second substantive question
-is still rejected; the subsequent reference question must be text-only. Both real
+is still rejected. The subsequent reference must use a text field or one native
+provider single-select question with an explicit canonical `customAnswer.enabled=true`.
+The browser selects its written-answer control and submits the exact typed reference
+with no predefined option. Missing or disabled custom answers, inferred legacy
+capabilities, extra questions and substituted choices fail. This behavioral form
+equivalence does not change the text-only necessary-question or named-tool
+documentation qualifications. Both real
 board answers must remain bound to unchanged forms, and one saved document must
 include both answers. Existing lifecycle, ownership, premature-output, terminal
 state and no-extra-task checks apply. Three checkpoints are required even when
@@ -1784,6 +1790,12 @@ attempt, one to three actual runs, a ten-minute cell deadline and verified
 Other field stopped the driver before any answer remains a FAIL. A new behavior
 pass does not establish semantic-tool selection, documentation placement, default
 hiring behavior or general reliability.
+
+The original scheduled attempt that stopped at a closed reference card remains a
+FAIL, including its separate cleanup failure. Supporting a server-bound written
+answer does not regrade that card, infer a missing provider flag, or establish a
+fresh Cloud pass. The general OpenCode omitted-default normalization fix requires
+its own reviewed runtime artifact; browser/grader calibration cannot prove it served.
 
 Continuation screenshots wait for the correct task heading and fully revealed
 conversation before capture. A loading screen or wrong task fails capture.
