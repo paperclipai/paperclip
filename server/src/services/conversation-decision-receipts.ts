@@ -56,17 +56,7 @@ export function conversationDecisionReceiptsService(db: Db) {
       const taskIds = new Set([...handoffIds, ...directIds].filter(id => id !== conversationId));
       if (taskIds.size === 0) return [];
 
-      // One on-demand canonical company snapshot, not one query per task. The
-      // attention owner applies current audience, privacy, dismissal, snooze and
-      // archive policy, including its existing queue/retention bookkeeping.
-      // Cost grows with the company feed, not only the returned task questions;
-      // there is currently no task-scoped attention API. Do not poll this read.
-      const feed = await attentionService(db).list(companyId, {
-        all: true, allowUnscopedAll: true, actor: options.actor, userId: options.userId,
-      });
-      return feed.items.filter(item => item.sourceKind === "issue_thread_interaction"
-        && item.detail?.kind === "questions"
-        && item.relatedIssue !== null && taskIds.has(item.relatedIssue.id));
+      return attentionService(db).taskQuestions(companyId, [...taskIds], options);
     },
     async listCreatedTasks(companyId: string, conversationId: string, options: {
       actor: AuthorizationActor; userId: string; cursor?: string; limit?: number;

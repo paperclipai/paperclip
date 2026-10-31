@@ -36,6 +36,14 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
 }
 
 describe("buildCodexLocalConfig", () => {
+  it("round-trips qualified Kimi Code with its exact selected model", () => {
+    const first = buildPaperclipRunnerConfig(makeValues({ model: "explicit-kimi-model", adapterSchemaValues: { provider: "acpx", acpxAgent: "kimi" } }));
+    const reopened = buildPaperclipRunnerConfig(makeValues({ model: "", adapterSchemaValues: JSON.parse(JSON.stringify(first)) }));
+    expect(reopened).toMatchObject({ provider: "acpx", acpxAgent: "kimi", model: "explicit-kimi-model" });
+    expect(first).not.toHaveProperty("candidateHarnesses");
+    expect(() => buildPaperclipRunnerConfig(makeValues({ model: "", adapterSchemaValues: { provider: "acpx", acpxAgent: "kimi" } })))
+      .toThrow("kimi requires an explicit provider model");
+  });
   it("refuses pending Antigravity selection before saving Runner config", () => {
     expect(() => buildPaperclipRunnerConfig(makeValues({ model: "exact-antigravity-model",
       adapterSchemaValues: { provider: "acpx", acpxAgent: "antigravity" } })))

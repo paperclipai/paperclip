@@ -27,6 +27,7 @@ describe("runner E2E Daytona image contract", () => {
     "src/drivers/acpx/copilot-closure-pins.ts",
     "src/drivers/acpx/pi-closure-pins.ts",
     "src/drivers/acpx/pi-node-pins.ts",
+    "src/drivers/acpx/kimi-closure-pins.ts",
     "src/providers/grok/launcher.cjs",
   ].map(input => `packages/paperclip-runner/${input}`);
 
@@ -60,6 +61,43 @@ describe("runner E2E Daytona image contract", () => {
       await writeFile(path.join(root, manifestPath), '{"commandDigest":"after"}\n');
       expect(await computeDaytonaImageContentId(options)).not.toBe(before);
       expect(await computeDaytonaImageContentId(withoutManifest)).toBe(unrelatedBefore);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("binds each Antigravity input consumed by the merged provider entrypoint builder", async () => {
+    const required = [
+      "packages/paperclip-runner/antigravity-distributions.json",
+      "packages/paperclip-runner/scripts/provision-antigravity.mjs",
+      "packages/paperclip-runner/scripts/antigravity-provisioner-layout.mjs",
+      "packages/paperclip-runner/scripts/materialize-antigravity-distribution.mjs",
+      "packages/paperclip-runner/scripts/patch-antigravity-runtime.mjs",
+      "packages/paperclip-runner/scripts/patch-antigravity-runtime.admission.py",
+    ];
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-daytona-builder-inputs-"));
+    const options = {
+      repositoryRoot: root,
+      inputPaths: DAYTONA_IMAGE_INPUT_PATHS.filter(input => required.includes(input)),
+      baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
+      frontendDigest: `sha256:${"c".repeat(64)}`,
+    } as const;
+    try {
+      for (const input of required) {
+        expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(input);
+        await mkdir(path.dirname(path.join(root, input)), { recursive: true });
+        await writeFile(path.join(root, input), await readFile(path.join(repositoryRoot, input)));
+      }
+      const baseline = await computeDaytonaImageContentId(options);
+      for (const input of required) {
+        const original = await readFile(path.join(root, input));
+        await writeFile(path.join(root, input), Buffer.concat([original, Buffer.from("\nchanged-build-input\n")]));
+        expect(await computeDaytonaImageContentId(options)).not.toBe(baseline);
+        await rm(path.join(root, input));
+        await expect(computeDaytonaImageContentId(options)).rejects.toThrow();
+        await writeFile(path.join(root, input), original);
+        expect(await computeDaytonaImageContentId(options)).toBe(baseline);
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -266,6 +304,11 @@ describe("runner E2E Daytona image contract", () => {
       "packages/paperclip-runner/runner/crates",
       "packages/paperclip-runner/scripts/materialize-pi-distribution.mjs",
       "packages/paperclip-runner/scripts/pi-distribution",
+      "packages/paperclip-runner/scripts/materialize-kimi-distribution.mjs",
+      "packages/paperclip-runner/scripts/patch-kimi-runtime.mjs",
+      "packages/paperclip-runner/scripts/kimi-instructions-runtime.mjs",
+      "packages/paperclip-runner/scripts/provision-kimi.mjs",
+      "packages/paperclip-runner/scripts/kimi-distribution",
       "packages/paperclip-runner/src",
     ]) {
       expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(requiredPath);
@@ -351,6 +394,7 @@ describe("runner E2E Daytona image contract", () => {
       const baseline = await computeDaytonaImageContentId(options);
       const candidate = await computeDaytonaImageContentId({ ...options, candidateProviders: ["pi"] });
       expect(candidate).not.toBe(baseline);
+      expect(await computeDaytonaImageContentId({ ...options, candidateProviders: ["kimi"] })).not.toBe(baseline);
       expect(await computeDaytonaImageContentId({ ...options, candidateProviders: ["copilot", "pi"] }))
         .toBe(await computeDaytonaImageContentId({ ...options, candidateProviders: ["pi", "copilot"] }));
       await expect(computeDaytonaImageContentId({ ...options, candidateProviders: ["pi", "pi"] }))
@@ -408,9 +452,15 @@ describe("runner E2E Daytona image contract", () => {
   it.each([
     "packages/paperclip-runner/scripts/cursor-runtime-patch.mjs",
     "packages/paperclip-runner/scripts/provider-pack-executable-shims.mjs",
+    "packages/paperclip-runner/scripts/materialize-kimi-distribution.mjs",
+    "packages/paperclip-runner/scripts/patch-kimi-runtime.mjs",
+    "packages/paperclip-runner/scripts/kimi-instructions-runtime.mjs",
+    "packages/paperclip-runner/scripts/provision-kimi.mjs",
+    "packages/paperclip-runner/scripts/kimi-distribution/package.json",
+    "packages/paperclip-runner/scripts/kimi-distribution/package-lock.json",
   ])("invalidates the image when %s changes", async (patchPath) => {
     const root = await mkdtemp(path.join(tmpdir(), "paperclip-provider-image-id-"));
-    expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(patchPath);
+    expect(DAYTONA_IMAGE_INPUT_PATHS.some(inputPath => patchPath === inputPath || patchPath.startsWith(`${inputPath}/`))).toBe(true);
     const options = {
       repositoryRoot: root,
       inputPaths: [patchPath],

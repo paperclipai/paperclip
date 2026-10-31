@@ -2,7 +2,7 @@ import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js"
 import { resolveGrokEffort } from "../drivers/acpx/grok-effort.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import type { DotBindingSnapshot, MuseBindingSnapshot, ExternalBotProviderKind } from "./external-provider.js";
-import { QUALIFIED_ACPX_VERSION } from "../drivers/acpx/generated-profiles.js";
+import { QUALIFIED_ACPX_VERSION, QUALIFIED_ACPX_PROFILE_DATA } from "../drivers/acpx/generated-profiles.js";
 import { isSupportedAcpxProfileVersion, type AcpxProfileVersion } from "../drivers/acpx/profile-compatibility.js";
 import { isProviderMode } from "./provider-mode.js";
 import { createHash } from "node:crypto";
@@ -93,7 +93,11 @@ export interface NativeAwsAgentCoreProfileSnapshot {
   eventExpiryDays: 90;
 }
 
-export type NativeAcpxAgent = "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot" | "antigravity";
+export type NativeAcpxAgent = keyof typeof QUALIFIED_ACPX_PROFILE_DATA;
+
+function isNativeAcpxAgent(value: unknown): value is NativeAcpxAgent {
+  return typeof value === "string" && Object.hasOwn(QUALIFIED_ACPX_PROFILE_DATA, value);
+}
 export type NativeCodexApprovalPolicy = "never" | "on-request" | "untrusted";
 export type NativeOpenCodePermissionMode = "allow" | "ask" | "deny";
 export type NativeAcpxPermissionMode = "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
@@ -709,8 +713,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for acpx");
     }
-    if (provider.agent !== "pi" && provider.agent !== "claude" && provider.agent !== "codex" && provider.agent !== "grok" && provider.agent !== "cursor" && provider.agent !== "copilot" && provider.agent !== "antigravity") {
-      throw new NativeExecutionInputError("input.provider.agent must be pi, claude, codex, grok, cursor, copilot, or antigravity");
+    if (!isNativeAcpxAgent(provider.agent)) {
+      throw new NativeExecutionInputError("input.provider.agent must name a registered ACPX profile");
     }
     if (isV4) {
       if (provider.permissionMode !== "approve-all" && provider.permissionMode !== "approve-paperclip" && provider.permissionMode !== "approve-reads" && provider.permissionMode !== "deny-all") {

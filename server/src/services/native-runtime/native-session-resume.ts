@@ -223,6 +223,8 @@ export async function findNativeSessionResumeRun(
     normalizedSessionId: string;
     currentRunId: string;
     beforeCreatedAt: Date;
+    /** Recovery discovery must retain an ineligible newest progress barrier. */
+    includeProgressBarrier?: boolean;
   },
 ) {
   if (!isNativeSessionId(input.normalizedSessionId)) return null;
@@ -287,10 +289,12 @@ export async function findNativeSessionResumeRun(
         nativeToolContractFingerprint: unknown;
         nativeExecutionInput: unknown;
         sessionCheckpoint: unknown;
+        nativeControllerRecovery: unknown;
       }>`jsonb_build_object(
         'nativeToolContractFingerprint', ${heartbeatRuns.runnerProfileJson}->'nativeToolContractFingerprint',
         'nativeExecutionInput', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput',
-        'sessionCheckpoint', ${heartbeatRuns.runnerProfileJson}->'sessionCheckpoint'
+        'sessionCheckpoint', ${heartbeatRuns.runnerProfileJson}->'sessionCheckpoint',
+        'nativeControllerRecovery', ${heartbeatRuns.runnerProfileJson}->'nativeControllerRecovery'
       )`,
       contextSnapshot: sql<{
         paperclipWake: unknown;
@@ -306,14 +310,16 @@ export async function findNativeSessionResumeRun(
     .from(heartbeatRuns)
     .innerJoin(barrier, eq(heartbeatRuns.id, barrier.id))
     .where(and(
-      eq(barrier.runtimeMode, "native"),
-      inArray(barrier.status, terminalStatuses),
-      eq(barrier.hasCheckpoint, true),
+      ...(input.includeProgressBarrier ? [] : [
+        eq(barrier.runtimeMode, "native"),
+        inArray(barrier.status, terminalStatuses),
+        eq(barrier.hasCheckpoint, true),
+        sql`date_trunc('milliseconds', ${barrier.createdAt}) <= ${input.beforeCreatedAt.toISOString()}::timestamptz`,
+      ]),
       sql`${heartbeatRuns.companyId}::text = ${input.companyId}`,
       sql`${heartbeatRuns.agentId}::text = ${input.agentId}`,
       sql`${heartbeatRuns.nativeIssueId}::text = ${input.issueId}`,
       sql`${heartbeatRuns.nativeSessionId}::text = ${input.normalizedSessionId}`,
-      sql`date_trunc('milliseconds', ${barrier.createdAt}) <= ${input.beforeCreatedAt.toISOString()}::timestamptz`,
     ));
   return run ?? null;
 }
