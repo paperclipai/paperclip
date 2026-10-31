@@ -292,6 +292,52 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     }
     return { head: value, etag: result.etag };
   }
+  function sourcePrefixProof(snapshot: ObjectJournalHead) {
+    // Leave strict head v1 unchanged for older readers/rollback. Ownership and
+    // close/claim state may change without changing this immutable byte prefix.
+    const fingerprint = sha256(Buffer.from(JSON.stringify({
+      end: snapshot.end, sequence: snapshot.sequence, sourceCursor: snapshot.sourceCursor,
+      root: snapshot.root, roots: snapshot.roots ?? null,
+    })));
+    return {
+      // Existing scoped object cleanup also removes these unreferenced metadata objects.
+      key: `${objectPrefix}source-prefix-proof-v1-${fingerprint}`,
+      bytes: Buffer.from(JSON.stringify({ schema: "paperclip.run-log.source-prefix-proof.v1", fingerprint })),
+    };
+  }
+  async function hasVerifiedSourcePrefix(snapshot: ObjectJournalHead, signal?: AbortSignal) {
+    const proof = sourcePrefixProof(snapshot);
+    let stored: Awaited<ReturnType<typeof getBytes>>;
+    try { stored = await getBytes(proof.key, 4096, signal); }
+    catch (error) { if (isMissing(error)) return false; throw error; }
+    if (!stored.bytes.equals(proof.bytes)) throw new Error("object_journal_source_prefix_proof_invalid");
+    return true;
+  }
+  async function recordVerifiedSourcePrefix(writer: ObjectJournalWriter, sourceCursor: number, signal?: AbortSignal) {
+    signal = signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+      : AbortSignal.timeout(15_000);
+    signal.throwIfAborted();
+    if (!Number.isSafeInteger(sourceCursor) || sourceCursor < writer.head.sourceCursor)
+      throw new Error("object_journal_invalid_source_prefix_cursor");
+    const current = await head(signal);
+    if (!current || current.etag !== writer.etag || current.head.closed || current.head.deleted)
+      throw new ObjectJournalConflictError();
+    // One-time verification can repair legacy max-cursor metadata, never payload bytes.
+    if (sourceCursor !== writer.head.sourceCursor)
+      writer = await publish({ ...writer.head, sourceCursor }, writer.etag, signal);
+    const proof = sourcePrefixProof(writer.head);
+    try {
+      await retryObjectOperation(() => putConditional({
+        objectKey: proof.key, body: proof.bytes, contentLength: proof.bytes.length,
+        contentType: "application/json", ifNoneMatch: "*", signal,
+      }), signal);
+    } catch (error) {
+      // A lost reply or an already published identical immutable proof is safe.
+      if (!await hasVerifiedSourcePrefix(writer.head, signal)) throw error;
+    }
+    return writer;
+  }
   async function publish(value: ObjectJournalHead, etag: string | null, signal?: AbortSignal) {
     value = headSchema.parse(value);
     signal = signal
@@ -569,6 +615,6 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
       continuationToken = page.continuationToken;
     } while (continuationToken);
   }
-  return { head, claim, append, close, readRange, remove };
+  return { head, claim, append, close, readRange, remove, hasVerifiedSourcePrefix, recordVerifiedSourcePrefix };
 }
 export type ObjectByteJournal = ReturnType<typeof createObjectByteJournal>;

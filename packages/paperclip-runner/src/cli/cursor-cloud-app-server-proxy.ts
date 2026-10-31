@@ -155,9 +155,9 @@ export function startCursorCloudAppServerProxy(options: {
         await session.interrupt({ ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}) }); result = true; break;
       case "thread/read": {
         if (!session) throw new Error("Cursor Cloud thread is not open");
+        await session.snapshot();
         const state = await session.read();
         const activeTurnId = ["creating", "running", "stopping"].includes(String(state.phase)) && typeof state.turnId === "string" ? state.turnId : null;
-        await session.snapshot();
         result = { cursorCloudTerminalDelivery: state.pendingTerminalDelivery, thread: { id: session.ids().driverSessionId, cwd, turns: activeTurnId ? [{ id: activeTurnId, status: "inProgress" }] : [] }, transcript: state }; break;
       }
       case "paperclip/ackTerminal":

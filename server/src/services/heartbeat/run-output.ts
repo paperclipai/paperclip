@@ -25,7 +25,7 @@ export interface HeartbeatRunOutputInput {
   run: Run;
   runId: string;
   issueId: string | null;
-  runLogStore: Pick<RunLogStore, "begin" | "append" | "enqueue" | "flush"> & Partial<Pick<RunLogStore, "read">>;
+  runLogStore: Pick<RunLogStore, "begin" | "append" | "enqueue" | "flush"> & Partial<Pick<RunLogStore, "read" | "recordVerifiedSourcePrefix">>;
   identityRedactor: Pick<ReturnType<typeof createAgentIdentityRedactor>, "chunk" | "redact">;
   secretKeys: Set<string>;
   appendRunEvent: ReturnType<typeof createHeartbeatLifecycle>["appendRunEvent"];
@@ -170,12 +170,15 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       const chunkSeq = outputSeq;
       let committed: Promise<number> = Promise.resolve(0);
       if (handle) {
+        let nativeLooking = chunk.includes('"paperclip.prp.event"');
+        try { nativeLooking ||= JSON.parse(chunk)?.type === "paperclip.prp.event"; } catch { /* Diagnostics need not be JSON. */ }
         const event = {
           stream,
           chunk: sanitizedChunk,
           ts,
           seq: chunkSeq,
           sourceCursor,
+          preservesSourceCoverage: sourceCursor !== undefined || !nativeLooking,
         };
         committed = runLogStore.enqueue
           ? (await runLogStore.enqueue(handle, event)).committed
@@ -256,9 +259,12 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       }
       const afterCursor = await nativeRunLogPrefixCursor({
         db, companyId: run.companyId, runId, store: runLogStore, handle: handle!,
-        redactChunk: (chunk) => compactRunLogChunk(
-          redactCurrentUserText(identityRedactor.redact(chunk), currentUserRedactionOptions),
-        ),
+        // Verify the two supported historical username-masking settings. Keep
+        // the full private-data projection here; compaction is proved separately.
+        redactChunks: (chunk) => [false, true].map(enabled => compactRunLogChunk(
+          redactCurrentUserText(identityRedactor.redact(chunk), { ...currentUserRedactionOptions, enabled }),
+          Number.MAX_SAFE_INTEGER,
+        )),
       });
       return createNativeRunLogExporter({
         db,

@@ -30,6 +30,11 @@ const CURSOR_CLOUD_CONTROL_INSTRUCTIONS = [
 type TurnAuthority = { generation: number; ownerRunId: string; turnId: string | null };
 type RemoteAuthority = TurnAuthority & { agentId: string; runId: string };
 type PendingAuthority = TurnAuthority & Pick<CursorCloudCheckpoint, "pendingOperation" | "requestedAgentId" | "idempotencyKey" | "agentId">;
+type PendingTerminal = {
+  authority: RemoteAuthority;
+  delivery: CursorCloudTerminalDelivery;
+  events: Array<{ eventType: PrpEvent["eventType"]; payload: Record<string, unknown>; itemId?: string }>;
+};
 type CloudClient = Pick<CursorCloudClient, "createAgent" | "createRun" | "getAgent" | "getRun" | "cancelRun" | "streamRun" | "getUsage" | "listArtifacts" | "downloadArtifact">;
 
 export interface CursorCloudSessionHandle extends HarnessSession {
@@ -174,6 +179,8 @@ class CursorCloudSession implements CursorCloudSessionHandle {
   #stop: Promise<void> | null = null;
   #stopCheckpoint: Promise<void> | null = null;
   #rejectionSettlement: Promise<void> | null = null;
+  #terminalSettlement: Promise<void> | null = null;
+  #pendingTerminal: PendingTerminal | null = null;
   #turnDeadline: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: CursorCloudDriverOptions, input: OpenHarnessSessionInput, instructions: string, checkpoint: CursorCloudCheckpoint, store: CursorCloudCheckpointStore) {
@@ -189,8 +196,8 @@ class CursorCloudSession implements CursorCloudSessionHandle {
       ? { ...tool, description: `${tool.description ?? "Register an inspectable file result."} Cursor Cloud: create the file in the provider artifacts directory, discover its exact path with list_cursor_cloud_artifacts, then use contentRef cursor-artifact:<exact listed relative artifact path>. Supply the actual filename, byteSize and lowercase SHA-256; these are independently verified before registration. Cloud filesystem paths and host paths are not accepted.` }
       : tool), { name: "list_cursor_cloud_artifacts", description: "List files exposed by the current Cursor Cloud Agent artifact API. Use the exact returned relative path in register_deliverable contentRef cursor-artifact:<path>. This read-only provider helper does not register a deliverable.", inputSchema: { type: "object", properties: {}, additionalProperties: false } }];
     this.#bridge = await startRunnerToolBridge({ socketPath: this.#options.relay.socketPath, secret: this.#options.relay.token, tools, preserveToolNames: true, timeoutMs: null,
-      sessionScope: () => this.#closed || this.#stopping || !active(this.#cp) ? null : this.#cp.turnId,
-      scopeToken: () => this.#closed || this.#stopping || !active(this.#cp) ? null : this.#cp.relayTurnToken ?? null,
+      sessionScope: () => this.#closed || this.#stopping || this.#pendingTerminal || !active(this.#cp) ? null : this.#cp.turnId,
+      scopeToken: () => this.#closed || this.#stopping || this.#pendingTerminal || !active(this.#cp) ? null : this.#cp.relayTurnToken ?? null,
       handler: call => this.#dispatch(call) });
     const socket = await lstat(this.#options.relay.socketPath);
     if (!socket.isSocket() || socket.isSymbolicLink() || (process.getuid && socket.uid !== process.getuid())) throw new Error("Cursor Cloud bound relay socket ownership is unsafe");
@@ -203,7 +210,7 @@ class CursorCloudSession implements CursorCloudSessionHandle {
   #remote(authority: TurnAuthority): RemoteAuthority | null { return this.#current(authority) && this.#cp.agentId && this.#cp.runId ? { ...authority, agentId: this.#cp.agentId, runId: this.#cp.runId } : null; }
   #pending(authority: TurnAuthority): PendingAuthority { return { ...authority, pendingOperation: this.#cp.pendingOperation, requestedAgentId: this.#cp.requestedAgentId, idempotencyKey: this.#cp.idempotencyKey, agentId: this.#cp.agentId }; }
   #currentPending(authority: PendingAuthority): boolean { return this.#current(authority) && active(this.#cp) && authority.pendingOperation === this.#cp.pendingOperation && authority.requestedAgentId === this.#cp.requestedAgentId && authority.idempotencyKey === this.#cp.idempotencyKey && authority.agentId === this.#cp.agentId; }
-  #currentRemote(authority: RemoteAuthority): boolean { return this.#current(authority) && active(this.#cp) && authority.agentId === this.#cp.agentId && authority.runId === this.#cp.runId; }
+  #currentRemote(authority: RemoteAuthority): boolean { return !this.#pendingTerminal && this.#current(authority) && active(this.#cp) && authority.agentId === this.#cp.agentId && authority.runId === this.#cp.runId; }
   #acceptRun(authority: RemoteAuthority, run: CursorCloudRun): boolean {
     if (!this.#currentRemote(authority)) return false;
     if (run.agentId !== authority.agentId || run.id !== authority.runId) throw new HarnessReconciliationError("Cursor Cloud response changed the confirmed Agent/Run identity");
@@ -286,6 +293,11 @@ class CursorCloudSession implements CursorCloudSessionHandle {
   }
   async interrupt(input: { turnId?: string; signal?: AbortSignal } = {}): Promise<void> {
     if (input.turnId && input.turnId !== this.#cp.turnId) throw new HarnessStaleTurnError(input.turnId);
+    if (this.#pendingTerminal) {
+      const settlement = this.#persistTerminal();
+      await (input.signal ? withAbort(settlement, input.signal) : settlement);
+      return;
+    }
     if (!active(this.#cp)) return;
     if (!this.#stop) {
       const stop = this.#interrupt(this.#authority(), input.signal).finally(() => { if (this.#stop === stop) this.#stop = null; });
@@ -436,26 +448,60 @@ class CursorCloudSession implements CursorCloudSessionHandle {
   async #settle(authority: RemoteAuthority, run: CursorCloudRun, interrupted = false): Promise<void> {
     if (this.#acceptRun(authority, run) && !isCursorCloudRunActive(run.status)) {
       const turnId = this.#cp.turnId!;
-      this.#cp.phase = "terminal"; this.#cp.terminalStatus = run.status; this.#cp.pendingOperation = null; this.#cp.deadlineAt = null; this.#clearDeadline();
       const delivery: CursorCloudTerminalDelivery = { schema: "paperclip.cursor-cloud.terminal-delivery.v1", threadId: this.#cp.driverSessionId, turnId, providerRunId: run.id, receiptId: randomUUID(), status: run.status as CursorCloudTerminalDelivery["status"], interrupted: interrupted || run.status === "CANCELLED", result: run.result ? this.#redact(run.result) : null };
-      this.#cp.pendingTerminalDelivery = delivery;
-      const events: PrpEvent[] = [];
-      if (delivery.result) events.push(this.#event("item.completed", { kind: "agentMessage", text: delivery.result, channel: "final" }, "final", turnId));
-      events.push(this.#event(delivery.interrupted ? "turn.interrupted" : run.status === "FINISHED" ? "turn.completed" : "turn.failed", { cursorCloudTerminalDelivery: delivery, providerStatus: run.status, remoteTerminalConfirmed: true, semanticCompletionAccepted: this.#cp.acceptedCompletion !== null, ...(run.status === "ERROR" || run.status === "EXPIRED" ? { error: { code: `cursor_cloud_${run.status.toLowerCase()}`, message: "Cursor Cloud run ended without successful provider completion." } } : {}) }, undefined, turnId));
-      await this.#store.write(this.#cp);
-      if (this.#current(authority)) for (const event of events) this.#publish(event);
+      const events: PendingTerminal["events"] = [];
+      if (delivery.result) events.push({ eventType: "item.completed", payload: { kind: "agentMessage", text: delivery.result, channel: "final" }, itemId: "final" });
+      events.push({ eventType: delivery.interrupted ? "turn.interrupted" : run.status === "FINISHED" ? "turn.completed" : "turn.failed", payload: { cursorCloudTerminalDelivery: delivery, providerStatus: run.status, remoteTerminalConfirmed: true, semanticCompletionAccepted: this.#cp.acceptedCompletion !== null, ...(run.status === "ERROR" || run.status === "EXPIRED" ? { error: { code: `cursor_cloud_${run.status.toLowerCase()}`, message: "Cursor Cloud run ended without successful provider completion." } } : {}) } });
+      this.#pendingTerminal = { authority, delivery, events };
+      await this.#persistTerminal();
+    }
+  }
+  async #persistTerminal(): Promise<void> {
+    if (this.#terminalSettlement) return this.#terminalSettlement;
+    const pending = this.#pendingTerminal;
+    if (!pending) return;
+    const settlement = this.#saveTerminal(pending);
+    this.#terminalSettlement = settlement;
+    try { await settlement; }
+    finally { if (this.#terminalSettlement === settlement) this.#terminalSettlement = null; }
+  }
+  async #saveTerminal(pending: PendingTerminal): Promise<void> {
+    const expiresAt = Date.now() + this.#cancelTimeoutMs;
+    for (let attempt = 0; this.#current(pending.authority) && this.#pendingTerminal === pending; attempt += 1) {
+      // Reserve the final sequence range in the durable candidate, but allocate
+      // events only after it saves. A failed-save diagnostic cannot consume an
+      // unpublished final event's identity or let a snapshot regress the cursor.
+      const checkpoint: CursorCloudCheckpoint = { ...this.#cp, phase: "terminal", terminalStatus: pending.delivery.status,
+        pendingOperation: null, deadlineAt: null, pendingTerminalDelivery: pending.delivery,
+        sourceSequence: this.#cp.sourceSequence + pending.events.length };
+      try { await this.#store.write(checkpoint); }
+      catch {
+        if (attempt === 0 && this.#current(pending.authority)) this.#publish(this.#event("harness.diagnostic", {
+          code: "cursor_cloud_terminal_checkpoint_pending", message: "Cursor Cloud finished, but its final checkpoint could not be saved. Its exact final delivery remains fenced until persistence succeeds.",
+        }));
+        const remaining = expiresAt - Date.now();
+        if (remaining <= 0 || !this.#current(pending.authority)) throw new HarnessReconciliationError("Cursor Cloud terminal checkpoint could not be saved; the delivery remains fenced");
+        await delay(Math.min(remaining, boundedPositive(this.#options.reconnectDelayMs, Math.min(250 * 2 ** Math.min(attempt, 4), 2_000))));
+        continue;
+      }
+      if (!this.#current(pending.authority)) return;
+      const events = pending.events.map(event => this.#event(event.eventType, event.payload, event.itemId, pending.delivery.turnId));
+      Object.assign(this.#cp, checkpoint);
+      this.#pendingTerminal = null; this.#clearDeadline();
+      for (const event of events) this.#publish(event);
+      return;
     }
   }
   async #dispatch(call: RunnerToolCall): Promise<unknown> {
     const turnId = this.#cp.turnId;
-    if (this.#closed || this.#stopping || !turnId || !active(this.#cp) || this.#cp.acceptedCompletion || call.signal.aborted) throw new Error("Cursor Cloud tool call has no current run authority");
+    if (this.#closed || this.#stopping || this.#pendingTerminal || !turnId || !active(this.#cp) || this.#cp.acceptedCompletion || call.signal.aborted) throw new Error("Cursor Cloud tool call has no current run authority");
     if (call.tool === "list_cursor_cloud_artifacts") {
       if (!this.#cp.agentId) throw new Error("Cursor Cloud Agent artifact identity is not confirmed");
       const listed = await this.#client.listArtifacts(this.#cp.agentId, { signal: call.signal });
       if (listed.items.length > 256) throw new Error("Cursor Cloud artifact catalog exceeds its 256-file bound");
       const result = { items: listed.items.map(item => ({ path: item.path, sizeBytes: item.sizeBytes })) };
       if (Buffer.byteLength(JSON.stringify(result)) > 65_536) throw new Error("Cursor Cloud artifact catalog exceeds its byte bound");
-      if (this.#closed || this.#stopping || call.signal.aborted || this.#cp.turnId !== turnId || !active(this.#cp)) throw new Error("Cursor Cloud artifact list arrived after run authority ended");
+      if (this.#closed || this.#stopping || this.#pendingTerminal || call.signal.aborted || this.#cp.turnId !== turnId || !active(this.#cp)) throw new Error("Cursor Cloud artifact list arrived after run authority ended");
       return result;
     }
     const callId = `${turnId}:${call.callId}`;
@@ -466,11 +512,11 @@ class CursorCloudSession implements CursorCloudSessionHandle {
       args = await stageCursorCloudArtifact({ arguments: args, agentId: this.#cp.agentId, runtimeDirectory: this.#options.runtimeDirectory, artifactRoot: this.#options.artifactRoot, client: this.#client, signal: call.signal });
       normalized = call.captureNormalizedInput?.(args);
     }
-    if (this.#stopping || this.#closed || call.signal.aborted || this.#cp.turnId !== turnId) throw new Error("Cursor Cloud run stopped before tool forwarding");
+    if (this.#stopping || this.#closed || this.#pendingTerminal || call.signal.aborted || this.#cp.turnId !== turnId) throw new Error("Cursor Cloud run stopped before tool forwarding");
     const response = this.#options.dynamicToolHandler({ tool: call.tool, callId, threadId: this.#cp.driverSessionId, turnId, arguments: args });
     normalized?.();
     const result = await response;
-    if (this.#closed || this.#stopping || this.#cp.turnId !== turnId || !active(this.#cp) || call.signal.aborted) throw new Error("Cursor Cloud tool result arrived after its run authority ended");
+    if (this.#closed || this.#stopping || this.#pendingTerminal || this.#cp.turnId !== turnId || !active(this.#cp) || call.signal.aborted) throw new Error("Cursor Cloud tool result arrived after its run authority ended");
     if ((call.tool === PRP_COMPLETION_TOOL_NAME || call.tool === PRP_BLOCK_TOOL_NAME) && record(result).success === true) {
       this.#cp.acceptedCompletion = { callIdDigest: cursorCloudDigest(callId), inputDigest: cursorCloudDigest(semanticCanonicalJson(call.arguments)), resultDigest: cursorCloudDigest(semanticCanonicalJson(result)), turnId };
       await this.#store.write(this.#cp);
@@ -535,7 +581,7 @@ class CursorCloudSession implements CursorCloudSessionHandle {
     this.#transcript.push(event); if (this.#transcript.length > 1_024) this.#transcript.shift(); this.#events.push(event);
   }
   #emit(eventType: PrpEvent["eventType"], payload: Record<string, unknown>, itemId?: string, turnId = this.#cp.turnId ?? undefined): void {
-    if (!this.#closed) this.#publish(this.#event(eventType, payload, itemId, turnId));
+    if (!this.#closed && !this.#pendingTerminal) this.#publish(this.#event(eventType, payload, itemId, turnId));
   }
   async acknowledgeTerminalDelivery(input: { turnId: string; receiptId: string }): Promise<void> {
     const pending = this.#cp.pendingTerminalDelivery;
@@ -546,6 +592,7 @@ class CursorCloudSession implements CursorCloudSessionHandle {
   async read(): Promise<Record<string, unknown>> { return { provider: "cursor_cloud", agentId: this.#cp.agentId, runId: this.#cp.runId, turnId: this.#cp.turnId, phase: this.#cp.phase, providerStatus: this.#cp.terminalStatus, submittedModel: this.#options.model, effectiveModelAcknowledged: false, instructionsDigest: this.#cp.instructionsDigest, instructionsAcknowledged: false, semanticCompletionReceipt: this.#cp.acceptedCompletion, pendingTerminalDelivery: structuredClone(this.#cp.pendingTerminalDelivery) }; }
   async reconcile(): Promise<Record<string, unknown>> {
     if (this.#rejectionSettlement) await this.#rejectionSettlement;
+    if (this.#pendingTerminal) { await this.#persistTerminal(); return this.read(); }
     const authority = this.#authority();
     await this.#resolvePending(authority);
     const remote = this.#remote(authority);
@@ -554,14 +601,18 @@ class CursorCloudSession implements CursorCloudSessionHandle {
   }
   async usage(): Promise<Record<string, unknown> | null> { return this.#cp.agentId ? { ...(await this.#client.getUsage(this.#cp.agentId, this.#cp.runId ? { runId: this.#cp.runId } : {})), cost: null, costUnavailable: true } : null; }
   async transcript() { return { schema: "paperclip-runner/harness-transcript/v1" as const, complete: this.#transcript.length < 1_024, eventCount: this.#transcript.length, events: structuredClone(this.#transcript), omissionReason: this.#transcript.length >= 1_024 ? "bounded_history" : null }; }
-  async snapshot(): Promise<PersistedHarnessSession> { if (this.#rejectionSettlement) await this.#rejectionSettlement; await this.#store.write(this.#cp); return { driverKind: CURSOR_CLOUD_DRIVER_KIND, driverSessionId: this.#cp.driverSessionId, providerSessionId: this.#cp.agentId, workingDirectory: this.#input.workingDirectory, runId: this.#cp.ownerRunId, normalizedSessionId: this.#cp.normalizedSessionId, activeTurnId: active(this.#cp) ? this.#cp.turnId : null, lastSourceSequence: this.#cp.sourceSequence }; }
-  async detachControllerForRestart(): Promise<void> { if (this.#rejectionSettlement) await this.#rejectionSettlement; this.#closed = true; this.#streamAbort?.abort(); this.#clearDeadline(); await this.#bridge?.close(); this.#events.close(); await this.#store.write(this.#cp); await this.#store.release(); }
+  async snapshot(): Promise<PersistedHarnessSession> { if (this.#rejectionSettlement) await this.#rejectionSettlement; if (this.#pendingTerminal) await this.#persistTerminal(); await this.#store.write(this.#cp); return { driverKind: CURSOR_CLOUD_DRIVER_KIND, driverSessionId: this.#cp.driverSessionId, providerSessionId: this.#cp.agentId, workingDirectory: this.#input.workingDirectory, runId: this.#cp.ownerRunId, normalizedSessionId: this.#cp.normalizedSessionId, activeTurnId: active(this.#cp) ? this.#cp.turnId : null, lastSourceSequence: this.#cp.sourceSequence }; }
+  async detachControllerForRestart(): Promise<void> { if (this.#rejectionSettlement) await this.#rejectionSettlement; if (this.#pendingTerminal) await this.#persistTerminal(); this.#closed = true; this.#streamAbort?.abort(); this.#clearDeadline(); await this.#bridge?.close(); this.#events.close(); await this.#store.write(this.#cp); await this.#store.release(); }
   async close(_input: { reason: string; force?: boolean }): Promise<void> {
     if (this.#closed) return;
     let failure: unknown;
-    try { if (active(this.#cp)) await this.interrupt(); } catch (error) { failure = error; }
+    try { if (this.#pendingTerminal) await this.#persistTerminal(); else if (active(this.#cp)) await this.interrupt(); } catch (error) { failure = error; }
     this.#closed = true; this.#streamAbort?.abort(); this.#clearDeadline();
-    await this.#bridge?.close(); this.#events.close(); await this.#store.write(this.#cp); await this.#store.release();
+    await this.#bridge?.close(); this.#events.close();
+    // A failed terminal write may have committed before its acknowledgement was
+    // lost. Retain the last durable checkpoint instead of overwriting it active.
+    if (!this.#pendingTerminal) await this.#store.write(this.#cp);
+    await this.#store.release();
     if (failure) throw failure;
   }
 }
