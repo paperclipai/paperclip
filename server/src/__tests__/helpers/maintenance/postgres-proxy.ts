@@ -68,7 +68,7 @@ export function createPostgresProtocolObserver(onQuery: (query: ObservedQuery) =
 
 export async function startMaintenancePostgresProxy(databaseUrl: string) {
   const upstream = new URL(databaseUrl), queries: ObservedQuery[] = [], errors: Error[] = [];
-  const frames = { Query: 0, Parse: 0, Bind: 0, Execute: 0, Sync: 0 };
+  const frames = { Query: 0, Parse: 0, Bind: 0, Execute: 0, Sync: 0, Terminate: 0 };
   const transport = { connectionsOpened: 0, connectionsClosed: 0, frontendBytes: 0, backendBytes: 0 };
   const sockets = new Set<Socket>(), observers = new Set<ReturnType<typeof createPostgresProtocolObserver>>();
   const server = createServer(client => {
@@ -77,7 +77,7 @@ export async function startMaintenancePostgresProxy(databaseUrl: string) {
     const target = createConnection({ host: upstream.hostname, port: Number(upstream.port) || 5432 });
     const observer = createPostgresProtocolObserver(query => queries.push(query), type => {
       if (type === "Q") frames.Query++; else if (type === "P") frames.Parse++; else if (type === "B") frames.Bind++;
-      else if (type === "E") frames.Execute++; else if (type === "S") frames.Sync++;
+      else if (type === "E") frames.Execute++; else if (type === "S") frames.Sync++; else if (type === "X") frames.Terminate++;
     });
     observers.add(observer);
     for (const socket of [client, target]) {

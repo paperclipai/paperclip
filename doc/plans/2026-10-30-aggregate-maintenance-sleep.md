@@ -8,9 +8,9 @@ scheduling, feature toggles, plugin readiness, environment cleanup, idle trackin
 hot-restart shutdown, and conservative sleep-safety checks. This work does not
 qualify actual database or host suspension, Cloud alarms, or cost savings.
 
-The dependency base currently retains the interval while residual run recovery
-is being completed. The assembled acceptance harness is implemented first so
-that its observation boundary has a positive control before interval removal.
+The dependency base retains the interval until final recovery integration and
+review repairs converge. The assembled acceptance harness was implemented first
+so that its observation boundary had a positive control before interval removal.
 
 ## Duty ownership
 
@@ -64,9 +64,13 @@ backups, live operation keepalives or authorized external reconciliation disappe
 
 ## Clock and settlement
 
-One positive control uses a real 31-second observation after actual startup
-settlement. Longer windows use only child-local Date/setTimeout/setInterval
-control. Boot, ordinary HTTP/service producer phases and graceful shutdown advance at real speed. The
+The original pre-migration positive control recorded recurring maintenance SQL
+during a real 31-second observation after actual startup settlement. Its baseline
+receipt is retained; the obsolete recurring-SQL expectation is replaced by the
+final enabled cases. The real-socket raw/prepared execution calibration remains
+in the suite. The two enabled cases are prepared to observe 90 real seconds each
+and two further hours using child-local Date/setTimeout/setInterval control.
+They remain unqualified until run on the final cutover tree. Boot, ordinary HTTP/service producer phases and graceful shutdown advance at real speed. The
 clock freezes after readiness and real socket settlement, then advances at most
 30 seconds per step, settling real I/O between steps. Parent deadlines,
 setImmediate and database sockets remain usable. Receipts distinguish real
@@ -154,12 +158,12 @@ coordinator still holds unresolved transactions. PostgreSQL regressions cover
 committed and uncommitted changes, failed expiry, zero SQL/active work during
 drain, exactly-once resume and existing shutdown/restart behavior.
 
-Remaining acceptance before a removal PR: final recovery integration, final recovery
-first-producer paths through assembled wiring, enabled empty/configured/history
-quiet including the real 90-second window, startup failure isolation and
-remaining final-recovery lifecycle races, relevant contracts across the combined tree, current-head
-Greptile 5/5 and required CI. No aggregate-removal acceptance or deployment claim
-is made by the preliminary harness checkpoint.
+Remaining acceptance before a removal PR: final reviewed recovery integration,
+aggregate interval removal, both enabled empty/configured-history quiet cases,
+relevant contracts across the combined tree, current-head Greptile 5/5 and
+required CI. Startup failure isolation, producer/lifecycle cases and ordinary
+restore/admission now have actual assembled proofs. No aggregate-removal
+acceptance or deployment claim is made by this preparation checkpoint.
 
 The assembled routine proof also uses ordinary subtree cancel and restore APIs.
 It requires the same persisted routine run to return to `issue_created`, clears

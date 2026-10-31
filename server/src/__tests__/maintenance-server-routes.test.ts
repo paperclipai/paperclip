@@ -45,26 +45,55 @@ describe("assembled maintenance server production wiring", () => {
     if (!databaseUrl) { temporary = await startEmbeddedPostgresTestDatabase("maintenance-server-"); databaseUrl = temporary.connectionString; }
   }, 150_000);
   afterAll(async () => { await temporary?.cleanup(); });
-  it("detects legacy aggregate recovery SQL after an empty real server boot settles", async () => {
+  it.each(["empty", "configured terminal history"] as const)("keeps enabled %s quiet for 90 real seconds and two qualified hourly windows", async state => {
     await clearDatabase();
-    const server = await startMaintenanceServer(databaseUrl!);
+    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+    if (state !== "empty") {
+      const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+      await fixture.insert(companies).values({ id: companyId, name: "Retained idle history", issuePrefix: "MIH" });
+      await fixture.insert(agents).values({ id: agentId, companyId, name: "Idle retained agent", status: "idle", adapterType: "process",
+        adapterConfig: { command: process.execPath, args: ["-e", "process.exit(0)"] }, runtimeConfig: { heartbeat: { enabled: true, intervalSec: 0, wakeOnDemand: true } } });
+      await fixture.insert(issues).values({ id: issueId, companyId, title: "Retained terminal task", status: "done", assigneeAgentId: agentId });
+      await fixture.insert(heartbeatRuns).values({ companyId, agentId, issueId, status: "succeeded", finishedAt: new Date(), contextSnapshot: { issueId } });
+    }
+    const server = await startMaintenanceServer(databaseUrl!, { clock: true });
     try {
-      const settled = await server.settled();
-      expect(settled.startup.phase).toBe("ready");
-      expect(settled.outgoingHttpRequests).toBe(0);
-      const baseline = server.proxy.queries.length, initialFrames = server.proxy.frames;
-      await delay(31_000);
-      await server.settled();
-      const repeated = server.proxy.queries.slice(baseline);
-      expect(repeated.length).toBeGreaterThan(0);
-      expect(repeated.some(query => query.sql.includes('"heartbeat_runs"'))).toBe(true);
+      if (state !== "empty") await server.api("PATCH", "/instance/settings/experimental", { enableExternalObjects: true, enableStatusCards: true });
+      await settleClock(server); await server.freeze();
+      const before = await server.snapshot(), queryCount = server.proxy.queries.length, frames = server.proxy.frames, transport = server.proxy.transport;
+      expect(before.startup.phase).toBe("ready"); expect(before.idle.active).toBe(0);
+      await server.realtime();
+      const wallStart = Date.now();
+      await delay(90_000);
+      const wallElapsedMs = Date.now() - wallStart;
+      await server.freeze();
+      const real = await server.settled(100);
+      expect(wallElapsedMs).toBeGreaterThanOrEqual(90_000);
+      expect(real.now - before.now).toBeGreaterThanOrEqual(89_000);
+      expect(real.idle.active).toBe(0);
+      expect(server.proxy.queries.length).toBe(queryCount);
+      expect(real.outgoingHttpRequests).toBe(before.outgoingHttpRequests);
+      expect(real.network.nonDatabaseConnections).toBe(before.network.nonDatabaseConnections);
+      expect(real.network.nonDatabaseBytesWritten).toBe(before.network.nonDatabaseBytesWritten);
+      const realFrames = server.proxy.frames, realTransport = server.proxy.transport;
+      for (let step = 0; step < 240; step++) { await server.advance(30_000); await server.settled(10); }
+      const after = await server.snapshot();
+      expect(after.now - real.now).toBe(2 * 60 * 60_000);
+      expect(after.idle.active).toBe(0);
+      expect(server.proxy.queries.length).toBe(queryCount);
+      expect(after.outgoingHttpRequests).toBe(before.outgoingHttpRequests);
+      expect(after.network.nonDatabaseConnections).toBe(before.network.nonDatabaseConnections);
+      expect(after.network.nonDatabaseBytesWritten).toBe(before.network.nonDatabaseBytesWritten);
       expect(server.proxy.errors).toEqual([]);
-      expect((await server.snapshot()).outgoingHttpRequests).toBe(0);
-      await writeFile(path.join(server.directory, "measurement.json"), JSON.stringify({ phase: "legacy-positive-control",
-        observationMs: 31_000, startupQueries: baseline, startup: receipt(server.proxy.queries.slice(0, baseline)),
-        repeatedQueries: repeated.length, repeated: receipt(repeated), initialFrames, finalFrames: server.proxy.frames, outgoingHttpRequests: 0 }, null, 2));
-    } finally { await server.stop(); }
-  }, 150_000);
+      await writeFile(path.join(server.directory, "enabled-quiet-measurement.json"), JSON.stringify({ phase: "enabled-quiet", state,
+        wallElapsedMs, realClockElapsedMs: real.now - before.now, qualifiedClockMs: after.now - real.now, stepMs: 30_000, ioSettledBetweenSteps: true,
+        measuredQueries: 0, startupQueries: queryCount, startup: receipt(server.proxy.queries), before, real, after,
+        frames: { before: frames, real: realFrames, after: server.proxy.frames }, transport: { before: transport, real: realTransport, after: server.proxy.transport },
+        boundary: "actual startServer, real elapsed 90s plus qualified child clock; pool connection housekeeping reported separately; no active provider/native work, Cloud enrollment, installed plugins, telemetry exporter, announcements or database backup; no host or database suspension claim",
+      }, null, 2));
+    } finally { await server.stop(); await fixture.$client.end(); }
+  }, 240_000);
+
   it("releases an ordinary held task Retry into one real process execution", async () => {
     await clearDatabase();
     const server = await startMaintenanceServer(databaseUrl!, { clock: true });
