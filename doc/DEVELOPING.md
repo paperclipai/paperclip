@@ -813,7 +813,9 @@ systemctl restart paperclip.service
 
 The staged command records the target server's boot identity and operating
 system process start time with the PID. It reads process metadata through
-`/proc` on Linux, `ps` on macOS and BSD, and PowerShell on Windows. These
+`/proc` on Linux, `ps` on macOS and BSD, and PowerShell on Windows. The `ps`
+timestamp probes use the C locale so translated month and day names do not
+prevent parsing. The server's locale remains unchanged. These
 identities let a later request reclaim an abandoned marker after the operating
 system recycles the numeric PID. Older markers stay compatible and use process
 start metadata when available. When OS metadata is unavailable, the current

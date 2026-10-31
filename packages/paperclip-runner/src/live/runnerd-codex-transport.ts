@@ -126,6 +126,7 @@ function readLocalProcessStartedAt(pid: number): string | null {
         encoding: "utf8",
         timeout: 1_500,
         windowsHide: true,
+        env: { ...process.env, LC_ALL: "C" },
       }).trim();
       const parsed = new Date(raw);
       return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
