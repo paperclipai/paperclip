@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import type { Issue, IssueStatus } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getKanbanColumnTone, KanbanBoard, resolveKanbanTargetStatus } from "./KanbanBoard";
+import { boardStatuses, getKanbanColumnTone, KanbanBoard, resolveKanbanTargetStatus } from "./KanbanBoard";
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -188,11 +188,16 @@ describe("KanbanBoard", () => {
     expect(container.textContent).not.toContain("Issue 1");
   });
 
+  it("has a column for every selectable issue status", () => {
+    expect(boardStatuses).toContain("ready_for_qa");
+  });
+
   it("gives every column a status-hued tone", () => {
     expect(getKanbanColumnTone("backlog").body).toContain("bg-muted/30");
     expect(getKanbanColumnTone("todo").body).toContain("amber");
     expect(getKanbanColumnTone("in_progress").body).toContain("blue");
     expect(getKanbanColumnTone("in_review").body).toContain("violet");
+    expect(getKanbanColumnTone("ready_for_qa").body).toContain("fuchsia");
     expect(getKanbanColumnTone("blocked").body).toContain("red");
     expect(getKanbanColumnTone("done").body).toContain("green");
     expect(getKanbanColumnTone("cancelled").body).toContain("bg-muted/25");
