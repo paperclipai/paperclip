@@ -9190,6 +9190,44 @@ describe("native warm session supervision", () => {
       expect(state.execute).toHaveBeenCalledTimes(2);
     });
 
+    it("claims native execution authority before retiring a superseded warm identity", async () => {
+      const { base, next, run } = fixture("identity-native-claim-order");
+      const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+      let inspected = false;
+      const close = vi.fn(async () => {
+        if (inspected) return;
+        inspected = true;
+        expect(updates.some(update => update.table === nativeRunFinalizations
+          && update.values.leaseOwner && update.values.controllerBootId)).toBe(true);
+      });
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        options.onSession?.({ close }); return result;
+      }).mockImplementationOnce(async () => result);
+      await run(base);
+      // Normal runtime selection already converted preparation to native and
+      // inserted an unclaimed observed coordinator before calling this facade.
+      await executePaperclipNativeSession({ db: leaseDb(next, {}, {}, updates),
+        execution: next, runnerInstanceId: "runner", useRunnerd: true });
+      expect(close).toHaveBeenCalledOnce();
+      expect(state.execute).toHaveBeenCalledTimes(2);
+    });
+
+    it.each(["cancelled", "foreign-owner"] as const)("does not retire or stage a warm successor after claim denial: %s", async denial => {
+      const { base, next, run } = fixture(`identity-native-claim-denied-${denial}`);
+      const close = vi.fn(async () => undefined);
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        options.onSession?.({ close }); return result;
+      });
+      await run(base);
+      state.stageNativeRunnerWakeAttachments.mockClear();
+      const db = leaseDb(next, denial === "foreign-owner" ? { leaseOwner: "different-controller" } : {},
+        {}, [], {}, denial === "cancelled" ? "cancelled" : "running");
+      await expect(executePaperclipNativeSession({ db, execution: next, runnerInstanceId: "runner", useRunnerd: true })).rejects.toThrow();
+      expect(close).not.toHaveBeenCalled();
+      expect(state.stageNativeRunnerWakeAttachments).not.toHaveBeenCalled();
+      expect(state.execute).toHaveBeenCalledTimes(1);
+    });
+
     it("does not retire an active turn when a new session identity arrives", async () => {
       const { base, next, run } = fixture("identity-active");
       let finish!: () => void;

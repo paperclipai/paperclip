@@ -2786,8 +2786,16 @@ transport options alone does not exercise the resumed-lease harness checks.
 Include a healthy warm handoff before the crash so recovery exercises the
 handoff's turn and item attachment IDs as well as first-run identities.
 Retirement tests must exercise the preceding `turn.stop` as well as drain and
-suspend after result acceptance. Configuration tests compare fresh and recovered
+suspend after result acceptance. Use the actual native-observed, unclaimed
+admission phase and the production claim before retiring the predecessor;
+a synthetic legacy preparation does not cover that boundary. Verify failed
+claims and Stop leave the predecessor and shared attachment staging untouched.
+Configuration tests compare fresh and recovered
 home-mode fingerprints while preserving rejection of real mode changes.
+Include multiple skill versions read back from Postgres JSONB: version-map key
+order must not change the generated preference or session fingerprint. Exercise
+the real environment-selection and configuration services with a retained shared
+workspace, and keep actual model or skill-version changes incompatible.
 Run it against an isolated database with `PAPERCLIP_TEST_DATABASE_URL` when the
 host cannot start embedded Postgres:
 

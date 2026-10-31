@@ -2728,9 +2728,16 @@ Accepted-result retirement still stops the old provider turn before draining and
 suspending its Runner. The checkpoint codec classifies `turn.stop` as lifecycle
 maintenance. Existing exact ownership, generation and accepted-result fences
 govern this cleanup; starting provider work still requires an active owner.
+A successor claims its existing native coordinator and starts renewal before
+retiring a superseded warm session. An unclaimed preparation cannot authorize
+the predecessor's checkpoint writes. Shared attachment staging follows verified
+retirement; a failed claim or Stop cannot close that predecessor or stage files.
 Recovery also preserves the implicit isolated-home default when binding admitted
 configuration, so an unchanged home does not invalidate the retained session.
 Explicit home-mode changes retain their normal configuration-change checks.
+Restoring pinned skill versions also preserves the fresh selection's existing
+name/key order. JSONB map ordering must not change the generated skill preference
+and invalidate the session when the selected keys, versions and bytes are unchanged.
 
 For per-turn direct sandbox recovery, the executor reads the retained Runner's
 suspended lifecycle through the recorded sandbox lease and validates its complete

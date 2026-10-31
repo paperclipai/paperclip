@@ -1408,9 +1408,10 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     const binding = { companyId, issueId: fixture.issueId, runId: fixture.runId };
     const root = resolve(runtimeRoot, fixture.runId, "real-retirement");
     const options = transportOptions(fixture, root);
+    const retirementController = await currentNativeControllerIdentity();
     const diagnostics: string[] = [], checkpointFailures: unknown[] = [];
     let authority!: DurablePrpControlPlane;
-    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: successor.bootId,
+    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: retirementController.bootId,
       controllerGeneration: 1, leaseOwner: "real-retirement-owner", leaseExpiresAt: new Date(Date.now() + 60_000),
     }).where(eq(nativeRunFinalizations.runId, fixture.runId));
     const transport = createRunnerdCodexTransport({ ...options,
@@ -1419,7 +1420,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       controlPlaneRegistration: async core => {
         authority = core;
         const write = nativeRunnerCheckpointWriter(fixture.db, { ...binding, authorityRunId: fixture.runId,
-          bootId: successor.bootId, generation: 1, leaseOwner: "real-retirement-owner" });
+          bootId: retirementController.bootId, generation: 1, leaseOwner: "real-retirement-owner" });
         core.setCheckpointPersistence(async checkpoint => {
           try { await write(checkpoint); }
           catch (error) { checkpointFailures.push(error); throw error; }
@@ -1450,12 +1451,32 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       await fixture.db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
         .where(eq(heartbeatRuns.id, fixture.runId));
       const nextRunId = randomUUID();
-      await fixture.db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId, issueId: fixture.issueId,
-        scopeKind: "issue", status: "running", runtimeMode: "legacy", executionStage: "preparing",
-        invocationSource: "assignment", contextSnapshot: { issueId: fixture.issueId },
-        controllerBootId: legacyControllerBootId, controllerLeaseExpiresAt: new Date(Date.now() + 60_000) });
+      const [nextRun] = await fixture.db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId,
+        issueId: fixture.issueId, nativeIssueId: fixture.issueId, scopeKind: "issue", status: "running", runtimeMode: "native",
+        invocationSource: "assignment", contextSnapshot: { issueId: fixture.issueId } }).returning();
+      const next = await prepareNativeHeartbeatRun({ db: fixture.db, run: nextRun,
+        issue: { id: fixture.issueId, title: "Next conversation", description: null }, environmentLeaseId: randomUUID() });
+      await fixture.db.insert(nativeRunFinalizations).values({ runId: nextRunId, companyId, issueId: fixture.issueId, phase: "observed" });
       await fixture.db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, fixture.issueId));
-      await expect(transport.transport.close(), diagnostics.join("\n")).resolves.toBeUndefined();
+      const [contract] = await fixture.db.select().from(completionContracts).where(eq(completionContracts.id, run.completionContractId!));
+      const nextExecution = buildNativeExecutionInput({ companyId, agentId, runId: nextRunId,
+        issue: { id: fixture.issueId, identifier: "NRR-NATIVE-RETIREMENT", title: "Next conversation", description: null, workMode: "standard" },
+        taskPrompt: "Start only after the previous provider durably suspends.",
+        workspace: { id: randomUUID(), cwd: root, repoUrl: null, repoRef: null, branchName: null },
+        normalizedSessionId: next.normalizedSessionId, runtimeContext: nativeRuntimeContextFixture(),
+        completionContract: { id: contract.id, sha256: contract.canonicalSha256, schemaVersion: contract.schemaVersion, contract: contract.contractJson as never },
+      });
+      const fixtureStoppedAfterRealClaim = new Error("fixture stopped before next provider dispatch");
+      await expect(executePaperclipNativeSession({ db: fixture.db, execution: nextExecution, runnerInstanceId: next.runnerInstanceId,
+        onExecutionLeaseAcquired: async () => {
+          const [claimed] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, nextRunId));
+          expect(claimed.controllerBootId).toBe(retirementController.bootId);
+          expect(claimed.leaseOwner).toEqual(expect.any(String));
+          expect(claimed.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
+          await expect(transport.transport.close(), diagnostics.join("\n")).resolves.toBeUndefined();
+          throw fixtureStoppedAfterRealClaim;
+        },
+      })).rejects.toBe(fixtureStoppedAfterRealClaim);
       expect(checkpointFailures).toEqual([]);
       const state = JSON.parse(await readFile(resolve(root, "runner", "runner-state.json"), "utf8"));
       expect(state).toMatchObject({ lifecycle: "suspended", runId: fixture.runId,
