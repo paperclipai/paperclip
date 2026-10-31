@@ -207,14 +207,20 @@ function priorityRank(priority: string | null | undefined) {
   return index >= 0 ? index : ISSUE_PRIORITIES.length;
 }
 
-function updatedWithinStart(value: string | undefined, now = new Date()): Date | null {
+/** Duration used by saved search membership and its deadline consumers. */
+export function companySearchUpdatedWithinMs(value: string | undefined): number | null {
   if (!value) return null;
   const match = /^(\d+)(h|d|w|m)$/.exec(value);
   if (!match) return null;
   const amount = Number.parseInt(match[1]!, 10);
   const unit = match[2];
   const hours = unit === "h" ? amount : unit === "d" ? amount * 24 : unit === "w" ? amount * 24 * 7 : amount * 24 * 30;
-  return new Date(now.getTime() - hours * 60 * 60 * 1000);
+  return hours * 60 * 60 * 1000;
+}
+
+function updatedWithinStart(value: string | undefined, now = new Date()): Date | null {
+  const duration = companySearchUpdatedWithinMs(value);
+  return duration === null ? null : new Date(now.getTime() - duration);
 }
 
 function issueOnlyFiltersActive(query: CompanySearchQuery) {
@@ -542,7 +548,7 @@ export function companySearchService(db: Db) {
     search: async (
       companyId: string,
       query: CompanySearchQuery,
-      options?: { issueReadCondition?: SQL<boolean>; projectReadCondition?: SQL<boolean> },
+      options?: { issueReadCondition?: SQL<boolean>; projectReadCondition?: SQL<boolean>; onNextMembershipChange?: (at: Date | null) => void },
     ): Promise<CompanySearchResponse> => {
       const taskSearch = parseTaskSearch(query.q);
       const normalizedQuery = taskSearch.normalizedQuery;
@@ -553,6 +559,7 @@ export function companySearchService(db: Db) {
       const limit = query.limit;
       const offset = query.offset;
       if (!hasSearchText && !issueOnlyFiltersActive(query)) {
+        options?.onNextMembershipChange?.(null);
         return {
           query: query.q,
           normalizedQuery,
@@ -721,6 +728,13 @@ export function companySearchService(db: Db) {
           }
         }
 
+        const membershipWindow = companySearchUpdatedWithinMs(query.updatedWithin);
+        if (options?.onNextMembershipChange && membershipWindow !== null && scopeIncludesIssues(scope)) {
+          // Includes rows outside the visible page: their expiry can move an
+          // offset/priority-ranked result into the watched set without a write.
+          branches.push(sql`SELECT 'membership-expiry' AS kind, min(m.updated_at)::text AS value,
+            0::int AS count ${countTail} FROM matched m ${branchWhere([scopeCond, ...facetsAll])}`);
+        }
         const resultRows = await db.execute(sql`
           ${taskSearchCtes(companyId, taskSearch, scope !== "issues", and(...issueFilters), options?.issueReadCondition)}
           ${sql.join(branches, sql` UNION ALL `)}
@@ -732,6 +746,7 @@ export function companySearchService(db: Db) {
           totals: { current: 0, unfiltered: 0, omit: {} },
         };
         const issueRowsRaw: IssueSearchRow[] = [];
+        let nextMembershipChange: Date | null = null;
         for (const row of resultRows) {
           if (row.kind === "result") {
             issueRowsRaw.push({
@@ -756,6 +771,9 @@ export function companySearchService(db: Db) {
             });
             continue;
           }
+          if (row.kind === "membership-expiry" && row.value && membershipWindow !== null) {
+            nextMembershipChange = new Date(new Date(row.value).getTime() + membershipWindow + 1);
+          }
           const count = Number(row.count ?? 0);
           if (row.kind === "type:issue") aggregates.typeCounts.issue = count;
           else if (row.kind === "type:comment") aggregates.typeCounts.comment = count;
@@ -776,6 +794,7 @@ export function companySearchService(db: Db) {
             aggregates.totals.omit[row.kind.slice("total:omit:".length) as CompanySearchIssueFilterKey] = count;
           }
         }
+        options?.onNextMembershipChange?.(nextMembershipChange);
         return { rows: await enrichIssueSnippets(issueRowsRaw), aggregates };
       }
 

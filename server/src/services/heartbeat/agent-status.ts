@@ -1,4 +1,5 @@
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
+import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { and, asc, desc, eq, lte, sql } from "drizzle-orm";
@@ -93,6 +94,7 @@ export function createHeartbeatAgentStatus(db: Db) {
       const nextStatus = running ? "running" : settledStatus(outcome, options?.keepIdleOnFailure);
       const now = new Date();
       await notifyStrandedAgentStatus(tx, { companyId: existing.companyId, agentId });
+      await notifyAttentionRetentionWork(tx, { companyId: existing.companyId });
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       const [updated] = await tx.update(agents).set({
         status: nextStatus,
@@ -144,6 +146,7 @@ export function createHeartbeatAgentStatus(db: Db) {
             eq(heartbeatRuns.agentId, candidate.id)))
           .orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
         const nextStatus = settledStatus(lastRun?.status);
+        await notifyAttentionRetentionWork(tx, { companyId: candidate.companyId });
         const [agent] = await tx.update(agents).set({ status: nextStatus,
           errorReason: nextStatus === "error" ? errorReason(lastRun?.error) : null, updatedAt: now,
         }).where(and(eq(agents.id, candidate.id), eq(agents.companyId, candidate.companyId),

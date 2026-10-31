@@ -38,7 +38,7 @@ describe("reconstruction after confirmed native workspace loss", () => {
     const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_RECONSTRUCTION_TEST_DATABASE_URL");
     if (external) {
       await applyPendingMigrations(external);
-      db = createDb(external);
+      db = createDb(external, { maxConnections: 6 });
       return;
     }
     temporary = await startEmbeddedPostgresTestDatabase("workspace-reconstruction-");
@@ -144,17 +144,21 @@ describe("reconstruction after confirmed native workspace loss", () => {
     expect(await queue.nextTimerHeartbeatAt(agent)).toBeNull();
     const events: string[] = [];
     const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.agentTimers, event => events.push(event));
+    const routineEvents: string[] = [];
+    const unsubscribeRoutine = subscribeDatabaseWork(db, DELIVERY_QUEUES.routineExecutionStatus, event => routineEvents.push(event));
     try {
       await db.transaction(async tx => {
         await reconstructNativeWorkspace({ ...f, db: tx as unknown as Db });
         expect(events).toContain("intent");
         expect(events).not.toContain("settled");
+        expect(routineEvents).toContain("intent"); expect(routineEvents).not.toContain("settled");
         expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("blocked");
       });
       expect(events).toContain("settled");
+      expect(routineEvents).toContain("settled");
       expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("todo");
       expect(await queue.nextTimerHeartbeatAt(agent)).toBe(agent.createdAt.getTime() + 600_000);
-    } finally { unsubscribe(); }
+    } finally { unsubscribe(); unsubscribeRoutine(); }
   });
 
   it("pins a historical cancelled workspace through public heartbeat startup without replaying its turn", async () => {

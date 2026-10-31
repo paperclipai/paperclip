@@ -1,3 +1,4 @@
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { createAgentLifecycle } from "./agent-lifecycle.js";
 import { agentAppearanceSchema, agentHarnessType, paperclipRunnerProfileForHarness, agentRunner, type AgentRunnerChoice } from "@paperclipai/shared";
@@ -6467,6 +6468,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           if (relationRows.length > 0) {
             const relationCompanyId = targetCompany.id;
             await db.transaction(async tx => {
+              await notifyAttentionRetentionWork(tx, { companyId: relationCompanyId });
               await notifyIssueRecovery(tx, { companyId: relationCompanyId });
               await tx
               .insert(issueRelations)

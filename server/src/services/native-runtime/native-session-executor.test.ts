@@ -4302,6 +4302,17 @@ describe("retained native cleanup activation", () => {
       releaseCommit = release;
     });
     const db = {
+      execute: async (query: SQL) => {
+        // Retention hints read the fixture's run/issue relationship inside the
+        // same cleanup transaction; this fixture has one issue and no ancestors.
+        const statement = new PgDialect().sqlToQuery(query);
+        expect(transactionOpen).toBe(true);
+        expect(statement.params).toContain(run.companyId);
+        if (statement.sql.includes("from heartbeat_runs")) return [{ id: run.nativeIssueId }];
+        if (statement.sql.includes("origin_kind")) return [{ id: run.nativeIssueId, originKind: null, originId: null }];
+        if (statement.sql.includes("with recursive affected")) return [{ issueId: run.nativeIssueId }];
+        throw new Error(`Unexpected cleanup fixture query: ${statement.sql}`);
+      },
       select: () => ({
         from: (table: unknown) => {
           const rows =
@@ -5103,7 +5114,10 @@ describe("retained native cleanup activation", () => {
       }
       const outcome = await pendingOutcome;
       if (mode === "legacy_busy_copy") {
-        expect(maintenanceReleased).toHaveBeenCalledExactlyOnceWith({ companyId: run.companyId, runId: run.id });
+        expect(maintenanceReleased).toHaveBeenCalledExactlyOnceWith(
+          { companyId: run.companyId, runId: run.id },
+          { companyId: run.companyId, runId: run.id },
+        );
         unsubscribeMaintenance?.();
       }
       if (canonicalSource) {
@@ -6425,7 +6439,10 @@ describe("native startup cancellation fence", () => {
       })).rejects.toThrow("native_cancellation_pending_recovery");
       expect(cancel).toHaveBeenCalledOnce();
       expect(submit).not.toHaveBeenCalled();
-      expect(released).toHaveBeenCalledWith({ companyId: execution.binding.companyId, agentId: execution.binding.agentId });
+      expect(released).toHaveBeenCalledWith(
+        { companyId: execution.binding.companyId, agentId: execution.binding.agentId },
+        { companyId: execution.binding.companyId, runId: execution.binding.runId, issueId: execution.binding.issueId },
+      );
     } finally { unsubscribe(); }
   });
 });
@@ -9872,9 +9889,10 @@ describe("native warm session supervision", () => {
       );
       expect(released).not.toHaveBeenCalled();
       releaseClose();
-      await vi.waitFor(() => expect(released).toHaveBeenCalledExactlyOnceWith({
-        companyId: base.binding.companyId, agentId: base.binding.agentId,
-      }));
+      await vi.waitFor(() => expect(released).toHaveBeenCalledExactlyOnceWith(
+        { companyId: base.binding.companyId, agentId: base.binding.agentId },
+        { companyId: base.binding.companyId, runId: base.binding.runId, issueId: base.binding.issueId },
+      ));
     } finally { releaseClose(); unsubscribe(); }
   });
 
@@ -12453,7 +12471,10 @@ describe("runnerd provider runtime wiring", () => {
       releaseEnvironment();
       releaseAssigned();
       const result = await preparation;
-      expect(released).toHaveBeenCalledExactlyOnceWith({ companyId: execution.binding.companyId, agentId: execution.binding.agentId });
+      expect(released).toHaveBeenCalledExactlyOnceWith(
+        { companyId: execution.binding.companyId, agentId: execution.binding.agentId },
+        { companyId: execution.binding.companyId, runId: execution.binding.runId, issueId: execution.binding.issueId },
+      );
       if (failure !== "success") {
         expect(result).toMatchObject({ error: { message: failure === "assigned" ? "assigned failed" : "environment failed" } });
         expect(state.createBackend).not.toHaveBeenCalled();
