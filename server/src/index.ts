@@ -1250,7 +1250,6 @@ async function startServerWithDatabaseTeardown(
     drainRunIds?: string[];
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
-  let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     const finishIdleWork = beginIdleTrackedWork();
@@ -1267,12 +1266,6 @@ async function startServerWithDatabaseTeardown(
     while (heartbeatSchedulerInFlight.size > 0) {
       await Promise.allSettled([...heartbeatSchedulerInFlight]);
     }
-  };
-  const startHeartbeatSchedulerInterval = (callback: () => void) => {
-    heartbeatSchedulerInterval = setInterval(() => {
-      if (!isWarmStandby() && !isIdleTaskDrainActive()) callback();
-    }, config.heartbeatSchedulerIntervalMs);
-    heartbeatSchedulerInterval?.unref?.();
   };
   const skillSourceSync = skillSourceSyncService(db as any);
   const nativeHarnessBackupExpiration = nativeHarnessBackupExpirationService(db as any, {
@@ -1793,12 +1786,6 @@ async function startServerWithDatabaseTeardown(
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerStoppedInstructionCollectionWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
 
-    // Startup housekeeping: provider and connection sweeps that every timer tick
-    // repeats and that neither serving requests nor run recovery depends on.
-    // Readiness does not wait for it. It is tracked as scheduler work, so idle
-    // sleep and shutdown wait for it. Each step logs its own failure and the
-    // next step still runs. The scheduler interval starts after it, so the login
-    // reapers and the lease cleanup still finish before the first timer tick.
     const runStartupHousekeeping = async () => {
       const step = (name: string, work: () => Promise<unknown>) =>
         work().catch((err: unknown) => {
@@ -1841,31 +1828,6 @@ async function startServerWithDatabaseTeardown(
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
     };
 
-    const createHeartbeatSchedulerTick = (scheduled: ReturnType<typeof registerScheduledWork>) => () => {
-      // Track the outer async callback as well as the work it starts. Shutdown
-      // can then wait through an already-running suppression check before it
-      // captures the authoritative set of running heartbeat rows.
-      trackHeartbeatSchedulerWork((async () => {
-        if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-        const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
-        if (sweptRuntimeStatuses > 0) {
-          logger.info(
-            { swept: sweptRuntimeStatuses },
-            "heartbeat runtime-status sweeper cleared expired entries",
-          );
-        }
-
-        if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-
-        if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-
-        if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-
-
-      })().catch((err) => {
-        logger.error({ err }, "heartbeat scheduler tick failed");
-      }));
-    };
     const startHeartbeatScheduler = () => {
       if (isCloudManagedInstance()) {
         const status = registerRoutineExecutionStatusWork(deliveryWork, routineExecutionStatusService(db as any),
@@ -1891,7 +1853,6 @@ async function startServerWithDatabaseTeardown(
         }),
       });
       trackHeartbeatSchedulerWork(Promise.all([scheduled.timers.ready, scheduled.monitors.ready, scheduled.routines.ready]));
-      startHeartbeatSchedulerInterval(createHeartbeatSchedulerTick(scheduled));
     };
     trackHeartbeatSchedulerWork(runStartupHousekeeping().then(() => {
       if (!heartbeatSchedulerStopped) startHeartbeatScheduler();
@@ -1902,8 +1863,6 @@ async function startServerWithDatabaseTeardown(
     // this path registers the same startup recovery and pending-work deadlines
     // as the enabled path.
     await startEnvironmentCleanup();
-    startHeartbeatSchedulerInterval(() => {
-    });
   }
   
   if (config.databaseBackupEnabled) {
@@ -2020,10 +1979,6 @@ async function startServerWithDatabaseTeardown(
     await workspaceRecoveryWork.stop();
     unregisterTerminalWorkspaceProbe?.();
     unsubscribeNativeWorkspaceSyncRetention?.();
-    if (heartbeatSchedulerInterval) {
-      clearInterval(heartbeatSchedulerInterval);
-      heartbeatSchedulerInterval = null;
-    }
 
     const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
       signal,
