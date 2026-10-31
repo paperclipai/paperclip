@@ -25,9 +25,11 @@ with the same fixture, assets, cache, viewport, and CPU/network settings.
 
 Startup cases also check that shared collection controls do not require the
 task-detail bundle before reveal, even when a different organization is remembered.
-Code warms after the collection paints, or on task-link intent. A failed speculative fetch leaves the
-collection usable and permits navigation without a document reload. Direct task
-URLs retain module preload while identity is pending. These cases must run with
+Code warms after the collection paints, or on task-link intent. A successful
+immutable response allows module preloading to compile the cached chunk without
+executing it. A failed fetch leaves the collection usable and permits navigation
+without a document reload. Direct task URLs preload their static dependencies
+while identity is pending. These cases must run with
 production assets: development modules do not exercise the bundle boundaries.
 
 The functional cases route feature settings and delayed responses. Routing
@@ -35,3 +37,6 @@ disables browser HTTP caching. For warm-cache timings, set the real local featur
 settings and use fresh browser contexts without request interception. Keep normal
 cache writes enabled so code warmed after paint can be used on the next task open.
 Retain intercepted runs as separate diagnostic evidence.
+Match the server's hashed asset cache policy (`public, max-age=31536000, immutable`);
+Vite preview's default `no-cache` policy adds revalidation that the shipped server
+does not require. Keep HTML uncached and return 404 for missing assets.

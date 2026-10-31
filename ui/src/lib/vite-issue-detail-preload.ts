@@ -10,6 +10,14 @@ export function preloadIssueDetail(): Plugin {
         chunk.type === "chunk" && chunk.moduleIds.some((id) => id.endsWith("/src/pages/IssueDetail.tsx")),
       );
       if (!issueDetail) return [];
+      const chunks = new Map(Object.values(bundle ?? {}).filter(chunk => chunk.type === "chunk").map(chunk => [chunk.fileName, chunk]));
+      const dependencies = new Set<string>();
+      const visit = (fileName: string) => {
+        if (!chunks.has(fileName) || dependencies.has(fileName)) return;
+        dependencies.add(fileName);
+        for (const imported of chunks.get(fileName)?.imports ?? []) visit(imported);
+      };
+      visit(issueDetail.fileName);
       return [{
         tag: "script",
         injectTo: "head-prepend",
@@ -19,19 +27,25 @@ export function preloadIssueDetail(): Plugin {
             const route = parts.length === 3 ? parts[1] : parts.length === 2 ? parts[0] : null;
             return route === "chats" || (route === "issues" && !["all", "active", "backlog", "done", "recent"].includes(parts[parts.length - 1]));
           };
+          const append = href => {
+            const link = document.createElement("link");
+            link.rel = "modulepreload";
+            link.href = href;
+            link.crossOrigin = "";
+            document.head.appendChild(link);
+          };
           let requested = false;
           const preload = (speculative = false) => {
             if (requested) return;
             requested = true;
             if (speculative) {
-              void fetch(${JSON.stringify(`/${issueDetail.fileName}`)}, { credentials: "same-origin", cache: "force-cache", priority: "low" }).then(response => response.arrayBuffer()).catch(() => {});
+              void fetch(${JSON.stringify(`/${issueDetail.fileName}`)}, { credentials: "same-origin", cache: "force-cache", priority: "low" }).then(async response => {
+                await response.arrayBuffer();
+                if (response.ok && response.headers.get("cache-control")?.split(",").some(value => value.trim().toLowerCase() === "immutable")) append(${JSON.stringify(`/${issueDetail.fileName}`)});
+              }).catch(() => {});
               return;
             }
-            const link = document.createElement("link");
-            link.rel = "modulepreload";
-            link.href = ${JSON.stringify(`/${issueDetail.fileName}`)};
-            link.crossOrigin = "";
-            document.head.appendChild(link);
+            for (const href of ${JSON.stringify([...dependencies].map(fileName => `/${fileName}`))}) append(href);
           };
           if (isDetail(location.pathname)) preload();
           window.addEventListener(${JSON.stringify(TASK_COLLECTION_PAINTED_EVENT)}, () => preload(true), { once: true });
