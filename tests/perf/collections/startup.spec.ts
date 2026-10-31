@@ -2,7 +2,37 @@ import { expect, test } from "@playwright/test";
 import { collectionFixture, coordinatorPreference, type CollectionFixture } from "./fixture";
 
 let fixture: CollectionFixture;
-test.beforeAll(async ({ request }) => { fixture = await collectionFixture(request); });
+let otherCompanyId: string;
+test.beforeAll(async ({ request }) => {
+  fixture = await collectionFixture(request);
+  const response = await request.post("/api/companies", { data: { name: "Other collection organization" } });
+  expect(response.ok()).toBeTruthy();
+  otherCompanyId = (await response.json()).id;
+});
+for (const route of ["issues", "inbox/mine"]) test(`${route} leaves task-detail code out of collection startup`, async ({ page }) => {
+  await coordinatorPreference(page);
+  await page.addInitScript(id => localStorage.setItem("paperclip.selectedCompanyId", id), otherCompanyId);
+  const detailReads: string[] = [];
+  const companyReads: string[] = [];
+  page.on("request", request => {
+    if (/\/assets\/issue-detail-[^/]+\.js$/.test(request.url())) detailReads.push(request.url());
+    const companyId = new URL(request.url()).pathname.match(/^\/api\/companies\/([^/]+)\//)?.[1];
+    if (companyId) companyReads.push(companyId);
+  });
+  await page.goto(`/${fixture.company.issuePrefix}/${route}`);
+  const first = page.getByRole("main").locator("[data-inbox-issue-link]").first();
+  await expect(first).toBeVisible();
+  expect(detailReads).toEqual([]);
+  expect(new Set(companyReads)).toEqual(new Set([fixture.company.id]));
+  const detailRequest = page.waitForRequest(request => /\/assets\/issue-detail-[^/]+\.js$/.test(request.url()));
+  await first.focus();
+  await detailRequest;
+  await first.press("Enter");
+  await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible();
+  await expect(page.getByTestId("issue-detail-header")).toBeVisible();
+  await expect(page.getByTestId("task-chat-composer-stack").locator('[contenteditable="true"]')).toBeEditable();
+});
+
 for (const mobile of [false, true]) test(`Tasks use a bounded render and a shared count on ${mobile ? "mobile" : "desktop"}`, async ({ page }) => {
   if (mobile) await page.setViewportSize({ width: 390, height: 844 });
   await coordinatorPreference(page);
@@ -24,6 +54,39 @@ for (const mobile of [false, true]) test(`Tasks use a bounded render and a share
   const after = await rows.first().boundingBox();
   expect(Math.abs(before!.height - after!.height)).toBeLessThan(1);
   await page.screenshot({ path: test.info().outputPath("tasks.png") });
+});
+
+test("a failed speculative preload keeps the collection usable and permits task navigation", async ({ page }) => {
+  await coordinatorPreference(page);
+  let navigations = 0;
+  page.on("request", request => { if (request.isNavigationRequest() && request.frame() === page.mainFrame()) navigations++; });
+  await page.goto(`/${fixture.company.issuePrefix}/issues`);
+  const first = page.getByRole("main").locator("[data-inbox-issue-link]").first();
+  await expect(first).toBeVisible();
+  const pattern = /\/assets\/issue-detail-[^/]+\.js$/;
+  await page.route(pattern, route => route.abort("failed"));
+  const failure = page.waitForEvent("requestfailed", request => pattern.test(request.url()));
+  await first.focus();
+  await failure;
+  await expect(page.getByRole("textbox", { name: "Search tasks", exact: true })).toBeEditable();
+  expect(navigations).toBe(1);
+  await page.unroute(pattern);
+  await first.press("Enter");
+  await expect(page.getByTestId("task-chat-composer-stack").locator('[contenteditable="true"]')).toBeEditable();
+  expect(navigations).toBe(1);
+});
+
+test("direct task opens preload their code while identity is still loading", async ({ page }) => {
+  await coordinatorPreference(page);
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/auth/get-session", async route => { await held; await route.continue(); });
+  try {
+    const detailRequest = page.waitForRequest(request => /\/assets\/issue-detail-[^/]+\.js$/.test(request.url()));
+    await page.goto(`/${fixture.company.issuePrefix}/issues/${fixture.taskIds[0]}`);
+    await detailRequest;
+  } finally { release(); }
+  await expect(page.getByTestId("task-chat-composer-stack").locator('[contenteditable="true"]')).toBeEditable();
 });
 
 test("Coordinator Inbox retains index reads when Streamlined UI is disabled", async ({ page }) => {
