@@ -88,6 +88,21 @@ export function githubReviewLineIsInPatch(
   return false;
 }
 
+export function githubReviewFindingsOutsidePatch(
+  findings: readonly Pick<GitHubReviewAssessment["findings"][number], "path" | "line" | "side">[],
+  patchFor: (path: string) => string | undefined,
+): string[] {
+  return findings.flatMap((finding) => {
+    const patch = patchFor(finding.path);
+    if (githubReviewLineIsInPatch(patch, finding.line, finding.side)) return [];
+    return [
+      patch
+        ? `${finding.path}:${finding.line} (${finding.side})`
+        : `${finding.path}:${finding.line} (${finding.side}; GitHub returned no diff for this file)`,
+    ];
+  });
+}
+
 export function githubReviewSchedulingDecision(input: {
   configuration: GitHubChatConfiguration;
   context: GitHubAutomaticPolicyContext;
