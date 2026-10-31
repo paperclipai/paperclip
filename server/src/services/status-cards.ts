@@ -1002,7 +1002,7 @@ export function statusCardService(
         pendingChangeCount: 0,
         pendingChangeHash: null,
         lastChangeAt: null,
-        nextEvalReason: current.refreshPolicy.mode === "reactive" ? "refresh" : membershipAt ? "membership" : null,
+        nextEvalReason: current.refreshPolicy.mode === "reactive" || current.refreshPolicy.mode === "interval" ? "refresh" : membershipAt ? "membership" : null,
         nextEvalAt: current.refreshPolicy.mode === "reactive" ? now : nextEvaluationAt(current, membershipAt, now),
         updatedAt: now,
       }).where(and(eq(statusCards.id, current.id), eq(statusCards.generatingIssueId, input.generationIssueId))).returning();
