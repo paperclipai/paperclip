@@ -1,3 +1,4 @@
+import { setImmediate as immediate } from "node:timers/promises";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { accessService } from "../services/access.js";
 import { writeDeferredExecutionWait } from "../services/deferred-execution-wait.js";
@@ -27,6 +28,7 @@ describe("deferred receipt durable dispatch", () => {
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator>;
   let drain = false;
   const errors: unknown[] = [];
+  const passes = new Set<Promise<unknown>>();
   beforeAll(async () => {
     const external = resolveExternalTestDatabaseUrl("PAPERCLIP_DEFERRED_RECEIPT_TEST_DATABASE_URL");
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("deferred-receipts-");
@@ -38,6 +40,11 @@ describe("deferred receipt durable dispatch", () => {
     heartbeat = heartbeatService(db);
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !drain, canReconcile: () => true,
       onError: error => errors.push(error) });
+    const register = coordinator.register.bind(coordinator);
+    coordinator.register = (queue, task) => register(queue, { ...task, run: signal => {
+      const pass = Promise.resolve(task.run(signal)); passes.add(pass);
+      void pass.then(() => passes.delete(pass), () => passes.delete(pass)); return pass;
+    } });
   });
   afterEach(async () => {
     await coordinator.stop(); await heartbeat.drainActiveRunExecutions();
@@ -70,12 +77,24 @@ describe("deferred receipt durable dispatch", () => {
   }
   async function finish(issueId: string) {
     await issueService(db).update(issueId, { status: "done" });
-    await heartbeat.drainActiveRunExecutions();
+    await vi.waitFor(async () => {
+      await Promise.allSettled([...passes]); await heartbeat.drainActiveRunExecutions();
+      expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.status} in ('queued', 'running')`)).toHaveLength(0);
+    }, { timeout: 15_000 });
     const saved = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.status, "scheduled_retry"));
-    expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.status} in ('queued', 'running')`)).toHaveLength(0);
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    if (saved.length) await vi.advanceTimersByTimeAsync(Math.max(0, Math.max(...saved.map(run => run.scheduledRetryAt!.getTime())) - Date.now()) + 1);
-    await vi.waitFor(async () => expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.status, "scheduled_retry"))).toHaveLength(0));
+    if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    if (saved.length) {
+      const due = Math.max(...saved.map(run => run.scheduledRetryAt!.getTime()));
+      while (Date.now() <= due) {
+        await vi.advanceTimersByTimeAsync(Math.min(500, due - Date.now() + 1));
+        await Promise.allSettled([...passes]); await immediate();
+      }
+    }
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(500); await Promise.allSettled([...passes]);
+      await heartbeat.drainActiveRunExecutions();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.status, "scheduled_retry"))).toHaveLength(0);
+    });
   }
   it("is quiet after empty reconstruction and terminal receipt history", async () => {
     const f = await fixture();
