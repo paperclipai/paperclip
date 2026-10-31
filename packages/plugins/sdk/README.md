@@ -584,6 +584,14 @@ const child = await ctx.issues.create({
 
 If `originKind` is omitted, the host stores `plugin:<pluginKey>`. Plugins may use sub-kinds such as `plugin:<pluginKey>:feature`, but the host rejects attempts to set another plugin's namespace.
 
+Issue creation and updates use plugin-origin identity. Worker-supplied IDs are
+not authenticated delegation. The host rejects non-null `actorAgentId`,
+`actorUserId`, `actorRunId`, `originRunId`, and explicit `responsibleUserId` for these operations. The SDK
+keeps the optional fields for source compatibility, but plugins must omit them
+or pass null. This changes runtime behavior for callers that previously supplied
+them. Host-issued scoped delegation would require a separate contract; no such
+contract is provided here. This restriction does not describe other issue APIs.
+
 Blocker relationships are also exposed as first-class helpers:
 
 ```ts
