@@ -969,7 +969,7 @@ async function runAttempt(input: {
     // raw reports stay private when their normal packaging path failed.
     for (const candidate of executions) {
       if (publishedResultPaths.has(candidate.id)) continue;
-      const casePrivateDir = path.join(temporaryRoot, "artifacts-private", "cases", candidate.task.id);
+      const casePrivateDir = path.join(privateDir, "cases", candidate.task.id);
       const fallback = syntheticResult(candidate, attempt, startedAtMs, "Attempt terminated before a worker result was retained");
       const original = await readResult(path.join(casePrivateDir, "result.json"), fallback);
       const result = abnormalFinalizationResult(original, error);
