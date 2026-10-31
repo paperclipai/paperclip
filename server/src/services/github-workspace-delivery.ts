@@ -1,9 +1,11 @@
 import type { Db } from "@paperclipai/db";
 import { resolveGitHubApiCredential, type GitHubApiCredential } from "./git-credentials.js";
+import { projectGitAuthorizationService } from "./project-git-authorization.js";
 import type { GitHubPullRequestReference } from "./github-pull-request-merge.js";
 
 export type GitHubWorkspaceDeliveryInput = {
   companyId: string;
+  projectSource?: { projectId: string; workspaceId: string };
   repoUrl: string | null;
   headSha: string | null;
   destinationRef: string | null;
@@ -49,7 +51,11 @@ export function createGitHubWorkspaceDeliveryResolver(db: Db, opts: Options = {}
     const fullName = `${owner}/${repo}`;
     const prefix = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
     try {
-      const credential = await credentialProvider(input.companyId);
+      const token = input.projectSource ? await projectGitAuthorizationService(db).resolve({
+        companyId: input.companyId, ...input.projectSource, expectedRepository: fullName,
+      }, { ...input.projectSource, operation: "inspect" }) : undefined;
+      const credential = token === undefined ? await credentialProvider(input.companyId)
+        : token ? { token, source: "project_authorization" as const } : null;
       const signal = AbortSignal.timeout(20_000);
       let requests = 0;
       async function read(path: string, allowMissing = false): Promise<{ body: unknown; next: boolean } | null> {

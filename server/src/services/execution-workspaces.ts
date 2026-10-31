@@ -1,6 +1,6 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { effectiveProjectWorkspacePolicy } from "./project-workspace-provider.js";
-import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
+import { readRemoteWorkspaceAuthority, readWorkspaceProviderBinding } from "@paperclipai/shared";
 import { cleanupRemoteWorkspaceAllocation, inspectRemoteWorkspacePersistence, type DestroyRemoteWorkspaceLease } from "./remote-workspace-lifecycle.js";
 import { inspectPluginWorkspace, removePluginWorkspace, restorePluginWorkspace, pluginWorkspaceSupportsMergeAncestry, type WorkspaceWorkers } from "./plugin-workspaces.js";
 import { acquireExecutionWorkspaceLifecycleLock, withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
@@ -1968,6 +1968,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   }
 
   async function workspaceDeliveryCandidate(workspace: ExecutionWorkspaceRow) {
+    const binding = readWorkspaceProviderBinding(workspace.metadata);
+    if (!binding) return null;
     const source = parseObject(workspace.metadata?.workspaceProviderSource);
     const destinationRef = Object.hasOwn(workspace.metadata ?? {}, "workspaceProviderDestinationRef")
       ? readNullableString(workspace.metadata?.workspaceProviderDestinationRef)
@@ -1984,7 +1986,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     const inspection = parseObject(parseObject(operation.metadata?.pluginWorkspace).inspection);
     const headSha = readNullableString(inspection.headSha);
     if (!headSha || !/^[a-f0-9]{40}$/i.test(headSha) || !workspace.branchName || inspection.branchName !== workspace.branchName) return null;
-    return { operationId: operation.id, headSha: headSha.toLowerCase(), destinationRef };
+    return { operationId: operation.id, headSha: headSha.toLowerCase(), destinationRef,
+      projectSource: { projectId: binding.projectId, workspaceId: binding.projectWorkspaceId } };
   }
 
   async function assessDelivery(
@@ -3797,7 +3800,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         if (deliveryCandidate) {
           try {
             const proof = await resolveWorkspaceDelivery({ companyId: workspace.companyId, repoUrl: workspace.repoUrl,
-              headSha: deliveryCandidate.headSha, destinationRef: deliveryCandidate.destinationRef,
+              headSha: deliveryCandidate.headSha, destinationRef: deliveryCandidate.destinationRef, projectSource: deliveryCandidate.projectSource,
               pullRequests: await listDeliveryPullRequestReferences(workspace) });
             if (proof.status !== "delivered" || proof.headSha !== deliveryCandidate.headSha) {
               result.skippedUndelivered += 1;
@@ -3826,10 +3829,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           const currentCandidate = current ? await workspaceDeliveryCandidate(current) : null;
           if (!current || current.repoUrl !== workspace.repoUrl || current.branchName !== workspace.branchName
             || current.providerRef !== workspace.providerRef || currentCandidate?.operationId !== expectedDeliveryCandidate.operationId
-            || currentCandidate.headSha !== expectedDeliveryCandidate.headSha || currentCandidate.destinationRef !== expectedDeliveryCandidate.destinationRef)
+            || currentCandidate.headSha !== expectedDeliveryCandidate.headSha || currentCandidate.destinationRef !== expectedDeliveryCandidate.destinationRef
+            || currentCandidate.projectSource.projectId !== expectedDeliveryCandidate.projectSource.projectId
+            || currentCandidate.projectSource.workspaceId !== expectedDeliveryCandidate.projectSource.workspaceId)
             throw conflict("Workspace changed after delivery was verified");
           const freshProof = await resolveWorkspaceDelivery({ companyId: current.companyId, repoUrl: current.repoUrl,
-            headSha: currentCandidate.headSha, destinationRef: currentCandidate.destinationRef,
+            headSha: currentCandidate.headSha, destinationRef: currentCandidate.destinationRef, projectSource: currentCandidate.projectSource,
             pullRequests: await listDeliveryPullRequestReferences(current) });
           if (freshProof.status !== "delivered" || freshProof.headSha !== expectedDeliveryProof.headSha
             || freshProof.destinationRef !== expectedDeliveryProof.destinationRef || freshProof.evidence.kind !== expectedDeliveryProof.evidence.kind

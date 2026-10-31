@@ -3715,9 +3715,12 @@ startup reconsider it. A known commit awaiting delivery, or an unavailable remot
 lookup, keeps a five-minute remote-only retry. GitHub merges have no guaranteed
 local ingress for this lane, so this concrete unresolved delivery obligation can
 keep the worker scheduled until delivery is proved. There is no new polling loop.
-Background GitHub access uses company credentials or public-repository access;
-it does not borrow a person's or agent's managed grant. Private repositories
-without a background-authorized credential remain retained.
+Background GitHub delivery checks use the source project's explicit GitHub
+authorization, with the same consent checks as provider inspection and removal.
+The stored source must still match the workspace repository. Each proof, including
+the final removal check, revalidates the selected grant, project access and trust.
+Public sources use anonymous access; missing or revoked private-source consent
+retains storage without falling back to another identity. No task identity is borrowed.
 
 Only positive delivery evidence triggers a fresh storage inspection. The actual
 HEAD and branch must match the receipt. Cleanup revalidates delivery after its

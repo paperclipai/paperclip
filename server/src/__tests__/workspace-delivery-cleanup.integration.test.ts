@@ -83,7 +83,7 @@ const support = await getEmbeddedPostgresTestSupport();
   it("retries a known commit remotely and inspects only after delivery without a work product", async () => {
     const f = await fixture();
     await f.service.sweepTerminalWorkspaces();
-    expect(f.resolve).toHaveBeenCalledWith(expect.objectContaining({ headSha: "a".repeat(40), destinationRef: "main", pullRequests: [] }));
+    expect(f.resolve).toHaveBeenCalledWith(expect.objectContaining({ headSha: "a".repeat(40), destinationRef: "main", pullRequests: [], projectSource: { projectId: f.input.projectId, workspaceId: f.input.projectWorkspaceId } }));
     expect(f.inspections()).toHaveLength(0);
     expect(await f.service.nextTerminalWorkspaceSweepAt()).not.toBeNull();
     f.service.terminalWorkspaceWorkSettled(new Set([`issue:${randomUUID()}`]));
@@ -166,6 +166,25 @@ const support = await getEmbeddedPostgresTestSupport();
     const [row] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspace.id));
     expect(row.status).toBe("cleanup_failed");
     expect(row.metadata?.workspaceProviderRemoval).toBeUndefined();
+  });
+  it("retains storage when the source project changes during the final inspection", async () => {
+    const f = await fixture(); f.setProof(f.delivered());
+    const original = f.workers.call.bind(f.workers);
+    let inspections = 0;
+    f.workers.call = async (...args) => {
+      const result = await original(...args);
+      if ((args[2] as any).operation.kind === "inspect" && ++inspections === 2) {
+        const [row] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspace.id));
+        await db.update(executionWorkspaces).set({ metadata: { ...row.metadata,
+          workspaceProvider: { ...row.metadata!.workspaceProvider as object, projectId: randomUUID() },
+        } }).where(eq(executionWorkspaces.id, f.workspace.id));
+      }
+      return result;
+    };
+    await f.service.sweepTerminalWorkspaces();
+    expect(inspections).toBe(2);
+    expect(f.resolve).toHaveBeenCalledTimes(1);
+    expect(f.removals()).toHaveLength(0);
   });
   it("fences destination edits made during inspection before archiving", async () => {
     const f = await fixture(); f.setProof(f.delivered());
