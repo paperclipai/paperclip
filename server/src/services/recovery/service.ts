@@ -3829,7 +3829,7 @@ export function recoveryService(
     if ((readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId)) !== issue.id) {
       return { kind: "skip" as const, reason: "invalid_issue_binding" };
     }
-    const [agent, pause, budget, stop, active, routine, goal, latest, durableWait, workspaceChildren] = await Promise.all([
+    const [agent, pause, budget, stop, active, routine, goal, latest, durableWait, workspaceChildren, recordedComment] = await Promise.all([
       getAgent(run.agentId),
       isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc),
       isInvocationBudgetBlocked(issue, run.agentId),
@@ -3840,6 +3840,12 @@ export function recoveryService(
       getLatestIssueRun(issue.companyId, issue.id),
       hasPersistedDurableWaitPath(issue, run),
       parseObject(context.paperclipWorkspace).mode === "shared_workspace" ? healthyOpenChildIssues(issue, true) : Promise.resolve([]),
+      db.select({ id: issueComments.id }).from(issueComments).where(and(
+        eq(issueComments.companyId, issue.companyId),
+        eq(issueComments.issueId, issue.id),
+        eq(issueComments.createdByRunId, run.id),
+        isNull(issueComments.deletedAt),
+      )).limit(1),
     ]);
     const ownsRepair = active?.kind === "deliberate_wait_without_target" && active.ownerType === "agent";
     return decideLegacyContinuation({
@@ -3855,6 +3861,7 @@ export function recoveryService(
           Boolean(goal[0]?.status && goal[0].status !== "complete") || Boolean(active && !ownsRepair),
         conversation: Boolean(issue.conversationAgentId) || isWaitingConversation(issue),
         agentInvokable: Boolean(agent && await isAgentInvokable(agent) && isHeartbeatWakeOnDemandEnabled(agent)),
+        dispositionRecorded: recordedComment.length > 0,
       },
     });
   }
