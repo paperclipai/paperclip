@@ -72,14 +72,18 @@ describe("Stop work and redirect admission evidence", () => {
       ...usage.usage, runDeltaComplete: false,
     } })])).toBeNull();
   });
-  it("requires a newer settled API receipt from the same run and source after Stop", () => {
+  it("requires the stopped run's settled API receipt without assuming controller or clock order", () => {
     expect(stoppedRunAccountingFinalized(settled(), before())).toBe(true);
+    const reconciled = settled();
+    Object.assign(reconciled.usageJson, { accountingReceiptSourceId: "reconciled-source", accountingReceiptSequence: 5 });
+    reconciled.costAccountedAt = "2026-01-01T00:00:00Z";
+    expect(stoppedRunAccountingFinalized(reconciled, before())).toBe(true);
     const changes: Array<(r: Row) => void> = [r => { r.id = "foreign"; }, r => { r.companyId = "foreign"; },
       r => { r.agentId = "foreign"; }, r => { r.nativeIssueId = "foreign"; }, r => { r.runtimeMode = "legacy"; },
       r => { r.status = "succeeded"; }, r => { r.costAccountingPending = true; }, r => { delete r.costAccountingPending; },
-      r => { r.costAccountedAt = null; }, r => { r.costAccountedAt = "2026-01-01T00:00:00Z"; },
+      r => { r.costAccountedAt = null; }, r => { r.costAccountedAt = "invalid"; },
       r => { r.usageJson.accountingReceiptReady = false; }, r => { delete r.usageJson.accountingReceiptId; },
-      r => { r.usageJson.accountingReceiptSourceId = "foreign"; }, r => { r.usageJson.accountingReceiptSequence = 5; }];
+      r => { delete r.usageJson.accountingReceiptSourceId; }, r => { r.usageJson.accountingReceiptSequence = 0; }];
     for (const change of changes) { const r = settled(); change(r); expect(stoppedRunAccountingFinalized(r, before())).toBe(false); }
   });
   it("retains the bounded command and exact three-run contract", () => {

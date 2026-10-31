@@ -42,9 +42,11 @@ The deployment-targeted Stop journey asks the revision to run `sleep 90` once
 before changing files. Startup alone cannot trigger Stop. An independent observer
 requires both a still-running bound native command and a complete, nonzero usage
 report for its current turn. After Stop, native cancellation and exact lease
-cleanup remain required. Before the redirect, the original run must have a newer
-complete accounting receipt from its original source, no pending accounting and
-a saved accounting timestamp. These waits share the original journey deadline.
+cleanup remain required. Before the redirect, the original run must have a
+complete accounting receipt, no pending accounting and a saved accounting
+timestamp. Receipt sources and sequences remain recorded, but controller changes
+and clock order cannot substitute for the run's actual settlement state.
+These waits share the original journey deadline.
 The three-run limit, budget and original download checks remain unchanged.
 Missing or partial accounting never counts as free work. Local evidence controls
 do not establish a deployed pass.

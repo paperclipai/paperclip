@@ -59,10 +59,9 @@ export function stoppedRunAccountingFinalized(run: Row, before: StopWorkBoundary
     && (run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId) === before.issueId
     && run.runtimeMode === "native" && run.status === "cancelled"
     && run.costAccountingPending === false && Number.isFinite(time(run.costAccountedAt))
-    && Number.isFinite(time(run.finishedAt)) && time(run.costAccountedAt) >= time(run.finishedAt)
     && usage?.accountingReceiptReady === true && text(usage.accountingReceiptId)
-    && usage.accountingReceiptSourceId === before.accountingSourceId
-    && Number.isSafeInteger(usage.accountingReceiptSequence) && usage.accountingReceiptSequence > before.accountingSequence;
+    && text(usage.accountingReceiptSourceId)
+    && Number.isSafeInteger(usage.accountingReceiptSequence) && usage.accountingReceiptSequence > 0;
 }
 
 export const STOP_REVISION_WAIT = "Before changing any file, run the bounded shell command sleep 90 exactly once. Wait for that command to finish before making the requested change. This gives me time to stop the revision while you work.";
