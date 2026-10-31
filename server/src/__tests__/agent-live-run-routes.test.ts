@@ -1657,6 +1657,37 @@ describe("agent live run routes", () => {
     );
   });
 
+  it("marks an agent's wakeup of itself so a running turn queues a follow-up", async () => {
+    const issueId = "22222222-2222-4222-8222-222222222222";
+    const res = await requestApp(
+      await createApp({}, { type: "agent", agentId: routeAgentId, companyId: "company-1" }),
+      (baseUrl) =>
+        request(baseUrl)
+          .post(`/api/agents/${routeAgentId}/wakeup`)
+          .send({ source: "on_demand", payload: { issueId } }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      routeAgentId,
+      expect.objectContaining({
+        contextSnapshot: expect.objectContaining({ triggeredBy: "agent", agentSelfWake: true }),
+      }),
+    );
+  });
+
+  it("does not mark a board wakeup as an agent self-wake", async () => {
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup?companyId=company-1`)
+        .send({ source: "on_demand" }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    const options = mockHeartbeatService.wakeup.mock.calls.at(-1)?.[1];
+    expect(options?.contextSnapshot).not.toHaveProperty("agentSelfWake");
+  });
+
   it("rejects raw provider tracing for ordinary board members", async () => {
     const res = await requestApp(
       await createApp(

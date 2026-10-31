@@ -13,6 +13,13 @@ describe("shouldQueueFollowupForRunningIssueWake", () => {
     })).toBe(true);
   });
 
+  it("queues a follow-up when an agent wakes itself from its running turn", () => {
+    expect(shouldQueueFollowupForRunningIssueWake({
+      contextSnapshot: { triggeredBy: "agent", agentSelfWake: true },
+      wakeCommentId: null,
+    })).toBe(true);
+  });
+
   it("still coalesces a generic issue wake without new input", () => {
     expect(shouldQueueFollowupForRunningIssueWake({
       contextSnapshot: { wakeReason: "issue_commented" },

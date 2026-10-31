@@ -725,6 +725,123 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
+  it("defers an agent self-wake behind its running turn and starts one follow-up", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const gateway = await createControlledGatewayServer(async (turn) => {
+      const runId = gateway.getAgentPayloads()[turn - 1]?.idempotencyKey;
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: typeof runId === "string" ? runId : null,
+        body: `Progress saved in turn ${turn}`,
+      });
+      if (turn === 2) {
+        await db
+          .update(issues)
+          .set({ status: "done", completedAt: new Date(), updatedAt: new Date() })
+          .where(eq(issues.id, issueId));
+      }
+    });
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
+      await grantFixtureWorkspaceAccess(companyId, ["responsible-user", "user-1"]);
+
+      await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Gateway Agent", gateway));
+
+      await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Continue after self-wake", agentId, issuePrefix));
+
+      const comment = await db
+        .insert(issueComments)
+        .values(wakeUserCommentRow(companyId, issueId, "user-1", "Start the long task"))
+        .returning()
+        .then((rows) => rows[0]);
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, commentId: comment.id },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId: comment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      const selfWakeRun = await heartbeat.wakeup(agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: null,
+        payload: { issueId },
+        requestedByActorType: "agent",
+        requestedByActorId: agentId,
+        contextSnapshot: {
+          triggeredBy: "agent",
+          actorId: agentId,
+          agentSelfWake: true,
+          forceFreshSession: false,
+        },
+      });
+
+      expect(selfWakeRun).toBeNull();
+      await waitFor(async () => Boolean(await selectDeferredWakeForAgent(companyId, agentId)));
+      const deferredWake = await selectDeferredWakeForAgent(companyId, agentId);
+      expect(deferredWake).toMatchObject({
+        reason: "issue_execution_deferred",
+        requestedByActorType: "agent",
+        requestedByActorId: agentId,
+      });
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
+
+      gateway.releaseFirstWait();
+
+      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
+      const followupRunId = gateway.getAgentPayloads()[1]?.idempotencyKey;
+      if (typeof followupRunId !== "string") {
+        throw new Error("Expected the follow-up gateway payload to include its run id");
+      }
+
+      await waitFor(async () => {
+        const runs = await db
+          .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, agentId));
+        const statusesByRunId = new Map(runs.map((run) => [run.id, run.status]));
+        return (
+          statusesByRunId.get(firstRun!.id) === "succeeded" &&
+          statusesByRunId.get(followupRunId) === "succeeded"
+        );
+      }, 90_000);
+
+      const runs = await db
+        .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      const selfWakeRuns = runs.filter(
+        (run) => (run.contextSnapshot as Record<string, unknown> | null)?.agentSelfWake === true,
+      );
+      expect(runs.map((run) => run.id).sort()).toEqual([firstRun!.id, followupRunId].sort());
+      expect(gateway.getAgentPayloads()).toHaveLength(2);
+      expect(selfWakeRuns.map((run) => run.id)).toEqual([followupRunId]);
+      expect(selfWakeRuns[0]?.contextSnapshot).toMatchObject({ issueId });
+      expect(await selectDeferredWakeForAgent(companyId, agentId)).toBeNull();
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
   it("cancels an empty deferred comment wake instead of promoting deleted input", async () => {
     const gateway = await createControlledGatewayServer(async turn => {
       if (turn === 1) await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));

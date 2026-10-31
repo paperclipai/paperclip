@@ -6281,6 +6281,7 @@ export function agentRoutes(
         originIdentityContextId: req.actor.identityContextId ?? null,
         responsibleUserId: req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : req.actor.userId ?? null,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
+        ...(req.actor.type === "agent" && req.actor.agentId === id ? { agentSelfWake: true } : {}),
         forceFreshSession: req.body.forceFreshSession === true,
         ...(req.body.reason === "rerun_with_provider_trace" &&
         req.body.debug?.providerTrace === "raw"

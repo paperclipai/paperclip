@@ -337,6 +337,7 @@ export function shouldQueueFollowupForRunningIssueWake(input: {
   wakeCommentId: string | null;
 }) {
   if (input.wakeCommentId) return true;
+  if (input.contextSnapshot?.agentSelfWake === true) return true;
   // A structured interaction response is new input just like a comment. It
   // must run after the turn that created the interaction instead of being
   // merged into that still-running turn.
