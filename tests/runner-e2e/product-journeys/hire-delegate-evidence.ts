@@ -10,6 +10,42 @@ export function hireDelegateNames(campaignId: string) {
 export interface HireScope {
   companyId: string; leadId: string; chatId: string; projectId: string; campaignId: string;
   model: string; provider: string; environmentId: string; connectionBinding: unknown;
+  connectionChoice?: HireConnectionChoice;
+}
+export interface HireConnectionChoice {
+  connectionId: string; grantId: string; provider: string; method: string; responsibleUserId: string;
+}
+export async function readHireConnectionChoice(api: { get<T = Row>(route: string): Promise<T> },
+  input: { companyId: string; responsibleUserId: string; binding: unknown; hiredId?: string }): Promise<HireConnectionChoice | undefined> {
+  const binding = input.binding as Row | undefined;
+  if (binding?.mode !== "delegated") return;
+  const fail = (): never => { throw new JourneyError("failed", "hire_connection_choice_mismatch"); };
+  if (![binding.connectionId, binding.grantId, binding.provider, binding.method, input.responsibleUserId]
+    .every(value => typeof value === "string" && value)) fail();
+  const listed = await api.get<Row>(`/api/companies/${input.companyId}/ai-connections`);
+  if (listed.currentUserId !== input.responsibleUserId || !Array.isArray(listed.connections)
+    || listed.connections.some((row: Row) => !row || row.companyId !== input.companyId)) fail();
+  const defaults = listed.connections.filter((row: Row) => row.provider === binding.provider && row.isDefault === true);
+  const selected = defaults[0];
+  if (defaults.length !== 1 || selected.companyId !== input.companyId || selected.id !== binding.connectionId
+    || selected.grantId !== binding.grantId || selected.method !== binding.method || selected.status !== "connected"
+    || selected.ownership !== "personal" || selected.ownerUserId !== input.responsibleUserId || selected.unavailableReason) fail();
+  if (input.hiredId) {
+    const installed = await api.get<Row>(`/api/tool-connections/${binding.connectionId}/installs`);
+    if (installed.connectionId !== binding.connectionId || !Array.isArray(installed.installs)
+      || installed.installs.some((row: Row) => row.companyId !== input.companyId)
+      || installed.installs.filter((row: Row) => row.targetType === "agent" && row.targetId === input.hiredId).length !== 1) fail();
+  }
+  return { connectionId: binding.connectionId, grantId: binding.grantId, provider: binding.provider,
+    method: binding.method, responsibleUserId: input.responsibleUserId };
+}
+
+function approvedFallback(scope: HireScope, hiredBinding: unknown) {
+  const binding = scope.connectionBinding as Row | undefined, choice = scope.connectionChoice;
+  return binding?.mode === "delegated" && choice && choice.connectionId === binding.connectionId && choice.grantId === binding.grantId
+    && choice.provider === binding.provider && choice.method === binding.method && typeof choice.responsibleUserId === "string"
+    && Boolean(choice.responsibleUserId) && isDeepStrictEqual(hiredBinding,
+      { provider: choice.provider, method: choice.method, mode: "responsible_user" });
 }
 export const hireRunIssueId = (run: Row) => run.issueId ?? run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId;
 
@@ -54,7 +90,8 @@ export function assertHireBinding(scope: HireScope, agents: Row[], hiredId?: str
   const hired = hires[0]!;
   if (hired.id === scope.leadId || hiredId && hired.id !== hiredId || hired.companyId !== scope.companyId
     || hired.reportsTo !== scope.leadId || hired.adapterType !== "paperclip_runner" || hired.adapterConfig?.model !== scope.model
-    || !scope.connectionBinding || !isDeepStrictEqual(hired.runtimeConfig?.aiConnection, scope.connectionBinding)) {
+    || !scope.connectionBinding || (!isDeepStrictEqual(hired.runtimeConfig?.aiConnection, scope.connectionBinding)
+      && !approvedFallback(scope, hired.runtimeConfig?.aiConnection))) {
     throw new JourneyError("failed", "hire_native_binding_mismatch");
   }
   return hired;
@@ -108,6 +145,14 @@ export function assertHireRuns(scope: HireScope, hiredId: string | undefined, ta
     if (!["queued", "running", "succeeded"].includes(run.status)) throw new JourneyError("failed", "hire_native_run_failed");
     if (run.status === "succeeded" && (run.runtimeMode !== "native" || provider?.kind !== scope.provider || provider?.model !== scope.model
       || run.contextSnapshot?.paperclipEnvironment?.id !== scope.environmentId)) throw new JourneyError("failed", "hire_run_runtime_mismatch");
+    if (run.status === "succeeded" && scope.connectionChoice) {
+      const actual = run.contextSnapshot?.aiConnection, expected = scope.connectionChoice;
+      if (actual?.connectionId !== expected.connectionId || actual.grantId !== expected.grantId
+        || actual.provider !== expected.provider || actual.method !== expected.method || actual.responsibleUserId !== expected.responsibleUserId
+        || !(run.agentId === scope.leadId ? actual.mode === "delegated" : ["delegated", "responsible_user"].includes(actual.mode))) {
+        throw new JourneyError("failed", "hire_run_credential_mismatch");
+      }
+    }
   }
   if (requestedCommentIds && count !== undefined && (requests.size !== requestedCommentIds.length
     || callbackCount !== tasks.length || completedTasks.size !== tasks.length)) throw new JourneyError("failed", "hire_turn_accounting_mismatch");

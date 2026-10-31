@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -16,7 +16,7 @@ type Row = Record<string, any>;
 const directories: string[] = [];
 afterEach(async () => { vi.mocked(sendChatMessage).mockReset(); await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
-async function fixture(options: { readError?: Error; mutate?(agents: Row[], tasks: Row[]): void; ownError?: Error; firstSendError?: Error } = {}) {
+async function fixture(options: { readError?: Error; mutate?(agents: Row[], tasks: Row[]): void; ownError?: Error; firstSendError?: Error; connectionList?: Row } = {}) {
   const campaignId = "journey-1-deadbeef", names = hireDelegateNames(campaignId), owned: Row[] = [], comments: Row[] = [];
   const binding = { connectionId: "approved" }, lead = { id: "lead", companyId: "company", name: `Lead ${campaignId}`, permissions: { canCreateAgents: true }, runtimeConfig: { aiConnection: binding } };
   const hire = { id: "hired", companyId: "company", name: names.hire, reportsTo: lead.id, adapterType: "paperclip_runner",
@@ -27,6 +27,8 @@ async function fixture(options: { readError?: Error; mutate?(agents: Row[], task
   const run = { id: "lead-run", companyId: "company", agentId: lead.id, issueId: chat.id, status: "succeeded", runtimeMode: "native",
     contextSnapshot: { source: "issue.comment", wakeCommentId: "user-comment", paperclipEnvironment: { id: "environment" } }, runnerProfileJson: { nativeExecutionInput: { provider: { kind: "opencode", model: "fixed-model" } } } };
   options.mutate?.(agents, tasks);
+  if ((lead.runtimeConfig.aiConnection as Row).mode === "delegated") Object.assign(run.contextSnapshot,
+    { aiConnection: { ...lead.runtimeConfig.aiConnection, responsibleUserId: "user" } });
   const audit = (action: string, entityId: string) => ({ companyId: "company", actorType: "agent", actorId: lead.id, agentId: lead.id, runId: run.id, action, entityId, entityType: action.startsWith("agent.") ? "agent" : "issue" });
   const activity = [audit("agent.hire_created", hire.id), ...tasks.map(task => audit("issue.created", task.id))];
   let sent = false, failedRead = false, runReads = 0;
@@ -39,6 +41,8 @@ async function fixture(options: { readError?: Error; mutate?(agents: Row[], task
     if (route === "/api/instance/settings/experimental") return { enableAgentChat: true };
     if (route === "/api/companies/company") return { requireBoardApprovalForNewAgents: false };
     if (route === "/api/agents/lead") return lead;
+    if (route === "/api/companies/company/ai-connections") return options.connectionList ?? { currentUserId: "user", connections: [] };
+    if (route.endsWith("/installs")) return { connectionId: "approved", installs: [{ companyId: "company", targetType: "agent", targetId: "hired" }] };
     if (route === "/api/companies/company/chats/lead") return sent ? chat : null;
     if (route === "/api/issues/chat/runs") {
       runReads++;
@@ -61,7 +65,7 @@ async function fixture(options: { readError?: Error; mutate?(agents: Row[], task
   const session = { async own(row: Row) { if (row.id === hire.id && options.ownError) throw options.ownError; owned.push(row); } } as unknown as TargetSession;
   const evidence = { checks: [] } as unknown as JourneyEvidence;
   const directory = await mkdtemp(path.join(os.tmpdir(), "hire-observation-")); directories.push(directory);
-  return { owned, evidence, stop, runReads: () => runReads,
+  return { owned, evidence, stop, directory, runReads: () => runReads,
     run: () => hireDelegateReuse(context, session, campaignId, evidence, { deadlineAt: Date.now() + 10_000, directory, capture: async () => {} }) };
 }
 
@@ -100,6 +104,26 @@ it("persists an exact fresh-chat intent before a first send can commit and fail"
   expect(f.owned).toContainEqual({ kind: "issue", name: "Chat with Lead journey-1-deadbeef", journeyId: "hire-delegate-reuse",
     freshChat: { companyId: "company", userId: "user", leadAgentId: "lead", absent: true } });
   expect(sendChatMessage).toHaveBeenCalledTimes(1);
+});
+
+it("rejects missing actual-user readiness before any child or chat creation intent and before sending", async () => {
+  const f = await fixture({ mutate(agents) {
+    agents[0]!.runtimeConfig.aiConnection = { provider: "openrouter", method: "api_key", mode: "delegated", connectionId: "approved", grantId: "grant" };
+  }, connectionList: { currentUserId: "operator", connections: [] } });
+  await expect(f.run()).rejects.toMatchObject({ code: "hire_connection_choice_mismatch" });
+  expect(f.owned).toEqual([]); expect(sendChatMessage).not.toHaveBeenCalled();
+});
+
+it("validates the real-user fallback without retaining raw credential-choice references in observation evidence", async () => {
+  const f = await fixture({ mutate(agents) {
+    agents[0]!.runtimeConfig.aiConnection = { provider: "openrouter", method: "api_key", mode: "delegated", connectionId: "approved", grantId: "grant" };
+    agents[1]!.runtimeConfig.aiConnection = { provider: "openrouter", method: "api_key", mode: "responsible_user" };
+  }, connectionList: { currentUserId: "user", connections: [{ companyId: "company", id: "approved", grantId: "grant", provider: "openrouter", method: "api_key",
+    ownership: "personal", ownerUserId: "user", isDefault: true, status: "connected" }] } });
+  await expect(f.run()).rejects.toBe(f.stop);
+  expect(f.evidence.checks).toContainEqual({ id: "one-attributed-native-hire", passed: true });
+  const observed = await readFile(path.join(f.directory, "hire-delegate-observation.json"), "utf8");
+  expect(observed).not.toMatch(/connectionId|grantId|responsibleUserId|approved/);
 });
 
 it("waits for reloaded replies and links, then clicks and reloads the exact saved child", async () => {

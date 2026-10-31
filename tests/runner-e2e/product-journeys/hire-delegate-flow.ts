@@ -5,7 +5,7 @@ import { expect, type Page } from "@playwright/test";
 import { sendChatMessage, readChatOutputDocument, type ChatIssue, type ChatRun } from "../chat-flow.js";
 import { assertChatHire, mutableIssueSnapshot } from "../chat-hardening.js";
 import { ConnectionFailure } from "../connection-config.js";
-import { assertHireAuditCoverage, assertHireBinding, assertHireDocument, assertHireRuns, hireDelegateNames, hireRunIssueId, observedHireResources, type HireScope } from "./hire-delegate-evidence.js";
+import { assertHireAuditCoverage, assertHireBinding, assertHireDocument, assertHireRuns, hireDelegateNames, hireRunIssueId, observedHireResources, readHireConnectionChoice, type HireScope } from "./hire-delegate-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 type Row = Record<string, any>;
@@ -27,6 +27,8 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
   if (lead.id !== agent.id || lead.companyId !== context.company.id || lead.permissions?.canCreateAgents !== true || !lead.runtimeConfig?.aiConnection) {
     throw new JourneyError("unsupported", "owned_hiring_agent_required");
   }
+  const connectionChoice = await readHireConnectionChoice(api, { companyId: context.company.id,
+    responsibleUserId: context.user.id, binding: lead.runtimeConfig.aiConnection });
   const check = (id: string, passed = true) => { evidence.checks.push({ id, passed }); if (!passed) throw new JourneyError("failed", id.replaceAll("-", "_")); };
   await mkdir(options.directory, { recursive: true, mode: 0o700 });
   const retain = (name: string, value: unknown) => writeFile(path.join(options.directory, name), JSON.stringify(value, null, 2), { mode: 0o600 });
@@ -74,7 +76,7 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
     if (chat.companyId !== context.company.id || chat.assigneeAgentId !== agent.id
       || chat.conversationAgentId !== agent.id || chat.conversationUserId !== context.user.id || chat.createdByUserId !== context.user.id) throw new JourneyError("failed", "hire_chat_scope_mismatch");
     scope ??= { companyId: context.company.id, leadId: agent.id, chatId: chat.id, projectId: project.id, campaignId,
-      model: agent.model, provider: agent.provider, environmentId: context.environmentId!, connectionBinding: lead.runtimeConfig.aiConnection };
+      model: agent.model, provider: agent.provider, environmentId: context.environmentId!, connectionBinding: lead.runtimeConfig.aiConnection, connectionChoice };
     if (chat.id !== scope.chatId) throw new JourneyError("failed", "hire_chat_replaced");
     if (!known.has(chat.id)) { await session.own({ kind: "issue", name: chat.title, id: chat.id, journeyId: "hire-delegate-reuse", freshChat }); known.add(chat.id); }
     // Read the audit after the run snapshot, then fetch its exact creations.
@@ -111,7 +113,11 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
     }
     const owned = observedHireResources(scope, { agents, tasks, activity, leadRuns });
     if (scopeMismatch || owned.scopeMismatch) throw new JourneyError("failed", "hire_resource_scope_mismatch");
-    if (owned.agents.length) hiredId = assertHireBinding(scope, owned.agents, hiredId).id;
+    if (owned.agents.length) {
+      await readHireConnectionChoice(api, { companyId: context.company.id, responsibleUserId: context.user.id,
+        binding: lead.runtimeConfig.aiConnection, hiredId: owned.agents[0]!.id });
+      hiredId = assertHireBinding(scope, owned.agents, hiredId).id;
+    }
     const projectedRuns = [...leadProjection, ...(await Promise.all(owned.tasks.map(task => readRuns(task.id)))).flat()];
     const canonical = new Map<string, Run>();
     for (const run of projectedRuns) {
@@ -125,7 +131,7 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
     const requestIds = comments.filter(row => row.authorUserId === context.user.id).map(row => row.id);
     const completionRepliesReady = assertHireRuns(scope, hiredId, owned.tasks, runs, undefined, requestIds, comments);
     for (const run of projectedRuns) assertHireRuns(scope, hiredId, owned.tasks, [run], undefined, requestIds, comments);
-    await retain("hire-delegate-observation.json", { scope: { ...scope, connectionBinding: undefined }, chat, project,
+    await retain("hire-delegate-observation.json", { scope: { ...scope, connectionBinding: undefined, connectionChoice: undefined }, chat, project,
       agents: owned.agents.map(row => ({ id: row.id, name: row.name, reportsTo: row.reportsTo })), tasks: owned.tasks,
       runs: runs.map(run => ({ id: run.id, issueId: hireRunIssueId(run), agentId: run.agentId, status: run.status })) });
     return { chat, ...owned, runs, requestIds, comments, completionRepliesReady, allAgents: [lead as Agent, ...agents], activity };

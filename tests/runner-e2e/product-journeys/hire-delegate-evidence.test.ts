@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { assertHireAuditCoverage, assertHireBinding, assertHireDocument, assertHireRuns, hireDelegateNames, observedHireResources, type HireScope } from "./hire-delegate-evidence.js";
+import { assertHireAuditCoverage, assertHireBinding, assertHireDocument, assertHireRuns, hireDelegateNames, observedHireResources, readHireConnectionChoice, type HireScope } from "./hire-delegate-evidence.js";
+import { defaultAiConnectionForHire } from "../../../server/src/services/agent-ai-connection-default.js";
 import { agentJourneyRuns, journeyRequiredChecks } from "./success-contract.js";
 
 type Row = Record<string, any>;
@@ -48,6 +49,44 @@ describe("deployment hiring qualification", () => {
     for (const change of [{ companyId: "other" }, { reportsTo: "other" }, { adapterType: "legacy" },
       { adapterConfig: { model: "other" } }, { runtimeConfig: { aiConnection: { connectionId: "other" } } }]) {
       expect(() => assertHireBinding(scope, [{ ...f.agent, ...change }])).toThrow();
+    }
+  });
+  it("accepts the canonical responsible-user fallback only for the independently approved same credential choice", () => {
+    const f = fixture(), delegated = { provider: "openrouter", method: "api_key", mode: "delegated", connectionId: "approved", grantId: "grant" };
+    const scoped = { ...scope, connectionBinding: delegated,
+      connectionChoice: { connectionId: "approved", grantId: "grant", provider: "openrouter", method: "api_key", responsibleUserId: "user" } };
+    Object.assign(f.agent.runtimeConfig, { aiConnection: { provider: "openrouter", method: "api_key", mode: "responsible_user" } });
+    expect(() => assertHireBinding(scoped, [f.agent])).not.toThrow();
+    expect(() => assertHireBinding({ ...scope, connectionBinding: delegated }, [f.agent])).toThrow();
+    expect(() => assertHireBinding({ ...scoped, connectionChoice: { ...scoped.connectionChoice, grantId: "foreign" } }, [f.agent])).toThrow();
+  });
+  it("uses the production delegated fallback and the actual requesting user's same approved personal default", async () => {
+    const binding = { provider: "openrouter", method: "api_key", mode: "delegated", connectionId: "00000000-0000-4000-8000-000000000001", grantId: "00000000-0000-4000-8000-000000000002" };
+    expect(defaultAiConnectionForHire("paperclip_runner", { provider: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017" }, binding))
+      .toEqual({ provider: "openrouter", method: "api_key", mode: "responsible_user" });
+    const selected = { id: binding.connectionId, grantId: binding.grantId, companyId: scope.companyId, provider: binding.provider,
+      method: binding.method, ownership: "personal", ownerUserId: "user", isDefault: true, status: "connected" };
+    const listed = { currentUserId: "user", connections: [selected] };
+    const installed = { connectionId: binding.connectionId, installs: [{ companyId: scope.companyId, targetType: "agent", targetId: "hire" }] };
+    const api = { async get<T>(route: string): Promise<T> { return (route.endsWith("/installs") ? installed : listed) as T; } };
+    const input = { companyId: scope.companyId, responsibleUserId: "user", binding, hiredId: "hire" };
+    await expect(readHireConnectionChoice(api, input)).resolves.toMatchObject({ connectionId: binding.connectionId, grantId: binding.grantId, responsibleUserId: "user" });
+    for (const mutate of [() => { listed.currentUserId = "operator"; }, () => { selected.grantId = "foreign"; },
+      () => { selected.ownerUserId = "operator"; }, () => { selected.status = "revoked"; },
+      () => { selected.isDefault = false; }, () => { installed.installs[0]!.targetId = "foreign"; }]) {
+      const before = structuredClone({ listed, installed }); mutate();
+      await expect(readHireConnectionChoice(api, input)).rejects.toMatchObject({ code: "hire_connection_choice_mismatch" });
+      Object.assign(listed, before.listed); Object.assign(selected, before.listed.connections[0]); listed.connections = [selected]; Object.assign(installed, before.installed);
+    }
+  });
+  it("requires actual execution attribution to keep the approved credential and responsible user", () => {
+    const f = fixture(), connectionChoice = { connectionId: "approved", grantId: "grant", provider: "openrouter", method: "api_key", responsibleUserId: "user" };
+    const scoped = { ...scope, connectionChoice }, run = { ...f.taskRun, contextSnapshot: { ...f.taskRun.contextSnapshot,
+      aiConnection: { ...connectionChoice, mode: "responsible_user" } } };
+    expect(() => assertHireRuns(scoped, f.agent.id, [f.task], [run])).not.toThrow();
+    for (const field of ["connectionId", "grantId", "provider", "method", "responsibleUserId", "mode"]) {
+      expect(() => assertHireRuns(scoped, f.agent.id, [f.task], [{ ...run,
+        contextSnapshot: { ...run.contextSnapshot, aiConnection: { ...run.contextSnapshot.aiConnection, [field]: "foreign" } } }])).toThrow("hire_run_credential_mismatch");
     }
   });
   it("keeps unexpected authored children visible for failure cleanup without grading them as the requested work", () => {

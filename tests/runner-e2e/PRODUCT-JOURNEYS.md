@@ -59,6 +59,17 @@ The hiring journey uses the existing Agent Chat prompts and native hiring oracle
 It gives each disposable project, agent, and task a campaign name. The first
 turn only hires. The target provider can then verify the native creation audit
 and prepare that exact teammate's budget before the next turn delegates work.
+When the lead uses a delegated personal connection, normal hiring selects the
+responsible user's default rather than copying the manager's identity. Before
+registering any chat or child-creation intent or sending the first turn, the
+journey reads the actual signed-in workflow user's provider default and requires
+the exact approved connection and grant, connected and owned by that user.
+After hiring it independently checks the exact child installation. The underlying
+connection's creator is not the owner of the user's default selection. Missing,
+different or ambiguous authority fails closed; no credential, default or grant is
+changed. Every successful native run must also retain the approved connection,
+grant and responsible-user attribution in its canonical execution metadata.
+Those references are compared privately and omitted from observation evidence.
 The checklist and review each require one successful child run and a current
 document revision authored by that run. The lead uses three requested turns and
 two separate server completion callbacks,
