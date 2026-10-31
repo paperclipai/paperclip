@@ -9,6 +9,12 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const verifiedProviderEntrypoints = Object.freeze([
   Object.freeze({
+    name: "kimi-metadata-probe",
+    source: resolve(packageRoot, "src/cli/kimi-metadata-probe.ts"),
+    output: resolve(packageRoot, "dist/cli/kimi-metadata-probe.js"),
+    verifiedOutput: resolve(packageRoot, "dist/cli/kimi-metadata-probe.cjs"),
+  }),
+  Object.freeze({
     name: "provision-antigravity",
     source: resolve(packageRoot, "scripts/provision-antigravity.mjs"),
     output: resolve(packageRoot, "dist/cli/provision-antigravity.js"),
@@ -80,6 +86,7 @@ export async function bundleVerifiedProviderEntrypoints({ write = true } = {}) {
         platform: "node",
         format,
         target: "node24",
+        absWorkingDir: entrypoint.name === "kimi-metadata-probe" ? packageRoot : undefined,
         packages: "bundle",
         splitting: false,
         sourcemap: false,
@@ -116,6 +123,7 @@ export async function bundleVerifiedProviderEntrypoints({ write = true } = {}) {
     results.push({ entrypoint, result, verifiedResult });
   }
   await bundlePiProvisioner({ write });
+  await bundleKimiProvisioner({ write });
   return results;
 }
 
@@ -141,6 +149,28 @@ export async function bundlePiProvisioner({ write = true, outputRoot = resolve(p
       ["../../patches/brace-expansion@5.0.9.patch", "brace-expansion.patch"],
       ["src/drivers/acpx/pi-acp-runtime.ts", "pi-acp-runtime.ts"],
       ["src/drivers/acpx/pi-runtime-extension.ts", "pi-runtime-extension.ts"],
+    ]) await cp(resolve(packageRoot, source), resolve(inputs, name));
+  }
+  return result;
+}
+
+export async function bundleKimiProvisioner({ write = true, outputRoot = resolve(packageRoot, "dist/cli") } = {}) {
+  const entrypoint = { name: "provision-kimi", source: resolve(packageRoot, "scripts/provision-kimi.mjs") };
+  const result = await build({
+    entryPoints: [entrypoint.source], outfile: resolve(outputRoot, "provision-kimi.cjs"),
+    bundle: true, platform: "node", format: "cjs", target: "node24", packages: "bundle",
+    splitting: false, sourcemap: false, legalComments: "none", metafile: true,
+    treeShaking: true, write, logLevel: "silent",
+    banner: { js: 'const __paperclipVerifiedEntrypointUrl = require("node:url").pathToFileURL(__filename).href;' },
+    define: { "import.meta.dirname": "__dirname", "import.meta.url": "__paperclipVerifiedEntrypointUrl" },
+  });
+  assertSelfContainedBundle(entrypoint, result);
+  if (write) {
+    const inputs = resolve(outputRoot, "kimi-provision-inputs");
+    await mkdir(inputs, { recursive: true });
+    for (const [source, name] of [
+      ["scripts/kimi-distribution/package.json", "package.json"],
+      ["scripts/kimi-distribution/package-lock.json", "package-lock.json"],
     ]) await cp(resolve(packageRoot, source), resolve(inputs, name));
   }
   return result;

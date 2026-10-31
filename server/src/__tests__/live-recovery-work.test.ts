@@ -147,6 +147,45 @@ describe("residual recovery production matrix", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
     await quiet();
   });
+  it.each(["scoped remote retry", "startup"] as const)("reconstructs only the retry deadlines owed by %s", async mode => {
+    const selected = await fixture(), other = await fixture();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const now = Date.now(), otherAt = now + 30_000, selectedAt = now + 60_000;
+    const seed = async (f: Awaited<ReturnType<typeof fixture>>, nextAttemptAt: number, remote = false) => {
+      await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issue.id));
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+        status: "failed", runtimeMode: "native", nativeIssueId: f.issue.id, contextSnapshot: { issueId: f.issue.id },
+        finishedAt: new Date(), errorCode: "saved_native_failure",
+        runnerProfileJson: remote ? { nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v1",
+          state: "prepared", descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64),
+          workspaceId: randomUUID(), leaseId: randomUUID(), providerLeaseId: "remote-retry-fixture", remoteCwd: "/workspace" } } : null,
+      }).returning();
+      await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issue.id, runId: run.id,
+        phase: "retryable_failure", nextAttemptAt: new Date(nextAttemptAt) });
+      return run;
+    };
+    const selectedRun = await seed(selected, selectedAt, true), otherRun = await seed(other, otherAt);
+    await heartbeat.recoverNativeRunsAfterRestart(new Date(now), mode === "startup" ? undefined : [selectedRun.id]);
+    const queries: string[] = [], prior = db.$client.options.debug;
+    if (mode === "scoped remote retry") {
+      db.$client.options.debug = (_connection, query) => { queries.push(query); };
+      try { await advance(30_001); await immediate(); expect(queries).toEqual([]); }
+      finally { db.$client.options.debug = prior; }
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, otherRun.id)))[0])
+        .toMatchObject({ phase: "retryable_failure", nextAttemptAt: new Date(otherAt) });
+    } else {
+      await advance(30_001);
+      await vi.waitFor(async () => expect((await db.select().from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, otherRun.id)))[0].phase).toBe("terminal_failure"));
+    }
+    await advance(selectedAt - Date.now() + 1);
+    await vi.waitFor(async () => expect((await db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, selectedRun.id)))[0].phase).toBe("terminal_failure"));
+    expect((await getRun(selectedRun.id)).errorCode).toBe("saved_native_failure");
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(2);
+    await heartbeat.drainActiveRunExecutions();
+    expect(coordinator.nextWakeAt()).toBeNull();
+  });
   it("consumes the durable native question cancellation from ordinary task completion", async () => {
     const f = await fixture(); await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.issue.id));
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",

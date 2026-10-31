@@ -14,6 +14,25 @@ permissions; discovery skips services without grants and excludes unsupported
 actions. The gateway checks actual grant scopes again before each call, including
 after refresh. Requested scopes alone never authorize an action.
 
+Before managed or customer-owned OAuth opens, Paperclip saves the validated
+service choice as non-secret setup intent on the draft. It is bound to the
+company, connection, initiating actor, grant kind, and credential subject.
+Declined or expired authorization and a cold **Finish setup** return restore
+that choice, not the new-account write defaults. Historical drafts without a
+matching saved intent require an explicit choice. Reconnecting an established
+account without a new choice keeps its exact grant request.
+
+Overlapping customer-owned starts preserve the latest saved draft choice through
+client binding and authorization metadata updates. Each OAuth state and consent
+URL keeps that attempt's own requested scopes. These updates preserve unrelated
+current settings and other users' pending proposals in both configuration records.
+
+An agent can hand setup to its responsible human without choosing services or
+creating provider OAuth state. If the agent proposes services, the human can
+review and change them in the picker. Saving the human's choice consumes only
+that person's pending proposal, so an old proposal cannot replace their choice
+after a declined sign-in. Neither draft intent nor a proposal is consent.
+
 Discovery isolates service outages. Healthy services remain usable while the
 connection's health message identifies unavailable services and recommends a
 catalog refresh. Failed services' cached actions are disabled until rediscovered;

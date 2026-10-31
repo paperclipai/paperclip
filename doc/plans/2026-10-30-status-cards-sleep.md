@@ -109,12 +109,14 @@ not on the ordinary write pool. The helper ends that physical connection in
 actual refresh settlement. Summary writeback runs watched-query reads on its
 existing transaction, so a one-connection main pool completes the full flow.
 
-Migration0419 adds nullable internal `next_eval_reason` to the existing card row.
+Migration0420 adds nullable internal `next_eval_reason` to the existing card row.
 Membership deadlines may be reconstructed at startup after a committed source
 hint was lost. Policy eligibility and the atomically recorded five-minute retry
 lease retain their saved deadline. Explicit refresh deadlines remain due work.
 The HTTP card response removes this internal provenance; the public schema stays
 unchanged.
+
+Migration0419 retains the published agent-comment retry uniqueness and conversation read-state backfill. The status-card column follows it in migration0420; the combined schema snapshot is generated from both owners.
 
 For legacy rows, a pending change hash preserves policy eligibility. An untagged
 active deadline farther than five minutes away cannot be an outstanding
@@ -157,7 +159,7 @@ eviction, skipped/repeated hours, half-hour DST, date-line changes, rollback,
 strict boundaries, and actual twenty-card source delivery followed by quiet.
 
 
-Refresh decisions use the card's PostgreSQL row revision as a private compare-and-swap fence. If a card changes during watched-source reads, the owner rereads it and reconsiders the current policy, for at most three attempts. A replacement future interval deadline remains unchanged; a replacement manual policy does not run automatically. The same fence protects no-change, paused-policy and generation claims. Existing issue idempotency, generation ownership and losing-claim cancellation still apply. The row revision is not exposed through card APIs or shared scheduling contracts.
+Refresh decisions use the card's PostgreSQL row revision as a private compare-and-swap fence. If a card changes during watched-source reads, the owner rereads it and reconsiders the current policy, for at most three attempts. A replacement future interval deadline remains unchanged; a replacement manual policy does not run automatically. The same fence protects no-change, paused-policy and generation claims. Refresh task idempotency includes that captured revision: concurrent requests for the same revision still share one task, while a later revision gets an independent task even when its watched fingerprint is unchanged. A superseded refresh can therefore cancel its losing task without cancelling a newer revision's not-yet-claimed task. Compile task identity is unchanged. The row revision is not exposed through card APIs or shared scheduling contracts.
 
 Company source hints do not preempt a future deadline owned by a failed evaluation (`retry`). Membership and policy deadlines remain eligible for source-driven rechecks, and actual due retries still run. An explicit policy edit can replace the retry through the existing card mutation path. Real PostgreSQL regressions hold the actual search while committing an ordinary policy edit, then verify the saved interval still fires. Persistent search failures stay quiet through issue hints and restart, retry at their saved deadline, and recover through an ordinary policy edit.
 

@@ -10,7 +10,7 @@ import { registerSkillVersionRetentionWork } from "../services/skill-version-ret
 import { notifySkillVersionRetention } from "../services/skill-version-retention-notifications.js";
 import { notifyInstructionCollection } from "../services/instruction-collection-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "../services/native-environment-settlement-notifications.js";
-import { idleWorkSnapshot } from "../services/task-admission.js";
+import { idleWorkSnapshot, trackIdleWork } from "../services/task-admission.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { applyPendingMigrations } from "@paperclipai/db";
 import { touchSkillVersionCache, lastUsedAt, skillVersionCachePaths } from "../services/skill-version-cache.js";
@@ -158,9 +158,15 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
     return dir;
   }
 
-  async function startRetention(graceMs = 20_000, service = skillVersionRetentionService(db, { graceMs }), clock: { shouldAdvanceTime?: boolean; now?: number } = {}) {
+  async function startRetention(
+    graceMs = 20_000,
+    service = skillVersionRetentionService(db, { graceMs }),
+    clock: boolean | { shouldAdvanceTime?: boolean; now?: number } = true,
+  ) {
+    const clockOptions = typeof clock === "boolean" ? { shouldAdvanceTime: clock } : clock;
+    const advanceAutomatically = clockOptions.shouldAdvanceTime ?? true;
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select 1`)));
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true, ...clock });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: advanceAutomatically, ...clockOptions });
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => admitted, canReconcile: () => true,
       onError: error => { throw error; } });
     const register = coordinator.register.bind(coordinator);
@@ -170,7 +176,8 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
       return pass;
     } });
     worker = registerSkillVersionRetentionWork(coordinator, service, () => admitted);
-    await worker.ready;
+    if (advanceAutomatically) await worker.ready;
+    else await waitForIo(worker.ready);
     return service;
   }
   async function settled(deadline: number | null = null) {
@@ -179,6 +186,32 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
       expect(idleWorkSnapshot().active).toBe(0);
       expect(coordinator!.nextWakeAt()).toBe(deadline);
     }, { timeout: 10_000 });
+  }
+  async function waitForIo<T>(operation: Promise<T>) {
+    let complete = false;
+    void operation.then(() => { complete = true; }, () => { complete = true; });
+    const deadline = process.hrtime.bigint() + 10_000_000_000n;
+    while (!complete) {
+      if (process.hrtime.bigint() >= deadline) throw new Error("Retention I/O did not settle within 10000ms");
+      await vi.advanceTimersByTimeAsync(0);
+      await realDelay(0);
+    }
+    return operation;
+  }
+  async function settledAtDeadlines() {
+    const deadline = process.hrtime.bigint() + 10_000_000_000n;
+    for (;;) {
+      if (process.hrtime.bigint() >= deadline) throw new Error("Retention work did not settle within 10000ms");
+      if (idleWorkSnapshot().active > 0) {
+        if (passes.size) await waitForIo(Promise.all([...passes]));
+        await vi.advanceTimersByTimeAsync(0);
+        await realDelay(0);
+        continue;
+      }
+      const next = coordinator!.nextWakeAt();
+      if (next === null) return;
+      await vi.advanceTimersByTimeAsync(Math.max(0, next - Date.now()));
+    }
   }
   async function quiet(ms = 3 * HOUR_MS) {
     const reads = vi.spyOn(db, "select"), transactions = vi.spyOn(db, "transaction"), directories = vi.spyOn(fs, "opendir");
@@ -581,6 +614,30 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
     expect(await exists(directory)).toBe(false); await quiet();
   });
 
+  it("does not advance retention deadlines while owned directory I/O is pending", async () => {
+    await startRetention(20_000, undefined, false);
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const reading = trackIdleWork((async () => {
+      const directory = await fs.opendir(paperclipHome!);
+      try { entered.resolve(); await release.promise; }
+      finally { await directory.close(); }
+    })());
+    const advance = vi.spyOn(vi, "advanceTimersByTimeAsync");
+    let settling: Promise<void> | undefined;
+    try {
+      await Promise.race([entered.promise, reading]);
+      const heldAt = Date.now();
+      settling = settledAtDeadlines();
+      await realDelay(0);
+      expect(advance.mock.calls.every(([ms]) => ms === 0)).toBe(true);
+      expect(Date.now()).toBe(heldAt);
+    } finally {
+      release.resolve();
+      try { await reading; await settling; }
+      finally { advance.mockRestore(); }
+    }
+  });
+
   it("keeps directory pages moving while another company's grace deadline is due", async () => {
     const dueCompany = await createCompany(), pagedCompany = await createCompany();
     const dueSkill = await createSkill(dueCompany, 2), pagedSkill = await createSkill(pagedCompany, 1);
@@ -595,26 +652,12 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
       return prune(id, options);
     };
     const expiring = await writeSnapshot(dueCompany, dueSkill.skillId, dueSkill.versionIds[0]!, 0);
-    const completeIo = async (work: Promise<unknown>) => {
-      let done = false;
-      void work.then(() => { done = true; }, () => { done = true; });
-      while (!done) {
-        if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
-        await realDelay(0);
-      }
-      await work;
-    };
     const accessedAt = (await lastUsedAt(skillVersionCachePaths(dueCompany, dueSkill.skillId, dueSkill.versionIds[0]!).access))!;
-    await completeIo(startRetention(5000, service, { shouldAdvanceTime: false, now: accessedAt }));
+    await startRetention(5000, service, { shouldAdvanceTime: false, now: accessedAt });
     expect(await exists(expiring)).toBe(true);
     // Keep virtual time fixed during real I/O; measure scheduler fairness,
     // independent of filesystem latency and CI CPU scheduling.
-    while (coordinator!.nextWakeAt() !== null) {
-      await vi.advanceTimersByTimeAsync(Math.max(0, coordinator!.nextWakeAt()! - Date.now()));
-      await completeIo(Promise.all([...passes]));
-      await realDelay(0);
-      expect(idleWorkSnapshot().active).toBe(0);
-    }
+    await settledAtDeadlines();
     expect(pageTimes.length).toBeGreaterThan(5);
     expect(Math.max(...pageTimes.slice(1).map((at, index) => at - pageTimes[index]!))).toBeLessThan(3000);
     expect(await exists(expiring)).toBe(false); await quiet();

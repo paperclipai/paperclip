@@ -81,6 +81,17 @@ Independent SQL writers and additional processes need an explicit wake protocol;
 process-local notifications do not provide cross-replica delivery. Worker quiet
 alone is not evidence that the host or database actually suspended.
 
+## Native reply recovery
+
+Committed native replies use the shared delivery coordinator and its persisted
+retry deadlines. One pass checks at most four independent tasks at a time.
+Checks for the same company and task run in candidate order within the batch.
+Other scoped deadline workers remain serial unless their owner enables concurrency.
+Drain retains unstarted checks, and shutdown waits for every admitted check before
+releasing tracked work. Completed history creates no recurring discovery reads;
+new committed work reactivates the existing notification path. Pending reply
+obligations keep their existing sleep blockers.
+
 ## Scheduled routine wake protocol
 
 Historical failed ephemeral leases and terminal custom-image setup sessions can
