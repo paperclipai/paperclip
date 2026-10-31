@@ -681,6 +681,7 @@ interface ExecuteLogRoute {
  * with exponential backoff automatically when `autoRestart` is enabled.
  */
 export interface PluginWorkerHandle {
+  hasStartupWork?(): boolean;
   drainStartup?(contextId: string): Promise<void>;
   retireStartup?(contextId: string): Promise<void>;
   prepareIdleSleep?(hold: { ownerId: string; expiresAt: number }): Promise<"none" | "present" | "unknown">;
@@ -890,6 +891,7 @@ export interface PluginWorkerManager {
 export function createPluginWorkerHandle(
   pluginId: string,
   options: WorkerStartOptions,
+  onStartupWorkChanged?: () => void,
 ): PluginWorkerHandle {
   const log = logger.child({ service: "plugin-worker", pluginId });
   const emitter = new EventEmitter();
@@ -2808,6 +2810,7 @@ export function createPluginWorkerHandle(
       if (pending) startupHostHandlers.get(startupId ?? "")?.delete(pending);
       if (startupId && startupHostHandlers.get(startupId)?.size === 0) startupHostHandlers.delete(startupId);
       complete(); activeHostHandlers--; done();
+      if (startupId) onStartupWorkChanged?.();
     }
   }
 
@@ -3471,6 +3474,7 @@ export function createPluginWorkerHandle(
           startupCalls.get(startupContextId ?? "")?.delete(finish);
           if (startupContextId && startupCalls.get(startupContextId)?.size === 0) startupCalls.delete(startupContextId);
           onWorkerSettled?.();
+          if (startupContextId) onStartupWorkChanged?.();
         };
         unsettledCalls.set(id, finish);
         if (startupContextId) {
@@ -3630,6 +3634,7 @@ export function createPluginWorkerHandle(
       await stopInternal();
       await startInternal();
     },
+    hasStartupWork() { return startupCalls.size > 0 || startupHostHandlers.size > 0 || startupRetirements.size > 0; },
     async drainStartup(contextId: string) {
       revokeStartupInvocations(contextId);
       await waitForStartupHandlers(contextId);
@@ -3644,7 +3649,10 @@ export function createPluginWorkerHandle(
       })();
       startupRetirements.set(contextId, retiring);
       try { await retiring; }
-      finally { if (startupRetirements.get(contextId) === retiring) startupRetirements.delete(contextId); }
+      finally {
+        if (startupRetirements.get(contextId) === retiring) startupRetirements.delete(contextId);
+        onStartupWorkChanged?.();
+      }
     },
 
     call<M extends HostToWorkerMethodName>(
@@ -3859,6 +3867,14 @@ export function createPluginWorkerManager(
 ): PluginWorkerManager {
   const log = logger.child({ service: "plugin-worker-manager" });
   const workers = new Map<string, PluginWorkerHandle>();
+  const retiredStartupWorkers = new Set<PluginWorkerHandle>();
+  const retainStartupWorker = (handle: PluginWorkerHandle) => {
+    if (handle.hasStartupWork?.()) retiredStartupWorkers.add(handle);
+  };
+  const pruneStartupWorker = (handle: PluginWorkerHandle) => {
+    if (!handle.hasStartupWork?.()) retiredStartupWorkers.delete(handle);
+  };
+  const startupWorkers = () => new Set([...workers.values(), ...retiredStartupWorkers]);
   const configApplied = new Set<() => void>();
   let activeInspections = 0;
   /** Per-plugin startup locks to prevent concurrent spawn races. */
@@ -3912,7 +3928,8 @@ export function createPluginWorkerManager(
         // caller already supplied its own (a test may inject its own).
         duplexRouteSlots,
         ...options,
-      });
+      }, () => pruneStartupWorker(handle));
+      if (existing) retainStartupWorker(existing);
       workers.set(pluginId, handle);
 
       // Subscribe to crash/ready events for live event forwarding
@@ -3959,17 +3976,18 @@ export function createPluginWorkerManager(
 
       log.info({ pluginId }, "stopping plugin worker");
       await trackIdleWork(handle.stop());
-      workers.delete(pluginId);
+      retainStartupWorker(handle);
+      if (workers.get(pluginId) === handle) workers.delete(pluginId);
     },
 
     getWorker(pluginId: string): PluginWorkerHandle | undefined {
       return workers.get(pluginId);
     },
     async retireStartup(contextId: string) {
-      await Promise.all([...workers.values()].map(worker => worker.retireStartup?.(contextId)));
+      await Promise.all([...startupWorkers()].map(worker => worker.retireStartup?.(contextId)));
     },
     async drainStartup(contextId: string) {
-      await Promise.all([...workers.values()].map(worker => worker.drainStartup?.(contextId)));
+      await Promise.all([...startupWorkers()].map(worker => worker.drainStartup?.(contextId)));
     },
 
     isRunning(pluginId: string): boolean {
@@ -3994,10 +4012,12 @@ export function createPluginWorkerManager(
             },
             "error stopping worker during shutdown",
           );
+        } finally {
+          retainStartupWorker(handle);
+          if (workers.get(handle.pluginId) === handle) workers.delete(handle.pluginId);
         }
       });
       await Promise.all(promises);
-      workers.clear();
     },
 
     diagnostics(): WorkerDiagnostics[] {

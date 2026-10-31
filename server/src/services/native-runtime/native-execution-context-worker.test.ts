@@ -37,6 +37,7 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line", li
     held.push(message.id);
     invocations.push(message.paperclipInvocation?.id);
     if (message.params.config.hostWrite) process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:"host-"+message.id,method:"companies.get",params:{companyId:"company"},paperclipInvocationId:message.paperclipInvocation.id})+"\\n");
+    if (message.params.config.replyEarly) { held.splice(held.indexOf(message.id),1); send(message.id,{kind:"description",taskId:"task"}); }
   }
   else if (message.method === "health") send(message.id, {status:"ok",details:{pending:held.length}});
   else if (message.method === "configChanged") {
@@ -58,6 +59,98 @@ async function startWorker(hostHandlers: Record<string, unknown> = {}) {
 }
 
 describe("Core startup responsibility across real worker IPC", () => {
+  it.each(["stop", "replace", "stopAll"])("keeps stopped startup work reachable through %s until verified retirement", async mode => {
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+    const manager = await startWorker({ "companies.get": async () => { entered(); await gate; return {}; } });
+    const original = manager.getWorker(manifest.id)!, settled = vi.fn();
+    try {
+      const request = manager.call(manifest.id, "environmentTask", { ...params, config: { hostWrite: true } }, 50, undefined, settled, "stopped-context");
+      const rejected = expect(request).rejects.toThrow("timed out");
+      await started; await rejected;
+      if (mode === "stop") await manager.stopWorker(manifest.id);
+      else if (mode === "replace") await original.stop();
+      else await manager.stopAll();
+      if (mode !== "stopAll") await manager.startWorker(manifest.id, { entrypointPath, manifest, config: {},
+        instanceInfo: { instanceId: "replacement", hostVersion: "1.0.0" }, apiVersion: 1, hostHandlers: {} });
+      let drained = false, retired = false;
+      const draining = manager.drainStartup!("stopped-context").then(() => { drained = true; });
+      const retiring = manager.retireStartup!("stopped-context").then(() => { retired = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(drained).toBe(false);
+      expect(retired).toBe(false);
+      expect(settled).not.toHaveBeenCalled();
+      release(); await Promise.all([draining, retiring]);
+      expect(settled).toHaveBeenCalledOnce();
+      const oldDrain = vi.spyOn(original, "drainStartup");
+      await manager.drainStartup!("stopped-context");
+      expect(oldDrain).not.toHaveBeenCalled();
+    } finally { release(); await manager.stopAll(); }
+  });
+
+  it("prunes a stopped handle after its last accepted startup host call settles", async () => {
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+    const manager = await startWorker({ "companies.get": async () => { entered(); await gate; return {}; } });
+    const original = manager.getWorker(manifest.id)!, settled = vi.fn();
+    try {
+      const request = manager.call(manifest.id, "environmentTask", { ...params, config: { hostWrite: true, replyEarly: true } }, 5_000, undefined, settled, "host-only-context");
+      await started; await request;
+      expect(settled).toHaveBeenCalledOnce();
+      await manager.stopWorker(manifest.id);
+      let drained = false;
+      const draining = manager.drainStartup!("host-only-context").then(() => { drained = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(drained).toBe(false);
+      release(); await draining;
+      const oldDrain = vi.spyOn(original, "drainStartup");
+      await manager.drainStartup!("host-only-context");
+      expect(oldDrain).not.toHaveBeenCalled();
+    } finally { release(); await manager.stopAll(); }
+  });
+
+  it("keeps a stopped handle owned after bounded retirement fails and permits verified retry", async () => {
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+    const manager = await startWorker({ "companies.get": async () => { entered(); await gate; return {}; } }), settled = vi.fn();
+    try {
+      const request = manager.call(manifest.id, "environmentTask", { ...params, config: { hostWrite: true } }, 50, undefined, settled, "stopped-retry");
+      const rejected = expect(request).rejects.toThrow("timed out");
+      await started; await rejected;
+      await manager.stopWorker(manifest.id);
+      vi.useFakeTimers();
+      const failed = manager.retireStartup!("stopped-retry").catch(error => error.message);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(await failed).toBe("Task cleanup is still pending");
+      expect(settled).not.toHaveBeenCalled();
+      vi.useRealTimers();
+      let retired = false;
+      const retry = manager.retireStartup!("stopped-retry").then(() => { retired = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(retired).toBe(false);
+      release(); await retry;
+      expect(settled).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); release(); await manager.stopAll(); }
+  });
+
+  it.each(["stop", "stopAll"])("preserves a replacement registered while %s is finishing", async mode => {
+    const manager = await startWorker(), original = manager.getWorker(manifest.id)!;
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; }), stopped = new Promise<void>(resolve => { entered = resolve; });
+    const stop = original.stop.bind(original);
+    let replacement: Awaited<ReturnType<typeof manager.startWorker>> | undefined;
+    vi.spyOn(original, "stop").mockImplementation(async () => { await stop(); entered(); await gate; });
+    try {
+      const stopping = mode === "stop" ? manager.stopWorker(manifest.id) : manager.stopAll();
+      await stopped;
+      replacement = await manager.startWorker(manifest.id, { entrypointPath, manifest, config: {},
+        instanceInfo: { instanceId: "replacement", hostVersion: "1.0.0" }, apiVersion: 1, hostHandlers: {} });
+      release(); await stopping;
+      expect(manager.getWorker(manifest.id)).toBe(replacement);
+      expect(await manager.call(manifest.id, "health", {})).toMatchObject({ status: "ok" });
+    } finally { release(); await replacement?.stop(); await manager.stopAll(); }
+  });
+
   it("refuses new calls while the same startup group retires and joins concurrent retirement", async () => {
     let release!: () => void, entered!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
