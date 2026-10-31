@@ -2259,6 +2259,12 @@ and project row timestamps do not reset a session. This includes the first
 project-owned directory binding. Changes to effective execution configuration
 still require a fresh session.
 
+One session-preparation attempt shares instruction fingerprint reads across its
+managed-account compatibility candidates. The key includes the instruction file,
+root, entry file and bundle mode. A new attempt reads the files again, so edits
+and restored files affect the next session decision. Standalone fingerprint calls
+remain fresh; runtime asset verification is unchanged.
+
 Run-log formatting is in `server/src/services/heartbeat/run-log.ts`. It bounds
 stored event payloads, redacts and shortens log chunks, and caps stdout/stderr
 excerpts. `run-output.ts` owns per-attempt log handles, current-user redaction,

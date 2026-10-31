@@ -2834,7 +2834,7 @@ function buildSessionConfigCategoryValues(input: {
   } satisfies Record<EffectiveRunSessionConfigCategory, unknown>;
 }
 
-export async function buildEffectiveRunSessionConfigMetadata(input: {
+type RunSessionConfigMetadataInput = {
   adapterType: string;
   effectiveAdapterConfig: Record<string, unknown>;
   managedAiHome?: string;
@@ -2849,11 +2849,35 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
   runtimeSkills: unknown;
   agentConfigRevision?: unknown;
   agentIdentityKeyId?: string;
-}): Promise<EffectiveRunSessionConfigMetadata> {
+};
+
+/** One preparation attempt owns these reads; later attempts must observe edits. */
+export function createRunSessionConfigMetadataBuilder() {
+  const instructionsByConfig = new Map<string, ReturnType<typeof resolveInstructionsConfigFingerprintMetadata>>();
+  return async (input: RunSessionConfigMetadataInput): Promise<EffectiveRunSessionConfigMetadata> => {
+    const config = input.effectiveAdapterConfig;
+    const fields = [config.instructionsFilePath, config.instructionsRootPath, config.instructionsEntryFile,
+      config.instructionsBundleMode].map(readNonEmptyString);
+    if (fields.every(value => value === null)) return buildEffectiveRunSessionConfigMetadata(input);
+    const key = JSON.stringify(fields);
+    let instructions = instructionsByConfig.get(key);
+    if (!instructions) {
+      instructions = resolveInstructionsConfigFingerprintMetadata(config);
+      instructionsByConfig.set(key, instructions);
+    }
+    return buildRunSessionConfigMetadata(input, await instructions);
+  };
+}
+
+export async function buildEffectiveRunSessionConfigMetadata(input: RunSessionConfigMetadataInput): Promise<EffectiveRunSessionConfigMetadata> {
+  return buildRunSessionConfigMetadata(input, await resolveInstructionsConfigFingerprintMetadata(input.effectiveAdapterConfig));
+}
+
+function buildRunSessionConfigMetadata(
+  input: RunSessionConfigMetadataInput,
+  instructions: Awaited<ReturnType<typeof resolveInstructionsConfigFingerprintMetadata>>,
+): EffectiveRunSessionConfigMetadata {
   const secretManifest = input.secretManifest ?? [];
-  const instructions = await resolveInstructionsConfigFingerprintMetadata(
-    input.effectiveAdapterConfig,
-  );
   const categoryValues = buildSessionConfigCategoryValues({
     adapterType: input.adapterType,
     effectiveAdapterConfig: managedAiSessionFingerprintConfig(input.effectiveAdapterConfig, input.managedAiHome),
