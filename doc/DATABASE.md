@@ -1594,3 +1594,13 @@ the ordinary instance settings API. Seed inserts preserve an existing winner;
 replacements lock the row and reject stale revisions. Database/transaction
 handles permit atomic migration receipts. Connection URLs, API keys and unknown
 fields are excluded. See [field ownership and startup order](cloud-runtime-configuration.md).
+
+### Execution decision audit atomicity
+
+Review decisions must commit with their required comment and one `issue.updated`
+activity. The activity identifies the decision, its previous decision, stage,
+participant, comment, and request source. Decision body equals the saved comment
+body after trimming, including comment redaction. Its execution-state change records the
+transaction-current state before and after the decision, including decisions
+that keep the issue in `in_review`. Comment or activity persistence failure must
+roll back the decision and issue transition. Existing history is not backfilled.
