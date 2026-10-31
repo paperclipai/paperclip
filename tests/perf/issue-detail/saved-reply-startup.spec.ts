@@ -57,17 +57,17 @@ test.beforeAll(async ({ request }) => {
 
 for (const mobile of [false, true]) test(`saved task replies reveal before historical output and keep their geometry (mobile=${mobile})`, async ({ page }, info) => {
   await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 });
-  await page.addInitScript(mobile => {
+  await page.addInitScript(() => {
     const frames: { height: number; latest: number }[] = [];
     Object.assign(window, { savedReplyFrames: frames });
     const sample = () => {
       const thread = document.querySelector('[data-testid="task-chat-thread"] > [aria-busy="false"]');
-      const scroller = mobile ? thread : thread?.querySelector('[data-testid="task-chat-scroller"]');
+      const scroller = thread?.querySelector('[data-testid="task-chat-scroller"]');
       if (scroller) frames.push({ height: scroller.scrollHeight, latest: [...scroller.querySelectorAll('[id^="comment-"]')].at(-1)?.getBoundingClientRect().top ?? 0 });
       requestAnimationFrame(sample);
     };
     requestAnimationFrame(sample);
-  }, mobile);
+  });
   const reads: string[] = [];
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -95,7 +95,7 @@ for (const mobile of [false, true]) test(`saved task replies reveal before histo
     await editor.fill("Keep this draft while historical output is unavailable.");
     const originalEditor = await editor.elementHandle();
     const before = await reply.boundingBox();
-    const height = () => page.getByTestId(mobile ? "task-chat-thread" : "task-chat-scroller").evaluate(element => element.scrollHeight);
+    const height = () => page.getByTestId("task-chat-scroller").evaluate(element => element.scrollHeight);
     const beforeHeight = await height();
     await page.waitForTimeout(600);
     expect(await height()).toBe(beforeHeight);
