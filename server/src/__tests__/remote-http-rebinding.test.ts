@@ -120,6 +120,53 @@ function rebindingLookup(): { lookup: () => Promise<Array<{ address: string; fam
 }
 
 describe("guarded remote HTTP fetch (PAP-17098 DNS rebinding)", () => {
+  it("downloads attachment bytes over public NAT64 without resolving the host twice", async () => {
+    const address = "64:ff9b::8fcc:3779";
+    const attachment = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    const upstream = await startServer((_req, res) => {
+      res.writeHead(200, { "content-type": "image/jpeg" });
+      res.end(attachment);
+    });
+    const internal = await startServer();
+    const network = routingSocketFactory({
+      [address]: upstream.port,
+      "64:ff9b::a00:1": internal.port,
+    });
+    let lookups = 0;
+    const response = await guardedRemoteHttpFetch("http://cdn.agentmail.to/attachment", {}, {
+      lookup: async () => [{ address: ++lookups === 1 ? address : "64:ff9b::a00:1", family: 6 }],
+      socketFactory: network.factory,
+      error: guardError,
+    });
+
+    expect(response.status).toBe(200);
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(attachment);
+    expect(lookups).toBe(1);
+    expect(network.dialled).toEqual([address]);
+    expect(upstream.requests).toEqual([{ url: "/attachment", host: "cdn.agentmail.to" }]);
+    expect(internal.connections).toBe(0);
+  });
+
+  it("rejects a different public NAT64 socket peer before sending request bytes", async () => {
+    const approved = "64:ff9b::8fcc:3779";
+    const other = "64:ff9b::808:808";
+    const upstream = await startServer();
+    const network = routingSocketFactory({ [approved]: upstream.port });
+    const socketFactory: RemoteHttpSocketFactory = (target) => {
+      const socket = network.factory(target);
+      Object.defineProperty(socket, "remoteAddress", { get: () => other, configurable: true });
+      return socket;
+    };
+
+    await expect(guardedRemoteHttpFetch("http://cdn.agentmail.to/attachment", {}, {
+      lookup: async () => [{ address: approved, family: 6 }],
+      socketFactory,
+      error: guardError,
+    })).rejects.toMatchObject({ code: "remote_http_private_endpoint" });
+    expect(network.dialled).toEqual([approved]);
+    expect(upstream.requests).toHaveLength(0);
+  });
+
   it("sends a stable default User-Agent and preserves an explicit caller value", async () => {
     const seen: Array<string | undefined> = [];
     const upstream = await startServer((req, res) => {
