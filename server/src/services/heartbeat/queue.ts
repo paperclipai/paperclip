@@ -1991,6 +1991,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   async function maybeEmitRunLoopSignal(agent: typeof agents.$inferSelect) {
     try {
       const windowStart = new Date(Date.now() - LOOP_DETECTOR_WINDOW_SEC * 1000);
+      // Scope by companyId first so the predicate aligns with an existing index.
+      // heartbeat_runs has no (agentId, createdAt) index; agentId appears only in
+      // heartbeat_runs_company_agent_started_idx (companyId, agentId, startedAt),
+      // whose leading column is companyId. Leading with companyId lets the planner
+      // serve the `createdAt desc` + LIMIT from heartbeat_runs_company_created_at_desc_idx
+      // (companyId, createdAt desc), bounding the scan to the rolling window instead
+      // of forcing a wider scan + sort. heartbeat_runs is company-scoped, so this
+      // narrows nothing semantically (agent ids are unique). See the PR verification
+      // section for query-cost evidence and the dispatch-latency bound.
       const recentRuns = await db
         .select({
           id: heartbeatRuns.id,
@@ -1998,7 +2007,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           createdAt: heartbeatRuns.createdAt,
         })
         .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.agentId, agent.id), gt(heartbeatRuns.createdAt, windowStart)))
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, agent.companyId),
+            eq(heartbeatRuns.agentId, agent.id),
+            gt(heartbeatRuns.createdAt, windowStart),
+          ),
+        )
         .orderBy(desc(heartbeatRuns.createdAt))
         .limit(LOOP_DETECTOR_RUN_FETCH_LIMIT);
 
