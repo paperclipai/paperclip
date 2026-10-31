@@ -6,6 +6,7 @@ import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { validatePrpEvent } from "../vendor/paperclip-runner/index.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
+import { isConfirmedCursorCloudTerminalObservation } from "./native-runtime/cursor-cloud-runtime.js";
 
 /** A server-recorded run-only Stop must not manufacture a recovery incident. */
 function hasAcknowledgedNativeRunStopReceipt(run: {
@@ -72,26 +73,15 @@ export async function acknowledgedNativeApiStopExecutionHasStopped(db: Db, run: 
   )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
   const validated = validatePrpEvent(parseObject(terminal?.payload).prpEvent);
   if (!terminal || !validated.ok || terminal.sourcePayloadSha256 !== nativeSha256(validated.event)) return false;
-  const event = validated.event, payload = parseObject(event.payload);
-  // Stop proves containment even when the provider ended before its intent
-  // was recorded. This latest bound turn must still be terminal; a later
-  // turn.started or synthetic local failure cannot prove provider termination.
-  const errorCode = parseObject(payload.error).code;
-  const confirmedTerminal = (terminal.eventType === "turn.interrupted" && payload.status === "interrupted")
-    || (terminal.eventType === "turn.completed" && payload.status === "completed")
-    || (terminal.eventType === "turn.cancelled" && payload.status === "cancelled"
-      && payload.providerTerminalState === "completed" && payload.reason === "cancelled_after_provider_completed")
-    || (terminal.eventType === "turn.failed" && payload.status === "failed" && typeof errorCode === "string"
-      && ["cursor_cloud_error", "cursor_cloud_expired"].includes(errorCode));
-  return confirmedTerminal && terminal.agentId === run.agentId &&
+  const event = validated.event;
+  return isConfirmedCursorCloudTerminalObservation({ eventType: terminal.eventType, payload: event.payload }) && terminal.agentId === run.agentId &&
     event.schema === "paperclip.prp.event.v1" && [1, 2].includes(Number(event.schemaVersion)) &&
     terminal.protocolSchemaVersion === event.schemaVersion && event.eventType === terminal.eventType &&
     event.sourceKind === "runner" && event.runId === run.id && event.normalizedSessionId === run.nativeSessionId &&
     event.sourceInstanceId === run.runnerInstanceId && terminal.sourceInstanceId === event.sourceInstanceId &&
     terminal.sourceEventId === event.sourceEventId && terminal.sourceSeq === event.sourceSeq &&
     Number.isSafeInteger(event.sourceSeq) && Number(event.sourceSeq) > 0 &&
-    typeof event.turnId === "string" && Boolean(event.turnId) &&
-    (payload.providerTerminalObserved === undefined || payload.providerTerminalObserved === true);
+    typeof event.turnId === "string" && Boolean(event.turnId);
 }
 
 /** A Stop acknowledgement alone does not prove provider cleanup completed. */
