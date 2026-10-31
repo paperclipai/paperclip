@@ -404,6 +404,48 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("resolves a stale required handoff when the corrective run leaves a valid path", () => {
+    const correctiveRun = {
+      ...run,
+      id: "run-2",
+      contextSnapshot: {
+        issueId: "issue-1",
+        wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+        handoffRequired: true,
+      },
+    } as any;
+    const withMonitor = decide({ run: correctiveRun, hasPersistedMonitor: true });
+    expect(withMonitor).toEqual({ kind: "skip", reason: "persisted issue monitor owns the next action" });
+    expect(isSuccessfulRunHandoffValidPathSkip(withMonitor)).toBe(true);
+    expect(isSuccessfulRunHandoffValidPathSkip(decide({ run: correctiveRun, hasExplicitBlockerPath: true }))).toBe(true);
+    expect(isSuccessfulRunHandoffValidPathSkip(decide({ run: correctiveRun }))).toBe(false);
+  });
+
+  it("does not resolve from a corrective run when the issue left the source agent", () => {
+    const decision = decide({
+      run: {
+        ...run,
+        id: "run-2",
+        contextSnapshot: { issueId: "issue-1", handoffRequired: true },
+      } as any,
+      issue: { ...issue, assigneeAgentId: "agent-2" } as any,
+      hasPersistedMonitor: true,
+    });
+    expect(decision).toEqual({ kind: "skip", reason: "source run is already a corrective handoff run" });
+    expect(isSuccessfulRunHandoffValidPathSkip(decision)).toBe(false);
+  });
+
+  it("resolves a stale required handoff from a comment-driven wake that keeps the monitor", () => {
+    const decision = decide({
+      run: {
+        ...run,
+        contextSnapshot: { issueId: "issue-1", wakeReason: "issue_commented", commentId: "comment-1" },
+      } as any,
+      hasPersistedMonitor: true,
+    });
+    expect(isSuccessfulRunHandoffValidPathSkip(decision)).toBe(true);
+  });
+
   it("does not queue for issue monitor maintenance runs", () => {
     expect(decide({
       run: {
