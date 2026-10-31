@@ -1,14 +1,15 @@
-import type { ToolAccessMutationDb } from "../types.js";
+import type { DbTransaction } from "../types.js";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectionGrants, toolConnections } from "@paperclipai/db";
 import { RAILWAY_SSH_SECRET_PATH } from "../../railway-ssh.js";
 import { isRailwayConnection } from "../../railway.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 
 export function createOrganizationGrantStore(db: Db) {
   async function ensureDefaultOrganizationGrant(
     connection: typeof toolConnections.$inferSelect,
-    dbClient: ToolAccessMutationDb = db,
+    dbClient: Pick<Db | DbTransaction, "select" | "insert" | "update" | "delete" | "transaction"> = db,
     onMutation?: (mutation: {
       previous: typeof connectionGrants.$inferSelect | null;
       current: typeof connectionGrants.$inferSelect;
@@ -66,7 +67,9 @@ export function createOrganizationGrantStore(db: Db) {
       // sending an unauthenticated request after an apparently successful
       // setup. Reconnecting is also the explicit recovery path for a revoked
       // shared identity, so it is correct to reactivate that default grant here.
-      const [updated] = await dbClient
+      const [updated] = await dbClient.transaction(async (tx) => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+        return tx
         .update(connectionGrants)
         .set({
           credentialSecretRefs: isRailwayConnection(connection)
@@ -83,12 +86,15 @@ export function createOrganizationGrantStore(db: Db) {
         })
         .where(eq(connectionGrants.id, existing.id))
         .returning();
+      });
       if (!updated)
         throw new Error("Failed to update default connection grant");
       onMutation?.({ previous: existing, current: updated });
       return updated;
     }
-    const [created] = await dbClient
+    const [created] = await dbClient.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+      return tx
       .insert(connectionGrants)
       .values({
         companyId: connection.companyId,
@@ -102,6 +108,7 @@ export function createOrganizationGrantStore(db: Db) {
         isDefault: true,
       })
       .returning();
+    });
     if (!created) throw new Error("Failed to create default connection grant");
     onMutation?.({ previous: null, current: created });
     return created;
