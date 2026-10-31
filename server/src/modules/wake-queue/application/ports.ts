@@ -193,6 +193,7 @@ export interface WakeQueueTransaction {
   }): Promise<boolean>;
   /** An open, non-hidden issue that still lists this issue as a `blocks` predecessor. */
   hasExplicitBlockerPath(input: { companyId: string; issueId: string }): Promise<boolean>;
+  hasPendingFinalizeBlocker(input: { companyId: string; issueId: string }): Promise<boolean>;
   isAutomaticRecoverySuppressedByPauseHold(input: { companyId: string; issueId: string }): Promise<boolean>;
   /** Deny-only facts from the exact finishing run and its durable chat wake owner. */
   isImmediateRecoverySourceBlocked(input: { companyId: string; runId: string }): Promise<boolean>;

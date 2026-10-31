@@ -1519,16 +1519,20 @@ export function recoveryService(
       if (activeConversation) return true;
     }
 
+    return hasOpenExplicitBlocker(issue.companyId, issue.id);
+  }
+
+  async function hasOpenExplicitBlocker(companyId: string, issueId: string) {
     return db
       .select({ id: issueRelations.issueId })
       .from(issueRelations)
       .innerJoin(issues, eq(issueRelations.issueId, issues.id))
       .where(
         and(
-          eq(issueRelations.companyId, issue.companyId),
-          eq(issueRelations.relatedIssueId, issue.id),
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, issueId),
           eq(issueRelations.type, "blocks"),
-          eq(issues.companyId, issue.companyId),
+          eq(issues.companyId, companyId),
           notInArray(issues.status, ["done", "cancelled"]),
           isNull(issues.hiddenAt),
         ),
@@ -5268,6 +5272,16 @@ export function recoveryService(
         }
 
         if (
+          issue.assigneeAgentId === participantAgentId &&
+          ((await hasOpenExplicitBlocker(issue.companyId, issue.id)) ||
+            ((await issuesSvc.listDependencyReadiness(issue.companyId, [issue.id]))
+              .get(issue.id)?.pendingFinalizeBlockerIssueIds.length ?? 0) > 0)
+        ) {
+          result.skipped += 1;
+          continue;
+        }
+
+        if (
           didAutomaticRecoveryFail(
             participantLatestRun,
             EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
@@ -5816,7 +5830,9 @@ export function recoveryService(
 
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
-        eq(issues.status, "blocked"),
+        opts?.blockerIssueId
+          ? notInArray(issues.status, ["backlog", "done", "cancelled"])
+          : eq(issues.status, "blocked"),
         isNull(issues.conversationAgentId),
         visibleIssueCondition(),
         sql`${issues.assigneeAgentId} is not null`,
@@ -5837,6 +5853,7 @@ export function recoveryService(
             companyId: issues.companyId,
             identifier: issues.identifier,
             assigneeAgentId: issues.assigneeAgentId,
+            status: issues.status,
             blockedTransitionAt: issues.blockedTransitionAt,
             totalCount: sql<number>`count(*) over()::int`,
           })
@@ -5853,6 +5870,7 @@ export function recoveryService(
           companyId: issues.companyId,
           identifier: issues.identifier,
           assigneeAgentId: issues.assigneeAgentId,
+          status: issues.status,
           blockedTransitionAt: issues.blockedTransitionAt,
           totalCount: sql<number>`count(*) over()::int`,
         })
@@ -5872,6 +5890,16 @@ export function recoveryService(
     ) {
       resolvedDependencyWakeBackstopCandidateCursor = null;
       candidateRows = await queryCandidates(null);
+    }
+    let candidatePage = candidateRows;
+    while (
+      !useCursor &&
+      candidatePage.length === RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT
+    ) {
+      candidatePage = await queryCandidates(
+        candidatePage[candidatePage.length - 1]!.id,
+      );
+      candidateRows = [...candidateRows, ...candidatePage];
     }
     const totalCandidateCount = candidateRows[0]?.totalCount ?? 0;
     const candidates = candidateRows.map(
@@ -5963,7 +5991,7 @@ export function recoveryService(
         // blockers were resolved: it is waiting on something outside the blocker
         // graph. Re-waking it here made it re-block on every sweep (each re-block
         // stamps a new cycle, so the ready-state key never repeats).
-        if (await wasBlockedByAssigneeAgent(companyId, candidate.id, agentId, candidate.blockedTransitionAt, readiness.blockerIssueIds)) {
+        if (candidate.status === "blocked" && await wasBlockedByAssigneeAgent(companyId, candidate.id, agentId, candidate.blockedTransitionAt, readiness.blockerIssueIds)) {
           result.selfBlockedSkipped += 1;
           continue;
         }

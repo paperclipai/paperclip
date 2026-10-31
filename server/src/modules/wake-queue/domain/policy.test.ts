@@ -303,6 +303,7 @@ const baseReleaseRecoveryFacts: ReleaseRecoveryFacts = {
   reviewParticipant: {
     applies: false,
     isExecutionReviewParticipantRecoveryRun: false,
+    hasBlockerWait: false,
   },
   immediate: {
     applies: false,
@@ -451,9 +452,34 @@ describe("decideReleaseRecovery", () => {
           ...baseReleaseRecoveryFacts.reviewParticipant,
           applies: true,
           isExecutionReviewParticipantRecoveryRun: true,
+          hasBlockerWait: false,
         },
       },
       expected: { kind: "blocked", notice: "execution_review_participant" },
+    },
+    {
+      name: "released: review-participant recovery applies but the issue waits on an unresolved blocker",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        reviewParticipant: {
+          ...baseReleaseRecoveryFacts.reviewParticipant,
+          applies: true,
+          hasBlockerWait: true,
+        },
+      },
+      expected: { kind: "released" },
+    },
+    {
+      name: "released: an unresolved blocker also stops escalation after a review-participant recovery retry",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        reviewParticipant: {
+          applies: true,
+          isExecutionReviewParticipantRecoveryRun: true,
+          hasBlockerWait: true,
+        },
+      },
+      expected: { kind: "released" },
     },
     {
       name: "queue_review_participant_recovery: review-participant recovery applies and no suppression or block condition fires",

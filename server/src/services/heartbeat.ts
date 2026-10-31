@@ -1682,10 +1682,9 @@ export function heartbeatService(
     return recovery.buildRunOutputSilence(run, now);
   }
 
-  async function reconcileResolvedDependencyWakes(opts?: {
-    runId?: string | null;
-    companyId?: string | null;
-  }) {
+  async function reconcileResolvedDependencyWakes(
+    opts?: Parameters<typeof recovery.reconcileResolvedDependencyWakeBackstop>[0],
+  ) {
     return recovery.reconcileResolvedDependencyWakeBackstop(opts);
   }
 

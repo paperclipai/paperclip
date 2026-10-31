@@ -910,6 +910,122 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(wakes.some((wake) => ["queued", "claimed", "completed"].includes(wake.status))).toBe(true);
   });
 
+  it("wakes the current reviewer of a pending review once when its done blocker finishes workspace finalize", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId, executionWorkspaceId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "not_finalized" });
+    const returnAssigneeAgentId = randomUUID();
+    const executionState = {
+      status: "pending",
+      currentStageId: randomUUID(),
+      currentStageIndex: 0,
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId, userId: null },
+      returnAssignee: { type: "agent", agentId: returnAssigneeAgentId, userId: null },
+      reviewRequest: null,
+      completedStageIds: [],
+      lastDecisionId: randomUUID(),
+      lastDecisionOutcome: "changes_requested",
+      changesRequestedCount: 2,
+    };
+    await db
+      .update(issues)
+      .set({ status: "in_review", executionState })
+      .where(eq(issues.id, blockedIssueId));
+    const heartbeat = heartbeatService(db);
+    const finalizeScope = { companyId, blockerIssueId, source: "workspace.finalize" as const };
+
+    const beforeFinalize = await heartbeat.reconcileResolvedDependencyWakes(finalizeScope);
+    expect(beforeFinalize).toMatchObject({ checked: 1, healed: 0, notReadySkipped: 1 });
+
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerIssueId,
+      phase: "workspace_finalize",
+      status: "succeeded",
+      startedAt: new Date(),
+    });
+
+    expect((await heartbeat.reconcileResolvedDependencyWakes({ companyId })).checked).toBe(0);
+    const afterFinalize = await heartbeat.reconcileResolvedDependencyWakes(finalizeScope);
+    expect(afterFinalize).toMatchObject({ healed: 1, issueIds: [blockedIssueId] });
+    expect((await heartbeat.reconcileResolvedDependencyWakes(finalizeScope)).healed).toBe(0);
+
+    const wakes = await db
+      .select({ agentId: agentWakeupRequests.agentId, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")));
+    expect(wakes).toEqual([
+      { agentId, payload: expect.objectContaining({ issueId: blockedIssueId, resolvedBlockerIssueId: blockerIssueId }) },
+    ]);
+    await heartbeat.drainActiveRunExecutions();
+    const [dependent] = await db
+      .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId, executionState: issues.executionState })
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId));
+    expect(dependent).toEqual({ status: "in_review", assigneeAgentId: agentId, executionState });
+  });
+
+  it("wakes a pending reviewer past the first candidate page once its done blocker finishes workspace finalize", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "finalized" });
+    const executionState = {
+      status: "pending",
+      currentStageId: randomUUID(),
+      currentStageIndex: 0,
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId, userId: null },
+      returnAssignee: { type: "agent", agentId: randomUUID(), userId: null },
+      reviewRequest: null,
+      completedStageIds: [],
+      lastDecisionId: randomUUID(),
+      lastDecisionOutcome: "changes_requested",
+      changesRequestedCount: 2,
+    };
+    await db
+      .update(issues)
+      .set({ status: "in_review", executionState })
+      .where(eq(issues.id, blockedIssueId));
+    const [blockerRow] = await db.select({ identifier: issues.identifier }).from(issues).where(eq(issues.id, blockerIssueId));
+    const issuePrefix = blockerRow!.identifier!.replace(/-2$/, "");
+    const openBlockerId = randomUUID();
+    await db.insert(issues).values({
+      id: openBlockerId, companyId, title: "Open blocker", status: "todo", priority: "medium",
+      issueNumber: 3, identifier: `${issuePrefix}-3`,
+    });
+    const fillerIds = Array.from({ length: 500 }, (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
+    await db.insert(issues).values(fillerIds.map((id, index) => ({
+      id, companyId, title: `Filler dependent ${index}`, status: "todo", priority: "medium",
+      assigneeAgentId: agentId, issueNumber: index + 4, identifier: `${issuePrefix}-${index + 4}`,
+    })));
+    await db.insert(issueRelations).values(fillerIds.flatMap((id) => [
+      { companyId, issueId: blockerIssueId, relatedIssueId: id, type: "blocks" as const },
+      { companyId, issueId: openBlockerId, relatedIssueId: id, type: "blocks" as const },
+    ]));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileResolvedDependencyWakes({
+      companyId, blockerIssueId, source: "workspace.finalize",
+    });
+
+    expect(result).toMatchObject({
+      checked: 501, candidateLimitSkipped: 0, notReadySkipped: 500, healed: 1, issueIds: [blockedIssueId],
+    });
+    const wakes = await db
+      .select({ agentId: agentWakeupRequests.agentId, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")));
+    expect(wakes).toEqual([
+      { agentId, payload: expect.objectContaining({ issueId: blockedIssueId, resolvedBlockerIssueId: blockerIssueId }) },
+    ]);
+    await heartbeat.drainActiveRunExecutions();
+    const [dependent] = await db
+      .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId, executionState: issues.executionState })
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId));
+    expect(dependent).toEqual({ status: "in_review", assigneeAgentId: agentId, executionState });
+  });
+
   it("waits for workspace finalize before healing a resolved blocked dependent", async () => {
     const { companyId, agentId, blockedIssueId, blockerIssueId, executionWorkspaceId } =
       await seedResolvedDependencyBackstopFixture({ workspaceState: "not_finalized" });

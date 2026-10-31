@@ -578,6 +578,11 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       return row !== null;
     },
 
+    async hasPendingFinalizeBlocker({ companyId, issueId }) {
+      const readiness = await issuesSvc.listDependencyReadiness(companyId, [issueId], tx);
+      return (readiness.get(issueId)?.pendingFinalizeBlockerIssueIds.length ?? 0) > 0;
+    },
+
     async isAutomaticRecoverySuppressedByPauseHold({ companyId, issueId }) {
       return isAutomaticRecoverySuppressedByPauseHold(tx, companyId, issueId, treeControlSvc);
     },
