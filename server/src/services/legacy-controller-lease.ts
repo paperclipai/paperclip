@@ -1,4 +1,4 @@
-import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
+import { notifyActiveExecutionRecovery, notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, gt, lte, sql } from "drizzle-orm";
 import { heartbeatRuns, livenessDb, type Db } from "@paperclipai/db";
@@ -36,14 +36,13 @@ export function legacyControllerClaim(runtimeMode: string) {
   };
 }
 
-export async function renewLegacyControllerLease(
-  db: Db,
+async function renewLegacyControllerLeaseInTransaction(
+  tx: Db,
   run: Pick<Run, "id" | "companyId" | "controllerBootId">,
   stage?: "dispatching",
 ): Promise<boolean> {
-  const [renewed] = await db.transaction(async tx => {
-    await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id });
-    return tx.update(heartbeatRuns).set({
+  await notifyActiveExecutionRecovery(tx, { companyId: run.companyId, runId: run.id });
+  const [renewed] = await tx.update(heartbeatRuns).set({
     controllerLeaseExpiresAt: sql`clock_timestamp() + interval '60 seconds'`,
     ...(stage ? { executionStage: stage } : {}),
   }).where(and(
@@ -52,8 +51,15 @@ export async function renewLegacyControllerLease(
     eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
     gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`),
   )).returning({ id: heartbeatRuns.id });
-  });
   return Boolean(renewed);
+}
+
+export async function renewLegacyControllerLease(
+  db: Db,
+  run: Pick<Run, "id" | "companyId" | "controllerBootId">,
+  stage?: "dispatching",
+): Promise<boolean> {
+  return db.transaction(tx => renewLegacyControllerLeaseInTransaction(tx as unknown as Db, run, stage));
 }
 
 /** One attempt may wait at most this long; a timed-out attempt is retried
@@ -77,7 +83,7 @@ async function renewOnLivenessPool(
 ): Promise<boolean> {
   return livenessDb(db).transaction(async (tx) => {
     await tx.execute(sql`select set_config('statement_timeout', ${`${statementTimeoutMs}ms`}, true)`);
-    return renewLegacyControllerLease(tx as unknown as Db, run, stage);
+    return renewLegacyControllerLeaseInTransaction(tx as unknown as Db, run, stage);
   });
 }
 

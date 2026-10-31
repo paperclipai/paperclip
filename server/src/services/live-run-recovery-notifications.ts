@@ -7,6 +7,11 @@ export async function notifyActiveRunSilence(tx: object, scope?: LiveRunRecovery
     ? JSON.stringify({ companyId: scope.companyId, runId: scope.runId, issueId: scope.issueId }) : "*");
 }
 
+export async function notifyActiveExecutionRecovery(tx: object, scope: { companyId: string; runId: string }) {
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.activeExecutionRecovery,
+    JSON.stringify({ companyId: scope.companyId, runId: scope.runId }));
+}
+
 export async function notifyLiveRunRecovery(tx: object, scope?: LiveRunRecoveryScope) {
   const hint = scope ? JSON.stringify({ companyId: scope.companyId, runId: scope.runId }) : "*";
   for (const queue of [DELIVERY_QUEUES.nativeProcessSessions, DELIVERY_QUEUES.nativeQuestionCancellations,
