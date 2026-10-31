@@ -456,7 +456,7 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
       release(); await blocker;
       expect(await reader).toMatchObject({ id: saved.id, body: f.reply, createdByRunId: f.runId });
       expect(await comments(f.runId)).toHaveLength(1);
-    } finally { release?.(); await Promise.allSettled([blocker, reader].filter((value): value is Promise<unknown> => Boolean(value))); }
+    } finally { release?.(); await Promise.allSettled([blocker, reader]); }
   });
 
   it("does not let an old hold shorten a newer claim's lease", async () => {
