@@ -15,6 +15,13 @@ broken first install.
 | --- | --- | --- |
 | Node.js | `>=24.11.0` (from `engines`) | `node --version` |
 | pnpm | `9.15.4` (from `packageManager`) | `pnpm --version` |
+| Rust (`cargo`, `rustfmt`) | `1.97.1` (from `packages/paperclip-runner/rust-toolchain.toml`) | `rustup show` in `packages/paperclip-runner` |
+
+`pnpm typecheck` runs `cargo fmt` and `cargo check` for
+`@paperclipai/paperclip-runner`, so install Rust with
+[rustup](https://rustup.rs) before your first check. The pin applies only inside
+`packages/paperclip-runner`, so `cargo --version` at the repository root can
+show a different version.
 
 If pnpm is missing or the version does not match:
 
