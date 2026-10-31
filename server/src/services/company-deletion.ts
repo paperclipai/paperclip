@@ -40,6 +40,7 @@ import {
   budgetPolicies,
   budgetIncidents,
   issueReadStates,
+  inboxDismissals,
   approvalComments,
   approvals,
   activityLog,
@@ -133,6 +134,7 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(routineRevisions).where(eq(routineRevisions.companyId, id));
         await tx.delete(routines).where(eq(routines.companyId, id));
         await tx.delete(issueReadStates).where(eq(issueReadStates.companyId, id));
+        await tx.delete(inboxDismissals).where(eq(inboxDismissals.companyId, id));
         await tx.delete(documents).where(eq(documents.companyId, id));
         await tx.delete(issues).where(eq(issues.companyId, id));
         await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
