@@ -2989,7 +2989,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const f = await publicationRetryFixture(categories);
       const begin = await f.service.execute(f.session, "begin_review", { reviewedCommit: f.head });
       expect(begin).toMatchObject({ findingCategories: categories });
-      // Later settings must not replace the policy used by this assessment.
       const config = await f.management.configuration(f.endpoint.id, "owner-user");
       await f.management.saveConfiguration(f.endpoint.id, { expectedRevision: config.revision,
         configuration: { ...config.configuration, defaults: { ...config.configuration.defaults, findingCategories: ["new-category"] } },
