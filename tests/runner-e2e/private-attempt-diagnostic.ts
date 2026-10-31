@@ -45,7 +45,13 @@ export async function readPrivateAttemptObservation(casePrivateDir: string) {
     return JSON.parse(await readFile(file, "utf8"));
   } catch { return; }
 }
-/** GITHUB_ENV survives the paid step's private stdout redirect; the next trusted step logs only this closed projection. */
+/**
+ * GITHUB_ENV survives the paid step's private stdout redirect. SetEnvFileCommand
+ * updates the env context; ActionRunner passes it to ScriptHandler, whose
+ * PrintActionDetails prints it before the next trusted shell step runs.
+ * https://github.com/actions/runner/blob/main/src/Runner.Worker/Handlers/ScriptHandler.cs#L120-L126
+ * The variable is not consumed as authority by the protected transfer.
+ */
 export async function appendPrivateAttemptDiagnostic(input: PrivateAttemptDiagnosticInput, env = process.env) {
   if (env.GITHUB_ACTIONS !== "true") return;
   if (!env.GITHUB_ENV || !env.RUNNER_TEMP) throw new Error("Closed private diagnostic channel is unavailable");
