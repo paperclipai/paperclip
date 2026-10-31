@@ -24,45 +24,40 @@ type SeededAgent = {
   adapterConfig?: Record<string, unknown>;
 };
 
-type AgentRow = {
-  id: string;
-  company_id: string;
-  name: string;
-  adapterType: string;
-  adapter_config: Record<string, unknown>;
-};
+type AgentRow = Required<SeededAgent>;
 
 function toRow(agent: SeededAgent): AgentRow {
   return {
     id: agent.id,
-    company_id: agent.companyId,
+    companyId: agent.companyId,
     name: agent.name,
     adapterType: agent.adapterType,
-    adapter_config: agent.adapterConfig ?? {},
+    adapterConfig: agent.adapterConfig ?? {},
   };
 }
 
-/** The `agents` table columns, so a predicate can be recognised as a real column. */
-const agentColumnNames = new Set(
-  Object.values(getTableColumns(agents)).map((col) => (col as { name: string }).name),
+/** Maps each `agents` SQL column name to the field drizzle returns it under. */
+const agentFieldByColumn = new Map(
+  Object.entries(getTableColumns(agents)).map(([field, col]) => [(col as { name: string }).name, field]),
 );
 
 /**
  * Compiles a drizzle `where` clause to `column = value` pairs through the real
  * Pg compiler, so the pairs come from the SQL the database would actually run.
+ * Only a conjunction of column equalities is supported; any other shape throws.
  */
 function wherePredicates(where: SQLWrapper | undefined): { column: string; value: unknown }[] {
   if (where === undefined) return [];
   const { sql, params } = new PgDialect().sqlToQuery(where as SQL);
+  const conjunction = sql.startsWith("(") && sql.endsWith(")") ? sql.slice(1, -1) : sql;
 
-  const predicates: { column: string; value: unknown }[] = [];
-  for (const match of sql.matchAll(/"([^"]+)"\s*=\s*\$(\d+)/g)) {
-    const column = match[1];
-    if (agentColumnNames.has(column)) {
-      predicates.push({ column, value: params[Number(match[2]) - 1] });
+  return conjunction.split(" and ").map((term) => {
+    const match = /^(?:"[^"]+"\.)?"([^"]+)" = \$(\d+)$/.exec(term);
+    if (!match || !agentFieldByColumn.has(match[1])) {
+      throw new Error(`mock db: unsupported where clause: ${sql}`);
     }
-  }
-  return predicates;
+    return { column: match[1], value: params[Number(match[2]) - 1] };
+  });
 }
 
 /** Records the operands each `where` call received so tests can pin the tenant predicate directly. */
@@ -75,11 +70,10 @@ function mockDbWithAgents(rows: SeededAgent[]): Db {
     where: (clause: SQLWrapper | undefined) => {
       const predicates = wherePredicates(clause);
       whereOperands.push(predicates);
-      if (clause === undefined) return Promise.resolve(seeded);
       return Promise.resolve(
-        predicates.length === 0
-          ? []
-          : seeded.filter((row) => predicates.every((p) => row[p.column as keyof AgentRow] === p.value)),
+        seeded.filter((row) =>
+          predicates.every((p) => row[agentFieldByColumn.get(p.column) as keyof AgentRow] === p.value),
+        ),
       );
     },
   };
@@ -99,9 +93,10 @@ afterEach(() => {
 
 describe("notifyHireApproved", () => {
   it("writes success activity when adapter hook returns ok", async () => {
+    const onHireApproved = vi.fn().mockResolvedValue({ ok: true });
     vi.mocked(findActiveServerAdapter).mockReturnValue({
       type: "openclaw_gateway",
-      onHireApproved: vi.fn().mockResolvedValue({ ok: true }),
+      onHireApproved,
     } as any);
 
     const db = mockDbWithAgent({
@@ -109,6 +104,7 @@ describe("notifyHireApproved", () => {
       companyId: "c1",
       name: "OpenClaw Agent",
       adapterType: "openclaw_gateway",
+      adapterConfig: { url: "https://gateway.example" },
     });
 
     await expect(
@@ -120,6 +116,10 @@ describe("notifyHireApproved", () => {
       }),
     ).resolves.toBeUndefined();
 
+    expect(onHireApproved).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "a1", agentName: "OpenClaw Agent" }),
+      { url: "https://gateway.example" },
+    );
     expect(logActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
