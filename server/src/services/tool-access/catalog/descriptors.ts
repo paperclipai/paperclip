@@ -79,6 +79,17 @@ const NOTION_WRITE_TOOLS = new Set([
   "notion-update-view",
 ]);
 
+const GRAFANA_CLOUD_WRITE_TOOLS = new Set([
+  "add-activity-to-incident",
+  "alerting-manage-routing",
+  "alerting-manage-rules",
+  "ask-assistant",
+  "query-athena",
+  "query-clickhouse",
+  "query-influxdb",
+  "query-snowflake",
+]);
+
 const SHOPIFY_DESTRUCTIVE_TOOLS = new Set([
   "cancel-cart",
   "cancel-checkout",
@@ -171,6 +182,11 @@ export function classifyRisk(
       ? "read"
       : "write";
   }
+  if (
+    sourceTemplateKey === "grafana-cloud" &&
+    GRAFANA_CLOUD_WRITE_TOOLS.has(normalizedToolName)
+  )
+    return "write";
   if (
     sourceTemplateKey === "shopify" &&
     SHOPIFY_DESTRUCTIVE_TOOLS.has(normalizedToolName)

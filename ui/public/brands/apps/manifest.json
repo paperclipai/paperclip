@@ -653,6 +653,12 @@
       "localAsset": "/brands/apps/firecrawl.svg"
     },
     {
+      "slug": "grafana-cloud",
+      "provider": "Grafana Cloud",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/grafana-cloud.svg"
+    },
+    {
       "slug": "gsc-wizard",
       "provider": "GSC Wizard",
       "catalogVisible": true,

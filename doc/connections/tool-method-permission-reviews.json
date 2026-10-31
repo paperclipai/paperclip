@@ -492,6 +492,46 @@
       "keyPermissions": "Ditto API keys are not scoped: a key reaches all data in its workspace, including permanent deletes, and actions are attributed to the user who created the key. Create a separate key for Paperclip so it can be removed independently, and set delete and link actions to Ask first before agents run unattended. Paperclip cannot narrow an existing key."
     },
     {
+      "app": "grafana-cloud",
+      "method": "mcp-oauth-read",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "grafana:read"
+      ],
+      "capability": "read",
+      "supportedActions": "Read dashboards, folders, data sources, alert rules and groups, incidents, investigations, on-call schedules and annotations; query Prometheus, Loki, Pyroscope, CloudWatch, Elasticsearch and Tempo; list and describe Athena, ClickHouse and Snowflake tables. The connection acts as the Grafana user who signs in.",
+      "evidence": [
+        "https://grafana.com/docs/grafana-cloud/ai-tools/mcp-servers/cloud-mcp/",
+        "https://mcp.grafana.com/.well-known/oauth-protected-resource/mcp",
+        "https://mcp.grafana.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-31",
+      "liveProof": "not-run",
+      "evidenceLimit": "Documentation and unauthenticated metadata only. An authenticated tool listing was not run, and Tempo tools are proxied dynamically, so their names are not enumerated. Grafana lists the server as public preview."
+    },
+    {
+      "app": "grafana-cloud",
+      "method": "mcp-oauth-write",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "grafana:read",
+        "grafana:query",
+        "grafana:write"
+      ],
+      "capability": "write",
+      "supportedActions": "Everything in the read method, plus raw SQL queries against ClickHouse, Snowflake, Athena and InfluxDB that run as written and can change data if the data source credentials allow it; update dashboards; create folders, annotations and incidents; add incident activity; create investigations; ask Grafana Assistant; and manage alert rules and notification routing. The connection acts as the Grafana user who signs in.",
+      "evidence": [
+        "https://grafana.com/docs/grafana-cloud/ai-tools/mcp-servers/cloud-mcp/",
+        "https://mcp.grafana.com/.well-known/oauth-protected-resource/mcp",
+        "https://mcp.grafana.com/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-31",
+      "liveProof": "not-run",
+      "evidenceLimit": "Documentation and unauthenticated metadata only. An authenticated tool listing was not run, and Tempo tools are proxied dynamically, so their names are not enumerated. Grafana lists the server as public preview."
+    },
+    {
       "app": "egnyte",
       "method": "mcp-oauth",
       "auth": "oauth",
