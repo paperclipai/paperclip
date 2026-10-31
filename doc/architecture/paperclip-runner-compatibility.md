@@ -100,8 +100,8 @@ and `0.167.0`. The Linux x64 `0.166.0` executable digest is
 computed from the `@openai/codex@0.166.0-linux-x64` archive. Codex `0.161.0`
 through `0.166.0` add the GPT-6.1 Terra catalog entry, a Vertex AI provider,
 and model-not-found handling that stops retries. The `0.165.0` release notes
-record the catalog addition; the ACP package contract stays at
-`codex-acp` 1.6.2, so the ACPX profile version moves to 2.
+record the catalog addition. The ACP package contract stays at
+`codex-acp` 1.6.2, so the ACPX profile version stays at 1.
 Version-boundary and remote artifact-preparation regressions are covered by
 `codex-runtime-compatibility.test.ts` and `native-session-executor.test.ts`.
 
