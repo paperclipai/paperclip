@@ -1331,6 +1331,21 @@ pnpm paperclipai run
 2. `paperclipai doctor` with repair enabled
 3. starts the server when checks pass
 
+From a source checkout, `run` first builds workspace artifacts with
+`scripts/ensure-plugin-build-deps.mjs`, with a 20-minute ceiling. On a slow
+machine, raise it with `PAPERCLIP_DEV_BUILD_TIMEOUT_MS`, or run the script
+once by itself before `run`.
+
+> **Note: Windows checkouts and migration hashes**
+>
+> The migration journal identifies applied migrations by the SHA-256 of each
+> migration's LF content. `.gitattributes` pins `packages/db/src/migrations/**`
+> to LF, and the migration runner normalises CRLF before hashing. Without both,
+> a `core.autocrlf=true` checkout makes applied migrations look pending, and
+> startup fails with `relation "…" already exists`. If an older checkout still
+> has CRLF migration files, run `git add --renormalize packages/db/src/migrations`
+> or check the files out again.
+
 ### One-command isolated manual test drive
 
 Use `test-drive` when you want to exercise the UI from a fresh checkout or SHA

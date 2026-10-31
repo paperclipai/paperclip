@@ -1,1 +1,2 @@
 patches/*.patch whitespace=-space-before-tab
+packages/db/src/migrations/** text eol=lf
