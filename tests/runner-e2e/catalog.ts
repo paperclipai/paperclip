@@ -1160,13 +1160,21 @@ const repositoryModelProfiles = [
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
-    id: "daytona-restart-continuity", label: "Daytona controller outage continuity", manualOnly: true,
-    description: "Keep the original active native runner, task tools and saved files through more than two minutes without a controller, then commit the result without replay.",
+    id: "daytona-restart-continuity", label: "Daytona warm controller outage continuity", manualOnly: true,
+    description: "Keep the original active native runner, reusable warm sandbox, task tools and saved files through five minutes without a controller, then continue the completed session after another replacement.",
     groups: [], profiles: repositoryModelProfiles.map(({ native }) => productionStoryProfile(native)),
-    environments: runnerEnvironments.filter(environment => environment.id === "daytona"),
+    environments: [{
+      ...daytonaWarmEnvironment,
+      configurationKey: "warm-controller-outage-v1",
+      buildEnvironment(input: EnvironmentFixtureBuildInput) {
+        const payload = daytonaWarmEnvironment.buildEnvironment(input);
+        // Keep provider idle stop beyond the outage and replacement budget.
+        return { ...payload, config: { ...(payload.config as Record<string, unknown>), autoStopInterval: 15 } };
+      },
+    }],
     tasks: everydayTasks.filter(task => task.id === "recover-controller")
-      .map(task => ({ ...task, automaticRetryPolicy: "single_attempt" as const })), expectedMatrixSize: 2,
-    definitionMetadata: { version: 2, scheduling: "explicit-only", controllerDowntimeMs: 125_000,
+      .map(task => ({ ...task, expectedRunCount: task.expectedRunCount + 1, automaticRetryPolicy: "single_attempt" as const })), expectedMatrixSize: 2,
+    definitionMetadata: { version: 7, scheduling: "explicit-only", controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15, retainedControllerContinuation: true, retainedControllerFollowupTransport: "task_comment_api",
       maximumAttemptsPerCell: 1, budgetMonthlyCents: 1000, instructions: "production", grading: "same-active-process-lease-native-prefix-and-workspace-receipt",
       authentication: "api-key", stagingAuthentication: "subscription", stagingQualification: false },
   },

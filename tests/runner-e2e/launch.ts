@@ -10,6 +10,7 @@ import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import { assertInstalledCliSelection, assertInstalledStartupOnly, verifyInstalledCli } from "./installed-cli.js";
 import { createProcessTreeOwner, stopOwnedProcessTree } from "./process-tree-owner.js";
 import { createRunnerE2ETemporaryRoot } from "./server-config.js";
+import { createExternalControllerDatabase } from "./external-controller-database.js";
 import { createHash, randomBytes } from "node:crypto";
 import { prepareCodexCiSandbox, requiresCodexCiSandbox } from "./codex-ci-sandbox.js";
 import { spawn } from "node:child_process";
@@ -508,6 +509,7 @@ async function runAttempt(input: {
   let attemptSecrets: string[] = [];
   let processCleanupFailed = false;
   let startupReceiptPath: string | undefined;
+  let externalDatabase: Awaited<ReturnType<typeof createExternalControllerDatabase>> | undefined;
   let gateway: Awaited<ReturnType<EvalOperations["start"]>> | undefined;
   const rawCleanupResults: Array<{ cleanup: string; synthetic: boolean; status: string }> = [];
   try {
@@ -521,6 +523,11 @@ async function runAttempt(input: {
       "config.json",
     );
     const port = await reserveRunnerE2EServerPort();
+    if (process.env.PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL) {
+      externalDatabase = await createExternalControllerDatabase({
+        adminUrl: process.env.PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL, temporaryRoot, configPath, serverPort: port,
+      });
+    }
     await Promise.all([
       mkdir(paperclipHome, { recursive: true }),
       mkdir(workspace, { recursive: true }),
@@ -891,7 +898,11 @@ async function runAttempt(input: {
     let cleanupError: unknown;
     const resourceAdmissionStarted = await access(path.join(privateDir, "resource-admission-started"))
       .then(() => true).catch((error: NodeJS.ErrnoException) => error.code !== "ENOENT");
-    if (mustPreserveRecoveryState({ processCleanupFailed, resourceAdmissionStarted, results: rawCleanupResults })) {
+    const preserveRecovery = mustPreserveRecoveryState({ processCleanupFailed, resourceAdmissionStarted, results: rawCleanupResults });
+    if (!preserveRecovery) {
+      try { await externalDatabase?.cleanup(); } catch (error) { cleanupError = error; }
+    }
+    if (preserveRecovery || cleanupError) {
       // Remote allocation cleanup is journaled in this instance's database.
       // Deleting it after the controller exits would strand uncertain creates.
       await chmod(temporaryRoot, 0o700);

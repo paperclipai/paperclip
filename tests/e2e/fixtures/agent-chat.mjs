@@ -44,6 +44,10 @@ if (!task.conversationAgentId) {
   });
   process.exit(0);
 }
+if (ctx.wakeReason === "chat_task_completed") {
+  await comment(`Delegated work completed: ${ctx.chatCompletionUpdates.map((update) => update.identifier).join(", ")}`);
+  process.exit(0);
+}
 const comments = await api(`/issues/${task.id}/comments?order=asc`);
 const current =
   comments.find((c) => c.id === ctx.wakeCommentId) ??

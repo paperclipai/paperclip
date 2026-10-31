@@ -71,7 +71,7 @@ export async function updateSystemRecovery(db: Db, source: WorkspaceRecoverySour
       sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,revision}' = ${String(previous.revision)}`))
       .returning({ id: issueRecoveryActions.id });
     return Boolean(updated);
-  });
+  }, { companyId: source.companyId });
 }
 
 export async function loadSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity) {

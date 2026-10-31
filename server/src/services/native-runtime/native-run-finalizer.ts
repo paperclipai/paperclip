@@ -29,7 +29,7 @@ import { readPersistedNativeFailureEvidence } from "./native-provider-failure-ev
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
-import { conversationNativeDecision, isConversation } from "../agent-conversations.js";
+import { conversationNativeDecision, isConversation, settleConversationTurnForRun } from "../agent-conversations.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { randomUUID } from "node:crypto";
 import { preserveNativeWorkspaceExportLease } from "./native-workspace-export-resume.js";
@@ -401,7 +401,7 @@ async function recordRetryableFailure(input: {
     if (phase === "terminal_failure" && failureCode === "native_workspace_sync_out_unsafe_archive") {
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     }
-    await notifyExecutionRunWork(tx);
+    await notifyExecutionRunWork(tx, { companyId: input.run.companyId });
     await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     await tx
       .update(nativeRunFinalizations)
@@ -747,6 +747,7 @@ async function recoverCommittedNativeChatResponseInScope(
 ): Promise<boolean> {
   let agentId: string | null = null;
   let materialized = false;
+  let conversationReply = false;
   const entered = beginRunPhase("response.transaction.entry");
   try {
     materialized = await measureRunPhase("response.transaction", () => db.transaction(async (transaction) => {
@@ -789,6 +790,7 @@ async function recoverCommittedNativeChatResponseInScope(
           id: heartbeatRuns.id,
           companyId: heartbeatRuns.companyId,
           agentId: heartbeatRuns.agentId,
+          responsibleUserId: heartbeatRuns.responsibleUserId,
           nativeIssueId: heartbeatRuns.nativeIssueId,
           nativeSessionId: heartbeatRuns.nativeSessionId,
           completionContractId: heartbeatRuns.completionContractId,
@@ -803,6 +805,8 @@ async function recoverCommittedNativeChatResponseInScope(
           contextSnapshot: sql<Record<string, unknown> | null>`case when ${heartbeatRuns.contextSnapshot} is null then null
             else jsonb_build_object(
               'skipIssueComment', ${heartbeatRuns.contextSnapshot}->'skipIssueComment',
+              'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+              'conversationSessionGeneration', ${heartbeatRuns.contextSnapshot}->'conversationSessionGeneration',
               'source', ${heartbeatRuns.contextSnapshot}->'source',
               'externalChatContinuation', ${heartbeatRuns.contextSnapshot}->'externalChatContinuation',
               'paperclipWake', jsonb_build_object('externalInteractionContinuation',
@@ -909,12 +913,16 @@ async function recoverCommittedNativeChatResponseInScope(
         agentId = run.agentId;
         return true;
       }
-      // Copyback can be owned by reconciliation before the live heartbeat
-      // reaches its presentation step. Recover a completed internal task's
-      // exact final reply from the same accepted turn, without rerunning work
-      // or granting external-chat publication authority.
+      const conversation = isConversation(issue);
+      const currentConversation = conversation && decision.reasonCode === "conversation_turn_finished"
+        && issue.conversationAgentId === run.agentId && issue.conversationUserId === run.responsibleUserId
+        && issue.status === "in_progress" && issue.conversationState === "active"
+        && (!issue.executionRunId || issue.executionRunId === run.id)
+        && run.contextSnapshot?.issueId === issue.id
+        && typeof run.contextSnapshot.conversationSessionGeneration === "number"
+        && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration;
       if (
-        !isConversation(issue) &&
+        (!conversation || currentConversation) &&
         run.status === "succeeded" &&
         record(run.contextSnapshot).skipIssueComment !== true &&
         !isExternalChatPresentationContext(run.contextSnapshot) &&
@@ -929,6 +937,9 @@ async function recoverCommittedNativeChatResponseInScope(
             eq(heartbeatRunEvents.companyId, input.companyId),
             eq(heartbeatRunEvents.runId, run.id),
             eq(heartbeatRunEvents.eventType, "item.completed"),
+            conversation ? and(eq(heartbeatRunEvents.agentId, run.agentId),
+              sql`${heartbeatRunEvents.payload}->'prpEvent'->>'runId' = ${run.id}`,
+              sql`${heartbeatRunEvents.payload}->'prpEvent'->>'normalizedSessionId' = ${run.nativeSessionId}`) : undefined,
             sql`${heartbeatRunEvents.payload}->'prpEvent'->>'turnId' = ${accepted.turnId}`,
             sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,kind}' = 'agentMessage'`,
             sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}' = 'final'`,
@@ -963,6 +974,7 @@ async function recoverCommittedNativeChatResponseInScope(
           })}::jsonb`, updatedAt: new Date(),
         }).where(eq(heartbeatRuns.id, run.id));
         agentId = run.agentId;
+        conversationReply = conversation;
         return true;
       }
       if (
@@ -1039,12 +1051,14 @@ async function recoverCommittedNativeChatResponseInScope(
   } finally {
     entered();
   }
-  if (materialized && agentId)
+  if (materialized && agentId) {
+    if (conversationReply) await settleConversationTurnForRun(db, input.companyId, input.runId);
     publishChatPublicationCommitSignal({
       ...input,
       agentId,
       eventType: "run.presentation.resolved",
     });
+  }
   return materialized;
 }
 
@@ -1659,7 +1673,7 @@ export async function finalizeNativeRun(input: {
         if (input.projectRunStatus) await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
         if (input.projectRunStatus) await notifyUnsafeWorkspaceExportRunChange(tx, run);
         if (input.projectRunStatus) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
-        await notifyExecutionRunWork(tx);
+        await notifyExecutionRunWork(tx, { companyId: run.companyId });
         await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: coordinator.issueId });
         const [after] = await projectRun(tx);
         return after ? { before, after } : null;

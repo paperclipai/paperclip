@@ -1253,12 +1253,15 @@ for (const execution of executions) {
         const story = await runEverydayFlow({
           page, api, fixtures, execution, nonce, workspacePath, privateDir,
           deadlineAt: startedAtMs + deadlineMs,
-          restartCount: upgradeManifest ? upgradeManifest.sequence.length - 1 : 1,
+          restartCount: upgradeManifest ? upgradeManifest.sequence.length -
+            (execution.suite.definitionMetadata?.retainedControllerContinuation === true ? 2 : 1) : 1,
           restart: async (recoveryBinding, controllerDowntimeMs) => {
             let receipt: ControllerOutageReceipt | undefined;
             restartIndex += 1;
             await restartIsolatedPaperclipServer({ api, requestId: `story-${nonce}-${restartIndex}`, deadlineAt: startedAtMs + deadlineMs,
-              discardControllerCache: controllerOutage !== undefined, controllerOutage, controllerDowntimeMs,
+              discardControllerCache: controllerOutage !== undefined,
+              controllerOutage: controllerOutage && !recoveryBinding ? { ...controllerOutage, holdMs: 1000 } : controllerOutage,
+              controllerDowntimeMs,
               ...(controllerOutage ? { recoveryBinding } : {}),
               onControllerOutage: async value => {
                 receipt = value;
