@@ -548,7 +548,9 @@ export function companySearchService(db: Db) {
     search: async (
       companyId: string,
       query: CompanySearchQuery,
-      options?: { issueReadCondition?: SQL<boolean>; projectReadCondition?: SQL<boolean>; onNextMembershipChange?: (at: Date | null) => void },
+      options?: { issueReadCondition?: SQL<boolean>; projectReadCondition?: SQL<boolean>; onNextMembershipChange?: (at: Date | null) => void;
+        /** Restrict result kinds before pagination; retain the requested text-match scope. */
+        issueResultsOnly?: boolean },
     ): Promise<CompanySearchResponse> => {
       const taskSearch = parseTaskSearch(query.q);
       const normalizedQuery = taskSearch.normalizedQuery;
@@ -558,7 +560,7 @@ export function companySearchService(db: Db) {
       const sort = query.sort;
       const limit = query.limit;
       const offset = query.offset;
-      if (!hasSearchText && !issueOnlyFiltersActive(query)) {
+      if ((!hasSearchText && !issueOnlyFiltersActive(query)) || (options?.issueResultsOnly && !scopeIncludesIssues(scope))) {
         options?.onNextMembershipChange?.(null);
         return {
           query: query.q,
@@ -894,7 +896,7 @@ export function companySearchService(db: Db) {
       const projectReadCondition = options?.projectReadCondition ?? sql<boolean>`true`;
 
       async function fetchAgentRows() {
-        if (!hasSearchText || !scopeIncludesAgents(scope) || hasIssueOnlyFilters) return [];
+        if (options?.issueResultsOnly || !hasSearchText || !scopeIncludesAgents(scope) || hasIssueOnlyFilters) return [];
         return db
           .select({
             id: agents.id,
@@ -911,7 +913,7 @@ export function companySearchService(db: Db) {
       }
 
       async function fetchProjectRows() {
-        if (!hasSearchText || !scopeIncludesProjects(scope) || hasIssueOnlyFilters) return [];
+        if (options?.issueResultsOnly || !hasSearchText || !scopeIncludesProjects(scope) || hasIssueOnlyFilters) return [];
         return db
           .select({
             id: projects.id,
@@ -927,7 +929,7 @@ export function companySearchService(db: Db) {
       }
 
       async function countArtifacts(filters: CompanySearchQuery = query) {
-        if (!hasSearchText) return 0;
+        if (options?.issueResultsOnly || !hasSearchText) return 0;
         const artifactIssueFilters = issueFilterConditions(companyId, filters);
         const artifactIssueConditions = [
           eq(issues.companyId, companyId),
@@ -995,7 +997,7 @@ export function companySearchService(db: Db) {
       }
 
       async function countAgents(filters: CompanySearchQuery = query) {
-        if (!hasSearchText || issueOnlyFiltersActive(filters)) return 0;
+        if (options?.issueResultsOnly || !hasSearchText || issueOnlyFiltersActive(filters)) return 0;
         const rows = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(agents)
@@ -1004,7 +1006,7 @@ export function companySearchService(db: Db) {
       }
 
       async function countProjects(filters: CompanySearchQuery = query) {
-        if (!hasSearchText || issueOnlyFiltersActive(filters)) return 0;
+        if (options?.issueResultsOnly || !hasSearchText || issueOnlyFiltersActive(filters)) return 0;
         const rows = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(projects)
@@ -1013,7 +1015,7 @@ export function companySearchService(db: Db) {
       }
 
       async function fetchArtifactRows() {
-        if (!hasSearchText || !scopeIncludesArtifacts(scope)) return [];
+        if (options?.issueResultsOnly || !hasSearchText || !scopeIncludesArtifacts(scope)) return [];
         const result = await companyArtifactsService(db).list(companyId, {
           q: normalizedQuery.slice(0, COMPANY_ARTIFACTS_MAX_QUERY_LENGTH),
           limit: Math.min(fetchLimit, COMPANY_ARTIFACTS_MAX_LIMIT),
