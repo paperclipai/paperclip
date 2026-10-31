@@ -41,6 +41,7 @@ import {
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
+  DEFAULT_CLAUDE_HELLO_PROBE_TIMEOUT_SEC,
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
   prepareSandboxClaudeProbeRuntime,
@@ -681,7 +682,7 @@ export async function probeClaudeAcpSandboxLogin(input: {
       localProcessUid: process.getuid?.() ?? null,
     }),
   );
-  const timeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45));
+  const timeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, DEFAULT_CLAUDE_HELLO_PROBE_TIMEOUT_SEC));
   const runId = `claude-acp-authprobe-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   let probe: Awaited<ReturnType<typeof runAdapterExecutionTargetProcess>>;
   try {
@@ -927,7 +928,7 @@ export async function testClaudeAcpEnvironment(
         detectCommand: "claude",
         targetIsRemote,
         targetIsSandbox,
-        helloProbeTimeoutSec: asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
+        helloProbeTimeoutSec: asNumber(config.helloProbeTimeoutSec, DEFAULT_CLAUDE_HELLO_PROBE_TIMEOUT_SEC),
       })),
     );
     const canProbe = !checks.some((check) => check.code === "claude_managed_config_dir_failed");

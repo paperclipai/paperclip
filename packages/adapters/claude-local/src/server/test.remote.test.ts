@@ -140,6 +140,28 @@ describe("claude sandbox auth-missing check", () => {
   });
 });
 
+describe("claude CLI hello probe timeout", () => {
+  it.each([
+    ["the default", {}, 90],
+    ["an explicit override", { helloProbeTimeoutSec: 120 }, 120],
+  ])("gives a non-sandbox remote hello probe %s timeout", async (_label, override, expectedTimeoutSec) => {
+    probeResult.value = { exitCode: 1, stdout: loginRequiredStdout, stderr: "" };
+
+    await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude", ...override },
+      executionTarget: sshTarget,
+      environmentName: "Remote host",
+    });
+
+    const helloCall = runAdapterExecutionTargetProcess.mock.calls
+      .map((call) => (call as unknown as unknown[])[4] as { stdin?: string; timeoutSec?: number })
+      .find((options) => options?.stdin === "Respond with hello.");
+    expect(helloCall?.timeoutSec).toBe(expectedTimeoutSec);
+  });
+});
+
 describe("claude CLI model compatibility check", () => {
   it("runs the hello probe with the compatible private CLI after updating an old sandbox", async () => {
     const command = "/home/daytona/paperclip-workspace/.paperclip-runtime/claude-cli/2.1.280/bin/claude";
