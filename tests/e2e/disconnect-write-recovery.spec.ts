@@ -188,7 +188,10 @@ test("startup work retries a failed session lookup while other APIs stay healthy
     }));
     await page.route("**/api/auth/get-session", async route => {
       if (healthy) return route.fulfill({ status: 200, json: session });
-      if (saving) failedAfterSave += 1;
+      if (saving) {
+        failedAfterSave += 1;
+        healthy = true;
+      }
       await route.fulfill({ status: 500, json: { error: "session_lookup_failed" } });
     });
     await page.goto(`/${company.issuePrefix}/issues/${issue.id}`);
@@ -199,7 +202,6 @@ test("startup work retries a failed session lookup while other APIs stay healthy
     saving = true;
     await header.locator("textarea").press("Enter");
     await expect.poll(() => failedAfterSave).toBeGreaterThan(0);
-    healthy = true;
     await expect.poll(async () => (await json(await request.get(`/api/issues/${issue.id}`))).title,
       { timeout: 15_000 }).toBe("Saved after session recovery");
     await page.reload();
