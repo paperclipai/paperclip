@@ -109,7 +109,7 @@ describe("residual recovery production matrix", () => {
     expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.status} in ('queued', 'running')`)).toHaveLength(0);
     const quietAt = Date.now();
     if (vi.isFakeTimers()) await advance(31_000);
-    else await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 35_000 });
+    else { await realDelay(31_000); await Promise.allSettled([...passes]); }
     console.info("quiet-drain", JSON.stringify({ quietAt, now: Date.now(), active: idleWorkSnapshot().active, next: [...deadlines].map(([q, at]) => [q, at()]), passes: Object.fromEntries([...deadlines.keys()].map(queue => [queue, timeline.filter(event => Array.isArray(event) && event[0] === "pass" && event[1] === queue).length])), settled: timeline.filter(event => Array.isArray(event) && event[0] === "settled") }));
     await vi.waitFor(() => { expect(coordinator.nextWakeAt(), JSON.stringify([...deadlines].map(([name, at]) => [name, at()]))).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
     const queries: string[] = [], prior = db.$client.options.debug;

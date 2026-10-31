@@ -2295,7 +2295,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         runningProcesses.has(run.id) ||
         activeRunExecutions.has(run.id) ||
         coordinatorOwnedByCurrentController;
-      if (nativeRun && !locallyTracked && nativeControllerLeaseExpiresAt && nativeControllerLeaseExpiresAt > now) {
+      if (nativeRun && !locallyTracked && nativeControllerBootId && nativeControllerPid
+        && nativeControllerProcessStartedAt && nativeControllerLeaseExpiresAt && nativeControllerLeaseExpiresAt > now) {
         scope.onDeferredDeadline?.(nativeControllerLeaseExpiresAt.getTime());
         continue;
       }
