@@ -22,7 +22,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   let draining = false, standby = false;
   const errors: unknown[] = [];
-  const provider = vi.fn(async (_companyId: string, _reference: { number: number }): Promise<"open" | "merged" | "unknown"> => "merged");
+  const provider = vi.fn(async (_companyId: string, _reference: { number: number }, _signal?: AbortSignal): Promise<"open" | "merged" | "unknown"> => "merged");
   const wakeup = vi.fn(async () => ({ id: "simulated-durable-wake" }));
   beforeAll(async () => {
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("merged-pr-work-");
@@ -246,6 +246,84 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await service().create({ id: issueId, companyId }, { ...input(), title: "Approve the plan?", payload: { version: 1, prompt: "Approve the plan?" } }, { agentId });
     await quiet(); expect(provider).not.toHaveBeenCalled(); expect(wakeup).not.toHaveBeenCalled();
     expect(errors).toEqual([]);
+  });
+
+  it("preserves manual acceptance without cancellation and rolls back a failed caller mutation", async () => {
+    const card = await create();
+    const issue = { id: issueId, companyId, projectId: null, goalId: null };
+    await expect(service().acceptInteraction(issue, card.id, {}, { userId: "board" }, {
+      afterResolveInTransaction: async () => { throw new Error("manual acceptance rollback"); },
+    })).rejects.toThrow("manual acceptance rollback");
+    expect((await stored(card.id)).status).toBe("pending");
+    const accepted = await service().acceptInteraction(issue, card.id, {}, { userId: "board" });
+    expect(accepted.interaction.status).toBe("accepted");
+    expect((await stored(card.id)).status).toBe("accepted");
+  });
+
+  it.each(["issue lock", "acceptance write"] as const)("keeps a stopped %s acceptance pending and accepts once after restart", async phase => {
+    vi.useRealTimers();
+    const card = await create();
+    let signal: AbortSignal | undefined;
+    provider.mockImplementation(async (_companyId, _reference, currentSignal) => { signal = currentSignal; return "merged"; });
+    let reserved: Awaited<ReturnType<typeof db.$client.reserve>> | undefined = await db.$client.reserve();
+    const [{ pid }] = await reserved<{ pid: number }[]>`select pg_backend_pid() as pid`;
+    if (phase === "issue lock") {
+      await reserved.unsafe("begin");
+      await reserved`select id from issues where id=${issueId} for update`;
+    } else {
+      await db.$client.unsafe(`create function maintenance_hold_merge_acceptance() returns trigger language plpgsql as $$begin
+        if new.id = '${card.id}'::uuid and new.status = 'accepted' then perform pg_advisory_xact_lock(930582); end if; return new; end$$`);
+      await db.$client.unsafe(`create trigger maintenance_hold_merge_acceptance before update on issue_thread_interactions for each row execute function maintenance_hold_merge_acceptance()`);
+      await reserved`select pg_advisory_lock(930582)`;
+    }
+    let stopping: Promise<void> | undefined;
+    try {
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      const worker = registerMergeConfirmationWork(coordinator, service(), () => true);
+      let blocked: { query: string } | undefined;
+      for (let attempt = 0; attempt < 200; attempt++) {
+        [blocked] = await db.$client<{ query: string }[]>`select query from pg_stat_activity
+          where datname=current_database() and wait_event_type='Lock' and ${pid} = any(pg_blocking_pids(pid))`;
+        if (blocked) break;
+        await delay(10);
+      }
+      expect(blocked?.query).toContain(phase === "issue lock" ? '"issues"' : '"issue_thread_interactions"');
+      let stopped = false;
+      stopping = coordinator.stop().then(() => { stopped = true; });
+      await delay(20);
+      expect(signal?.aborted).toBe(true);
+      expect(stopped).toBe(false);
+      expect((await stored(card.id)).status).toBe("pending");
+      const releasedAt = performance.now();
+      if (phase === "issue lock") await reserved.unsafe("commit");
+      else await reserved`select pg_advisory_unlock(930582)`;
+      reserved.release(); reserved = undefined;
+      await stopping; await worker.ready; coordinator = undefined;
+      expect(performance.now() - releasedAt).toBeLessThan(1000);
+      expect((await stored(card.id)).status).toBe("pending");
+      expect(wakeup).not.toHaveBeenCalled();
+      expect(await db.select().from(activityLog).where(eq(activityLog.action, "issue.thread_interaction_accepted"))).toHaveLength(0);
+      expect(await db.select().from(chatActions)).toHaveLength(0);
+      await start();
+      expect((await stored(card.id)).status).toBe("accepted");
+      expect(wakeup).toHaveBeenCalledTimes(1);
+      expect(await db.select().from(activityLog).where(eq(activityLog.action, "issue.thread_interaction_accepted"))).toHaveLength(1);
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      await quiet();
+      expect(wakeup).toHaveBeenCalledTimes(1); expect(errors).toEqual([]);
+    } finally {
+      if (reserved) {
+        if (phase === "issue lock") await reserved.unsafe("rollback");
+        else await reserved`select pg_advisory_unlock(930582)`;
+        reserved.release();
+      }
+      await stopping;
+      await coordinator?.stop(); coordinator = undefined;
+      if (phase === "acceptance write") {
+        await db.$client.unsafe("drop trigger if exists maintenance_hold_merge_acceptance on issue_thread_interactions");
+        await db.$client.unsafe("drop function if exists maintenance_hold_merge_acceptance()");
+      }
+    }
   });
 
   it("awaits an in-flight observation at shutdown and reconstructs its unaccepted card on restart", async () => {

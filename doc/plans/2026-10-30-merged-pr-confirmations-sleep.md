@@ -104,6 +104,20 @@ The full existing 17-test file passes with these failure controls. Production
 configuration validation remains unchanged. Current-head required CI remains
 the completion gate.
 
+## Cancellation during acceptance
+
+The registered worker passes its optional cancellation signal into the canonical
+confirmation acceptance transaction. It rechecks after the issue lock, before
+mutation and before commit. Cancellation while an awaited write is blocked rolls
+back the interaction, audit and transactional delivery effects. Manual callers
+without a signal retain their existing acceptance and rollback behavior.
+
+A PostgreSQL lock wait itself remains unabortable by this signal: stop waits for
+the query to unwind. Once the lock is released, cancelled acceptance leaves the
+card pending for restart. The existing HTTP request timeout and prompt stop abort
+remain unchanged. Actual lock and write-trigger controls verify pending state,
+no post-stop wake, and exactly one acceptance/audit/wake on restart.
+
 ## Existing limitations outside this migration
 
 Direct non-chat continuation still uses the existing postcommit `wakeup` call.
