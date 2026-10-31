@@ -2341,6 +2341,39 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(reopenActivities).toContainEqual({ action: "execution_workspace.source_issue_reopened" });
   }, 20_000);
 
+  it("skips a terminal workspace while a run bound to it is live after the issue pointers cleared", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId: seeded.companyId,
+      name: "Coder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId: seeded.companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: { executionWorkspaceId: seeded.executionWorkspaceId },
+    });
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const workspace = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId))
+      .then((rows) => rows[0]);
+
+    expect(sweep).toMatchObject({ archived: 0, skippedActiveRun: 1 });
+    expect(workspace?.status).toBe("active");
+  }, 20_000);
+
   it("allows archiving shared workspace sessions with warnings even when issues are still open", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

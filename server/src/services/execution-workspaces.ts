@@ -2080,13 +2080,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       issue.checkoutRunId,
       issue.executionRunId,
     ]).filter((runId): runId is string => Boolean(runId)))];
-    if (runIds.length === 0) return false;
+    // A run keeps using the workspace after its issue turns terminal and the
+    // issue's run pointers are cleared, so also match the run's own binding.
     const active = await db
       .select({ id: heartbeatRuns.id })
       .from(heartbeatRuns)
       .where(and(
         eq(heartbeatRuns.companyId, workspace.companyId),
-        inArray(heartbeatRuns.id, runIds),
+        or(
+          ...(runIds.length > 0 ? [inArray(heartbeatRuns.id, runIds)] : []),
+          sql<boolean>`(${heartbeatRuns.contextSnapshot} ->> 'executionWorkspaceId') = ${workspace.id}`,
+        ),
         inArray(heartbeatRuns.status, ["queued", "running"]),
       ))
       .limit(1);
@@ -3887,6 +3891,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
                   )
                   AND live_run.company_id = ${workspace.companyId}
                   AND live_run.status IN ('queued', 'running')
+              )`,
+              sql<boolean>`NOT EXISTS (
+                SELECT 1
+                FROM ${heartbeatRuns} bound_run
+                WHERE bound_run.company_id = ${workspace.companyId}
+                  AND bound_run.context_snapshot ->> 'executionWorkspaceId' = ${workspace.id}
+                  AND bound_run.status IN ('queued', 'running')
               )`,
               sql<boolean>`NOT EXISTS (
                 WITH RECURSIVE issue_tree(id, status) AS (
