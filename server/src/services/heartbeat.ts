@@ -97,6 +97,7 @@ import {
 import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
   isWorkspaceBusyDeferral,
+  environmentCapacityDeferral,
   createHeartbeatRetries,
 } from "./heartbeat/retries.js";
 export {
@@ -515,7 +516,7 @@ import {
 import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 
 
-import { environmentService } from "./environments.js";
+import { EnvironmentCapacityExhaustedError, environmentService } from "./environments.js";
 
 import {
   environmentRuntimeService,
@@ -2761,6 +2762,11 @@ export function heartbeatService(
           resolveReusedGitWorkspaceAnchor,
           appendRunEvent,
         },
+      }).catch((err: unknown) => {
+        if (!(err instanceof EnvironmentCapacityExhaustedError)) throw err;
+        throw environmentCapacityDeferral({
+          run, environmentId: err.environmentId, wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
+        });
       }));
       const preparedInstructions = instructionWorkingCopy = createHeartbeatInstructionWorkingCopy({
         observabilityCompatibilityKey: observability?.compatibilityKey,

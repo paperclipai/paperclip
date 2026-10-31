@@ -8,6 +8,10 @@ import {
 import { envConfigSchema } from "./secret.js";
 
 export const environmentDriverSchema = z.enum(ENVIRONMENT_DRIVERS);
+export const environmentCapacitySchema = z.object({
+  maxConcurrentRuns: z.number().int().positive().optional(),
+  admissionCommand: z.array(z.string().min(1)).min(1).max(64).optional(),
+}).strict();
 export const environmentStatusSchema = z.enum(ENVIRONMENT_STATUSES);
 export const environmentLeaseStatusSchema = z.enum(ENVIRONMENT_LEASE_STATUSES);
 export const environmentLeaseCleanupStatusSchema = z.enum(ENVIRONMENT_LEASE_CLEANUP_STATUSES);
