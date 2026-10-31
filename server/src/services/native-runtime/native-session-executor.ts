@@ -5091,6 +5091,7 @@ async function recoverPluginRunnerCheckpoint(input: {
 async function migrateRunnerdStateRootForExecution(input: {
   db: Db;
   execution: NativeExecutionInput;
+  preparedExecutionAdmission?: NativePreparedExecutionAdmission;
   allowVerifiedBackup: boolean;
   retainedWarmOwnerRunId?: string;
   allowLocalRecovery: boolean;
@@ -5678,8 +5679,11 @@ function readStagedRunnerdAttachment(root: string) {
 
 /** A staged attachment has not published a target session. Re-establish its
  * exact source and target from private durable evidence before any remote RPC. */
+type NativePreparedExecutionAdmission = Readonly<{ admissionSha256: string; preparedSha256: string }>;
+
 async function verifyStagedAttachmentRestart(input: {
   db: Db; execution: NativeExecutionInput; restartRecovery?: NativeRestartRecoveryClaim;
+  preparedExecutionAdmission?: NativePreparedExecutionAdmission;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
 }, expected?: NativeStagedAttachmentRecovery): Promise<NativeStagedAttachmentRecovery | null> {
   const root = scopedRunnerdStateRoot(input.execution);
@@ -5701,7 +5705,9 @@ async function verifyStagedAttachmentRestart(input: {
     matchesExecution: (previous, execution) => nativeSessionScopeKey(previous) === nativeSessionScopeKey(execution) &&
       nativeSessionConfigDigest(previous, "remote") === nativeSessionConfigDigest(execution, "remote"),
   });
-  if (!verified || nativeSha256(verified.currentExecution) !== nativeSha256(input.execution) ||
+  const executionSha256 = nativeSha256(input.execution);
+  if (!verified || nativeSha256(verified.currentExecution) !== (input.preparedExecutionAdmission?.admissionSha256 ?? executionSha256) ||
+      (input.preparedExecutionAdmission && executionSha256 !== input.preparedExecutionAdmission.preparedSha256) ||
       verified.templateDigest !== staged.templateDigest ||
       nativeSha256(verified.sourceIdentity) !== nativeSha256(staged.sourceIdentity) ||
       (localStage && nativeSha256(readStagedRunnerdAttachment(root)) !== nativeSha256(localStage))) return deny();
@@ -7958,6 +7964,8 @@ export async function executePaperclipNativeSession(input: {
   refreshTools?: boolean;
   db: Db;
   execution: NativeExecutionInput;
+  /** Private server preparation proof; never persisted or accepted from a tool. */
+  preparedExecutionAdmission?: NativePreparedExecutionAdmission;
   runnerInstanceId: string;
   /** Trusted task identity from the heartbeat orchestration. */
   conversationMode?: boolean;
@@ -8123,6 +8131,7 @@ export async function executePaperclipNativeSession(input: {
     const needsWarmRetirement = [...warmNativeSessions].some(([scope, entry]) =>
       scope !== sessionScopeId && entry.ownerScope === ownerScope);
     const prepareAttachments = async () => {
+      const admissionSha256 = nativeSha256(input.execution);
       const targetKind = input.runnerExecutionTarget?.kind ?? "local";
       const chatAttachmentReadScope = new NativeChatAttachmentReadScope({
         db: input.db,
@@ -8155,16 +8164,16 @@ export async function executePaperclipNativeSession(input: {
       const stagedPrompt = renderNativeRunnerStagedAttachmentPrompt(
         attachmentStage.attachments,
       );
+      if (nativeSha256(input.execution) !== admissionSha256) throw new Error("native_attachment_admission_changed");
       if (stagedPrompt) {
+        const preparedExecution = parseNativeExecutionInput({
+          ...input.execution,
+          task: { ...input.execution.task, prompt: `${input.execution.task.prompt}\n\n${stagedPrompt}` },
+        });
         preparedInput = {
           ...preparedInput,
-          execution: parseNativeExecutionInput({
-            ...input.execution,
-            task: {
-              ...input.execution.task,
-              prompt: `${input.execution.task.prompt}\n\n${stagedPrompt}`,
-            },
-          }),
+          execution: preparedExecution,
+          preparedExecutionAdmission: { admissionSha256, preparedSha256: nativeSha256(preparedExecution) },
         };
       }
       return preparedInput;
@@ -8384,6 +8393,7 @@ async function executePaperclipNativeSessionWithinScope(
     retainedTransition = await migrateRunnerdStateRootForExecution({
       db: input.db,
       execution: input.execution,
+      preparedExecutionAdmission: input.preparedExecutionAdmission,
       allowVerifiedBackup: input.runnerExecutionTarget?.kind === "remote",
       retainedWarmOwnerRunId: idleWarmNativeSessionOwnerRunId(input) ?? remoteWarmRecovery?.identity.runId,
       allowLocalRecovery: input.runnerExecutionTarget?.kind !== "remote",
@@ -12121,6 +12131,7 @@ export async function createRunnerdBackend(input: {
   controllerPersistence?: { bootId: string; runnerArtifact?: { version: string; digest: string } };
   onAccountingEvent?: (event: PrpEvent) => Promise<void>;
   execution: NativeExecutionInput;
+  preparedExecutionAdmission?: NativePreparedExecutionAdmission;
   runnerInstanceId: string;
   chatAttachmentReadScope?: NativeChatAttachmentReadScope;
   restartRecovery?: NativeRestartRecoveryClaim;
@@ -12195,6 +12206,7 @@ export async function createRunnerdBackend(input: {
       retainedTransition = await migrateRunnerdStateRootForExecution({
         db: input.db,
         execution: input.execution,
+        preparedExecutionAdmission: input.preparedExecutionAdmission,
         allowVerifiedBackup: input.runnerExecutionTarget?.kind === "remote",
         retainedWarmOwnerRunId: undefined,
         allowLocalRecovery: input.runnerExecutionTarget?.kind !== "remote",

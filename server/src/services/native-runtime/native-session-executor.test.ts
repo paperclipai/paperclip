@@ -1,6 +1,7 @@
 import { onRetainedNativeSessionCleanupRelease } from "../retained-native-session-cleanup-notifications.js";
 import { readIdleLocalWork, markIdleStartupComplete, markIdleIngressTracked } from "../idle-local-work.js";
 import * as runnerCheckpoint from "./native-runner-checkpoint.js";
+import * as stagedAttachmentRecovery from "./native-staged-attachment-recovery.js";
 import * as controllerRecovery from "./native-controller-recovery.js";
 import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
 import * as environmentTaskRuntime from "../environment-task-runtime.js";
@@ -12316,6 +12317,55 @@ describe("runnerd provider runtime wiring", () => {
       }),
     ).toThrow("scope_closed");
   });
+
+  it.each(["attached", "changed-admission", "changed-template", "changed-template-digest", "changed-preparation"] as const)(
+    "verifies frozen staged admission after normal wake attachment preparation: %s", async mode => {
+      const current = scopedNativeExecution(`staged-attachment-${mode}`);
+      current.task.prompt = "Inspect attachment ref:original";
+      const root = await initializeScopedRunnerRoot(current, "attachment-runner");
+      const sourceIdentity = { runnerInstanceId: "attachment-runner", environmentLeaseId: "attachment-lease",
+        runId: "attachment-source", normalizedSessionId: current.session.normalizedSessionId!, turnId: "source-turn", itemId: "source-item" };
+      const targetIdentity = { ...sourceIdentity, runId: current.binding.runId, turnId: "target-turn", itemId: "target-item" };
+      const controller = new DurablePrpControlPlane({ stateDirectory: join(root, "control-plane"), identity: sourceIdentity,
+        expectedRunnerVersion: "fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+      controller.stageRunAttachment(targetIdentity, { provider: { kind: "codex", instructions: "prepared attachment grant" } });
+      const path = join(root, "control-plane/control-plane-state.json");
+      const saved = JSON.parse(await readFile(path, "utf8"));
+      const canonicalTemplateDigest = saved.stagedRunAttachment.templateDigest;
+      if (mode === "changed-template" || mode === "changed-template-digest") {
+        saved.stagedRunAttachment.runAttachTemplate.provider.instructions = "substituted grant";
+        if (mode === "changed-template-digest") saved.stagedRunAttachment.templateDigest = `sha256:${nativeSha256(saved.stagedRunAttachment.runAttachTemplate)}`;
+        await writeFile(path, JSON.stringify(saved));
+      }
+      state.stageNativeRunnerWakeAttachments.mockImplementationOnce(async () => {
+        if (mode === "changed-preparation") current.task.prompt = "Inspect attachment ref:mutated-during-preparation";
+        return { attachments: [{ id: "attachment-original" }], cleanup: async () => undefined } as never;
+      });
+      state.renderNativeRunnerStagedAttachmentPrompt.mockReturnValueOnce("Materialized attachment: .paperclip-inbound/current/original");
+      const admission = structuredClone(current);
+      if (mode === "changed-admission") admission.task.prompt = "Inspect attachment ref:changed";
+      const reached = new Error("verified staged admission reached recheck");
+      const restore = vi.spyOn(runnerCheckpoint, "restoreNativeRunnerCheckpoint").mockResolvedValue(null);
+      const header = vi.spyOn(runnerCheckpoint, "loadNativeRunnerCheckpointHeader").mockResolvedValue("staged header");
+      const verify = vi.spyOn(stagedAttachmentRecovery, "resolveNativeStagedAttachmentRecovery")
+        .mockResolvedValueOnce({ currentExecution: admission, sourceIdentity, targetIdentity,
+          templateDigest: canonicalTemplateDigest } as never)
+        .mockRejectedValueOnce(reached);
+      try {
+        const resume = executePaperclipNativeSession({ db: leaseDb(current), execution: current, useRunnerd: true,
+          runnerInstanceId: "attachment-runner", restartRecovery: { kind: "reattach_remote_runner", runId: current.binding.runId,
+            leaseOwner: "controller", controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null,
+            remote: { kind: "sandbox", leaseId: "attachment-lease", providerLeaseId: "sandbox", remoteCwd: "/workspace" } } as never,
+          runnerExecutionTarget: { kind: "remote", transport: "sandbox", leaseId: "attachment-lease", remoteCwd: "/workspace",
+            runner: { execute: vi.fn() }, sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "sandbox" } } as never });
+        if (mode === "attached") { await expect(resume).rejects.toBe(reached); expect(verify).toHaveBeenCalledTimes(2); }
+        else await expect(resume).rejects.toThrow(mode === "changed-template" ? "staged_attachment_binding_mismatch"
+          : mode === "changed-preparation" ? "native_attachment_admission_changed" : "staged_attachment_recovery_unproven");
+        expect(state.stageNativeRunnerWakeAttachments).toHaveBeenCalledWith(expect.objectContaining({ binding: expect.objectContaining({
+          companyId: current.binding.companyId, issueId: current.binding.issueId, agentId: current.binding.agentId, runId: current.binding.runId,
+        }) }));
+      } finally { restore.mockRestore(); header.mockRestore(); verify.mockRestore(); await controller.stop(); }
+    });
 
   it("passes the run checkpoint active turn into restart recovery", async () => {
     state.createBackend.mockClear();
