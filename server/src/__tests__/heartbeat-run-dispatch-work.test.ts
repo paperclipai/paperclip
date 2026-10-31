@@ -2,9 +2,11 @@ import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, companies, costEvents, createDb, databaseWorkPending, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, costEvents, createDb, databaseWorkPending, heartbeatRuns, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { issueService } from "../services/issues.js";
+import { materializeNativeProviderCapacityRetry } from "../services/native-runtime/native-provider-capacity-retry.js";
 import { agentService } from "../services/agents.js";
 import { budgetService } from "../services/budgets.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -24,9 +26,14 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
   let reads: ReturnType<typeof vi.spyOn>;
   let draining = false;
   const errors: unknown[] = [];
+  const retryQueries: string[] = [];
   beforeAll(async () => {
     if (!external) database = await startEmbeddedPostgresTestDatabase("run-dispatch-work-");
     db = createDb(external ?? database!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    db.$client.options.debug = (_connection, query) => {
+      if (query.startsWith("select") && query.includes('"heartbeat_runs"') &&
+        query.includes("startupCancellation") && query.includes('"scheduled_retry_at"')) retryQueries.push(query);
+    };
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
   }, 90_000);
   beforeEach(async () => {
@@ -87,6 +94,45 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
     await start(); await quiet();
     await fixture(); await worker!.stop(); await coordinator!.stop();
     await start(); await quiet();
+  });
+  it.each(["agent", "issue"] as const)("does not scan global scheduled retries for repeated ordinary %s edits", async kind => {
+    const f = await fixture();
+    const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Edit source", status: "backlog" }).returning();
+    await start(); await quiet();
+    const before = retryQueries.length;
+    expect(before).toBeGreaterThan(0); // The passive observer saw real startup retry SQL.
+    for (let index = 0; index < 12; index++) {
+      if (kind === "agent") await agentService(db).update(f.agentId, { name: `Edited agent ${index}` });
+      else await issueService(db).update(issue.id, { title: `Edited issue ${index}` });
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    await quiet();
+    expect(retryQueries).toHaveLength(before);
+  });
+  it.each([false, true])("observes a native capacity retry only after its transaction settles (rollback=%s)", async rollback => {
+    const f = await fixture();
+    const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Capacity retry", status: "in_progress",
+      assigneeAgentId: f.agentId }).returning();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issue.id }).where(eq(heartbeatRuns.id, f.runId));
+    await start(); await quiet();
+    let retryId = "";
+    const writing = db.transaction(async tx => {
+      retryId = await materializeNativeProviderCapacityRetry({ tx: tx as unknown as typeof db, ...f, issueId: issue.id });
+      expect(databaseWorkPending(db, DELIVERY_QUEUES.scheduledRetryDispatch)).toBe(true);
+      expect(await status(retryId)).toBeUndefined();
+      if (rollback) throw new Error("native capacity rollback");
+    });
+    if (rollback) {
+      await expect(writing).rejects.toThrow("native capacity rollback");
+      await quiet(); expect(await status(retryId)).toBeUndefined();
+    } else {
+      await writing;
+      const retry = await status(retryId);
+      expect(retry.status).toBe("scheduled_retry");
+      await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(retry.scheduledRetryAt!.getTime()), { timeout: 5_000 });
+      await heartbeat.cancelRun(retryId, "fixture teardown", { suppressImmediateRecovery: true });
+      await quiet();
+    }
   });
   it("ordinary retry creation wakes the worker, respects the exact deadline, dispatches and settles", async () => {
     const f = await fixture(); await start(); await quiet();
