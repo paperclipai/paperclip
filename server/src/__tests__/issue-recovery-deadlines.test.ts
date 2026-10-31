@@ -1,3 +1,4 @@
+import { setImmediate as immediate } from "node:timers/promises";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
@@ -27,6 +28,7 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
   let draining = false;
   const tasks = new Map<string, { nextRunAt?: () => number | null; hasPending: () => Promise<boolean> }>();
   const errors: unknown[] = [];
+  const passes = new Set<Promise<unknown>>();
   const extraStops: Array<() => Promise<void>> = [];
   const extraDeadlines: Array<() => number | null> = [];
   beforeAll(async () => {
@@ -52,7 +54,14 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
       onError: error => errors.push(error) });
     tasks.clear();
     const register = coordinator.register.bind(coordinator);
-    coordinator.register = (queue, task) => { tasks.set(queue, task); return register(queue, task); };
+    coordinator.register = (queue, task) => {
+      tasks.set(queue, task);
+      return register(queue, { ...task, run: signal => {
+        const work = task.run(signal); passes.add(work);
+        void work.then(() => passes.delete(work), () => passes.delete(work));
+        return work;
+      } });
+    };
     worker = heartbeat.registerIssueStateRecoveryWork(coordinator, () => !draining);
     dispatch = heartbeat.registerRunDispatchWork(coordinator, () => !draining);
     cancellation = heartbeat.registerScheduledRetryCancellationWork(coordinator, () => !draining);
@@ -89,6 +98,7 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
   }
   async function quiet() {
     await settled();
+    expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.status} in ('queued', 'running')`)).toHaveLength(0);
     const reads = vi.spyOn(db, "select"); const executes = vi.spyOn(db, "execute");
     const selected = reads.mock.calls.length, executed = executes.mock.calls.length;
     if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
@@ -97,15 +107,32 @@ describe.skipIf(!support.supported)("issue recovery production producers and dea
   }
   async function finish(issueId: string) {
     await issueService(db).update(issueId, { status: "done" });
-    await heartbeat.drainActiveRunExecutions();
+    // Closing one blocker can legitimately start its dependent. Wait for this
+    // task's dispatch and execution; quiet() verifies the whole fixture later.
+    await vi.waitFor(async () => {
+      await Promise.allSettled([...passes]);
+      await heartbeat.drainActiveRunExecutions();
+      expect(await db.select().from(heartbeatRuns).where(and(
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+        sql`${heartbeatRuns.status} in ('queued', 'running')`,
+      ))).toHaveLength(0);
+    }, { timeout: 15_000 });
     const saved = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "scheduled_retry"),
       sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`));
-    expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.status} in ('queued', 'running')`)).toHaveLength(0);
     if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     if (saved.length > 0) {
       const due = Math.max(...saved.map(run => run.scheduledRetryAt!.getTime()));
-      await vi.advanceTimersByTimeAsync(Math.max(0, due - Date.now()) + 1);
+      // Keep PostgreSQL I/O and coordinator settlement ahead of virtual time.
+      // A single leap can otherwise occur before the retry deadline is armed.
+      while (Date.now() <= due) {
+        await vi.advanceTimersByTimeAsync(Math.min(500, due - Date.now() + 1));
+        await Promise.allSettled([...passes]);
+        await immediate();
+      }
       await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+        await Promise.allSettled([...passes]);
+        await heartbeat.drainActiveRunExecutions();
         const remaining = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "scheduled_retry"),
             sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`));
         expect(remaining).toHaveLength(0);
