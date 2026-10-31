@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium } from "@playwright/test";
-import { stopAndRedirectThroughUi } from "./stop-redirect-flow.ts";
+import { nativeCancellationHasNoLaterWork, nativeWorkEvents, stopAndRedirectThroughUi } from "./stop-redirect-flow.ts";
 import { activeStopWorkBoundary, stoppedRunAccountingFinalized } from "./product-journeys/stop-redirect-evidence.ts";
 
 const base = { id: "run", companyId: "company", agentId: "agent", nativeIssueId: "issue", runtimeMode: "native", status: "running",
@@ -12,7 +12,7 @@ const event = (seq, type, payload = {}) => ({ seq, eventType: type, runId: base.
 const command = { schema: "paperclip.tool.execution.v1", executionId: "sleep", transport: "process", operation: "execute", status: "running" };
 const usage = { kind: "usage", usage: { runDeltaComplete: true, runDelta: { inputTokens: 120, outputTokens: 10 } } };
 let state = { phase: "startup", run: structuredClone(base), events: [event(1, "turn.started")] };
-let beforeStop = false, beforeRedirect = false, stops = 0, replies = 0, cancelled = false, boundary, journey;
+let beforeStop = false, beforeRedirect = false, stops = 0, replies = 0, cancelled = false, boundary, journey, beforeEvents;
 const observed = new Set();
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
@@ -41,14 +41,23 @@ try {
       '<button data-testid="task-chat-composer-stop" onclick="window.stopped()">Stop</button>' }));
   await page.exposeFunction("stopped", () => {
     stops++;
-    state = { ...state, phase: "pending", run: { ...base, status: "cancelled", costAccountingPending: true,
+    state = { ...state, phase: "pending", events: [...state.events, event(4, "turn.cancelled")],
+      run: { ...base, status: "cancelled", costAccountingPending: true,
       finishedAt: "2026-01-01T00:00:01Z", usageJson: { ...base.usageJson, accountingReceiptSequence: 6, accountingReceiptReady: false, accountingReceiptId: "receipt" } } };
   });
   await page.goto("https://stop.fixture/task");
   journey = stopAndRedirectThroughUi({ page, nonce: "fixture",
     beforeStop: async () => { beforeStop = true; boundary = await observe(s => activeStopWorkBoundary(s.run, s.events)); },
-    awaitRetirement: async () => assert.equal(stops, 1),
-    beforeRedirect: async () => { beforeRedirect = true; await observe(s => stoppedRunAccountingFinalized(s.run, boundary)); },
+    awaitRetirement: async () => {
+      assert.equal(stops, 1);
+      beforeEvents = await observe(s => nativeCancellationHasNoLaterWork(s.events) && nativeWorkEvents(s.events));
+    },
+    beforeRedirect: async () => {
+      beforeRedirect = true;
+      const final = await observe(s => stoppedRunAccountingFinalized(s.run, boundary) && s);
+      assert(nativeCancellationHasNoLaterWork(final.events));
+      assert.deepEqual(nativeWorkEvents(final.events), beforeEvents);
+    },
     reply: async () => { replies++; return { id: "owned-comment" }; },
   });
   journey.catch(() => undefined);
@@ -62,14 +71,15 @@ try {
   state = { ...state, phase: "ready", events: [event(1, "turn.started"), event(2, "item.completed", usage), event(3, "tool.execution.started", command)] };
   await until(() => beforeRedirect && observed.has("pending"));
   assert.equal(stops, 1); assert.equal(replies, 0, "Stop/lease proof cannot substitute for settled accounting");
-  state = { ...state, phase: "ready-but-pending", run: { ...state.run, usageJson: { ...state.run.usageJson, accountingReceiptReady: true } } };
+  state = { ...state, phase: "ready-but-pending", events: [...state.events, event(5, "item.completed", usage)],
+    run: { ...state.run, usageJson: { ...state.run.usageJson, accountingReceiptReady: true } } };
   await until(() => observed.has("ready-but-pending")); assert.equal(replies, 0);
   state = { ...state, phase: "missing-accounted-time", run: { ...state.run, costAccountingPending: false } };
   await until(() => observed.has("missing-accounted-time")); assert.equal(replies, 0);
   state = { ...state, phase: "settled", run: { ...state.run, costAccountedAt: "2026-01-01T00:00:02Z" } };
   assert.equal((await journey).reply.id, "owned-comment");
   assert.equal(stops, 1); assert.equal(replies, 1);
-  console.log("PASS: Chromium/controlled API rejects startup, command-only, usage-only, incomplete accounting and missing timestamp; one Stop and redirect after genuine bound proof.");
+  console.log("PASS: Chromium/controlled API rejects startup, command-only, usage-only, incomplete accounting and missing timestamp; terminal usage preserves the work snapshot; one Stop and redirect after genuine bound proof.");
 } finally {
   cancelled = true;
   await journey?.catch(() => undefined);

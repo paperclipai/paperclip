@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeNativeTurnStarted } from "../stop-redirect-flow.js";
+import { activeNativeTurnStarted, nativeCancellationHasNoLaterWork, nativeWorkEvents } from "../stop-redirect-flow.js";
 import { activeStopWorkBoundary, stoppedRunAccountingFinalized, STOP_REVISION_WAIT } from "./stop-redirect-evidence.js";
 import { agentJourneyRunCountValid } from "./success-contract.js";
 
@@ -85,6 +85,42 @@ describe("Stop work and redirect admission evidence", () => {
       r => { r.usageJson.accountingReceiptReady = false; }, r => { delete r.usageJson.accountingReceiptId; },
       r => { delete r.usageJson.accountingReceiptSourceId; }, r => { r.usageJson.accountingReceiptSequence = 0; }];
     for (const change of changes) { const r = settled(); change(r); expect(stoppedRunAccountingFinalized(r, before())).toBe(false); }
+  });
+  it("accepts a previously ready receipt only when the exact stopped run is actually settled", () => {
+    const ready = { ...structuredClone(run), usageJson: { ...run.usageJson,
+      accountingReceiptReady: true, accountingReceiptId: "existing-receipt" } };
+    const boundary = activeStopWorkBoundary(ready, events())!;
+    expect(boundary).not.toBeNull();
+    const cancelled = { ...ready, status: "cancelled", costAccountingPending: false,
+      costAccountedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-01T00:00:01Z" };
+    expect(stoppedRunAccountingFinalized(cancelled, boundary)).toBe(true);
+    for (const patch of [{ status: "running" }, { costAccountingPending: true },
+      { costAccountedAt: null }, { usageJson: { ...ready.usageJson, accountingReceiptReady: false } }]) {
+      expect(stoppedRunAccountingFinalized({ ...cancelled, ...patch }, boundary)).toBe(false);
+    }
+  });
+  it("permits canonical terminal usage at either snapshot without changing the productive work history", () => {
+    const stopped = [...events(), event(4, "turn.cancelled")];
+    const accounted = [...stopped, event(5, "item.completed", usage)];
+    for (const rows of [stopped, accounted]) expect(nativeCancellationHasNoLaterWork(rows)).toBe(true);
+    expect(nativeWorkEvents(accounted)).toEqual(nativeWorkEvents(stopped));
+    expect(nativeWorkEvents([...accounted, event(6, "item.completed", usage)])).toEqual(nativeWorkEvents(accounted));
+  });
+  it.each(["tool.execution.started", "tool.execution.progressed", "turn.started", "message.delta", "item.delta", "item.completed"])("rejects productive %s interleaved with post-Stop accounting", kind => {
+    const stopped = [...events(), event(4, "turn.cancelled")];
+    const later = [...stopped, event(5, "item.completed", usage), event(6, kind, { kind: "message", text: "continued work" }),
+      event(7, "item.completed", usage)];
+    expect(nativeCancellationHasNoLaterWork(later)).toBe(false);
+    expect(nativeWorkEvents(later)).not.toEqual(nativeWorkEvents(stopped));
+  });
+  it("does not hide a malformed or differently typed item behind a usage label", () => {
+    const stopped = [...events(), event(4, "turn.cancelled")];
+    const malformed = event(5, "item.completed", usage); malformed.protocolSchemaVersion = 2;
+    const mismatched = event(5, "item.completed", usage); mismatched.eventType = "message.delta";
+    for (const row of [malformed, mismatched, event(5, "item.delta", usage), event(5, "message.delta", usage)]) {
+      expect(nativeCancellationHasNoLaterWork([...stopped, row])).toBe(false);
+      expect(nativeWorkEvents([...stopped, row])).not.toEqual(nativeWorkEvents(stopped));
+    }
   });
   it("retains the bounded command and exact three-run contract", () => {
     expect(STOP_REVISION_WAIT).toContain("sleep 90 exactly once");
