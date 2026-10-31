@@ -303,6 +303,7 @@ const baseReleaseRecoveryFacts: ReleaseRecoveryFacts = {
   reviewParticipant: {
     applies: false,
     isExecutionReviewParticipantRecoveryRun: false,
+    hasPendingWakeInteraction: false,
   },
   immediate: {
     applies: false,
@@ -431,6 +432,30 @@ describe("decideReleaseRecovery", () => {
         ...baseReleaseRecoveryFacts,
         reviewParticipant: { ...baseReleaseRecoveryFacts.reviewParticipant, applies: true },
         shared: { ...baseReleaseRecoveryFacts.shared, hasPersistedMonitor: true },
+      },
+      expected: { kind: "released" },
+    },
+    {
+      name: "released: review-participant recovery applies but the issue waits on a pending wake interaction",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        reviewParticipant: {
+          ...baseReleaseRecoveryFacts.reviewParticipant,
+          applies: true,
+          hasPendingWakeInteraction: true,
+        },
+      },
+      expected: { kind: "released" },
+    },
+    {
+      name: "released: a pending wake interaction also stops escalation after a review-participant recovery retry",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        reviewParticipant: {
+          applies: true,
+          isExecutionReviewParticipantRecoveryRun: true,
+          hasPendingWakeInteraction: true,
+        },
       },
       expected: { kind: "released" },
     },

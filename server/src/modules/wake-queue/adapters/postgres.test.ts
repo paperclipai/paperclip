@@ -15,6 +15,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueRecoveryActions,
+  issueThreadInteractions,
   issues,
   nativeRunFinalizations,
   subscribeDatabaseWork,
@@ -965,6 +966,39 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const issueRow = (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
     expect(issueRow?.status).toBe("blocked");
     expect(issueRow?.executionState).toEqual({ phase: "running" });
+  });
+
+  it("stops waiting on a pending question once a human dismisses it", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, status: "in_review" });
+    const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId }, status: "succeeded" });
+    const [question] = await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      createdByAgentId: agentId,
+      payload: {
+        version: 1,
+        questions: [{ id: "scope", prompt: "Choose scope", selectionMode: "single", options: [{ id: "first", label: "First" }] }],
+      },
+    }).returning();
+
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    const readWait = async () => {
+      let pending = false;
+      await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (_locked, ports) => {
+        pending = await ports.transaction.hasPendingWakeInteraction({ companyId, issueId });
+        return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+      });
+      return pending;
+    };
+
+    expect(await readWait()).toBe(true);
+    await db.update(issueThreadInteractions)
+      .set({ dismissedAt: new Date(), dismissedByUserId: "responsible-user" })
+      .where(eq(issueThreadInteractions.id, question!.id));
+    expect(await readWait()).toBe(false);
   });
 
   it("reopens an issue for the company that owns it, and clears the execution state", async () => {

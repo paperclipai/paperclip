@@ -24,10 +24,12 @@ import {
   issueComments,
   issueRecoveryActions,
   issueRelations,
+  issueThreadInteractions,
   issues,
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
+import { activeIssueInteractionCondition } from "../../../services/issue-question-context.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../../../services/legacy-execution-recovery.js";
 import {
   authorizeFailedChatRunRetryWake,
@@ -572,6 +574,27 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
             eq(issues.companyId, companyId),
             notInArray(issues.status, ["done", "cancelled"]),
             isNull(issues.hiddenAt),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return row !== null;
+    },
+
+    async hasPendingWakeInteraction({ companyId, issueId }) {
+      const row = await tx
+        .select({ id: issueThreadInteractions.id })
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            eq(issueThreadInteractions.companyId, companyId),
+            eq(issueThreadInteractions.issueId, issueId),
+            eq(issueThreadInteractions.status, "pending"),
+            inArray(issueThreadInteractions.continuationPolicy, [
+              "wake_assignee",
+              "wake_assignee_on_accept",
+            ]),
+            activeIssueInteractionCondition({ runId: run.id }),
           ),
         )
         .limit(1)

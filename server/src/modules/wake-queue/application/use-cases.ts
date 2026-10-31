@@ -8,8 +8,9 @@ import {
   deriveImmediateRecoveryContextLabels,
 } from "../domain/policy.js";
 import {
-  EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
   isConfigurationIncompleteFailedRun,
+  isExecutionReviewParticipantRecoveryEligibleRun,
+  isExecutionReviewParticipantRecoveryRun,
   isWorkspaceValidationFailedRun,
   readNonEmptyString,
 } from "../domain/values.js";
@@ -38,10 +39,6 @@ import { WakeQueueApplicationError } from "./types.js";
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
 const ISSUE_DISPOSITION_REPAIR_RETRY_REASON = "issue_disposition_repair";
-const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASONS = new Set([
-  "execution_review_requested",
-  "execution_approval_requested",
-]);
 const HEARTBEAT_RUN_TERMINAL_STATUSES = new Set([
   "succeeded",
   "failed",
@@ -54,16 +51,6 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = new Set([
   "cancelled",
 ]);
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = "stranded_issue_recovery";
-
-function isExecutionReviewParticipantRecoveryRun(run: Pick<RunSnapshot, "contextSnapshot">): boolean {
-  return readNonEmptyString(run.contextSnapshot.retryReason) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON;
-}
-
-function isExecutionReviewParticipantRecoveryEligibleRun(run: Pick<RunSnapshot, "contextSnapshot">): boolean {
-  const wakeReason = readNonEmptyString(run.contextSnapshot.wakeReason);
-  return (wakeReason !== null && EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASONS.has(wakeReason))
-    || isExecutionReviewParticipantRecoveryRun(run);
-}
 
 function didAutomaticRecoveryFail(
   run: Pick<RunSnapshot, "status" | "contextSnapshot">,
@@ -558,6 +545,13 @@ async function runReleaseRecoveryTail(
         })
       : false;
 
+  const hasPendingWakeInteraction = reviewParticipantApplies
+    ? await transaction.hasPendingWakeInteraction({
+        companyId: issue.companyId,
+        issueId: issue.id,
+      })
+    : false;
+
   const hasExplicitBlockerPath =
     immediateApplies && !reviewParticipantApplies
       ? await transaction.hasExplicitBlockerPath({
@@ -597,6 +591,7 @@ async function runReleaseRecoveryTail(
       applies: reviewParticipantApplies,
       isExecutionReviewParticipantRecoveryRun:
         isExecutionReviewParticipantRecoveryRun(run),
+      hasPendingWakeInteraction,
     },
     immediate: {
       applies: immediateApplies,
