@@ -87,6 +87,10 @@ the raw/prepared real-PostgreSQL calibration remains.
 
 Current assembled cases cover:
 
+- Actual readiness while a fixture-owned PostgreSQL lock holds the real startup
+  retention INSERT. Health becomes ready with active work and pending SQL;
+  releasing the lock produces the archive and zero active work. Readiness alone
+  therefore does not stand in for idle eligibility.
 - Disabled-heartbeat empty boot across two simulated hourly windows.
 - Ordinary HTTP company/settings/completed-task creation, independent durable
   inspection, drain/resume and two additional hourly windows without owner work.
@@ -94,6 +98,9 @@ Current assembled cases cover:
   idle drain starts, followed by its actual commit and external-object source
   ingestion. Provider work waits during drain, then resume fetches the simulated
   merged PR, persists terminal state and settles for two hourly windows.
+- Actual shutdown during an in-flight provider HTTP read, cancellation and
+  durable claim release without a false terminal result, followed by a fresh
+  server reconstructing and completing the retained object.
 - A real HTTP 503 from the controlled provider, durable retry deadline, no
   SQL/provider retry during drain, successful resume and quiet after settlement.
 - Actual Cloud warm standby, signed identity claim and durable canonical identity.
@@ -139,7 +146,7 @@ drain, exactly-once resume and existing shutdown/restart behavior.
 
 Remaining acceptance before a removal PR: final recovery integration, final recovery
 first-producer paths through assembled wiring, enabled empty/configured/history
-quiet including the real 90-second window, scheduling suppression, startup and
-shutdown races, relevant contracts across the combined tree, current-head
+quiet including the real 90-second window, startup failure isolation and
+remaining final-recovery lifecycle races, relevant contracts across the combined tree, current-head
 Greptile 5/5 and required CI. No aggregate-removal acceptance or deployment claim
 is made by the preliminary harness checkpoint.

@@ -1,6 +1,6 @@
 import { createCipheriv, createHash, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, randomUUID, sign, verify } from "node:crypto";
 import { createServer } from "node:http";
-import { agents, agentApiKeys, agentTaskSessions, authUsers, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, toolApplications, toolConnections } from "@paperclipai/db";
+import { agents, agentApiKeys, agentTaskSessions, authUsers, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, issues, issueThreadInteractions, toolApplications, toolConnections } from "@paperclipai/db";
 import { access, mkdir, readdir, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -65,6 +65,46 @@ describe("assembled maintenance server production wiring", () => {
         repeatedQueries: repeated.length, repeated: receipt(repeated), initialFrames, finalFrames: server.proxy.frames, outgoingHttpRequests: 0 }, null, 2));
     } finally { await server.stop(); }
   }, 150_000);
+  it("exposes readiness while real deferred housekeeping is held and settles its work after release", async () => {
+    await clearDatabase();
+    const fixture = createDb(databaseUrl!, { maxConnections: 1 });
+    const companyId = randomUUID(), issueId = randomUUID(), interactionId = randomUUID();
+    await fixture.insert(companies).values({ id: companyId, name: "Readiness fixture", issuePrefix: "MRD" });
+    await fixture.insert(issues).values({ id: issueId, companyId, title: "Historical human decision", status: "todo" });
+    await fixture.insert(issueThreadInteractions).values({ id: interactionId, companyId, issueId, kind: "request_confirmation",
+      title: "Historical human choice", continuationPolicy: "none", payload: { version: 1, prompt: "Choose a color?" },
+      updatedAt: new Date(Date.now() - 91 * 86_400_000) });
+    await fixture.$client.unsafe(`create or replace function maintenance_hold_startup_archive() returns trigger language plpgsql as $$begin
+      perform pg_advisory_xact_lock(913703); return new; end$$`);
+    await fixture.$client.unsafe(`create trigger maintenance_hold_startup_archive before insert on decision_retention for each row execute function maintenance_hold_startup_archive()`);
+    let reserved: Awaited<ReturnType<typeof fixture.$client.reserve>> | undefined = await fixture.$client.reserve();
+    await reserved`select pg_advisory_lock(913703)`;
+    let server: Awaited<ReturnType<typeof startMaintenanceServer>> | undefined;
+    try {
+      server = await startMaintenanceServer(databaseUrl!, { suppressed: true });
+      const current = server;
+      await expect.poll(() => current.proxy.queries.some(query => /insert into "decision_retention"/.test(query.sql)), { timeout: 10_000 }).toBe(true);
+      const snapshot = await server.snapshot();
+      expect(snapshot.startup.phase).toBe("ready"); expect(snapshot.idle.active).toBeGreaterThan(0);
+      expect(server.proxy.pending).toBeGreaterThan(0);
+      const health = await server.api<{ status: string; startupRecovery: { phase: string } }>("GET", "/health");
+      expect(health).toMatchObject({ status: "ok", startupRecovery: { phase: "ready" } });
+      await reserved`select pg_advisory_unlock(913703)`; reserved.release(); reserved = undefined;
+      await server.settled();
+      const [archived] = await fixture.$client`select archived_reason, archived_at is not null as archived from decision_retention where source_id=${interactionId}`;
+      expect(archived).toMatchObject({ archived_reason: "idle_ttl", archived: true });
+      await writeFile(path.join(server.directory, "readiness-measurement.json"), JSON.stringify({ phase: "real-housekeeping-held-after-readiness",
+        companyId, issueId, interactionId, beforeRelease: { startup: snapshot.startup, idle: snapshot.idle }, afterRelease: await server.snapshot(),
+        archived, boundary: "fixture owns advisory lock on actual startup archive INSERT; no startup/DB/service mocks", frames: server.proxy.frames,
+      }, null, 2));
+    } finally {
+      if (reserved) { await reserved`select pg_advisory_unlock(913703)`.catch(() => {}); reserved.release(); }
+      await fixture.$client.unsafe("drop trigger if exists maintenance_hold_startup_archive on decision_retention").catch(() => {});
+      await fixture.$client.unsafe("drop function if exists maintenance_hold_startup_archive()").catch(() => {});
+      await fixture.$client.end(); await server?.stop();
+    }
+  }, 150_000);
+
   it("keeps the disabled-heartbeat boot quiet across two former hourly windows with a qualified child clock", async () => {
     await clearDatabase();
     const server = await startMaintenanceServer(databaseUrl!, { enabled: false, clock: true });
