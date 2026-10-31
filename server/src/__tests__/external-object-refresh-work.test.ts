@@ -2,11 +2,12 @@ import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { activityLog, approvals, applyPendingMigrations, databaseWorkPending, budgetIncidents, budgetPolicies, companies, costEvents, createDb, externalObjects, externalObjectMentions, issues, issueComments, plugins } from "@paperclipai/db";
 import { externalObjectService, type ExternalObjectResolveResult } from "../services/external-objects.js";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { issueService } from "../services/issues.js";
 import { documentService } from "../services/documents.js";
 import { budgetService } from "../services/budgets.js";
 import { pluginRegistryService } from "../services/plugin-registry.js";
@@ -365,6 +366,94 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
       }
     } finally { db.$client.options.debug = debug; }
     expect(provider).toHaveBeenCalledTimes(2);
+  });
+
+  it("scopes repeated issue deletions to cascaded source objects and cancels their last future mention", async () => {
+    clock(); const svc = service();
+    const own = await fixture(), foreign = await fixture();
+    const future = new Date(Date.now() + 86_400_000), removedDeadline = new Date(Date.now() + 1_800_000);
+    const sharedUrl = "https://example.com/shared-issue-object";
+    const [retained] = await db.insert(issues).values({ companyId: own.companyId, title: "Retained",
+      description: sharedUrl }).returning();
+    await svc.syncIssue(retained!.id);
+    await db.update(issues).set({ description: sharedUrl }).where(eq(issues.id, foreign.issueId));
+    await svc.syncIssue(foreign.issueId);
+    const deletions: Array<{ id: string; affected: string[]; orphaned: string[] }> = [];
+    for (let index = 0; index < 3; index++) {
+      const [issue] = await db.insert(issues).values({ companyId: own.companyId,
+        title: sharedUrl, description: `https://example.com/deleted-${index}` }).returning();
+      await svc.syncIssue(issue!.id);
+      const [comment] = await db.insert(issueComments).values({ companyId: own.companyId, issueId: issue!.id,
+        body: `https://example.com/comment-${index}` }).returning();
+      await svc.syncComment(comment!.id);
+      const doc = await documentService(db).upsertIssueDocument({ issueId: issue!.id, key: "notes", format: "markdown",
+        body: `https://example.com/document-${index}` });
+      await svc.syncDocument(doc.document.id);
+      const mentions = await db.select().from(externalObjectMentions).where(and(
+        eq(externalObjectMentions.companyId, own.companyId), eq(externalObjectMentions.sourceIssueId, issue!.id)));
+      expect(new Set(mentions.map(mention => mention.sourceKind))).toEqual(new Set(["title", "description", "comment", "document"]));
+      deletions.push({ id: issue!.id, affected: [...new Set(mentions.map(mention => mention.objectId!))],
+        orphaned: mentions.filter(mention => mention.sourceKind !== "title").map(mention => mention.objectId!) });
+    }
+    const shared = (await db.select().from(externalObjectMentions).where(eq(externalObjectMentions.sourceIssueId, retained!.id)))[0]!.objectId!;
+    for (let offset = 0; offset < 1100; offset += 250) {
+      const ids = Array.from({ length: Math.min(250, 1100 - offset) }, () => randomUUID());
+      await db.insert(externalObjects).values(ids.map(id => ({ id, companyId: own.companyId,
+        providerKey: "url", objectType: "link", externalId: id, nextRefreshAt: future })));
+      await db.insert(externalObjectMentions).values(ids.map(objectId => ({ companyId: own.companyId,
+        sourceIssueId: own.issueId, sourceKind: "description" as const, objectId })));
+    }
+    await db.update(externalObjects).set({ nextRefreshAt: future });
+    for (const entry of deletions) for (const id of entry.orphaned)
+      await db.update(externalObjects).set({ nextRefreshAt: removedDeadline }).where(eq(externalObjects.id, id));
+    await start(svc);
+    await settle(() => coordinator!.nextWakeAt() === removedDeadline.getTime() && !databaseWorkPending(db, DELIVERY_QUEUES.externalObjectRefresh));
+    expect(provider).not.toHaveBeenCalled();
+    const reads: Array<{ query: string; params: unknown[] }> = [];
+    const selections: Array<{ query: string; params: unknown[] }> = [];
+    const debug = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query, params) => {
+      if (/^select/i.test(query) && query.includes('from "external_objects"') && query.includes('inner join "companies"'))
+        reads.push({ query, params: [...params] });
+      if (/^select distinct/i.test(query) && query.includes('from "external_object_mentions"'))
+        selections.push({ query, params: [...params] });
+    };
+    try {
+      for (let index = 0; index < deletions.length; index++) {
+        const entry = deletions[index], first = reads.length;
+        const result = await issueService(db).remove(entry.id);
+        expect(result?.id).toBe(entry.id);
+        const next = index === deletions.length - 1 ? future : removedDeadline;
+        await settle(() => reads.length > first && coordinator!.nextWakeAt() === next.getTime()
+          && !databaseWorkPending(db, DELIVERY_QUEUES.externalObjectRefresh));
+        const deletionReads = reads.slice(first);
+        expect(deletionReads.length).toBeLessThanOrEqual(entry.affected.length);
+        for (const read of deletionReads) {
+          expect(read.query).toContain('"external_objects"."id" =');
+          expect(read.params).toContain(own.companyId); expect(read.params).not.toContain(foreign.companyId);
+          expect(read.params.some(value => entry.affected.includes(String(value)))).toBe(true);
+        }
+      }
+      expect(selections).toHaveLength(deletions.length);
+      for (let index = 0; index < selections.length; index++) {
+        expect(selections[index]!.query).toContain('"external_object_mentions"."company_id" =');
+        expect(selections[index]!.query).toContain('"external_object_mentions"."source_issue_id" =');
+        expect(selections[index]!.params).toContain(own.companyId); expect(selections[index]!.params).toContain(deletions[index]!.id);
+      }
+      const lastMentions = await db.select().from(externalObjectMentions).where(eq(externalObjectMentions.objectId, shared));
+      expect(lastMentions).toHaveLength(1); expect(lastMentions[0]!.sourceIssueId).toBe(retained!.id);
+      const orphanIds = deletions.flatMap(entry => entry.orphaned);
+      const orphanRows = await db.select().from(externalObjects).where(inArray(externalObjects.id, orphanIds));
+      expect(orphanRows).toHaveLength(orphanIds.length);
+      for (const orphan of orphanRows) expect(orphan.nextRefreshAt).toEqual(removedDeadline);
+      expect(await db.select().from(externalObjectMentions).where(inArray(externalObjectMentions.objectId, orphanIds))).toEqual([]);
+      const foreignRows = await db.select().from(externalObjects).where(eq(externalObjects.companyId, foreign.companyId));
+      expect(foreignRows).toHaveLength(1); expect(foreignRows[0]!.nextRefreshAt).toEqual(future);
+      const count = reads.length;
+      await vi.advanceTimersByTimeAsync(removedDeadline.getTime() - Date.now() + 1);
+      expect(reads).toHaveLength(count); expect(provider).not.toHaveBeenCalled();
+      expect(coordinator!.nextWakeAt()).toBe(future.getTime());
+    } finally { db.$client.options.debug = debug; }
   });
 
   it("keeps warm standby startup SQL-free and resumes a first committed producer", async () => {
