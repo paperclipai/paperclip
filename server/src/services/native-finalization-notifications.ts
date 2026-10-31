@@ -1,3 +1,4 @@
+import { notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../modules/external-agents/index.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
@@ -15,6 +16,7 @@ export type NativeFinalizationWorkScope = { companyId: string; runId?: string; i
 
 export async function notifyNativeFinalizationWork(transaction: object, scope: NativeFinalizationWorkScope) {
   if (scope.issueId || scope.runId) {
+    await notifyActiveRunSilence(transaction, scope);
     await notifyNativeEnvironmentSettlement(transaction, scope);
     await notifyExternalAgentSettlement(transaction, scope);
     await notifyExternalConversationSettlement(transaction, scope);

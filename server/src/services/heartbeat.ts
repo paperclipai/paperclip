@@ -4245,6 +4245,10 @@ export function heartbeatService(
     computeTaskDrain,
     applyTaskDrain,
 
+    registerActiveRunSilenceWork: (coordinator: Parameters<typeof recovery.registerActiveRunSilenceWork>[0], canRun: () => boolean) =>
+      recovery.registerActiveRunSilenceWork(coordinator, () => canRun() && readTaskDrain(new Date()) === null,
+        async scope => recovery.scanSilentActiveRuns({ ...scope, issueCreatedAtGte: await getWorktreeExecutionCutoff() }),
+        async () => !(await getSchedulingSuppression(true)).suppressed),
     registerDeferredReceiptWork: (coordinator: Parameters<typeof registerDeferredReceiptWork>[1], canRun: () => boolean) =>
       registerDeferredReceiptWork(db, coordinator, {
         resume: scope => heartbeatQueue.resumeDeferredExecutionReceipts(scope),

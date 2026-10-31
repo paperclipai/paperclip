@@ -1,3 +1,4 @@
+import { notifyActiveRunSilence } from "../../../services/live-run-recovery-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
 import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
@@ -100,6 +101,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
 
   async function findCandidateSilentRuns(input: {
     companyId?: string;
+    runId?: string;
     suspicionBefore: Date;
     issueCreatedAtGte?: Date | null;
   }): Promise<RunSnapshot[]> {
@@ -109,6 +111,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
       .where(
         and(
           input.companyId ? eq(heartbeatRuns.companyId, input.companyId) : undefined,
+          input.runId ? eq(heartbeatRuns.id, input.runId) : undefined,
           eq(heartbeatRuns.status, "running"),
           sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${input.suspicionBefore.toISOString()}::timestamptz`,
         ),
@@ -282,8 +285,9 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
   }
 
   async function recordDecision(companyId: string, input: RecordDecisionInput): Promise<WatchdogDecisionRecord> {
-    const [row] = await db
-      .insert(heartbeatRunWatchdogDecisions)
+    const [row] = await db.transaction(async tx => {
+      await notifyActiveRunSilence(tx, { companyId, runId: input.runId });
+      return tx.insert(heartbeatRunWatchdogDecisions)
       .values({
         companyId,
         runId: input.runId,
@@ -296,6 +300,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
         createdByRunId: input.createdByRunId,
       })
       .returning();
+    });
 
     await logActivity(db, {
       companyId,

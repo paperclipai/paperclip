@@ -1,3 +1,4 @@
+import { notifyActiveRunSilence } from "../live-run-recovery-notifications.js";
 import { eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import type { AdapterInvocationMeta, AdapterRuntimeEvent } from "../../adapters/index.js";
@@ -94,8 +95,9 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       pendingOutputProgress.at.getTime() - lastOutputFlushAt.getTime() >=
         ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS;
     if (!shouldFlush) return;
-    progressWrite = db
-      .update(heartbeatRuns)
+    progressWrite = db.transaction(async tx => {
+      await notifyActiveRunSilence(tx, { companyId: run.companyId, runId: run.id });
+      await tx.update(heartbeatRuns)
       .set({
         lastOutputAt: pendingOutputProgress.at,
         lastOutputSeq: pendingOutputProgress.seq,
@@ -103,7 +105,8 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
         lastOutputBytes: pendingOutputProgress.bytes,
         updatedAt: new Date(),
       })
-      .where(eq(heartbeatRuns.id, run.id))
+      .where(eq(heartbeatRuns.id, run.id));
+    })
       .then(() => {
         lastOutputFlushAt = pendingOutputProgress.at;
         if (outputProgressState.pending === pendingOutputProgress)

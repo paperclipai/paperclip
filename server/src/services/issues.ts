@@ -1,3 +1,4 @@
+import { notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
@@ -11507,6 +11508,7 @@ export function issueService(db: Db) {
           || blockedByIssueIds !== undefined) {
           await notifyRunDispatch(tx, { companyId: receiptExisting.companyId });
           await notifyDeferredExecutionEligibility(tx, { companyId: receiptExisting.companyId });
+          await notifyActiveRunSilence(tx, { companyId: receiptExisting.companyId, issueId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
         }
         if (patch.monitorNextCheckAt !== undefined || (receiptExisting.monitorNextCheckAt &&
@@ -11972,7 +11974,10 @@ export function issueService(db: Db) {
           await notifyDecisionTargetIssueRemoval(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
           await notifyRunDispatch(tx, owner ? { companyId: owner.companyId } : undefined);
-          if (owner) await notifyDeferredExecutionEligibility(tx, owner);
+          if (owner) {
+            await notifyDeferredExecutionEligibility(tx, owner);
+            await notifyActiveRunSilence(tx, { companyId: owner.companyId, issueId: id });
+          }
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           removedIssue = await tx
             .delete(issues)

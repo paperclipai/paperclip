@@ -1,3 +1,4 @@
+import { notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import type { Db } from "@paperclipai/db";
@@ -9,6 +10,7 @@ export async function notifyExecutionRunWork(transaction: object, scope?: Execut
   if (scope) {
     await notifyRunDispatch(transaction, scope);
     await notifyDeferredExecutionEligibility(transaction, scope);
+    await notifyActiveRunSilence(transaction, scope);
   }
   for (const queue of [DELIVERY_QUEUES.executionStatus, DELIVERY_QUEUES.executionFinalization,
     DELIVERY_QUEUES.executionReplacement, DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.issueMonitors]) {
@@ -24,7 +26,10 @@ export function writeExecutionControl<T>(
 ): Promise<T> {
   return db.transaction(async transaction => {
     await notifyRunDispatch(transaction, scope);
-    if (scope) await notifyDeferredExecutionEligibility(transaction, scope);
+    if (scope) {
+      await notifyDeferredExecutionEligibility(transaction, scope);
+      await notifyActiveRunSilence(transaction, scope);
+    }
     await notifyDeliveryWork(transaction, DELIVERY_QUEUES.issueMonitors);
     for (const topic of typeof queue === "string" ? [queue] : queue) await notifyDeliveryWork(transaction, topic);
     return write(transaction as unknown as Db);

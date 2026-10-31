@@ -73,8 +73,10 @@ export async function legacyShutdownWorkspaceResourceProtected(db: Db,
 }
 
 /** Released stop receipts still need reconciliation if export never settled. */
-export async function sweepLegacyShutdownWorkspaceSettlements(db: Db, now = new Date()) {
+export async function sweepLegacyShutdownWorkspaceSettlements(db: Db, now = new Date(), scope: { companyId?: string; leaseId?: string } = {}) {
   const rows = await db.select().from(environmentLeases).where(and(
+    scope.companyId ? eq(environmentLeases.companyId, scope.companyId) : undefined,
+    scope.leaseId ? eq(environmentLeases.id, scope.leaseId) : undefined,
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'schema' = ${SCHEMA}`,
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'state' = 'pending'`,
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'deadlineAt' <= ${now.toISOString()}`,

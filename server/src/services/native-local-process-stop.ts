@@ -145,7 +145,7 @@ export async function readNativeLocalProcessStop(db: Db, companyId: string, runI
 
 type SettledProcessRelease = "released" | "pending" | "skipped";
 
-export async function releaseSettledNativeRunProcess(db: Db, runId: string): Promise<SettledProcessRelease> {
+export async function releaseSettledNativeRunProcess(db: Db, runId: string, options: { onDeferredDeadline?: (at: number) => void } = {}): Promise<SettledProcessRelease> {
   return db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
     const [run] = await tx.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
@@ -173,7 +173,10 @@ export async function releaseSettledNativeRunProcess(db: Db, runId: string): Pro
       )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
       if (identity?.payload?.targetKind !== "local" || identity.payload.hostname !== os.hostname() ||
           identity.payload.processPid !== run.processPid || identity.payload.processGroupId !== run.processGroupId) return "skipped";
-      if (!(await recordNativeLocalProcessStop(tx, run))) return "pending";
+      if (!(await recordNativeLocalProcessStop(tx, run))) {
+        options.onDeferredDeadline?.(Date.now() + 30_000);
+        return "pending";
+      }
     }
     await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId: run.id });
     await tx.update(heartbeatRuns).set({

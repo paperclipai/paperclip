@@ -109,13 +109,15 @@ export function createHeartbeatAgentStatus(db: Db) {
     publishStatus(result.updated, outcome);
   }
 
-  async function reconcileStrandedAgentStatuses(liveRunIds: () => ReadonlySet<string>) {
+  async function reconcileStrandedAgentStatuses(liveRunIds: () => ReadonlySet<string>, scope: { companyId?: string; agentId?: string } = {}) {
     const now = new Date();
     const cutoff = new Date(now.getTime() - RECONCILIATION_GRACE_MS);
     const candidates = await db.transaction(async tx => {
       await tx.execute(sql`SET LOCAL statement_timeout = '2s'`);
       return tx.select({ id: agents.id, companyId: agents.companyId }).from(agents)
       .where(and(eq(agents.status, "running"), eq(agents.lifecycleState, "ready"),
+        scope.companyId ? eq(agents.companyId, scope.companyId) : undefined,
+        scope.agentId ? eq(agents.id, scope.agentId) : undefined,
         lte(agents.updatedAt, cutoff), settledAgentWorkCondition(liveRunIds(), now)))
       .orderBy(asc(agents.updatedAt), asc(agents.id)).limit(RECONCILIATION_BATCH_SIZE);
     });
