@@ -181,6 +181,12 @@ const URL_PREAMBLE_RE = /the url below to sign in/i;
 // the line.
 const PROMPT_LINE_RE = /^Paste code here if prompted\b[\s>*]*$/;
 
+// The copy hint that `claude` 2.1.291 prints between the URL block and the
+// prompt. The parser skips this exact text and binds no value from it.
+const COPY_HINT_LINE_RE = /^Hold\s+Shift\s+while\s+selecting\s+to\s+use\s+your\s+terminal['’]s\s+native\s+copy\.?$/i;
+
+const MAX_COPY_HINT_LINES = 4;
+
 // The maximum number of characters between the end of the URL preamble line and
 // the start of the URL. The Claude UI prints the URL right after the preamble.
 // The parser accepts a URL start only inside this window, so a URL far from the
@@ -363,11 +369,16 @@ function reassembleUrl(lines: string[], startLine: number): SetupTokenUrlMatch |
  * line after the URL block. The parser reads the non-blank lines after the URL
  * end line. The Claude UI can emit one full URL line per wrapped display row, so
  * it repeats the same full authorization URL on a few consecutive lines. The
- * parser skips a line that repeats `url`, then binds the prompt on the first
- * non-blank, non-repeat line. That line must match the exact prompt shape.
- * Returns null when the first non-blank, non-repeat line is not the prompt.
+ * parser skips a line that repeats `url`. The `claude` 2.1.291 UI also prints a
+ * copy hint before the prompt. A narrow terminal wraps the hint, so the parser
+ * joins the lines before the prompt with one space and requires the joined text
+ * to match {@link COPY_HINT_LINE_RE}. The parser then binds the prompt on the
+ * first non-blank line that is not a repeat and not part of the copy hint. That
+ * line must match the exact prompt shape. Returns null when any other line sits
+ * before the prompt.
  */
 function findBrowserCodePrompt(lines: string[], endLine: number, url: string): string | null {
+  const hintLines: string[] = [];
   for (let i = endLine + 1; i < lines.length; i += 1) {
     const trimmed = lines[i].trim();
     if (trimmed.length === 0) continue;
@@ -375,7 +386,12 @@ function findBrowserCodePrompt(lines: string[], endLine: number, url: string): s
     // punctuation first, the same way the repeated-URL comparison needs, so a
     // repeated URL with a trailing punctuation mark still matches.
     if (trimmed.replace(TRAILING_PUNCTUATION_RE, "") === url) continue;
-    return PROMPT_LINE_RE.test(trimmed) ? SETUP_TOKEN_PROMPT : null;
+    if (PROMPT_LINE_RE.test(trimmed)) {
+      if (hintLines.length === 0 || COPY_HINT_LINE_RE.test(hintLines.join(" "))) return SETUP_TOKEN_PROMPT;
+      return null;
+    }
+    hintLines.push(trimmed);
+    if (hintLines.length > MAX_COPY_HINT_LINES) return null;
   }
   return null;
 }
