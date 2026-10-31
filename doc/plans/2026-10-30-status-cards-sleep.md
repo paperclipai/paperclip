@@ -163,5 +163,18 @@ Refresh decisions use the card's PostgreSQL row revision as a private compare-an
 
 Company source hints do not preempt a future deadline owned by a failed evaluation (`retry`). Membership and policy deadlines remain eligible for source-driven rechecks, and actual due retries still run. An explicit policy edit can replace the retry through the existing card mutation path. Real PostgreSQL regressions hold the actual search while committing an ordinary policy edit, then verify the saved interval still fires. Persistent search failures stay quiet through issue hints and restart, retry at their saved deadline, and recover through an ordinary policy edit.
 
+A losing refresh cancels only an unclaimed task. It locks the exact company task
+in the canonical issue-first order, checks its generation ledger, and preserves
+terminal state and timestamps. Successful summary writeback records that ledger
+in the same transaction that clears the card's generation pointer. Because the
+failed card revision CAS excludes a future claim of this revision's task, the
+loser cannot mistake a completed shared winner for an unclaimed orphan. The same
+original request returns without enqueueing or reporting an active generation;
+a separate later manual request can still start a new revision. Canonical issue
+cancellation uses a transaction-bound service so its preflight reads also work
+with one connection. Activity publications and native-question actions run only
+after the outer transaction commits. Archive and truly unclaimed-task cleanup
+retain their existing effects.
+
 
 Every reactive summary writeback records one immediate card-owned refresh deadline in the same transaction that clears its generation. This preserves changes whose committed source hint was consumed while the old generation still owned the card, including changes after the summary's final watched-source read. The existing card commit hint restores that one deadline; it does not fan out to other companies or force generation. A fresh unchanged search disarms it. A relevant diff follows the existing policy, assignment, result and quiet path. Manual and interval writeback cadence stays unchanged. Rollback removes both the summary and its recheck obligation. Real PostgreSQL controls hold the actual summary search, commit an ordinary issue write, observe the worker consume that hint while generation is still owned, then verify exactly one needed generation or one unchanged recheck followed by SQL quiet.
