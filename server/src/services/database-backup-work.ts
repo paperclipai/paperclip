@@ -4,13 +4,21 @@ import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 
 export function registerDatabaseBackupWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
-  options: { intervalMs: number; run: () => Promise<unknown> },
+  options: {
+    intervalMs: number;
+    run: () => Promise<unknown>;
+    // Anchors the first run to the previous dump, so restarts closer together
+    // than the interval cannot starve backups. Resolved off the startup path;
+    // the startup-relative deadline stands until it settles, and on null/error.
+    resolveFirstRunAt?: () => Promise<number | null>;
+  },
 ) {
   const { intervalMs } = options;
 
 
   let nextAt = Date.now() + intervalMs;
-  return coordinator.register(DELIVERY_QUEUES.databaseBackups, {
+  const startupDeadline = nextAt;
+  const worker = coordinator.register(DELIVERY_QUEUES.databaseBackups, {
     retryMs: intervalMs,
     pausePassiveMaintenance: true,
     hasPending: async () => false,
@@ -26,4 +34,11 @@ export function registerDatabaseBackupWork(
       }
     },
   });
+  void options.resolveFirstRunAt?.().then(firstRunAt => {
+    // Only pull the first deadline earlier, and never after a run has moved it.
+    if (firstRunAt === null || nextAt !== startupDeadline || firstRunAt >= nextAt) return;
+    nextAt = firstRunAt;
+    worker.wake();
+  }, () => {});
+  return worker;
 }
