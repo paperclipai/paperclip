@@ -4,6 +4,260 @@
       "title": "Opprett ditt første selskap",
       "description": "Kom i gang ved å opprette et selskap.",
       "newCompany": "Nytt selskap"
+    },
+    "cloudCreateUnavailable": "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio."
+  },
+  "nav": {
+    "newTask": "New Task",
+    "search": "Search",
+    "dashboard": "Dashboard",
+    "home": "Home",
+    "inbox": "Inbox",
+    "chat": "Chat",
+    "decisions": "Decisions",
+    "status": "Status",
+    "conferenceRoom": "Conference Room",
+    "work": "Work",
+    "tasks": "Tasks",
+    "cases": "Cases",
+    "routines": "Routines",
+    "goals": "Goals",
+    "artifacts": "Artifacts",
+    "skills": "Skills",
+    "workspaces": "Workspaces",
+    "company": "Company",
+    "organization": "Organization",
+    "org": "Org",
+    "orgSection": "Org",
+    "connectors": "Connectors",
+    "audit": "Audit",
+    "timeline": "Timeline",
+    "costs": "Costs",
+    "activity": "Activity",
+    "commentary": "Commentary",
+    "settings": "Settings",
+    "beta": "beta",
+    "badge": {
+      "unread": "unread",
+      "decisions": "decisions",
+      "unreadChats": "unread chats"
+    },
+    "mobileNavigation": "Mobile navigation",
+    "openSidebar": "Open sidebar",
+    "hideProperties": "Hide properties",
+    "showProperties": "Show properties",
+    "openActionsFor": "Open actions for {{name}}",
+    "removeFromStarred": "Remove from starred",
+    "leaving": "Leaving...",
+    "section": {
+      "actions": "{{label}} actions",
+      "collapse": "Collapse {{label}}",
+      "expand": "Expand {{label}}"
+    },
+    "item": {
+      "liveCount": "{{count}} live",
+      "attentionNeeded": "attention needed"
+    },
+    "sort": {
+      "top": "Top",
+      "alphabetical": "Alphabetical",
+      "recent": "Recent"
+    },
+    "account": {
+      "boardName": "Board",
+      "signedIn": "Signed in",
+      "localBoard": "Local workspace board",
+      "openMenu": "Open account menu",
+      "viewProfile": "View profile",
+      "viewCommit": "View commit {{commit}} on GitHub",
+      "sha": "SHA {{sha}}",
+      "invite": "Invite",
+      "inviteDescription": "Invite people to your organization.",
+      "documentation": "Documentation",
+      "documentationDescription": "Open Paperclip docs in a new tab.",
+      "signOut": "Sign out",
+      "signingOut": "Signing out...",
+      "signOutDescription": "End this browser session.",
+      "shareFeedback": "Share feedback",
+      "label": "Account"
+    },
+    "organizationMenu": {
+      "title": "Organizations",
+      "reorder": "Reorder {{name}}",
+      "openSwitcher": "Open organization switcher",
+      "openSwitcherNamed": "Open {{name}} organization switcher",
+      "select": "Select organization",
+      "openSwitcherCompany": "Open company switcher",
+      "openSwitcherNamedCompany": "Open {{name}} company switcher",
+      "selectCompany": "Select company",
+      "done": "Done",
+      "edit": "Edit",
+      "loadError": "Couldn't load organizations",
+      "loadErrorCompany": "Couldn't load companies",
+      "retry": "Try again",
+      "empty": "No organizations",
+      "emptyCompany": "No companies",
+      "create": "Create organization",
+      "invite": "Invite people",
+      "inviteTo": "Invite people to {{name}}"
+    },
+    "agents": {
+      "section": "Agents",
+      "new": "New agent",
+      "sectionActions": "Agents section actions",
+      "browse": "Browse agents",
+      "sort": "Agent sort",
+      "seeAll": "See all agents",
+      "pause": "Pause agent",
+      "resume": "Resume agent",
+      "updating": "Updating...",
+      "budgetPaused": "Budget paused",
+      "invalidOrgChain": "Invalid org chain",
+      "invalidReportingChain": "Invalid reporting chain",
+      "builtInStatus": "Built-in agent {{status}}",
+      "pausedByBudget": "Agent paused by budget",
+      "pausedByBudgetLimits": "Agent was paused by budget limits",
+      "star": "Star agent",
+      "edit": "Edit agent",
+      "leave": "Leave agent",
+      "pausedToast": "Agent paused",
+      "resumedToast": "Agent resumed",
+      "pauseFailedToast": "Could not pause agent",
+      "resumeFailedToast": "Could not resume agent"
+    },
+    "projects": {
+      "section": "Projects",
+      "new": "New project",
+      "sectionActions": "Projects section actions",
+      "browse": "Browse projects",
+      "sort": "Project sort",
+      "starred": "Starred projects",
+      "private": "Private project",
+      "pausedByBudget": "Project paused by budget",
+      "leave": "Leave project"
+    },
+    "serverInfo": {
+      "title": "Server",
+      "lastRestarted": "Last restarted",
+      "runningCommit": "Running commit",
+      "checkoutState": "Checkout state",
+      "unavailable": "Unavailable",
+      "commitUnavailable": "Commit unavailable",
+      "changeStatusUnavailable": "Change status unavailable",
+      "cleanCheckout": "Clean checkout",
+      "localChanges": "Local changes present",
+      "localChangesWithDetails": "Local changes present ({{details}})",
+      "staged": "{{count}} staged",
+      "unstaged": "{{count}} unstaged",
+      "untracked": "{{count}} untracked",
+      "healthUnavailable": "Health unavailable",
+      "loading": "Loading..."
+    },
+    "needsYou": "Needs You",
+    "newTaskSentence": "New task"
+  },
+  "dashboard": {
+    "empty": {
+      "welcome": "Welcome to Paperclip. Set up your first organization and agent to get started.",
+      "getStarted": "Get Started",
+      "selectOrganization": "Create or select an organization to view the dashboard."
+    },
+    "pausedImported": {
+      "title_one": "{{count}} imported agent is paused and will not run.",
+      "title_other": "{{count}} imported agents are paused and will not run.",
+      "resumeAll": "Resume all",
+      "resuming": "Resuming…",
+      "description": "Agents from an organization import arrive paused as a safety default. Resume them so assigned tasks can start."
+    },
+    "allPaused": {
+      "title": "All agents in this organization are paused — nothing will run.",
+      "review": "Review agents",
+      "description": "Resume at least one agent to let assigned tasks start."
+    },
+    "noAgents": {
+      "message": "You have no agents.",
+      "create": "Create one here"
+    },
+    "budget": {
+      "activeIncidents_one": "{{count}} active budget incident",
+      "activeIncidents_other": "{{count}} active budget incidents",
+      "summary": "{{agents}} agents paused · {{projects}} projects paused · {{approvals}} pending budget approvals",
+      "open": "Open budgets"
+    },
+    "metrics": {
+      "agentsEnabled": "Agents Enabled",
+      "agentsDescription": "{{running}} running, {{paused}} paused, {{errors}} errors",
+      "tasksInProgress": "Tasks In Progress",
+      "tasksDescription": "{{open}} open, {{blocked}} blocked",
+      "monthSpend": "Month Spend",
+      "budgetUsage": "{{percent}}% of {{budget}} budget",
+      "unlimitedBudget": "Unlimited budget",
+      "pendingApprovals": "Pending Approvals",
+      "budgetOverridesAwaiting": "{{overrides}} budget overrides awaiting board review",
+      "awaitingBoardReview": "Awaiting board review"
+    },
+    "charts": {
+      "runActivity": "Run Activity",
+      "tasksByPriority": "Tasks by Priority",
+      "tasksByStatus": "Tasks by Status",
+      "successRate": "Success Rate",
+      "last14Days": "Last 14 days",
+      "noRuns": "No runs yet",
+      "noTasks": "No tasks",
+      "dayIssues": "{{day}}: {{total}} issues",
+      "legend": {
+        "succeeded": "Succeeded",
+        "recovered": "Recovered",
+        "failed": "Failed",
+        "other": "Other"
+      },
+      "tooltip": {
+        "runs_one": "{{date}}: {{count}} run",
+        "runs_other": "{{date}}: {{count}} runs",
+        "succeeded": "succeeded: {{value}}",
+        "recovered": "recovered: {{value}} (retry succeeded)",
+        "failed": "failed: {{value}}",
+        "other": "other: {{value}}"
+      },
+      "priority": {
+        "critical": "Critical",
+        "high": "High",
+        "medium": "Medium",
+        "low": "Low"
+      },
+      "status": {
+        "todo": "To Do",
+        "inProgress": "In Progress",
+        "inReview": "In Review",
+        "done": "Done",
+        "blocked": "Blocked",
+        "cancelled": "Cancelled",
+        "backlog": "Backlog"
+      }
+    },
+    "recentActivity": "Recent Activity",
+    "recentTasks": "Recent Tasks",
+    "noTasks": "No tasks yet.",
+    "live": {
+      "breadcrumb": "Live runs",
+      "title": "Live agent runs",
+      "description": "Active runs first, followed by the most recent completed runs.",
+      "showingUpTo": "Showing up to {{limit}}",
+      "panelTitle": "Active / recent",
+      "empty": "No active or recent agent runs.",
+      "createOrganization": "Create an organization to view live runs.",
+      "selectOrganization": "Select an organization to view live runs."
     }
+  },
+  "notFound": {
+    "breadcrumb": "Not Found",
+    "pageTitle": "Page not found",
+    "pageDescription": "This route does not exist.",
+    "organizationTitle": "Organization not found",
+    "organizationDescription": "No organization matches prefix \"{{prefix}}\".",
+    "unknownPrefix": "unknown",
+    "requestedPath": "Requested path:",
+    "openDashboard": "Open dashboard",
+    "goHome": "Go home"
   }
 }
