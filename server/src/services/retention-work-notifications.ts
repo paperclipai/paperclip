@@ -1,10 +1,54 @@
 import { notifyApprovalWork } from "./approval-work-notifications.js";
+import { RECOVERY_ORIGIN_KINDS, parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
+import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { AttentionSourceKind } from "@paperclipai/shared";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
-export async function notifyAttentionRetentionWork(transaction: object, scope: { companyId?: string; sourceKind?: AttentionSourceKind; sourceId?: string } = {}) {
-  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.attentionRetention, JSON.stringify(scope));
+export async function notifyAttentionRetentionWork(transaction: object, scope: { companyId?: string; sourceKind?: AttentionSourceKind; issueId?: string; sourceId?: string } = {}) {
+  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.attentionRetention, JSON.stringify({
+    companyId: scope.companyId, sourceKind: scope.sourceKind, sourceId: scope.sourceId, issueId: scope.issueId,
+  }));
+}
+
+export async function notifyIssueAttentionRetentionWork(transaction: object,
+  scope: { companyId: string; issueId?: string; parentId?: string | null; runId?: string; originKind?: string | null; originId?: string | null }) {
+  const database = transaction as Db;
+  const seeds = [scope.issueId, scope.parentId].filter((id): id is string => Boolean(id));
+  if (!seeds.length && scope.runId) {
+    const rows = await database.execute(sql`select issue_id::text as id from heartbeat_runs
+      where company_id = ${scope.companyId}::uuid and id = ${scope.runId}::uuid and issue_id is not null
+      union select native_issue_id::text from heartbeat_runs
+      where company_id = ${scope.companyId}::uuid and id = ${scope.runId}::uuid and native_issue_id is not null
+      union select coalesce(context_snapshot->>'issueId', context_snapshot->>'taskId') from heartbeat_runs
+      where company_id = ${scope.companyId}::uuid and id = ${scope.runId}::uuid
+        and coalesce(context_snapshot->>'issueId', context_snapshot->>'taskId') is not null`);
+    for (const row of rows) seeds.push(row.id as string);
+  }
+  if (!seeds.length) return notifyAttentionRetentionWork(transaction, { companyId: scope.companyId });
+  const origins = await database.execute(sql`select id::text as id, origin_kind as "originKind", origin_id as "originId" from issues
+    where company_id = ${scope.companyId}::uuid
+      and id in (${sql.join([...new Set(seeds)].map(id => sql`${id}::uuid`), sql`, `)})`);
+  const current = origins.find(source => source.id === scope.issueId);
+  origins.push({ originKind: scope.originKind ?? current?.originKind, originId: scope.originId ?? current?.originId });
+  for (const source of origins) {
+    const incident = source.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation
+      ? parseIssueGraphLivenessIncidentKey(source.originId as string | null) : null;
+    if (incident?.companyId === scope.companyId) seeds.push(incident.issueId, incident.leafIssueId);
+  }
+  const affected = await database.execute(sql`with recursive affected(id) as (
+    select unnest(array[${sql.join([...new Set(seeds)].map(id => sql`${id}::uuid`), sql`, `)}])
+    union
+    select parent.id from affected current cross join lateral (
+      select related_issue_id as id from issue_relations where company_id = ${scope.companyId}::uuid
+        and issue_id = current.id and type = 'blocks'
+      union select parent_id from issues where company_id = ${scope.companyId}::uuid
+        and id = current.id and parent_id is not null
+    ) parent
+  ) select id::text as "issueId" from affected`);
+  for (const row of affected) await notifyAttentionRetentionWork(transaction, {
+    companyId: scope.companyId, issueId: row.issueId as string,
+  });
 }
 
 export async function notifyRetentionWork(transaction: object, kind: AttentionSourceKind, scope: { companyId?: string; sourceId?: string } = {}) {

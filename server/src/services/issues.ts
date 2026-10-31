@@ -1,7 +1,7 @@
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
-import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
+import { notifyIssueAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyMergeConfirmationWork } from "./merged-pr-confirmation-notifications.js";
 import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
@@ -2545,33 +2545,37 @@ async function listPendingFinalizeBlockerIssueIds(
     ),
   );
 
-  if (lockSources) {
+  const rows: Array<{ issueId: string | null; executionWorkspaceId: string | null;
+    phase: string; status: string; startedAt: Date }> = [];
+  for (const chunk of chunkList(executionWorkspaceIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    if (lockSources) {
 
 
-    await dbOrTx.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
-      .where(and(eq(executionWorkspaces.companyId, companyId), inArray(executionWorkspaces.id, executionWorkspaceIds)))
-      .for("update", { noWait: true });
-  }
-  const query = dbOrTx
-    .select({
-      issueId: workspaceOperations.issueId,
-      executionWorkspaceId: workspaceOperations.executionWorkspaceId,
-      phase: workspaceOperations.phase,
-      status: workspaceOperations.status,
-      startedAt: workspaceOperations.startedAt,
-    })
-    .from(workspaceOperations)
-    .where(
-      and(
-        eq(workspaceOperations.companyId, companyId),
-        inArray(
-          workspaceOperations.executionWorkspaceId,
-          executionWorkspaceIds,
+      await dbOrTx.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+        .where(and(eq(executionWorkspaces.companyId, companyId), inArray(executionWorkspaces.id, chunk)))
+        .for("update", { noWait: true });
+    }
+    const query = dbOrTx
+      .select({
+        issueId: workspaceOperations.issueId,
+        executionWorkspaceId: workspaceOperations.executionWorkspaceId,
+        phase: workspaceOperations.phase,
+        status: workspaceOperations.status,
+        startedAt: workspaceOperations.startedAt,
+      })
+      .from(workspaceOperations)
+      .where(
+        and(
+          eq(workspaceOperations.companyId, companyId),
+          inArray(
+            workspaceOperations.executionWorkspaceId,
+            chunk,
+          ),
         ),
-      ),
-    );
+      );
 
-  const rows = await (lockSources ? query.for("share", { noWait: true }) : query);
+    rows.push(...await (lockSources ? query.for("share", { noWait: true }) : query));
+  }
 
   const latestAttributedByBlockerWorkspace = new Map<
     string,
@@ -4126,23 +4130,26 @@ async function listIssueBlockerAttentionMap(
       ownerType: string;
       ownerAgentId: string | null;
       ownerUserId: string | null;
-    }> = await dbOrTx
-      .select({
-        id: issueRecoveryActions.id,
-        sourceIssueId: issueRecoveryActions.sourceIssueId,
-        status: issueRecoveryActions.status,
-        ownerType: issueRecoveryActions.ownerType,
-        ownerAgentId: issueRecoveryActions.ownerAgentId,
-        ownerUserId: issueRecoveryActions.ownerUserId,
-      })
-      .from(issueRecoveryActions)
-      .where(
-        and(
-          eq(issueRecoveryActions.companyId, companyId),
-          inArray(issueRecoveryActions.status, ["active", "escalated"]),
-          inArray(issueRecoveryActions.sourceIssueId, explicitWaitCandidateIds),
-        ),
-      );
+    }> = [];
+    for (const chunk of chunkList(explicitWaitCandidateIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+      recoveryActionRows.push(...await dbOrTx
+        .select({
+          id: issueRecoveryActions.id,
+          sourceIssueId: issueRecoveryActions.sourceIssueId,
+          status: issueRecoveryActions.status,
+          ownerType: issueRecoveryActions.ownerType,
+          ownerAgentId: issueRecoveryActions.ownerAgentId,
+          ownerUserId: issueRecoveryActions.ownerUserId,
+        })
+        .from(issueRecoveryActions)
+        .where(
+          and(
+            eq(issueRecoveryActions.companyId, companyId),
+            inArray(issueRecoveryActions.status, ["active", "escalated"]),
+            inArray(issueRecoveryActions.sourceIssueId, chunk),
+          ),
+        ));
+    }
     const recoveryActionIds = recoveryActionRows.map((row) => row.id);
     const liveRecoveryActionIds = new Set<string>();
     for (const chunk of chunkList(
@@ -4205,22 +4212,11 @@ async function listIssueBlockerAttentionMap(
     }
   }
 
-  const agentRows: IssueBlockerAttentionAgentRow[] =
-    agentIds.size > 0
-      ? await dbOrTx
-          .select({
-            id: agents.id,
-            companyId: agents.companyId,
-            status: agents.status,
-          })
-          .from(agents)
-          .where(
-            and(
-              eq(agents.companyId, companyId),
-              inArray(agents.id, [...agentIds]),
-            ),
-          )
-      : [];
+  const agentRows: IssueBlockerAttentionAgentRow[] = [];
+  for (const chunk of chunkList([...agentIds], ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    agentRows.push(...await dbOrTx.select({ id: agents.id, companyId: agents.companyId, status: agents.status })
+      .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, chunk))));
+  }
   const agentsById = new Map(agentRows.map((agent) => [agent.id, agent]));
 
   type PathClassification = {
@@ -7648,7 +7644,7 @@ export function issueService(db: Db) {
       await assertNoBlockingCycles(companyId, issueId, deduped, dbOrTx);
     }
 
-    await notifyAttentionRetentionWork(dbOrTx, { companyId });
+    await notifyIssueAttentionRetentionWork(dbOrTx, { companyId, issueId });
     await notifyIssueRecovery(dbOrTx, { companyId });
     await dbOrTx
       .delete(issueRelations)
@@ -10638,8 +10634,9 @@ export function issueService(db: Db) {
         if (values.monitorNextCheckAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyRunDispatch(tx, { companyId: values.companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+        values.id ??= randomUUID();
         await notifyStatusCardIssueChange(tx, companyId);
-        await notifyAttentionRetentionWork(tx, { companyId });
+        await notifyIssueAttentionRetentionWork(tx, { companyId, issueId: values.id, parentId: values.parentId, originKind: values.originKind, originId: values.originId });
         if (values.originKind === "routine_execution") await notifyRoutineExecutionStatus(tx, values.id, companyId);
         const [issue] = await tx.insert(issues).values(values).returning();
         await attachOwnedDraftImages(tx, issue, issue.description, { userId: issueData.createdByUserId, agentId: issueData.createdByAgentId });
@@ -11532,7 +11529,7 @@ export function issueService(db: Db) {
           || issueData.parentId !== undefined || issueData.executionWorkspaceId !== undefined) {
           await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
         }
-        await notifyAttentionRetentionWork(tx, { companyId: receiptExisting.companyId });
+        await notifyIssueAttentionRetentionWork(tx, { companyId: receiptExisting.companyId, issueId: id, parentId: patch.parentId, originKind: patch.originKind, originId: patch.originId });
         if (patch.status !== undefined || patch.hiddenAt !== undefined) {
           await notifyMergeConfirmationWork(tx, { companyId: receiptExisting.companyId, issueId: id });
         }
@@ -12007,7 +12004,7 @@ export function issueService(db: Db) {
           await requestRestorePointDeletion(tx, { sourceIssueId: id });
           const [owner] = await tx.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, id));
           if (owner) {
-            await notifyAttentionRetentionWork(tx, { companyId: owner.companyId });
+            await notifyIssueAttentionRetentionWork(tx, { companyId: owner.companyId, issueId: id });
             await notifyExternalConversationSettlement(tx, { companyId: owner.companyId });
             await notifyExternalObjectRefresh(tx, owner.companyId);
             await notifyApprovalWork(tx, owner.companyId);
@@ -12145,7 +12142,7 @@ export function issueService(db: Db) {
         : isNull(issues.executionRunId);
       const updated = await db.transaction(async tx => {
         await notifyStatusCardIssueChange(tx, issueCompany.companyId);
-        await notifyAttentionRetentionWork(tx, { companyId: issueCompany.companyId });
+        await notifyIssueAttentionRetentionWork(tx, { companyId: issueCompany.companyId, issueId: id });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyRunDispatch(tx, { companyId: issueCompany.companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
@@ -12281,7 +12278,7 @@ export function issueService(db: Db) {
           const staleExecutionRunId = current.executionRunId;
           const adopted = await db.transaction(async tx => {
             await notifyStatusCardIssueChange(tx, issueCompany.companyId);
-            await notifyAttentionRetentionWork(tx, { companyId: issueCompany.companyId });
+            await notifyIssueAttentionRetentionWork(tx, { companyId: issueCompany.companyId, issueId: id });
             await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
             await notifyRunDispatch(tx, { companyId: issueCompany.companyId });
             await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
@@ -12539,7 +12536,7 @@ export function issueService(db: Db) {
           existing.status === "in_progress" ? "todo" : existing.status;
         await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
         await notifyNativeStatusReassessment(tx, { companyId: existing.companyId, issueId: id });
-        await notifyAttentionRetentionWork(tx, { companyId: existing.companyId });
+        await notifyIssueAttentionRetentionWork(tx, { companyId: existing.companyId, issueId: id });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyRunDispatch(tx, { companyId: existing.companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
@@ -12595,7 +12592,7 @@ export function issueService(db: Db) {
         }
 
         await notifyStatusCardIssueChange(tx, existing.companyId);
-        await notifyAttentionRetentionWork(tx, { companyId: existing.companyId });
+        await notifyIssueAttentionRetentionWork(tx, { companyId: existing.companyId, issueId: id });
         await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
         if (existing.checkoutRunId || existing.executionRunId || options.clearAssignee) {
           await notifyExternalConversationSettlement(tx, { companyId: existing.companyId, issueId: id });
