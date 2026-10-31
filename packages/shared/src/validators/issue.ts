@@ -961,6 +961,7 @@ export const updateIssueSchema = objectWithoutDefaults(
     onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
     reviewInteractionId: z.string().guid().optional(),
     reviewRequest: issueReviewRequestSchema.optional().nullable(),
+    reviewDecision: z.enum(["approve", "request_changes"]).optional(),
     reopen: z.boolean().optional(),
     resume: z.boolean().optional(),
     interrupt: z.boolean().optional(),
