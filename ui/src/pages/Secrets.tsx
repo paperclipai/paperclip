@@ -180,6 +180,9 @@ type ProviderVaultForm = {
   address: string;
   mountPath: string;
   secretPathPrefix: string;
+  siteUrl: string;
+  environment: string;
+  secretPath: string;
 };
 
 type SafeProviderErrorDetails = {
@@ -206,6 +209,7 @@ const PROVIDER_ORDER: SecretProvider[] = [
   "aws_secrets_manager",
   "gcp_secret_manager",
   "vault",
+  "infisical",
 ];
 
 function defaultProviderVaultStatus(provider: SecretProvider): SecretProviderConfigStatus {
@@ -230,6 +234,9 @@ function emptyProviderVaultForm(provider: SecretProvider = "local_encrypted"): P
     address: "",
     mountPath: "",
     secretPathPrefix: "",
+    siteUrl: "",
+    environment: "",
+    secretPath: "",
   };
 }
 
@@ -286,6 +293,9 @@ function providerVaultFormFromConfig(config: CompanySecretProviderConfig): Provi
     address: providerConfigValue(config.config, "address"),
     mountPath: providerConfigValue(config.config, "mountPath"),
     secretPathPrefix: providerConfigValue(config.config, "secretPathPrefix"),
+    siteUrl: providerConfigValue(config.config, "siteUrl"),
+    environment: providerConfigValue(config.config, "environment"),
+    secretPath: providerConfigValue(config.config, "secretPath"),
   };
 }
 
@@ -619,6 +629,13 @@ function buildProviderVaultConfig(form: ProviderVaultForm): Record<string, unkno
         namespace: compact(form.namespace),
         mountPath: compact(form.mountPath),
         secretPathPrefix: compact(form.secretPathPrefix),
+      };
+    case "infisical":
+      return {
+        siteUrl: compact(form.siteUrl),
+        projectId: form.projectId.trim(),
+        environment: form.environment.trim(),
+        secretPath: compact(form.secretPath),
       };
     default:
       return {};
@@ -3055,7 +3072,8 @@ export function Secrets() {
               disabled={
                 saveVaultMutation.isPending ||
                 !vaultForm.displayName.trim() ||
-                (vaultForm.provider === "aws_secrets_manager" && !vaultForm.region.trim())
+                (vaultForm.provider === "aws_secrets_manager" && !vaultForm.region.trim()) ||
+                (vaultForm.provider === "infisical" && (!vaultForm.projectId.trim() || !vaultForm.environment.trim()))
               }
             >
               {saveVaultMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
@@ -3803,6 +3821,23 @@ function ProviderVaultFields({
         <TextField label="Location" value={form.location} onChange={(value) => setField("location", value)} placeholder="global" />
         <TextField label="Namespace" value={form.namespace} onChange={(value) => setField("namespace", value)} placeholder="production" />
         <TextField label="Secret name prefix" value={form.secretNamePrefix} onChange={(value) => setField("secretNamePrefix", value)} placeholder="paperclip" />
+      </div>
+    );
+  }
+
+  if (form.provider === "infisical") {
+    return (
+      <div className="grid gap-3">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <TextField label="Site URL" value={form.siteUrl} onChange={(value) => setField("siteUrl", value)} placeholder="https://app.infisical.com" />
+          <TextField label="Project id" value={form.projectId} onChange={(value) => setField("projectId", value)} placeholder="Infisical project (workspace) id" required />
+          <TextField label="Environment" value={form.environment} onChange={(value) => setField("environment", value)} placeholder="prod" required />
+          <TextField label="Secret path" value={form.secretPath} onChange={(value) => setField("secretPath", value)} placeholder="/paperclip" />
+        </div>
+        <p className="text-xs text-muted-foreground">
+          The machine identity is read from PAPERCLIP_SECRETS_INFISICAL_CLIENT_ID and PAPERCLIP_SECRETS_INFISICAL_CLIENT_SECRET
+          on the Paperclip server. Leave site URL blank to use the deployment default.
+        </p>
       </div>
     );
   }
