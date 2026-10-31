@@ -10,6 +10,7 @@ import { CREDENTIAL_NAMES } from "./types.js";
 import { EVAL_OBSERVABILITY_SECRET_NAMES } from "./braintrust.js";
 import { usesInstalledCli, verifyInstalledCli } from "./installed-cli.js";
 import { runnerMatrix } from "./catalog.js";
+import { remoteWorkspaceStorageServerEnvironment } from "./remote-workspace-storage.js";
 import { createRunnerE2EServerStopper, runnerE2EServerDetached } from "./server-stop.js";
 import { runnerE2ETypeScriptProcessArgs } from "./web-server-command.js";
 import { qualifyLegacyClaudeCli } from "./legacy-claude-cli.js";
@@ -42,6 +43,7 @@ const paperclipCli = path.join(repositoryRoot, "tests/runner-e2e/server-entry.ts
 const executionIds: string[] = JSON.parse(process.env.PAPERCLIP_RUNNER_E2E_EXECUTION_IDS ?? "[]");
 const upgradeArtifacts = await readUpgradeArtifacts(process.env[upgradeArtifactKey]);
 let artifactIndex = 0;
+let kimiCandidateAdmission: RestartRequest["kimiCandidateAdmission"];
 const selectedExecutions = usesInstalledCli(process.env) || upgradeArtifacts ? executionIds.map(id => {
   const execution = runnerMatrix.find(row => row.id === id);
   if (!execution) throw new Error("Unknown installed CLI proof execution");
@@ -56,6 +58,10 @@ const restartTimeoutMs = 180_000;
 const gracefulStopTimeoutMs = 30_000;
 const initialCli = upgradeArtifacts?.artifacts.A.pins.PAPERCLIP_RUNNER_E2E_INSTALLED_CLI ?? process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_CLI;
 const installedRelease = initialCli ? installedReleaseLaunch(initialCli) : null;
+const workspaceStorage = remoteWorkspaceStorageServerEnvironment({
+  executions: executionIds.map(id => runnerMatrix.find(execution => execution.id === id)).filter((execution): execution is typeof runnerMatrix[number] => Boolean(execution)),
+  env: process.env, instanceId: required("PAPERCLIP_INSTANCE_ID"),
+});
 const servingArtifacts = new WeakMap<ChildProcess, ServingArtifact>();
 const serverEnvironment = buildPaperclipServerEnvironment(installedRelease
   ? installedReleaseEnvironment(process.env, repositoryRoot, path.join(temporaryRoot, "provider-bin"))
@@ -99,11 +105,13 @@ const serverEnvironment = buildPaperclipServerEnvironment(installedRelease
   // Onboarding normally opens the app after listen. Browser ownership belongs
   // to Playwright in this harness, so never create a developer desktop tab.
   PAPERCLIP_OPEN_ON_LISTEN: "false",
+  ...workspaceStorage,
 });
 assertIsolatedServerEnvironment(serverEnvironment, {
   temporaryRoot,
   paperclipHome,
   configPath,
+  workspaceStorage,
 });
 const definedServerEnvironment = Object.fromEntries(
   Object.entries(serverEnvironment).filter(
@@ -198,6 +206,7 @@ async function startServer() {
   const launch = installed ? installedReleaseLaunch(installed.entry) : null;
   // The serving process must report its baked-in revision, never a test-supplied SHA.
   const environment = { ...definedServerEnvironment };
+  if (kimiCandidateAdmission) environment.PAPERCLIP_ACPX_CANDIDATE_ADMISSION = JSON.stringify(kimiCandidateAdmission);
   if (upgradeArtifacts) {
     delete environment.PAPERCLIP_BUILD_COMMIT;
     delete environment[upgradeArtifactKey];
@@ -342,7 +351,7 @@ async function writeRestartAck(
   await rename(temporaryAckPath, restartAckPath);
 }
 
-async function restartServer({ requestId, preserveRunner, discardControllerCache, crashAfterResult, controllerOutage, recoveryBinding, controllerDowntimeMs = 0 }: RestartRequest) {
+async function restartServer({ requestId, kimiCandidateAdmission: stagedKimiAdmission, preserveRunner, discardControllerCache, crashAfterResult, controllerOutage, recoveryBinding, controllerDowntimeMs = 0 }: RestartRequest) {
   activeRestartRequestId = requestId;
   appendLog(`\nRestart request ${requestId}: stopping Paperclip\n`);
   const previous = child;
@@ -404,6 +413,7 @@ async function restartServer({ requestId, preserveRunner, discardControllerCache
     throw new Error("Wrapper shutdown interrupted the Paperclip restart");
   }
 
+  if (stagedKimiAdmission) kimiCandidateAdmission = stagedKimiAdmission;
   appendLog(`Restart request ${requestId}: starting Paperclip\n`);
   const replacement = await startServer();
   await waitForHealth(replacement);

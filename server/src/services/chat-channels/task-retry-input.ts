@@ -1,3 +1,4 @@
+import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
 import { z } from "zod";
 import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, chatActions, chatConversations, chatEndpoints, heartbeatRuns, issues, type Db } from "@paperclipai/db";
@@ -91,6 +92,7 @@ export async function releaseUnadmittedTaskRetryInput(db: Db, input: { companyId
     )).for("update");
     if (receipt?.runId) return;
     await notifyChatInboundWakeNotices(tx, { companyId: input.companyId, issueId: issue.id });
+    await notifyDeferredExecutionWork(tx, { companyId: input.companyId });
     await tx.update(agentWakeupRequests).set({ status: "deferred_issue_execution", finishedAt: null,
       payload: sql`${agentWakeupRequests.payload} - 'coalescedIntoWakeupRequestId'`, updatedAt: new Date(),
     }).where(and(eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.status, "coalesced"),

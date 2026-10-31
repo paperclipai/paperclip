@@ -1,3 +1,4 @@
+import { connectionEventWakeRoutes } from "./routes/connection-event-wake.js";
 import { registerGitHubReviewProjectionWork } from "./services/chat-channels/github/review-projection-work.js";
 import { finishServiceShutdown } from "./shutdown.js";
 import { promptInjectionPreventionRoutes } from "./routes/prompt-injection-prevention.js";
@@ -111,6 +112,8 @@ import { caseRoutes } from "./routes/cases.js";
 import { caseHandoffRoutes } from "./routes/case-handoffs.js";
 import { workflowRoutes } from "./routes/workflows.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
+import { createRemoteWorkspaceFiles } from "./services/remote-workspace-files.js";
+import { createSavedWorkspaceLoader } from "./services/remote-workspaces.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
@@ -127,6 +130,7 @@ import {
 import { smokeLabRoutes } from "./routes/smoke-lab.js";
 import { costRoutes } from "./routes/costs.js";
 import { agentCommentaryRoutes } from "./routes/agent-commentary.js";
+import { agentChatMessageRoutes } from "./routes/agent-chat-messages.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { attentionRoutes } from "./routes/attention.js";
@@ -183,7 +187,9 @@ import {
   ensureBundledPlugins,
   resolveBundledCatalogRoot,
   resolveBundledPluginInstalls,
+  resolveManagedBundledPluginKeys,
 } from "./services/bundled-plugins.js";
+import { createBundledPluginPackageResolver } from "./services/bundled-plugin-package.js";
 import { readDistributionPluginCatalog, distributionPluginActivationGuard } from "./services/distribution-plugin-catalog.js";
 import {
   createPluginWorkerManager,
@@ -533,7 +539,10 @@ export async function createApp(
   // A signed claim above commits identity before any normal request can seed
   // company data. Unclaimed probes bypass session resolution as well as SQL.
   app.use(cloudWarmStandbyMiddleware(isWarmStandby, health, staticUi));
-  app.use("/api/customer-success/v1", customerSuccessRoutes(db, opts.storageService));
+  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+  app.use("/api/customer-success/v1", customerSuccessRoutes(db, opts.storageService, {
+    pluginWorkerManager: workerManager,
+  }));
   app.use(museTransportRoutes(db, opts.authPublicBaseUrl));
   app.use(publicMcpIngress);
   // Connection-intent tools carry their own short-lived, run-bound bearer and
@@ -541,7 +550,6 @@ export async function createApp(
   // agent API key. Every request revalidates the active heartbeat row.
   app.use(runtimeConnectionIntentRoutes(db));
   const hostServicesDisposers = new Map<string, () => void>();
-  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
   let lifecyclePluginsReady = false;
   const agentLifecycle = startAgentLifecycle(db, createLifecycleDriver(db, workerManager), () => lifecyclePluginsReady && !isWarmStandby() && !isIdleTaskDrainActive());
   const connectionIntentHeartbeat = heartbeatService(db, {
@@ -575,6 +583,7 @@ export async function createApp(
   // REPLACES whatever actor the request otherwise resolved to, and only on
   // the one endpoint it authorizes (see the middleware for the contract).
   app.use(cloudControlMiddleware());
+  app.use(connectionEventWakeRoutes(db));
   app.use(skillAccessRequestContext);
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {
@@ -623,7 +632,7 @@ export async function createApp(
     res.set("Cache-Control", "no-store"); res.set("Referrer-Policy", "no-referrer");
     res.redirect(303, await chatChannels.githubWizard.identityCallback(String(req.query.state ?? ""), String(req.query.code ?? ""), req.actor));
   });
-  const managedAutoInstallKeys = opts.managedPluginAutoInstall ?? null;
+  const managedAutoInstallKeys = resolveManagedBundledPluginKeys(opts.managedPluginAutoInstall);
   const bundledCatalogRoot =
     opts.bundledPluginCatalogRoot ?? resolveBundledCatalogRoot(process.env);
   const distributionPlugins = readDistributionPluginCatalog(bundledCatalogRoot, BUNDLED_PLUGIN_CATALOG);
@@ -636,6 +645,7 @@ export async function createApp(
       distributionPlugins,
     },
   );
+  const bundledPackageResolver = managedAutoInstallKeys === null ? undefined : createBundledPluginPackageResolver(bundledPluginInstalls);
   const managedBundledPluginKeys =
     managedAutoInstallKeys !== null
       ? bundledPluginInstalls.map((install) => install.pluginKey)
@@ -665,10 +675,11 @@ export async function createApp(
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(folderRoutes(db));
-  api.use(companySkillRoutes(db));
+  api.use(companySkillRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(companySkillPolicyRoutes(db));
   api.use(inboxAgentPolicyRoutes(db));
   api.use(agentCommentaryRoutes(db));
+  api.use(agentChatMessageRoutes(db));
   api.use(builtInAgentRoutes(db));
   api.use(summarySlotRoutes(db));
   api.use(statusCardRoutes(db));
@@ -765,7 +776,10 @@ export async function createApp(
   api.use(caseHandoffRoutes(db));
   api.use(workflowRoutes(db));
   api.use(issueTreeControlRoutes(db, { pluginWorkerManager: workerManager }));
-  api.use(fileResourceRoutes(db));
+  api.use(fileResourceRoutes(db, { remoteFiles: createRemoteWorkspaceFiles(db, {
+    environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workerManager }),
+    loadSavedWorkspace: createSavedWorkspaceLoader(db, opts.storageService),
+  }) }));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(
     environmentRoutes(db, {
@@ -906,7 +920,11 @@ export async function createApp(
     {
       localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
       migrationDb: opts.pluginMigrationDb,
-      assertPackageActivation: distributionPluginActivationGuard(bundledCatalogRoot, distributionPlugins, managedAutoInstallKeys),
+      assertPackageActivation: bundledPackageResolver?.assertActivation ?? distributionPluginActivationGuard(bundledCatalogRoot, distributionPlugins, managedAutoInstallKeys),
+      resolvePackageRoot: bundledPackageResolver?.resolve,
+      prebuiltOnly: managedAutoInstallKeys !== null,
+      enableLocalFilesystem: managedAutoInstallKeys === null,
+      enableNpmDiscovery: managedAutoInstallKeys === null,
     },
     {
       workerManager,
@@ -965,6 +983,7 @@ export async function createApp(
   );
   api.use(
     adapterRoutes({
+      db,
       resolveRunnerTarget: (companyId, environmentId) => resolveAgentRunnerTargetForCompany(db, companyId, environmentId),
       getNativeRunnerEnabled: async () =>
         (await instanceSettingsService(db).getExperimental())
@@ -1014,6 +1033,7 @@ export async function createApp(
   app.use(
     pluginUiStaticRoutes(db, {
       localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
+      resolvePackageRoot: bundledPackageResolver?.resolve,
     }),
   );
 
@@ -1253,7 +1273,7 @@ export async function createApp(
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
   });
-  const devWatcher = createPluginDevWatcher(
+  const devWatcher = managedAutoInstallKeys !== null ? null : createPluginDevWatcher(
     lifecycle,
     async (pluginId) =>
       (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
@@ -1299,7 +1319,7 @@ export async function createApp(
     // owns provisioning); self-hosted leaves an operator's uninstall alone.
     // Disabled plugins never start automatically. Added distribution permissions
     // still enter upgrade_pending so enabling them requires an operator decision.
-    { reinstallUninstalled: managedAutoInstallKeys !== null },
+    { reinstallUninstalled: managedAutoInstallKeys !== null, preservePackagePath: managedAutoInstallKeys !== null },
   )
     .then(() => loader.loadAll())
     .then((result) => {

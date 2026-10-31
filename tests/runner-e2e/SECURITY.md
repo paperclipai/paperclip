@@ -1,8 +1,25 @@
 # Runner E2E security for a public repository
 
+The explicit `remote-workspace-storage` cell snapshots only its synthetic
+projectless task folder in an owned disposable sandbox. Its prompt creates a
+small Python project, local Git history without a remote, and an untracked random
+reference. Provider credentials and agent homes remain outside that folder.
+The ordinary settings read must report remote storage enabled by default; the
+workflow does not opt itself in. Its five-minute active outage and later completed-session
+replacement retain the existing native identity and no-replay checks.
+The server's S3 override is admitted only for this suite and only from explicit
+`PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_*` configuration, with a unique instance
+prefix. Ambient storage settings remain stripped and rejected for other suites.
+Snapshot objects, databases, raw provider IDs, and execution workspaces remain
+private. Public checkpoint evidence contains only fixture IDs, saved-version
+references, file digests, and allowlisted state. Screenshot and report sanitizers
+remain the existing Product E2E pipeline. Discovery and local oracle calibration
+do not establish provider permissions or a live acceptance result.
+
 The explicit [chat feature evals](CHAT-FEATURES.md) use synthetic project briefs
-and a privately supplied Codex subscription login through the existing isolated
-company staging helper. Only source-chat screenshots are captured. Task, document
+and either a privately supplied Codex subscription login through the existing
+isolated company staging helper or the OpenCode profile's encrypted OpenRouter
+secret reference. Only source-chat screenshots are captured. Task, document
 and run evidence stays behind the existing sanitizer and publication allowlist;
 the YAML catalog contains no credentials. The suite's accounted-work budgets do
 not cover production setup probes or imply zero subscription cost.
@@ -154,6 +171,15 @@ new immutable SHA before upgrading an action. The credential-free security test
 rejects mutable tag or branch references.
 
 ## Secrets and protected environments
+
+Kimi's explicit-only `kimi-qualification` cells use `KIMI_API_KEY`, delivered
+through the launcher's normal encrypted company-secret fixture path. All ambient
+`KIMI_*` values, including legacy model keys and login-home aliases, are removed
+from the product server environment. Neither the catalog nor evidence stores
+the key. The maintained Code profile does not borrow an ambient OAuth cache or
+fall back to `KIMI_MODEL_API_KEY`. This registration does not add a hosted paid
+workflow credential grant; hosted authorization and secret delivery remain a
+separate change.
 
 Explicit Grok subscription campaigns may select `GROK_AUTH_JSON` from the same
 protected paid environment. Deliver it only to that subscription profile's paid

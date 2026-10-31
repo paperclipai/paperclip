@@ -3,9 +3,8 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AttentionItem } from "@paperclipai/shared";
 import { createIssue } from "../../storybook/fixtures/paperclipData";
-import { coordinatorAttentionQueryKey } from "@/lib/coordinator-attention";
+import { coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { MemoryRouter } from "@/lib/router";
 import { useLocation, useNavigate } from "react-router-dom";
 import { CoordinatorTasks } from "./CoordinatorTasks";
@@ -13,8 +12,8 @@ import { queryKeys } from "@/lib/queryKeys";
 
 const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), attention: vi.fn(), breadcrumbs: vi.fn(), liveRuns: vi.fn() }));
 vi.mock("@/api/heartbeats", () => ({ heartbeatsApi: { liveRunsForCompany: mocks.liveRuns } }));
-vi.mock("@/api/issues", () => ({ issuesApi: { list: mocks.list, get: mocks.get, listLabels: async () => [], update: vi.fn() } }));
-vi.mock("@/api/attention", () => ({ attentionApi: { list: mocks.attention } }));
+vi.mock("@/api/issues", () => ({ issuesApi: { list: mocks.list, listCompact: mocks.list, get: mocks.get, listLabels: async () => [], update: vi.fn() } }));
+vi.mock("@/api/attention", () => ({ attentionApi: { taskIndex: mocks.attention } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
 vi.mock("@/api/access", () => ({ accessApi: { listUserDirectory: async () => ({ users: [] }) } }));
@@ -22,14 +21,16 @@ vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mocks.breadcrumbs }) }));
-vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, onViewChange }: { filters: { onChange: (value: { liveOnly?: boolean; priorities?: string[]; assignees?: string[]; statuses?: string[] }) => void }; onViewChange: (view: "blocked") => void }) => <>
+vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, onViewChange, onLayoutChange }: { filters: { onChange: (value: { liveOnly?: boolean; priorities?: string[]; assignees?: string[]; statuses?: string[]; routineTasksOnly?: boolean }) => void }; onViewChange: (view: "blocked") => void; onLayoutChange: (layout: "board") => void }) => <>
+  <button onClick={() => filters.onChange({ routineTasksOnly: true })}>Routine tasks</button>
+  <button onClick={() => filters.onChange({ routineTasksOnly: false })}>Show other tasks</button>
   <button onClick={() => filters.onChange({ liveOnly: true })}>Live runs only</button>
   <button onClick={() => filters.onChange({ priorities: ["high"] })}>High priority</button>
   <button onClick={() => filters.onChange({ assignees: [], statuses: [] })}>Clear assignee and status</button>
   <button onClick={() => filters.onChange({ assignees: ["first", "second"], statuses: ["todo"] })}>Change assignee and status</button>
   <button onClick={() => onViewChange("blocked")}>Needs attention</button>
+  <button onClick={() => onLayoutChange("board")}>Board view</button>
 </> }));
-vi.mock("@/components/KanbanBoard", () => ({ KanbanBoard: () => null }));
 vi.mock("@/components/TaskList", async importOriginal => ({
   ...await importOriginal<typeof import("@/components/TaskList")>(),
   TaskList: ({ items, emptyState }: { items: { issue: { id: string; title: string } }[]; emptyState: React.ReactNode }) =>
@@ -39,31 +40,104 @@ vi.mock("@/components/TaskList", async importOriginal => ({
 describe("Coordinator tasks using the proposed table", () => {
   let root: Root, host: HTMLDivElement, client: QueryClient;
   const pending = createIssue({ id: "pending", companyId: "company", status: "todo", parentId: null, title: "Needs a channel answer" });
-  const decision = { subject: { kind: "interaction", id: "question" }, relatedIssue: { id: pending.id } } as AttentionItem;
   beforeEach(() => {
     vi.clearAllMocks(); localStorage.clear();
     mocks.liveRuns.mockResolvedValue([]);
-    mocks.attention.mockResolvedValue({ items: [decision, { ...decision, subject: { kind: "interaction", id: "approval" } }] });
+    mocks.attention.mockResolvedValue({ taskIds: [pending.id] });
     mocks.get.mockResolvedValue(pending);
-    mocks.list.mockResolvedValue([createIssue({ id: "unrelated-review", companyId: "company", status: "in_review", parentId: null })]);
+    mocks.list.mockImplementation(async (_company, filters) => filters.q ? [] : filters.ids ? [pending] : [createIssue({ id: "unrelated-review", companyId: "company", status: "in_review", parentId: null })]);
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   });
-  afterEach(() => { flushSync(() => root.unmount()); client.clear(); host.remove(); });
+  afterEach(() => { flushSync(() => root.unmount()); client.clear(); host.remove(); vi.unstubAllGlobals(); });
   async function mount(url: string) {
     flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[url]}><CoordinatorTasks /></MemoryRouter></QueryClientProvider>));
     await vi.waitFor(() => expect(host.textContent).not.toContain("Loading tasks"));
   }
+  it("loads the task index without descriptions or historical diagnostics", async () => {
+    await mount("/issues");
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "index", limit: 200 }), expect.anything());
+    expect(mocks.get).not.toHaveBeenCalled();
+  });
+
+  it("opens routine task links, filters before paging, and lets the checkbox change the collection", async () => {
+    const routine = createIssue({ id: "routine-task", companyId: "company", parentId: null, originKind: "routine_execution", title: "Routine report" });
+    const manual = createIssue({ id: "manual-task", companyId: "company", parentId: null, originKind: "manual", title: "Manual report" });
+    mocks.list.mockImplementation(async (_company, filters) => filters.originKind === "routine_execution" ? [routine] : [manual, routine]);
+    await mount("/issues?view=all&originKind=routine_execution");
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ originKind: "routine_execution", includeAgentCreatedTasks: true, includeRoutineExecutions: true, offset: 0 }), expect.anything());
+    expect([...host.querySelectorAll("[data-task-id]")].map(row => row.getAttribute("data-task-id"))).toEqual([routine.id]);
+    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Show other tasks")!.click());
+    await vi.waitFor(() => expect(host.textContent).toContain("Manual report"));
+    expect(mocks.list.mock.lastCall?.[1].originKind).toBeUndefined();
+    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Routine tasks")!.click());
+    await vi.waitFor(() => expect(host.querySelector('[data-task-id="manual-task"]')).toBeNull());
+  });
+
+  it("filters pending-decision batches by routine origin without treating excluded IDs as missing", async () => {
+    const routine = createIssue({ id: "routine-decision", companyId: "company", parentId: null, originKind: "routine_execution", title: "Routine decision" });
+    mocks.attention.mockResolvedValue({ taskIds: [pending.id, routine.id] });
+    mocks.list.mockResolvedValue([routine]);
+    await mount("/issues?view=needs_attention&originKind=routine_execution");
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ ids: [pending.id, routine.id], originKind: "routine_execution" }), expect.anything());
+    expect(host.textContent).toContain("Routine decision");
+    expect(host.textContent).not.toContain("couldn’t load");
+  });
+
+  it("loads diagnostics for visible production board cards and retains their next-step badges", async () => {
+    vi.stubGlobal("IntersectionObserver", class {
+      constructor(private callback: IntersectionObserverCallback) {}
+      observe(target: Element) { this.callback([{ target, isIntersecting: !target.closest("[hidden]") } as IntersectionObserverEntry], this as unknown as IntersectionObserver); }
+      unobserve() {}
+      disconnect() {}
+    });
+    const index = createIssue({ id: "board-task", companyId: "company", status: "in_progress", parentId: null, listProjection: "index" });
+    const details = { ...index, listProjection: "rows", successfulRunHandoff: {
+      required: true, hasLiveContinuation: false, state: "required", sourceRunId: "source-run", correctiveRunId: null,
+      assigneeAgentId: null, detectedProgressSummary: null, createdAt: null,
+    } };
+    mocks.list.mockImplementation(async (_company, filters) => filters.projection === "rows" ? [details] : [index]);
+    await mount("/issues");
+    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Board view")!.click());
+    await vi.waitFor(() => expect(host.querySelector('[aria-label="Needs next step"]')).not.toBeNull());
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "rows", ids: [index.id] }), expect.anything());
+  });
+
+  it("enriches cards mounted by board pagination without replacing the collection", async () => {
+    const indexes = Array.from({ length: 12 }, (_, index) => createIssue({ id: `board-task-${index}`, companyId: "company", status: "in_progress", parentId: null, listProjection: "index" }));
+    mocks.list.mockImplementation(async (_company, filters) => filters.projection === "rows"
+      ? indexes.filter(issue => filters.ids.includes(issue.id)).map(issue => ({ ...issue, successfulRunHandoff: {
+        required: issue.id === "board-task-10", hasLiveContinuation: false,
+      } })) : indexes);
+    await mount("/issues");
+    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Board view")!.click());
+    await vi.waitFor(() => expect(mocks.list.mock.calls.some(call => call[1].projection === "rows")).toBe(true));
+    expect(host.querySelector('[aria-label="Needs next step"]')).toBeNull();
+    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent?.trim() === "Show 2 more")!.click());
+    await vi.waitFor(() => expect(host.querySelector('[aria-label="Needs next step"]')).not.toBeNull());
+    expect(mocks.list.mock.calls.filter(call => call[1].projection === "index")).toHaveLength(1);
+  });
+
+  it("batches pending task reads instead of fetching one enriched detail per decision", async () => {
+    const ids = Array.from({ length: 105 }, (_, index) => `task-${index}`);
+    mocks.attention.mockResolvedValue({ taskIds: ids });
+    mocks.list.mockImplementation(async (_company, filters) => filters.ids.map((id: string) => createIssue({ id, companyId: "company", parentId: null })));
+    await mount("/issues?view=needs_attention");
+    expect(mocks.get).not.toHaveBeenCalled();
+    expect(mocks.list).toHaveBeenCalledTimes(2);
+    expect(mocks.list.mock.calls.map(call => call[1].ids.length)).toEqual([100, 5]);
+    expect(mocks.list.mock.calls.every(call => call[1].projection === "index")).toBe(true);
+  });
   it("hydrates distinct pending task IDs independently of status and the first task-list page", async () => {
     await mount("/issues?view=needs_attention");
     expect([...host.querySelectorAll("[data-task-id]")].map(node => node.getAttribute("data-task-id"))).toEqual(["pending"]);
-    expect(mocks.get).toHaveBeenCalledTimes(1);
-    expect(mocks.list).not.toHaveBeenCalled();
-    // The same cache update used by Needs You removes the task only after its
-    // last decision has resolved; no parallel status-based queue is involved.
-    flushSync(() => client.setQueryData(coordinatorAttentionQueryKey("company"), { items: [decision] }));
+    expect(mocks.get).not.toHaveBeenCalled();
+    expect(mocks.list).toHaveBeenCalledExactlyOnceWith("company", expect.objectContaining({ ids: [pending.id], projection: "index" }), expect.anything());
+    // Canonical attention invalidation refreshes the complete task membership.
+    // No parallel status-based queue is involved.
+    flushSync(() => client.setQueryData(coordinatorAttentionTasksQueryKey("company"), { taskIds: [pending.id] }));
     await vi.waitFor(() => expect(host.querySelectorAll("[data-task-id]")).toHaveLength(1));
-    flushSync(() => client.setQueryData(coordinatorAttentionQueryKey("company"), { items: [] }));
+    flushSync(() => client.setQueryData(coordinatorAttentionTasksQueryKey("company"), { taskIds: [] }));
     await vi.waitFor(() => expect(host.textContent).toContain("No tasks need a decision."));
   });
   it("filters live tasks and updates when a run finishes, excluding terminal tasks with stale runs", async () => {
@@ -186,26 +260,24 @@ describe("Coordinator tasks using the proposed table", () => {
   });
   it("retains workspace scope when switching to Needs attention", async () => {
     const other = createIssue({ id: "other-workspace", companyId: "company", parentId: null, executionWorkspaceId: "other-workspace" });
-    mocks.attention.mockResolvedValue({ items: [decision, { ...decision, relatedIssue: { id: other.id } }] });
-    mocks.get.mockImplementation(async id => id === pending.id ? pending : other);
+    mocks.attention.mockResolvedValue({ taskIds: [pending.id, other.id] });
+    mocks.list.mockResolvedValue([pending, other]);
     await mount(`/issues?view=needs_attention&workspace=${pending.executionWorkspaceId}`);
     expect([...host.querySelectorAll("[data-task-id]")].map(node => node.getAttribute("data-task-id"))).toEqual([pending.id]);
-    expect(mocks.list).not.toHaveBeenCalled();
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ ids: [pending.id, other.id], projection: "index" }), expect.anything());
   });
   it("retains authoritative participant scope in Needs attention, including tasks assigned to another agent", async () => {
     const participated = { ...pending, assigneeAgentId: "another-assignee" };
     const unrelated = createIssue({ id: "unrelated-agent", companyId: "company", parentId: null });
-    mocks.attention.mockResolvedValue({ items: [decision, { ...decision, relatedIssue: { id: unrelated.id } }] });
-    mocks.get.mockImplementation(async id => id === pending.id ? participated : unrelated);
+    mocks.attention.mockResolvedValue({ taskIds: [pending.id, unrelated.id] });
     mocks.list.mockImplementation(async (_company, filters) => filters.participantAgentId === "participant" && (!filters.ids || filters.ids[0] === pending.id) ? [participated] : []);
     await mount("/issues?participantAgentId=participant");
     flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Needs attention")!.click());
-    await vi.waitFor(() => expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ ids: [unrelated.id], participantAgentId: "participant" }), expect.anything()));
+    await vi.waitFor(() => expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ ids: [pending.id, unrelated.id], participantAgentId: "participant" }), expect.anything()));
     await vi.waitFor(() => expect(host.textContent).not.toContain("Loading tasks"));
     expect([...host.querySelectorAll("[data-task-id]")].map(node => node.getAttribute("data-task-id"))).toEqual([pending.id]);
     expect(mocks.get).not.toHaveBeenCalled();
-    for (const id of [pending.id, unrelated.id]) expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ ids: [id], participantAgentId: "participant" }), expect.anything());
-    expect(mocks.list).toHaveBeenCalledTimes(3);
+    expect(mocks.list).toHaveBeenCalledTimes(2);
   });
   it.each([["active", "in_progress"], ["backlog", "backlog"], ["done", "done"]] as const)("preserves the existing %s task preset", async (view, status) => {
     mocks.list.mockResolvedValue([createIssue({ id: "matching", companyId: "company", parentId: null, status }), createIssue({ id: "other", companyId: "company", parentId: null, status: "blocked" })]);
@@ -214,9 +286,15 @@ describe("Coordinator tasks using the proposed table", () => {
     expect(ids).toEqual(view === "active" ? ["matching", "other"] : ["matching"]);
   });
   it("keeps inaccessible or failed pending tasks visible as an error, not a false all-clear", async () => {
-    mocks.get.mockRejectedValue(new Error("Task unavailable"));
+    mocks.list.mockRejectedValue(new Error("Task unavailable"));
     await mount("/issues?view=needs_attention");
     expect(host.querySelector('[role="alert"]')?.textContent).toContain("Task unavailable");
+    expect(host.textContent).not.toContain("No tasks need a decision.");
+  });
+  it("does not report an all-clear when the index omits a pending task", async () => {
+    mocks.list.mockResolvedValue([]);
+    await mount("/issues?view=needs_attention");
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("Some tasks with pending decisions couldn’t load.");
     expect(host.textContent).not.toContain("No tasks need a decision.");
   });
 });

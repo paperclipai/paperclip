@@ -1,5 +1,6 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -39,7 +40,8 @@ vi.mock("../services/heartbeat-run-events.js", async (importOriginal) => {
 const mockedAppendHeartbeatRunEvent = vi.mocked(appendHeartbeatRunEvent);
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_OUTPUT_WATCHDOG_TEST_DATABASE_URL");
+const describeEmbeddedPostgres = external || embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -52,8 +54,9 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
   let db: ReturnType<typeof createDb>;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-active-run-output-watchdog-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-active-run-output-watchdog-");
+    db = createDb(external ?? tempDb!.connectionString);
+    if (external) await db.execute(sql`truncate companies cascade`);
   }, 30_000);
 
   afterEach(async () => {
@@ -65,6 +68,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 

@@ -272,6 +272,15 @@ provider restart. For that journey, interrupt a disposable deployment after
 workspace preparation and before its first executor claim, then confirm one
 provider turn starts on the original run through the normal admission gates.
 
+The same suite's `diskless` and `diskless-per-turn` cases exercise three native
+controller processes with both native projections removed between completed
+turns. They check history and invocation counts through the real executor and
+admission snapshot rebinder. The workspace and sandbox remain available, and
+the processes use the same source revision. Separate Postgres tests cover
+metadata import, bounded discovery, ownership holds and incomplete-publication
+retention. These cases do not qualify full webserver disk loss, distinct releases,
+HTTP traffic continuity, or the live Daytona provider path.
+
 The [Runner transport regressions](../../packages/paperclip-runner/runner/crates/runner-core/src/durable/transport.rs)
 exercise a real WebSocket welcome delayed beyond two seconds. Authentication
 uses the ten-second connection setup budget, clipped by the current lifecycle
@@ -287,8 +296,10 @@ historical provider outage or successful hosted task recovery.
 
 Active remote process supervision distinguishes a failed health read from a
 confirmed exit. The [executor tests](../../server/src/services/native-runtime/native-session-executor.test.ts)
-exercise timeout recovery with a real listening process, unchanged ownership,
-and rejected identity evidence. The Runner restart tests require positive exit
+exercise timeout and repeated gateway-failure recovery with a real listening
+process, unchanged ownership, and rejected identity evidence. Read-only probes
+use their shared deadline with bounded backoff; fast failures do not exhaust a
+three-attempt limit. Signal requests remain single-attempt. The Runner restart tests require positive exit
 evidence before replacement. The executor regressions also retire a real child
 during its metadata read, keep unknown adopted-process ownership held, and reject
 launch before detachment when Node is unavailable. The diagnostic tests cover

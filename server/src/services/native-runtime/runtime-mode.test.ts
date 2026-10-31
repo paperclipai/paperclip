@@ -419,8 +419,14 @@ describe("resolveNativeRuntimeMode", () => {
   it("rejects an explicit native profile outside the approved boundary", () => {
     expect(resolveNativeRuntimeMode({ ...eligible, agent: { ...eligible.agent, adapterType: "claude_local" } }))
       .toEqual(expect.objectContaining({ kind: "legacy", reason: "direct_adapter" }));
-    expect(() => resolveNativeRuntimeMode({ ...eligible, issue: { id: "issue", workMode: "skill_test" } }))
+    expect(() => resolveNativeRuntimeMode({ ...eligible, issue: { id: "issue", workMode: "unknown" } }))
       .toThrow(NativeRuntimeEligibilityError);
+  });
+
+  it("admits Skills Studio tests on remote Runners", () => {
+    expect(resolveNativeRuntimeMode({ ...eligible,
+      issue: { id: "skill-test", workMode: "skill_test" }, target: { kind: "remote" },
+    })).toMatchObject({ kind: "native", profile: { backend: "codex_app_server" } });
   });
 
   it("admits remote targets only through paperclip_runner", () => {
