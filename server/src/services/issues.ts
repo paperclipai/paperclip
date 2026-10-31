@@ -34,6 +34,7 @@ import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-
 import { assertLegacyRunTaskOwnership } from "../legacy-run-task-ownership.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { externalConversationStateSql, nonIdleSlackIssueCondition, resumeSlackConversation } from "./slack-conversation-state.js";
+import { loadWatchdogServiceContext, assertWatchdogCommentTarget, type WatchdogServiceContext } from "./watchdog-service-context.js";
 import { documentService } from "./documents.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
 import { createdFromIssueCondition } from "./issue-creation-origin.js";
@@ -326,6 +327,22 @@ export async function executeIssuePostCommitActions(
       );
     }
   }
+}
+
+// A watchdog signal may only collapse into an earlier signal of the same
+// watchdog; an unrelated issue with a matching title must not absorb it.
+function watchdogSignalTitleScope(input: {
+  originKind?: string | null;
+  originId?: string | null;
+  createdByAgentId?: string | null;
+}) {
+  if (input.originKind !== "watchdog_service_signal") return undefined;
+  if (!input.originId || !input.createdByAgentId) return sql`false`;
+  return and(
+    eq(issues.originKind, "watchdog_service_signal"),
+    eq(issues.originId, input.originId),
+    eq(issues.createdByAgentId, input.createdByAgentId),
+  );
 }
 
 function wakeRequestTargetsIssue(issueId: string) {
@@ -10211,6 +10228,7 @@ export function issueService(db: Db) {
                   issues.createdAt,
                   new Date(Date.now() - 48 * 60 * 60 * 1000),
                 ),
+                watchdogSignalTitleScope(issueData),
                 sql`lower(regexp_replace(btrim(${issues.title}), '\\s+', ' ', 'g')) = ${normalizedTitle}`,
               ),
             )
@@ -12831,6 +12849,7 @@ export function issueService(db: Db) {
         proactiveChatMessage?: { sourceTaskId: string; userId: string };
         /** Server-only: authenticated Paperclip messages also belong in the Slack thread. */
         mirrorToSlack?: boolean;
+        watchdogContext?: WatchdogServiceContext;
       },
       dbOrTx: any = db,
     ): Promise<IssueComment> {
@@ -12847,11 +12866,31 @@ export function issueService(db: Db) {
               .where(eq(issues.id, issueId))
               .for("update"));
             return addComment(issueId, body, actor, options, tx);
+          }).catch(async (error) => {
+            if (options?.watchdogContext) {
+              const service = options.watchdogContext;
+              await db.insert(activityLog).values({ companyId: service.companyId, actorType: "agent",
+                actorId: service.agentId, agentId: service.agentId, runId: service.runId,
+                action: "watchdog.service_action_rejected", entityType: "issue", entityId: issueId,
+                details: { stage: "comment-insert" } });
+            }
+            throw error;
           });
         return options?.authorizationReason ===
           CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON
           ? retryNativeChatReviewPresentation(append)
           : append();
+      }
+      if (options?.watchdogContext) {
+        // The outer transaction holds the issue row lock. Re-read provenance,
+        // assignment, status and the live run immediately before inserting.
+        const service = await loadWatchdogServiceContext(dbOrTx, {
+          source: "agent_jwt", companyId: options.watchdogContext.companyId,
+          agentId: actor.agentId, runId: actor.runId ?? undefined,
+        });
+        if (!service) throw forbidden("Watchdog service authorization no longer exists.");
+        const signal = await assertWatchdogCommentTarget(dbOrTx, service, issueId);
+        if (!body.includes(signal.marker)) throw forbidden("Watchdog comment signal changed.");
       }
       // The query below locks human comments on caller-owned transactions too,
       // sharing the fence with both question creation and Slack settlement.
