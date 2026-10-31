@@ -80,14 +80,22 @@ describePostgres("tool profile writes notify the connection delivery worker", ()
     expect(delivery.wakeup).not.toHaveBeenCalled();
   });
 
-  it("registers the agent tool grant on the caller transaction and retires only after it commits", async () => {
+  it("registers the agent tool grant on the caller transaction before its first write and retires only after it commits", async () => {
     const f = await seedPendingAccessRequest(db, "owner");
     await db.update(toolCatalogEntries).set({ riskLevel: "read" });
     delivery = await startConnectionDelivery(db);
     const baseline = delivery.sweeps;
+    let pendingAtFirstProfileWrite: boolean | undefined;
     await db.transaction(async (tx) => {
+      // Observe the caller transaction itself (not a proxy) right before its first tool profile insert.
+      const insert = tx.insert.bind(tx);
+      tx.insert = ((table: Parameters<typeof insert>[0]) => {
+        if (table === toolProfiles) pendingAtFirstProfileWrite ??= databaseWorkPending(db, DELIVERY_QUEUES.connection);
+        return insert(table);
+      }) as typeof tx.insert;
       await grantConnectionAgentTools(tx as unknown as typeof db, { connection: f.connection, agentId: f.agentId, userId: "owner",
         tools: [{ catalogEntryId: f.tool.id, toolName: f.tool.toolName, versionHash: "v1", permission: "allowed" }] });
+      expect(pendingAtFirstProfileWrite).toBe(true);
       expect(databaseWorkPending(db, DELIVERY_QUEUES.connection)).toBe(true);
       await new Promise(resolve => setTimeout(resolve, 200));
       expect(delivery!.sweeps).toBe(baseline);
