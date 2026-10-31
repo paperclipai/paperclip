@@ -102,6 +102,23 @@ value with a salted hash of the per-installation secret.
 Use `trackAgentTaskRun()` to emit this event. The generated contract remains
 the authority for its exact dimensions and optionality.
 
+## Proposed Cloud Organization Mapping
+
+`cloud.organization_identified` is a proposed event that links the telemetry
+installation id to the stable, opaque Cloud account-group id. Never substitute
+an organization name, slug, hostname, or local Paperclip company id.
+
+The server attempts the event once per process start only when
+`getCloudStackContext()` confirms a managed Cloud instance with complete
+organization metadata. The telemetry runtime suppresses this event until its
+backend schema is registered and the generated contract is synchronized, so no
+proposal data leaves the process before approval.
+
+After approval and adoption, historical events can be attributed at query time
+by joining their sender identity to the latest mapping event. Historical event
+rows are not rewritten. Installations that never start on an adopted version
+remain unmapped.
+
 ### Other Data Paths
 
 This document covers Paperclip Telemetry only. The generated Telemetry

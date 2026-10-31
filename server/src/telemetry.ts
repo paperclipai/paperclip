@@ -3,8 +3,10 @@ import {
   TelemetryClient,
   resolveTelemetryConfig,
   loadOrCreateState,
+  trackCloudOrganizationIdentified,
 } from "@paperclipai/shared/telemetry";
 import { resolvePaperclipInstanceRoot } from "./home-paths.js";
+import { getCloudStackContext } from "./services/cloud-instance.js";
 import { serverVersion } from "./version.js";
 
 let client: TelemetryClient | null = null;
@@ -21,6 +23,10 @@ export function initTelemetry(fileConfig?: { enabled?: boolean }): TelemetryClie
     () => loadOrCreateState(stateDir, serverVersion),
     serverVersion,
   );
+  const organizationId = getCloudStackContext()?.accountGroupId;
+  if (organizationId) {
+    trackCloudOrganizationIdentified(client, { organization_id: organizationId });
+  }
   client.startPeriodicFlush(60_000);
   return client;
 }

@@ -36,6 +36,17 @@ export function trackCompanyImported(
   });
 }
 
+export function trackCloudOrganizationIdentified(
+  client: TelemetryClient,
+  dims: { organization_id: string },
+): void {
+  client.track(
+    // @ts-expect-error -- proposed-telemetry
+    "cloud.organization_identified",
+    dims,
+  );
+}
+
 export function trackProjectCreated(client: TelemetryClient): void {
   client.track("project.created", {});
 }
