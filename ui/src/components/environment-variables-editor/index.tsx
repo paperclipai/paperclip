@@ -162,6 +162,28 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
 }: EnvironmentVariablesEditorProps, ref) {
   const toast = useOptionalToastActions();
   const editorRootRef = useRef<HTMLDivElement | null>(null);
+  const [createdSecrets, setCreatedSecrets] = useState<CompanySecret[]>([]);
+  useEffect(() => {
+    setCreatedSecrets((prev) => {
+      if (prev.length === 0) return prev;
+      const listed = new Set(secrets.map((secret) => secret.id));
+      const pending = prev.filter((secret) => !listed.has(secret.id));
+      return pending.length === prev.length ? prev : pending;
+    });
+  }, [secrets]);
+  const knownSecrets = useMemo(() => {
+    const listed = new Set(secrets.map((secret) => secret.id));
+    const pending = createdSecrets.filter((secret) => !listed.has(secret.id));
+    return pending.length > 0 ? [...pending, ...secrets] : secrets;
+  }, [secrets, createdSecrets]);
+  const createSecret = useCallback(
+    async (name: string, secretValue: string) => {
+      const created = await onCreateSecret(name, secretValue);
+      setCreatedSecrets((prev) => [...prev, created]);
+      return created;
+    },
+    [onCreateSecret],
+  );
   const [rows, setRows] = useState<EnvRow[]>(() => rowsFromValue(value));
   const rowsRef = useRef(rows);
   const [committedRows, setCommittedRows] = useState<EnvRow[]>(() => cloneRows(rows));
@@ -414,12 +436,12 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
     () =>
       rows.reduce(
         (count, row) =>
-          computeRowHealth(row, secrets) || computeUserSecretRowHealth(row, userSecretDefinitions)
+          computeRowHealth(row, knownSecrets) || computeUserSecretRowHealth(row, userSecretDefinitions)
             ? count + 1
             : count,
         0,
       ),
-    [rows, secrets, userSecretDefinitions],
+    [rows, knownSecrets, userSecretDefinitions],
   );
 
   const quickBind = useMemo(() => {
@@ -463,7 +485,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
                 key={row.id}
                 row={row}
                 isLast={index === rows.length - 1}
-                secrets={secrets}
+                secrets={knownSecrets}
                 userSecretDefinitions={userSecretDefinitions}
                 recentlyUsedSecrets={recentlyUsedSecrets}
                 disabled={disabled}
@@ -475,7 +497,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
                 onNameBlur={() => markTouched(row.id)}
                 onNamePaste={(text) => bulkImport(text, row.id)}
                 onEnterInValueLast={addRow}
-                onCreateSecret={onCreateSecret}
+                onCreateSecret={createSecret}
                 onToast={(message) => toast?.pushToast({ title: message, tone: "success" })}
                 focusRequest={pendingFocus?.rowId === row.id ? pendingFocus.field : null}
                 onFocusConsumed={() => setPendingFocus(null)}

@@ -1403,7 +1403,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
   });
 
   const { data: secrets } = useQuery({
-    queryKey: selectedCompanyId ? ["company-secrets", selectedCompanyId] : ["company-secrets", "none"],
+    queryKey: selectedCompanyId ? queryKeys.secrets.list(selectedCompanyId) : ["secrets", "none"],
     queryFn: () => secretsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });

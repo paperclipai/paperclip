@@ -836,6 +836,66 @@ describe("EnvironmentVariablesEditor", () => {
     }
   });
 
+  it("keeps a just-stored secret bound and resolvable before the host's secret list refreshes", async () => {
+    const created = makeSecret("cd983dd3-75e3-4312-862f-f85e44abd259", { name: "x_write_api_key", latestVersion: 1 });
+    const onCreateSecret = vi.fn(async () => created);
+    const onChange = vi.fn();
+    render(
+      <EnvironmentVariablesEditor
+        value={{ X_WRITE_API_KEY: { type: "plain", value: "abcDEF123456789012345678" } }}
+        secrets={secrets}
+        onChange={onChange}
+        onCreateSecret={onCreateSecret}
+      />,
+    );
+    container.querySelector<HTMLButtonElement>('button[title^="This value looks sensitive"]')!.click();
+    await flush();
+    const storeButton = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.trim() === "Store & bind",
+    );
+    expect(storeButton, "Store & bind should render in the store popover").toBeTruthy();
+    storeButton!.click();
+    await flush();
+
+    expect(onCreateSecret).toHaveBeenCalledWith("x_write_api_key", "abcDEF123456789012345678");
+    expect(document.body.textContent).not.toContain("Missing secret");
+    expect(container.textContent).toContain("x_write_api_key");
+
+    saveButton().click();
+    await flush();
+    expect(onChange).toHaveBeenLastCalledWith({
+      X_WRITE_API_KEY: { type: "secret_ref", secretId: created.id, version: "latest" },
+    });
+  });
+
+  it("shows a just-stored secret as missing once the host lists it and then drops it", async () => {
+    const created = makeSecret("cd983dd3-75e3-4312-862f-f85e44abd259", { name: "x_write_api_key", latestVersion: 1 });
+    const value = { X_WRITE_API_KEY: { type: "plain" as const, value: "abcDEF123456789012345678" } };
+    const editor = (hostSecrets: CompanySecret[]) => (
+      <EnvironmentVariablesEditor
+        value={value}
+        secrets={hostSecrets}
+        onChange={vi.fn()}
+        onCreateSecret={async () => created}
+      />
+    );
+    render(editor(secrets));
+    container.querySelector<HTMLButtonElement>('button[title^="This value looks sensitive"]')!.click();
+    await flush();
+    [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.trim() === "Store & bind")!
+      .click();
+    await flush();
+
+    rerender(editor([...secrets, created]));
+    await flush();
+    expect(container.textContent).not.toContain("Missing secret");
+
+    rerender(editor(secrets));
+    await flush();
+    expect(container.textContent).toContain("Missing secret (cd983dd3");
+  });
+
   it("lets slash-delimited secrets be browsed by folder and exposes full paths on hover", async () => {
     const cloudProviderKey = "/paperclip-cloud/prod/provider/aws-access-key-id";
     const cloudMigrationKey = "/paperclip-cloud/prod/migration/postgres-url";
