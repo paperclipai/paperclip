@@ -419,6 +419,37 @@ it("waits for a same-task comment target before applying its scroll position wit
   expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("true");
 });
 
+it("positions an available comment after the reveal deadline even if unrelated metadata is stalled", async () => {
+  vi.useFakeTimers();
+  try {
+    function Readiness() { return <span data-testid="target-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
+    render(<TaskChatScrollNavigation.Provider value={{ key: "available-target", hash: "#comment-comment-1", restore: false }}>
+      <TaskChatThread issueId="available-target" comments={createLongThreadComments()} onAdd={async () => {}} initialHistoryPending threadHeader={<Readiness />} />
+    </TaskChatScrollNavigation.Provider>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("true");
+    expect(container.querySelector('[data-testid="mock-editor"]')).not.toBeNull();
+  } finally { vi.useRealTimers(); }
+});
+
+it("bounds the scroll wait for a same-task target that never arrives", async () => {
+  const props = { issueId: "stalled-target", comments: createLongThreadComments(), onAdd: async () => {} };
+  function Readiness() { return <span data-testid="target-scroll-ready">{String(useTaskChatScrollNavigation().ready)}</span>; }
+  const show = (hash: string, pending: boolean) => render(<TaskChatScrollNavigation.Provider value={{ key: hash || "initial", hash, restore: false }}>
+    <TaskChatThread {...props} initialHistoryPending={pending} threadHeader={<Readiness />} />
+  </TaskChatScrollNavigation.Provider>);
+  show("", false);
+  await settleThreadLayout();
+  vi.useFakeTimers();
+  try {
+    show("#comment-unavailable", true);
+    expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("false");
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(container.querySelector('[data-testid="target-scroll-ready"]')?.textContent).toBe("true");
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  } finally { vi.useRealTimers(); }
+});
+
 it.each([0, 32_000, 100_000])("offers earlier output only when a single legacy run exceeds the compact window (%s bytes)", (logBytes) => {
   const onExpandHistory = vi.fn();
   if (logBytes > 32_000) transcriptState.truncatedRunIds.add("legacy-run");

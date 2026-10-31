@@ -20,7 +20,7 @@ import { CoordinatorChatReceiptStatus, useCoordinatorChatDecisionReceipts } from
 import { CoordinatorChatQuestionStatus, useCoordinatorChatPendingQuestions } from "@/components/coordinator/CoordinatorChatPendingQuestions";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { TaskChatExpansionState } from "@/components/task-chat/expansion-state";
-import { TaskChatScrollReady, useTaskChatScrollNavigation } from "@/components/task-chat/scroll-navigation";
+import { TaskChatScrollReady, taskChatHashAnchor, useTaskChatScrollNavigation } from "@/components/task-chat/scroll-navigation";
 import {
   useCallback,
   useEffect,
@@ -3133,6 +3133,17 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const historyShellRef = useRef<HTMLDivElement>(null);
   const [expiredHistoryWait, setExpiredHistoryWait] = useState<{ historyKey: typeof historyKey } | null>(null);
   const historyWaitExpired = expiredHistoryWait !== null && expiredHistoryWait.historyKey === historyKey;
+  const scrollTarget = taskChatHashAnchor(scrollNavigation.hash ?? "");
+  const scrollCommentId = scrollTarget?.startsWith("comment-") ? scrollTarget.slice("comment-".length) : null;
+  const scrollWaitKey = scrollCommentId ? JSON.stringify([issueId, scrollNavigation.key, scrollNavigation.hash]) : "";
+  const [expiredScrollWaitKey, setExpiredScrollWaitKey] = useState<string | null>(null);
+  const scrollTargetPending = Boolean(scrollCommentId && initialHistoryPending &&
+    !comments.some(comment => comment.id === scrollCommentId) && expiredScrollWaitKey !== scrollWaitKey);
+  useEffect(() => {
+    if (!scrollTargetPending) return;
+    const timer = window.setTimeout(() => setExpiredScrollWaitKey(scrollWaitKey), INITIAL_HISTORY_REVEAL_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [scrollTargetPending, scrollWaitKey]);
   const prepareInitialContent = Boolean(scrollNavigation.hash) || !historyPending || historyRevealed || historyWaitExpired;
   // Supporting requests can stall without rejecting. Bound the first reveal
   // independently of their pending states so saved conversation and the
@@ -3178,7 +3189,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   return (
     <TaskChatRequestHistoryContext.Provider value={issueId ?? "unknown"}>
     <TaskChatExpansionState.Provider value={expansionState.current}>
-      <TaskChatScrollReady.Provider value={(historyRevealed || !historyPending || historyWaitExpired) && !(scrollNavigation.hash && initialHistoryPending)}>
+      <TaskChatScrollReady.Provider value={(historyRevealed || !historyPending || historyWaitExpired) && !scrollTargetPending}>
         <TaskChatPresentationProvider
           mode={streamlinedUiEnabled ? "streamlined" : "production"}
         >

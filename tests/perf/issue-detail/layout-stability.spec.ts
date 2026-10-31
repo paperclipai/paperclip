@@ -154,6 +154,24 @@ test("explicit comment links resolve older pages before revealing at the target"
   }).toBeLessThanOrEqual(2);
 });
 
+test("a loaded comment target positions after the reveal deadline when live-run metadata stalls", async ({ page }) => {
+  let release!: () => void;
+  let metadataReads = 0;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/issues/*/live-runs", async route => { metadataReads++; await held; await route.continue().catch(() => {}); });
+  try {
+    await page.goto(`/${prefix}/issues/${issue.identifier}#comment-${oldestCommentId}`);
+    await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible({ timeout: 20_000 });
+    expect(metadataReads).toBeGreaterThan(0);
+    await expect(page.getByText("Some task history is still loading.", { exact: true })).toBeVisible();
+    const target = page.locator(`[id="comment-${oldestCommentId}"]`);
+    await expect(target).toBeVisible();
+    await expect.poll(() => target.evaluate(el => Math.abs(el.getBoundingClientRect().top - document.querySelector('[data-testid="task-chat-scroller"]')!.getBoundingClientRect().top)))
+      .toBeLessThanOrEqual(2);
+    await expect(page.getByTestId("task-chat-composer-stack").locator('[contenteditable="true"]')).toBeVisible();
+  } finally { release(); }
+});
+
 test("a draft survives background task refresh, reload, and one persisted reply", async ({ page, request }) => {
   await page.goto(`/${prefix}/issues/${draftIssue.identifier}`);
   await ready(page);
