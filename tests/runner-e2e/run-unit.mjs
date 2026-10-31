@@ -22,7 +22,7 @@ for (const [name, command] of [
   ["Vitest", [vitest, "run", "--config", "tests/runner-e2e/vitest.config.ts", ...args]],
   ["Node tests", ["--test", "tests/runner-e2e/artifact-budget.test.mjs", "tests/runner-e2e/native-completion-checks.test.mjs",
     "tests/runner-e2e/native-completion-git-source.test.mjs", "tests/runner-e2e/native-completion-source-contract.test.mjs",
-    "tests/runner-e2e/chat-feature-testops-api.test.mjs", "tests/runner-e2e/chat-feature-testops-cli.test.mjs", "tests/runner-e2e/chat-feature-testops-results.test.mjs", "tests/runner-e2e/testops-chat-reporter.test.mjs"]],
+    "tests/runner-e2e/chat-feature-testops-api.test.mjs", "tests/runner-e2e/chat-feature-testops-cli.test.mjs", "tests/runner-e2e/chat-feature-testops-results.test.mjs", "tests/runner-e2e/testops-chat-reporter.test.mjs", "tests/runner-e2e/chat-feature-testops-retained-verification.node-test.mjs"]],
 ]) {
   const result = spawnSync(process.execPath, command, { cwd: root, env, stdio: "inherit" });
   if (result.error || result.signal) {
