@@ -4,6 +4,260 @@
       "title": "Crie sua primeira empresa",
       "description": "Comece criando uma empresa.",
       "newCompany": "Nova empresa"
+    },
+    "cloudCreateUnavailable": "As empresas são criadas no Paperclip Cloud. Esta instância não consegue acessá-lo agora — tente de novo pelo seu portfólio no Cloud."
+  },
+  "nav": {
+    "newTask": "Nova tarefa",
+    "search": "Buscar",
+    "dashboard": "Painel",
+    "home": "Início",
+    "inbox": "Caixa de entrada",
+    "chat": "Chat",
+    "decisions": "Decisões",
+    "status": "Status",
+    "conferenceRoom": "Sala de reunião",
+    "work": "Trabalho",
+    "tasks": "Tarefas",
+    "cases": "Casos",
+    "routines": "Rotinas",
+    "goals": "Metas",
+    "artifacts": "Artefatos",
+    "skills": "Skills",
+    "workspaces": "Workspaces",
+    "company": "Empresa",
+    "organization": "Empresa",
+    "org": "Organograma",
+    "orgSection": "Organização",
+    "connectors": "Conectores",
+    "audit": "Auditoria",
+    "timeline": "Linha do tempo",
+    "costs": "Custos",
+    "activity": "Atividade",
+    "commentary": "Comentários",
+    "settings": "Configurações",
+    "beta": "beta",
+    "badge": {
+      "unread": "não lidas",
+      "decisions": "decisões",
+      "unreadChats": "chats não lidos"
+    },
+    "mobileNavigation": "Navegação móvel",
+    "openSidebar": "Abrir barra lateral",
+    "hideProperties": "Ocultar propriedades",
+    "showProperties": "Mostrar propriedades",
+    "openActionsFor": "Abrir ações de {{name}}",
+    "removeFromStarred": "Remover dos favoritos",
+    "leaving": "Saindo...",
+    "section": {
+      "actions": "Ações de {{label}}",
+      "collapse": "Recolher {{label}}",
+      "expand": "Expandir {{label}}"
+    },
+    "item": {
+      "liveCount": "{{count}} ao vivo",
+      "attentionNeeded": "requer atenção"
+    },
+    "sort": {
+      "top": "Principais",
+      "alphabetical": "Ordem alfabética",
+      "recent": "Recentes"
+    },
+    "account": {
+      "boardName": "Conselho",
+      "signedIn": "Conectado",
+      "localBoard": "Conselho do workspace local",
+      "openMenu": "Abrir menu da conta",
+      "viewProfile": "Ver perfil",
+      "viewCommit": "Ver o commit {{commit}} no GitHub",
+      "sha": "SHA {{sha}}",
+      "invite": "Convidar",
+      "inviteDescription": "Convide pessoas para a sua empresa.",
+      "documentation": "Documentação",
+      "documentationDescription": "Abre a documentação do Paperclip em uma nova aba.",
+      "signOut": "Sair",
+      "signingOut": "Saindo...",
+      "signOutDescription": "Encerra esta sessão do navegador.",
+      "shareFeedback": "Enviar feedback",
+      "label": "Conta"
+    },
+    "organizationMenu": {
+      "title": "Empresas",
+      "reorder": "Reordenar {{name}}",
+      "openSwitcher": "Abrir seletor de empresa",
+      "openSwitcherNamed": "Abrir seletor de empresa ({{name}})",
+      "select": "Selecionar empresa",
+      "openSwitcherCompany": "Abrir seletor de empresa",
+      "openSwitcherNamedCompany": "Abrir seletor de empresa ({{name}})",
+      "selectCompany": "Selecionar empresa",
+      "done": "Concluir",
+      "edit": "Editar",
+      "loadError": "Não foi possível carregar as empresas",
+      "loadErrorCompany": "Não foi possível carregar as empresas",
+      "retry": "Tentar novamente",
+      "empty": "Nenhuma empresa",
+      "emptyCompany": "Nenhuma empresa",
+      "create": "Criar empresa",
+      "invite": "Convidar pessoas",
+      "inviteTo": "Convidar pessoas para {{name}}"
+    },
+    "agents": {
+      "section": "Agentes",
+      "new": "Novo agente",
+      "sectionActions": "Ações da seção Agentes",
+      "browse": "Ver agentes",
+      "sort": "Ordenação dos agentes",
+      "seeAll": "Ver todos os agentes",
+      "pause": "Pausar agente",
+      "resume": "Retomar agente",
+      "updating": "Atualizando...",
+      "budgetPaused": "Pausado por orçamento",
+      "invalidOrgChain": "Hierarquia inválida",
+      "invalidReportingChain": "Cadeia de reporte inválida",
+      "builtInStatus": "Agente nativo: {{status}}",
+      "pausedByBudget": "Agente pausado por orçamento",
+      "pausedByBudgetLimits": "O agente foi pausado pelos limites de orçamento",
+      "star": "Favoritar agente",
+      "edit": "Editar agente",
+      "leave": "Sair do agente",
+      "pausedToast": "Agente pausado",
+      "resumedToast": "Agente retomado",
+      "pauseFailedToast": "Não foi possível pausar o agente",
+      "resumeFailedToast": "Não foi possível retomar o agente"
+    },
+    "projects": {
+      "section": "Projetos",
+      "new": "Novo projeto",
+      "sectionActions": "Ações da seção Projetos",
+      "browse": "Ver projetos",
+      "sort": "Ordenação dos projetos",
+      "starred": "Projetos favoritos",
+      "private": "Projeto privado",
+      "pausedByBudget": "Projeto pausado por orçamento",
+      "leave": "Sair do projeto"
+    },
+    "serverInfo": {
+      "title": "Servidor",
+      "lastRestarted": "Último reinício",
+      "runningCommit": "Commit em execução",
+      "checkoutState": "Estado do checkout",
+      "unavailable": "Indisponível",
+      "commitUnavailable": "Commit indisponível",
+      "changeStatusUnavailable": "Status das alterações indisponível",
+      "cleanCheckout": "Checkout limpo",
+      "localChanges": "Há alterações locais",
+      "localChangesWithDetails": "Há alterações locais ({{details}})",
+      "staged": "{{count}} em stage",
+      "unstaged": "{{count}} fora do stage",
+      "untracked": "{{count}} não rastreados",
+      "healthUnavailable": "Status de saúde indisponível",
+      "loading": "Carregando..."
+    },
+    "needsYou": "Precisa de você",
+    "newTaskSentence": "Nova tarefa"
+  },
+  "dashboard": {
+    "empty": {
+      "welcome": "Boas-vindas ao Paperclip. Configure sua primeira empresa e seu primeiro agente para começar.",
+      "getStarted": "Começar",
+      "selectOrganization": "Crie ou selecione uma empresa para ver o painel."
+    },
+    "pausedImported": {
+      "title_one": "{{count}} agente importado está pausado e não vai rodar.",
+      "title_other": "{{count}} agentes importados estão pausados e não vão rodar.",
+      "resumeAll": "Retomar todos",
+      "resuming": "Retomando…",
+      "description": "Agentes que chegam pela importação de uma empresa ficam pausados por segurança. Retome-os para que as tarefas atribuídas possam começar."
+    },
+    "allPaused": {
+      "title": "Todos os agentes desta empresa estão pausados — nada vai rodar.",
+      "review": "Revisar agentes",
+      "description": "Retome pelo menos um agente para que as tarefas atribuídas possam começar."
+    },
+    "noAgents": {
+      "message": "Você ainda não tem agentes.",
+      "create": "Crie um aqui"
+    },
+    "budget": {
+      "activeIncidents_one": "{{count}} incidente de orçamento ativo",
+      "activeIncidents_other": "{{count}} incidentes de orçamento ativos",
+      "summary": "Agentes pausados: {{agents}} · Projetos pausados: {{projects}} · Aprovações de orçamento pendentes: {{approvals}}",
+      "open": "Abrir orçamentos"
+    },
+    "metrics": {
+      "agentsEnabled": "Agentes ativos",
+      "agentsDescription": "{{running}} rodando, {{paused}} pausados, {{errors}} com erro",
+      "tasksInProgress": "Tarefas em andamento",
+      "tasksDescription": "{{open}} abertas, {{blocked}} bloqueadas",
+      "monthSpend": "Gasto no mês",
+      "budgetUsage": "{{percent}}% do orçamento de {{budget}}",
+      "unlimitedBudget": "Orçamento ilimitado",
+      "pendingApprovals": "Aprovações pendentes",
+      "budgetOverridesAwaiting": "Exceções de orçamento aguardando o conselho: {{overrides}}",
+      "awaitingBoardReview": "Aguardando revisão do conselho"
+    },
+    "charts": {
+      "runActivity": "Atividade de execuções",
+      "tasksByPriority": "Tarefas por prioridade",
+      "tasksByStatus": "Tarefas por status",
+      "successRate": "Taxa de sucesso",
+      "last14Days": "Últimos 14 dias",
+      "noRuns": "Nenhuma execução ainda",
+      "noTasks": "Nenhuma tarefa",
+      "dayIssues": "{{day}}: {{total}} tarefas",
+      "legend": {
+        "succeeded": "Sucesso",
+        "recovered": "Recuperada",
+        "failed": "Falha",
+        "other": "Outras"
+      },
+      "tooltip": {
+        "runs_one": "{{date}}: {{count}} execução",
+        "runs_other": "{{date}}: {{count}} execuções",
+        "succeeded": "sucesso: {{value}}",
+        "recovered": "recuperadas: {{value}} (sucesso na nova tentativa)",
+        "failed": "falhas: {{value}}",
+        "other": "outras: {{value}}"
+      },
+      "priority": {
+        "critical": "Crítica",
+        "high": "Alta",
+        "medium": "Média",
+        "low": "Baixa"
+      },
+      "status": {
+        "todo": "A fazer",
+        "inProgress": "Em andamento",
+        "inReview": "Em revisão",
+        "done": "Concluída",
+        "blocked": "Bloqueada",
+        "cancelled": "Cancelada",
+        "backlog": "Backlog"
+      }
+    },
+    "recentActivity": "Atividade recente",
+    "recentTasks": "Tarefas recentes",
+    "noTasks": "Nenhuma tarefa ainda.",
+    "live": {
+      "breadcrumb": "Execuções ao vivo",
+      "title": "Execuções de agentes ao vivo",
+      "description": "Primeiro as execuções ativas, depois as concluídas mais recentes.",
+      "showingUpTo": "Mostrando até {{limit}}",
+      "panelTitle": "Ativas / recentes",
+      "empty": "Nenhuma execução de agente ativa ou recente.",
+      "createOrganization": "Crie uma empresa para ver as execuções ao vivo.",
+      "selectOrganization": "Selecione uma empresa para ver as execuções ao vivo."
     }
+  },
+  "notFound": {
+    "breadcrumb": "Não encontrado",
+    "pageTitle": "Página não encontrada",
+    "pageDescription": "Esta rota não existe.",
+    "organizationTitle": "Empresa não encontrada",
+    "organizationDescription": "Nenhuma empresa corresponde ao prefixo \"{{prefix}}\".",
+    "unknownPrefix": "desconhecido",
+    "requestedPath": "Caminho solicitado:",
+    "openDashboard": "Abrir painel",
+    "goHome": "Ir para o início"
   }
 }
