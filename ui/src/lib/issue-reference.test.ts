@@ -89,6 +89,12 @@ describe("issue-reference", () => {
     expect(parseIssueReferenceFromHref("http://localhost:3100/api/issues/:id")).toBeNull();
   });
 
+  it("treats undecodable issue path segments as non-references", () => {
+    expect(parseIssuePathIdFromPath("/issues/${ISSUE_ID%")).toBeNull();
+    expect(parseIssueReferenceFromHref("${PAPERCLIP_API_URL%/}/issues/${ISSUE_ID%/}")).toBeNull();
+    expect(parseIssueReferenceFromHref("issue://PAP-1%")).toBeNull();
+  });
+
   describe("known-prefix gating", () => {
     it("links a bare identifier whose prefix is known", () => {
       expect(parseIssueReferenceFromHref("PAP-1271", new Set(["PAP"]))).toEqual({
@@ -148,6 +154,13 @@ describe("issue-reference", () => {
         { type: "link", url: "/issues/PAP-1", children: [{ type: "text", value: "PAP-1" }] },
         { type: "text", value: " and JIRA-2 today." },
       ]);
+    });
+
+    it("leaves inline code with an undecodable issue path segment untouched", () => {
+      const inlineCode = { type: "inlineCode", value: "${PAPERCLIP_API_URL%/}/issues/${ISSUE_ID%/}" };
+      const tree: TreeNode = { type: "root", children: [{ type: "paragraph", children: [inlineCode] }] };
+      expect(() => remarkLinkIssueReferences()(tree)).not.toThrow();
+      expect(paragraphChildren(tree)).toEqual([inlineCode]);
     });
 
     it("links every identifier when no prefixes are supplied (legacy permissive)", () => {
