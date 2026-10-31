@@ -268,6 +268,8 @@ reconcile-branch requires board.
 
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.
+Workspace metadata reads do not perform storage inspection or certify delivery.
+The explicit close-readiness API and destructive cleanup retain live safety checks.
 
 Evidence: `source-only` —
 [implementation](../../server/src/routes/workspace-runtime-service-authz.ts#L76) at the
