@@ -383,7 +383,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
   it("joins a claimed execution whose initial run read has not reached live registration", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const [issue] = await db.insert(issues).values({ companyId, title: "Held preparation", status: "todo", assigneeAgentId: agentId }).returning();
-    const queued = await seedQueuedRun({ companyId, agentId, issueId: issue.id });
+    const queued = await seedQueuedRun({ companyId, agentId, issueId: issue.id, wakeReason: "issue_assigned" });
     const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
     const factory = runState.createHeartbeatRunState;
     let held = false;
