@@ -12,8 +12,8 @@ import { agents, budgetPolicies, companies, costEvents, createDb, heartbeatRuns,
 import { type PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { accountRunCost } from "../run-cost-accounting.js";
-import { usageReceiptSpoolPath } from "../usage-receipts.js";
-import { createNativeUsageDelivery } from "./native-usage-delivery.js";
+import { usageReceiptSpoolPath, type UsageReceiptEnvelope } from "../usage-receipts.js";
+import { createNativeUsageContinuationDelivery, createNativeUsageDelivery } from "./native-usage-delivery.js";
 
 const runnerRoot = fileURLToPath(new URL("../../../../packages/paperclip-runner/runner/", import.meta.url));
 const fixtureProfile = process.env.CI ? "release" : "debug";
@@ -43,6 +43,89 @@ describe("producer-owned native usage", () => {
     normalizedSessionId: "session-1", turnId, emittedAt: new Date().toISOString(), eventType: type,
     payload: type === "usage.reported" ? { runDeltaAvailable: true, runDeltaBasis: "run", runDelta: { inputTokens: 120, outputTokens: 10, providerCostUsd: amount } } : {},
   } as PrpEvent);
+
+  const finalizedSource = async () => {
+    const input = await seed();
+    await db.update(heartbeatRuns).set({ runnerInstanceId: input.runnerInstanceId }).where(eq(heartbeatRuns.id, input.runId));
+    const delivery = await createNativeUsageDelivery(db, input);
+    const report = event(input, 1, "usage.reported"), done = event(input, 2, "turn.completed");
+    await delivery.capture(report);
+    await delivery.capture(done);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, input.runId));
+    expect(await accountRunCost(db, input.runId)).toBe(true);
+    const { billing: _billing, ...source } = input;
+    return { input, source, report, done };
+  };
+
+  it("continues exact finalized source receipts without acquiring ownership or resetting accounting", async () => {
+    const { input, source, report, done } = await finalizedSource();
+    const before = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
+    await expect(createNativeUsageDelivery(db, input)).rejects.toThrow("native_usage_run_not_available");
+    const continuation = await createNativeUsageContinuationDelivery(db, source);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId))).toEqual(before);
+    await continuation.capture(report);
+    await continuation.capture(done);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId))).toEqual(before);
+    expect(await db.select().from(runUsageReceipts).where(eq(runUsageReceipts.runId, input.runId))).toHaveLength(2);
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId))).toHaveLength(1);
+    await expect(continuation.capture({ ...report, sourceInstanceId: randomUUID() })).rejects.toThrow("native_usage_source_mismatch");
+    await expect(continuation.capture({ ...report, payload: { ...report.payload as object, runDeltaAvailable: false } }))
+      .rejects.toThrow("native_usage_source_conflict");
+  });
+
+  it("journals an equal finalized source tail using the source billing without repricing", async () => {
+    const { input, source } = await finalizedSource();
+    const before = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
+    // Even a structurally supplied extra current-run classification cannot own
+    // the old receipt: the continuation derives billing from saved source data.
+    const withCurrentBilling = { ...source, billing: { provider: "anthropic", biller: "current-grant", billingType: "subscription_included" } };
+    const continuation = await createNativeUsageContinuationDelivery(db, withCurrentBilling);
+    await continuation.capture(event(input, 3, "usage.reported"));
+    const receipts = await db.select().from(runUsageReceipts).where(eq(runUsageReceipts.runId, input.runId));
+    expect(receipts).toHaveLength(3);
+    expect(receipts.find(row => row.sequence === 3)?.receiptJson.receipt).toMatchObject(billing);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId))).toEqual(before);
+    expect((await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId)))[0].costCents).toBe(25);
+  });
+
+  it.each(["tokens", "cost", "incomplete", "unpriceable", "basis"])(
+    "holds a differing finalized source tail before acknowledgement: %s", async change => {
+      const { input, source } = await finalizedSource();
+      const continuation = await createNativeUsageContinuationDelivery(db, source);
+      const late = event(input, 3, "usage.reported");
+      if (change === "incomplete") (late.payload as Record<string, unknown>).runDeltaAvailable = false;
+      if (change === "basis") delete (late.payload as Record<string, unknown>).runDeltaBasis;
+      if (["tokens", "cost", "unpriceable"].includes(change)) (late.payload as Record<string, unknown>).runDelta = {
+        inputTokens: change === "tokens" ? 150 : change === "unpriceable" ? "unknown" : 120,
+        outputTokens: 10, providerCostUsd: change === "cost" ? 0.5 : 0.25,
+      };
+      await expect(continuation.capture(late)).rejects.toThrow("native_usage_after_finalization_requires_reconciliation");
+      await expect(continuation.capture(late)).rejects.toThrow("native_usage_after_finalization_requires_reconciliation");
+      expect(await db.select().from(runUsageReceipts).where(eq(runUsageReceipts.runId, input.runId))).toHaveLength(2);
+      expect((await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId)))[0].costCents).toBe(25);
+    });
+
+  it.each(["company", "run", "runner", "source"])("rejects a changed continuation binding without mutation: %s", async change => {
+    const { input, source } = await finalizedSource();
+    if (change === "source") await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ accountingReceiptSourceId: randomUUID() })}::jsonb` })
+      .where(eq(heartbeatRuns.id, input.runId));
+    const before = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
+    await expect(createNativeUsageContinuationDelivery(db, { ...source,
+      ...(change === "company" ? { companyId: randomUUID() } : {}),
+      ...(change === "run" ? { runId: randomUUID() } : {}),
+      ...(change === "runner" ? { runnerInstanceId: randomUUID() } : {}),
+    })).rejects.toThrow("native_usage_continuation_source_mismatch");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId))).toEqual(before);
+  });
+
+  it("rejects changed immutable source receipt facts during hydration", async () => {
+    const { input, source } = await finalizedSource();
+    const [receipt] = await db.select().from(runUsageReceipts).where(and(eq(runUsageReceipts.runId, input.runId), eq(runUsageReceipts.sequence, 1)));
+    const changed = structuredClone(receipt.receiptJson) as UsageReceiptEnvelope;
+    changed.producerEvent!.usage!.runDelta = { inputTokens: 999, outputTokens: 10 };
+    await db.update(runUsageReceipts).set({ receiptJson: changed }).where(eq(runUsageReceipts.id, receipt.id));
+    await expect(createNativeUsageContinuationDelivery(db, source)).rejects.toThrow("native_usage_source_conflict");
+  });
 
   it("retains the same Runner report through a failed Postgres receipt and an empty replacement receiver", async () => {
     const input = await seed();

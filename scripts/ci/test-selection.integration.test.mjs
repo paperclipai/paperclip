@@ -51,7 +51,9 @@ test("real graph retains direct and indirect filesystem, process and opaque depe
   const select = (changed) => selectProjectTests({ root: directory, project: "fixture", changed });
   const result = await select(["ui/src/leaf.ts"]);
   assert.deepEqual(result.related, ["ui/src/import.test.ts"]);
-  for (const file of ["reader", "indirect", "process", "dynamic", "cjs", "builtin-loader", "opaque", "partial", "automock", "bypass", "spy", "remock", "arguments"]) {
+  assert.ok(result.inputRelated.includes("ui/src/reader.test.ts"), "literal file reads add the missing source dependency");
+  assert.ok(!result.alwaysRun.includes("ui/src/reader.test.ts"));
+  for (const file of ["indirect", "process", "dynamic", "cjs", "builtin-loader", "opaque", "partial", "automock", "bypass", "spy", "remock", "arguments"]) {
     assert.ok(result.alwaysRun.includes(`ui/src/${file}.test.ts`), `${file} must never be dropped`);
   }
   assert.ok(!result.selected.includes("ui/src/independent.test.ts"));
@@ -73,6 +75,9 @@ test("real graph retains direct and indirect filesystem, process and opaque depe
   assert.ok((await select(["ui/src/leaf.ts"])).alwaysRun.includes("ui/src/generated.test.ts"),
     "generated inputs have no trustworthy source-to-output graph and retain their consumers");
   write("ui/src/environment.ts", 'import {readFileSync} from "node:fs"; readFileSync(new URL("./leaf.ts", import.meta.url));');
+  const fileSetup = await select(["ui/src/leaf.ts"]);
+  assert.deepEqual(fileSetup.selected, fileSetup.inventory, "an explicit setup file read affects the entire project");
+  write("ui/src/environment.ts", 'import {readFileSync} from "node:fs"; readFileSync(process.env.INPUT);');
   await assert.rejects(select(["ui/src/leaf.ts"]), /Opaque setup builtin/, "setup filesystem reads can affect every test outside the import graph");
   mkdirSync(path.join(directory, "server/src/__tests__/helpers"), { recursive: true });
   for (const file of ["server/src/__tests__/setup-supertest.ts", "server/src/__tests__/helpers/isolated-test-home.ts"]) {

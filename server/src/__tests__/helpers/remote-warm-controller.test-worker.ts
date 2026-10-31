@@ -2,6 +2,9 @@ import { createDb } from "@paperclipai/db";
 import { executePaperclipNativeSession } from "../../services/native-runtime/native-session-executor.js";
 import { dockerCommandRunner } from "./docker-command-runner.js";
 
+// Separate TypeScript fixture import time from actual controller admission.
+process.send?.({ ready: true });
+
 process.once("message", async (input: {
   connectionString: string;
   container: string;
