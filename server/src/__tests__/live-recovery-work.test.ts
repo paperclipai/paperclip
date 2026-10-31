@@ -412,9 +412,14 @@ describe("residual recovery production matrix", () => {
     }
     return { ...f, run, lease };
   }
-  it.each(["competing allocation", "cleanup in flight"] as const)("parks unchanged shutdown refusal for %s until its owning commit", async gate => {
-    const f = await shutdownSource(gate === "competing allocation");
-    const [competing] = gate === "competing allocation" ? await db.insert(environmentLeases).values({ companyId: f.companyId,
+  it.each(["competing allocation lease", "competing allocation run", "cleanup in flight"] as const)("parks unchanged shutdown refusal for %s until its owning commit", async gate => {
+    const competingGate = gate !== "cleanup in flight";
+    const f = await shutdownSource(competingGate);
+    const [otherRun] = gate === "competing allocation run" ? await db.insert(heartbeatRuns).values({
+      companyId: f.companyId, agentId: f.agent.id, status: "failed", runtimeMode: "legacy", finishedAt: new Date(),
+    }).returning() : [];
+    const [competing] = competingGate ? await db.insert(environmentLeases).values({ companyId: f.companyId,
+      heartbeatRunId: otherRun?.id,
       status: "pending_cleanup", provider: f.lease.provider, providerLeaseId: f.lease.providerLeaseId,
       acquiredAt: new Date(f.lease.acquiredAt.getTime() - 1000) }).returning() : [];
     await start();
@@ -423,7 +428,8 @@ describe("residual recovery production matrix", () => {
     const releaseGate = async (database: typeof db) => writeEnvironmentCleanup(database, tx => tx.update(environmentLeases).set(
       competing ? { status: "released", releasedAt: new Date() }
         : { metadata: sql`${environmentLeases.metadata} || '{"pendingCleanupInFlight":false}'::jsonb` },
-    ).where(eq(environmentLeases.id, competing?.id ?? f.lease.id)), { companyId: f.companyId });
+    ).where(eq(environmentLeases.id, competing?.id ?? f.lease.id)), { companyId: f.companyId,
+      ...(otherRun ? { runId: otherRun.id } : { leaseId: competing?.id ?? f.lease.id }) });
     await expect(db.transaction(async tx => {
       await releaseGate(tx as unknown as typeof db);
       throw new Error("roll back shutdown gate release");
@@ -440,6 +446,8 @@ describe("residual recovery production matrix", () => {
       expect(current.metadata?.workspaceRestoreRecovery).toMatchObject({ runId: f.run.id });
       expect(current.providerLeaseId).toBe(f.lease.providerLeaseId);
     }, { timeout: 15_000 });
+    expect(await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, f.companyId),
+      eq(issueRecoveryActions.fingerprint, `legacy-execution:${f.run.id}`)))).toHaveLength(1);
     await reconcileDatabaseWork(db, "legacy-shutdown-settlement"); await Promise.allSettled([...passes]); await immediate();
     await quiet();
   });
