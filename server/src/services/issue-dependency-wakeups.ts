@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests } from "@paperclipai/db";
@@ -268,4 +268,99 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
     }),
   );
   return covering ?? null;
+}
+
+/** How many recent completed dependency wakes to inspect for set matching. */
+const COMPLETED_BLOCKER_SET_WAKE_SCAN_LIMIT = 20;
+
+/**
+ * Cooldown for reconciliation-path dependency wakes. A completed
+ * wake for the SAME dependent + SAME fully-resolved blocker set suppresses
+ * further `blocked_dependency_restored` / backstop wakes for this window,
+ * aligned with `ISSUE_REWAKE_MAX_COOLDOWN_MS`. A later blocked cycle outside
+ * the window (e.g. a terminal reset re-blocking the issue) still re-wakes.
+ */
+export const DEPENDENCY_REWAKE_COOLDOWN_MS = 30 * 60_000;
+
+function payloadBlockerIssueIds(payload: unknown): string[] | null {
+  if (!payload || typeof payload !== "object") return null;
+  const raw = (payload as Record<string, unknown>).blockerIssueIds;
+  if (!Array.isArray(raw)) return null;
+  const ids = raw.filter((id): id is string => typeof id === "string" && id.length > 0);
+  return ids.length > 0 ? ids : null;
+}
+
+/**
+ * Cycle-insensitive cooldown dedup for reconciliation-path wakes.
+ *
+ * The cycle-aware state key re-arms whenever the dependent's
+ * `blockedTransitionAt` is restamped. That is correct for genuine new blocked
+ * episodes (a terminal reset re-blocking the issue must re-engage the
+ * assignee), but it livelocks the "stale blocker hold" state: an issue blocked
+ * by an all-`done` blocker set whose assignee re-blocks at the end of every
+ * woken run. Each re-block restamps the cycle, so the route-time
+ * `blocked_dependency_restored` wake and the periodic backstop re-fire
+ * `issue_blockers_resolved` forever at run cadence (observed: 90+ wakes over
+ * ~2h on one issue, one per 30-60s run).
+ *
+ * This helper finds a `completed` wake for the SAME dependent issue and the
+ * SAME resolved blocker set that finished within the cooldown window. A
+ * re-block that soon after a delivered wake carries no new information — the
+ * assignee just ran against this exact ready state — so reconciliation emits
+ * skip. An older completed wake does NOT suppress: a genuinely later blocked
+ * cycle still heals. The primary `blocker_done` signal path does not use this
+ * check; a blocker genuinely resolving always wakes.
+ *
+ * Matching reads `payload.issueId` / `payload.blockerIssueIds` from completed
+ * rows (both reconciliation emit paths always write them) and is bounded by
+ * `COMPLETED_BLOCKER_SET_WAKE_SCAN_LIMIT`.
+ */
+export async function findRecentCompletedWakeForResolvedBlockerSet(
+  db: Db,
+  input: {
+    companyId: string;
+    dependentIssueId: string;
+    blockerIssueIds: string[];
+    now?: Date;
+    cooldownMs?: number;
+  },
+) {
+  const targetSet = uniqueSortedBlockerIssueIds(input.blockerIssueIds).join(",");
+  if (!targetSet) return null;
+
+  const rows = await db
+    .select({
+      id: agentWakeupRequests.id,
+      status: agentWakeupRequests.status,
+      payload: agentWakeupRequests.payload,
+      requestedAt: agentWakeupRequests.requestedAt,
+      finishedAt: agentWakeupRequests.finishedAt,
+    })
+    .from(agentWakeupRequests)
+    .where(
+      and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.reason, ISSUE_BLOCKERS_RESOLVED_WAKE_REASON),
+        eq(agentWakeupRequests.status, "completed"),
+        sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.dependentIssueId}`,
+      ),
+    )
+    .orderBy(desc(agentWakeupRequests.requestedAt))
+    .limit(COMPLETED_BLOCKER_SET_WAKE_SCAN_LIMIT);
+
+  const match = rows.find((row) => {
+    const ids = payloadBlockerIssueIds(row.payload);
+    if (!ids) return false;
+    return uniqueSortedBlockerIssueIds(ids).join(",") === targetSet;
+  });
+  if (!match) return null;
+
+  const now = input.now ?? new Date();
+  const cooldownMs = input.cooldownMs ?? DEPENDENCY_REWAKE_COOLDOWN_MS;
+  const anchor = match.finishedAt ?? match.requestedAt;
+  if (!anchor) return null;
+  const anchorTime = anchor instanceof Date ? anchor.getTime() : new Date(anchor).getTime();
+  if (Number.isNaN(anchorTime)) return null;
+  if (now.getTime() - anchorTime >= cooldownMs) return null;
+  return match;
 }

@@ -298,6 +298,7 @@ import {
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
+  findRecentCompletedWakeForResolvedBlockerSet,
   findExistingIssueBlockersResolvedWakeForReadyState,
   shouldWakeOnRestoredBlockedDependency,
 } from "../services/issue-dependency-wakeups.js";
@@ -15772,6 +15773,23 @@ export function issueRoutes(
                 blockedTransitionAt: input.blockedTransitionAt,
               });
             if (existingWake) return;
+            // A re-block against the same already fully-resolved
+            // blocker set restamps `blockedTransitionAt`, which invalidates the
+            // cycle-aware key above and re-arms this reconciliation wake on
+            // every run (observed livelock: one wake per 30-60s run for 2h+).
+            // Treat a completed wake for the identical blocker set as covering
+            // the current ready state so `blocked_dependency_restored` fires at
+            // most once per blocker-set composition. The primary `blocker_done`
+            // signal path is deliberately not gated by this check.
+            if (input.mutation === "blocked_dependency_restored") {
+              const completedForBlockerSet =
+                await findRecentCompletedWakeForResolvedBlockerSet(db, {
+                  companyId: issue.companyId,
+                  dependentIssueId: input.dependentIssueId,
+                  blockerIssueIds: input.blockerIssueIds,
+                });
+              if (completedForBlockerSet) return;
+            }
           } catch (err) {
             logger.warn(
               { err, issueId: input.dependentIssueId, idempotencyKey },
