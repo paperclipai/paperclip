@@ -710,7 +710,6 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
   const fullStackWorkflow = readWorkflow("runner-full-stack-e2e.yml");
   for (const [secret, condition] of Object.entries({
     OPENAI_API_KEY: "matrix.credentialName == 'OPENAI_API_KEY'",
-    ANTHROPIC_API_KEY: "matrix.credentialName == 'ANTHROPIC_API_KEY'",
     OPENROUTER_API_KEY: "matrix.credentialName == 'OPENROUTER_API_KEY'",
     DAYTONA_API_KEY: "matrix.environmentId == 'daytona'",
   })) {
@@ -720,6 +719,47 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
       ),
       `${secret} must be scoped to only the matrix cells that require it`,
     );
+  }
+  const anthropicExpressions = [...fullStackWorkflow.matchAll(/^\s+ANTHROPIC_API_KEY: \$\{\{ (.+) \}\}$/gm)];
+  assert.equal(anthropicExpressions.length, 1);
+  const anthropicInput = (state) => runInNewContext(anthropicExpressions[0][1], state, { timeout: 1000 });
+  const chooseClaude = "chat-features.runner-opencode.local.onboarding.choose-first-runtime";
+  const hireClaude = "chat-features.runner-opencode.local.agents.hire-claude-code";
+  const privateClaude = (executionId) => ({
+    matrix: { credentialName: "OPENROUTER_API_KEY", profileId: "runner-opencode", environmentId: "local", executionId },
+    needs: { catalog: { outputs: { operations_cadence: "" } } },
+    steps: { manual_cell_route: { outputs: { route: "private" } }, manual_private_verified: { outcome: "success" },
+      claude_cli: { outcome: "success" }, claude_feature_inputs: { outcome: "success" } },
+    secrets: { ANTHROPIC_API_KEY: "synthetic-secondary-key" },
+  });
+  for (const id of [chooseClaude, hireClaude]) {
+    const allowed = privateClaude(id);
+    assert.equal(anthropicInput(allowed), allowed.secrets.ANTHROPIC_API_KEY);
+    for (const change of [
+      (state) => { state.matrix.executionId += "-extra"; },
+      (state) => { state.matrix.executionId = id.replace("chat-features.", "other-suite."); },
+      (state) => { state.matrix.executionId = id.split(".").slice(-2).join("."); },
+      (state) => { state.matrix.profileId = "runner-codex"; },
+      (state) => { state.matrix.environmentId = "daytona"; },
+      (state) => { state.needs.catalog.outputs.operations_cadence = "daily"; },
+      (state) => { state.steps.manual_cell_route.outputs.route = "actions"; },
+      (state) => { state.steps.manual_private_verified.outcome = "failure"; },
+      (state) => { state.steps.claude_cli.outcome = "failure"; },
+    ]) {
+      const denied = structuredClone(allowed); change(denied); assert.equal(anthropicInput(denied), "");
+    }
+  }
+  const missingHiringConfig = privateClaude(hireClaude);
+  missingHiringConfig.steps.claude_feature_inputs.outcome = "failure";
+  assert.equal(anthropicInput(missingHiringConfig), "");
+  const noChooseConfig = privateClaude(chooseClaude);
+  noChooseConfig.steps.claude_feature_inputs.outcome = "skipped";
+  assert.equal(anthropicInput(noChooseConfig), noChooseConfig.secrets.ANTHROPIC_API_KEY);
+  for (const profileId of ["legacy-claude", "runner-acpx-claude"]) {
+    const primary = privateClaude("existing-primary-claude");
+    primary.matrix.credentialName = "ANTHROPIC_API_KEY"; primary.matrix.profileId = profileId;
+    primary.steps.manual_cell_route.outputs.route = "actions"; primary.steps.manual_private_verified.outcome = "skipped";
+    assert.equal(anthropicInput(primary), primary.secrets.ANTHROPIC_API_KEY);
   }
   const historyPublisher = fullStackWorkflow.slice(
     fullStackWorkflow.indexOf("  publish_history:"),
