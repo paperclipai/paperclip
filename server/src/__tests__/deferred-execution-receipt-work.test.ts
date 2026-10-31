@@ -78,7 +78,15 @@ describe("deferred receipt durable dispatch", () => {
     return { companyId, agent, issue, source, actorId };
   }
   async function quiet() {
-    await vi.waitFor(async () => { expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); }, { timeout: 40_000 });
+    await vi.waitFor(async () => {
+      if (vi.isFakeTimers()) {
+        // Fake-clock cases have no live execution. Settle finite cleanup
+        // deadlines explicitly instead of advancing at waitFor's wall speed.
+        await vi.advanceTimersByTimeAsync(1000);
+        await Promise.allSettled([...passes]); await immediate();
+      }
+      expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: 40_000 });
     const reads = vi.spyOn(db, "select"), executes = vi.spyOn(db, "execute");
     const selected = reads.mock.calls.length, executed = executes.mock.calls.length;
     if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
@@ -455,8 +463,8 @@ describe("deferred receipt durable dispatch", () => {
       const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!));
       expect(wake.runId, JSON.stringify(wake)).toBeTruthy(); runId = wake.runId;
     }, { timeout: 40_000 });
+    // Observe this Retry before closing the task and draining its follow-ups.
     await vi.waitFor(async () => {
-      await heartbeat.drainActiveRunExecutions();
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
       expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
       expect(run.stdoutExcerpt).toContain("receipt-proof");
