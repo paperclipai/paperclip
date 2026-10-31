@@ -82,6 +82,7 @@ import { NATIVE_PROVIDER_SLUGS, nativeProviderCatalogFor } from "./native-provid
 import { connectorToolPolicy } from "./connectors/tool-policy.js";
 
 import { notifyChatEndpointWork } from "./chat-work-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 import { defaultConnectionAgentInstructions } from "@paperclipai/shared";
 
@@ -779,6 +780,11 @@ export function toolAccessService(
       ? createVercelConnectClient()
       : options.vercelConnectClient;
   const runtimeSupervisor = createToolRuntimeSupervisor(db, options);
+  const notifyConnectionAccess = (tx: object) => notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+  const writeConnectionAccess = <T>(write: (tx: Db) => Promise<T>) => db.transaction(async tx => {
+    await notifyConnectionAccess(tx);
+    return write(tx as unknown as Db);
+  });
   const connectionGrantsService = createConnectionGrants(db, { getConnectionRow, assertSecretRefs, vercelConnect });
   const removeConnection = createConnectionRemoval(db, { options, secrets, runtimeSupervisor, vercelConnect, getConnectionRow });
   const credentialStore = createOAuthCredentialStore(db, secrets);
@@ -1223,6 +1229,7 @@ export function toolAccessService(
     };
     if (existing) {
       const [updated] = await db.transaction(async tx => {
+        await notifyConnectionAccess(tx);
         const [current] = await tx.select({ type: toolApplications.type }).from(toolApplications)
           .where(and(eq(toolApplications.id, existing.id), eq(toolApplications.companyId, companyId)))
           .for("no key update");
@@ -1242,7 +1249,7 @@ export function toolAccessService(
       });
       return { row: updated, created: false };
     }
-    const [created] = await db
+    const [created] = await writeConnectionAccess(tx => tx
       .insert(toolApplications)
       .values({
         companyId,
@@ -1253,7 +1260,7 @@ export function toolAccessService(
         status: "active",
         metadata,
       })
-      .returning();
+      .returning());
     return { row: created, created: true };
   }
 
@@ -1271,6 +1278,7 @@ export function toolAccessService(
     };
     if (existing) {
       const updated = await writeToolConnectionHealthChange(db, existing, async tx => {
+        await notifyConnectionAccess(tx);
         const [updated] = await tx
           .update(toolConnections)
           .set({
@@ -1297,6 +1305,7 @@ export function toolAccessService(
     }
     const connectionId = randomUUID();
     const created = await writeToolConnectionHealthChange(db, { companyId, id: connectionId }, async tx => {
+      await notifyConnectionAccess(tx);
       const [created] = await tx
         .insert(toolConnections)
         .values({
@@ -1340,7 +1349,7 @@ export function toolAccessService(
       safeDefault: true,
     };
     if (existing) {
-      const [updated] = await db
+      const [updated] = await writeConnectionAccess(tx => tx
         .update(toolProfiles)
         .set({
           name: definition.profileName,
@@ -1351,10 +1360,10 @@ export function toolAccessService(
           updatedAt: new Date(),
         })
         .where(eq(toolProfiles.id, existing.id))
-        .returning();
+        .returning());
       return { row: updated, created: false };
     }
-    const [created] = await db
+    const [created] = await writeConnectionAccess(tx => tx
       .insert(toolProfiles)
       .values({
         companyId,
@@ -1365,7 +1374,7 @@ export function toolAccessService(
         defaultAction: "deny",
         metadata,
       })
-      .returning();
+      .returning());
     return { row: created, created: true };
   }
 
@@ -1374,7 +1383,7 @@ export function toolAccessService(
     profileId: string,
     catalog: ToolCatalogEntry[],
   ): Promise<ToolProfileEntry[]> {
-    await db
+    const deleteEntries = (tx: Db) => tx
       .delete(toolProfileEntries)
       .where(
         and(
@@ -1385,8 +1394,7 @@ export function toolAccessService(
     const readEntries = catalog.filter(
       (entry) => entry.riskLevel === "read" && entry.status === "active",
     );
-    if (readEntries.length === 0) return [];
-    const rows = await db
+    const insertEntries = (tx: Db) => tx
       .insert(toolProfileEntries)
       .values(
         readEntries.map((entry) => ({
@@ -1403,6 +1411,10 @@ export function toolAccessService(
         })),
       )
       .returning();
+    const rows = await writeConnectionAccess(async tx => {
+      await deleteEntries(tx);
+      return readEntries.length === 0 ? [] : insertEntries(tx);
+    });
     return rows.map(toProfileEntry);
   }
 
@@ -1418,14 +1430,14 @@ export function toolAccessService(
       safeDefault: true,
     };
     if (existing) {
-      const [updated] = await db
+      const [updated] = await writeConnectionAccess(tx => tx
         .update(toolProfileBindings)
         .set({ priority: 100, metadata, updatedAt: new Date() })
         .where(eq(toolProfileBindings.id, existing.id))
-        .returning();
+        .returning());
       return toProfileBinding(updated);
     }
-    const [created] = await db
+    const [created] = await writeConnectionAccess(tx => tx
       .insert(toolProfileBindings)
       .values({
         companyId,
@@ -1439,7 +1451,7 @@ export function toolAccessService(
         createdByUserId:
           connectionActorUserId(actor),
       })
-      .returning();
+      .returning());
     return toProfileBinding(created);
   }
 
@@ -3959,7 +3971,7 @@ export function toolAccessService(
         .map((entry) => entry.id);
       if (safeReadEntryIds.length > 0) {
         const reviewedAt = new Date();
-        await db
+        await writeConnectionAccess(tx => tx
           .update(toolCatalogEntries)
           .set({
             status: "active",
@@ -3977,7 +3989,7 @@ export function toolAccessService(
               eq(toolCatalogEntries.companyId, companyId),
               inArray(toolCatalogEntries.id, safeReadEntryIds),
             ),
-          );
+          ));
         catalog = catalog.map((entry) =>
           safeReadEntryIds.includes(entry.id)
             ? {
