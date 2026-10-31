@@ -2,7 +2,40 @@ import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
+import { isPluginRunnerManagedCredentialSupported, preparePluginRunnerCredentials, supportsPluginRunnerManagedCredentials } from "./plugin-runner-credentials.js";
+
+describe("plugin Runner managed credential compatibility", () => {
+  const pluginTarget = { kind: "remote", transport: "sandbox", remoteCwd: ".", runnerTask: async () => ({}) } as const;
+  const plainSandboxTarget = { kind: "remote", transport: "sandbox", remoteCwd: "." } as const;
+  const localTarget = { kind: "local" } as const;
+  const config = { provider: "opencode" };
+  const routing = { kind: "gateway", protocol: "chat" };
+
+  it("rejects unsupported managed credentials on a supplied plugin Runner target", () => {
+    const check = (config: Record<string, unknown>, route: unknown = undefined) =>
+      isPluginRunnerManagedCredentialSupported({ executionTarget: pluginTarget, adapterType: "paperclip_runner", config, routing: route });
+    expect(check(config, routing)).toBe(false);
+    expect(check(config)).toBe(false);
+    expect(check({ provider: "codex" }, { kind: "gateway", protocol: "responses" })).toBe(false);
+    expect(check({ provider: "acpx", acpxAgent: "claude" }, { kind: "gateway", protocol: "messages" })).toBe(false);
+    expect(check({ provider: "codex" })).toBe(true);
+    expect(check({ provider: "acpx", acpxAgent: "claude" })).toBe(true);
+  });
+
+  it("does not apply plugin restrictions to other supplied targets or adapters", () => {
+    for (const executionTarget of [localTarget, plainSandboxTarget, null]) {
+      expect(isPluginRunnerManagedCredentialSupported({ executionTarget, adapterType: "paperclip_runner", config, routing })).toBe(true);
+    }
+    expect(isPluginRunnerManagedCredentialSupported({ executionTarget: pluginTarget, adapterType: "opencode_local", config, routing })).toBe(true);
+  });
+
+  it("exposes the same capability check before a plugin task target exists", () => {
+    expect(supportsPluginRunnerManagedCredentials("codex", undefined)).toBe(true);
+    expect(supportsPluginRunnerManagedCredentials("claude", null)).toBe(true);
+    expect(supportsPluginRunnerManagedCredentials("codex", routing)).toBe(false);
+    expect(supportsPluginRunnerManagedCredentials("opencode", undefined)).toBe(false);
+  });
+});
 
 const homes: string[] = [];
 afterEach(async () => { await Promise.all(homes.splice(0).map(home => rm(home, { recursive: true, force: true }))); });

@@ -8,7 +8,7 @@ import { z } from "zod";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, runUsageReceipts, type Db } from "@paperclipai/db";
 import type { AdapterExecutionResult, AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
-import { compareCents, normalizeCents, pricingProvenanceSchema, usdToUnits } from "@paperclipai/shared";
+import { AI_ROUTING_MODEL_ID_MAX_LENGTH, compareCents, normalizeCents, pricingProvenanceSchema, usdToUnits } from "@paperclipai/shared";
 import { idleAccountingSpoolPath, registerIdleSpoolDirectory } from "./idle-local-work.js";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -25,10 +25,10 @@ const price = z.number().finite().nonnegative().nullable().optional();
 const usage = z.object({ inputTokens: token, outputTokens: token, cachedInputTokens: token.optional(), cacheWriteTokens: token.optional() });
 const checkpointSchema = z.object({
   attemptId: z.string().uuid().optional(), usage: usage.optional(),
-  usageByModel: z.array(z.object({ model: z.string().min(1).max(250), usage, costUsd: z.number().finite().nonnegative() })).max(500).optional(),
+  usageByModel: z.array(z.object({ model: z.string().min(1).max(AI_ROUTING_MODEL_ID_MAX_LENGTH), usage, costUsd: z.number().finite().nonnegative() })).max(500).optional(),
   usageBasis: z.enum(["per_run", "session_cumulative"]).nullable().optional(),
   provider: z.string().max(250).nullable().optional(), biller: z.string().max(250).nullable().optional(),
-  model: z.string().max(250).nullable().optional(), billingType: z.string().max(100).nullable().optional(),
+  model: z.string().max(AI_ROUTING_MODEL_ID_MAX_LENGTH).nullable().optional(), billingType: z.string().max(100).nullable().optional(),
   costUsd: price, cacheAdjustedCostUsd: price,
   costStatus: z.enum(["reported", "estimated", "unpriced"]).optional(),
   pricingContext: z.object({ serviceTier: z.string().max(50).optional(), contextTier: z.enum(["short", "long"]).optional() }).optional(),

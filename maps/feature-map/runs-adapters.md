@@ -194,6 +194,24 @@ Cloud onboarding must not offer shell commands the customer cannot run.
 
 Manual: Select the intended adapter and account, refresh model choices, and run its environment test. Save, reload, then execute a small task. Repeat with a deliberately unavailable account and verify the failure remains visible.
 
+For gateway/local connection pools, model choices follow the requesting harness
+and the account's routing protocol, not its provider label alone. Verify OpenCode's
+`paperclip/` model namespace and Hermes's raw model IDs, including literal
+`paperclip/` aliases. Pool defaults remain raw: OpenCode must distinguish `custom/a`
+from the raw alias `paperclip/custom/a` by projecting the latter as
+`paperclip/paperclip/custom/a`; Hermes preserves both raw IDs. Empty chat inventories
+require explicit model entry before saving or enabling a pool. Verify the selected
+execution target supports the member's managed credentials before allocation,
+including mixed-pool lifecycle verification. Global environment failures must retain
+their actionable diagnosis. Legacy OpenCode discovery preserves complete spaced
+model IDs on both local and remote targets.
+Model inventories are hints: retain saved manual member defaults absent from a nonempty inventory;
+qualify task overrides against declared hints when present and allow manual
+overrides when hints are empty. Saving or listing models does not prove provider
+availability. [Pool routing regressions](../../server/src/__tests__/ai-connection-router.test.ts)
+and [catalog/runtime regressions](../../server/src/__tests__/agent-hire-ai-connections.test.ts)
+cover fixture behavior, not live-provider acceptance.
+
 The explicit-only [Antigravity agent journey](../../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
 checks a saved personal subscription, prompt-free native Test and exact low model,
 then independently correlates two actual downloaded outputs, accepted/committed

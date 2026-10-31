@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { centsToUnits, normalizeCents } from "./money.js";
+import { AI_ROUTING_MODEL_ID_MAX_LENGTH } from "./ai-provider-routing.js";
 
 export const exactCentsSchema = z.union([z.string().max(160), z.number().finite()]).transform((value, ctx) => {
   try {
@@ -33,7 +34,7 @@ export const importBillingInvoiceSchema = z.object({
     costEventId: z.string().uuid().optional(),
     runId: z.string().uuid().optional(),
     providerRequestId: z.string().min(1).max(250).optional(),
-    model: z.string().min(1).max(250).optional(),
+    model: z.string().min(1).max(AI_ROUTING_MODEL_ID_MAX_LENGTH).optional(),
     pricing: pricingProvenanceSchema.optional(),
   })).min(1).max(2000),
 }).superRefine((invoice, ctx) => {

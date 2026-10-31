@@ -8,7 +8,8 @@ import { connectionManagementService, continuingConnectionManagement } from "../
 import { connectionManagementGuard, connectionRequestContext, connectionRequestUserId, aiLoginUserAction } from "./connection-management-authz.js";
 import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
 import { agentHarnessType, isEnvironmentDriverSupportedForAdapter, normalizeClaudeRunnerOptions, type AgentConfigurationWarning, type AgentRunnerChoice } from "@paperclipai/shared";
-import { resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
+import { pluginEnvironmentRunnerTaskDriver, resolveAgentRunnerEnvironmentForCompany, resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
+import { supportsPluginRunnerManagedCredentials } from "../services/native-runtime/plugin-runner-credentials.js";
 import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
 import { qualifyAgentRunner } from "../services/agent-runner-qualification.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
@@ -3061,11 +3062,21 @@ export function agentRoutes(
       const pool = (await aiConnectionRouterService(db).selectable(companyId, responsibleUserForAiRequest(req) ?? "")).find(pool => pool.id === poolId);
       if (!pool) throw unprocessable("Enable an accessible AI connection pool");
       const catalog = new Map<string, { id: string; label: string }>();
+      const accounts = await aiConnectionService(db).list(companyId, responsibleUserForAiRequest(req) ?? "");
       for (const member of pool.members) {
+        const account = accounts.find(a => a.id === member.binding.connectionId && a.grantId === member.binding.grantId && a.provider === member.binding.provider && a.method === member.binding.method);
+        if (!account) continue;
         const memberAdapter = member.binding.provider === "openai" ? "codex_local" : member.binding.provider === "anthropic" ? "claude_local" : member.binding.provider === "xai" ? "grok_local" : "opencode_local";
-        const models = [{ id: member.profile.model, label: member.profile.model }, ...await listAdapterModels(memberAdapter)];
+        const routing = account.routing?.kind === "gateway" || account.routing?.kind === "local" ? account.routing : undefined;
+        const models: Array<{ id: string; label?: string }> = routing
+          ? [{ id: member.profile.model }, ...routing.models]
+          : [{ id: member.profile.model, label: member.profile.model }, ...await listAdapterModels(memberAdapter)];
         for (const model of models) {
-          try { poolMemberRuntimeConfig({ ...member, profile: { ...member.profile, model: model.id } }, type); catalog.set(model.id, model); } catch { /* Only qualified profiles belong in the pool catalog. */ }
+          try {
+            const runtime = poolMemberRuntimeConfig({ ...member, profile: { ...member.profile, model: model.id } }, type, {}, account);
+            const id = String(runtime.config.model);
+            catalog.set(id, { id, label: model.label?.trim() || id });
+          } catch {}
         }
       }
       res.json([...catalog.values()]);
@@ -3179,10 +3190,18 @@ export function agentRoutes(
       if (!pool) throw unprocessable("Enable the selected connection pool");
       const userId = responsibleUserForAiRequest(req);
       const memberConnectionIds = new Set<string>();
+      const accounts = await aiConnectionService(db).list(companyId, userId ?? "");
+      const runnerEnvironment = adapterType === "paperclip_runner" ? await resolveAgentRunnerEnvironmentForCompany(db, companyId, environmentId) : null;
+      const runnerTasks = runnerEnvironment?.environment?.driver === "plugin" && await pluginEnvironmentRunnerTaskDriver(db, runnerEnvironment.environment);
       let compatible = false;
+      let hasAccessibleMember = false;
       for (const member of pool.members) {
+        const account = accounts.find(a => a.id === member.binding.connectionId && a.grantId === member.binding.grantId && a.provider === member.binding.provider && a.method === member.binding.method);
+        if (!account) continue;
+        hasAccessibleMember = true;
         let runtime: ReturnType<typeof poolMemberRuntimeConfig>;
-        try { runtime = poolMemberRuntimeConfig(member, adapterType); } catch { continue; }
+        try { runtime = poolMemberRuntimeConfig(member, adapterType, {}, account); } catch { continue; }
+        if (runnerTasks && !supportsPluginRunnerManagedCredentials(runtime.config.provider === "acpx" ? runtime.config.acpxAgent : runtime.config.provider, account.routing)) continue;
         compatible = true;
         const allowUninstalledShared = newAgent && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, member.binding);
         try {
@@ -3194,7 +3213,7 @@ export function agentRoutes(
           if (!(error instanceof HttpError && [403, 422].includes(error.status))) throw error;
         }
       }
-      if (!compatible) throw unprocessable("This pool has no compatible harness");
+      if (!compatible && hasAccessibleMember) throw unprocessable("This pool has no compatible harness");
       if (!memberConnectionIds.size) throw unprocessable("Install or repair a compatible pool member for this agent.", { code: "ai_connection_pool_no_eligible_member" });
       return { connectionId: pool.id, ...(newAgent ? { memberConnectionIds: [...memberConnectionIds] } : {}) };
     }

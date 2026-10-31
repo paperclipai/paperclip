@@ -7,6 +7,9 @@ import { requireServerAdapter } from "../adapters/index.js";
 import { agentEnvironmentTestService } from "./agent-environment-test.js";
 import { aiConnectionRouterService } from "./ai-connection-router.js";
 import { aiConnectionService } from "./ai-connections.js";
+import { pluginEnvironmentRunnerTaskDriver } from "./agent-runner-selection.js";
+import { supportsPluginRunnerManagedCredentials } from "./native-runtime/plugin-runner-credentials.js";
+import { unprocessable } from "../errors.js";
 import { withManagedAiProbe, stripAiAuthBindings } from "./ai-connection-runtime.js";
 import { environmentService } from "./environments.js";
 import { secretService } from "./secrets.js";
@@ -57,9 +60,25 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
     let binding = agent.runtimeConfig.aiConnection ? aiRuntimeConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
     let config = agent.adapterConfig;
     if (binding?.mode === "router") {
+      const resolveRunnerTasks = async (client: Db) => {
+        if (agent.adapterType !== "paperclip_runner") return false;
+        const service = client === db ? tests : agentEnvironmentTestService(client, manager);
+        const environmentId = await service.resolveAdapterTestEnvironmentId(agent.companyId, agent.defaultEnvironmentId);
+        if (!environmentId) return false;
+        await service.assertAdapterTestEnvironmentForCompany(agent.companyId, environmentId, agent.adapterType);
+        const environment = await environmentService(client).getById(environmentId);
+        return environment?.driver === "plugin" && Boolean(await pluginEnvironmentRunnerTaskDriver(client, environment));
+      };
+      const candidateRunnerTasks = await resolveRunnerTasks(db);
       const selected = await aiConnectionRouterService(db, manager).resolve({ companyId: agent.companyId,
         poolId: binding.connectionId, agentId: agent.id, userId: responsibleUserId,
-        adapterType: agent.adapterType, taskKey: `lifecycle:${agent.lifecycleOperation!.id}` });
+        adapterType: agent.adapterType, taskKey: `lifecycle:${agent.lifecycleOperation!.id}`,
+        validateRuntime: async (runtimeConfig, metadata, phase, client) => {
+          const runnerTasks = phase === "candidate" ? candidateRunnerTasks : await resolveRunnerTasks(client);
+          const provider = runtimeConfig.provider === "acpx" ? runtimeConfig.acpxAgent : runtimeConfig.provider;
+          if (runnerTasks && !supportsPluginRunnerManagedCredentials(provider, metadata.routing)) throw unprocessable("Plugin Runner does not support this managed credential provider or routing");
+        },
+      });
       binding = selected.binding;
       config = { ...config, ...selected.runtimeConfig };
     }

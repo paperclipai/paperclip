@@ -85,11 +85,11 @@ export function parseOpenCodeModelsOutput(stdout: string): AdapterModel[] {
   for (const raw of stdout.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
-    const firstToken = line.split(/\s+/)[0]?.trim() ?? "";
-    if (!firstToken.includes("/")) continue;
-    const provider = firstToken.slice(0, firstToken.indexOf("/")).trim();
-    const model = firstToken.slice(firstToken.indexOf("/") + 1).trim();
-    if (!provider || !model) continue;
+    const slashIndex = line.indexOf("/");
+    if (slashIndex < 1) continue;
+    const provider = line.slice(0, slashIndex);
+    const model = line.slice(slashIndex + 1);
+    if (/\s/.test(provider) || !model.trim()) continue;
     parsed.push({ id: `${provider}/${model}`, label: `${provider}/${model}` });
   }
   return dedupeModels(parsed);

@@ -7,12 +7,15 @@ import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { createDb, closeRegisteredClients, companies, agents, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, dotAgentBindings, grokBotRoutines } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
-import type { AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { AiConnectionMetadata, AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, poolMemberRuntimeConfig, applyAiConnectionRouterTaskSettings } from "../services/ai-connection-router.js";
 import { aiConnectionSessionCompatibilityInputs } from "../services/ai-connection-session.js";
 import { projectPaperclipRunnerTaskConfig, resolvePaperclipRunnerNativeProviderInput } from "../services/native-runtime/provider-profile.js";
 import { aiConnectionService } from "../services/ai-connections.js";
+import * as aiConnections from "../services/ai-connections.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { environmentService } from "../services/environments.js";
+import { createHeartbeatPoolRuntimeValidator } from "../services/heartbeat/environment-selection.js";
 import { managedAiSessionFingerprintConfig, prepareManagedAiRuntime } from "../services/ai-connection-runtime.js";
 import { secretService } from "../services/secrets.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -27,6 +30,7 @@ import { legacyExecutionNeedsReconciliation } from "../services/legacy-execution
 import { getServerAdapter, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
 import { dotRunnerBroker } from "../services/dot-runner-broker.js";
+import { isPluginRunnerManagedCredentialSupported } from "../services/native-runtime/plugin-runner-credentials.js";
 
 const captureRunFailure = vi.hoisted(() => vi.fn());
 vi.mock("../sentry.js", async (importOriginal) => ({
@@ -88,6 +92,328 @@ describe("durable, authorized connection routing", () => {
     expect(await service().selectable(companyId, "alice")).toEqual([]);
     await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
   });
+  it("saves and selects a chat gateway with the OpenCode harness", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+    const routing = { kind: "gateway", protocol: "chat", auth: "bearer", baseUrl: "https://gateway.example/v1", models: [{ id: "custom/model" }] } as const;
+    const account = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Chat gateway", apiKey: "fixture", allAgents: true, agentIds: [], routing: { ...routing, models: [...routing.models] } }, "fixture-gateway");
+    const member: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...account }, profile: { provider: "opencode", model: "custom/model" } };
+    const pool = await makePool({ members: [member] });
+    const originalService = aiConnectionService;
+    let selects = 0;
+    const spy = vi.spyOn(aiConnections, "aiConnectionService").mockImplementation((client) => {
+      const service = originalService(client);
+      const originalSelect = service.select;
+      const originalAuthorize = service.authorize;
+      return { ...service, select: async (...args: Parameters<typeof originalSelect>) => { selects++; return originalSelect(...args); }, authorize: async (...args: Parameters<typeof originalAuthorize>) => { selects++; return originalAuthorize(...args); } };
+    });
+    try {
+      const selected = await resolve(pool.id, "chat-gateway");
+      expect(selects).toBeGreaterThan(0);
+      expect(selects).toBeLessThanOrEqual(2);
+      selects = 0;
+      await resolve(pool.id, "chat-gateway");
+      expect(selects).toBeLessThanOrEqual(1);
+      expect(selected.binding).toEqual(member.binding);
+      expect(selected.runtimeConfig).toMatchObject({ provider: "opencode", model: "paperclip/custom/model" });
+    } finally {
+      spy.mockRestore();
+    }
+    await expect(makePool({ members: [{ ...member, profile: { provider: "codex", model: "model" } }] })).rejects.toThrow();
+    await expect(makePool({ members: [{ ...member, binding: { ...member.binding, provider: "anthropic" } }] })).rejects.toThrow();
+    await expect(makePool({ members: [{ ...member, binding: { ...member.binding, method: "subscription" } }] })).rejects.toThrow();
+    await expect(makePool({ members: [{ ...members[0]!, profile: { provider: "opencode", model: "custom/model" } }] })).rejects.toThrow();
+  });
+  it.each(["gateway", "local"] as const)("validates %s pool profiles by routing protocol", (kind) => {
+    const route = { kind, baseUrl: kind === "local" ? "http://127.0.0.1:1234" : "https://gateway.example/v1", auth: "bearer" as const, models: [] };
+    for (const [protocol, profile, compatibleAdapter, incompatibleAdapter] of [
+      ["responses", { provider: "codex", model: "custom" }, "codex_local", "claude_local"],
+      ["messages", { provider: "acpx", acpxAgent: "claude", model: "custom" }, "claude_local", "codex_local"],
+      ["chat", { provider: "opencode", model: "custom" }, "opencode_local", "codex_local"],
+    ] as const) {
+      const member = { ...members[0]!, profile };
+      const metadata = { provider: "openai" as const, method: "api_key" as const, routing: { ...route, protocol } };
+      const expected = { ...profile, model: protocol === "chat" ? "paperclip/custom" : profile.model };
+      expect(poolMemberRuntimeConfig(member, "paperclip_runner", {}, metadata).config).toMatchObject(expected);
+      expect(() => poolMemberRuntimeConfig(member, "paperclip_runner", {}, { ...metadata, routing: { ...metadata.routing, protocol: protocol === "chat" ? "responses" : "chat" } })).toThrow();
+      expect(poolMemberRuntimeConfig(member, compatibleAdapter, {}, metadata).config).toMatchObject(expected);
+      expect(() => poolMemberRuntimeConfig(member, incompatibleAdapter, {}, metadata)).toThrow("Pool member is incompatible with this harness");
+    }
+  });
+  it.each(["gateway", "local"] as const)("accepts only projected %s routing hints as model overrides for the requesting harness", (kind) => {
+    const route = { kind, baseUrl: kind === "local" ? "http://127.0.0.1:1234" : "https://gateway.example/v1", auth: "bearer" as const };
+    for (const adapterType of ["paperclip_runner", "opencode_local", "hermes_local"]) {
+      for (const declaredPrefix of ["", "paperclip/"]) {
+        const prefix = `${adapterType === "hermes_local" ? "" : "paperclip/"}${declaredPrefix}`;
+        const chatMember = { ...members[0]!, profile: { provider: "opencode" as const, model: `${declaredPrefix}custom/a` } };
+        const chatMeta = { provider: "openai" as const, method: "api_key" as const, routing: { ...route, protocol: "chat" as const, models: [{ id: `${declaredPrefix}custom/a` }, { id: `${declaredPrefix}custom/b` }] } };
+        for (const model of new Set([`${declaredPrefix}custom/b`, `${prefix}custom/b`])) {
+          expect(poolMemberRuntimeConfig(chatMember, adapterType, { model }, chatMeta)).toEqual(model === `${prefix}custom/b` ? { config: { provider: "opencode", model }, notes: [] } : { config: { provider: "opencode", model: `${prefix}custom/a` }, notes: ["Model override is unavailable for this member; using its default."] });
+        }
+        expect(poolMemberRuntimeConfig(chatMember, adapterType, { model: "custom/c" }, chatMeta)).toEqual({ config: { provider: "opencode", model: `${prefix}custom/a` }, notes: ["Model override is unavailable for this member; using its default."] });
+        if (adapterType === "hermes_local") {
+          expect(poolMemberRuntimeConfig(chatMember, adapterType, { model: declaredPrefix ? "custom/b" : "paperclip/custom/b" }, chatMeta)).toEqual({ config: { provider: "opencode", model: `${prefix}custom/a` }, notes: ["Model override is unavailable for this member; using its default."] });
+        }
+        const manualModel = adapterType === "hermes_local" ? "paperclip/custom/manual" : "paperclip/paperclip/custom/manual";
+        expect(poolMemberRuntimeConfig({ ...chatMember, profile: { provider: "opencode", model: "paperclip/custom/manual" } }, adapterType, {}, chatMeta)).toEqual({ config: { provider: "opencode", model: manualModel }, notes: [] });
+      }
+    }
+    const responsesMember = { ...members[0]!, profile: { provider: "codex" as const, model: "a" } };
+    const responsesMeta = { provider: "openai" as const, method: "api_key" as const, routing: { ...route, protocol: "responses" as const, models: [{ id: "a" }, { id: "b" }] } };
+    expect(poolMemberRuntimeConfig(responsesMember, "paperclip_runner", { model: "b" }, responsesMeta)).toEqual({ config: { provider: "codex", model: "b" }, notes: [] });
+    expect(poolMemberRuntimeConfig(responsesMember, "paperclip_runner", { model: "c" }, responsesMeta)).toEqual({ config: { provider: "codex", model: "a" }, notes: ["Model override is unavailable for this member; using its default."] });
+    expect(poolMemberRuntimeConfig({ ...responsesMember, profile: { provider: "codex", model: "manual" } }, "paperclip_runner", {}, responsesMeta)).toEqual({ config: { provider: "codex", model: "manual" }, notes: [] });
+  });
+  it.each(["gateway", "local"] as const)("keeps the %s default when routing hints are empty", (kind) => {
+    const metadata = { provider: "openai" as const, method: "api_key" as const, routing: { kind, protocol: "chat" as const, auth: "bearer" as const, baseUrl: kind === "local" ? "http://127.0.0.1:1234" : "https://gateway.example/v1", models: [] } };
+    const member = { ...members[0]!, profile: { provider: "opencode" as const, model: "custom/default" } };
+    for (const adapterType of ["paperclip_runner", "opencode_local", "hermes_local"]) {
+      const model = adapterType === "hermes_local" ? "custom/default" : "paperclip/custom/default";
+      for (const requested of ["custom/manual", "paperclip/custom/manual"]) {
+        expect(poolMemberRuntimeConfig(member, adapterType, { model: requested }, metadata)).toEqual({ config: { provider: "opencode", model }, notes: ["Model override is unavailable for this member; using its default."] });
+      }
+      expect(poolMemberRuntimeConfig(member, adapterType, { model }, metadata)).toEqual({ config: { provider: "opencode", model }, notes: [] });
+      expect(poolMemberRuntimeConfig(member, adapterType, {}, metadata)).toEqual({ config: { provider: "opencode", model: adapterType === "hermes_local" ? "custom/default" : "paperclip/custom/default" }, notes: [] });
+    }
+    expect(poolMemberRuntimeConfig({ ...member, profile: { provider: "opencode", model: "paperclip/custom/default" } }, "hermes_local", {}, metadata)).toEqual({ config: { provider: "opencode", model: "paperclip/custom/default" }, notes: [] });
+  });
+  it.each(["gateway", "local"] as const)("saves and selects a manual %s default absent from nonempty discovery hints", async (kind) => {
+    const routing = { kind, protocol: "chat" as const, auth: "bearer" as const, baseUrl: kind === "local" ? "http://127.0.0.1:1234" : "https://gateway.example/v1", models: [{ id: "discovered" }] };
+    const account = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Manual default", apiKey: "fixture", allAgents: true, agentIds: [], routing }, "fixture");
+    const member: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...account }, profile: { provider: "opencode", model: "custom/manual" } };
+    const pool = await makePool({ members: [member] });
+    expect((await resolve(pool.id, `manual-${kind}`)).runtimeConfig).toEqual({ provider: "opencode", model: "paperclip/custom/manual" });
+  });
+  it.each([
+    ["gateway", "fresh"], ["gateway", "pinned"], ["local", "fresh"], ["local", "pinned"],
+  ] as const)("prioritizes the projected %s default over a raw hint alias for %s selections", async (kind, phase) => {
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+    const routing = { kind, protocol: "chat" as const, auth: "bearer" as const, baseUrl: kind === "local" ? "http://127.0.0.1:1234" : "https://gateway.example/v1", models: [{ id: "paperclip/custom/a" }] };
+    const account = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Default alias collision", apiKey: "fixture", allAgents: true, agentIds: [], routing }, "fixture");
+    const member: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...account }, profile: { provider: "opencode", model: "custom/a" } };
+    const pool = await makePool({ members: [member] });
+    for (const adapterType of ["paperclip_runner", "opencode_local"]) {
+      const taskKey = `default-alias-${kind}-${phase}-${adapterType}`;
+      if (phase === "pinned") await resolve(pool.id, taskKey, { adapterType });
+      const pinsBefore = await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id));
+      const [cursorBefore] = await db.select().from(aiConnectionRouterCursors).where(eq(aiConnectionRouterCursors.poolId, pool.id));
+      for (const [index, model] of ["paperclip/custom/a", "paperclip/paperclip/custom/a", "paperclip/custom/a"].entries()) {
+        const selection = await resolve(pool.id, phase === "fresh" ? `${taskKey}-${index}` : taskKey, { adapterType, overrides: { model } });
+        expect(selection).toMatchObject({ memberId: member.id, binding: member.binding, runtimeConfig: { provider: "opencode", model: phase === "fresh" ? model : "paperclip/custom/a" }, notes: [] });
+      }
+      const pinsAfter = await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id));
+      const [cursorAfter] = await db.select().from(aiConnectionRouterCursors).where(eq(aiConnectionRouterCursors.poolId, pool.id));
+      expect(pinsAfter).toHaveLength(pinsBefore.length + (phase === "fresh" ? 3 : 0));
+      expect(cursorAfter?.version).toBe(cursorBefore!.version + (phase === "fresh" ? 3 : 0));
+      if (phase === "pinned") {
+        expect(pinsAfter).toEqual(pinsBefore);
+        expect(cursorAfter).toEqual(cursorBefore);
+      }
+    }
+  });
+  it.each([
+    ["gateway", "fresh"], ["gateway", "pinned"], ["local", "fresh"], ["local", "pinned"],
+  ] as const)("keeps a projected %s catalog identity canonical across members for %s selections", async (kind, phase) => {
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+    const route = { kind, protocol: "chat" as const, auth: "bearer" as const, baseUrl: kind === "local" ? "http://127.0.0.1:1234" : "https://gateway.example/v1" };
+    const accountA = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Canonical member A", apiKey: "fixture", allAgents: true, agentIds: [], routing: { ...route, models: [{ id: "custom/a" }] } }, "fixture");
+    const accountB = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Canonical member B", apiKey: "fixture", allAgents: true, agentIds: [], routing: { ...route, models: [{ id: "paperclip/custom/a" }, { id: "paperclip/custom/c" }] } }, "fixture");
+    const memberA: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...accountA }, profile: { provider: "opencode", model: "custom/a" } };
+    const memberB: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...accountB }, profile: { provider: "opencode", model: "other" } };
+    const pool = await makePool({ members: [memberB, memberA] });
+    proposal.mockImplementation(async (_id, _method, request) => ({ kind: "selected", memberId: request.pinnedMemberId ?? (request.taskKey.endsWith("-canonical") ? memberA.id : memberB.id) }));
+    try {
+      for (const adapterType of ["paperclip_runner", "opencode_local"]) {
+        const taskKey = `cross-member-${kind}-${phase}-${adapterType}`;
+        if (phase === "pinned") await resolve(pool.id, taskKey, { adapterType });
+        const key = (suffix: string) => phase === "fresh" ? `${taskKey}-${suffix}` : taskKey;
+        const fallback = await resolve(pool.id, key("fallback"), { adapterType, overrides: { model: "paperclip/custom/a" } });
+        expect(fallback).toMatchObject({ memberId: memberB.id, binding: memberB.binding, runtimeConfig: { provider: "opencode", model: "paperclip/other" }, notes: phase === "fresh" ? ["Model override is unavailable for this member; using its default."] : [] });
+        const alias = await resolve(pool.id, key("alias"), { adapterType, overrides: { model: "paperclip/paperclip/custom/a" } });
+        expect(alias).toMatchObject({ memberId: memberB.id, runtimeConfig: { provider: "opencode", model: phase === "fresh" ? "paperclip/paperclip/custom/a" : "paperclip/other" }, notes: [] });
+        const raw = await resolve(pool.id, key("raw"), { adapterType, overrides: { model: "paperclip/custom/c" } });
+        expect(raw).toMatchObject({ memberId: memberB.id, runtimeConfig: { provider: "opencode", model: "paperclip/other" }, notes: phase === "fresh" ? ["Model override is unavailable for this member; using its default."] : [] });
+        const canonical = await resolve(pool.id, `${taskKey}-canonical`, { adapterType, overrides: { model: "paperclip/custom/a" } });
+        expect(canonical).toMatchObject({ memberId: memberA.id, runtimeConfig: { provider: "opencode", model: "paperclip/custom/a" }, notes: [] });
+      }
+    } finally { proposal.mockReset(); proposal.mockImplementation(defaultProposal); }
+  });
+  it("keeps a direct OpenRouter default out of a chat gateway member's overrides for fresh and pinned selections", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+    const routing = { kind: "gateway" as const, protocol: "chat" as const, auth: "bearer" as const, baseUrl: "https://gateway.example/v1", models: [{ id: "openrouter/vendor/model-a" }] };
+    const direct = await aiConnectionService(db).save(companyId, "alice", { provider: "openrouter", method: "api_key", ownership: "personal", name: "Direct OpenRouter default", apiKey: "fixture", allAgents: true, agentIds: [] }, "fixture");
+    const gateway = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Gateway OpenRouter hint", apiKey: "fixture", allAgents: true, agentIds: [], routing }, "fixture");
+    const memberA: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openrouter", method: "api_key", ...direct }, profile: { provider: "opencode", model: "openrouter/vendor/model-a" } };
+    const memberB: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...gateway }, profile: { provider: "opencode", model: "custom/b" } };
+    const overrides = { model: "openrouter/vendor/model-a" };
+    const fallback = { config: { provider: "opencode", model: "paperclip/custom/b" }, notes: ["Model override is unavailable for this member; using its default."] };
+    expect(poolMemberRuntimeConfig(memberB, "paperclip_runner", overrides, { provider: "openai", method: "api_key", routing })).toEqual(fallback);
+    const pool = await makePool({ members: [memberB, memberA] });
+    const fresh = await resolve(pool.id, "openrouter-hint-fresh", { overrides });
+    expect(fresh).toMatchObject({ memberId: memberB.id, runtimeConfig: fallback.config, notes: fallback.notes });
+    expect(await resolve(pool.id, "openrouter-hint-fresh", { overrides })).toEqual(fresh);
+    expect(await resolve(pool.id, "openrouter-hint-direct", { overrides })).toMatchObject({ memberId: memberA.id, runtimeConfig: { provider: "opencode", model: "openrouter/vendor/model-a" }, notes: [] });
+    const pinned = await resolve(pool.id, "openrouter-hint-pinned");
+    expect(pinned).toMatchObject({ memberId: memberB.id, runtimeConfig: fallback.config, notes: [] });
+    expect(await resolve(pool.id, "openrouter-hint-pinned", { overrides })).toEqual(pinned);
+  });
+  it("does not let an incompatible Responses member contribute a chat member's model identity", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+    const route = { kind: "gateway" as const, auth: "bearer" as const, baseUrl: "https://gateway.example/v1" };
+    const responses = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Responses member", apiKey: "fixture", allAgents: true, agentIds: [], routing: { ...route, protocol: "responses", models: [{ id: "custom/a" }] } }, "fixture");
+    const chatRouting = { ...route, protocol: "chat" as const, models: [{ id: "paperclip/custom/a" }] };
+    const chat = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Chat member", apiKey: "fixture", allAgents: true, agentIds: [], routing: chatRouting }, "fixture");
+    const memberA: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...responses }, profile: { provider: "codex", model: "custom/a" } };
+    const memberB: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...chat }, profile: { provider: "opencode", model: "custom/b" } };
+    const chatMeta = { provider: "openai" as const, method: "api_key" as const, routing: chatRouting };
+    const fallback = { config: { provider: "opencode", model: "paperclip/custom/b" }, notes: ["Model override is unavailable for this member; using its default."] };
+    const mixed = await makePool({ members: [memberA, memberB] });
+    const alone = await makePool({ members: [memberB] });
+    const withResponses = await resolve(mixed.id, "phantom-identity", { adapterType: "opencode_local", overrides: { model: "paperclip/custom/a" } });
+    const withoutResponses = await resolve(alone.id, "phantom-identity", { adapterType: "opencode_local", overrides: { model: "paperclip/custom/a" } });
+    expect(withResponses).toMatchObject({ memberId: memberB.id, runtimeConfig: fallback.config, notes: fallback.notes });
+    expect({ ...withResponses, poolId: alone.id }).toEqual(withoutResponses);
+    expect(poolMemberRuntimeConfig(memberB, "opencode_local", { model: "paperclip/custom/a" }, chatMeta)).toEqual(fallback);
+    expect(poolMemberRuntimeConfig(memberB, "opencode_local", { model: "paperclip/paperclip/custom/a" }, chatMeta)).toEqual({ config: { provider: "opencode", model: "paperclip/paperclip/custom/a" }, notes: [] });
+  });
+  it("replays a pinned task's stored settings after an unrelated member leaves the pool and still fails closed", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+    const route = { kind: "gateway" as const, protocol: "chat" as const, auth: "bearer" as const, baseUrl: "https://gateway.example/v1" };
+    const accountA = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Unrelated member", apiKey: "fixture", allAgents: true, agentIds: [], routing: { ...route, models: [{ id: "custom/a" }] } }, "fixture");
+    const accountB = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Pinned member", apiKey: "fixture", allAgents: true, agentIds: [], routing: { ...route, models: [{ id: "paperclip/custom/a" }] } }, "fixture");
+    const memberA: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...accountA }, profile: { provider: "opencode", model: "custom/a" } };
+    const memberB: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...accountB }, profile: { provider: "opencode", model: "other" } };
+    const pool = await makePool({ members: [memberB, memberA] });
+    const overrides = { model: "paperclip/custom/a" };
+    const first = await resolve(pool.id, "frozen-pin", { overrides });
+    expect(first).toMatchObject({ memberId: memberB.id, runtimeConfig: { provider: "opencode", model: "paperclip/other" }, notes: ["Model override is unavailable for this member; using its default."] });
+    await service().save(pluginKey, { companyId, id: pool.id, expectedRevision: pool.revision, config: { name: "Without unrelated member", enabled: true, mode: "round_robin", thresholdPercent: 90, members: [memberB] } }, "alice");
+    expect(await resolve(pool.id, "frozen-pin", { overrides })).toEqual(first);
+    const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, "frozen-pin")));
+    expect(pin?.selection).toEqual(first);
+    expect(await resolve(pool.id, "frozen-pin", { overrides, persisted: first })).toEqual(first);
+    await expect(resolve(pool.id, "frozen-pin", { overrides, adapterType: "codex_local" })).rejects.toThrow();
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, accountB.grantId));
+    try {
+      await expect(resolve(pool.id, "frozen-pin", { overrides })).rejects.toThrow();
+      await expect(resolve(pool.id, "frozen-pin", { overrides, persisted: first })).rejects.toThrow();
+    } finally { await db.update(connectionGrants).set({ status: "active" }).where(eq(connectionGrants.id, accountB.grantId)); }
+  });
+  it("authorizes direct OpenRouter members before evaluating fresh and pinned model overrides", async () => {
+    const account = await aiConnectionService(db).save(companyId, "alice", { provider: "openrouter", method: "api_key", ownership: "personal", name: "OpenRouter", apiKey: "fixture", allAgents: true, agentIds: [] }, "fixture");
+    const member: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openrouter", method: "api_key", ...account }, profile: { provider: "opencode", model: "anthropic/claude-sonnet-4.5" } };
+    const pool = await makePool({ members: [member] });
+    const overrides = { model: "openrouter/anthropic/claude-sonnet-4.5" };
+    const selected = await resolve(pool.id, "openrouter-effective-model", { overrides });
+    expect(selected.runtimeConfig).toEqual({ provider: "opencode", model: overrides.model });
+    expect(await resolve(pool.id, "openrouter-effective-model", { overrides })).toEqual(selected);
+    await expect(resolve(pool.id, "openrouter-wrong-user", { overrides, userId: "bob" })).rejects.toThrow();
+    await expect(resolve(pool.id, "openrouter-effective-model", { overrides, userId: "bob" })).rejects.toThrow();
+    await expect(resolve(pool.id, "openrouter-no-override")).rejects.toThrow();
+  });
+  it.each(["gateway", "local"] as const)("keeps distinct raw %s model identities and permits a bare Hermes default", async (kind) => {
+    const routing = { kind, protocol: "chat" as const, auth: "bearer" as const, baseUrl: kind === "local" ? "http://127.0.0.1:1234" : "https://gateway.example/v1", models: [{ id: "custom/a" }, { id: "paperclip/custom/a" }] };
+    const metadata = { provider: "openai" as const, method: "api_key" as const, routing };
+    for (const [raw, projected] of [["custom/a", "paperclip/custom/a"], ["paperclip/custom/a", "paperclip/paperclip/custom/a"]]) {
+      const member = { ...members[0]!, profile: { provider: "opencode" as const, model: raw! } };
+      expect(poolMemberRuntimeConfig(member, "paperclip_runner", {}, metadata)).toEqual({ config: { provider: "opencode", model: projected }, notes: [] });
+      expect(poolMemberRuntimeConfig(member, "opencode_local", { model: projected }, metadata)).toEqual({ config: { provider: "opencode", model: projected }, notes: [] });
+      expect(poolMemberRuntimeConfig(member, "hermes_local", {}, metadata)).toEqual({ config: { provider: "opencode", model: raw }, notes: [] });
+    }
+    const account = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Bare Hermes", apiKey: "fixture", allAgents: true, agentIds: [], routing: { ...routing, models: [] } }, "fixture");
+    const member: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...account }, profile: { provider: "opencode", model: "qwen" } };
+    const pool = await makePool({ members: [member] });
+    expect(pool.members[0]?.profile.model).toBe("qwen");
+    expect((await resolve(pool.id, `bare-hermes-${kind}`, { adapterType: "hermes_local" })).runtimeConfig).toEqual({ provider: "opencode", model: "qwen" });
+    expect((await resolve(pool.id, `bare-opencode-${kind}`)).runtimeConfig).toEqual({ provider: "opencode", model: "paperclip/qwen" });
+  });
+  it.each(["gateway", "local"] as const)("validates %s manual model syntax independently of inventory hints", (kind) => {
+    const routing = { kind, protocol: "chat" as const, auth: "bearer" as const, baseUrl: kind === "local" ? "http://127.0.0.1:1234" : "https://gateway.example/v1", models: [] };
+    const metadata = { provider: "openai" as const, method: "api_key" as const, routing };
+    const member = { ...members[0]!, profile: { provider: "opencode" as const, model: "default" } };
+    for (const adapterType of ["paperclip_runner", "opencode_local", "hermes_local"]) {
+      const invalid = ["", " ", "\t", "m".repeat(257), ...(adapterType === "hermes_local" ? [] : ["paperclip/", "custom/"])];
+      for (const model of invalid) {
+        expect(poolMemberRuntimeConfig(member, adapterType, { model }, metadata)).toEqual({ config: { provider: "opencode", model: adapterType === "hermes_local" ? "default" : "paperclip/default" }, notes: ["Model override is unavailable for this member; using its default."] });
+      }
+      for (const raw of ["custom model", "/model", "custom//a"]) {
+        const model = adapterType === "hermes_local" ? raw : `paperclip/${raw}`;
+        expect(poolMemberRuntimeConfig(member, adapterType, { model: raw }, metadata)).toEqual({ config: { provider: "opencode", model: adapterType === "hermes_local" ? "default" : "paperclip/default" }, notes: ["Model override is unavailable for this member; using its default."] });
+        expect(poolMemberRuntimeConfig({ ...member, profile: { provider: "opencode", model: raw } }, adapterType, {}, metadata)).toEqual({ config: { provider: "opencode", model }, notes: [] });
+      }
+      if (adapterType === "hermes_local") expect(poolMemberRuntimeConfig(member, adapterType, { model: "custom/" }, metadata)).toEqual({ config: { provider: "opencode", model: "default" }, notes: ["Model override is unavailable for this member; using its default."] });
+      expect(poolMemberRuntimeConfig(member, adapterType, { model: " custom/a " }, metadata)).toEqual({ config: { provider: "opencode", model: adapterType === "hermes_local" ? "default" : "paperclip/default" }, notes: ["Model override is unavailable for this member; using its default."] });
+      const raw = `paperclip/${"m".repeat(246)}`;
+      expect(poolMemberRuntimeConfig({ ...member, profile: { provider: "opencode", model: raw } }, adapterType, {}, metadata).config.model).toBe(adapterType === "hermes_local" ? raw : `paperclip/${raw}`);
+      expect(() => poolMemberRuntimeConfig({ ...member, profile: { provider: "opencode", model: "m".repeat(257) } }, adapterType, {}, metadata)).toThrow("valid pool member model");
+    }
+  });
+  it.each(["gateway", "local"] as const)("projects %s OpenCode effort into the legacy variant field only", (kind) => {
+    const metadata = { provider: "openai" as const, method: "api_key" as const, routing: { kind, protocol: "chat" as const, auth: "bearer" as const, baseUrl: kind === "local" ? "http://127.0.0.1:1234" : "https://gateway.example/v1", models: [] } };
+    const member = { ...members[0]!, profile: { provider: "opencode" as const, model: "custom/model", effort: "high" } };
+    expect(poolMemberRuntimeConfig(member, "opencode_local", {}, metadata)).toEqual({ config: { provider: "opencode", model: "paperclip/custom/model", variant: "high" }, notes: [] });
+    expect(poolMemberRuntimeConfig(member, "opencode_local", { variant: "medium" }, metadata)).toEqual({ config: { provider: "opencode", model: "paperclip/custom/model", variant: "medium" }, notes: [] });
+    expect(poolMemberRuntimeConfig(member, "opencode_local", { variant: "provider-specific" }, metadata)).toEqual({ config: { provider: "opencode", model: "paperclip/custom/model", variant: "provider-specific" }, notes: [] });
+    for (const adapterType of ["opencode_local"]) {
+      expect(poolMemberRuntimeConfig(member, adapterType, { variant: "v".repeat(32) }, metadata)).toEqual({ config: { provider: "opencode", model: "paperclip/custom/model", variant: "v".repeat(32) }, notes: [] });
+      for (const variant of ["v".repeat(33), " ", "\t"]) {
+        expect(poolMemberRuntimeConfig(member, adapterType, { variant }, metadata)).toEqual({ config: { provider: "opencode", model: "paperclip/custom/model", variant: "high" }, notes: ["Effort override is unavailable for this member; using its default."] });
+      }
+      expect(poolMemberRuntimeConfig(member, adapterType, { variant: "" }, metadata)).toEqual({ config: { provider: "opencode", model: "paperclip/custom/model", variant: "high" }, notes: [] });
+    }
+    expect(poolMemberRuntimeConfig(member, "paperclip_runner", { variant: "medium" }, metadata)).toEqual({ config: { provider: "opencode", model: "paperclip/custom/model" }, notes: ["Effort override is unavailable for this member; using its default."] });
+  });
+  it("rejects unsupported supplied execution targets before pinning and rechecks at commit", async () => {
+    const routing = { kind: "gateway" as const, protocol: "chat" as const, auth: "bearer" as const, baseUrl: "https://gateway.example/v1", models: [] };
+    const account = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Target guard", apiKey: "fixture", allAgents: true, agentIds: [], routing }, "fixture");
+    const member: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...account }, profile: { provider: "opencode", model: "custom/model" } };
+    const pool = await makePool({ members: [member] });
+    const pluginTarget = { kind: "remote", transport: "sandbox", remoteCwd: ".", runnerTask: async () => ({}) } as const;
+    let executionTarget: Parameters<typeof isPluginRunnerManagedCredentialSupported>[0]["executionTarget"] = pluginTarget;
+    const validateRuntime = async (config: Record<string, unknown>, metadata: AiConnectionMetadata) => {
+      if (!isPluginRunnerManagedCredentialSupported({ executionTarget, adapterType: "paperclip_runner", config, routing: metadata.routing })) throw new Error("Unsupported supplied target");
+    };
+    await expect(resolve(pool.id, "unsupported-target", { validateRuntime })).rejects.toThrow();
+    expect(await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id))).toHaveLength(0);
+    expect((await db.select().from(aiConnectionRouterCursors).where(eq(aiConnectionRouterCursors.poolId, pool.id)))[0]?.version).toBe(0);
+    executionTarget = { kind: "local" };
+    const selection = await resolve(pool.id, "supported-target", { validateRuntime });
+    expect(selection.runtimeConfig.model).toBe("paperclip/custom/model");
+    executionTarget = pluginTarget;
+    await expect(resolve(pool.id, "supported-target", { validateRuntime })).rejects.toThrow("Unsupported supplied target");
+    executionTarget = { kind: "local" };
+    proposal.mockImplementationOnce(async () => { executionTarget = pluginTarget; return { kind: "selected", memberId: member.id }; });
+    try {
+      await expect(resolve(pool.id, "changed-target", { validateRuntime })).rejects.toThrow("Unsupported supplied target");
+      expect(await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id))).toHaveLength(1);
+      expect((await db.select().from(aiConnectionRouterCursors).where(eq(aiConnectionRouterCursors.poolId, pool.id)))[0]?.version).toBe(1);
+      await expect(resolve(pool.id, "supported-target", { persisted: selection, validateRuntime })).rejects.toThrow("Unsupported supplied target");
+    } finally { proposal.mockReset(); proposal.mockImplementation(defaultProposal); }
+  });
+  it("commits concurrent allocations with the real environment validator on one database connection", async () => {
+    const single = createDb(externalTestDatabaseUrl ?? database.connectionString, { maxConnections: 1 });
+    const pool = await makePool();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const validateRuntime = await createHeartbeatPoolRuntimeValidator(single, {
+        run: { id: randomUUID() }, agent: { id: agentId, companyId, defaultEnvironmentId: null }, adapterType: "paperclip_runner",
+        issueId: null, issueContext: null, trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} },
+        environmentsSvc: environmentService(single), instanceSettings: instanceSettingsService(single),
+      });
+      const allocations = ["one", "two", "three"].map(taskKey => aiConnectionRouterService(single, worker).resolve({
+        companyId, poolId: pool.id, agentId, userId: "alice", adapterType: "paperclip_runner", taskKey, validateRuntime,
+      }));
+      const selected = await Promise.race([
+        Promise.all(allocations),
+        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("Allocation stalled with one database connection")), 4000); }),
+      ]);
+      expect(selected).toHaveLength(3);
+      expect(await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id))).toHaveLength(3);
+      expect((await db.select().from(aiConnectionRouterCursors).where(eq(aiConnectionRouterCursors.poolId, pool.id)))[0]?.version).toBe(3);
+    } finally {
+      if (timer) clearTimeout(timer);
+      await single.$client.end({ timeout: 1 });
+    }
+  }, 10_000);
   it("registers native connectors only for declared installed routers", async () => {
     const entry = (await service().catalog())[0]!;
     expect(entry.name).toBe("AI connection pool");
@@ -200,18 +526,20 @@ describe("durable, authorized connection routing", () => {
     expect((await resolve(pool.id, "existing")).binding).toEqual(old.binding);
     expect((await resolve(pool.id, "future")).memberId).toBe(members[1]!.id);
   });
-  it("keeps account and harness pinned through independent composer fallback", async () => {
+  it("keeps pinned settings frozen and composer fallback independent", async () => {
     const pool = await makePool();
     const first = await resolve(pool.id, "composer");
     const changed = await resolve(pool.id, "composer", { overrides: { model: "claude-sonnet-5", modelReasoningEffort: "high" } });
-    expect(changed.binding).toEqual(first.binding); expect(changed.runtimeConfig).toMatchObject({ provider: "codex", model: "gpt-5.6-sol", modelReasoningEffort: "high" }); expect(changed.notes).toHaveLength(1);
+    expect(changed.binding).toEqual(first.binding); expect(changed).toEqual(first); expect(changed.runtimeConfig).toMatchObject({ provider: "codex", model: "gpt-5.6-sol", modelReasoningEffort: "low" }); expect(changed.notes).toEqual([]);
+    const composer = poolMemberRuntimeConfig(members[0]!, "paperclip_runner", { model: "claude-sonnet-5", modelReasoningEffort: "high" });
+    expect(composer.config).toMatchObject({ provider: "codex", model: "gpt-5.6-sol", modelReasoningEffort: "high" }); expect(composer.notes).toHaveLength(1);
     const claude = poolMemberRuntimeConfig(members[1]!, "paperclip_runner", { model: "gpt-5.6-sol", modelReasoningEffort: "ultra" });
     expect(claude.config).toMatchObject({ provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" }); expect(claude.notes).toHaveLength(2);
     const claudeEffort = poolMemberRuntimeConfig(members[1]!, "paperclip_runner", { modelReasoningEffort: "xhigh" });
     expect(claudeEffort.config).toMatchObject({ provider: "acpx", acpxAgent: "claude", modelReasoningEffort: "xhigh" });
     expect(claudeEffort.notes).toEqual([]);
-    const overrides = applyAiConnectionRouterTaskSettings({ model: "claude-sonnet-5", effort: "invalid", cwd: "/fixture" }, changed);
-    const native = resolvePaperclipRunnerNativeProviderInput({ backend: "codex_app_server", adapterConfig: projectPaperclipRunnerTaskConfig("codex_app_server", changed.runtimeConfig, overrides) });
+    const overrides = applyAiConnectionRouterTaskSettings({ model: "claude-sonnet-5", effort: "invalid", cwd: "/fixture" }, { ...changed, runtimeConfig: composer.config, notes: composer.notes });
+    const native = resolvePaperclipRunnerNativeProviderInput({ backend: "codex_app_server", adapterConfig: projectPaperclipRunnerTaskConfig("codex_app_server", composer.config, overrides) });
     expect(native).toMatchObject({ provider: "codex", model: "gpt-5.6-sol", codexReasoningEffort: "high" });
     expect(overrides).toMatchObject({ cwd: "/fixture" }); expect(overrides).not.toHaveProperty("effort");
   });

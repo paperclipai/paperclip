@@ -1,8 +1,25 @@
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
+import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { environmentTaskCredentialSchema, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
+
+export function supportsPluginRunnerManagedCredentials(provider: unknown, routing: unknown): boolean {
+  return routing == null && (provider === "codex" || provider === "claude");
+}
+
+export function isPluginRunnerManagedCredentialSupported(input: {
+  executionTarget: AdapterExecutionTarget | null | undefined;
+  adapterType: string;
+  config: Record<string, unknown>;
+  routing: unknown;
+}): boolean {
+  const target = input.executionTarget;
+  if (input.adapterType !== "paperclip_runner" || target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask) return true;
+  const provider = input.config.provider === "acpx" ? input.config.acpxAgent : input.config.provider;
+  return supportsPluginRunnerManagedCredentials(provider, input.routing);
+}
 
 interface PreparedPluginRunnerCredentials {
   githubBroker?: { url: string; token: string };

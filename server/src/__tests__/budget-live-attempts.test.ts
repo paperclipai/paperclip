@@ -4,11 +4,52 @@ import os from "node:os";
 import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, budgetPolicies, budgetReservations, companies, costEvents, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, budgetPolicies, budgetReservations, companies, costEvents, createDb, heartbeatRuns, runUsageReceipts, type Db } from "@paperclipai/db";
+import { importBillingInvoiceSchema } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { computeObservedSpend } from "../services/budgets.js";
 import { accountRunCost } from "../services/run-cost-accounting.js";
-import { createRunUsageRecorder, replayUsageReceipts, type UsageReceiptEnvelope } from "../services/usage-receipts.js";
+import { createRunUsageRecorder, replayUsageReceipts, spoolUsageReceipt, type UsageReceiptEnvelope } from "../services/usage-receipts.js";
+
+describe("usage receipt model bounds", () => {
+  it("accepts full routing model identities in invoice lines", () => {
+    const model = "openrouter/" + "x".repeat(256);
+    const invoice = { biller: "gateway", externalId: "invoice", currency: "USD", lines: [{
+      externalId: "line", amountCents: "25", occurredAt: new Date().toISOString(), model,
+    }] };
+    expect(importBillingInvoiceSchema.parse(invoice).lines[0].model).toBe(model);
+    expect(importBillingInvoiceSchema.safeParse({ ...invoice, lines: [{ ...invoice.lines[0], model: model + "x" }] }).success).toBe(false);
+  });
+
+  it("spools full projected model identities and rejects identities above the bound", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "usage-model-bound-"));
+    const model = "paperclip/paperclip/" + "x".repeat(246);
+    const receipt: UsageReceiptEnvelope = {
+      schema: "paperclip/accounting-receipt/v1", id: randomUUID(), companyId: randomUUID(), runId: randomUUID(),
+      sourceId: randomUUID(), sequence: 1, receivedAt: new Date().toISOString(), adapterType: "opencode_local",
+      receipt: { model, usageByModel: [{ model, usage: { inputTokens: 3, outputTokens: 2 }, costUsd: 0.25 }], complete: true },
+    };
+    try {
+      expect(model).toHaveLength(266);
+      const file = await spoolUsageReceipt(receipt, directory);
+      expect(JSON.parse(await fs.readFile(file, "utf8")).receipt).toEqual(receipt.receipt);
+      const longest = "openrouter/" + "x".repeat(256);
+      expect(longest).toHaveLength(267);
+      receipt.id = randomUUID();
+      receipt.receipt.model = longest;
+      receipt.receipt.usageByModel![0].model = longest;
+      const longestFile = await spoolUsageReceipt(receipt, directory);
+      expect(JSON.parse(await fs.readFile(longestFile, "utf8")).receipt).toEqual(receipt.receipt);
+      receipt.receipt.model = longest + "x";
+      await expect(spoolUsageReceipt(receipt, directory)).rejects.toThrow();
+      receipt.receipt.model = longest;
+      receipt.receipt.usageByModel![0].model = longest + "x";
+      await expect(spoolUsageReceipt(receipt, directory)).rejects.toThrow();
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+});
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("live budget exposure across recorder attempts", () => {
@@ -52,6 +93,34 @@ const support = await getEmbeddedPostgresTestSupport();
     return { companyId, agentId, runId, policy, directory, proxy, recorder, identity, partial, readRun,
       offline: (value: boolean) => { offline = value; } };
   }
+
+  it("replays and settles full-length projected model identities", async () => {
+    const f = await fixture(false);
+    const model = "paperclip/paperclip/" + "x".repeat(246);
+    const usage = { inputTokens: 3, outputTokens: 2 };
+    const details = { ...f.identity, model, usage, usageByModel: [{ model, usage, costUsd: 0.25 }], costUsd: 0.25, costStatus: "reported" as const };
+    f.offline(true);
+    await f.recorder.capture({ ...details, complete: false });
+    const files = (await fs.readdir(f.directory)).filter(file => file.endsWith(".json"));
+    expect(files).toHaveLength(1);
+    expect(JSON.parse(await fs.readFile(path.join(f.directory, files[0]), "utf8")).receipt).toMatchObject({ model, usageByModel: [{ model }] });
+    f.offline(false);
+    expect(await replayUsageReceipts(f.proxy, f.directory)).toEqual({ replayed: 1, failed: 0 });
+    expect((await f.readRun()).usageJson).toMatchObject({ model, usageByModel: [{ model }], accountingReceiptReady: false });
+    await f.recorder.complete({ ...details, exitCode: 0, signal: null, timedOut: false, usageComplete: true });
+    expect((await f.readRun()).usageJson).toMatchObject({ model, usageByModel: [{ model }], accountingReceiptReady: true });
+    const receipts = await db.select().from(runUsageReceipts);
+    expect(receipts).toHaveLength(2);
+    expect(receipts.map(row => row.receiptJson)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ receipt: expect.objectContaining({ model, usageByModel: [expect.objectContaining({ model })] }) }),
+    ]));
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await accountRunCost(db, f.runId)).toBe(true);
+    const events = await db.select().from(costEvents);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ model, costCents: 25 });
+    expect((await f.readRun()).accountingLastError).not.toBe("usage_capture_failed");
+  });
 
   it("enforces a token-priced retry while preserving final receipt uncertainty and one ledger charge", async () => {
     const f = await fixture();

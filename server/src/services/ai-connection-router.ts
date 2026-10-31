@@ -2,8 +2,9 @@ import type { ConnectionManagementContext } from "./connection-management.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, ne, sql } from "drizzle-orm";
 import { aiConnectionPools, aiConnectionRouterCursors, aiConnectionTaskPins, companySecrets, connectionGrants, instanceSettings, plugins, toolApplications, toolConnections, toolConnectionInstalls, type Db } from "@paperclipai/db";
-import { aiConnectionRouterAppDefinition, aiConnectionRouterSlug, aiConnectionPoolConfigSchema, isAiConnectionCompatible, type AiConnectionPool, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterSelection, type AiConnectionPoolSaveInput, type AiConnectionUsage } from "@paperclipai/shared";
+import { AI_PROVIDER_MODEL_ID_MAX_LENGTH, AI_ROUTING_MODEL_ID_MAX_LENGTH, aiConnectionRouterAppDefinition, aiConnectionRouterSlug, aiConnectionPoolConfigSchema, aiConnectionMetadataSchema, aiRoutingHarness, aiRoutingModelFromRaw, isAiConnectionCompatible, type AiConnectionMetadata, type AiConnectionPool, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterSelection, type AiConnectionPoolSaveInput, type AiConnectionUsage } from "@paperclipai/shared";
 import { isCodexLocalKnownModel, codexLocalReasoningEffortsForModel } from "@paperclipai/adapter-codex-local";
+import { isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import { models as claudeModels, claudeLocalReasoningEffortsForModel } from "@paperclipai/adapter-claude-local";
 import { models as grokModels, grokLocalReasoningEffortsForModel } from "@paperclipai/adapter-grok-local";
 import { aiConnectionService } from "./ai-connections.js";
@@ -23,45 +24,60 @@ export class AiConnectionPoolExhausted extends Error {
   readonly code = "ai_connection_pool_exhausted";
   constructor(readonly retryAt: string, readonly poolId: string) { super("All eligible pool accounts are over their usage limit. Waiting for usage to reset."); }
 }
+const nativeCatalogModel = (provider: string, value: string) => provider === "openai" ? isCodexLocalKnownModel(value)
+  : provider === "anthropic" ? claudeModels.some((m) => m.id === value)
+  : provider === "xai" ? grokModels.some((m) => m.id === value) : value.startsWith("openrouter/");
 
 /** Routing can override provider/model only, never environment, permissions, or instructions. */
-export function poolMemberRuntimeConfig(member: AiConnectionPoolMember, adapterType: string, overrides: Record<string, unknown> = {}) {
+export function poolMemberRuntimeConfig(member: AiConnectionPoolMember, adapterType: string, overrides: Record<string, unknown> = {}, metadata?: AiConnectionMetadata) {
   const notes: string[] = [];
   const provider = member.binding.provider;
   const profile = member.profile;
-  const expected = provider === "openai" ? profile.provider === "codex"
+  const routed = metadata?.routing?.kind === "gateway" || metadata?.routing?.kind === "local";
+  const expected = routed ? isAiConnectionCompatible(metadata, "paperclip_runner", profile.model, profile.provider, profile.acpxAgent)
+    : provider === "openai" ? profile.provider === "codex"
     : provider === "anthropic" ? profile.provider === "acpx" && profile.acpxAgent === "claude"
     : provider === "xai" ? profile.provider === "acpx" && profile.acpxAgent === "grok"
     : profile.provider === "opencode";
   if (!expected) throw unprocessable("Pool member harness does not match its account");
-  const supportsModel = (value: string) => provider === "openai" ? isCodexLocalKnownModel(value)
-    : provider === "anthropic" ? claudeModels.some((m) => m.id === value)
-    : provider === "xai" ? grokModels.some((m) => m.id === value) : value.startsWith("openrouter/");
-  const config: Record<string, unknown> = { provider: profile.provider, ...(profile.acpxAgent ? { acpxAgent: profile.acpxAgent } : {}), model: profile.model };
+  const harness = aiRoutingHarness(adapterType, profile.provider, profile.acpxAgent);
+  const validModel = (value: string, max: number) => value.trim().length > 0 && value.length <= max;
+  if (!validModel(profile.model, routed ? AI_PROVIDER_MODEL_ID_MAX_LENGTH : AI_ROUTING_MODEL_ID_MAX_LENGTH)) throw unprocessable("Enter a valid pool member model");
+  const projectModel = (value: string) => routed ? aiRoutingModelFromRaw(metadata!.routing!, harness, value) : value;
+  const routedModels = routed ? metadata!.routing!.models : [];
+  const defaultModel = projectModel(profile.model);
+  const normalizeOverride = (value: string) => routed ? value.trim() : value;
+  const supportsModel = (value: string) => routed
+    ? validModel(harness === "opencode_local" ? value.slice("paperclip/".length) : value, AI_PROVIDER_MODEL_ID_MAX_LENGTH)
+      && routedModels.some((m) => projectModel(m.id) === value)
+    : validModel(value, AI_ROUTING_MODEL_ID_MAX_LENGTH) && nativeCatalogModel(provider, value);
+  const config: Record<string, unknown> = { provider: profile.provider, ...(profile.acpxAgent ? { acpxAgent: profile.acpxAgent } : {}), model: defaultModel };
   const validate = () => {
-    if (!isAiConnectionCompatible(member.binding, adapterType, config.model, config.provider, config.acpxAgent)) throw unprocessable("Pool member is incompatible with this harness");
+    if (!isAiConnectionCompatible(routed ? metadata : member.binding, adapterType, config.model, config.provider, config.acpxAgent)) throw unprocessable("Pool member is incompatible with this harness");
+    if (harness === "opencode_local" && (!isValidOpenCodeModelId(config.model) || String(config.model).trim().endsWith("/"))) throw unprocessable("OpenCode requires model in provider/model form");
     if (adapterType === "paperclip_runner") {
       const resolved = resolvePaperclipRunnerProviderProfile(config);
       resolvePaperclipRunnerNativeProviderInput({ backend: resolved.backend, adapterConfig: config });
     }
   };
-  validate();
-  if (typeof overrides.model === "string" && overrides.model !== profile.model) {
-    if (supportsModel(overrides.model)) {
-      config.model = overrides.model;
-      try { validate(); } catch { config.model = profile.model; notes.push("Model override is unavailable for this member; using its default."); }
+  const overrideModel = typeof overrides.model === "string" ? normalizeOverride(overrides.model) : undefined;
+  if (overrideModel !== undefined && overrideModel !== defaultModel) {
+    if (supportsModel(overrideModel)) {
+      config.model = overrideModel;
+      try { validate(); } catch { config.model = defaultModel; notes.push("Model override is unavailable for this member; using its default."); }
     } else notes.push("Model override is unavailable for this member; using its default.");
   }
   const model = String(config.model);
-  const efforts = provider === "openai" ? codexLocalReasoningEffortsForModel(model)
-    : provider === "anthropic" ? claudeLocalReasoningEffortsForModel(model)
-    : provider === "xai" ? grokLocalReasoningEffortsForModel(model) : [];
+  const efforts = harness === "codex_local" ? codexLocalReasoningEffortsForModel(model)
+    : harness === "claude_local" ? claudeLocalReasoningEffortsForModel(model)
+    : harness === "grok_local" ? grokLocalReasoningEffortsForModel(model) : [];
   const effortKey = adapterType === "paperclip_runner" ? profile.provider === "codex" || (profile.provider === "acpx" && profile.acpxAgent === "claude") ? "modelReasoningEffort" : null
-    : provider === "anthropic" ? "effort" : provider === "xai" ? "reasoningEffort" : provider === "openai" ? "modelReasoningEffort" : "variant";
+    : harness === "claude_local" ? "effort" : harness === "grok_local" ? "reasoningEffort" : harness === "codex_local" ? "modelReasoningEffort" : harness === "opencode_local" ? "variant" : null;
+  const supportsEffort = (value: unknown): value is string => typeof value === "string" && Boolean(effortKey)
+    && (effortKey === "variant" ? value.trim().length > 0 && value.length <= 32 : efforts.includes(value));
   const requested = overrides.modelReasoningEffort ?? overrides.reasoningEffort ?? overrides.effort ?? overrides.variant;
-  const effort = typeof requested === "string" && efforts.includes(requested) && effortKey ? requested
-    : profile.effort && efforts.includes(profile.effort) && effortKey ? profile.effort : null;
-  if (requested && requested !== effort) notes.push("Effort override is unavailable for this member; using its default.");
+  const effort = supportsEffort(requested) ? requested : supportsEffort(profile.effort) ? profile.effort : null;
+  if ((requested ?? profile.effort) && (requested ?? profile.effort) !== effort) notes.push("Effort override is unavailable for this member; using its default.");
   if (effort && effortKey) config[effortKey] = effort;
   validate();
   return { config, notes };
@@ -124,8 +140,9 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     const config = aiConnectionPoolConfigSchema.parse(input.config);
     const visible = await aiConnectionService(db).list(input.companyId, userId);
     for (const member of config.members) {
-      if (!visible.some((v) => v.id === member.binding.connectionId && v.grantId === member.binding.grantId)) throw forbidden("Choose an account you may use in this company");
-      poolMemberRuntimeConfig(member, "paperclip_runner");
+      const account = visible.find((v) => v.id === member.binding.connectionId && v.grantId === member.binding.grantId && v.provider === member.binding.provider && v.method === member.binding.method);
+      if (!account) throw forbidden("Choose an account you may use in this company");
+      poolMemberRuntimeConfig(member, "paperclip_runner", {}, account);
     }
     const id = input.id ?? randomUUID();
     await managementContext?.reauthorize();
@@ -205,9 +222,13 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     } finally { if (timer) clearTimeout(timer); }
   }
 
-  async function resolve(input: { companyId: string; poolId: string; agentId: string; userId: string | null; adapterType: string; taskKey: string; overrides?: Record<string, unknown>; existingGrantId?: string; requireExisting?: boolean; persisted?: AiConnectionRouterSelection }) {
+  async function resolve(input: { companyId: string; poolId: string; agentId: string; userId: string | null; adapterType: string; taskKey: string; overrides?: Record<string, unknown>; existingGrantId?: string; requireExisting?: boolean; persisted?: AiConnectionRouterSelection; validateRuntime?: (config: Record<string, unknown>, metadata: AiConnectionMetadata, phase: "candidate" | "commit" | "persisted", client: Db) => Promise<void> }) {
     const pinWhere = and(eq(aiConnectionTaskPins.companyId, input.companyId), eq(aiConnectionTaskPins.poolId, input.poolId), eq(aiConnectionTaskPins.agentId, input.agentId), eq(aiConnectionTaskPins.taskKey, input.taskKey));
-    const validateSelection = async (selection: AiConnectionRouterSelection, client = db) => aiConnectionService(client).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId, adapterType: input.adapterType, binding: selection.binding, model: selection.runtimeConfig.model, runnerProvider: selection.runtimeConfig.provider, acpxAgent: selection.runtimeConfig.acpxAgent });
+    const validateSelection = async (selection: AiConnectionRouterSelection, client = db) => {
+      const account = await aiConnectionService(client).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId, adapterType: input.adapterType, binding: selection.binding, model: selection.runtimeConfig.model, runnerProvider: selection.runtimeConfig.provider, acpxAgent: selection.runtimeConfig.acpxAgent });
+      await input.validateRuntime?.(selection.runtimeConfig, aiConnectionMetadataSchema.parse(account.connection.config.ai), input.persisted ? "persisted" : "commit", client);
+      return account;
+    };
     if (input.persisted) {
       if (input.persisted.poolId !== input.poolId) throw unprocessable("Persisted pool selection does not match this run");
       const [pin] = await db.select().from(aiConnectionTaskPins).where(pinWhere);
@@ -235,9 +256,11 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       const candidates: AiConnectionRouterRequest["candidates"] = [];
       for (const member of pin ? [pin.member] : pool.members) {
         try {
-          const effective = poolMemberRuntimeConfig(member, input.adapterType, input.overrides);
-          const selection: AiConnectionRouterSelection = { poolId: row.id, memberId: member.id, binding: member.binding, runtimeConfig: effective.config, notes: effective.notes };
-          await validateSelection(selection);
+          const account = await aiConnectionService(db).authorize({ companyId: input.companyId, agentId: input.agentId, userId: input.userId, binding: member.binding });
+          const metadata = aiConnectionMetadataSchema.parse(account.connection.config.ai);
+          const effective = pin ? { config: pin.selection.runtimeConfig, notes: pin.selection.notes } : poolMemberRuntimeConfig(member, input.adapterType, input.overrides, metadata);
+          if (!isAiConnectionCompatible(metadata, input.adapterType, effective.config.model, effective.config.provider, effective.config.acpxAgent)) throw unprocessable("Pool member is incompatible with this harness");
+          await input.validateRuntime?.(effective.config, metadata, "candidate", db);
           candidates.push({ member, runtimeConfig: effective.config, notes: effective.notes });
         } catch (error) { if (pin) throw error; }
       }
@@ -260,7 +283,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       const candidate = candidates.find((v) => v.member.id === result.memberId);
       if (!candidate || (pin && candidate.member.id !== pin.member.id)) throw unprocessable("The router returned an unauthorized member");
       const selected: AiConnectionRouterSelection = { poolId: row.id, memberId: candidate.member.id, binding: candidate.member.binding, runtimeConfig: candidate.runtimeConfig, notes: candidate.notes };
-      if (pin) return selected;
+      if (pin) return pin.selection;
       const committed = await db.transaction(async (tx) => {
         const [locked] = await tx.select().from(aiConnectionRouterCursors).where(and(eq(aiConnectionRouterCursors.poolId, row.id), eq(aiConnectionRouterCursors.companyId, input.companyId))).for("update");
         const [existing] = await tx.select().from(aiConnectionTaskPins).where(pinWhere);

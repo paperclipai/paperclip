@@ -420,7 +420,7 @@ async function resolveAgentEnvironmentForCompany(db: Db, companyId: string, defa
 // The plugin's manifest declaration decides whether its environment runs
 // Runner tasks. Run admission separately verifies a ready plugin and a live
 // worker, so a plugin that is down still selects the Runner and fails its run.
-async function pluginEnvironmentRunnerTaskDriver(db: Db, environment: Parameters<typeof parseEnvironmentDriverConfig>[0]) {
+export async function pluginEnvironmentRunnerTaskDriver(db: Db, environment: Parameters<typeof parseEnvironmentDriverConfig>[0]) {
   let config: { pluginKey: string; driverKey: string };
   try {
     const parsed = parseEnvironmentDriverConfig(environment);

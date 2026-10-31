@@ -26,15 +26,49 @@ freshness. Each caller retains its selection deadline.
 
 One cursor spans all agents in a pool. An allocation transaction locks the
 cursor, checks config and cursor revisions, rechecks authorization, and writes
-the task pin and cursor advance together. Pins use company, pool, agent and the
+the task pin and cursor advance together. Commit-time environment and plugin
+validation use the same transaction client, including on a single-connection pool.
+Pins use company, pool, agent and the
 existing task key (including `__heartbeat__`). Wakes without a task key retain
 the original run ID as an affinity key in retry context. Conflicts retry at most
 20 times; contention beyond that returns an actionable conflict.
 
-Pins snapshot the concrete binding and member profile. Removing or editing a
-member affects future allocations. Composer changes can change a supported
-model or effort, with a note on fallback, but never the account or harness.
-Session reset and compaction retain the pin. Revocation requires operator repair.
+Pins snapshot the concrete binding, member profile and resolved settings. A
+pinned task keeps its stored model, effort and notes; removing or editing a
+member, or a later composer change, affects only future allocations. Each
+continuation still re-checks authorization and harness and runtime
+compatibility, and fails closed. Session reset and compaction retain the pin.
+Revocation requires operator repair.
+
+Gateway/local pool profiles store raw model IDs, up to 256 characters. OpenCode
+adds one `paperclip/` namespace at execution and catalog projection, including
+when a raw alias itself starts with `paperclip/`; Hermes uses the raw ID unchanged.
+This raw-storage rule does not change direct/OpenRouter profiles: their existing
+qualified model semantics remain, and compatibility checks use the effective task
+model after overrides rather than rejecting an unevaluated member default.
+Model inventories are hints and do not invalidate a saved manual default. A task
+override must exactly equal the member's projected default or the projected ID of
+one of that member's own hints. Raw spellings, other members' model identities,
+manual IDs on a member with no hints, and empty, whitespace-only or oversized
+overrides keep the default with a fallback note. Projected OpenCode models also
+retain the harness's provider/model format requirements. Raw aliases otherwise
+follow the connection schema, including aliases with internal spaces. Legacy local
+and remote OpenCode discovery preserve each complete line-oriented model ID before
+checking availability. A chat connection with no model hints requires explicit
+model entry before its pool can be saved or enabled.
+Qualified model identities remain lossless through usage receipts and accounting,
+with a 267-character maximum covering the OpenRouter namespace. Legacy OpenCode
+projects saved effort and task variants into `variant`; native OpenCode does not
+support that setting and reports a fallback note.
+
+Pool adoption and allocation also validate the selected execution environment.
+Plugin Runner task targets currently accept managed non-routed Codex and Claude
+credentials only. Unsupported members are excluded before a pin is committed,
+including during lifecycle harness verification of mixed pools. Global environment
+failures surface before member filtering, rather than becoming unavailable-account
+errors. Commit-time authorization and final execution-target validation remain required.
+Persisted-selection validation does not reinterpret current environment preferences;
+existing native recovery/lease rules and the actual-target credential guard still apply.
 Authentication repair uses the failed run’s durable concrete allocation and
 current member permissions; reconnect-and-continue preserves the agent’s pool
 binding. Changing the agent’s pool invalidates the old repair card.
