@@ -2555,7 +2555,7 @@ export function pluginRoutes(
       const result = await bridgeDeps.workerManager.call(
         plugin.id,
         "validateConfig",
-        { config: body.configJson },
+        { config: body.configJson, companyId },
       );
 
       // The worker returns PluginConfigValidationResult { ok, warnings?, errors? }
