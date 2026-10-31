@@ -50,13 +50,13 @@ try {
     beforeStop: async () => { beforeStop = true; boundary = await observe(s => activeStopWorkBoundary(s.run, s.events)); },
     awaitRetirement: async () => {
       assert.equal(stops, 1);
-      beforeEvents = await observe(s => nativeCancellationHasNoLaterWork(s.events) && nativeWorkEvents(s.events));
+      beforeEvents = await observe(s => nativeCancellationHasNoLaterWork(s.events, boundary) && nativeWorkEvents(s.events, boundary));
     },
     beforeRedirect: async () => {
       beforeRedirect = true;
       const final = await observe(s => stoppedRunAccountingFinalized(s.run, boundary) && s);
-      assert(nativeCancellationHasNoLaterWork(final.events));
-      assert.deepEqual(nativeWorkEvents(final.events), beforeEvents);
+      assert(nativeCancellationHasNoLaterWork(final.events, boundary));
+      assert.deepEqual(nativeWorkEvents(final.events, boundary), beforeEvents);
     },
     reply: async () => { replies++; return { id: "owned-comment" }; },
   });
@@ -68,18 +68,39 @@ try {
   await until(() => observed.has("command-only")); assert.equal(stops, 0);
   state = { ...state, phase: "usage-only", events: [event(1, "turn.started"), event(2, "item.completed", usage)] };
   await until(() => observed.has("usage-only")); assert.equal(stops, 0);
+  const partial = { kind: "usage", usage: { ...usage.usage, runDeltaComplete: false } };
+  state = { ...state, phase: "partial-usage", events: [event(1, "turn.started"), event(2, "item.completed", partial), event(3, "tool.execution.started", command)] };
+  await until(() => observed.has("partial-usage")); assert.equal(stops, 0);
   state = { ...state, phase: "ready", events: [event(1, "turn.started"), event(2, "item.completed", usage), event(3, "tool.execution.started", command)] };
   await until(() => beforeRedirect && observed.has("pending"));
   assert.equal(stops, 1); assert.equal(replies, 0, "Stop/lease proof cannot substitute for settled accounting");
-  state = { ...state, phase: "ready-but-pending", events: [...state.events, event(5, "item.completed", usage)],
+  const raw = { kind: "usage", item: { type: "usage" }, text: "", channel: "usage" };
+  const reconciled = event(5, "item.completed", raw);
+  reconciled.sourceInstanceId = reconciled.payload.prpEvent.sourceInstanceId = "reconciler";
+  state = { ...state, phase: "ready-but-pending", events: [...state.events, reconciled,
+    event(6, "item.completed", partial), event(7, "item.completed", usage)],
     run: { ...state.run, usageJson: { ...state.run.usageJson, accountingReceiptReady: true } } };
   await until(() => observed.has("ready-but-pending")); assert.equal(replies, 0);
+  const current = await page.evaluate(async () => (await fetch("/api/owned-observation")).json());
+  for (const mutate of [row => { row.companyId = "foreign"; }, row => { row.agentId = "foreign"; },
+    row => { row.payload.prpEvent.runId = "foreign"; }, row => { row.sourceEventId = "foreign"; },
+    row => { row.sourceInstanceId = "foreign"; }, row => { row.sourceSeq++; }]) {
+    const foreign = event(8, "item.completed", raw); mutate(foreign);
+    assert.equal(nativeCancellationHasNoLaterWork([...current.events, foreign], boundary), false);
+    assert.notDeepEqual(nativeWorkEvents([...current.events, foreign], boundary), beforeEvents);
+  }
+  for (const type of ["tool.execution.started", "message.delta", "item.delta"]) {
+    const productive = event(8, type, { kind: "message" });
+    productive.sourceInstanceId = productive.payload.prpEvent.sourceInstanceId = "reconciler";
+    assert.equal(nativeCancellationHasNoLaterWork([...current.events, productive], boundary), false);
+  }
+  assert.equal(nativeCancellationHasNoLaterWork(current.events), false);
   state = { ...state, phase: "missing-accounted-time", run: { ...state.run, costAccountingPending: false } };
   await until(() => observed.has("missing-accounted-time")); assert.equal(replies, 0);
   state = { ...state, phase: "settled", run: { ...state.run, costAccountedAt: "2026-01-01T00:00:02Z" } };
   assert.equal((await journey).reply.id, "owned-comment");
   assert.equal(stops, 1); assert.equal(replies, 1);
-  console.log("PASS: Chromium/controlled API rejects startup, command-only, usage-only, incomplete accounting and missing timestamp; terminal usage preserves the work snapshot; one Stop and redirect after genuine bound proof.");
+  console.log("PASS: Chromium/controlled API rejects startup, command-only, usage-only, partial pre-Stop usage, incomplete accounting and missing timestamp; bound raw/partial/complete usage preserves the work snapshot; wrong bindings and productive output remain work; one Stop and redirect after genuine bound proof.");
 } finally {
   cancelled = true;
   await journey?.catch(() => undefined);

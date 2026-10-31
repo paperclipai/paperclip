@@ -99,27 +99,75 @@ describe("Stop work and redirect admission evidence", () => {
       expect(stoppedRunAccountingFinalized({ ...cancelled, ...patch }, boundary)).toBe(false);
     }
   });
-  it("permits canonical terminal usage at either snapshot without changing the productive work history", () => {
+  it("permits canonical usage at either snapshot without changing the productive work history", () => {
     const stopped = [...events(), event(4, "turn.cancelled")];
     const accounted = [...stopped, event(5, "item.completed", usage)];
-    for (const rows of [stopped, accounted]) expect(nativeCancellationHasNoLaterWork(rows)).toBe(true);
-    expect(nativeWorkEvents(accounted)).toEqual(nativeWorkEvents(stopped));
-    expect(nativeWorkEvents([...accounted, event(6, "item.completed", usage)])).toEqual(nativeWorkEvents(accounted));
+    for (const rows of [stopped, accounted]) expect(nativeCancellationHasNoLaterWork(rows, before())).toBe(true);
+    expect(nativeWorkEvents(accounted, before())).toEqual(nativeWorkEvents(stopped, before()));
+    expect(nativeWorkEvents([...accounted, event(6, "item.completed", usage)], before())).toEqual(nativeWorkEvents(accounted, before()));
   });
-  it.each(["tool.execution.started", "tool.execution.progressed", "turn.started", "message.delta", "item.delta", "item.completed"])("rejects productive %s interleaved with post-Stop accounting", kind => {
+  it.each(["raw", "partial", "complete"].flatMap(kind => [1, 2].map(version => ({ kind, version }))))("permits bound canonical $kind usage in schema$version", ({ kind, version }) => {
+    const stopped = [...events(), event(4, "turn.cancelled")];
+    const payload = kind === "raw" ? { kind: "usage", item: { type: "usage" }, text: "", channel: "usage" }
+      : { kind: "usage", usage: { ...usage.usage, runDeltaComplete: kind === "complete" } };
+    const row = event(5, "item.completed", payload);
+    row.protocolSchemaVersion = version;
+    Object.assign(row.payload.prpEvent, { schema: `paperclip.prp.event.v${version}`, schemaVersion: version });
+    expect(nativeCancellationHasNoLaterWork([...stopped, row], before())).toBe(true);
+    expect(nativeWorkEvents([...stopped, row], before())).toEqual(nativeWorkEvents(stopped, before()));
+  });
+  it.each(["raw", "partial", "complete"])("permits self-consistent %s billing from a new accounting source", kind => {
+    const stopped = [...events(), event(4, "turn.cancelled")];
+    const payload = kind === "raw" ? { kind: "usage", item: { type: "usage" } }
+      : { kind: "usage", usage: { ...usage.usage, runDeltaComplete: kind === "complete" } };
+    const row = event(5, "item.completed", payload);
+    row.sourceInstanceId = row.payload.prpEvent.sourceInstanceId = "reconciler";
+    expect(nativeCancellationHasNoLaterWork([...stopped, row], before())).toBe(true);
+    expect(nativeWorkEvents([...stopped, row], before())).toEqual(nativeWorkEvents(stopped, before()));
+  });
+  it.each(["row-company", "row-agent", "row-run", "envelope-run", "row-instance", "envelope-instance", "missing-instance", "empty-instance",
+    "source-event", "missing-source-event", "row-source-event", "source-sequence", "missing-sequence", "zero-sequence", "fractional-sequence", "source-kind"])("does not discard usage with an unbound %s", kind => {
+    const stopped = [...events(), event(4, "turn.cancelled")], row = event(5, "item.completed", usage), envelope = row.payload.prpEvent;
+    if (kind === "row-company") row.companyId = "foreign";
+    if (kind === "row-agent") row.agentId = "foreign";
+    if (kind === "row-run") row.runId = "foreign";
+    if (kind === "envelope-run") envelope.runId = "foreign";
+    if (kind === "row-instance") row.sourceInstanceId = "foreign";
+    if (kind === "envelope-instance") envelope.sourceInstanceId = "foreign";
+    if (kind === "missing-instance") delete envelope.sourceInstanceId;
+    if (kind === "empty-instance") row.sourceInstanceId = envelope.sourceInstanceId = "";
+    if (kind === "source-event") envelope.sourceEventId = "foreign";
+    if (kind === "missing-source-event") delete envelope.sourceEventId;
+    if (kind === "row-source-event") delete row.sourceEventId;
+    if (kind === "source-sequence") envelope.sourceSeq++;
+    if (kind === "missing-sequence") delete row.sourceSeq;
+    if (kind === "zero-sequence") row.sourceSeq = envelope.sourceSeq = 0;
+    if (kind === "fractional-sequence") row.sourceSeq = envelope.sourceSeq = 1.5;
+    if (kind === "source-kind") envelope.sourceKind = "server";
+    expect(nativeCancellationHasNoLaterWork([...stopped, row], before())).toBe(false);
+    expect(nativeWorkEvents([...stopped, row], before())).not.toEqual(nativeWorkEvents(stopped, before()));
+  });
+  it("keeps usage strict when authoritative current-run context is absent", () => {
+    const stopped = [...events(), event(4, "turn.cancelled")], accounted = [...stopped, event(5, "item.completed", usage)];
+    expect(nativeCancellationHasNoLaterWork(accounted)).toBe(false);
+    expect(nativeWorkEvents(accounted)).not.toEqual(nativeWorkEvents(stopped));
+  });
+  it.each(["tool.execution.started", "tool.execution.progressed", "turn.started", "message.delta", "item.delta", "item.completed"]
+    .flatMap(kind => ["runner", "reconciler"].map(source => ({ kind, source }))))("rejects productive $kind from $source interleaved with post-Stop accounting", ({ kind, source }) => {
     const stopped = [...events(), event(4, "turn.cancelled")];
     const later = [...stopped, event(5, "item.completed", usage), event(6, kind, { kind: "message", text: "continued work" }),
       event(7, "item.completed", usage)];
-    expect(nativeCancellationHasNoLaterWork(later)).toBe(false);
-    expect(nativeWorkEvents(later)).not.toEqual(nativeWorkEvents(stopped));
+    later[later.length - 2]!.sourceInstanceId = later[later.length - 2]!.payload.prpEvent.sourceInstanceId = source;
+    expect(nativeCancellationHasNoLaterWork(later, before())).toBe(false);
+    expect(nativeWorkEvents(later, before())).not.toEqual(nativeWorkEvents(stopped, before()));
   });
   it("does not hide a malformed or differently typed item behind a usage label", () => {
     const stopped = [...events(), event(4, "turn.cancelled")];
     const malformed = event(5, "item.completed", usage); malformed.protocolSchemaVersion = 2;
     const mismatched = event(5, "item.completed", usage); mismatched.eventType = "message.delta";
     for (const row of [malformed, mismatched, event(5, "item.delta", usage), event(5, "message.delta", usage)]) {
-      expect(nativeCancellationHasNoLaterWork([...stopped, row])).toBe(false);
-      expect(nativeWorkEvents([...stopped, row])).not.toEqual(nativeWorkEvents(stopped));
+      expect(nativeCancellationHasNoLaterWork([...stopped, row], before())).toBe(false);
+      expect(nativeWorkEvents([...stopped, row], before())).not.toEqual(nativeWorkEvents(stopped, before()));
     }
   });
   it("retains the bounded command and exact three-run contract", () => {

@@ -48,9 +48,16 @@ complete accounting receipt, no pending accounting and a saved accounting
 timestamp. Receipt sources and sequences remain recorded, but controller changes
 and clock order cannot substitute for the run's actual settlement state. A receipt
 that was already ready before Stop is accepted only when the exact cancelled run
-is actually accounted and no longer pending. Canonical terminal usage receipts
-do not count as continued work; tools, messages and other item events still do,
-including work that arrives between cancellation and accounting settlement.
+is actually accounted and no longer pending. Canonical usage receipts, including
+raw, partial and complete forms, do not count as continued work when their API row
+and envelope match the observed run, company and agent, with consistent source
+event IDs, sequence numbers and instance IDs. An accounting source can change
+after Stop; its receipt does not need the pre-Stop Runner instance or accounting
+source and sequence. Pre-Stop work still requires the current Runner and turn.
+Missing context or mismatched source event IDs, sequence numbers, instances or
+envelope versions keep the usage row in the strict work evidence. Tools, messages
+and other item events still count, including work that arrives between
+cancellation and accounting settlement.
 These waits share the original journey deadline.
 The three-run limit, budget and original download checks remain unchanged.
 Missing or partial accounting never counts as free work. Local evidence controls

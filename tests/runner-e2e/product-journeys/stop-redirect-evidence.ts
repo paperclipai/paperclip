@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { isValidNativePrpEnvelope } from "../native-event-envelope.js";
+import { isBoundNativePrpEventRow } from "../native-event-envelope.js";
 import { activeFollowupBoundary, type ActiveFollowupBoundary } from "./active-followup-evidence.js";
 
 type Row = Record<string, any>;
@@ -26,16 +26,8 @@ export function activeStopWorkBoundary(run: Row, events: Row[]): StopWorkBoundar
   const accounting = run.usageJson;
   if (!text(turnId) || !text(issueId) || !text(accounting?.accountingReceiptSourceId)
     || !Number.isSafeInteger(accounting.accountingReceiptSequence) || accounting.accountingReceiptSequence <= 0) return null;
-  const bound = (row: Row) => {
-    const event = row.payload?.prpEvent;
-    if (!event || !isValidNativePrpEnvelope(event, row.protocolSchemaVersion)
-      || row.companyId !== run.companyId || row.agentId !== run.agentId || row.runId !== run.id
-      || event.runId !== run.id || event.eventType !== row.eventType
-      || event.sourceKind !== "runner" || !text(event.sourceEventId) || event.sourceEventId !== row.sourceEventId
-      || event.sourceInstanceId !== command.sourceInstanceId || event.sourceInstanceId !== row.sourceInstanceId
-      || !Number.isSafeInteger(event.sourceSeq) || event.sourceSeq <= 0 || event.sourceSeq !== row.sourceSeq) return false;
-    return true;
-  };
+  const binding = { runId: run.id, companyId: run.companyId, agentId: run.agentId };
+  const bound = (row: Row) => isBoundNativePrpEventRow(row, binding, command.sourceInstanceId);
   const turnStart = events.findLast(row => bound(row) && row.eventType === "turn.started");
   if (!turnStart || turnStart.payload.prpEvent.turnId !== turnId || turnStart.seq >= command.startedSeq) return null;
   const usage = events.findLast(row => bound(row) && row.seq > turnStart.seq && row.eventType === "item.completed"
