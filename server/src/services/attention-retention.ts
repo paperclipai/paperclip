@@ -18,8 +18,8 @@ const archiveDelay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
 const kinds = ["decision", "issue_thread_interaction", "recovery_action", "blocker_attention", "review",
   "failed_run", "budget_alert", "agent_error_alert"] as const;
 type Kind = typeof kinds[number];
-type Scope = { companyId?: string; sourceKind?: AttentionSourceKind; sourceId?: string };
-type Candidate = { sourceKind: Kind; sourceId: string; companyId: string; activityAt: string; deadlineAt: number };
+type Scope = { companyId?: string; sourceKind?: AttentionSourceKind; sourceId?: string; issueId?: string };
+type Candidate = { sourceKind: Kind; sourceId: string; companyId: string; activityAt: string; deadlineAt: number; issueId: string | null };
 type Entry = Candidate & { id: string; dueAt: number; rootId: string; variant?: "owner" | "terminal" };
 type Cursor = { sourceKind: string; sourceId: string };
 
@@ -42,37 +42,39 @@ const sourceTables: Record<Kind, SQL> = {
 };
 
 const sources: Record<Kind, SQL> = {
-  decision: sql`select 'decision' as source_kind, d.id::text as source_id, d.company_id, d.updated_at as activity_at
+  decision: sql`select 'decision' as source_kind, d.id::text as source_id, d.company_id, d.updated_at as activity_at, d.origin_issue_id::text as issue_id
     from decisions d where d.status = 'open'`,
-  issue_thread_interaction: sql`select 'issue_thread_interaction', i.id::text, i.company_id, i.updated_at
+  issue_thread_interaction: sql`select 'issue_thread_interaction', i.id::text, i.company_id, i.updated_at, i.issue_id::text
     from issue_thread_interactions i where i.status = 'pending' and i.addressee_user_id is null`,
-  recovery_action: sql`select 'recovery_action', r.id::text, r.company_id, r.updated_at
+  recovery_action: sql`select 'recovery_action', r.id::text, r.company_id, r.updated_at, r.source_issue_id::text
     from issue_recovery_actions r where r.status in ('active', 'escalated') and r.owner_type in (${sql.join(HUMAN_RECOVERY_OWNER_TYPES.map(owner => sql`${owner}`), sql`, `)})`,
-  blocker_attention: sql`select 'blocker_attention', i.id::text, i.company_id, i.updated_at
+  blocker_attention: sql`select 'blocker_attention', i.id::text, i.company_id, i.updated_at, i.id::text
     from issues i where i.status = 'blocked' and i.hidden_at is null and i.harness_kind is null`,
-  review: sql`select 'review', i.id::text, i.company_id, i.updated_at
+  review: sql`select 'review', i.id::text, i.company_id, i.updated_at, i.id::text
     from issues i where i.status = 'in_review' and i.hidden_at is null and i.harness_kind is null`,
-  failed_run: sql`select 'failed_run', r.id::text, r.company_id, coalesce(r.finished_at, r.updated_at, r.created_at)
+  failed_run: sql`select 'failed_run', r.id::text, r.company_id, coalesce(r.finished_at, r.updated_at, r.created_at), coalesce(r.context_snapshot->>'issueId', r.context_snapshot->>'taskId')
     from heartbeat_runs r where r.status in ('failed', 'timed_out') and exists (
       select 1 from heartbeat_run_events e where e.run_id = r.id and e.company_id = r.company_id
         and e.event_type = 'lifecycle' and e.message like ${`${RETRY_EXHAUSTION_MESSAGE_PREFIX}%`})`,
-  budget_alert: sql`select 'budget_alert', b.id::text, b.company_id, b.updated_at from budget_incidents b
+  budget_alert: sql`select 'budget_alert', b.id::text, b.company_id, b.updated_at, null::text from budget_incidents b
     where b.status = 'open' and (b.threshold_type = 'hard' or (b.amount_limit > 0
       and round(b.amount_observed::numeric / b.amount_limit * 10000) / 100 >= ${ATTENTION_BUDGET_WARNING_PERCENT}))`,
-  agent_error_alert: sql`select 'agent_error_alert', a.id::text, a.company_id, a.updated_at from agents a where a.status = ${ATTENTION_AGENT_ERROR_STATUS}`,
+  agent_error_alert: sql`select 'agent_error_alert', a.id::text, a.company_id, a.updated_at, null::text from agents a where a.status = ${ATTENTION_AGENT_ERROR_STATUS}`,
 };
 
 export function attentionRetentionService(db: Db) {
   const cursors = new Map<string, Cursor>();
   async function candidates(database: Db, scope: Scope = {}, cursor?: Cursor, sourceId?: string): Promise<Candidate[]> {
-    const selected = kinds.filter(kind => !scope.sourceKind || scope.sourceKind === kind);
+    const selected = kinds.filter(kind => (!scope.sourceKind || scope.sourceKind === kind)
+      && (!scope.issueId || !["budget_alert", "agent_error_alert"].includes(kind)));
     if (!selected.length) return [];
-    const rows = await database.execute(sql`with source_candidates(source_kind, source_id, company_id, activity_at) as (${sql.join(selected.map(kind => sources[kind]), sql` union all `)})
+    const rows = await database.execute(sql`with source_candidates(source_kind, source_id, company_id, activity_at, issue_id) as (${sql.join(selected.map(kind => sources[kind]), sql` union all `)})
       select s.source_kind as "sourceKind", s.source_id as "sourceId", s.company_id as "companyId",
-        s.activity_at::text as "activityAt", ceil(extract(epoch from s.activity_at) * 1000 + ${archiveDelay}) as "deadlineAt"
+        s.issue_id as "issueId", s.activity_at::text as "activityAt", ceil(extract(epoch from s.activity_at) * 1000 + ${archiveDelay}) as "deadlineAt"
       from source_candidates s inner join companies c on c.id = s.company_id
       left join decision_retention r on r.company_id = s.company_id and r.source_kind = s.source_kind and r.source_id = s.source_id
       where c.status = 'active'
+        and (${scope.issueId ?? null}::text is null or s.issue_id = ${scope.issueId ?? null})
         and (${scope.companyId ?? null}::uuid is null or s.company_id = ${scope.companyId ?? null}::uuid)
         and (${sourceId ?? scope.sourceId ?? null}::text is null or s.source_id = ${sourceId ?? scope.sourceId ?? null})
         and (s.source_kind = 'blocker_attention' or ((r.id is null or r.keep = false) and r.archived_at is null))
@@ -302,7 +304,8 @@ export function registerAttentionRetentionWork(coordinator: ReturnType<typeof cr
     decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint) as Scope,
     matches: (entry, scope) => (!scope?.companyId || scope.companyId === entry.companyId)
       && (!scope?.sourceKind || scope.sourceKind === entry.sourceKind)
-      && (!scope?.sourceId || scope.sourceId === entry.sourceId),
+      && (!scope?.sourceId || scope.sourceId === entry.sourceId)
+      && (!scope?.issueId || scope.issueId === entry.issueId),
     load: service.load, check: service.check,
   }, canRun);
 }
