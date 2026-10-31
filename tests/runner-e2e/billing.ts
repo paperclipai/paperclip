@@ -283,12 +283,13 @@ export function summarizeExecutionBilling(
   // Some retained journeys store their measured summary without raw run usage.
   // Regeneration must preserve those measurements, including unknown prices.
   if (result.usage === undefined && result.billing) return structuredClone(result.billing);
-  const capturedEmptyUsage = Array.isArray(result.usage?.runs) && result.usage.runs.length === 0;
+  const capturedEmptyUsage = Array.isArray(result.usage?.runs) && result.usage.runs.length === 0 &&
+    Object.keys(result.usage).length === 1;
   const browserOnly = result.runtimeMode === "none" && !result.runIds?.length &&
-    (Boolean(result.productJourney) || Array.isArray(result.runIds) && capturedEmptyUsage);
+    (result.usage == null ? Boolean(result.productJourney)
+      : capturedEmptyUsage && (Boolean(result.productJourney) || Array.isArray(result.runIds)));
   const requestedRunCount = browserOnly ? 0 : Math.max(result.runIds?.length ?? 0, 1);
-  const entries = browserOnly && (result.usage == null || capturedEmptyUsage)
-    ? [] : usageEntries(result.usage, requestedRunCount);
+  const entries = browserOnly ? [] : usageEntries(result.usage, requestedRunCount);
   let inputTokens = 0;
   let outputTokens = 0;
   let cachedInputTokens = 0;

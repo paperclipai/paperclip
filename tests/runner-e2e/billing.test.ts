@@ -79,6 +79,7 @@ describe("runner E2E billing summaries", () => {
     { runIds: [], usage: undefined },
     { runIds: [], usage: null },
     { runIds: [], usage: {} },
+    { runIds: [], usage: { runs: [], collection: "unavailable" } },
   ])("does not infer zero work from a missing browser-only receipt: %j", receipt => {
     const billing = summarizeExecutionBilling(result({ runtimeMode: "none", ...receipt }));
     expect(billing).toMatchObject({
@@ -104,6 +105,23 @@ describe("runner E2E billing summaries", () => {
     expect(billing).toMatchObject({
       llm: { runCount: 1, inputTokens: 100, outputTokens: 20, reportedCostUsd: 0.01 },
       runtime: { agentRunDurationMs: null },
+    });
+  });
+
+  it.each([false, true])("does not accept conflicting aggregate usage as zero-work proof (private journey: %s)", privateJourney => {
+    const browser = result({
+      runtimeMode: "none",
+      runIds: [],
+      usage: { runs: [], inputTokens: 100, outputTokens: 20, costUsd: 0.01 },
+      ...(privateJourney ? { productJourney: {
+        outcome: "passed" as const, startingState: "recipe" as const, phases: [], checks: [],
+        resourceDisposition: "released" as const, privacy: "private" as const,
+      } } : {}),
+    });
+    expect(summarizeExecutionBilling(browser)).toMatchObject({
+      llm: { runCount: 1, costStatus: "unavailable" },
+      runtime: { agentRunDurationMs: null },
+      complete: false,
     });
   });
 
