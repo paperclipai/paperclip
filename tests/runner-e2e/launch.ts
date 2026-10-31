@@ -799,7 +799,8 @@ async function runAttempt(input: {
     if (manualPrivateHandoff && await access(ownedServerLog).then(() => true, () => false)) {
       await cp(ownedServerLog, path.join(privateDir, "server.log"), { errorOnExist: true, force: false });
     }
-    const reporterPrivacy = await sanitizePrivateReporterArtifacts(privateDir, credentials);
+    const reporterPrivacy = await sanitizePrivateReporterArtifacts(privateDir, credentials, manualPrivateHandoff
+      ? { owner: await privateCellEvidenceOwner(manualPrivateHandoff, execution.id) } : undefined);
     if (processResult.privateDiagnosticLeak) reporterPrivacy.push({ file: "playwright process stdout/stderr", disposition: "redacted", reason: "credential detected before diagnostic emission" });
     for (const [index, candidate] of executions.entries()) {
       let result: RunnerE2EResult = {

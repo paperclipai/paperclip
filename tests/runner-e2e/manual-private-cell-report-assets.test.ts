@@ -28,6 +28,7 @@ import { MANUAL_PRIVATE_EXECUTIONS, MANUAL_PRIVATE_PROTOCOL, manualCellKind } fr
 import { archivePrivateEvidence, retainPrivateTransfer } from "./private-history.js";
 import { BoundedHistoryPublisher } from "./history-budget.js";
 import { sanitizeJson } from "./redaction.js";
+import { sanitizePrivateReporterArtifacts } from "./private-reporter-artifacts.js";
 import type { RunnerE2EResult } from "./types.js";
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const roots: string[] = [];
@@ -115,6 +116,21 @@ it("retains the real failed trace/report through actual copy, private package, b
   expect((await validateSealedInventory(path.join(restored, "sealed-results/html-report"), "../result-evidence-inventory.json", undefined, "standard", downloaded)).complete).toBe(true);
   expect(await readFile(path.join(restored, "sealed-results/html-report", f.prefix, "html-report/trace/playwright-logo.svg"))).toEqual(await readFile(canonicalGeneratedReportAsset("html/trace/playwright-logo.svg")!));
 }, 60_000);
+it("preserves canonical trace assets through reporter sanitization before private packaging", async () => {
+  const f = await fixture();
+  const before = await readFile(path.join(f.cell, "html-report/trace/index.html"));
+  await sanitizePrivateReporterArtifacts(f.cell, [], { owner: f.owner });
+  expect(await readFile(path.join(f.cell, "html-report/trace/index.html"))).toEqual(before);
+  await expect(packageEvidence({ privateDir: f.cell, uploadDir: f.upload, secrets: [], expectPassScreenshot: false,
+    privateCell: { owner: f.owner, layout: "original" } })).resolves.toMatchObject({ leaks: [] });
+});
+it("keeps rejecting contaminated or modified canonical assets during reporter sanitization", async () => {
+  const f = await fixture();
+  await expect(sanitizePrivateReporterArtifacts(f.cell, ["Playwright"], { owner: f.owner })).rejects.toThrow(/Secret leak/);
+  const file = path.join(f.cell, "html-report/trace/index.html"), original = await readFile(file, "utf8");
+  await writeFile(file, original.replace("Playwright", "Xlaywright"));
+  await expect(sanitizePrivateReporterArtifacts(f.cell, [], { owner: f.owner })).rejects.toThrow(/canonical producer/);
+});
 it.each(["wrong-case", "wrong-run", "wrong-attempt", "double-wrapper", "extra-nesting", "watch", "xterm", "tampered-html", "tampered-svg", "shape"])("actual package rejects %s in the reserved cell namespace", async kind => {
   const f = await fixture(); let relative = "html-report/trace/index.html";
   if (kind === "watch") relative = "html-report/trace/watch.js";

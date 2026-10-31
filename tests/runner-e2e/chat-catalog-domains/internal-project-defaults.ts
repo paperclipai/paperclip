@@ -101,8 +101,13 @@ function defaults(): ChatCatalogCase {
       return gradeProjectDefaultsSetup({ lead, future, held, task: t, runs, activeRunId: String(state.activeRunId), gateCalls: gate?.calls ?? [] }); },
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-project-defaults.ts", "chat-catalog-domains/internal-native-run-brief.ts", "../e2e/fetch-allowed-port.ts", "run-observations.ts"],
     async act(ctx, state) {
-      const settled = await pollUntil({ label: "Canonical project-defaults turn settles", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150000), load: () => observeInternal(ctx, state),
-        accept: o => chatCatalogNativePhaseIsTimely(ctx) && o.runs.some(row => row.agentId === o.leadId && row.status === "succeeded") && ctx.issue()?.conversationState === "waiting" });
+      // This boundary depends only on the canonical run and conversation.
+      // Rebuilding domain/DOM evidence on each wait poll adds unrelated load
+      // and trace volume; retain the complete observation after settlement.
+      await pollUntil({ label: "Canonical project-defaults turn settles", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150000),
+        load: async () => { await ctx.refreshIssue(); return ctx.allRuns(); },
+        accept: runs => chatCatalogNativePhaseIsTimely(ctx) && runs.some(row => row.agentId === ctx.input.fixtures.agent.id && row.status === "succeeded") && ctx.issue()?.conversationState === "waiting" });
+      const settled = await observeInternal(ctx, state);
       state.defaultsReply = settled.reply;
       state.futureTask = await task(ctx, "Verify inherited Launch defaults", entity(state, "project").id, { status: "todo", assigneeAgentId: entity(state, "futureWorker").id,
         description: "Use the current saved project/task context to report which project checklist applies to this new work and the associated goal. Do not change project defaults or any other task. Complete after recording your factual findings, including if no defaults or goal are present." });

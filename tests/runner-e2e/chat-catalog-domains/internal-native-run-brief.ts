@@ -26,7 +26,10 @@ export async function startNativeRunBriefGate(workerId: string, deadlineAt: numb
     else { pending.add(response); response.once("close", () => pending.delete(response)); }
   });
   const port = await listenOnFetchAllowedPort(server);
-  const script = `const response = await fetch(${JSON.stringify(`http://127.0.0.1:${port}${route}`)}, {headers: {authorization: ${JSON.stringify(authorization)}}, signal: AbortSignal.timeout(Math.max(1, ${deadlineAt} - Date.now()))}); if (!response.ok) throw new Error("Website brief read failed"); process.stdout.write(await response.text());`;
+  // fetch has a separate five-minute header timeout. The prerequisite must
+  // follow only its original absolute observation deadline, including a wait
+  // for headers. A one-use HTTP agent also avoids inherited socket timeouts.
+  const script = `import {get} from "node:http"; const brief = await new Promise((resolve, reject) => { const request = get(${JSON.stringify(`http://127.0.0.1:${port}${route}`)}, {agent: false, timeout: 0, headers: {authorization: ${JSON.stringify(authorization)}}, signal: AbortSignal.timeout(Math.max(1, ${deadlineAt} - Date.now()))}, response => { if (response.statusCode !== 200) { response.resume(); reject(new Error("Website brief read failed")); return; } response.setEncoding("utf8"); let body = ""; response.on("data", chunk => { body += chunk; }); response.on("end", () => resolve(body)); response.on("error", reject); }); request.on("error", reject); }); process.stdout.write(brief);`;
   return {
     calls,
     command: `exec ${quote(process.execPath)} --input-type=module --eval ${quote(script)}`,
