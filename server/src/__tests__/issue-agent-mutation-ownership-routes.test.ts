@@ -165,6 +165,7 @@ const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null))
 const mockRetryWorkspaceExport = vi.hoisted(() => vi.fn());
 const mockRequestWorkspaceRecovery = vi.hoisted(() => vi.fn());
 const mockRequestTaskRetry = vi.hoisted(() => vi.fn());
+const mockOnboardingFirstTaskDependenciesAllowed = vi.hoisted(() => vi.fn(async () => undefined));
 const mockGetExperimental = vi.hoisted(() => vi.fn());
 const mockResumeWorkspaceFinalization = vi.hoisted(() => vi.fn());
 
@@ -176,6 +177,10 @@ function registerRouteMocks() {
     }) };
   });
   vi.doMock("../services/task-retry.js", () => ({ requestTaskRetry: mockRequestTaskRetry }));
+  vi.doMock("../services/onboarding-first-task-admission.js", async () => ({
+    ...await vi.importActual<typeof import("../services/onboarding-first-task-admission.js")>("../services/onboarding-first-task-admission.js"),
+    assertOnboardingFirstTaskDependenciesAllowed: mockOnboardingFirstTaskDependenciesAllowed,
+  }));
   vi.doMock("../services/task-interruption-presentation.js", () => ({
     taskInterruptionPresentation: vi.fn(async () => null),
     taskInterruptionPresentations: vi.fn(async () => new Map()),
@@ -2977,6 +2982,118 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockHeartbeatService.cancelRun).toHaveBeenCalledTimes(1);
       expect(mockHeartbeatService.cancelRun.mock.invocationCallOrder[0])
         .toBeLessThan(mockIssueService.update.mock.invocationCallOrder[0]!);
+    });
+  });
+
+  describe("native run changing its own task status", () => {
+    const nativeRun = {
+      id: ownerRunId,
+      companyId,
+      agentId: ownerAgentId,
+      runtimeMode: "native",
+      status: "running",
+      contextSnapshot: { issueId },
+    };
+    const runActor = () => ({ ...ownerActor(), source: "agent_jwt" });
+
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId }));
+      mockHeartbeatService.getRun.mockResolvedValue(nativeRun);
+    });
+
+    it.each([
+      ["in_review", {}],
+      ["in_review", { assigneeAgentId: ownerAgentId }],
+      ["done", {}],
+      ["blocked", {}],
+      ["todo", { blockedByIssueIds: [] }],
+      ["blocked", { blockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] }],
+    ])("rejects %s before it releases the run's own execution lock (%j)", async (status, extra) => {
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status, ...extra });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details).toMatchObject({ code: "native_run_status_reported_by_finish", requestedStatus: status });
+      expect(res.body.error).toContain("paperclip_finish");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    });
+
+    it("still lets the run edit other fields of its task", async () => {
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ title: "Renamed by its run" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ["a legacy run", { runtimeMode: "legacy" }, {}],
+      ["a native run that no longer owns execution", {}, { executionRunId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", checkoutRunId: null }],
+      ["a native run that is no longer running", { status: "failed" }, {}],
+    ])("leaves the status change to the existing rules for %s", async (_label, runOverrides, issueOverrides) => {
+      mockHeartbeatService.getRun.mockResolvedValue({ ...nativeRun, ...runOverrides });
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId, ...issueOverrides }));
+
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: "in_review" });
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review" });
+    });
+
+    it("does not intercept a native run handing its task to a human", async () => {
+      // A native handoff still stops the outgoing run first; confirm that stop
+      // so the request reaches the update instead of the stop-unconfirmed 409.
+      mockHeartbeatService.cancelRun.mockResolvedValue({ ...nativeRun, status: "cancelled" });
+      const handoff = { assigneeAgentId: null, assigneeUserId: "board-user", status: "in_review" };
+
+      const res = await request(createApp(runActor(), createRunContextDb({}, ownerAgentId, ownerRunId, [], true)))
+        .patch(`/api/issues/${issueId}`).send(handoff);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject(handoff);
+      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(ownerRunId, expect.anything(), expect.anything());
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockHeartbeatService.cancelRun.mock.invocationCallOrder[0])
+        .toBeLessThan(mockIssueService.update.mock.invocationCallOrder[0]!);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(handoff);
+    });
+
+    it("does not intercept a native conversation reply moving to review", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId,
+        conversationAgentId: ownerAgentId, conversationUserId: "board-user" }));
+
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: "in_review" });
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review" });
+    });
+
+    it("keeps the dependency rule's error for a blocker it rejects", async () => {
+      const { HttpError: CurrentHttpError } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+      mockOnboardingFirstTaskDependenciesAllowed.mockRejectedValueOnce(
+        new CurrentHttpError(400, "Remove the onboarding task from blockedByIssueIds.", { code: "onboarding_first_task_parent_blocker" }));
+
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`)
+        .send({ status: "blocked", blockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.details).toMatchObject({ code: "onboarding_first_task_parent_blocker" });
+      expect(mockOnboardingFirstTaskDependenciesAllowed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        companyId, actorAgentId: ownerAgentId, actorRunId: ownerRunId, blockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"],
+      }));
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("does not intercept a board user changing the status", async () => {
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: "in_review" });
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review" });
     });
   });
 
