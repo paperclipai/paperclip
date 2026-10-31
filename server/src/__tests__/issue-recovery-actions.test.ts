@@ -39,6 +39,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { buildPaperclipWakePayload, heartbeatService } from "../services/heartbeat.js";
+import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
 import { workspaceOperationService, isNativeWorkspaceFinalizationOperationActive } from "../services/workspace-operations.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
@@ -2070,6 +2071,198 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(recorded!.evidence).toMatchObject({ executionReconciliation: { runId }, continuationDelivery: "pending" });
     await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send(body).expect(200);
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id)))[0]).toEqual(recorded);
+  });
+
+  it("clears sibling no-replay holds for the same run when one action is reconciled", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId,
+      issueId: sourceIssueId,
+      status: "failed",
+    });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+    const evidence = {
+      runId,
+      automaticRecovery: { replay: "blocked", actionOutcome: "unknown" },
+    };
+    const fingerprint = `legacy-execution:${runId}`;
+    const [canonical, sibling] = await db
+      .insert(issueRecoveryActions)
+      .values([
+        {
+          companyId,
+          sourceIssueId,
+          kind: "active_run_watchdog",
+          status: "resolved",
+          outcome: "blocked",
+          ownerType: "board",
+          returnOwnerAgentId: coderId,
+          cause: "legacy_execution_requires_reconciliation",
+          fingerprint,
+          nextAction: "Preserve recorded work without replay.",
+          evidence,
+        },
+        {
+          companyId,
+          sourceIssueId,
+          kind: "active_run_watchdog",
+          status: "resolved",
+          outcome: "blocked",
+          ownerType: "board",
+          returnOwnerAgentId: coderId,
+          cause: "legacy_execution_requires_reconciliation",
+          fingerprint,
+          nextAction: "Preserve recorded work without replay.",
+          evidence,
+        },
+      ])
+      .returning();
+    expect(await getExecutionBlocker(db, companyId, sourceIssueId)).toMatchObject({
+      recoveryActionId: expect.any(String),
+      cause: "legacy_execution_requires_reconciliation",
+    });
+
+    const app = createApp();
+    const body = {
+      actionId: canonical!.id,
+      outcome: "restored",
+      sourceIssueStatus: "todo",
+      executionReconciliation: {
+        runId,
+        providerStopped: true,
+        actionOutcome: "not_performed",
+        outcomeEvidence:
+          "Provider receipts confirm no external action was submitted and the provider is stopped.",
+      },
+    };
+    await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send(body)
+      .expect(200);
+
+    expect(await getExecutionBlocker(db, companyId, sourceIssueId)).toBeNull();
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(actions).toHaveLength(2);
+    const cleared = actions.find((row) => row.id === canonical!.id)!;
+    expect(cleared.evidence).not.toHaveProperty("automaticRecovery");
+    expect(cleared.evidence).toMatchObject({
+      executionReconciliation: { runId },
+      continuationDelivery: "pending",
+    });
+    const coalesced = actions.find((row) => row.id === sibling!.id)!;
+    expect(coalesced.evidence).not.toHaveProperty("automaticRecovery");
+    expect(coalesced.evidence).toMatchObject({
+      executionReconciliation: { runId },
+      continuationDelivery: "invalidated",
+      coalescedIntoRecoveryActionId: canonical!.id,
+    });
+  });
+
+  it("clears a settled no-replay hold on a done issue without reopening or 500", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId,
+      issueId: sourceIssueId,
+      status: "failed",
+    });
+    await db
+      .update(issues)
+      .set({ status: "done", completedAt: new Date() })
+      .where(eq(issues.id, sourceIssueId));
+    const [action] = await db
+      .insert(issueRecoveryActions)
+      .values({
+        companyId,
+        sourceIssueId,
+        kind: "active_run_watchdog",
+        status: "resolved",
+        outcome: "blocked",
+        ownerType: "board",
+        returnOwnerAgentId: coderId,
+        cause: "legacy_execution_requires_reconciliation",
+        fingerprint: `legacy-execution:${runId}`,
+        nextAction: "Preserve recorded work without replay.",
+        evidence: {
+          runId,
+          automaticRecovery: { replay: "blocked", actionOutcome: "unknown" },
+        },
+      })
+      .returning();
+    expect(await getExecutionBlocker(db, companyId, sourceIssueId)).toMatchObject({
+      recoveryActionId: action!.id,
+    });
+
+    const app = createApp();
+    const mismatched = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action!.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        executionReconciliation: {
+          runId,
+          providerStopped: true,
+          actionOutcome: "not_performed",
+          outcomeEvidence:
+            "Provider receipts confirm no external action was submitted and the provider is stopped.",
+        },
+      })
+      .expect(409);
+    expect(mismatched.body.details?.code).toBe("settled_no_replay_status_mismatch");
+    expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]!.status).toBe(
+      "done",
+    );
+
+    const cleared = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action!.id,
+        outcome: "restored",
+        sourceIssueStatus: "done",
+        executionReconciliation: {
+          runId,
+          providerStopped: true,
+          actionOutcome: "not_performed",
+          outcomeEvidence:
+            "Provider receipts confirm no external action was submitted and the provider is stopped.",
+        },
+      })
+      .expect(200);
+    expect(cleared.body.issue.status).toBe("done");
+    expect(await getExecutionBlocker(db, companyId, sourceIssueId)).toBeNull();
+    const [recorded] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action!.id));
+    expect(recorded!.evidence).not.toHaveProperty("automaticRecovery");
+    expect(recorded!.evidence).toMatchObject({
+      executionReconciliation: { runId },
+      continuationDelivery: "not_requested",
+    });
+    await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action!.id,
+        outcome: "restored",
+        sourceIssueStatus: "done",
+        executionReconciliation: {
+          runId,
+          providerStopped: true,
+          actionOutcome: "not_performed",
+          outcomeEvidence:
+            "Provider receipts confirm no external action was submitted and the provider is stopped.",
+        },
+      })
+      .expect(200);
   });
 
   async function seedReconciledDelivery() {

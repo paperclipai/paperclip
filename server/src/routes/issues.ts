@@ -9933,13 +9933,66 @@ export function issueRoutes(
               // An automatic no-replay disposition is final until new evidence
               // arrives. Keep the supported evidence API usable without a dialog.
               assertBoard(req);
+              if (activeRecoveryAction || outcome !== "restored") {
+                throw conflict(
+                  "Verified outcomes must restore this source recovery without replacing another active recovery action.",
+                  { code: "settled_no_replay_active_conflict" },
+                );
+              }
+              // Terminal status match clears the hold in place — no reopen→todo,
+              // no status flip, no 500 on the terminal reopen path (DEF-932 /
+              // DEF-747). Non-terminal matching status must not clear: a
+              // repair-only request shape must not authorize ordinary
+              // reconciliation of a no-replay hold.
               if (
-                activeRecoveryAction ||
-                sourceIssueStatus !== "todo" ||
-                outcome !== "restored"
+                sourceIssueStatus === lockedIssue.status &&
+                ["done", "cancelled"].includes(lockedIssue.status)
+              ) {
+                if (settled.evidence.executionReconciliation) {
+                  return {
+                    issue: lockedIssue,
+                    recoveryAction: settled,
+                    replayed: true,
+                  };
+                }
+                await validateExecutionReconciliation({
+                  db: tx as unknown as Db,
+                  companyId: lockedIssue.companyId,
+                  issueId: lockedIssue.id,
+                  agentId:
+                    lockedIssue.assigneeAgentId ??
+                    settled.returnOwnerAgentId ??
+                    null,
+                  sourceRunId:
+                    settled.evidence.runId ?? settled.evidence.sourceRunId,
+                  decision: executionReconciliation,
+                  clearHoldOnly: true,
+                });
+                await markExecutionReconciliation(
+                  tx as unknown as Db,
+                  settled,
+                  executionReconciliation,
+                  actor.actorId,
+                  undefined,
+                  { clearHoldOnly: true },
+                );
+                const [cleared] = await tx
+                  .select()
+                  .from(issueRecoveryActions)
+                  .where(eq(issueRecoveryActions.id, settled.id));
+                return {
+                  issue: lockedIssue,
+                  recoveryAction: cleared ?? settled,
+                  clearHoldOnly: true,
+                };
+              }
+              if (
+                ["done", "cancelled"].includes(lockedIssue.status) ||
+                sourceIssueStatus !== "todo"
               ) {
                 throw conflict(
                   "Verified outcomes must restore this source recovery without replacing another active recovery action.",
+                  { code: "settled_no_replay_status_mismatch" },
                 );
               }
               await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: lockedIssue.companyId, issueId: lockedIssue.id });
