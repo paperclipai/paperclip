@@ -160,10 +160,14 @@ coordinator still holds unresolved transactions. PostgreSQL regressions cover
 committed and uncommitted changes, failed expiry, zero SQL/active work during
 drain, exactly-once resume and existing shutdown/restart behavior.
 
-The final acceptance matrix passes all 34 cases with no skips: 16 actual boot
-cases, three passive protocol observer cases, seven runtime-status cases and
-eight single-flight cases. All 26 PostgreSQL decision-target controls pass.
-All 121 startup contracts and the scoped test TypeScript graph also pass.
+The recorded acceptance source is `6ccd1ed3e661e086b793de32b809ff8d3799eb69`,
+with C2 predecessor `b29334feafd5bf1740aa74e2ff0649c6b4cefc20`. It passes all
+41 cases with no skips: the original 34 (16 actual boot, three passive observer,
+seven runtime-status and eight single-flight cases), plus seven focused harness
+support and artifact-ownership cases. All 26 PostgreSQL decision-target controls,
+121 startup contracts and the scoped test TypeScript graph also pass. These
+receipts qualify that recorded executable source; later parent changes need
+their affected-source verification.
 Startup contracts retain independent registration, failure isolation and shutdown
 tracking. Required CI and exact-head review remain PR gates; these measurements
 do not qualify deployment or host suspension.
@@ -191,8 +195,8 @@ The real observation follows readiness and complete work settlement.
 
 | Fixture | Real observation | Application SQL | DB connections opened / closed at end | DB bytes during real window | Further qualified clock |
 | --- | --- | --- | --- | --- | --- |
-| Empty | 90,002 ms | 0 | 7 / 7 | 30 frontend, 0 backend | 7,200,000 ms |
-| Configured terminal history | 90,001 ms | 0 | 7 / 7 | 30 frontend, 0 backend | 7,200,000 ms |
+| Empty | 90,003 ms | 0 | 7 / 7 | 30 frontend, 0 backend | 7,200,000 ms |
+| Configured terminal history | 90,002 ms | 0 | 7 / 7 | 30 frontend, 0 backend | 7,200,000 ms |
 
 Each fixture had already closed one startup connection before observation. The
 remaining six connections each sent one five-byte PostgreSQL Terminate frame.
