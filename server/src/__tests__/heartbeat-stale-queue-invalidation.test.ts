@@ -1796,8 +1796,22 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     const interactionId = randomUUID();
     const wakeCommentId = randomUUID();
     let claimedIssue: { status: string; executionRunId: string | null } | null = null;
+    let resumedRunId: string | undefined;
+    let signalAdapterStarted!: () => void;
+    const adapterStarted = new Promise<void>(resolve => { signalAdapterStarted = resolve; });
+    const execute = mockAdapterExecute.getMockImplementation()!;
+    mockAdapterExecute.mockImplementation(async (...args: unknown[]) => {
+      if ((args[0] as { runId: string }).runId === resumedRunId) {
+        signalAdapterStarted();
+        // A claimed continuation can finish after the old terminal poll.
+        if (interactionStatus === "rejected" && interactionKind === "connection_intent") {
+          await new Promise(resolve => setTimeout(resolve, 3100));
+        }
+      }
+      return execute();
+    });
     afterContinuationDispatchCheck = async ({ runId: checkedRunId, issueId: checkedIssueId }) => {
-      if (checkedIssueId !== issueId) return;
+      if (checkedIssueId !== issueId || checkedRunId !== resumedRunId) return;
       claimedIssue = await db
         .select({ status: issues.status, executionRunId: issues.executionRunId })
         .from(issues)
@@ -1831,13 +1845,14 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       contextExtras: { interactionId, interactionKind, interactionStatus, wakeCommentId,
         originCommentIds: [wakeCommentId],
         interactionResolvedAt: new Date().toISOString(), mutation: "interaction", source: `${interactionKind}.resolved`, forceFreshSession: true } });
+    resumedRunId = runId;
     await heartbeat.resumeQueuedRuns();
-    expect(await waitForCondition(async () => (await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status === "succeeded")).toBe(true);
-    // Terminal status precedes completion bookkeeping. Drain those writes before
-    // afterEach truncates the fixture, otherwise PostgreSQL can deadlock.
+    // Adapter entry guarantees this exact execution is registered. Await its
+    // owning completion barrier before terminal assertions and fixture cleanup.
+    await adapterStarted;
     await heartbeat.waitForRunExecutionDrain(runId);
+    expect((await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status).toBe("succeeded");
     expect(countExecuteCallsForRun(runId)).toBe(1);
-    await waitForCondition(async () => claimedIssue !== null);
     expect(claimedIssue).toEqual({ status: "in_progress", executionRunId: runId });
   });
 });

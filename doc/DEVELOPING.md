@@ -2730,6 +2730,13 @@ An upgrade readiness report contains preliminary native evidence, not permission
 to remove a deployment volume. Keep the checkpoint pool bounded and measure all
 pools when qualifying database cost; the current size of two is a default.
 
+Committed native Agent Chat turns recover their unanswered final reply through
+the existing response presentation worker. Recovery verifies the accepted result
+and final turn, agent, responsible user, native session and conversation generation.
+It stores the exact final message before the normal conversation settlement moves
+the chat to waiting. Later user input remains active. Recovery does not run the
+agent again, replace a selected reply or restore a deleted reply.
+
 For retained Codex event tails, keep source drain/accounting and target admission
 separate. `native-staged-attachment-recovery.ts` validates private source/target
 header evidence; `native-recovery-usage-delivery.ts` binds the source's accounting

@@ -546,7 +546,7 @@ export async function settleUnrecoverableExecutions(
             companyId: run.companyId, issueId: task.id, runId: run.id,
           }).limit(1).for("update");
           if (!hold) return;
-          await notifyExecutionRunWork(tx);
+          await notifyExecutionRunWork(tx, { companyId: run.companyId });
           const note = "Exact session recovery stopped. The recorded workspace recovery holds this execution without replaying its actions.";
           await tx.update(issueRecoveryActions).set({ status: "cancelled", outcome: "cancelled",
             resolvedAt: now, updatedAt: now, wakePolicy: null, monitorPolicy: null,
@@ -654,7 +654,7 @@ export async function settleUnrecoverableExecutions(
             replay: "not_authorized",
           },
         });
-        await notifyExecutionRunWork(tx);
+        await notifyExecutionRunWork(tx, { companyId: run.companyId });
         await tx
           .update(heartbeatRuns)
           .set({ executionStatusDeliveryId: randomUUID() })
