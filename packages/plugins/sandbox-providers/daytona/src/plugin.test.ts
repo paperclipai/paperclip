@@ -1805,7 +1805,7 @@ describe("Daytona sandbox provider plugin", () => {
     });
   });
 
-  it("passes configured resources to Daytona for image-based creation", async () => {
+  it.each([20, 30])("passes configured resources to Daytona for image-based creation with %i GiB disk", async disk => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
     mockCreate.mockResolvedValue(sandbox);
@@ -1822,7 +1822,7 @@ describe("Daytona sandbox provider plugin", () => {
         image: "node:20",
         cpu: 4,
         memory: 8,
-        disk: 20,
+        disk,
         timeoutMs: 300000,
         reuseLease: true,
       },
@@ -1832,7 +1832,7 @@ describe("Daytona sandbox provider plugin", () => {
     const [createParams] = mockCreate.mock.calls[0] as [Record<string, unknown>];
     expect(createParams).toMatchObject({
       image: "node:20",
-      resources: { cpu: 4, memory: 8, disk: 20, gpu: undefined },
+      resources: { cpu: 4, memory: 8, disk, gpu: undefined },
     });
     expect(createParams).not.toHaveProperty("snapshot");
     expect(sandbox.resize).not.toHaveBeenCalled();

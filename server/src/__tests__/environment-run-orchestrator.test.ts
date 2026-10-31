@@ -13,6 +13,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockLoggerInfo = vi.hoisted(() => vi.fn());
 const mockGetEnvironment = vi.hoisted(() => vi.fn());
 const mockGetLease = vi.hoisted(() => vi.fn());
+const mockBoundCompanyIds = vi.hoisted(() => vi.fn().mockResolvedValue([]));
 
 vi.mock("../services/environment-execution-target.js", () => ({
   resolveEnvironmentExecutionTarget: mockResolveEnvironmentExecutionTarget,
@@ -32,6 +33,7 @@ vi.mock("../services/environments.js", () => ({
     ensureLocalEnvironment: vi.fn(),
     getById: mockGetEnvironment,
     getLeaseById: mockGetLease,
+    listBoundCompanyIds: mockBoundCompanyIds,
     acquireLease: vi.fn(),
     releaseLease: vi.fn(),
     updateLeaseMetadata: mockUpdateLeaseMetadata,
@@ -879,6 +881,14 @@ describe("live remote runner lease reattachment", () => {
     expect(result.lease).toEqual(savedLease);
     expect(result.leaseContext.executionWorkspaceId).toBe("ew-1");
     expect(result.environment.config.reuseLease).toBe(false);
+  });
+  it("rejects a company binding change before acquiring or reconnecting a remote environment", async () => {
+    mockBoundCompanyIds.mockResolvedValueOnce(["foreign-company"]);
+    const runtime = makeMockRuntime();
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
+      .rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+    expect(mockGetLease).not.toHaveBeenCalled();
   });
   it.each(["active", "foreign-company", "revoked", "undispatched", "stopped"])("inspects the original plugin task lease (%s)", async state => {
     mockGetEnvironment.mockResolvedValue(makeEnvironment("plugin"));
