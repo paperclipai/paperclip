@@ -93,6 +93,7 @@ import type { workspaceOperationService } from "../workspace-operations.js";
 import type { environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import type { instanceSettingsService } from "../instance-settings.js";
 import type { EffectiveRunSessionConfigMetadata } from "./workspaces.js";
+import { shouldOfferRuntimeConnectionsMcp } from "./runtime-connections-mcp.js";
 import type { ProviderResourceDisposition } from "../environment-runtime.js";
 import type { NativeExecutionInput, NativeSessionBackend } from "../../vendor/paperclip-runner/index.js";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
@@ -801,7 +802,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       });
       const runtimeToolDelivery =
         adapter.runtimeToolDelivery ?? "invocation_context";
-      if (runtimeTools && runtimeToolDelivery === "native_mcp") {
+      if (runtimeTools && shouldOfferRuntimeConnectionsMcp({ runtimeToolDelivery, hasIssue: Boolean(issueRef) })) {
         runtimeMcpServers.unshift({
           name: "Paperclip connections",
           url: runtimeTools.mcpEndpoint,
