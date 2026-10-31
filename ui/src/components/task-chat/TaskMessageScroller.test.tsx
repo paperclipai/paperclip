@@ -186,6 +186,38 @@ describe("TaskMessageScroller", () => {
     expect(scroller().scrollTop).toBe(1000);
   });
 
+  it("retains the reading anchor when a resize scroll event precedes the next width reflow", async () => {
+    const resize: (() => void)[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { resize.push(() => callback([], this as unknown as ResizeObserver)); }
+      observe() {}
+      disconnect() {}
+    });
+    let width = 400, rowTop = 100;
+    flushSync(() => root.render(<TaskMessageScroller contentKey="width-transition">
+      <div ref={node => {
+        if (!node) return;
+        const viewport = node.parentElement!;
+        fakeGeometry(viewport, { clamp: true });
+        Object.defineProperty(viewport, "clientWidth", { get: () => width, configurable: true });
+        viewport.getBoundingClientRect = () => ({ top: 0, bottom: 400 } as DOMRect);
+      }}>
+        <div data-thread-anchor="reading-row" ref={node => {
+          if (node) node.getBoundingClientRect = () => ({ top: rowTop - scroller().scrollTop, bottom: rowTop + 100 - scroller().scrollTop, height: 100 } as DOMRect);
+        }}>Saved reply</div>
+      </div>
+    </TaskMessageScroller>));
+    await scrollTo(scroller(), 150);
+    width = 500; rowTop = 80;
+    for (const callback of resize) callback();
+    expect(scroller().scrollTop).toBe(130);
+    width = 600; rowTop = 60;
+    await dispatch(scroller(), new Event("scroll", { bubbles: true }));
+    for (const callback of resize) callback();
+    expect(rowTop - scroller().scrollTop).toBe(-50);
+    expect(pill()).not.toBeNull();
+  });
+
   it("retains upward intent when content reconciles before the scroll event", async () => {
     const load = vi.fn();
     const update = (tick: number) => flushSync(() => root.render(
@@ -298,6 +330,31 @@ describe("TaskMessageScroller", () => {
     expect(viewport.scrollTop).toBe(150);
     navigate("desktop-entry-one", "#nav-comment-1", true);
     expect(viewport.scrollTop).toBe(500);
+  });
+
+  it.each([[false, "none"], [false, "wheel"], [false, "pointer"], [true, "none"], [true, "wheel"], [true, "pointer"]] as const)("positions a late hash target unless the reader moved on (restore=%s, readerMoved=%s)", async (restore, readerMoved) => {
+    let initialized = false;
+    const show = (targetReady: boolean) => flushSync(() => root.render(
+      <TaskChatScrollNavigation.Provider value={{ key: `late-target-${restore}-${readerMoved}`, hash: "#late-target", restore }}>
+        <TaskMessageScroller contentKey={targetReady}>
+          <div ref={node => {
+            if (node && !initialized) { fakeGeometry(node.parentElement!, { clamp: true }); initialized = true; }
+          }}>
+            Saved conversation
+            {targetReady ? <div id="late-target" data-thread-anchor="late-target" ref={node => {
+              if (node) node.getBoundingClientRect = () => ({ top: 100 - scroller().scrollTop, bottom: 200 - scroller().scrollTop, height: 100 } as DOMRect);
+            }}>Linked comment</div> : null}
+          </div>
+        </TaskMessageScroller>
+      </TaskChatScrollNavigation.Provider>,
+    ));
+    show(false);
+    if (readerMoved !== "none") {
+      await scrollTo(scroller(), 300);
+      await dispatch(scroller(), readerMoved === "wheel" ? new WheelEvent("wheel", { bubbles: true, deltaY: -100 }) : new Event("pointerdown", { bubbles: true }));
+    }
+    show(true);
+    expect(scroller().scrollTop).toBe(readerMoved === "none" ? 100 : 300);
   });
 
   it("does not replace a saved reading position with a hidden route's geometry", async () => {
