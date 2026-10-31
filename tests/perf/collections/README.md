@@ -29,3 +29,9 @@ Code warms after the collection paints, or on task-link intent. A failed specula
 collection usable and permits navigation without a document reload. Direct task
 URLs retain module preload while identity is pending. These cases must run with
 production assets: development modules do not exercise the bundle boundaries.
+
+The functional cases route feature settings and delayed responses. Routing
+disables browser HTTP caching. For warm-cache timings, set the real local feature
+settings and use fresh browser contexts without request interception. Keep normal
+cache writes enabled so code warmed after paint can be used on the next task open.
+Retain intercepted runs as separate diagnostic evidence.
