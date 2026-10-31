@@ -155,7 +155,7 @@ describePostgres("board claim wakes connection delivery", () => {
     await retired(f.connection.id);
   });
 
-  it("retains a notification during an in-flight sweep and reruns once", async () => {
+  it("coalesces back-to-back claim writes during an in-flight sweep", async () => {
     const f = await arrange();
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
@@ -169,6 +169,12 @@ describePostgres("board claim wakes connection delivery", () => {
     try {
       await entered.promise;
       await claimBoardOwnership(db, f.claim);
+      await db.update(companyMemberships).set({ status: "suspended" });
+      await db.delete(instanceUserRoles);
+      await db.insert(instanceUserRoles).values({ userId: "local-board", role: "instance_admin" });
+      await initializeBoardClaimChallenge(db, { deploymentMode: "authenticated" });
+      const next = new URL(getBoardClaimWarningUrl("127.0.0.1", 3197)!);
+      await claimBoardOwnership(db, { ...f.claim, token: next.pathname.split("/").pop()!, code: next.searchParams.get("code")! });
     } finally {
       hold = false;
       release.resolve();
