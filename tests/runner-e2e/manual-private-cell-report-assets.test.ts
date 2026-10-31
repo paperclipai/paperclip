@@ -1,3 +1,4 @@
+import { readPrivateAttemptObservation } from "./private-attempt-diagnostic.js";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -27,6 +28,7 @@ import { MANUAL_PRIVATE_EXECUTIONS, MANUAL_PRIVATE_PROTOCOL, manualCellKind } fr
 import { archivePrivateEvidence, retainPrivateTransfer } from "./private-history.js";
 import { BoundedHistoryPublisher } from "./history-budget.js";
 import { sanitizeJson } from "./redaction.js";
+import { sanitizePrivateReporterArtifacts } from "./private-reporter-artifacts.js";
 import type { RunnerE2EResult } from "./types.js";
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const roots: string[] = [];
@@ -114,6 +116,21 @@ it("retains the real failed trace/report through actual copy, private package, b
   expect((await validateSealedInventory(path.join(restored, "sealed-results/html-report"), "../result-evidence-inventory.json", undefined, "standard", downloaded)).complete).toBe(true);
   expect(await readFile(path.join(restored, "sealed-results/html-report", f.prefix, "html-report/trace/playwright-logo.svg"))).toEqual(await readFile(canonicalGeneratedReportAsset("html/trace/playwright-logo.svg")!));
 }, 60_000);
+it("preserves canonical trace assets through reporter sanitization before private packaging", async () => {
+  const f = await fixture();
+  const before = await readFile(path.join(f.cell, "html-report/trace/index.html"));
+  await sanitizePrivateReporterArtifacts(f.cell, [], { owner: f.owner });
+  expect(await readFile(path.join(f.cell, "html-report/trace/index.html"))).toEqual(before);
+  await expect(packageEvidence({ privateDir: f.cell, uploadDir: f.upload, secrets: [], expectPassScreenshot: false,
+    privateCell: { owner: f.owner, layout: "original" } })).resolves.toMatchObject({ leaks: [] });
+});
+it("keeps rejecting contaminated or modified canonical assets during reporter sanitization", async () => {
+  const f = await fixture();
+  await expect(sanitizePrivateReporterArtifacts(f.cell, ["Playwright"], { owner: f.owner })).rejects.toThrow(/Secret leak/);
+  const file = path.join(f.cell, "html-report/trace/index.html"), original = await readFile(file, "utf8");
+  await writeFile(file, original.replace("Playwright", "Xlaywright"));
+  await expect(sanitizePrivateReporterArtifacts(f.cell, [], { owner: f.owner })).rejects.toThrow(/canonical producer/);
+});
 it.each(["wrong-case", "wrong-run", "wrong-attempt", "double-wrapper", "extra-nesting", "watch", "xterm", "tampered-html", "tampered-svg", "shape"])("actual package rejects %s in the reserved cell namespace", async kind => {
   const f = await fixture(); let relative = "html-report/trace/index.html";
   if (kind === "watch") relative = "html-report/trace/watch.js";
@@ -275,13 +292,13 @@ it.each([0, 1])("actual launcher packaging call %s retains the verified private 
 
 async function actualLauncherEvidenceBranch(packageCall = packageEvidence) {
   const source = await readFile(new URL("./launch.ts", import.meta.url), "utf8");
-  const start = source.indexOf("      if (manualPrivateHandoff) {\n        await preserveOriginalFrameworkResult(casePrivateDir);");
   const parser = createRequire(import.meta.url)("../../node_modules/.pnpm/@babel+parser@7.29.8/node_modules/@babel/parser");
   const ast = parser.parse(source, { sourceType: "module", plugins: ["typescript"] });
-  let end = -1;
+  let start = -1, end = -1;
   const visit = (node: any) => {
     if (!node || typeof node !== "object") return;
-    if (node.type === "IfStatement" && node.start === start + 6) end = node.end;
+    if (node.type === "IfStatement" && node.test?.name === "manualPrivateHandoff" && Array.isArray(node.consequent?.body) && node.consequent.body.some((statement: any) =>
+      statement.expression?.argument?.callee?.name === "preserveOriginalFrameworkResult")) { start = node.start; end = node.end; }
     for (const value of Object.values(node)) {
       if (Array.isArray(value)) value.forEach(visit);
       else if (value && typeof value === "object") visit(value);
@@ -289,10 +306,10 @@ async function actualLauncherEvidenceBranch(packageCall = packageEvidence) {
   };
   visit(ast);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
-  const code = stripTypeScriptTypes(`async function actualBranch(manualPrivateHandoff, candidate, casePrivateDir, resultsRoot, uploadDir, credentials, result, resultPath) { ${source.slice(start, end)} return result; }`, { mode: "strip" });
+  const code = stripTypeScriptTypes(`async function actualBranch(manualPrivateHandoff, candidate, casePrivateDir, resultsRoot, uploadDir, credentials, result, resultPath) { let manualDiagnostic; ${source.slice(start, end)} return result; }`, { mode: "strip" });
   const publisher = vi.fn(publishRunnerE2EAttemptEvidence);
-  const branch = Function("preserveOriginalFrameworkResult", "writeFile", "sanitizeJson", "packageEvidence", "privateCellEvidenceOwner", "sealStandardOriginalEvidence", "publishRunnerE2EAttemptEvidence", `${code}; return actualBranch;`)(
-    preserveOriginalFrameworkResult, writeFile, sanitizeJson, packageCall, privateCellEvidenceOwner, sealStandardOriginalEvidence, publisher,
+  const branch = Function("preserveOriginalFrameworkResult", "writeFile", "sanitizeJson", "packageEvidence", "privateCellEvidenceOwner", "sealStandardOriginalEvidence", "publishRunnerE2EAttemptEvidence", "readPrivateAttemptObservation", `${code}; return actualBranch;`)(
+    preserveOriginalFrameworkResult, writeFile, sanitizeJson, packageCall, privateCellEvidenceOwner, sealStandardOriginalEvidence, publisher, readPrivateAttemptObservation,
   ) as (context: ManualPrivateHandoff | undefined, candidate: { id: string }, source: string, root: string, target: string, secrets: string[], result: RunnerE2EResult, resultPath: string) => Promise<RunnerE2EResult>;
   return { branch, publisher };
 }

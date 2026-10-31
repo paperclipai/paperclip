@@ -1,3 +1,4 @@
+import { appendPrivateAttemptDiagnostic, readPrivateAttemptObservation, type PrivateAttemptDiagnosticInput } from "./private-attempt-diagnostic.js";
 import { withholdPrivateScreenshots } from "./screenshot-privacy.js";
 import { copyHealthHelloDetail } from "./chat-readiness-detail.js";
 import { copyRetainedSourceSdk } from "./source-sdk-evidence.js";
@@ -112,6 +113,7 @@ const localEnvPath = path.join(repositoryRoot, ".env.runner-e2e.local");
 let resultsRoot = path.join(repositoryRoot, "tests/runner-e2e/results");
 const manualEvidenceSecrets = new Set<string>();
 let manualPrivateHandoff: ManualPrivateHandoff | undefined;
+let manualDiagnostic: PrivateAttemptDiagnosticInput | undefined;
 const activeProcessGroups = new Set<number>();
 const activeProcessCleanup = new Map<number, Promise<string | null>>();
 const activeProcessTerminators = new Map<number, () => void>();
@@ -616,7 +618,7 @@ async function runAttempt(input: {
       PAPERCLIP_RUNNER_E2E_TEMP_ROOT: temporaryRoot,
       PAPERCLIP_RUNNER_E2E_PRIVATE_DIR: privateDir,
       PAPERCLIP_RUNNER_E2E_WORKSPACE: workspace,
-      PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(privateDir, "server.log"),
+      PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(temporaryRoot, "artifacts-private", "server.log"),
       PAPERCLIP_RUNNER_BINARY: runnerBinary,
       PAPERCLIP_RUNNER_REMOTE_BINARY_PATH:
         installedCli ? undefined : resolvePaperclipRemoteRunnerBinaryForHarness(executions, runnerBinary),
@@ -793,7 +795,12 @@ async function runAttempt(input: {
         persistedStateError = error;
       }
     }
-    const reporterPrivacy = await sanitizePrivateReporterArtifacts(privateDir, credentials);
+    const ownedServerLog = path.join(temporaryRoot, "artifacts-private", "server.log");
+    if (manualPrivateHandoff && await access(ownedServerLog).then(() => true, () => false)) {
+      await cp(ownedServerLog, path.join(privateDir, "server.log"), { errorOnExist: true, force: false });
+    }
+    const reporterPrivacy = await sanitizePrivateReporterArtifacts(privateDir, credentials, manualPrivateHandoff
+      ? { owner: await privateCellEvidenceOwner(manualPrivateHandoff, execution.id) } : undefined);
     if (processResult.privateDiagnosticLeak) reporterPrivacy.push({ file: "playwright process stdout/stderr", disposition: "redacted", reason: "credential detected before diagnostic emission" });
     for (const [index, candidate] of executions.entries()) {
       let result: RunnerE2EResult = {
@@ -888,6 +895,7 @@ async function runAttempt(input: {
       });
       const resultPath = path.join(casePrivateDir, "result.json");
       if (manualPrivateHandoff) {
+        manualDiagnostic = { stage: "package-original", result, observation: await readPrivateAttemptObservation(casePrivateDir) };
         await preserveOriginalFrameworkResult(casePrivateDir);
         await writeFile(
           resultPath,
@@ -902,6 +910,7 @@ async function runAttempt(input: {
           privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const },
         });
         const originalEvidence = evidence, originalFeaturePassed = result.status === "passed";
+        manualDiagnostic!.evidence = originalEvidence;
         if (evidence.leaks.length > 0 || evidence.missing.length > 0) {
           result = withholdPrivateScreenshots(result, { packagedEvidenceSecretFinding: evidence.leaks.length > 0 });
           result = {
@@ -929,6 +938,7 @@ async function runAttempt(input: {
             privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const },
           });
         }
+        manualDiagnostic!.stage = "seal-original";
         await sealStandardOriginalEvidence({ context: manualPrivateHandoff,
           executionId: candidate.id, source: casePrivateDir, evidence: originalEvidence, secrets: credentials, expectPassScreenshot: originalFeaturePassed });
       } else {
@@ -959,15 +969,20 @@ async function runAttempt(input: {
     }
     return [...publishedResults];
   } catch (error) {
+    if (manualDiagnostic) manualDiagnostic.error = error;
     if (error instanceof PublicOriginCleanupError) processCleanupFailed = true;
     // Packaging/diagnostic failures must not erase an actually launched attempt
     // or its primary startup failure. Retain only closed sanitized metadata;
     // raw reports stay private when their normal packaging path failed.
     for (const candidate of executions) {
       if (publishedResultPaths.has(candidate.id)) continue;
-      const casePrivateDir = path.join(temporaryRoot, "artifacts-private", "cases", candidate.task.id);
+      const casePrivateDir = path.join(privateDir, "cases", candidate.task.id);
       const fallback = syntheticResult(candidate, attempt, startedAtMs, "Attempt terminated before a worker result was retained");
       const original = await readResult(path.join(casePrivateDir, "result.json"), fallback);
+      if (manualPrivateHandoff) {
+        manualDiagnostic ??= { stage: "execution", result: original, observation: await readPrivateAttemptObservation(casePrivateDir) };
+        manualDiagnostic.error ??= error;
+      }
       const result = abnormalFinalizationResult(original, error);
       if (databaseLane === "owned-docker-postgres") result.databaseIdentity = dockerDatabase ? publicDockerDatabaseIdentity(dockerDatabase.receipt) : (await dockerDatabaseLaunchState(databaseLane, temporaryRoot)).identity;
       const uploadDir = path.join(resultsRoot, campaignId, candidate.suite.id, candidate.profile.id, candidate.environment.id, candidate.task.id, `attempt-${attempt}`);
@@ -1188,6 +1203,7 @@ async function main() {
   }
   const executions = selectRunnerExecutions(options, runnerMatrix);
   manualPrivateHandoff = await readManualPrivateHandoff(process.env, executions.map(execution => execution.id));
+  if (manualPrivateHandoff) await appendPrivateAttemptDiagnostic({ stage: "execution" });
   resultsRoot = manualPrivateHandoff ? path.join(manualPrivateHandoff.root, "results") : resolveRunnerE2EResultsRoot(repositoryRoot);
   if (options.installedStartupOnly) {
     assertInstalledStartupOnly(process.env, executions, options);
@@ -1384,7 +1400,13 @@ async function main() {
 
 await main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
+  if (manualPrivateHandoff) manualDiagnostic ??= { stage: "execution", error };
   process.exitCode = 1;
 }).finally(async () => {
   if (manualPrivateHandoff) await sealManualResultEvidence(manualPrivateHandoff, [...manualEvidenceSecrets]);
-}).catch(() => { process.stderr.write("Private evidence finalization failed; no public fallback\n"); process.exitCode = 1; });
+}).catch((error) => {
+  if (manualDiagnostic && !manualDiagnostic.error) manualDiagnostic.error = error;
+  process.stderr.write("Private evidence finalization failed; no public fallback\n"); process.exitCode = 1;
+}).finally(async () => {
+  if (manualPrivateHandoff && manualDiagnostic) await appendPrivateAttemptDiagnostic(manualDiagnostic).catch(() => {});
+});
