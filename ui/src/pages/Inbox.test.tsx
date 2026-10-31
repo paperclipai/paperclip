@@ -826,6 +826,43 @@ describe("Inbox toolbar", () => {
     act(() => root.unmount());
   });
 
+  it.each([
+    { columns: ["status", "id", "updated"], showsStatus: true },
+    { columns: ["id", "updated"], showsStatus: false },
+  ])("honors the Status column in streamlined task rows (columns=$columns)", async ({ columns, showsStatus }) => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem(
+      taskCollectionPreferencesStorageKey({ companyId: "company-1", collectionKey: "inbox" }),
+      JSON.stringify({
+        version: 1,
+        companyId: "company-1",
+        collectionKey: "inbox",
+        viewState: {},
+        columns,
+      }),
+    );
+    apiMocks.issuesList.mockResolvedValue([createIssue({ title: "Status column task" })]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.querySelector('[data-slot="task-row"]')).not.toBeNull());
+
+    const taskRow = container.querySelector('[data-slot="task-row"]');
+    expect(taskRow?.textContent).toContain("Status column task");
+    expect(taskRow?.querySelector('svg[role="img"]') !== null).toBe(showsStatus);
+
+    act(() => root.unmount());
+  });
+
   it("shows the resolved isolated workspace name in canonical task metadata", async () => {
     routerMock.location.pathname = "/inbox/mine";
     localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "workspace", "updated"]));
