@@ -175,18 +175,36 @@ retain the inspection-based completion path. No stored binding migration is requ
 
 A provider whose inspection cannot prove merge ancestry may declare
 `workspaceProvider.supportsMergeAncestry: false`. Omission preserves the existing
-ancestry inspection behavior. For an opted-out provider, automatic cleanup first
-checks for a matching PR work product. No matching PR means no storage inspection
-or recurring cleanup deadline for that workspace; work-product and workspace
-notifications reconsider it, and startup reconstructs the decision. Provider
-manifest changes, activation, and company re-enablement also wake cleanup, so a
-provider that later gains ancestry inspection can reconsider parked workspaces.
-A relevant open or unknown PR retains the existing bounded retry because external merge
-state can change without a local notification. Only a merged PR with the expected
-branch and a known HEAD triggers inspection; Core still compares that HEAD with
-fresh storage evidence before archive. Removal's fresh data-safety and lifecycle
-checks are unchanged. Explicit close-readiness and pending lifecycle recovery
-continue to inspect even without a PR.
+ancestry inspection behavior. For an opted-out provider, automatic cleanup uses
+its latest successful finalization HEAD as a hint for destination-aware GitHub
+checks. It discovers associated PRs without requiring a recorded work product.
+A direct ancestry proof or a merged PR with the exact final HEAD, intended base
+repository/branch, and reachable integration commit must precede storage
+inspection. A fresh matching HEAD and branch, remote recoverability, no local
+data, terminal tasks, and the existing lifecycle fences still govern deletion.
+Open or unknown delivery for a known commit retains a bounded remote-only retry.
+Missing candidate identity parks until a relevant write or startup recovery.
+Explicit close-readiness and pending lifecycle recovery retain their checks.
+
+A provider may declare `workspaceProvider.recoveryPullRequestVersion: 1`. Core
+can then include `recoveryPullRequest: { number, headSha }` in `inspect` and
+`remove`. This is a narrow recovery hint, not permission to delete. The provider
+must use its trusted source repository, validate that the specific PR recovery
+reference still identifies `headSha`, and independently check the actual workspace
+and all owned data. Arbitrary remote URLs and reference names are not accepted.
+Absent capability means Core does not send the extra field. Pending removal
+persists the same hint for safe retry; it never replaces the provider's checks.
+
+The optional `prepared.destinationRef` records the resolved delivery branch as
+`refs/heads/<branch>`. Providers should return null when preparation cannot
+establish an unambiguous branch destination. Core stores this alongside the source
+snapshot; callers cannot overwrite it through workspace metadata updates. Older
+providers omit it. Core only falls back to their captured explicit source refs,
+not a mutable project configuration or a newly chosen default branch. A source
+SHA or tag may support direct ancestry, but does not imply a PR base branch.
+Provider upgrades, activation, company re-enablement, and finalization settlement
+wake cleanup transactionally. No table, independent timer, or background scan of
+all remote PR refs is required.
 
 ## Warm task retention
 

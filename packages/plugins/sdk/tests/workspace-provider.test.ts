@@ -50,6 +50,26 @@ const result = {
   branchCreatedByRuntime: true,
 };
 describe("workspace provider SDK", () => {
+  it("bounds recovery hints to an exact PR number and commit", () => {
+    for (const kind of ["inspect", "remove"] as const) {
+      const operation = { kind, binding: result.binding, ...(kind === "remove" ? { expectedHeadSha: "a".repeat(40) } : {}) };
+      const recoveryPullRequest = { number: 42, headSha: "a".repeat(40) };
+      expect(workspaceProviderOperationSchema.parse({ ...operation, recoveryPullRequest })).toMatchObject({ recoveryPullRequest });
+      for (const bad of [{ ...recoveryPullRequest, number: 0 }, { ...recoveryPullRequest, number: 1.5 },
+        { ...recoveryPullRequest, headSha: "a".repeat(41) }, { ...recoveryPullRequest, ref: "refs/heads/main" }]) {
+        expect(() => workspaceProviderOperationSchema.parse({ ...operation, recoveryPullRequest: bad })).toThrow();
+      }
+    }
+  });
+  it("accepts only canonical optional preparation destinations", () => {
+    for (const destinationRef of [undefined, null, "refs/heads/main", "refs/heads/release/one"]) {
+      expect(parseWorkspaceProviderResult(params, { ...result, ...(destinationRef !== undefined ? { destinationRef } : {}) }))
+        .toMatchObject(result);
+    }
+    for (const destinationRef of ["main", "refs/tags/main", "refs/heads/main..other", "refs/heads/main/", "refs/heads/.hidden", "refs/heads/main.lock"]) {
+      expect(() => parseWorkspaceProviderResult(params, { ...result, destinationRef })).toThrow();
+    }
+  });
   it("separates completion acknowledgement from removal safety", () => {
     const input: PluginWorkspaceParams = { ...params, agentId: id(6), runId: id(7),
       operation: { kind: "finalize", binding: result.binding } };
@@ -122,6 +142,10 @@ describe("workspace provider SDK", () => {
       resourceLifecycle: ["project"],
     };
     expect(pluginManifestV1Schema.safeParse(manifest).success).toBe(true);
+    expect(pluginManifestV1Schema.parse({ ...manifest, workspaceProvider: { ...manifest.workspaceProvider,
+      recoveryPullRequestVersion: 1 } }).workspaceProvider?.recoveryPullRequestVersion).toBe(1);
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, workspaceProvider: { ...manifest.workspaceProvider,
+      recoveryPullRequestVersion: 2 } }).success).toBe(false);
     const withDefault = { ...manifest, workspaceProvider: { ...manifest.workspaceProvider,
       defaultForProjects: { mode: "isolated_workspace", strategy: "git_worktree" } } };
     expect(pluginManifestV1Schema.parse(withDefault).workspaceProvider?.defaultForProjects).toEqual({

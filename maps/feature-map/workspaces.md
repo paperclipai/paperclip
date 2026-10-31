@@ -157,9 +157,12 @@ Manual: Provision a disposable workspace, wait for readiness, start an available
 
 - A link or running badge does not prove the service is reachable from the user’s browser.
 - Workspace IDs, runtime leases, and repository paths are not interchangeable.
-- Terminal workspace cleanup wakes after committed task/workspace/PR changes and
-  restores cooldown deadlines at startup. Empty lanes stop scanning. Display Git
-  results can lag by thirty seconds. Compatible records share one advisory Git
+- Terminal workspace cleanup wakes after committed task/workspace/PR/finalization changes and
+  restores cooldown deadlines at startup. Empty lanes stop scanning. Metadata reads
+  do not inspect storage. Providers without ancestry inspection use finalized HEAD
+  and destination-aware GitHub proof before storage checks. Associated squash PRs
+  need not be recorded manually; wrong HEAD/base, unreachable integration commits,
+  or unavailable credentials retain the workspace. Compatible records share one advisory Git
   inspection per bounded page, while each record keeps its own delivery check.
   Destructive cleanup starts a separate Git scan even if an older scan is running.
   The [worker tests](../../server/src/__tests__/terminal-workspace-work.test.ts)

@@ -270,6 +270,10 @@ Policy: Company/project/workspace visibility and runtime authority; active run, 
 preset and task ownership where required.
 Workspace metadata reads do not perform storage inspection or certify delivery.
 The explicit close-readiness API and destructive cleanup retain live safety checks.
+Automatic GitHub delivery checks use company-scoped background credentials; they
+do not borrow managed grants from a person or agent. The resolved destination and
+provider recovery hint cannot be supplied as an authorization override through
+workspace metadata. Ambiguous or inaccessible proof retains storage.
 
 Evidence: `source-only` —
 [implementation](../../server/src/routes/workspace-runtime-service-authz.ts#L76) at the

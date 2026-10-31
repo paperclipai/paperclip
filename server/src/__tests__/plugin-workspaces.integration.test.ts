@@ -45,6 +45,39 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     const fixture = (companyId?: string) =>
       createPluginWorkspaceFixture(db, companyId);
+    it.each([1, undefined])("gates recovery hints by provider capability (%s)", async (version) => {
+      const f = await fixture();
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+      await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
+        workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, recoveryPullRequestVersion: version as 1 | undefined } } }).where(eq(plugins.id, f.pluginId));
+      const workspace = await preparePluginWorkspace(db, f.workers, f.input);
+      const recoveryPullRequest = { number: 42, headSha: "a".repeat(40) };
+      await inspectPluginWorkspace(db, f.workers, workspace!, recoveryPullRequest);
+      expect(f.calls.at(-1).operation.recoveryPullRequest).toEqual(version === 1 ? recoveryPullRequest : undefined);
+      let freshInspectionCompleted = false;
+      await expect(removePluginWorkspace(db, f.workers, workspace!, "a".repeat(40), recoveryPullRequest, async () => {
+        freshInspectionCompleted = f.calls.at(-1).operation.kind === "inspect";
+        throw new Error("delivery changed");
+      })).rejects.toThrow("delivery changed");
+      expect(freshInspectionCompleted).toBe(true);
+      const [unchanged] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace!.id));
+      expect(unchanged.metadata?.workspaceProviderRemoval).toBeUndefined();
+      f.loseRemoval();
+      await expect(removePluginWorkspace(db, f.workers, workspace!, "a".repeat(40), recoveryPullRequest)).rejects.toThrow();
+      const [pending] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace!.id));
+      expect(pending.metadata?.workspaceProviderRemoval).toMatchObject({ operation: { recoveryPullRequest } });
+      await removePluginWorkspace(db, f.workers, pending, "a".repeat(40), recoveryPullRequest, async () => { throw new Error("must not reauthorize pending removal"); });
+      expect(f.calls.at(-1).operation.recoveryPullRequest).toEqual(version === 1 ? recoveryPullRequest : undefined);
+    });
+    it.each(["refs/heads/main", null, undefined])("persists the actual prepared destination (%s)", async (destinationRef) => {
+      const f = await fixture();
+      const workers: WorkspaceWorkers = { ...f.workers, call: async (...args: Parameters<typeof f.workers.call>) => {
+        const result = await f.workers.call(...args);
+        return result.kind === "prepared" ? { ...result, ...(destinationRef !== undefined ? { destinationRef } : {}) } : result;
+      } };
+      const workspace = await preparePluginWorkspace(db, workers, f.input);
+      expect(workspace!.metadata?.workspaceProviderDestinationRef).toBe(destinationRef);
+    });
     it.each([true, undefined])("wakes parked cleanup when a provider upgrade enables ancestry (%s)", async (supportsMergeAncestry) => {
       const f = await fixture();
       await preparePluginWorkspace(db, f.workers, f.input);
@@ -103,68 +136,28 @@ const support = await getEmbeddedPostgresTestSupport();
         expect(events).toEqual([]);
       } finally { unsubscribe(); }
     });
-    it("keeps PR-only storage idle until delivery can qualify for fresh inspection", async () => {
+    it("keeps storage idle without a settled completion HEAD, even with a recorded PR", async () => {
       const f = await fixture();
-      const workspace = (await preparePluginWorkspace(db, f.workers, f.input))!;
+      await preparePluginWorkspace(db, f.workers, f.input);
       const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
       await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
         workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, supportsMergeAncestry: false } } }).where(eq(plugins.id, f.pluginId));
       await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
       await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
-      const originalCall = f.workers.call.bind(f.workers);
-      f.workers.call = async (...args) => {
-        const value = await originalCall(...args);
-        return (args[2] as any).operation.kind === "inspect" ? { ...value as object, isMergedIntoBase: null } : value;
-      };
-      let clock = new Date();
-      let state: "open" | "merged" = "open";
-      let headSha = "b".repeat(40);
-      let pullRequestReads = 0;
-      const options = { pluginWorkerManager: f.workers, workspaceReaperCooldownDays: 0,
-        terminalWorkspaceInspectionBackoffMs: 300_000, now: () => clock,
-        resolvePullRequestDetails: async () => { pullRequestReads += 1; return { state, headRef: workspace.branchName, headSha }; } };
-      const svc = executionWorkspaceService(db, options);
-      const inspections = () => f.calls.filter(call => call.operation.kind === "inspect").length;
-      await svc.sweepTerminalWorkspaces(100);
-      expect(inspections()).toBe(0);
-      expect(await svc.nextTerminalWorkspaceSweepAt()).toBeNull();
-      svc.terminalWorkspaceWorkSettled(new Set([`issue:${randomUUID()}`]));
-      await svc.sweepTerminalWorkspaces(100);
-      expect(inspections()).toBe(0);
-      expect(await svc.nextTerminalWorkspaceSweepAt()).toBeNull();
-      await executionWorkspaceService(db, options).sweepTerminalWorkspaces(100);
-      expect(inspections()).toBe(0);
-
-      await db.insert(issueWorkProducts).values({ companyId: f.companyId, issueId: f.issueId,
-        type: "pull_request", provider: "github", title: "Unrelated work", status: "active",
-        url: "https://github.com/other/repository/pull/1" });
-      svc.terminalWorkspaceWorkSettled(new Set([`issue:${f.issueId}`]));
-      await svc.sweepTerminalWorkspaces(100);
-      expect(inspections()).toBe(0);
-      expect(await svc.nextTerminalWorkspaceSweepAt()).toBeNull();
-
       await db.insert(issueWorkProducts).values({ companyId: f.companyId, issueId: f.issueId,
         type: "pull_request", provider: "github", title: "Work", status: "active",
         url: "https://github.com/example/repo/pull/1" });
-      svc.terminalWorkspaceWorkSettled(new Set([`issue:${f.issueId}`]));
+      const options = { pluginWorkerManager: f.workers, workspaceReaperCooldownDays: 0,
+        resolveWorkspaceDelivery: async () => { throw new Error("No delivery lookup without a completion HEAD"); } };
+      const svc = executionWorkspaceService(db, options);
       await svc.sweepTerminalWorkspaces(100);
-      expect(inspections()).toBe(0);
-      expect(await svc.nextTerminalWorkspaceSweepAt()).not.toBeNull();
-      const readsBeforeUnrelatedWake = pullRequestReads;
+      expect(f.calls.some(call => call.operation.kind === "inspect")).toBe(false);
+      expect(await svc.nextTerminalWorkspaceSweepAt()).toBeNull();
       svc.terminalWorkspaceWorkSettled(new Set([`issue:${randomUUID()}`]));
       await svc.sweepTerminalWorkspaces(100);
-      expect(pullRequestReads).toBe(readsBeforeUnrelatedWake);
-      expect(inspections()).toBe(0);
-
-      state = "merged";
-      clock = new Date(clock.getTime() + 300_001);
-      await svc.sweepTerminalWorkspaces(100);
-      expect(inspections()).toBe(1);
-      expect(f.calls.some(call => call.operation.kind === "remove")).toBe(false);
-      headSha = "a".repeat(40);
-      clock = new Date(clock.getTime() + 300_001);
-      await svc.sweepTerminalWorkspaces(100);
-      expect(f.calls.some(call => call.operation.kind === "remove")).toBe(true);
+      expect(await svc.nextTerminalWorkspaceSweepAt()).toBeNull();
+      await executionWorkspaceService(db, options).sweepTerminalWorkspaces(100);
+      expect(f.calls.some(call => call.operation.kind === "inspect")).toBe(false);
     });
     it("uses bounded finalization only for opted-in providers, preserving maintenance inspection", async () => {
       const f = await fixture();

@@ -3612,28 +3612,47 @@ to authorize removal.
 
 The terminal-workspace reaper uses the database work coordinator. Startup scans
 recover existing workspace rows in bounded pages. Issue status and tree changes,
-workspace lifecycle writes, and pull-request work-product writes signal work on
+workspace lifecycle writes, finalization receipts, and pull-request work-product writes signal work on
 their transaction before writing. The coordinator wakes after the outer
 transaction settles and holds idle admission while writes or cleanup are active.
 Empty and nonterminal-only lanes have no recurring timer or query. Terminal trees
 schedule their actual cooldown deadline; unresolved delivery or cleanup eligibility
 is checked again after five minutes. Providers that explicitly declare
-`supportsMergeAncestry: false` are inspected for automatic cleanup only when a
-matching merged PR can provide delivery evidence. With no matching PR work
-product, the unchanged workspace has no delivery-inspection deadline; existing
-work-product notifications and startup recovery reconsider it. Open or unknown
-remote PRs and unfinished cleanup retain their retries. Missing declarations keep
-the previous ancestry-inspection behavior. Nonterminal trees, cooldowns, and active runs
-are checked before Git. The worker shares Git readiness across compatible rows
-that point at one directory within a bounded page. Company, branch, base ref,
-and runtime ownership must match. Each row keeps its own task and delivery
-assessment, which reuses the task tree read by the early gate. Unchanged terminal
-candidates also back off for five minutes during unrelated commit wakes. Scoped
-task/workspace hints invalidate
-affected candidates; changed tree or workspace revisions invalidate them too.
-Deadline selection reuses task trees read by those pages and performs no separate
-full-inventory query. Commits during a paged rotation request another bounded
-rotation so changes behind its cursor are recovered.
+`supportsMergeAncestry: false` use the latest successful finalization receipt as a
+candidate HEAD. Core checks GitHub before inspecting storage: the exact HEAD must
+be an ancestor of the intended destination tip, or an associated merged PR must
+have that exact final HEAD and destination, with its integration commit still
+reachable from the destination. Recorded PR work products are optional lookup
+hints. This supports squash merges without equating the squash commit with the
+original workspace commit.
+
+Preparation captures the resolved destination branch when the provider supports
+it. Cleanup never silently adopts a changed project source or today's default
+branch for an ambiguous old workspace. Missing receipts or destinations park the
+workspace; finalization, workspace, issue, provider and work-product changes and
+startup reconsider it. A known commit awaiting delivery, or an unavailable remote
+lookup, keeps a five-minute remote-only retry. GitHub merges have no guaranteed
+local ingress for this lane, so this concrete unresolved delivery obligation can
+keep the worker scheduled until delivery is proved. There is no new polling loop.
+Background GitHub access uses company credentials or public-repository access;
+it does not borrow a person's or agent's managed grant. Private repositories
+without a background-authorized credential remain retained.
+
+Only positive delivery evidence triggers a fresh storage inspection. The actual
+HEAD and branch must match the receipt. Cleanup revalidates delivery after its
+last inspection before recording removal intent. A provider can opt into
+`recoveryPullRequestVersion: 1` to receive one specific PR number and original
+HEAD for recovery checks. A merged PR alone does not prove that the original
+commit remains recoverable after source-branch deletion. The provider must
+independently prove recovery of that exact commit and reject any local data.
+Missing capability declarations preserve existing provider protocols.
+Nonterminal trees, cooldowns, and active runs are checked before Git. The worker
+shares readiness across compatible rows within a bounded page. Each row retains
+its own task and delivery assessment. Scoped task/workspace hints invalidate
+backoff; changed tree or workspace revisions invalidate it too. Deadline selection
+reuses task trees read by those pages without a separate full-inventory query.
+Commits during a paged rotation request another bounded rotation so changes behind
+its cursor are recovered.
 The backoff retains at most 256 candidates and only applies to the background
 worker. Final cleanup still checks the current task tree,
 delivery evidence, ownership, lifecycle generation, and Git state under the

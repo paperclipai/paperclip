@@ -18,6 +18,14 @@ export const freshWorkspaceSchema = z.object({
 export type PluginFreshWorkspace = z.infer<typeof freshWorkspaceSchema>;
 
 const sha = z.string().regex(/^[a-f0-9]{40,64}$/);
+export const workspaceRecoveryPullRequestSchema = z.object({
+  number: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  headSha: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
+}).strict();
+export type PluginWorkspaceRecoveryPullRequest = z.infer<typeof workspaceRecoveryPullRequestSchema>;
+const destinationRef = z.string().max(256).regex(/^refs\/heads\/[^\x00-\x20\x7f~^:?*\[\]\\]+$/)
+  .refine(ref => !ref.includes("..") && !ref.includes("@{") && !ref.endsWith(".") && !ref.endsWith("/")
+    && ref.split("/").every(part => part && !part.startsWith(".") && !part.endsWith(".lock")));
 export const workspaceProviderOperationSchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -51,6 +59,7 @@ export const workspaceProviderOperationSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("inspect"),
       binding: workspaceProviderBindingSchema,
+      recoveryPullRequest: workspaceRecoveryPullRequestSchema.optional(),
     })
     .strict(),
   z
@@ -58,6 +67,7 @@ export const workspaceProviderOperationSchema = z.discriminatedUnion("kind", [
       kind: z.literal("remove"),
       binding: workspaceProviderBindingSchema,
       expectedHeadSha: sha.nullable(),
+      recoveryPullRequest: workspaceRecoveryPullRequestSchema.optional(),
     })
     .strict(),
 ]);
@@ -68,6 +78,7 @@ export const workspaceProviderResultSchema = z.discriminatedUnion("kind", [
       binding: workspaceProviderBindingSchema,
       branchName: z.string().min(1).max(256).nullable(),
       baseSha: sha.nullable(),
+      destinationRef: destinationRef.nullable().optional(),
       created: z.boolean(),
       branchCreatedByRuntime: z.boolean(),
     })

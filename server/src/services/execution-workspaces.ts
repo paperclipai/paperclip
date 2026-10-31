@@ -99,6 +99,7 @@ import {
   type GitHubPullRequestReference,
   type PullRequestMergeDetailsResolver,
 } from "./github-pull-request-merge.js";
+import { createGitHubWorkspaceDeliveryResolver, type GitHubWorkspaceDeliveryResolver, type GitHubWorkspaceDeliveryResult } from "./github-workspace-delivery.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { createIssueGitRemoteAuthProvider } from "./git-credentials.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
@@ -270,7 +271,7 @@ function preserveWorkspaceMetadataForPatch(
     }
     if (patch.metadata !== undefined) {
       nextPatch.metadata = { ...patch.metadata };
-      for (const key of ["workspaceProvider", "workspaceProviderOwner", "workspaceProviderSource", "workspaceProviderBaseSha", "workspaceProviderRemoved", "workspaceProviderBranchMode", "workspaceProviderRemoval", "workspaceProviderRetired", "workspaceProviderRestoration", "lifecycleGeneration", "reopenPendingConsumption", "reopenPendingConsumptionSince"] as const) {
+      for (const key of ["workspaceProvider", "workspaceProviderOwner", "workspaceProviderSource", "workspaceProviderDestinationRef", "workspaceProviderBaseSha", "workspaceProviderRemoved", "workspaceProviderBranchMode", "workspaceProviderRemoval", "workspaceProviderRetired", "workspaceProviderRestoration", "lifecycleGeneration", "reopenPendingConsumption", "reopenPendingConsumptionSince"] as const) {
         if (current.metadata?.[key] !== undefined) nextPatch.metadata[key] = current.metadata[key];
         else delete nextPatch.metadata[key];
       }
@@ -324,6 +325,7 @@ export type ExecutionWorkspaceServiceOptions = {
   taskDirectoryRetention?: { dryRun: boolean; terminalDelayMs: number; orphanGraceMs: number; perSweep?: number; trackedLimit?: number };
   terminalWorkspaceInspectionBackoffMs?: number;
   resolvePullRequestDetails?: PullRequestMergeDetailsResolver;
+  resolveWorkspaceDelivery?: GitHubWorkspaceDeliveryResolver;
   now?: () => Date;
   beforeTerminalWorkspaceCleanup?: (workspace: ExecutionWorkspaceRow) => Promise<void>;
   // The terminal-workspace reaper waits this many days after an issue tree
@@ -1424,12 +1426,12 @@ const WORKSPACE_COMPACTION_TRASH_STALE_MS = 60 * 60 * 1000;
 const WORKSPACE_COMPACTION_TRASH_PURGE_INTERVAL_MS = 30 * 60 * 1000;
 
 export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServiceOptions = {}) {
-  async function inspectWorkspace(workspace: ExecutionWorkspace) {
+  async function inspectWorkspace(workspace: ExecutionWorkspace, recoveryPullRequest?: { number: number; headSha: string }) {
     if (workspace.providerType !== "plugin") return (opts.inspectGitCloseReadiness ?? inspectGitCloseReadiness)(workspace);
     const [row] = await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, workspace.id), eq(executionWorkspaces.companyId, workspace.companyId)));
     if (!row) throw notFound("Workspace is unavailable");
     let state;
-    try { state = await inspectPluginWorkspace(db, opts.pluginWorkerManager, row); }
+    try { state = await inspectPluginWorkspace(db, opts.pluginWorkerManager, row, recoveryPullRequest); }
     catch { return { statusInspectionSucceeded: false, warnings: ["Workspace storage inspection is unavailable; data was retained."], git: null }; }
     return { statusInspectionSucceeded: true, warnings: [], git: {
       repoRoot: `/workspaces/${workspace.id}`, workspacePath: `/workspaces/${workspace.id}`,
@@ -1725,6 +1727,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const resolvePullRequestDetails = opts.resolvePullRequestDetails ?? createPullRequestMergeDetailsResolver(db);
+  const resolveWorkspaceDelivery = opts.resolveWorkspaceDelivery ?? createGitHubWorkspaceDeliveryResolver(db);
   const now = opts.now ?? (() => new Date());
   // The reaper waits this long after an issue tree becomes terminal before it
   // archives the workspace. A value of 0 disables the cooldown, so the reaper
@@ -1764,7 +1767,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // sweep and starves eligible rows behind them. The cursor resets to the start
   // when a sweep reaches the end of the candidate set.
   let terminalSweepCursor: { updatedAt: string; id: string } | null = null;
-  const terminalInspections = new Map<string, { revision: string; issueIds: Set<string>; nextAt: number }>();
+  const terminalInspections = new Map<string, { revision: string; issueIds: Set<string>; nextAt: number; parked?: boolean }>();
   const terminalWorkspaceDeadlines = new Map<string, number>();
   const isolatedRehomeDeadlines = new Map<string, number>();
   const isolatedRehomeNotBefore = new Map<string, number>();
@@ -1941,18 +1944,31 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     return details;
   }
 
-  async function hasMergedDeliveryPullRequest(workspace: ExecutionWorkspaceRow, references: GitHubPullRequestReference[]) {
-    for (const reference of references) {
-      const details = await cachedDeliveryPullRequestDetails(workspace, reference);
-      if (details.state === "merged" && details.headRef === workspace.branchName && details.headSha) return true;
-    }
-    return false;
+  async function workspaceDeliveryCandidate(workspace: ExecutionWorkspaceRow) {
+    const source = parseObject(workspace.metadata?.workspaceProviderSource);
+    const destinationRef = Object.hasOwn(workspace.metadata ?? {}, "workspaceProviderDestinationRef")
+      ? readNullableString(workspace.metadata?.workspaceProviderDestinationRef)
+      : readNullableString(workspace.baseRef) ?? readNullableString(source.repoRef) ?? readNullableString(source.defaultRef);
+    if (!destinationRef || destinationRef === "HEAD" || !parseGitHubRepository(workspace.repoUrl)) return null;
+    const operations = await db.select({ id: workspaceOperations.id, status: workspaceOperations.status, createdAt: workspaceOperations.createdAt,
+      finishedAt: workspaceOperations.finishedAt, metadata: workspaceOperations.metadata })
+      .from(workspaceOperations).where(and(eq(workspaceOperations.companyId, workspace.companyId),
+        eq(workspaceOperations.executionWorkspaceId, workspace.id), eq(workspaceOperations.phase, "workspace_finalize")))
+      .orderBy(desc(workspaceOperations.createdAt), desc(workspaceOperations.id)).limit(2);
+    const [operation, previous] = operations;
+    if (operation && previous && operation.createdAt.getTime() === previous.createdAt.getTime()) return null;
+    if (!operation || operation.status !== "succeeded" || !operation.finishedAt) return null;
+    const inspection = parseObject(parseObject(operation.metadata?.pluginWorkspace).inspection);
+    const headSha = readNullableString(inspection.headSha);
+    if (!headSha || !/^[a-f0-9]{40}$/i.test(headSha) || !workspace.branchName || inspection.branchName !== workspace.branchName) return null;
+    return { operationId: operation.id, headSha: headSha.toLowerCase(), destinationRef };
   }
 
   async function assessDelivery(
     workspace: ExecutionWorkspaceRow,
     git: ExecutionWorkspaceCloseGitReadiness | null,
     precomputedIssueTree?: Awaited<ReturnType<typeof listWorkspaceIssueTree>>,
+    deliveryProof?: Extract<GitHubWorkspaceDeliveryResult, { status: "delivered" }>,
   ) {
     const issueTree = precomputedIssueTree ?? await listWorkspaceIssueTree(workspace);
     const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId) ?? null;
@@ -1977,7 +1993,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .catch(() => null)
       : null;
 
-    if (sourceIssueTerminal) {
+    if (deliveryProof) {
+      mergedPullRequest = deliveryProof.evidence.kind === "merged_pr" && deliveryProof.headSha === workspaceHeadSha;
+    } else if (sourceIssueTerminal) {
       for (const reference of await listDeliveryPullRequestReferences(workspace)) {
         const details = await cachedDeliveryPullRequestDetails(workspace, reference);
         if (
@@ -2003,7 +2021,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         sourceIssueTerminal,
         mergedPullRequest,
         pullRequestStateUnknown,
-        isMergedIntoBase: git?.isMergedIntoBase ?? null,
+        isMergedIntoBase: deliveryProof
+          ? deliveryProof.evidence.kind === "ancestry" && deliveryProof.headSha === workspaceHeadSha
+          : git?.isMergedIntoBase ?? null,
       }),
       sourceIssueTerminal,
       subtreeTerminal,
@@ -2416,6 +2436,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     workspace: ExecutionWorkspaceRow,
     expectedHeadSha: string | null,
     capturedGeneration: number,
+    recoveryPullRequest?: { number: number; headSha: string },
+    beforeRemove?: () => Promise<void>,
   ): Promise<{ cleaned: boolean; warnings: string[]; skippedReopened?: boolean }> {
     // The gateway holds the per-workspace lifecycle lock across the destructive
     // actions. A reopen takes the same lock, so a reopen cannot rebuild the
@@ -2434,14 +2456,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         message: "execution workspace cleanup skipped because it was reopened",
       },
       onSkip: () => ({ cleaned: false, warnings: [], skippedReopened: true }),
-      write: () => runTerminalWorkspaceCleanup(workspace, expectedHeadSha),
+      write: () => runTerminalWorkspaceCleanup(workspace, expectedHeadSha, recoveryPullRequest, beforeRemove),
     });
   }
 
-  async function runTerminalWorkspaceCleanup(workspace: ExecutionWorkspaceRow, expectedHeadSha: string | null) {
+  async function runTerminalWorkspaceCleanup(workspace: ExecutionWorkspaceRow, expectedHeadSha: string | null,
+    recoveryPullRequest?: { number: number; headSha: string }, beforeRemove?: () => Promise<void>) {
     if (workspace.providerType === "plugin") {
       if (await workspaceHasActiveRun(workspace)) throw conflict("Workspace still has active execution");
-      await removePluginWorkspace(db, opts.pluginWorkerManager, workspace, expectedHeadSha);
+      await removePluginWorkspace(db, opts.pluginWorkerManager, workspace, expectedHeadSha, recoveryPullRequest, beforeRemove);
       return { cleaned: true, warnings: [] };
     }
     const [
@@ -3667,13 +3690,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           else result.skippedActiveRun += 1;
           continue;
         }
-        let deliveryReferences: GitHubPullRequestReference[] | null = null;
-        if (workspace.providerType === "plugin" && !isClosedExecutionWorkspaceStatus(workspace.status)
-          && !reopenPending && !workspace.metadata?.workspaceProviderRemoval && !workspace.metadata?.workspaceProviderRestoration) {
+        let deliveryCandidate: Awaited<ReturnType<typeof workspaceDeliveryCandidate>> = null;
+        let deliveryProof: Extract<GitHubWorkspaceDeliveryResult, { status: "delivered" }> | undefined;
+        if (workspace.providerType === "plugin" && !reopenPending
+          && !workspace.metadata?.workspaceProviderRemoval && !workspace.metadata?.workspaceProviderRestoration) {
           try {
             if (!(await pluginWorkspaceSupportsMergeAncestry(db, opts.pluginWorkerManager, workspace))) {
-              deliveryReferences = await listDeliveryPullRequestReferences(workspace);
-              if (deliveryReferences.length === 0) {
+              deliveryCandidate = await workspaceDeliveryCandidate(workspace);
+              if (!deliveryCandidate) {
                 result.skippedUndelivered += 1;
                 if (compactionPending && compactedTerminalAt.get(workspace.id) !== latestTerminalAt)
                   terminalWorkspaceDeadlines.set(workspace.id, compactionDueAt);
@@ -3692,7 +3716,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             [...issueTree].sort((a, b) => a.id.localeCompare(b.id)),
           ])).digest("hex");
           const previous = terminalInspections.get(workspace.id);
-          if (previous?.revision === revision && previous.nextAt > now().getTime()) {
+          if (previous?.revision === revision && (previous.parked || previous.nextAt > now().getTime())) {
+            if (previous.parked) {
+              if (compactionPending && compactedTerminalAt.get(workspace.id) !== latestTerminalAt)
+                terminalWorkspaceDeadlines.set(workspace.id, compactionDueAt);
+              else terminalWorkspaceDeadlines.delete(workspace.id);
+            }
             result.skippedBackoff += 1;
             continue;
           }
@@ -3702,17 +3731,48 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             nextAt: now().getTime() + opts.terminalWorkspaceInspectionBackoffMs,
           });
         }
-        if (deliveryReferences !== null) {
+        if (deliveryCandidate) {
           try {
-            if (!(await hasMergedDeliveryPullRequest(workspace, deliveryReferences))) {
+            const proof = await resolveWorkspaceDelivery({ companyId: workspace.companyId, repoUrl: workspace.repoUrl,
+              headSha: deliveryCandidate.headSha, destinationRef: deliveryCandidate.destinationRef,
+              pullRequests: await listDeliveryPullRequestReferences(workspace) });
+            if (proof.status !== "delivered" || proof.headSha !== deliveryCandidate.headSha) {
               result.skippedUndelivered += 1;
+              if (proof.status === "unknown" && ["unsupported_source_or_destination", "unsupported_destination_ref"].includes(proof.reason)) {
+                const inspection = terminalInspections.get(workspace.id);
+                if (inspection) inspection.parked = true;
+                if (compactionPending && compactedTerminalAt.get(workspace.id) !== latestTerminalAt)
+                  terminalWorkspaceDeadlines.set(workspace.id, compactionDueAt);
+                else terminalWorkspaceDeadlines.delete(workspace.id);
+              }
               continue;
             }
+            deliveryProof = proof;
           } catch {
             result.skippedUndelivered += 1;
             continue;
           }
         }
+        const recoveryPullRequest = deliveryProof?.evidence.kind === "merged_pr"
+          ? { number: deliveryProof.evidence.number, headSha: deliveryProof.headSha } : undefined;
+        const expectedDeliveryCandidate = deliveryCandidate;
+        const expectedDeliveryProof = deliveryProof;
+        const verifyDeliveryBeforeRemove = expectedDeliveryCandidate && expectedDeliveryProof ? async () => {
+          const [current] = await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, workspace.id),
+            eq(executionWorkspaces.companyId, workspace.companyId)));
+          const currentCandidate = current ? await workspaceDeliveryCandidate(current) : null;
+          if (!current || current.repoUrl !== workspace.repoUrl || current.branchName !== workspace.branchName
+            || current.providerRef !== workspace.providerRef || currentCandidate?.operationId !== expectedDeliveryCandidate.operationId
+            || currentCandidate.headSha !== expectedDeliveryCandidate.headSha || currentCandidate.destinationRef !== expectedDeliveryCandidate.destinationRef)
+            throw conflict("Workspace changed after delivery was verified");
+          const freshProof = await resolveWorkspaceDelivery({ companyId: current.companyId, repoUrl: current.repoUrl,
+            headSha: currentCandidate.headSha, destinationRef: currentCandidate.destinationRef,
+            pullRequests: await listDeliveryPullRequestReferences(current) });
+          if (freshProof.status !== "delivered" || freshProof.headSha !== expectedDeliveryProof.headSha
+            || freshProof.destinationRef !== expectedDeliveryProof.destinationRef || freshProof.evidence.kind !== expectedDeliveryProof.evidence.kind
+            || (recoveryPullRequest && (freshProof.evidence.kind !== "merged_pr" || freshProof.evidence.number !== recoveryPullRequest.number)))
+            throw conflict("Workspace delivery could not be confirmed before removal");
+        } : undefined;
         const workspacePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
         const createdByRuntime = workspace.providerType === "git_worktree"
           ? isRuntimeOwnedGitBranch(workspace.metadata)
@@ -3722,7 +3782,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           : `workspace:${workspace.id}`;
         let inspection = readinessByWorkingTree.get(readinessKey);
         if (!inspection) {
-          inspection = inspectWorkspace(toExecutionWorkspace(workspace));
+          inspection = inspectWorkspace(toExecutionWorkspace(workspace), recoveryPullRequest);
           readinessByWorkingTree.set(readinessKey, inspection);
         }
         const { git, statusInspectionSucceeded } = await inspection;
@@ -3730,7 +3790,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedUndelivered += 1;
           continue;
         }
-        const assessment = await assessDelivery(workspace, git, issueTree);
+        if (deliveryCandidate && (git?.headSha !== deliveryCandidate.headSha || git.branchName !== workspace.branchName
+          || (await workspaceDeliveryCandidate(workspace))?.operationId !== deliveryCandidate.operationId)) {
+          result.skippedUndelivered += 1;
+          continue;
+        }
+        const assessment = await assessDelivery(workspace, git, issueTree, deliveryProof);
         if (!assessment.sourceIssueTerminal || !assessment.subtreeTerminal) {
           if (reopenPending) {
             // The source issue left the terminal state, so the reopen transition
@@ -3838,7 +3903,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         if (workspace.providerType === "plugin" && isClosedExecutionWorkspaceStatus(workspace.status)) {
           const generation = readExecutionWorkspaceLifecycleGeneration(workspace.metadata);
           try {
-            const cleanup = await cleanupTerminalWorkspace(workspace, assessment.workspaceHeadSha, generation);
+            const cleanup = await cleanupTerminalWorkspace(workspace, assessment.workspaceHeadSha, generation, recoveryPullRequest, verifyDeliveryBeforeRemove);
             if (cleanup.skippedReopened) result.skippedReopened += 1;
             else if (!cleanup.cleaned) result.cleanupFailed += 1;
             else { result.archived += 1; terminalWorkspaceDeadlines.delete(workspace.id); }
@@ -3877,6 +3942,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             .where(and(
               eq(executionWorkspaces.id, workspace.id),
               eq(executionWorkspaces.companyId, workspace.companyId),
+              ...(deliveryProof ? workspaceSourceKeys.map(key => sql`${executionWorkspaces[key]} IS NOT DISTINCT FROM ${workspace[key]}`) : []),
+              deliveryProof ? sql`${executionWorkspaces.metadata} IS NOT DISTINCT FROM ${JSON.stringify(workspace.metadata)}::jsonb` : undefined,
               inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
               isNull(executionWorkspaces.closedAt),
               sql<boolean>`(${executionWorkspaces.metadata} ->> ${EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY}) IS DISTINCT FROM 'true'`,
@@ -3972,7 +4039,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           archived.metadata as Record<string, unknown> | null,
         );
         try {
-          const cleanup = await cleanupTerminalWorkspace(archived, assessment.workspaceHeadSha, capturedGeneration);
+          const cleanup = await cleanupTerminalWorkspace(archived, assessment.workspaceHeadSha, capturedGeneration, recoveryPullRequest, verifyDeliveryBeforeRemove);
           if (cleanup.skippedReopened) result.skippedReopened += 1;
           else if (!cleanup.cleaned) result.cleanupFailed += 1;
           else result.archived += 1;

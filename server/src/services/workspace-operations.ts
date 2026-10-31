@@ -2,6 +2,7 @@ import { notifyAttentionRetentionWork, notifyIssueAttentionRetentionWork } from 
 import { notifyNativeResultCommit } from "./native-result-commit-notifications.js";
 import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
+import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { workspaceOperations } from "@paperclipai/db";
@@ -465,24 +466,27 @@ export function workspaceOperationService(db: Db) {
     }): WorkspaceOperationRecorder {
       let executionWorkspaceId = input.executionWorkspaceId ?? null;
       const createdIds: string[] = [];
+      let hasFinalization = false;
 
       return {
         async attachExecutionWorkspaceId(nextExecutionWorkspaceId) {
           executionWorkspaceId = nextExecutionWorkspaceId ?? null;
           if (!executionWorkspaceId || createdIds.length === 0) return;
-          await db
-            .update(workspaceOperations)
-            .set({
-              executionWorkspaceId,
-              updatedAt: new Date(),
-            })
-            .where(inArray(workspaceOperations.id, createdIds));
+          await db.transaction(async tx => {
+            if (hasFinalization) await notifyTerminalWorkspaceWork(tx, `workspace:${executionWorkspaceId}`);
+            await tx
+              .update(workspaceOperations)
+              .set({ executionWorkspaceId, updatedAt: new Date() })
+              .where(and(eq(workspaceOperations.companyId, input.companyId), inArray(workspaceOperations.id, createdIds)));
+          });
         },
 
         async recordOperation(recordInput) {
           async function writeState<T>(write: (database: Db) => Promise<T>): Promise<T> {
             if (recordInput.phase !== "workspace_finalize" || (!input.heartbeatRunId && !executionWorkspaceId && !input.issueId)) return write(db);
             return db.transaction(async tx => {
+              if (executionWorkspaceId) await notifyTerminalWorkspaceWork(tx, `workspace:${executionWorkspaceId}`);
+              else if (input.issueId) await notifyTerminalWorkspaceWork(tx, `issue:${input.issueId}`);
               if (!input.heartbeatRunId) {
                 // An export clears barriers for every issue sharing this workspace.
                 if (executionWorkspaceId) await notifyAttentionRetentionWork(tx, { companyId: input.companyId, sourceKind: "blocker_attention" });
@@ -567,6 +571,7 @@ export function workspaceOperationService(db: Db) {
             throw insertError;
           }
           createdIds.push(id);
+          if (recordInput.phase === "workspace_finalize") hasFinalization = true;
 
           let heartbeatTimer: NodeJS.Timeout | null = null;
           let timeoutTimer: NodeJS.Timeout | null = null;
