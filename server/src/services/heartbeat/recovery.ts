@@ -916,8 +916,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     };
   }
 
-  async function recoverNativeRunsAfterRestart(now = new Date(), runIds?: string[]) {
-    if (!runIds) {
+  async function recoverNativeRunsAfterRestart(now = new Date(), runIds?: string[], options?: { skipDelegatedWork?: boolean }) {
+    if (!runIds && !options?.skipDelegatedWork) {
       await reconcileRetainedWorkspaces(db, environmentRuntime, resumeRemoteStopComments);
       await reconcileNativeFinalizations(db, undefined, {
         environmentRuntime,
@@ -1529,11 +1529,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         if (lease.heartbeatRunId && !activeRunExecutions.has(lease.heartbeatRunId)
           && !adapterExecutionControls.has(lease.heartbeatRunId)
           && await preserveOrphanedNativeWorkspace(db, lease)) recovered += 1;
-        await deferOrphanedActiveLease(lease.id);
+        if (!opts.leaseId) await deferOrphanedActiveLease(lease.id);
         continue;
       }
       if (!(await allowLegacyShutdownWorkspaceCleanup(db, lease))) {
-        await deferOrphanedActiveLease(lease.id);
+        if (!opts.leaseId) await deferOrphanedActiveLease(lease.id);
         continue;
       }
       // A provider resource id names one physical sandbox. A different lease
@@ -1560,7 +1560,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           // Defer this row so the fixed-size page reaches the rows behind
           // it next tick, instead of re-selecting the same guarded rows
           // forever.
-          await deferOrphanedActiveLease(lease.id);
+          if (!opts.leaseId) await deferOrphanedActiveLease(lease.id);
           continue;
         }
       }
@@ -1582,7 +1582,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             eq(environmentLeases.status, "active"),
           ),
         )
-        .returning({ id: environmentLeases.id }), { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined });
+        .returning({ id: environmentLeases.id }), { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined, leaseId: lease.id });
       if (flipped.length > 0) recovered += 1;
     }
 
@@ -2292,6 +2292,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         runningProcesses.has(run.id) ||
         activeRunExecutions.has(run.id) ||
         coordinatorOwnedByCurrentController;
+      if (nativeRun && !locallyTracked && nativeControllerLeaseExpiresAt && nativeControllerLeaseExpiresAt > now) {
+        scope.onDeferredDeadline?.(nativeControllerLeaseExpiresAt.getTime());
+        continue;
+      }
       if (
         nativeRun &&
         ([
@@ -2302,6 +2306,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         ].includes(nativeRecoveryState ?? "") ||
           nativeCoordinatorPhase === "retryable_failure")
       ) {
+        if (nativeControllerLeaseExpiresAt && nativeControllerLeaseExpiresAt > now)
+          scope.onDeferredDeadline?.(nativeControllerLeaseExpiresAt.getTime());
         continue;
       }
       const observedOwnerUnverified =
@@ -2691,7 +2697,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       active: scope => recoverActiveExecutions(scope),
       settled: async scope => {
         if (!scope.runId || activeRunExecutions.has(scope.runId) || runningProcesses.has(scope.runId)
-          || adapterExecutionControls.has(scope.runId)) return;
+          || adapterExecutionControls.has(scope.runId)) {
+          scope.onDeferredDeadline(Date.now() + 30_000);
+          return;
+        }
         await releaseSettledNativeRunProcess(db, scope.runId, scope);
       },
       orphanLease: scope => sweepOrphanedActiveLeases({ ...scope, backoffMs: 5 * 60_000 }),

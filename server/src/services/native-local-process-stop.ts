@@ -147,7 +147,7 @@ export async function readNativeLocalProcessStop(db: Db, companyId: string, runI
 type SettledProcessRelease = "released" | "pending" | "skipped";
 
 export async function releaseSettledNativeRunProcess(db: Db, runId: string, options: { onDeferredDeadline?: (at: number) => void } = {}): Promise<SettledProcessRelease> {
-  return db.transaction(async transaction => {
+  const outcome = await db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
     const [run] = await tx.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
       runtimeMode: heartbeatRuns.runtimeMode, status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt,
@@ -173,7 +173,8 @@ export async function releaseSettledNativeRunProcess(db: Db, runId: string, opti
         eq(heartbeatRunEvents.eventType, PROCESS_IDENTITY_RECORDED), isNull(heartbeatRunEvents.sourceEventId),
       )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
       if (identity?.payload?.targetKind !== "local" || identity.payload.hostname !== os.hostname() ||
-          identity.payload.processPid !== run.processPid || identity.payload.processGroupId !== run.processGroupId) return "skipped";
+          identity.payload.processPid !== run.processPid || identity.payload.processGroupId !== run.processGroupId ||
+          !run.processStartedAt || identity.payload.processStartedAt !== run.processStartedAt.toISOString()) return "skipped";
       if (!(await recordNativeLocalProcessStop(tx, run))) {
         options.onDeferredDeadline?.(Date.now() + 30_000);
         return "pending";
@@ -184,8 +185,10 @@ export async function releaseSettledNativeRunProcess(db: Db, runId: string, opti
     await tx.update(heartbeatRuns).set({
       processPid: null, processGroupId: null, processStartedAt: null, updatedAt: new Date(),
     }).where(eq(heartbeatRuns.id, run.id));
-    return "released";
+    return "released" as const;
   });
+  if (outcome !== "pending") pendingSettledProcessReleases.delete(runId);
+  return outcome;
 }
 
 const MAX_SETTLED_PROCESS_RELEASE_ATTEMPTS = 20;

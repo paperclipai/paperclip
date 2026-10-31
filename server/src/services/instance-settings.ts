@@ -1,4 +1,4 @@
-import { notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
+import { notifyLiveRunRecovery, notifyLiveResourceRecovery } from "./live-run-recovery-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifySkillVersionRetentionReconstruction } from "./skill-version-retention-notifications.js";
@@ -635,7 +635,8 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         if (patch.enableWorktreeRunExecution !== undefined) {
           await notifyRunDispatch(tx);
           await notifyDeferredExecutionEligibility(tx);
-          await notifyActiveRunSilence(tx);
+          await notifyLiveRunRecovery(tx);
+          await notifyLiveResourceRecovery(tx);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyExternalAgentSettlement(tx);
           await notifyInstructionCommit(tx);

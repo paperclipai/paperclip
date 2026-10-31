@@ -1,9 +1,10 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import { spawn } from "node:child_process";
 import os from "node:os";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -39,8 +40,9 @@ vi.mock("../adapters/index.js", async () => {
   return { ...actual, getServerAdapter: vi.fn(() => ({ supportsLocalAgentJwt: false, execute })) };
 });
 
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_SETTLED_PROCESS_TEST_DATABASE_URL");
 const support = await getEmbeddedPostgresTestSupport();
-const suite = support.supported ? describe : describe.skip;
+const suite = external || support.supported ? describe : describe.skip;
 
 function startDetached() {
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
@@ -57,14 +59,15 @@ async function exitedPid() {
 
 suite("settled native run process identity", () => {
   let db: ReturnType<typeof createDb>;
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let companyId: string;
   let agentId: string;
   const children: ReturnType<typeof startDetached>[] = [];
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("native-settled-process-");
-    db = createDb(temporary.connectionString);
+    if (!external) temporary = await startEmbeddedPostgresTestDatabase("native-settled-process-");
+    db = createDb(external ?? temporary!.connectionString);
+    if (external) await db.execute(sql`truncate companies cascade`);
     companyId = randomUUID();
     agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Settled processes", issuePrefix: "SPR", defaultResponsibleUserId: "owner" });

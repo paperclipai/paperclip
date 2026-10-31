@@ -66,10 +66,12 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
               scope?.runId ? eq(heartbeatRuns.id, scope.runId) : undefined,
               cursor ? gt(heartbeatRuns.id, cursor) : undefined,
               kind === "native" ? and(eq(heartbeatRuns.runtimeMode, "native"), inArray(heartbeatRuns.status, ["running", "failed"]),
-                eq(nativeRunFinalizations.phase, "retryable_failure"), isNull(nativeRunFinalizations.resultId))
+                eq(nativeRunFinalizations.phase, "retryable_failure"), isNull(nativeRunFinalizations.resultId),
+                sql`${heartbeatRuns.contextSnapshot}->'nativeQuestionCancellation' is null`)
                 : kind === "question" ? and(inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
                   sql`${heartbeatRuns.contextSnapshot}->'nativeQuestionCancellation' is not null`)
-                  : kind === "active" ? eq(heartbeatRuns.status, "running")
+                  : kind === "active" ? and(eq(heartbeatRuns.status, "running"),
+                    sql`${heartbeatRuns.contextSnapshot}->'nativeQuestionCancellation' is null`)
                     : and(eq(heartbeatRuns.runtimeMode, "native"), inArray(heartbeatRuns.status, ["failed", "cancelled", "timed_out", "interrupted"]),
                       isNotNull(heartbeatRuns.finishedAt), or(isNotNull(heartbeatRuns.processPid),
                         isNotNull(heartbeatRuns.processGroupId), isNotNull(heartbeatRuns.processStartedAt))),
