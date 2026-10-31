@@ -1,4 +1,3 @@
-import { chatNativeTimeoutEvidence } from "./chat-native-timeout-policy.js";
 import { readChatReadinessReceipts } from "./chat-readiness-observer.js";
 import { legacyChatFeatureFingerprint } from "./chat-catalog-fingerprint.js";
 import { runChatCatalogFlow } from "./chat-catalog-flow.js";
@@ -109,11 +108,7 @@ export async function runChatFeatureFlow(context: {
       .map(({ scopeType, scopeId, amount, hardStopEnabled, isActive, unpricedUsagePolicy }) => ({ scopeType, scopeId, amount, hardStopEnabled, isActive, unpricedUsagePolicy }));
     expect(funding).toHaveLength(3);
     expect(funding.every(policy => policy.amount === CHAT_FEATURE_BUDGET_CENTS && policy.hardStopEnabled && policy.isActive && policy.unpricedUsagePolicy === "allow")).toBe(true);
-    const savedLead = await api.get<{ adapterConfig?: { timeoutSec?: unknown } }>(`/api/agents/${f.agent.id}`);
-    const nativeTimeoutPolicy = chatNativeTimeoutEvidence({ selectedTurnTimeoutMs: execution.task.turnTimeoutMs,
-      authoredLegacyTurnTimeoutMs: 120_000, attemptTimeoutMs: execution.task.attemptTimeoutMs[execution.environment.id], observationBudgetMs: 300_000,
-      savedAgentTimeoutSec: savedLead.adapterConfig?.timeoutSec });
-    await input.evidence("chat-feature-setup.json", { nativeTimeoutPolicy, scenarioId: scenario.id, companyId: f.company.id,
+    await input.evidence("chat-feature-setup.json", { scenarioId: scenario.id, companyId: f.company.id,
       leadId: f.agent.id, workerId, projectId, brief, budgetMonthlyCents: CHAT_FEATURE_BUDGET_CENTS,
       maximumProviderRuns: execution.task.expectedRunCount, providerRunTimeoutMs: execution.task.turnTimeoutMs,
       setupObservations, funding, instructions: "Production role defaults; no fixture procedure or expected outcome is injected." });

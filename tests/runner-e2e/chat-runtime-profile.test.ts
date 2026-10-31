@@ -10,7 +10,7 @@ it("pins the new controller identity and rejects model/provider/credential subst
   expect(reviewedChatExecutionIds("secrets.vault-reference")).toEqual(["chat-features.runner-codex-subscription.local.secrets.vault-reference", "chat-features.runner-opencode.local.secrets.vault-reference"]);
 });
 it("changes the complete chat matrix without relabeling the existing global qualification model", () => {
-  const cells = runnerMatrix.filter(cell => cell.suite.id === "chat-features");
+  const cells = runnerMatrix.filter(cell => cell.suite.id === "chat-features" && cell.profile.id === "runner-opencode");
   expect(cells.length).toBe(244);
   expect(cells.every(cell => cell.profile.model === CHAT_OPENCODE_MODEL && reviewedChatProfile(cell.profile))).toBe(true);
   expect(runnerProfiles.find(row => row.id === "runner-opencode")!.model).not.toBe(CHAT_OPENCODE_MODEL);

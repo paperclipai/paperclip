@@ -13,9 +13,10 @@ const originalRoot = path.resolve(import.meta.dirname, "../.."), file = "package
 const source = 'import {z} from "zod";export const schema=z.object({daytona_api_key:z.string().min(1)});';
 const declaration = 'import {z} from "zod";export declare const schema:{daytona_api_key:z.ZodOptional<z.ZodString>};';
 let root: string; let fixtureLockSha256: string;
+const fixtureInputs: Record<string, string> = {};
 beforeAll(async () => {
   root = await realpath(await mkdtemp(path.join(os.tmpdir(), "sdk-public-type-synthetic-")));
-  for (const [relative] of Object.entries(pins.inputs)) { const dest = path.join(root, relative); await mkdir(path.dirname(dest), { recursive: true }); await copyFile(path.join(originalRoot, relative), dest); }
+  for (const [relative] of Object.entries(pins.inputs)) { const dest = path.join(root, relative); await mkdir(path.dirname(dest), { recursive: true }); await copyFile(path.join(originalRoot, relative), dest); fixtureInputs[relative] = blob(await readFile(dest)); }
   await copyFile(path.join(originalRoot, "pnpm-lock.yaml"), path.join(root, "pnpm-lock.yaml")); fixtureLockSha256 = hash(await readFile(path.join(root, "pnpm-lock.yaml")));
   await symlink(await realpath(path.join(originalRoot, "node_modules")), path.join(root, "node_modules"));
   await symlink(await realpath(path.join(originalRoot, "packages/shared/node_modules")), path.join(root, "packages/shared/node_modules"));
@@ -23,7 +24,7 @@ beforeAll(async () => {
 afterAll(async () => { if (root) await rm(root, { recursive: true, force: true }); });
 async function fixture(sourceText = source) {
   await mkdir(path.dirname(path.join(root, inputFile)), { recursive: true }); await writeFile(path.join(root, inputFile), sourceText);
-  return { ...pins, lockSha256: fixtureLockSha256, inputs: { ...pins.inputs, [inputFile]: blob(sourceText) } };
+  return { ...pins, lockSha256: fixtureLockSha256, inputs: { ...fixtureInputs, [inputFile]: blob(sourceText) } };
 }
 it("classifies varied genuinely public schema types while retaining the raw observation", async () => {
   for (const text of [declaration, declaration.replaceAll("z.", "schemaLibrary.").replace("{z}", "{z as schemaLibrary}"), declaration.replace("ZodString", "ZodNumber")]) {

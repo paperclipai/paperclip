@@ -41,9 +41,9 @@ describe("optional original-clock callbacks reach the real shared UI helpers", (
   it("slow result-link click cannot obtain a fresh verification/navigation budget", async () => {
     vi.useFakeTimers(); vi.setSystemTime(389_000);
     const click = vi.fn(async () => { vi.setSystemTime(391_000); }); const waitForURL = vi.fn();
-    const node: any = { first: () => node, click };
-    const ctx = { input: { page: { url: () => "https://fixture.test/RUN/chats/ceo", locator: () => node, waitForURL } } };
-    const observation = { scenarioId: "questions-and-approvals.accept-one-proposal", origin: "https://fixture.test", companyId: "company", leadId: "lead", state: {}, reply: "Created", links: ["/RUN/issues/task"], tasks: [{ id: "task", title: "Checklist" }], projects: [], goals: [], comments: [], activity: [], documents: [], revisions: [], runs: [], humanQueries: [] };
+    const node: any = { first: () => node, filter: () => node, locator: () => node, click };
+    const ctx = { input: { page: { url: () => "https://fixture.test/RUN/chats/ceo", locator: () => node, getByTestId: () => node, waitForURL } } };
+    const observation = { scenarioId: "questions-and-approvals.accept-one-proposal", origin: "https://fixture.test", companyId: "company", leadId: "lead", state: {}, renderedLinkEvidence: [{ href: "/RUN/issues/task", threadTestId: "task-chat-thread", source: "reply", conversationId: "chat", anchorCommentId: "reply", commentId: "reply" }], reply: "Created", links: ["/RUN/issues/task"], tasks: [{ id: "task", title: "Checklist" }], projects: [], goals: [], comments: [], activity: [], documents: [], revisions: [], runs: [], humanQueries: [] };
     await expect(verifyInternalResult(ctx as never, {}, observation, remaining)).rejects.toThrow(/exhausted/);
     expect(click).toHaveBeenCalledExactlyOnceWith({ timeout: 1000 }); expect(waitForURL).not.toHaveBeenCalled();
   });

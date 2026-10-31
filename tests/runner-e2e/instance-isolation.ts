@@ -52,7 +52,7 @@ export async function assertRunnerDatabaseIsolation(
   const supervised = !docker && config.database?.mode === "postgres";
   if (docker ? config.database?.mode !== "postgres" || config.database.connectionString !== docker.connectionString : !config.database || (!supervised &&
     (config.database.mode !== "embedded-postgres" || config.database.connectionString))) {
-    throw new Error("Runner E2E Paperclip instance did not use its fixture-owned database");
+    throw new Error("Runner E2E Paperclip instance did not use its fixture-owned database lane");
   }
   if (
     config.storage?.provider !== "local_disk" ||
@@ -103,7 +103,7 @@ export async function assertRunnerDatabaseIsolation(
           throw new Error("Supervisor database ownership mismatch");
         }
       } catch (cause) {
-        throw new Error("Runner E2E Paperclip instance did not use its fixture-owned database", { cause });
+        throw new Error("Runner E2E Paperclip instance did not use its fixture-owned database lane", { cause });
       }
     }
     const databaseStat = await stat(databasePath);

@@ -56,7 +56,7 @@ it("gates ordinary fixture creation on recognition and fingerprints the diagnost
   const source = readFileSync(new URL("./runner.spec.ts", import.meta.url), "utf8");
   const start = source.indexOf('if (execution.task.flow === "setup_health") {');
   const guard = source.indexOf('if (!credential.recognized) throw', start);
-  const fixtures = source.indexOf('fixtures = execution.task.flow === "first_task"', start);
+  const fixtures = source.indexOf('fixtures = await withSdkCanaryPreFixture(', start);
   expect(start).toBeGreaterThan(0); expect(guard).toBeGreaterThan(start); expect(fixtures).toBeGreaterThan(guard);
   expect(readFileSync(new URL("./chat-setup-health.ts", import.meta.url), "utf8")).toContain('"chat-setup-credential.ts"');
 });

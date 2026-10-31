@@ -24,7 +24,7 @@ it("preserves actual setup/act/cleanup context identity and one original clock a
   const context = {
     scenario: { id: "companies.switch-company", query: "Canonical query" }, refreshIssue: async () => {}, issue: () => ({ id: "chat" }), allRuns: async () => [],
     input: { execution: { task: { turnTimeoutMs: 0 } }, fixtures: { company: { id: "company" }, agent: { id: "lead" } },
-      evidence: async () => {}, api: { baseURL: "https://fixture.test", get: async (path: string) => path.endsWith("/budgets/overview") ? { policies: [] } : path === "/api/agents/lead" ? { adapterConfig: { timeoutSec: 0 } } : [] } },
+      page: { evaluate: async () => [], locator: () => ({ count: async () => 0 }) }, evidence: async () => {}, api: { baseURL: "https://fixture.test", get: async (path: string) => path.endsWith("/budgets/overview") ? { policies: [] } : path === "/api/agents/lead" ? { adapterConfig: { timeoutSec: 0 } } : [] } },
   } as unknown as ChatCatalogContext;
   await expect(runChatCatalogFlow(context)).rejects.toThrow("stop after identity proof");
   expect(contexts).toHaveLength(3); expect(contexts.every(ctx => ctx === context)).toBe(true);

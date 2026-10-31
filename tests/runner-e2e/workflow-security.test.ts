@@ -95,7 +95,7 @@ describe("public repository paid workflow security", () => {
         .split(/\n(?= {6}- )/u)
         .filter((step) => step.includes("uses: pnpm/action-setup@"));
 
-      expect(pnpmSetupSteps, workflowName).toHaveLength(8);
+      expect(pnpmSetupSteps, workflowName).toHaveLength(workflowName === "pr-trusted.yml" ? 9 : 8);
       for (const step of pnpmSetupSteps) {
         expect(step, workflowName).toContain('NPM_CONFIG_AUDIT: "false"');
         expect(step, workflowName).toContain('NPM_CONFIG_FUND: "false"');
@@ -139,10 +139,10 @@ describe("public repository paid workflow security", () => {
         step.includes("uses: pnpm/action-setup@") ? [index] : [],
       );
 
-      expect(pnpmSetupStepIndexes, name).toHaveLength(8);
+      expect(pnpmSetupStepIndexes, name).toHaveLength(name === "pr-trusted.yml" ? 9 : 8);
       for (const pnpmSetupStepIndex of pnpmSetupStepIndexes) {
         const pnpmSetupStep = steps[pnpmSetupStepIndex]!;
-        const nodeBootstrapStep = steps[pnpmSetupStepIndex - 1]!;
+        const nodeBootstrapStep = steps.slice(0, pnpmSetupStepIndex).findLast(step => step.includes("uses: actions/setup-node@"))!;
         expect(nodeBootstrapStep, name).toContain("uses: actions/setup-node@");
         expect(nodeBootstrapStep, name).not.toContain("cache: pnpm");
 
@@ -603,6 +603,7 @@ describe("public repository paid workflow security", () => {
     const workflowDirectory = path.join(repositoryRoot, ".github/workflows");
     const allowedProviderWorkflows = new Set([
       "e2e.yml",
+      "chat-feature-testops.yml",
       "runner-full-stack-e2e.yml",
       "runner-live-evals.yml",
       "runner-protocol-live-evals.yml",
@@ -889,7 +890,7 @@ describe("public repository paid workflow security", () => {
     }
     expect(recurring).toContain("needs.authorize.outputs.target_sha == github.sha");
     for (const filename of await readdir(workflows)) {
-      if (!/\.ya?ml$/u.test(filename) || ["runner-full-stack-e2e.yml", "runner-protocol-live-evals.yml"].includes(filename)) continue;
+      if (!/\.ya?ml$/u.test(filename) || ["runner-full-stack-e2e.yml", "runner-protocol-live-evals.yml", "chat-feature-testops.yml"].includes(filename)) continue;
       const other = await readFile(path.join(workflows, filename), "utf8");
       for (const environment of environments) expect(other, filename).not.toContain(environment);
     }

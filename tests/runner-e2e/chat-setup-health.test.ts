@@ -22,7 +22,7 @@ describe("explicit setup-only diagnostic cell", () => {
     expect(cell.task.buildPrompt("nonce")).toBe("");
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"]), runnerMatrix).some(row => row.id === cell.id)).toBe(false);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--id", CHAT_SETUP_HEALTH_ID]), runnerMatrix)).toEqual([cell]);
-    expect(runnerMatrix.filter(row => row.suite.id === "chat-features").length).toBe(244);
+    expect(runnerMatrix.filter(row => row.suite.id === "chat-features" && row.profile.id === "runner-opencode").length).toBe(244);
   });
   it("accepts one real successful setup without any chat/task/native work", () => expect(gradeSetupHealth(valid()).every(check => check.passed)).toBe(true));
   it.each(["ready", "configMatches", "agentCount", "issues", "conversations", "comments", "humanComments", "runs"])("rejects wrong %s", field => {

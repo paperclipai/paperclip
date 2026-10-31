@@ -892,7 +892,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
         <p class="eyebrow">E2E campaign</p>
         <h1 tabindex="-1">${html(input.presentation?.title ?? input.title)}</h1>
         <p class="lede">${html(input.presentation?.description ?? "App and agent journeys across deployment targets, profiles, and execution environments. Declared PNG screenshots and normalized results are retained with every published campaign; additional diagnostic evidence remains in the access-controlled workflow artifact.")}</p>
-        ${input.campaign ? `<p class="report-source"><span>${html(input.generatedAt)}</span>${input.campaign.source.sha ? `<code>${html(input.campaign.source.sha.slice(0,8))}</code>` : ""}${input.campaign.source.workflowRunUrl ? `<a href="${html(input.campaign.source.workflowRunUrl)}">Source run ↗</a>` : ""}</p>` : ""}
+        ${input.campaign ? `<p class="report-source"><span>${html(input.generatedAt)}</span>${input.campaign.source.sha ? `<code>${html(input.campaign.source.sha.slice(0,8))}</code>` : ""}${input.campaign.source.workflowRunUrl ? `<a href="${html(input.campaign.source.workflowRunUrl)}">Source run ↗</a>` : ""}${input.summaryAvailable ? '<a href="summary.md">Campaign summary ↗</a>' : ""}</p>` : ""}
       </div>
       <div class="report-actions">
         <div class="summary" aria-label="Campaign summary">

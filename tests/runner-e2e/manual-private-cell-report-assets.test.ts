@@ -276,7 +276,18 @@ it.each([0, 1])("actual launcher packaging call %s retains the verified private 
 async function actualLauncherEvidenceBranch(packageCall = packageEvidence) {
   const source = await readFile(new URL("./launch.ts", import.meta.url), "utf8");
   const start = source.indexOf("      if (manualPrivateHandoff) {\n        await preserveOriginalFrameworkResult(casePrivateDir);");
-  const end = source.indexOf("      console.log(", start);
+  const parser = createRequire(import.meta.url)("../../node_modules/.pnpm/@babel+parser@7.29.8/node_modules/@babel/parser");
+  const ast = parser.parse(source, { sourceType: "module", plugins: ["typescript"] });
+  let end = -1;
+  const visit = (node: any) => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "IfStatement" && node.start === start + 6) end = node.end;
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) value.forEach(visit);
+      else if (value && typeof value === "object") visit(value);
+    }
+  };
+  visit(ast);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
   const code = stripTypeScriptTypes(`async function actualBranch(manualPrivateHandoff, candidate, casePrivateDir, resultsRoot, uploadDir, credentials, result, resultPath) { ${source.slice(start, end)} return result; }`, { mode: "strip" });
   const publisher = vi.fn(publishRunnerE2EAttemptEvidence);

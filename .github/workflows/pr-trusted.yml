@@ -59,6 +59,10 @@ jobs:
           fi
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
         if: steps.eligible.outputs.enabled == 'true'
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
           version: 9.15.4
       - name: Restore dependencies for graph analysis

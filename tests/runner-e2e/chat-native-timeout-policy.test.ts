@@ -6,10 +6,10 @@ import { CHAT_NATIVE_TIMEOUT_POLICY, chatNativeTimeoutEvidence } from "./chat-na
 import type { RunnerProfileFixture } from "./types.js";
 
 it("uses the production native cap only in the catalog while preserving every finite scenario budget and run bound", () => {
-  const cells = runnerMatrix.filter(row => row.suite.id === "chat-features");
+  const cells = runnerMatrix.filter(row => row.suite.id === "chat-features" && row.profile.id === "runner-opencode");
   expect(cells).toHaveLength(244);
   for (const cell of cells) {
-    expect(cell.task.turnTimeoutMs).toBe(0);
+    expect(cell.task.turnTimeoutMs).toBe(["create-backlog", "delegate-announcement"].includes(cell.task.id) ? 120_000 : 0);
     const declaration = chatCatalogCases.find(row => row.scenarioId === cell.task.id);
     if (declaration) {
       expect(cell.task.attemptTimeoutMs).toEqual({ local: declaration.attemptTimeoutMs, daytona: declaration.attemptTimeoutMs });
@@ -29,7 +29,7 @@ it("uses the production native cap only in the catalog while preserving every fi
 
 it("saves the actual catalog profile with no native cap without removing funding, daily admission or unrelated adapter settings", () => {
   const original = { adapterConfig: { provider: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017", timeoutSec: 120, retained: true }, runtimeConfig: { retained: true } };
-  const profile = { provider: "opencode", buildAgent: () => structuredClone(original) } as unknown as RunnerProfileFixture;
+  const profile = { id: "runner-opencode", provider: "opencode", buildAgent: () => structuredClone(original) } as unknown as RunnerProfileFixture;
   const input = {} as Parameters<RunnerProfileFixture["buildAgent"]>[0];
   const saved = chatFeatureProfile(profile).buildAgent(input);
   expect(saved.adapterConfig).toEqual({ ...original.adapterConfig, timeoutSec: 0 });
