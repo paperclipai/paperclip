@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { PaperclipMcpConfig } from "./config.js";
 
 export class PaperclipApiError extends Error {
@@ -49,6 +50,12 @@ async function parseResponseBody(response: Response): Promise<unknown> {
 }
 
 export class PaperclipApiClient {
+  private readonly runIds = new AsyncLocalStorage<string | undefined>();
+
+  withRunId<T>(runId: string | undefined, execute: () => T): T {
+    return this.runIds.run(runId, execute);
+  }
+
   constructor(private readonly config: PaperclipMcpConfig) {}
 
   get defaults() {
@@ -88,8 +95,12 @@ export class PaperclipApiClient {
     if (options.body !== undefined) {
       headers["Content-Type"] = "application/json";
     }
-    if ((options.includeRunId ?? isWriteMethod(method)) && this.config.runId) {
-      headers["X-Paperclip-Run-Id"] = this.config.runId;
+    const runId = this.runIds.getStore();
+    if (isWriteMethod(method) && !runId) {
+      throw new Error("Per-call Paperclip run id required");
+    }
+    if ((isWriteMethod(method) || options.includeRunId) && runId) {
+      headers["X-Paperclip-Run-Id"] = runId;
     }
 
     const response = await fetch(url, {
