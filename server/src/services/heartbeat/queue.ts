@@ -4779,15 +4779,27 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
    * wake was inserted but before the intent was linked to it. Dispatch failure
    * only requeues the intent; it never changes the provider run outcome.
    */
-  async function dispatchPendingNativeStatusWakeups(
-    input: {
-      companyId?: string;
-      limit?: number;
-      staleClaimMs?: number;
-      requestId?: string;
-      onDeferredDeadline?: (at: number) => void;
-      onError?: (error: unknown) => void;
-    } = {},
+  type NativeStatusWakeDispatchInput = {
+    companyId?: string;
+    limit?: number;
+    staleClaimMs?: number;
+    requestId?: string;
+    onDeferredDeadline?: (at: number) => void;
+    onError?: (error: unknown) => void;
+  };
+  type NativeStatusWakeDelivery = { runId: string | null; status: string };
+
+  function createNativeStatusWakeBatch() {
+    const deliveredByIssueScope = new Map<string, NativeStatusWakeDelivery>();
+    return (input: NativeStatusWakeDispatchInput = {}) => dispatchNativeStatusWakeBatch(input, deliveredByIssueScope);
+  }
+
+  function dispatchPendingNativeStatusWakeups(input: NativeStatusWakeDispatchInput = {}) {
+    return createNativeStatusWakeBatch()(input);
+  }
+
+  async function dispatchNativeStatusWakeBatch(input: NativeStatusWakeDispatchInput,
+    deliveredByIssueScope: Map<string, NativeStatusWakeDelivery>,
   ) {
     const now = new Date();
     const staleClaimMs = Math.max(1_000, input.staleClaimMs ?? 60_000);
@@ -4812,10 +4824,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     let dispatched = 0;
     let recovered = 0;
     let deferred = 0;
-    const deliveredByIssueScope = new Map<
-      string,
-      { runId: string | null; status: string }
-    >();
 
     for (const candidate of candidates) {
       const payload = parseObject(candidate.payload);
@@ -5088,6 +5096,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   return {
     enqueueWakeup,
     dispatchPendingNativeStatusWakeups,
+    createNativeStatusWakeBatch,
     startNextQueuedRunForAgent,
     countRunningRunsForAgent,
     releaseRunClaimedJustBeforeSuppression,
