@@ -20,6 +20,7 @@ import {
   type WorkspaceWorkers,
 } from "../services/plugin-workspaces.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
+import { pluginRegistryService } from "../services/plugin-registry.js";
 import { projectService } from "../services/projects.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import {
@@ -44,6 +45,64 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     const fixture = (companyId?: string) =>
       createPluginWorkspaceFixture(db, companyId);
+    it.each([true, undefined])("wakes parked cleanup when a provider upgrade enables ancestry (%s)", async (supportsMergeAncestry) => {
+      const f = await fixture();
+      await preparePluginWorkspace(db, f.workers, f.input);
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+      await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
+        workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, supportsMergeAncestry: false } } }).where(eq(plugins.id, f.pluginId));
+      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
+      const svc = executionWorkspaceService(db, { pluginWorkerManager: f.workers, workspaceReaperCooldownDays: 0 });
+      await svc.sweepTerminalWorkspaces(100);
+      expect(await svc.nextTerminalWorkspaceSweepAt()).toBeNull();
+      expect(f.calls.some(call => call.operation.kind === "inspect")).toBe(false);
+      const events: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.terminalWorkspaces, (event, hints) => {
+        events.push(event);
+        if (event === "settled") svc.terminalWorkspaceWorkSettled(hints);
+      });
+      try {
+        await pluginRegistryService(db).update(f.pluginId, { manifest: { ...plugin.manifestJson,
+          workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, supportsMergeAncestry } } });
+        expect(events).toEqual(["intent", "settled"]);
+      } finally { unsubscribe(); }
+      await svc.sweepTerminalWorkspaces(100);
+      expect(f.calls.some(call => call.operation.kind === "inspect")).toBe(true);
+      expect(f.calls.some(call => call.operation.kind === "remove")).toBe(true);
+    });
+    it("wakes cleanup only for provider contract changes and activation", async () => {
+      const f = await fixture();
+      const registry = pluginRegistryService(db);
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+      const events: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.terminalWorkspaces, event => events.push(event));
+      try {
+        await registry.update(f.pluginId, { manifest: { ...plugin.manifestJson, description: "Updated description" } });
+        await registry.updateStatus(f.pluginId, { status: "disabled" });
+        expect(events).toEqual([]);
+        await registry.updateStatus(f.pluginId, { status: "ready" });
+        expect(events.splice(0)).toEqual(["intent", "settled"]);
+        await registry.updateStatus(f.pluginId, { status: "ready" });
+        await registry.upsertCompanySettings(f.pluginId, f.companyId, { enabled: false, settingsJson: {} });
+        expect(events).toEqual([]);
+        await registry.upsertCompanySettings(f.pluginId, f.companyId, { enabled: true, settingsJson: {} });
+        expect(events.splice(0)).toEqual(["intent", "settled"]);
+        await registry.upsertCompanySettings(f.pluginId, f.companyId, { enabled: true, settingsJson: {} });
+        expect(events).toEqual([]);
+        await db.transaction(async tx => {
+          await pluginRegistryService(tx as unknown as typeof db).update(f.pluginId, {
+            manifest: { ...plugin.manifestJson, workspaceProvider: undefined },
+          });
+          expect(events).toEqual(["intent"]);
+        });
+        expect(events.splice(0)).toEqual(["intent", "settled"]);
+        await registry.updateStatus(f.pluginId, { status: "disabled" });
+        await registry.updateStatus(f.pluginId, { status: "ready" });
+        await registry.update(f.pluginId, { manifest: { ...plugin.manifestJson, workspaceProvider: undefined, description: "Other plugin" } });
+        expect(events).toEqual([]);
+      } finally { unsubscribe(); }
+    });
     it("keeps PR-only storage idle until delivery can qualify for fresh inspection", async () => {
       const f = await fixture();
       const workspace = (await preparePluginWorkspace(db, f.workers, f.input))!;
