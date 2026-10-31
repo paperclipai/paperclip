@@ -1,3 +1,6 @@
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifySkillVersionPinChange } from "./skill-version-retention-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
@@ -16,6 +19,7 @@ import { clearPrimaryAgent } from "./primary-agent.js";
 import { budgetServiceInTransaction } from "./budgets.js";
 
 export async function prepareAgentConfiguration(db: Db, existing: AgentConfigurationRecord, data: AgentConfigurationPatch, options?: UpdateAgentOptions): Promise<AgentConfigurationPatch> {
+  await notifyAttentionRetentionWork(db, { companyId: existing.companyId });
   const id = existing.id;
   const { ensureManager, assertNoCycle, assertCompanyShortnameAvailable, assertBuiltInAgentMetadataMutationAllowed } = agentRecordQueries(db);
   if (existing.status === "pending_approval" && !options?.allowPendingApprovalConfigUpdate) {
@@ -83,6 +87,8 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
       existing.adapterConfig,
     );
   }
+  await notifyRunDispatch(db, { companyId: existing.companyId });
+  await notifyDeferredExecutionEligibility(db, { companyId: existing.companyId });
   if (normalizedPatch.runtimeConfig !== undefined || normalizedPatch.reportsTo !== undefined) {
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
   }
