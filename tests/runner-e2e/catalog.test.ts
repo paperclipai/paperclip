@@ -33,6 +33,47 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
+  it("keeps the Daytona controller outage on a reusable warm sandbox inside its idle lifetime", () => {
+    const suite = runnerSuites.find(candidate => candidate.id === "daytona-restart-continuity")!;
+    const secretRefs = {
+      OPENAI_API_KEY: { type: "secret_ref" as const, secretId: "22222222-2222-4222-8222-222222222222", version: "latest" as const },
+      ANTHROPIC_API_KEY: { type: "secret_ref" as const, secretId: "33333333-3333-4333-8333-333333333333", version: "latest" as const },
+      DAYTONA_API_KEY: { type: "secret_ref" as const, secretId: "44444444-4444-4444-8444-444444444444", version: "latest" as const },
+    };
+    const environmentInput = { executionId: "controller-outage", secretRefs, daytonaImage: `fixture@sha256:${"a".repeat(64)}` };
+    const base = runnerEnvironments.find(environment => environment.id === "daytona")!;
+    const baseConfig = base.buildEnvironment(environmentInput).config as Record<string, unknown>;
+    const warmConfig = daytonaWarmEnvironment.buildEnvironment(environmentInput).config as Record<string, unknown>;
+    const cells = runnerMatrix.filter(entry => entry.suite.id === suite.id);
+    expect(cells).toHaveLength(2);
+    expect(cells.map(cell => cell.id)).toEqual([
+      "daytona-restart-continuity.runner-codex.daytona.recover-controller",
+      "daytona-restart-continuity.runner-acpx-claude.daytona.recover-controller",
+    ]);
+    for (const cell of cells) {
+      const config = cell.environment.buildEnvironment(environmentInput).config as Record<string, unknown>;
+      expect(config).toMatchObject({ reuseLease: true, runnerLifecycleMode: "warm" });
+      expect(config.autoStopInterval).toBe(15);
+      expect(Number(config.autoStopInterval) * 60_000).toBeGreaterThan(420_000);
+      expect(config).toEqual({ ...warmConfig, autoStopInterval: 15 });
+      expect(cell.environment.configurationKey).toBe("warm-controller-outage-v1");
+      expect(cell.environment.label).toContain("warm reusable");
+      const agentInput = { ...environmentInput, environmentId: "env-1", environmentFixtureId: "daytona" as const, workspacePath: "/workspace" };
+      const adapterConfig = cell.profile.buildAgent(agentInput).adapterConfig as Record<string, unknown>;
+      const original = runnerProfiles.find(profile => profile.id === cell.profile.id)!.buildAgent(agentInput).adapterConfig as Record<string, unknown>;
+      expect(adapterConfig.idleTimeoutMs).toBe(300_000);
+      expect(adapterConfig.lifecycleMode).toBe(original.lifecycleMode);
+      expect(cell.suite.manualOnly).toBe(true);
+      expect(cell.task.automaticRetryPolicy).toBe("single_attempt");
+      expect(selectRunnerExecutions(parseRunnerSelectors(["--id", cell.id])).map(entry => entry.id)).toEqual([cell.id]);
+      expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(entry => entry.id === cell.id)).toBe(false);
+    }
+    expect(baseConfig).toMatchObject({ autoStopInterval: 5, reuseLease: false, runnerLifecycleMode: "per_turn" });
+    expect(warmConfig).toMatchObject({ autoStopInterval: 5, reuseLease: true, runnerLifecycleMode: "warm" });
+    expect(suite.definitionMetadata).toMatchObject({ version: 7, controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15,
+      retainedControllerContinuation: true, retainedControllerFollowupTransport: "task_comment_api", maximumAttemptsPerCell: 1 });
+  });
+
   it("selects non-reused Kimi lifecycle leases without changing its warm or local cases", () => {
     const suite = runnerSuites.find(row => row.id === "kimi-qualification")!;
     const cells = runnerMatrix.filter(row => row.suite.id === suite.id);

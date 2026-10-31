@@ -135,7 +135,7 @@ export async function terminalizeLegacyExecution(input: {
     };
     if (issueId) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: current.companyId, issueId });
     await notifyInstructionCollection(tx, { companyId: current.companyId, runId: current.id });
-    await notifyExecutionRunWork(tx);
+    await notifyExecutionRunWork(tx, { companyId: current.companyId });
     let [updated] = await tx
       .update(heartbeatRuns)
       .set({

@@ -16,11 +16,13 @@ const uuid = (identity: string) => {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 };
 
-export async function createNativeUsageDelivery(db: Db, input: {
+type NativeUsageDeliveryInput = {
   companyId: string; runId: string; runnerInstanceId: string;
   provider: NativeExecutionInput["provider"];
   billing: Pick<AdapterUsageCheckpoint, "provider" | "biller" | "billingType">;
-}) {
+};
+
+export async function createNativeUsageDelivery(db: Db, input: NativeUsageDeliveryInput) {
   const sourceId = uuid(`${input.runId}:${input.runnerInstanceId}`);
   const [bound] = await db.update(heartbeatRuns).set({ usageJson: sql`
     coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingReceiptOwner":"native_producer"}'::jsonb ||
@@ -29,9 +31,39 @@ export async function createNativeUsageDelivery(db: Db, input: {
   }).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
     isNull(heartbeatRuns.costAccountedAt))).returning({ id: heartbeatRuns.id });
   if (!bound) throw new Error("native_usage_run_not_available");
-  const saved = await db.select({ receipt: runUsageReceipts.receiptJson }).from(runUsageReceipts).where(and(
+  return createNativeUsageReceiver(db, input, sourceId, await loadNativeUsageReceipts(db, input, sourceId));
+}
+
+/** Drain the authenticated previous producer's accounting without acquiring or
+ * resetting its ownership. Finalized sources retain normal receipt equality
+ * and reconciliation rules; this grants no business/tool execution authority. */
+export async function createNativeUsageContinuationDelivery(db: Db, input: Omit<NativeUsageDeliveryInput, "billing">) {
+  const sourceId = uuid(`${input.runId}:${input.runnerInstanceId}`);
+  const [source] = await db.select({ runnerInstanceId: heartbeatRuns.runnerInstanceId, usage: heartbeatRuns.usageJson })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
+  if (source?.runnerInstanceId !== input.runnerInstanceId || source.usage?.accountingReceiptOwner !== "native_producer"
+    || source.usage.accountingReceiptSourceId !== sourceId) throw new Error("native_usage_continuation_source_mismatch");
+  const saved = await loadNativeUsageReceipts(db, input, sourceId);
+  if (!saved.length) throw new Error("native_usage_continuation_receipts_missing");
+  const classification = (receipt: AdapterUsageCheckpoint) => ({
+    provider: receipt.provider, biller: receipt.biller, billingType: receipt.billingType,
+  });
+  const receipts = saved.map(row => (row.receipt as UsageReceiptEnvelope).receipt as AdapterUsageCheckpoint);
+  const billing = classification(receipts[0]);
+  if (receipts.some(receipt => receiptFingerprint(classification(receipt)) !== receiptFingerprint(billing)
+    || receipt.model !== (input.provider.model ?? "unknown"))) throw new Error("native_usage_source_conflict");
+  return createNativeUsageReceiver(db, { ...input, billing }, sourceId, saved, true);
+}
+
+function loadNativeUsageReceipts(db: Db, input: Pick<NativeUsageDeliveryInput, "companyId" | "runId">, sourceId: string) {
+  return db.select({ receipt: runUsageReceipts.receiptJson, hash: runUsageReceipts.receiptHash,
+    sequence: runUsageReceipts.sequence }).from(runUsageReceipts).where(and(
     eq(runUsageReceipts.companyId, input.companyId), eq(runUsageReceipts.runId, input.runId),
     eq(runUsageReceipts.sourceId, sourceId))).orderBy(asc(runUsageReceipts.sequence));
+}
+
+function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sourceId: string,
+  saved: Awaited<ReturnType<typeof loadNativeUsageReceipts>>, verifySaved = false) {
   const accepted = new Map<string, UsageReceiptEnvelope>();
   const turnAccounting = ["opencode", "acpx"].includes(input.provider.kind) ? createNativeTurnAccounting(input.provider) : null;
   let observedUsage: Record<string, unknown> | null = null;
@@ -60,6 +92,12 @@ export async function createNativeUsageDelivery(db: Db, input: {
   for (const row of saved) {
     const envelope = row.receipt as UsageReceiptEnvelope;
     if (!envelope.producerEvent) throw new Error("native_usage_receipt_missing_producer");
+    if (verifySaved && (envelope.companyId !== input.companyId || envelope.runId !== input.runId
+      || envelope.sourceId !== sourceId || envelope.sequence !== row.sequence || envelope.adapterType !== "paperclip_runner"
+      || envelope.id !== uuid(`${input.runId}:${input.runnerInstanceId}:${envelope.producerEvent.sourceEventId}`)
+      || receiptFingerprint(envelope) !== row.hash || accepted.has(envelope.producerEvent.sourceEventId))) {
+      throw new Error("native_usage_source_conflict");
+    }
     accepted.set(envelope.producerEvent.sourceEventId, envelope);
     observe(envelope);
   }

@@ -274,6 +274,30 @@ ID saved with the plan, even when GitHub increments the run attempt. Turbo hashe
 `PAPERCLIP_CI_SELECTION_HASH`, so a passing subset cannot satisfy a full run or a
 different selection.
 
+Graph discovery runs at most two isolated Node processes concurrently. Each
+project retains its own Vite configuration, aliases and module graph. Any worker
+error or timeout rejects the whole refinement and retains the original task plan.
+The selector checkout needs only the merge commit and its two parents, not the
+repository's complete history.
+
+Server test costs are recorded in CI with tests, hooks, collection, setup and
+environment preparation included. The weekly **Refresh CI test durations**
+workflow reads two successful protected-master Cloud readiness runs and opens a
+timing-only PR. It never executes code from logs, changes test selection rules,
+or grants AWS access. GitHub may require a maintainer to approve the bot PR's
+workflow runs; the refresh never merges itself. An outstanding refresh PR pauses
+new refreshes. Both timing manifests include source runs and measurement coverage.
+The refresh requires at least 90% coverage of each current lane and uses median
+measurements; missing files retain their old weights. Historical logs can bootstrap
+test/hook costs until structured loading/setup measurements are available.
+
+To reproduce a refresh from a full checkout with GitHub Actions read access:
+
+```sh
+node scripts/ci/refresh-test-durations.mjs [master-run-id ...]
+node --test scripts/ci/test-selection-timing*.test.mjs
+```
+
 Set the repository variable `CI_VITEST_SELECTION=off` to disable file selection
 while keeping the existing task-level optimization. Empty or `enabled` enables
 it; other values disable it. `full-ci`, profiling, and task-level `full`/`shadow`
@@ -2649,6 +2673,33 @@ and `packages/adapter-utils/src/sandbox-callback-bridge.test.ts` for these contr
 
 ### Native runner restart recovery
 
+For remote controller disk-loss work, use the existing control-plane snapshot
+transaction and `native-controller-recovery.ts`; do not add a second snapshot
+writer. The private versioned metadata is limited to 4 KiB. Its importer handles
+one verified retained source while the source disk is available. Workspace and
+provider-backup migrations remain with their storage owners. See
+[the continuity verification guide](testing-native-remote-continuity.md) for
+the direct/prepared transport and three-controller continuation fixtures.
+An upgrade readiness report contains preliminary native evidence, not permission
+to remove a deployment volume. Keep the checkpoint pool bounded and measure all
+pools when qualifying database cost; the current size of two is a default.
+
+Committed native Agent Chat turns recover their unanswered final reply through
+the existing response presentation worker. Recovery verifies the accepted result
+and final turn, agent, responsible user, native session and conversation generation.
+It stores the exact final message before the normal conversation settlement moves
+the chat to waiting. Later user input remains active. Recovery does not run the
+agent again, replace a selected reply or restore a deleted reply.
+
+For retained Codex event tails, keep source drain/accounting and target admission
+separate. `native-staged-attachment-recovery.ts` validates private source/target
+header evidence; `native-recovery-usage-delivery.ts` binds the source's accounting
+receiver. The transport persists its staged target before source bootstrap, then
+uses the existing authenticated attachment protocol after durable drain. Do not
+rotate the identity first, acknowledge before receipt persistence, or weaken the
+Runner's settled-provider check. A staged target does not yet certify a resumable
+session. Its eventual snapshot still uses the existing checkpoint transaction.
+
 Custom source-mode HTTP launchers should create their listener with
 `createPaperclipHttpServer` from `server/src/http/server.ts`, passing the selected
 API origin as `apiUrl`. This registers the native Runner WebSocket transport
@@ -2790,6 +2841,35 @@ The suite uses isolated PostgreSQL state, isolated `PAPERCLIP_HOME` roots, real
 and hard restarts with live and dead runners, the result-finalization race,
 incomplete bootstrap, repeated crashes with steering, and fail-closed process
 identity mismatches.
+
+Native task-session publication is part of the terminal checkpoint transaction,
+not resource cleanup. `native-task-session-publication.ts` owns its accepted-result,
+owner, task-epoch and reset checks; heartbeat supplies prepared session metadata.
+The goal-less regression in `native-session-resumption.test.ts` holds provider
+cleanup open and then exercises a normal follow-up and an explicit session reset.
+Control-port tests also cover terminal snapshots before accepted results and
+result-replay contention with the status writer's coordinator-first lock order.
+Remote adoption tests must invoke actual external-state preparation. Inspecting
+transport options alone does not exercise the resumed-lease harness checks.
+Include a healthy warm handoff before the crash so recovery exercises the
+handoff's turn and item attachment IDs as well as first-run identities.
+Retirement tests must exercise the preceding `turn.stop` as well as drain and
+suspend after result acceptance. Use the actual native-observed, unclaimed
+admission phase and the production claim before retiring the predecessor;
+a synthetic legacy preparation does not cover that boundary. Verify failed
+claims and Stop leave the predecessor and shared attachment staging untouched.
+Configuration tests compare fresh and recovered
+home-mode fingerprints while preserving rejection of real mode changes.
+Include multiple skill versions read back from Postgres JSONB: version-map key
+order must not change the generated preference or session fingerprint. Exercise
+the real environment-selection and configuration services with a retained shared
+workspace, and keep actual model or skill-version changes incompatible.
+Run it against an isolated database with `PAPERCLIP_TEST_DATABASE_URL` when the
+host cannot start embedded Postgres:
+
+```sh
+pnpm exec vitest run server/src/__tests__/native-session-resumption.test.ts -t 'publishes the completed task session before provider cleanup'
+```
 
 ## Version-based skill authoring and delivery
 

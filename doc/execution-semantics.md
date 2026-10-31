@@ -330,6 +330,10 @@ persisted cancellations of parked retries through the normal guarded cancellatio
 path if the original owner stops or its final database write fails. They preserve
 the original cancellation request and never start a provider turn for that work.
 
+Replaying an audited native Stop also fences a later same-run retry. It preserves
+the original intent and acknowledgement. That retry fence does not prove that
+the provider stopped or that workspace cleanup finished.
+
 Recovery instructions in a wake describe only an active or escalated recovery
 action. Resolving or cancelling that action removes its repair instructions from
 subsequent wakes, so the original worker can resume the task. This prompt change
@@ -2167,8 +2171,11 @@ digest. Earlier live qualification results keep their original profile identity.
 
 Healthy native warm turns retain their runner and provider processes. After a
 controller crash, continuation can recover a completed remote session from its
-saved checkpoint and exact sandbox process identity. The prior controller must
-be stopped, its result committed, and the successor must hold current task and
+saved checkpoint and exact sandbox process identity. For an externally persisted
+controller with validated recovery metadata, the prior lease must be released
+and its result committed. A PID in the replacement container does not establish
+whether the prior remote controller is alive. Legacy file-backed recovery retains
+its stopped-process check. The successor must hold current task and
 coordinator authority. Recovery reconnects through the prior run's route before
 the authenticated run attachment changes authority. Unavailable identity probes
 have a shared 30-second retry budget; an identity conflict never permits replay.
@@ -2232,6 +2239,27 @@ passed authentication. It preserves protocol and capability checks. Fresh or
 replacement launches use current release authority. A missing historical receipt
 retains the current release gate; guest files cannot establish old authority. A missing, changed, or incompatible package
 must be replaced and verified before launch.
+
+The server records the closed `runnerProfileJson.nativeProviderPackAdmission`
+receipt after actual session admission and attachment. Its `session_admitted`
+stage and `core_verified_selection` authority describe Core's verified selection,
+not an independent provider statement. It includes only the bound run, session,
+runner, lease and pack identities. Retained attachments keep the original pack
+and identify `inheritedFromRunId`. The first receipt is immutable history.
+`nativeProviderPackAdmissionState` separately describes current admission proof:
+`pending`, `verified` or `unknown`, with an opaque admission epoch. The mandatory
+coordinator claim atomically sets a new pending epoch before session admission.
+Only the matching owner and epoch can publish post-attachment proof. Failed
+receipt writes leave pending evidence; changed or unsupported admission leaves
+unknown evidence and does not prevent authorized execution. A missing legacy
+receipt remains unknown; the current release cannot supply that missing history.
+Retained recovery needs positively verified prior provenance, captured before
+same-run invalidation or read from the exact source run. A fresh replacement
+uses its actual newly verified selection. Recording the receipt does not grant
+execution or change the existing recovery gates. Admission proof does not certify
+provider liveness, physical termination or workspace export.
+The `runnerEnvironmentLeaseId` names the logical Runner and provider-pack
+authority scope. It can differ from a physical `environment_leases.id`.
 
 Warm attachment requires two consecutive authenticated readiness snapshots.
 Blocked readiness probes back off within the reconnect deadline so they do not
@@ -2647,3 +2675,159 @@ The existing prior-owner, suspended-state and backup checks still decide whether
 the next turn may start. Missing checkpoints and ambiguous identity remain
 blocked; restoration does not authorize a new provider session or change the
 configured lifecycle policy.
+
+Remote admission also handles the absence of both native controller projections.
+`native-controller-recovery.ts` selects the existing bounded task/session source
+and restores its encrypted PRP records before admission reads local identity.
+It reconstructs the supervisor envelope from `runnerProfileJson.sessionCheckpoint`
+and the private `nativeControllerRecovery` metadata. Missing, incompatible, or
+mixed evidence holds the continuation; it does not authorize fresh execution.
+The 32-candidate boundary and newer-progress barriers remain in force. Exhausted
+history and current-run progress cannot establish fresh-bootstrap proof.
+
+A settled warm journal may contain an authenticated idle goal-read snapshot
+after `run.terminal`. Recovery accepts only the supported PRP event v1/v2
+envelopes with the same complete attachment identity, a null goal and
+`workingNow: false`. All commands must already be complete. Active goals, new
+work, unknown versions and mixed bindings remain holds. This check adds no
+streaming persistence or database work.
+
+If admission finds a live retained controller owner, it preserves the unstarted
+business run and records the owner's actual deadline through the existing native
+resumption path. This does not consume a provider attempt or stop the retained
+sandbox. A locked run/coordinator check rejects Stop, changed ownership or any
+provider progress. Startup restores even an overdue wait to the same scheduler;
+ordinary resumption rechecks current permissions and task authority. No idle
+scan is added. Per-turn continuation reconstructs a missing suspended-state
+receipt from the admitted sandbox or prepared-task owner, including after a
+previous read failed with only a PRP projection written.
+
+The version-one metadata contains a digest of the exact redacted stored snapshot,
+configuration digests and the PRP checkpoint binding. It is bounded to 4 KiB,
+excluded from public run projections, and saved by `checkpointSession` in its
+existing snapshot transaction. No second snapshot writer, per-text-chunk query,
+pool, or recurring scan is added. A null checkpoint binding records an incomplete
+publication and prevents expiration. Snapshot and result writes recheck the
+coordinator generation and lease after lock waits, including the existing limited
+post-result maintenance exception.
+
+Goal-less native turns publish their task-session pointer with the first accepted,
+successful terminal checkpoint, before provider or instruction cleanup can delay
+the heartbeat completion callback. The pointer uses the native normalized UUID
+and the checkpoint's provider display identity. Its prepared configuration metadata
+comes from normal admission; neither streaming events nor ordinary checkpoints
+add task-session writes. Goal checkpoints retain their existing publication path.
+
+The snapshot transaction validates the exact accepted result and current owner,
+then updates only the authenticated run's existing task-session projection. Its
+private `nativeTaskSessionPublication` receipt shares the 4 KiB recovery-metadata
+budget. Coordinator, issue and run locks precede the ownership clock check; the
+issue's `NO KEY UPDATE` lock remains compatible with result insertion's parent
+`KEY SHARE`. Reset/deletion, a newer task-session epoch or a competing execution
+prevents publication. Later maintenance and heartbeat completion honor the receipt,
+so they cannot restore a cleared pointer or overwrite its successor. Unsupported
+legacy bindings keep the existing completion path. The receipt is excluded from
+public run projections and contains no session parameters or credentials.
+
+A terminal snapshot can arrive before result acceptance. That snapshot publishes
+neither a continuation pointer nor a handled publication receipt. The existing
+post-acceptance checkpoint completes publication in its normal transaction.
+The first production release containing recovery readers, complete attachment
+identity handling and redaction for both private recovery fields is the
+disk-independent rollback floor. Earlier
+development-reader probes do not establish a published rollback target.
+
+Active remote adoption and compatible idle warm reuse carry an existing verified
+Runner proof. Preparation revalidates that proof and the exact process's liveness,
+then preserves its in-place harness state. The later protocol attachment still
+authenticates the durable PRP authority. A provider lease acquisition described as
+`resumed` does not establish that this already-running harness was suspended.
+Ordinary resumed leases retain their verified suspension and backup checks.
+
+Reattachment keeps the complete durable PRP binding, including its turn and item
+attachment IDs. A healthy warm handoff can create new attachment IDs within the
+retained Runner. Replacing that run's controller must preserve those IDs; deriving
+them again from the business run ID would request an invalid authority rotation.
+
+Cold Codex continuation can restore a completed provider with a retained event
+suffix. Native remote controllers first persist a private staged attachment under
+the target run's existing checkpoint owner, then restore and drain the exact
+source authority before attaching the target. The source's run, turn and item
+identity stays on every old event. Receipt persistence precedes acknowledgement;
+unknown semantic work holds the handoff and never reaches the target's tool
+authority. The provider's settled-session attachment guard remains mandatory.
+
+The staged controller format is
+`paperclip.runner.durable.control-plane-state.staged-attachment.v1`. It contains
+the source and target attachment tuples and one bound target attachment template
+inside the existing encrypted PRP authority, subject to its existing size limits.
+The header stores a bounded descriptor and digest. Before command delivery, the
+template is a separate changed-record part; after queueing, recovery uses the
+existing command or receipt. Control checkpoints do not rewrite another copy of
+instructions or tool context in the header.
+It is separate from the 4 KiB run-profile recovery envelope. Startup discovers
+this target obligation through bounded encrypted-header reads before a target
+session snapshot exists. It verifies both frozen runs, the accepted and released
+source, its original Runner artifact and the exact source header. Remote process
+verification then chooses authenticated source adoption or verified suspended
+source restoration. An in-memory rebound snapshot supplies normal admission;
+an existing target snapshot always takes precedence over that source baseline.
+The intent remains through command delivery and authenticated handoff, including
+an uncertain commit response. Source and target receipt phases require their
+exact physical authority; receipt replay cannot start a second Runner or attach
+again under a different endpoint. After the ordinary target snapshot commits,
+an in-memory notification permits intent retirement in the next existing command
+write. There is no separate metadata/snapshot transaction for that retirement.
+
+Source accounting uses the source's immutable producer receipts and billing
+classification. Opening this receiver does not reset accounting ownership or
+reopen a finalized run. Equal finalized usage retains the existing audit policy;
+changed, incomplete or conflicting usage remains unacknowledged for
+reconciliation. The target's usage receiver never receives source events. Staging
+adds recovery control work only: text streaming and settled idle operation add no
+queries, snapshot transactions, pools or recurring scans. The first rollback
+release supporting this continuation must also read the staged controller format;
+older readers fail closed. Prepared-launch and other provider paths retain their
+existing admission and recovery contracts.
+
+Accepted-result retirement still stops the old provider turn before draining and
+suspending its Runner. The checkpoint codec classifies `turn.stop` as lifecycle
+maintenance. Existing exact ownership, generation and accepted-result fences
+govern this cleanup; starting provider work still requires an active owner.
+A successor claims its existing native coordinator and starts renewal before
+retiring a superseded warm session. An unclaimed preparation cannot authorize
+the predecessor's checkpoint writes. Shared attachment staging follows verified
+retirement; a failed claim or Stop cannot close that predecessor or stage files.
+Recovery also preserves the implicit isolated-home default when binding admitted
+configuration, so an unchanged home does not invalidate the retained session.
+Explicit home-mode changes retain their normal configuration-change checks.
+Restoring pinned skill versions also preserves the fresh selection's existing
+name/key order. JSONB map ordering must not change the generated skill preference
+and invalidate the session when the selected keys, versions and bytes are unchanged.
+
+For per-turn direct sandbox recovery, the executor reads the retained Runner's
+suspended lifecycle through the recorded sandbox lease and validates its complete
+identity and lack of pending delivery/cleanup. Only a lifecycle projection is
+cached locally; provider files remain on the execution host. Prepared tasks use
+their existing `read_state` contract. The normal snapshot rebinder, tool-contract
+checks and current admission authority still govern the next turn.
+
+An active remote owner causes startup recovery to retain the obligation at the
+actual lease deadline. The existing recovery dispatch timer is rearmed on drain
+resume; successful reconciliation leaves no recurring recovery work.
+Follow-up waits retain their original dispatch mode and owner across a drain,
+including when another heartbeat service facade resumes the work. A failed
+dispatch retains a bounded retry obligation rather than losing its deadline.
+Upgrade diagnostics retain their existing `ready` meaning and add bounded retained-pointer
+header evidence. That inventory is preliminary, reports partial coverage, and
+does not certify workspace durability or volume removal.
+
+`importNativeControllerRecovery` is an internal one-source operation for the
+migration owner while old controller files remain available. It requires the
+admitted configuration digest and exact supervisor snapshot, locks the issue,
+coordinator and run in order, rejects live or unsettled ownership, and publishes
+only missing metadata. Repeating the same import is a no-op. Normal lifecycle
+checkpoints publish the metadata without a separate migration write. Disk-free
+rollback requires a server that reads this envelope and the supported settled
+warm journal, including its PRP v2 idle goal suffix. Earlier local-only readers
+and readers lacking that suffix handling remain outside that rollback contract.

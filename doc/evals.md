@@ -55,8 +55,9 @@ original bounds. Its source registration is not an AWS or TestOps pass. The
 broader YAML catalog remains planning inventory.
 
 The explicit-only [Daytona restart continuity journey](../tests/runner-e2e/README.md)
-extends the existing native restart oracle to a 125-second controller outage,
-using the recorded Claude and Codex models in disposable development fixtures.
+extends the existing native restart oracle to a 300-second controller outage
+and another replacement after completion, using the recorded Claude and Codex
+models in disposable development fixtures.
 It requires same-process adoption, saved files and finalization without replay;
 local regression checks and catalog discovery are separate from live acceptance.
 
