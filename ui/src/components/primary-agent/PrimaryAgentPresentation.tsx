@@ -1,4 +1,4 @@
-import { createContext, useContext, useRef, useState } from "react";
+import { createContext, useContext, useRef, useState, type CSSProperties } from "react";
 import { ArrowRight, Crown } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
@@ -42,13 +42,24 @@ export function PrimaryAgentIndicator({ agentId, companyId }: { agentId: string;
 
 const crownClass = "primary-crown relative";
 
+type CrownPop = { timing: "now" | "after-dialog"; bubbles: { angle: number; size: number; travel: number }[] };
+
+function crownBubbles(): CrownPop["bubbles"] {
+  const start = Math.random() * 360;
+  return [0, 1, 2].map((index) => ({
+    angle: Math.round(start + index * 120 + (Math.random() - 0.5) * 60),
+    size: Number((0.45 + Math.random() * 0.55).toFixed(2)),
+    travel: Number((0.8 + Math.random() * 0.4).toFixed(2)),
+  }));
+}
+
 export function PrimaryAgentCrownButton({ agent }: {
   agent: Agent;
 }) {
   const primary = usePrimaryAgentPresentation(agent.companyId);
   const [confirming, setConfirming] = useState(false);
   const [replacing, setReplacing] = useState<Agent | null>(null);
-  const [pop, setPop] = useState<"now" | "after-dialog" | null>(null);
+  const [pop, setPop] = useState<CrownPop | null>(null);
   const filledRef = useRef<HTMLSpanElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   if (!primary || agent.status === "terminated" || agent.status === "pending_approval") return null;
@@ -56,8 +67,8 @@ export function PrimaryAgentCrownButton({ agent }: {
   const previous = primary.primaryAgent?.id === primary.primaryAgentId ? primary.primaryAgent : null;
   const loading = primary.loading || Boolean(primary.primaryAgentId && !previous);
   const busy = loading || Boolean(primary.pendingAgentId);
-  const choose = (timing: "now" | "after-dialog") => {
-    setPop(timing);
+  const choose = (timing: CrownPop["timing"]) => {
+    setPop({ timing, bubbles: crownBubbles() });
     primary.onChange(agent.id);
   };
   const request = () => {
@@ -79,10 +90,14 @@ export function PrimaryAgentCrownButton({ agent }: {
   ) : selected && !loading ? (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span ref={filledRef} role="img" aria-label="My primary agent" tabIndex={-1} data-pop={pop ?? undefined}
-          onAnimationEnd={(event) => { if (event.animationName === "primary-crown-ring") setPop(null); }}
+        <span ref={filledRef} role="img" aria-label="My primary agent" tabIndex={-1} data-pop={pop?.timing}
+          onAnimationEnd={(event) => { if (event.animationName === "primary-crown-pop") setPop(null); }}
           className={cn(crownClass, "inline-flex size-9 shrink-0 items-center justify-center rounded-md text-primary outline-none focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3)")}>
           <Crown aria-hidden="true" className="size-5 fill-current" />
+          {pop?.bubbles.map((bubble, index) => (
+            <span key={index} aria-hidden="true" className="primary-crown-bubble"
+              style={{ "--bubble-angle": bubble.angle, "--bubble-size": bubble.size, "--bubble-travel": bubble.travel } as CSSProperties} />
+          ))}
         </span>
       </TooltipTrigger>
       <TooltipContent>My primary agent</TooltipContent>

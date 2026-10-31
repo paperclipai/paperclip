@@ -613,6 +613,9 @@
   --agent-detail-switch-off: color-mix(in oklab, var(--foreground) 15%, transparent);
   --motion-primary-crown-pop: var(--motion-duration-deliberate);
   --motion-primary-crown-pop-delay: var(--motion-duration-fast);
+  --primary-crown-bubble-size: 7px;
+  --primary-crown-bubble-travel: 30px;
+  --motion-ease-primary-crown-burst: cubic-bezier(0.2, 0.8, 0.3, 1);
 }
 
 .dark {
@@ -5121,23 +5124,35 @@ html:not(.dark) .coordinator-sidebar {
   background: var(--agent-detail-switch-off);
 }
 
-/* Agent detail header: the primary-agent crown fills with a short pop. After the
-   replace-primary dialog it waits for the dialog to close first. */
+/* Agent detail header: the primary-agent crown fills with a short pop while three
+   bubbles burst out of its centre. After the replace-primary dialog it waits for
+   the dialog to close first. Each bubble gets its own angle, size and travel. */
 .primary-crown[data-pop] svg {
   transform-origin: center;
   animation: primary-crown-pop var(--motion-primary-crown-pop) var(--motion-ease-standard) both;
 }
-.primary-crown[data-pop]::after {
+.primary-crown-bubble {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: calc(var(--primary-crown-bubble-size) * var(--bubble-size));
+  aspect-ratio: 1;
+  pointer-events: none;
+  translate: -50% -50%;
+  rotate: calc(var(--bubble-angle) * 1deg);
+  animation: primary-crown-bubble-travel var(--motion-primary-crown-pop) var(--motion-ease-primary-crown-burst) both;
+}
+.primary-crown-bubble::before {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: 9999px;
-  border: 1.5px solid currentColor;
-  pointer-events: none;
-  animation: primary-crown-ring var(--motion-primary-crown-pop) var(--motion-ease-standard) both;
+  background: currentColor;
+  animation: primary-crown-bubble-scale var(--motion-primary-crown-pop) both;
 }
 .primary-crown[data-pop="after-dialog"] svg,
-.primary-crown[data-pop="after-dialog"]::after {
+.primary-crown[data-pop="after-dialog"] .primary-crown-bubble,
+.primary-crown[data-pop="after-dialog"] .primary-crown-bubble::before {
   animation-delay: var(--motion-primary-crown-pop-delay);
 }
 @keyframes primary-crown-pop {
@@ -5146,13 +5161,18 @@ html:not(.dark) .coordinator-sidebar {
   70% { transform: scale(0.92); }
   100% { transform: scale(1); fill-opacity: 1; }
 }
-@keyframes primary-crown-ring {
-  from { opacity: 0.5; transform: scale(0.5); }
-  to { opacity: 0; transform: scale(1.5); }
+@keyframes primary-crown-bubble-travel {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(var(--primary-crown-bubble-travel) * var(--bubble-travel))); }
+}
+@keyframes primary-crown-bubble-scale {
+  0% { transform: scale(0); animation-timing-function: var(--motion-ease-out-expo); }
+  25% { transform: scale(1); animation-timing-function: var(--motion-ease-standard); }
+  100% { transform: scale(0); }
 }
 @media (prefers-reduced-motion: reduce) {
   .primary-crown[data-pop] svg { animation: none; }
-  .primary-crown[data-pop]::after { display: none; }
+  .primary-crown-bubble { display: none; }
 }
 
 /* Agent detail Harness / Secrets: AgentConfigForm's "panels" layout. */

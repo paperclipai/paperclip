@@ -73,6 +73,12 @@ describe("PrimaryAgentCrownButton", () => {
     expect(crown()?.getAttribute("role")).toBe("img");
     expect(crown()?.getAttribute("aria-label")).toBe("My primary agent");
     expect(crown()?.dataset.pop).toBe("now");
+    const bubbles = Array.from(crown()?.querySelectorAll<HTMLElement>(".primary-crown-bubble") ?? []);
+    expect(bubbles).toHaveLength(3);
+    for (const bubble of bubbles) {
+      expect(Number(bubble.style.getPropertyValue("--bubble-size"))).toBeGreaterThan(0);
+      expect(Number(bubble.style.getPropertyValue("--bubble-travel"))).toBeGreaterThan(0);
+    }
   });
 
   it("asks before replacing the current primary agent, then fills after the dialog", async () => {
@@ -111,6 +117,7 @@ describe("PrimaryAgentCrownButton", () => {
     await render({ initial: ceo, onChange: vi.fn() });
     expect(crown()?.getAttribute("role")).toBe("img");
     expect(crown()?.dataset.pop).toBeUndefined();
+    expect(crown()?.querySelector(".primary-crown-bubble")).toBeNull();
     expect(container.querySelector("button")).toBeNull();
   });
 
