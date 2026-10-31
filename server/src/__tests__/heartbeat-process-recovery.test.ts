@@ -2940,6 +2940,58 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("clears stale agent errorReason when a recovered run starts", async () => {
+    let signalAdapterStarted!: () => void;
+    const adapterStarted = new Promise<void>((resolve) => {
+      signalAdapterStarted = resolve;
+    });
+    let finishAdapter!: () => void;
+    const adapterFinished = new Promise<void>((resolve) => {
+      finishAdapter = resolve;
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      signalAdapterStarted();
+      await adapterFinished;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Recovered after stale process loss.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const { agentId, runId } = await seedQueuedIssueRunFixture();
+    await db
+      .update(agents)
+      .set({
+        errorReason: "Process lost -- child pid 81145 is no longer running",
+        adapterConfig: { env: { OPENAI_API_KEY: "test-api-key" } },
+      })
+      .where(eq(agents.id, agentId));
+
+    const heartbeat = heartbeatService(db);
+    const resumePromise = heartbeat.resumeQueuedRuns();
+
+    try {
+      await adapterStarted;
+      const runningAgent = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .then((rows) => rows[0] ?? null);
+
+      expect(runningAgent?.status).toBe("running");
+      expect(runningAgent?.errorReason).toBeNull();
+    } finally {
+      finishAdapter();
+      await resumePromise;
+      await waitForRunToSettle(heartbeat, runId);
+    }
+  });
+
   it("keeps a native run active without granting legacy retry or signal authority", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
