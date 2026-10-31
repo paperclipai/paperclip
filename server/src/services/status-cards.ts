@@ -969,12 +969,8 @@ export function statusCardService(
         pendingChangeCount: 0,
         pendingChangeHash: null,
         lastChangeAt: null,
-        nextEvalReason: current.refreshPolicy.mode === "reactive" &&
-          filterStatusCardChanges(diffStatusCardFingerprint(snapshot, watchedNow), current.refreshPolicy).length > 0
-          ? "refresh" : membershipAt ? "membership" : null,
-        nextEvalAt: current.refreshPolicy.mode === "reactive" &&
-          filterStatusCardChanges(diffStatusCardFingerprint(snapshot, watchedNow), current.refreshPolicy).length > 0
-          ? now : nextEvaluationAt(current, membershipAt, now),
+        nextEvalReason: current.refreshPolicy.mode === "reactive" ? "refresh" : membershipAt ? "membership" : null,
+        nextEvalAt: current.refreshPolicy.mode === "reactive" ? now : nextEvaluationAt(current, membershipAt, now),
         updatedAt: now,
       }).where(and(eq(statusCards.id, current.id), eq(statusCards.generatingIssueId, input.generationIssueId))).returning();
       if (!next) throw conflict("Status-card generation was superseded by a newer task");

@@ -1,3 +1,4 @@
+import { instanceSettingsService } from "../instance-settings.js";
 import { writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { observeStoppedWorkspaceRecovery } from "../workspace-recovery.js";
@@ -777,7 +778,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
   async function resumeExecutionWaitComments(scope: DeferredReceiptRecoveryOptions = {}) {
     if ((await getSchedulingSuppression()).suppressed) return;
     await reconcileTaskChatRetryReceipts(db, scope);
-    const retries = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
+    const retries = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
+      conversationAgentId: issues.conversationAgentId })
       .from(agentWakeupRequests).innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
         sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
         eq(issues.assigneeAgentId, agentWakeupRequests.agentId)))
@@ -788,8 +790,13 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         sql`${agentWakeupRequests.payload}->'taskRetry'->>'chatActionId' is null`,
         notInArray(issues.status, ["done", "cancelled"])))
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
+    const chatEnabled = !retries.some(retry => retry.conversationAgentId)
+      || (await instanceSettingsService(db).getExperimental()).enableAgentChat;
     for (const retry of retries) {
+      // Accepted chat work waits for the flag's committed eligibility signal.
+      // Public Retry still rejects new requests while the feature is disabled.
       await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(eq(agentWakeupRequests.id, retry.id));
+      if (retry.conversationAgentId && !chatEnabled) continue;
       await resumeTaskRetry(retry.companyId, retry.id).catch(err => {
         scope.onError?.(err); logger.warn({ err, requestId: retry.id }, "Task retry dispatch deferred");
       });

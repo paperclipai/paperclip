@@ -258,7 +258,9 @@ export function createOAuthRefreshLeases(db: Db, now: () => Date, getConnectionR
               eq(connectionGrants.id, latest.id),
               eq(connectionGrants.companyId, latest.companyId),
               eq(connectionGrants.status, "active"),
-              sql`${connectionGrants.providerTenant} = ${JSON.stringify(latest.providerTenant)}::jsonb`,
+              // SQL NULL and JSON null both represent absent optional metadata.
+              // Keep object snapshots exact so concurrent metadata writes win the CAS.
+              sql`coalesce(${connectionGrants.providerTenant}, 'null'::jsonb) = ${JSON.stringify(latest.providerTenant)}::jsonb`,
               sql`${connectionGrants.providerTenant} #>> '{oauth,refreshLease,id}' is null`,
             ),
           )
