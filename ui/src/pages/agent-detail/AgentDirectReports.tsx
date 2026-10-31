@@ -61,7 +61,7 @@ export function AgentDirectReports({ reports }: { reports: Agent[] }) {
 
   return (
     <div className="relative">
-      <div ref={listRef} className="flex flex-wrap items-center gap-x-4 gap-y-1">
+      <div ref={listRef} className="flex flex-wrap items-center gap-x-4 gap-y-2">
         {visible.map((report) => (
           <Link
             key={report.id}
