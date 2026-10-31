@@ -97,6 +97,10 @@ They use the normal composer agent and project mention formats, with the exact
 IDs from the independently verified hire and owned project. Missing, foreign or
 mismatched context fails before constructing the handoff. The mentions provide
 the intended resources without prescribing a tool call or bypassing normal delegation.
+The handoff selects these references through the normal rich-editor mention menu
+and verifies each chip target before sending once. Typing Markdown link syntax
+as plain rich-editor text escapes it and is not a mention. The saved user body
+must still match the requested body exactly.
 Creating work for the lead and later reassigning it starts additional native work
 and fails the existing assignee and run checks.
 When the lead uses a delegated personal connection, normal hiring selects the

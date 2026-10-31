@@ -13,6 +13,7 @@ import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSes
 // controls are stubs; they do not claim a live user-journey pass.
 vi.mock("@playwright/test", () => ({ expect: (value: unknown) => Object.assign(expect(value), { toBeVisible: async () => {}, toHaveURL: async (predicate: (url: URL) => boolean) => { expect(predicate(new URL("https://qa.example.test/QA/issues/QA-2"))).toBe(true); } }) }));
 vi.mock("../chat-flow.js", () => ({ sendChatMessage: vi.fn(), readChatOutputDocument: vi.fn() }));
+vi.mock("./hire-delegate-composer.js", () => ({ sendHireHandoffMessage: (page: any, text: string) => sendChatMessage(page, text) }));
 type Row = Record<string, any>;
 const directories: string[] = [];
 afterEach(async () => { vi.mocked(sendChatMessage).mockReset(); await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });

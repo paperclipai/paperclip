@@ -8,6 +8,7 @@ import { assertChatHire, mutableIssueSnapshot } from "../chat-hardening.js";
 import { ConnectionFailure } from "../connection-config.js";
 import { assertHireAuditCoverage, assertHireBinding, assertHireDocument, assertHireRuns, hireDelegateNames, hireRunIssueId, observedHireResources, readHireConnectionChoice, type HireScope } from "./hire-delegate-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
+import { sendHireHandoffMessage } from "./hire-delegate-composer.js";
 
 type Row = Record<string, any>;
 type Agent = Parameters<typeof assertChatHire>[0]["agents"][number] & Row;
@@ -27,7 +28,7 @@ export function hireHandoffMentions(scope: Pick<HireScope, "companyId" | "leadId
     || project.companyId !== scope.companyId || project.name !== names.project) {
     throw new JourneyError("failed", "hire_handoff_context_unverified");
   }
-  const agentHref = buildAgentMentionHref(hiredId), projectHref = buildProjectMentionHref(project.id);
+  const agentHref = buildAgentMentionHref(hiredId, hired.icon ?? null), projectHref = buildProjectMentionHref(project.id, project.color ?? null);
   if (parseAgentMentionHref(agentHref)?.agentId !== hiredId || parseProjectMentionHref(projectHref)?.projectId !== project.id) {
     throw new JourneyError("failed", "hire_handoff_context_unverified");
   }
@@ -177,11 +178,12 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
     }
     throw new JourneyError("failed", awaitingReply ? "hire_completion_reply_missing" : "hire_chat_not_completed");
   };
-  const turn = async (text: string, count: number) => {
+  const turn = async (text: string, count: number, handoff?: ReturnType<typeof hireHandoffMentions>) => {
     await page.goto(chatUrl, { waitUntil: "domcontentloaded" });
     const before = await api.get<Row | null>(chatPath);
     const prior = before ? await api.get<Row[]>(`/api/issues/${before.id}/comments?order=asc`) : [];
-    await sendChatMessage(page, text);
+    if (handoff) await sendHireHandoffMessage(page, text, handoff, options.deadlineAt);
+    else await sendChatMessage(page, text);
     const state = await waitForIdle(count);
     const comments = await api.get<Row[]>(`/api/issues/${state.chat.id}/comments?order=asc`);
     const added = comments.filter(row => row.authorUserId === context.user.id && !prior.some(old => old.id === row.id));
@@ -196,7 +198,7 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
   const handoff = hireHandoffMentions(scope!, hiredId!, hired, project);
   const marker = `HIRE${campaignId.replace(/[^a-z0-9]/gi, "")}`;
   await session.own({ kind: "issue", name: names.checklist, journeyId: "hire-delegate-reuse" });
-  state = await turn(`Have the existing ${handoff.teammate} write a concise launch checklist as a saved Paperclip document with the line "Reference: ${marker}". Create exactly one task titled ${names.checklist} in ${handoff.project}, already assigned to that teammate when it is created. Link the result here and let the teammate complete it. Do not hire another agent.`, 4);
+  state = await turn(`Have the existing ${handoff.teammate} write a concise launch checklist as a saved Paperclip document with the line "Reference: ${marker}". Create exactly one task titled ${names.checklist} in ${handoff.project}, already assigned to that teammate when it is created. Link the result here and let the teammate complete it. Do not hire another agent.`, 4, handoff);
   const first = state.tasks.find(task => task.title === names.checklist);
   check("first-delegated-task-complete", typeof first?.identifier === "string" && state.tasks.length === 1);
   const readOutput = async (task: Row, token: string, runs: Row[]) => {
@@ -209,7 +211,7 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
   const originalTask = mutableIssueSnapshot(await api.get<Task>(`/api/issues/${first!.id}`));
   check("checklist-authored-by-hired-run");
   await session.own({ kind: "issue", name: names.review, journeyId: "hire-delegate-reuse" });
-  state = await turn(`Have the existing ${handoff.teammate} review the checklist on ${first!.identifier} and write a separate saved review document with the line "Reference: REVIEW${marker}". Create exactly one task titled ${names.review} in ${handoff.project}, already assigned to that same teammate when it is created. Include the actual checklist in the handoff. Preserve the original checklist and task. Link the completed review here. Do not hire another agent.`, 7);
+  state = await turn(`Have the existing ${handoff.teammate} review the checklist on ${first!.identifier} and write a separate saved review document with the line "Reference: REVIEW${marker}". Create exactly one task titled ${names.review} in ${handoff.project}, already assigned to that same teammate when it is created. Include the actual checklist in the handoff. Preserve the original checklist and task. Link the completed review here. Do not hire another agent.`, 7, handoff);
   const second = state.tasks.find(task => task.title === names.review);
   check("same-teammate-reused", typeof second?.identifier === "string" && state.tasks.length === 2 && state.tasks.every(task => taskNames.includes(task.title)));
   const reviewOutput = await readOutput(second!, `REVIEW${marker}`, state.runs);
