@@ -1359,6 +1359,18 @@ different tools with different permission rules. Read them this way:
 
 Both fields hold only counts.
 
+A sandbox ACP run also records how its agent process session ended, when the
+host bridge saw it end before finalization. Startup failures (`create_runtime`,
+`ensure_session`, `configure_session`) carry the same fields, so an agent process
+that dies during the handshake is reported too. `acpProcessTerminalSource` is one of
+`remote_event`, `input_delivery`, `output_poll`, `output_stream`, or
+`proxy_close`, and `acpProcessTerminalOutcome` is `exit` or `error`.
+`acpProcessTerminalExitCode` (0–255) and `acpProcessTerminalSignal` (a closed
+POSIX signal name) are present only when known. These are the same values as the
+run log's `ACP process session terminal:` line. They separate a killed or exited
+agent process from a host proxy close after a generic ACP connection failure. The
+server drops all of them if the source is not a closed label.
+
 ACP and legacy OpenCode results retain the adapter's resolved wall-clock timeout as
 `adapterExecutionTimeout` in the instance run result. Finalization uses it for
 `effectiveTimeoutSec`, `timeoutSource`, and `timeoutConfigured`. Sources are
