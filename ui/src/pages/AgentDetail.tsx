@@ -5,7 +5,7 @@ import { liveRunEvent, mergeRunEvents } from "../lib/live-run-event";
 import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
 import { grokBotApi } from "@/api/grokBot";
 import { GrokBotWorkSummary } from "@/components/GrokBotWorkSummary";
-import { PrimaryAgentIndicator, SetPrimaryAgentButton } from "@/components/primary-agent/PrimaryAgentPresentation";
+import { PrimaryAgentCrownButton } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { AiConnectionPoolRunDetails } from "@/components/ai-connections/AiConnectionPoolRunDetails";
 import { AgentConnectionInstructions } from "@/features/connections/ConnectionInstructions";
 import type { AgentInstructionCandidate, AgentInstructionsBundle } from "@paperclipai/shared";
@@ -1369,7 +1369,7 @@ export function AgentDetail() {
               className="min-w-0 truncate text-3xl font-semibold leading-9 text-foreground"
               onSave={(name) => saveHeaderField({ name })}
             />
-            <PrimaryAgentIndicator agentId={agent.id} companyId={agent.companyId} />
+            <PrimaryAgentCrownButton agent={agent} />
           </div>
           <div className="mt-1 flex items-center gap-1.5 text-xs leading-4 text-muted-foreground">
             {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
@@ -1398,7 +1398,6 @@ export function AgentDetail() {
             </span>
           </div>
           <AgentLifecycleStatus agent={currentAgent} refreshError={lifecycle.isError} onRetry={() => agentAction.mutate("retryLifecycle")} retryPending={agentAction.isPending} />
-          <SetPrimaryAgentButton agent={agent} />
         </div>
         <AgentActionButtons
           agent={currentAgent}

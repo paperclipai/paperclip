@@ -611,6 +611,8 @@
   --agent-detail-control-border: color-mix(in oklab, var(--foreground) 20%, transparent);
   --agent-detail-control-bg: color-mix(in oklab, var(--foreground) 5%, var(--background));
   --agent-detail-switch-off: color-mix(in oklab, var(--foreground) 15%, transparent);
+  --motion-primary-crown-pop: var(--motion-duration-deliberate);
+  --motion-primary-crown-pop-delay: var(--motion-duration-fast);
 }
 
 .dark {
@@ -5117,6 +5119,40 @@ html:not(.dark) .coordinator-sidebar {
 }
 [data-agent-tile] [data-slot="toggle"][aria-checked="false"] {
   background: var(--agent-detail-switch-off);
+}
+
+/* Agent detail header: the primary-agent crown fills with a short pop. After the
+   replace-primary dialog it waits for the dialog to close first. */
+.primary-crown[data-pop] svg {
+  transform-origin: center;
+  animation: primary-crown-pop var(--motion-primary-crown-pop) var(--motion-ease-standard) both;
+}
+.primary-crown[data-pop]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 1.5px solid currentColor;
+  pointer-events: none;
+  animation: primary-crown-ring var(--motion-primary-crown-pop) var(--motion-ease-standard) both;
+}
+.primary-crown[data-pop="after-dialog"] svg,
+.primary-crown[data-pop="after-dialog"]::after {
+  animation-delay: var(--motion-primary-crown-pop-delay);
+}
+@keyframes primary-crown-pop {
+  0% { transform: scale(1); fill-opacity: 0; }
+  40% { transform: scale(1.3); fill-opacity: 1; }
+  70% { transform: scale(0.92); }
+  100% { transform: scale(1); fill-opacity: 1; }
+}
+@keyframes primary-crown-ring {
+  from { opacity: 0.5; transform: scale(0.5); }
+  to { opacity: 0; transform: scale(1.5); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .primary-crown[data-pop] svg { animation: none; }
+  .primary-crown[data-pop]::after { display: none; }
 }
 
 /* Agent detail Harness / Secrets: AgentConfigForm's "panels" layout. */

@@ -146,8 +146,9 @@ Use the roster’s organization view; `/org` redirects to the roster in the stre
 
 ### `personal-primary-agent`
 
-Open an agent profile and choose **Set as my primary**. Inspect its crown on the
-profile/roster and its position in the Agents sidebar, then open a new task or Chat.
+Open an agent profile and choose the outlined crown beside its name (**Set as my
+primary**). Inspect the filled crown on the profile, the crown on the roster and
+its position in the Agents sidebar, then open a new task or Chat.
 
 ### `agent-api-keys`
 
@@ -286,9 +287,10 @@ Manual: Inspect a manager and report, change the relationship through the offere
 
 ### `personal-primary-agent`
 
-Automated: [primary-agent context](../../ui/src/context/PrimaryAgentProvider.test.tsx)
+Automated: [primary-agent context](../../ui/src/context/PrimaryAgentProvider.test.tsx),
+[the profile crown](../../ui/src/components/primary-agent/PrimaryAgentPresentation.test.tsx)
 and [primary-agent routes](../../server/src/__tests__/primary-agent.test.ts)
-cover selection, company/user scope, and request contracts.
+cover selection, replacement confirmation, company/user scope, and request contracts.
 
 Manual: Select an available agent, reload, and inspect the retained personal choice.
 Replace it and verify confirmation is required. Leave or terminate the selected
