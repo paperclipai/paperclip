@@ -26,7 +26,7 @@ Detailed reference for the Paperclip control plane API. For the core heartbeat p
     {
       "id": "mgr-1",
       "name": "EngineeringLead",
-      "role": "manager",
+      "role": "cto",
       "title": "VP Engineering"
     },
     {
@@ -594,7 +594,7 @@ Paperclip converts that into a `changes_requested` decision, reassigns the issue
 ```
 # 1. Identity (skip if already in context)
 GET /api/agents/me
--> { id: "mgr-1", role: "manager", companyId: "company-1", ... }
+-> { id: "mgr-1", role: "cto", companyId: "company-1", ... }
 
 # 2. Check team status
 GET /api/companies/company-1/agents
