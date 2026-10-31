@@ -88,13 +88,14 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     const local = await skillInstallationMaintenance(db).verifyVersions({ companyId, limit: 50 });
     expect(local.results).toEqual([expect.objectContaining({ versionId: skill.currentVersionId, status: "local_storage" })]);
     const key = "cloud-runtime-config:v1";
-    const run = (phase: string) => promisify(execFile)(process.execPath, [
+    const run = (phase: string, storageProvider?: "s3" | "local_disk") => promisify(execFile)(process.execPath, [
       "--import", fileURLToPath(import.meta.resolve("tsx")),
       fileURLToPath(new URL("../../scripts/migrate-skill-packages.ts", import.meta.url)),
       `--phase=${phase}`, `--company=${companyId}`, "--limit=50",
     ], { env: { ...process.env, DATABASE_URL: database.connectionString,
       PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "disposable-cloud-cli-fixture",
-      PAPERCLIP_STORAGE_LOCAL_DIR: path.join(root, "objects"), ...env },
+      PAPERCLIP_STORAGE_LOCAL_DIR: path.join(root, "objects"), ...env,
+      ...(storageProvider === undefined ? {} : { PAPERCLIP_STORAGE_PROVIDER: storageProvider }) },
       timeout: 60_000, maxBuffer: 1024 * 1024 });
     await expect(run("eligibility")).rejects.toThrow("Initialize Cloud runtime configuration");
     expect(await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key))).toHaveLength(0);
@@ -104,6 +105,10 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
       expect(eligibility.results).toEqual([expect.objectContaining({ versionId: skill.currentVersionId, status: "version_backed" })]);
       const verification = JSON.parse((await run("verification")).stdout.trim().split("\n").at(-1)!);
       expect(verification.results).toEqual([expect.objectContaining({ versionId: skill.currentVersionId, status: expectedStatus })]);
+      if (env.PAPERCLIP_STORAGE_PROVIDER === "s3") {
+        const legacyVerification = JSON.parse((await run("verification", "local_disk")).stdout.trim().split("\n").at(-1)!);
+        expect(legacyVerification.results).toEqual([expect.objectContaining({ versionId: skill.currentVersionId, status: "local_storage" })]);
+      }
       expect(await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key))).toEqual([persisted]);
     } finally {
       await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, key));

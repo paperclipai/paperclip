@@ -5964,6 +5964,7 @@ function runnerProviderStateFilename(execution: NativeExecutionInput): string {
     case "grok_bot":
     case "openai_dot":
       return "dot-provider-state.json";
+    case "cursor_cloud":
     case "codex":
     case "opencode":
       return "codex-provider-state.json";
@@ -6064,11 +6065,12 @@ export function providerSessionIdentityFromDurableProviderState(input: {
         providerSessionIdentity: structuredClone(identity),
       };
     }
+    case "cursor_cloud":
     case "codex":
     case "opencode": {
       const config = record(state.config);
       const expectedDriver =
-        input.execution.provider.kind === "codex"
+        input.execution.provider.kind === "cursor_cloud" ? "cursor_cloud_api" : input.execution.provider.kind === "codex"
           ? "codex_app_server"
           : "opencode_server";
       if (

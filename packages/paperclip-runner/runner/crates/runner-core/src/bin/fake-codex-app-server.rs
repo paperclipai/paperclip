@@ -1219,6 +1219,55 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }))?;
             }
             "initialized" => {}
+            "paperclip/ackTerminal" => {
+                let path = argument(&args, "--cursor-cloud-terminal-file")
+                    .ok_or("terminal fixture missing")?;
+                let delivery: Value = serde_json::from_slice(&fs::read(&path)?)?;
+                if message.pointer("/params/turnId") != delivery.get("turnId")
+                    || message.pointer("/params/receiptId") != delivery.get("receiptId")
+                {
+                    return Err("terminal receipt changed".into());
+                }
+                if Path::new(&format!("{path}.hold-ack")).exists() {
+                    send(
+                        json!({"id": id, "error": {"code": -32000, "message": "controlled lost receipt"}}),
+                    )?;
+                } else {
+                    fs::remove_file(path)?;
+                    send(
+                        json!({"id": id, "result": {"acknowledged": true, "turnId": delivery["turnId"], "receiptId": delivery["receiptId"]}}),
+                    )?;
+                }
+            }
+            "paperclip/shutdown" if args.iter().any(|arg| arg == "--cursor-cloud-shutdown") => {
+                let unconfirmed =
+                    argument(&args, "--cursor-cloud-shutdown-control").is_some_and(|path| {
+                        fs::read_to_string(path).is_ok_and(|value| value.trim() == "unconfirmed")
+                    });
+                let params = &message["params"];
+                let has_remote_run = state.next_turn > 0;
+                if !unconfirmed {
+                    state.active_turn_id = None;
+                    save_state(&state_path, &state)?;
+                }
+                let mut receipt = json!({
+                    "threadId": params["threadId"], "turnId": params["turnId"],
+                    "remoteStopped": !unconfirmed,
+                    "remoteAgentId": if has_remote_run { json!("cursor-agent-fixture") } else { Value::Null },
+                    "remoteRunId": if has_remote_run { json!("cursor-run-fixture") } else { Value::Null },
+                    "status": if unconfirmed { "RUNNING" } else { "CANCELLED" },
+                });
+                if let Some(path) = argument(&args, "--cursor-cloud-terminal-file") {
+                    if !unconfirmed && Path::new(&path).exists() {
+                        let delivery: Value = serde_json::from_slice(&fs::read(path)?)?;
+                        receipt["remoteRunId"] = delivery["providerRunId"].clone();
+                        receipt["status"] = delivery["status"].clone();
+                        receipt["cursorCloudTerminalDelivery"] = delivery;
+                    }
+                }
+                send(json!({"id":id,"result":receipt}))?;
+            }
+
             "thread/start" => {
                 if let Some(delay) = argument(&args, "--thread-start-delay-ms") {
                     thread::sleep(Duration::from_millis(delay.parse()?));
@@ -1372,6 +1421,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 send(json!({"id": id, "result": {"data": turns, "nextCursor": null}}))?;
             }
             "thread/read" => {
+                if let Some(path) = argument(&args, "--cursor-cloud-terminal-file") {
+                    if Path::new(&path).exists() {
+                        let first_read = format!("{path}.first-read");
+                        let finishes_between_reads = args
+                            .iter()
+                            .any(|arg| arg == "--cursor-cloud-finish-between-reads")
+                            && !Path::new(&first_read).exists();
+                        if finishes_between_reads {
+                            fs::write(first_read, b"observed active")?;
+                        } else {
+                            let delivery: Value = serde_json::from_slice(&fs::read(&path)?)?;
+                            state.active_turn_id = None;
+                            save_state(&state_path, &state)?;
+                            send(
+                                json!({"id": id, "result": {"thread": {"id": state.thread_id, "turns": []}, "cursorCloudTerminalDelivery": delivery}}),
+                            )?;
+                            continue;
+                        }
+                    }
+                }
                 if descendant_notifications
                     && message.pointer("/params/threadId").and_then(Value::as_str)
                         == Some("descendant-1")
@@ -1896,6 +1965,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     finish_turn(&state_path, &mut state, "completed")?;
                 } else if emit_split_event_burst {
                     send_split_event_burst(&state, split_event_prefix_count)?;
+                } else if hold_turn && args.iter().any(|arg| arg == "--held-final-message") {
+                    send(json!({"method": "item/completed", "params": {
+                        "threadId": state.thread_id, "turnId": provider_turn_id,
+                        "item": {"id": "final", "type": "agentMessage", "text": "Durable Cloud final"}
+                    }}))?;
                 } else if hold_turn && args.iter().any(|arg| arg == "--held-output") {
                     if let Some(release_file) = argument(&args, "--held-output-release-file") {
                         let deadline = Instant::now() + Duration::from_secs(60);

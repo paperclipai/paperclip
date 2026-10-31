@@ -11,6 +11,8 @@ import type {
 } from "../contracts/native-session-backend.js";
 import type { CodexAppServerTransport } from "../drivers/codex/app-server-transport.js";
 import { CodexAppServerDriver } from "../drivers/codex/codex-app-server-driver.js";
+import { CURSOR_CLOUD_TERMINAL_DRAIN_TIMEOUT_MS } from "../contracts/cursor-cloud.js";
+import { cursorCloudDriverDescriptor } from "../drivers/cursor-cloud/cursor-cloud-driver.js";
 import type { CodexWorkingDirectoryAuthority } from "../drivers/codex/codex-boundaries.js";
 import { describeRunnerdExternalBotDriver } from "../drivers/dot/runnerd-dot-driver.js";
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
@@ -57,6 +59,7 @@ export interface CodexNativeSessionBackendOptions {
 
 function transportDriverIdentity(input: NativeExecutionInput): {
   kind:
+    | "cursor_cloud_api"
     | "codex_app_server"
     | "opencode_server"
     | "claude_managed_agents_api"
@@ -66,6 +69,8 @@ function transportDriverIdentity(input: NativeExecutionInput): {
   version: string;
 } {
   switch (input.provider.kind) {
+    case "cursor_cloud":
+      return { kind: "cursor_cloud_api", displayName: "Cursor Cloud (experimental)", version: "cursor-cloud-v1" };
     case "codex":
       return {
         kind: "codex_app_server",
@@ -151,7 +156,7 @@ function createTransportBackedNativeSessionBackend(
 
   const baseInstructions = nativeSystemInstructions(input);
   const transportFactory = options.transportFactory;
-  return new HarnessDriverBackend(
+  const backend = new HarnessDriverBackend(
     new CodexAppServerDriver({
       ...(input.provider.model ? { model: input.provider.model } : {}),
       ...(input.provider.kind === "codex" && "webSearch" in input.provider && input.provider.webSearch === "disabled"
@@ -201,6 +206,7 @@ function createTransportBackedNativeSessionBackend(
       capabilities: isCodex
         ? {}
         : { steering: false, goals: false, threadLineage: false,
+            ...(input.provider.kind === "cursor_cloud" ? { runtimeRequestResolution: false } : {}),
             toolRefreshOnResume: input.provider.kind !== "acpx"
               || ACPX_CAPABILITY_PROFILES[input.provider.agent].toolRefreshOnResume === true },
       collaborationModes: supportsCollaborativePlanning
@@ -209,7 +215,17 @@ function createTransportBackedNativeSessionBackend(
       requireProviderSessionIdentity: options.transportFactory !== undefined,
     }),
     preparedContext ? constraints : undefined,
+    input.provider.kind === "cursor_cloud" ? CURSOR_CLOUD_TERMINAL_DRAIN_TIMEOUT_MS : undefined,
   );
+  if (input.provider.kind === "cursor_cloud") {
+    backend.descriptor = async () => {
+      const descriptor = cursorCloudDriverDescriptor();
+      return { kind: "runner", name: descriptor.kind, version: descriptor.version,
+        capabilities: structuredClone(descriptor.capabilities),
+        runtimeContextCapabilities: structuredClone(descriptor.runtimeContextCapabilities) };
+    };
+  }
+  return backend;
 }
 
 /** Inspect the selected runnerd harness without starting a provider process. */

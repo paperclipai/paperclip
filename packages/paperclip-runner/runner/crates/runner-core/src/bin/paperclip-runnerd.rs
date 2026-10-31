@@ -10,7 +10,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use paperclip_runner_core::acpx_candidate_admission::AcpxCandidateAdmission;
 use paperclip_runner_core::durable::{
     capture_bootstrap_ticket, redact_diagnostic_text, run_durable_runner, AcpxLaunchProfile,
-    DurableRunnerConfig, OpenCodeLaunchProfile, QualifiedLaunchArtifact,
+    CursorCloudLaunchProfile, DurableRunnerConfig, OpenCodeLaunchProfile, QualifiedLaunchArtifact,
 };
 use paperclip_runner_core::local_runner::{run_local_runner, LocalRunnerError, RunnerConfig};
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
@@ -343,6 +343,33 @@ fn opencode_launch_profile(
     }
 }
 
+fn cursor_cloud_launch_profile(
+    args: &[String],
+) -> Result<Option<CursorCloudLaunchProfile>, LocalRunnerError> {
+    let command = optional_value(args, "--cursor-cloud-proxy-command")?;
+    let command_sha256 = optional_value(args, "--cursor-cloud-proxy-command-sha256")?;
+    let proxy_script = optional_value(args, "--cursor-cloud-proxy-script")?;
+    let proxy_script_sha256 = optional_value(args, "--cursor-cloud-proxy-script-sha256")?;
+    match (command, command_sha256, proxy_script, proxy_script_sha256) {
+        (None, None, None, None) => Ok(None),
+        (Some(command), Some(command_sha256), Some(proxy_script), Some(proxy_script_sha256)) => {
+            Ok(Some(CursorCloudLaunchProfile {
+                command: QualifiedLaunchArtifact {
+                    path: PathBuf::from(command),
+                    sha256: command_sha256,
+                },
+                proxy_script: QualifiedLaunchArtifact {
+                    path: PathBuf::from(proxy_script),
+                    sha256: proxy_script_sha256,
+                },
+            }))
+        }
+        _ => Err(LocalRunnerError::invalid(
+            "Cursor Cloud launch profile requires command, proxy, and both SHA-256 digests",
+        )),
+    }
+}
+
 fn usize_value(args: &[String], name: &str, default: usize) -> Result<usize, LocalRunnerError> {
     optional_u64(args, name)?.map_or(Ok(default), |value| {
         usize::try_from(value)
@@ -424,6 +451,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         runner_digest: value(args, "--runner-digest")?,
         acpx_launch_profile: acpx_launch_profile(args)?,
         opencode_launch_profile: opencode_launch_profile(args)?,
+        cursor_cloud_launch_profile: cursor_cloud_launch_profile(args)?,
         max_outbox_bytes: usize_value(args, "--max-outbox-bytes", 16 * 1024 * 1024)?,
         p0_reserve_bytes: usize_value(args, "--p0-reserve-bytes", 1024 * 1024)?,
         max_frame_bytes: usize_value(args, "--max-frame-bytes", 1024 * 1024)?,
@@ -529,6 +557,39 @@ fn run_main(args: Vec<String>) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_cloud_launch_flags_are_optional_as_a_whole_and_required_as_an_exact_pin_set() {
+        assert!(cursor_cloud_launch_profile(&[]).unwrap().is_none());
+        let complete = vec![
+            "--cursor-cloud-proxy-command",
+            "/runtime/node",
+            "--cursor-cloud-proxy-command-sha256",
+            "sha256:node",
+            "--cursor-cloud-proxy-script",
+            "/runtime/cursor-cloud-proxy.cjs",
+            "--cursor-cloud-proxy-script-sha256",
+            "sha256:proxy",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        let profile = cursor_cloud_launch_profile(&complete).unwrap().unwrap();
+        assert_eq!(profile.command.path, PathBuf::from("/runtime/node"));
+        assert_eq!(
+            profile.proxy_script.path,
+            PathBuf::from("/runtime/cursor-cloud-proxy.cjs")
+        );
+        for missing in (0..complete.len()).step_by(2) {
+            let partial = complete
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index < missing || *index > missing + 1)
+                .map(|(_, value)| value.clone())
+                .collect::<Vec<_>>();
+            assert!(cursor_cloud_launch_profile(&partial).is_err());
+        }
+    }
 
     #[test]
     fn listener_port_is_configurable_and_defaults_to_43127() {

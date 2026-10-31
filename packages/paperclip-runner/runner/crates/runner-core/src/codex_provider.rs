@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 #[cfg(test)]
 use crate::durable::QualifiedLaunchArtifact;
-use crate::durable::{redact_text, OpenCodeLaunchProfile};
+use crate::durable::{redact_text, CursorCloudLaunchProfile, OpenCodeLaunchProfile};
 use crate::local_runner::LocalRunnerError;
 use crate::process_supervisor::{
     is_node_interpreter, BoundedLogBuffer, ProcessExitFact, ProcessOutput, SupervisedProcess,
@@ -71,6 +71,7 @@ pub(crate) fn runtime_notification_codex_args(
 
 pub const CODEX_APP_SERVER_MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const QUALIFIED_OPENCODE_VERSION: &str = "1.18.34";
+const CURSOR_CLOUD_PROXY_VERSION: &str = "cursor-cloud-v1";
 const DEFAULT_PROVIDER_TRACE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BUFFERED_MESSAGES: usize = 1_024;
 const MAX_BUFFERED_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -98,6 +99,19 @@ const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
     "PAPERCLIP_OPENCODE_PERMISSION_MODE",
     "PAPERCLIP_OPENCODE_RUNTIME_DIR",
     "PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS",
+    "PAPERCLIP_RUNNER_INSTANCE_ID",
+    "PAPERCLIP_RUN_ID",
+    "PAPERCLIP_NORMALIZED_SESSION_ID",
+    "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",
+];
+const CURSOR_CLOUD_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "CURSOR_API_KEY",
+    "PAPERCLIP_CURSOR_CLOUD_CONFIG_PATH",
+    "PAPERCLIP_CURSOR_CLOUD_ARTIFACT_ROOT",
+    "PAPERCLIP_CURSOR_CLOUD_RELAY_SOCKET_PATH",
+    "PAPERCLIP_CURSOR_CLOUD_RELAY_TOKEN",
+    "PAPERCLIP_CURSOR_CLOUD_RELAY_URL",
+    "PAPERCLIP_CURSOR_CLOUD_RELAY_EXPIRES_AT",
     "PAPERCLIP_RUNNER_INSTANCE_ID",
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_NORMALIZED_SESSION_ID",
@@ -490,10 +504,12 @@ impl CodexProviderConfig {
         }
         if !matches!(
             (self.provider.as_str(), self.driver.as_str()),
-            ("codex", "codex_app_server") | ("opencode", "opencode_server")
+            ("codex", "codex_app_server")
+                | ("opencode", "opencode_server")
+                | ("cursor_cloud", "cursor_cloud_api")
         ) {
             return Err(LocalRunnerError::invalid(
-                "local runner provider must be codex through codex_app_server or opencode through opencode_server",
+                "runner facade provider/driver pair must be codex/codex_app_server, opencode/opencode_server, or cursor_cloud/cursor_cloud_api",
             ));
         }
         if self.provider_version.trim().is_empty() || self.provider_version.len() > 120 {
@@ -505,6 +521,18 @@ impl CodexProviderConfig {
             return Err(LocalRunnerError::invalid(format!(
                 "OpenCode providerVersion must equal the qualified {QUALIFIED_OPENCODE_VERSION} release",
             )));
+        }
+        if self.provider == "cursor_cloud"
+            && (self.provider_version != CURSOR_CLOUD_PROXY_VERSION
+                || self.model.as_ref().is_none_or(|model| {
+                    model.trim().is_empty() || model.chars().any(char::is_control)
+                })
+                || self.approval_policy != "never"
+                || self.read_only)
+        {
+            return Err(LocalRunnerError::invalid(
+                "Cursor Cloud requires cursor-cloud-v1, an exact model, provider-managed permissions, and no local read-only claim",
+            ));
         }
         if self.externally_sandboxed && self.provider != "codex" {
             return Err(LocalRunnerError::invalid(
@@ -760,6 +788,8 @@ pub struct CodexProvider {
     trace: Option<ProviderTraceSink>,
     last_trace_frame_id: Option<u64>,
     opencode_launch_profile: Option<OpenCodeLaunchProfile>,
+    cursor_cloud_launch_profile: Option<CursorCloudLaunchProfile>,
+    provider_termination_receipt: Option<Value>,
     completion_contract: Option<ProviderCompletionContract>,
     permission_profile: &'static str,
     exit_drain: Option<ProviderExitDrain>,
@@ -895,7 +925,9 @@ const CODEX_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
 ];
 
 fn codex_permission_profile(provider: &str, external_sandbox: bool) -> &'static str {
-    if provider == "codex" && external_sandbox {
+    if provider == "cursor_cloud" {
+        "paperclip-runner-provider-managed"
+    } else if provider == "codex" && external_sandbox {
         "paperclip-runner-external-sandbox"
     } else {
         "paperclip-runner-workspace-only"
@@ -918,6 +950,7 @@ impl CodexProvider {
             1,
             None,
             None,
+            None,
         )
     }
 
@@ -933,6 +966,7 @@ impl CodexProvider {
             1,
             None,
             None,
+            None,
         )
     }
 
@@ -942,6 +976,7 @@ impl CodexProvider {
         resume_thread_id: Option<&str>,
         process_generation: u64,
         opencode_launch_profile: Option<&OpenCodeLaunchProfile>,
+        cursor_cloud_launch_profile: Option<&CursorCloudLaunchProfile>,
         completion_contract: Option<(&str, &[String])>,
     ) -> Result<Self, LocalRunnerError> {
         Self::start_with_tools_observed(
@@ -950,6 +985,7 @@ impl CodexProvider {
             resume_thread_id,
             process_generation,
             opencode_launch_profile,
+            cursor_cloud_launch_profile,
             completion_contract,
             &mut |_| Ok(()),
         )
@@ -961,6 +997,7 @@ impl CodexProvider {
         resume_thread_id: Option<&str>,
         process_generation: u64,
         opencode_launch_profile: Option<&OpenCodeLaunchProfile>,
+        cursor_cloud_launch_profile: Option<&CursorCloudLaunchProfile>,
         completion_contract: Option<(&str, &[String])>,
         observe: &mut dyn FnMut(ProviderStartupObservation) -> Result<(), LocalRunnerError>,
     ) -> Result<Self, LocalRunnerError> {
@@ -1007,16 +1044,21 @@ impl CodexProvider {
             "all_proxy",
             "RUST_BACKTRACE",
         ];
-        let provider_environment_keys = if config.provider == "opencode" {
-            OPENCODE_PROVIDER_ENVIRONMENT_KEYS
+        let provider_environment_keys = match config.provider.as_str() {
+            "opencode" => OPENCODE_PROVIDER_ENVIRONMENT_KEYS,
+            "cursor_cloud" => CURSOR_CLOUD_PROVIDER_ENVIRONMENT_KEYS,
+            _ => CODEX_PROVIDER_ENVIRONMENT_KEYS,
+        };
+        let github_environment_keys = if config.provider == "cursor_cloud" {
+            &[][..]
         } else {
-            CODEX_PROVIDER_ENVIRONMENT_KEYS
+            GITHUB_CREDENTIAL_ENVIRONMENT_KEYS
         };
         let environment_keys = common_environment_keys
             .iter()
             .copied()
             .chain(provider_environment_keys.iter().copied())
-            .chain(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.iter().copied())
+            .chain(github_environment_keys.iter().copied())
             .collect::<Vec<_>>();
         let runtime_request_scope = new_runtime_request_scope()?;
         let stdio_mcp = if config.provider == "codex" && !config.read_only {
@@ -1051,7 +1093,28 @@ impl CodexProvider {
             }
         }
         let spawn = (|| {
-            if config.provider == "opencode" {
+            if config.provider == "cursor_cloud" {
+                let profile = cursor_cloud_launch_profile.ok_or_else(|| {
+                    LocalRunnerError::invalid(
+                        "Cursor Cloud runner startup omitted its qualified launch profile",
+                    )
+                })?;
+                let proxy_script = profile.proxy_script.path.to_string_lossy();
+                if config.command != profile.command.path
+                    || config.args.as_slice() != [proxy_script.as_ref()]
+                {
+                    return Err(LocalRunnerError::invalid(
+                        "Cursor Cloud launch does not match the runner-owned qualified profile",
+                    ));
+                }
+                let launch = verified_cursor_cloud_launch(profile)?;
+                SupervisedProcess::spawn_verified_with_environment_keys(
+                    &launch,
+                    Duration::from_secs(2),
+                    CODEX_APP_SERVER_MAX_FRAME_BYTES,
+                    &environment_keys,
+                )
+            } else if config.provider == "opencode" {
                 let profile = opencode_launch_profile.ok_or_else(|| {
                     LocalRunnerError::invalid(
                         "OpenCode runner startup omitted its qualified launch profile",
@@ -1145,6 +1208,8 @@ impl CodexProvider {
             trace: ProviderTraceSink::from_environment(),
             last_trace_frame_id: None,
             opencode_launch_profile: opencode_launch_profile.cloned(),
+            cursor_cloud_launch_profile: cursor_cloud_launch_profile.cloned(),
+            provider_termination_receipt: None,
             completion_contract: completion_contract.map(|(revision, criterion_ids)| {
                 ProviderCompletionContract {
                     revision: revision.to_owned(),
@@ -1198,7 +1263,7 @@ impl CodexProvider {
             } else {
                 params_object.insert("permissions".to_owned(), json!(provider.permission_profile));
             }
-            if config.provider == "opencode" {
+            if matches!(config.provider.as_str(), "opencode" | "cursor_cloud") {
                 if let Some(mode) = &config.conversation_mode {
                     params_object.insert("conversationMode".to_owned(), json!(mode));
                 }
@@ -1344,6 +1409,9 @@ impl CodexProvider {
         completion_contract: Option<(&str, &[String])>,
         accounting: &mut Vec<(String, Value)>,
     ) -> Result<bool, LocalRunnerError> {
+        if self.config.provider == "cursor_cloud" {
+            return Ok(false);
+        }
         let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
         let completion_contract =
             completion_contract.map(|(revision, criterion_ids)| ProviderCompletionContract {
@@ -1675,6 +1743,7 @@ impl CodexProvider {
             Some(&thread_id),
             next_generation,
             self.opencode_launch_profile.as_ref(),
+            self.cursor_cloud_launch_profile.as_ref(),
             completion_contract.as_ref().map(|contract| {
                 (
                     contract.revision.as_str(),
@@ -2048,6 +2117,7 @@ impl CodexProvider {
         // Retain the prior settled identity while the next turn runs. Besides
         // recognizing delayed prior-turn requests, this fails closed if a
         // provider ambiguously reuses the same turn id for fresh work.
+        self.provider_termination_receipt = None;
         self.active_provider_turn_id = Some(provider_turn_id);
         self.runtime_request_scope = runtime_request_scope;
     }
@@ -2100,6 +2170,59 @@ impl CodexProvider {
             "turn/interrupt",
             json!({"threadId": self.thread_id, "turnId": turn_id}),
         )
+    }
+
+    pub(crate) fn cursor_cloud_terminal_delivery(
+        &mut self,
+    ) -> Result<Option<crate::cursor_cloud_proxy::TerminalDelivery>, LocalRunnerError> {
+        if self.config.provider != "cursor_cloud" {
+            return Ok(None);
+        }
+        let snapshot = self.read_thread()?;
+        if snapshot.pointer("/thread/id").and_then(Value::as_str) != Some(self.thread_id.as_str()) {
+            return Err(LocalRunnerError::invalid(
+                "Cursor Cloud terminal snapshot changed its thread",
+            ));
+        }
+        let Some(value) = snapshot
+            .get("cursorCloudTerminalDelivery")
+            .filter(|value| !value.is_null())
+        else {
+            return Ok(None);
+        };
+        if latest_active_turn_id(&snapshot).is_some() {
+            return Err(LocalRunnerError::invalid(
+                "Cursor Cloud terminal snapshot also reports active work",
+            ));
+        }
+        let delivery = crate::cursor_cloud_proxy::TerminalDelivery::parse(value, &self.thread_id)?;
+        self.active_provider_turn_id = None;
+        Ok(Some(delivery))
+    }
+
+    pub(crate) fn acknowledge_cursor_cloud_terminal(
+        &mut self,
+        delivery: &crate::cursor_cloud_proxy::TerminalDelivery,
+    ) -> Result<(), LocalRunnerError> {
+        if self.config.provider != "cursor_cloud" || delivery.thread_id != self.thread_id {
+            return Err(LocalRunnerError::invalid(
+                "Cursor Cloud terminal receipt changed its provider",
+            ));
+        }
+        let response = self.request(
+            "paperclip/ackTerminal",
+            json!({"turnId":delivery.turn_id,"receiptId":delivery.receipt_id}),
+        )?;
+        if response.get("acknowledged") != Some(&Value::Bool(true))
+            || response.get("turnId").and_then(Value::as_str) != Some(delivery.turn_id.as_str())
+            || response.get("receiptId").and_then(Value::as_str)
+                != Some(delivery.receipt_id.as_str())
+        {
+            return Err(LocalRunnerError::invalid(
+                "Cursor Cloud terminal receipt was not acknowledged",
+            ));
+        }
+        Ok(())
     }
 
     pub fn read_thread(&mut self) -> Result<Value, LocalRunnerError> {
@@ -3120,14 +3243,76 @@ impl CodexProvider {
     }
 
     pub fn shutdown(&mut self) -> Result<(), LocalRunnerError> {
+        self.shutdown_with_cursor_cloud_delivery(|_| Ok(false))
+    }
+
+    pub(crate) fn shutdown_with_cursor_cloud_delivery(
+        &mut self,
+        mut retain: impl FnMut(
+            &crate::cursor_cloud_proxy::TerminalDelivery,
+        ) -> Result<bool, LocalRunnerError>,
+    ) -> Result<(), LocalRunnerError> {
         self.expected_shutdown = true;
         // A failed courtesy response must never prevent process fencing.
         let cancellation = self.cancel_pending_requests();
-        let result = self.process.terminate_group().map(|_| ()).and(cancellation);
+        let remote_termination = if self.config.provider == "cursor_cloud" {
+            let expected_turn = self.active_provider_turn_id.clone().or_else(|| {
+                self.completed_turn_authority
+                    .as_ref()
+                    .map(|authority| authority.provider_turn_id.clone())
+            });
+            self.request_classified_until(
+                "paperclip/shutdown",
+                json!({ "threadId": self.thread_id, "turnId": expected_turn }),
+                Some(std::time::Instant::now() + crate::cursor_cloud_proxy::SHUTDOWN_TIMEOUT),
+            )
+            .map_err(ProviderRequestError::into_inner)
+            .and_then(|receipt| {
+                let normalized = crate::cursor_cloud_proxy::shutdown_receipt(
+                    &receipt,
+                    &self.thread_id,
+                    expected_turn.as_deref(),
+                )?;
+                if let Some(value) = receipt
+                    .get("cursorCloudTerminalDelivery")
+                    .filter(|value| !value.is_null())
+                {
+                    let delivery =
+                        crate::cursor_cloud_proxy::TerminalDelivery::parse(value, &self.thread_id)?;
+                    if Some(delivery.turn_id.as_str()) != expected_turn.as_deref()
+                        || receipt.get("remoteRunId").and_then(Value::as_str)
+                            != Some(delivery.provider_run_id.as_str())
+                        || receipt.get("status").and_then(Value::as_str)
+                            != Some(delivery.status.as_str())
+                    {
+                        return Err(LocalRunnerError::invalid(
+                            "Cursor Cloud shutdown changed its terminal delivery",
+                        ));
+                    }
+                    if retain(&delivery)? {
+                        let _ = self.acknowledge_cursor_cloud_terminal(&delivery);
+                    }
+                }
+                self.provider_termination_receipt = Some(normalized);
+                Ok(())
+            })
+        } else {
+            Ok(())
+        };
+        let result = self
+            .process
+            .terminate_group()
+            .map(|_| ())
+            .and(remote_termination)
+            .and(cancellation);
         if let Some(trace) = self.trace.as_mut() {
             trace.finish();
         }
         result
+    }
+
+    pub(crate) fn provider_termination_receipt(&self) -> Option<&Value> {
+        self.provider_termination_receipt.as_ref()
     }
 
     fn cancel_pending_requests(&mut self) -> Result<(), LocalRunnerError> {
@@ -3204,6 +3389,15 @@ impl CodexProvider {
         method: &str,
         params: Value,
     ) -> Result<Value, ProviderRequestError> {
+        self.request_classified_until(method, params, None)
+    }
+
+    fn request_classified_until(
+        &mut self,
+        method: &str,
+        params: Value,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Value, ProviderRequestError> {
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.checked_add(1).ok_or_else(|| {
             ProviderRequestError::Rejected(LocalRunnerError::invalid("Codex request id exhausted"))
@@ -3211,8 +3405,16 @@ impl CodexProvider {
         self.send_frame(&json!({"id": request_id, "method": method, "params": params}))
             .map_err(ProviderRequestError::Ambiguous)?;
         loop {
+            let remaining = deadline.map_or(Duration::from_secs(30), |deadline| {
+                deadline.saturating_duration_since(std::time::Instant::now())
+            });
+            if remaining.is_zero() {
+                return Err(ProviderRequestError::Ambiguous(LocalRunnerError::invalid(
+                    format!("Provider {method} exceeded its bounded response deadline"),
+                )));
+            }
             let line = self
-                .receive_provider_stdout_line(Duration::from_secs(30))
+                .receive_provider_stdout_line(remaining)
                 .map_err(ProviderRequestError::Ambiguous)?;
             let Some(line) = line else {
                 let exit = self
@@ -3383,6 +3585,21 @@ fn verified_opencode_launch(
         VerifiedProcessArgument::ExecutableArtifact(executable),
     ];
     Ok(VerifiedProcessLaunch::new(command, args))
+}
+
+fn verified_cursor_cloud_launch(
+    profile: &CursorCloudLaunchProfile,
+) -> Result<VerifiedProcessLaunch, LocalRunnerError> {
+    let command = verify_launch_artifact(&profile.command, "Cursor Cloud proxy command")
+        .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
+    let proxy = verify_launch_artifact(&profile.proxy_script, "Cursor Cloud proxy script")
+        .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
+    let proxy = if is_node_interpreter(&profile.command.path) {
+        VerifiedProcessArgument::CommonJsArtifact(proxy)
+    } else {
+        VerifiedProcessArgument::Artifact(proxy)
+    };
+    Ok(VerifiedProcessLaunch::new(command, vec![proxy]))
 }
 
 fn json_size(value: &Value, label: &str) -> Result<usize, LocalRunnerError> {
@@ -4840,6 +5057,7 @@ done
             1,
             None,
             None,
+            None,
             &mut |observation| match observation {
                 ProviderStartupObservation::Spawned {
                     process_id,
@@ -4912,6 +5130,115 @@ done
             Some(VerifiedProcessArgument::ExecutableArtifact(_))
         ));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn cursor_cloud_proxy_launch_verifies_node_and_script_without_a_native_executable() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-cursor-cloud-launch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let command = directory.join("node");
+        let proxy = directory.join("cursor-cloud-proxy.cjs");
+        fs::write(&command, b"qualified node").unwrap();
+        fs::write(&proxy, b"module.exports = {};\n").unwrap();
+        let profile = CursorCloudLaunchProfile {
+            command: qualified_artifact(&command),
+            proxy_script: qualified_artifact(&proxy),
+        };
+        let launch = verified_cursor_cloud_launch(&profile);
+        if cfg!(target_os = "windows") {
+            let error = match launch {
+                Ok(_) => panic!("Cursor Cloud Windows launch must remain unsupported"),
+                Err(error) => error,
+            };
+            assert!(error
+                .to_string()
+                .contains("verified process snapshots are supported only on Linux and macOS"));
+            fs::remove_dir_all(directory).unwrap();
+            return;
+        }
+        let launch = launch.unwrap();
+        assert_eq!(launch.arguments().len(), 1);
+        assert!(matches!(
+            launch.arguments().first(),
+            Some(VerifiedProcessArgument::CommonJsArtifact(_))
+        ));
+        fs::write(&proxy, b"unqualified replacement").unwrap();
+        assert!(verified_cursor_cloud_launch(&profile).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn cursor_cloud_admission_requires_its_exact_proxy_model_and_provider_permission_boundary() {
+        let mut config: CodexProviderConfig = serde_json::from_value(json!({
+            "provider": "cursor_cloud", "driver": "cursor_cloud_api",
+            "providerVersion": CURSOR_CLOUD_PROXY_VERSION, "command": "node",
+            "cwd": std::env::current_dir().unwrap(), "model": "caller-selected-model",
+            "conversationMode": "prepared", "approvalPolicy": "never"
+        }))
+        .unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.skill_instructions_config(), None);
+        assert_eq!(
+            codex_permission_profile("cursor_cloud", false),
+            "paperclip-runner-provider-managed"
+        );
+        for (field, value) in [
+            ("driver", json!("codex_app_server")),
+            ("providerVersion", json!("unqualified-version")),
+            ("model", Value::Null),
+            ("model", json!(" ")),
+            ("approvalPolicy", json!("on-request")),
+            ("readOnly", json!(true)),
+            ("externallySandboxed", json!(true)),
+        ] {
+            let mut invalid = serde_json::to_value(&config).unwrap();
+            invalid[field] = value;
+            assert!(
+                serde_json::from_value::<CodexProviderConfig>(invalid)
+                    .unwrap()
+                    .validate()
+                    .is_err(),
+                "{field}"
+            );
+        }
+        config.model = Some("different-explicit-model".to_owned());
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn cursor_cloud_environment_contains_only_its_selected_provider_and_private_relay_bindings() {
+        for name in [
+            "CURSOR_API_KEY",
+            "PAPERCLIP_CURSOR_CLOUD_CONFIG_PATH",
+            "PAPERCLIP_CURSOR_CLOUD_RELAY_SOCKET_PATH",
+            "PAPERCLIP_CURSOR_CLOUD_RELAY_TOKEN",
+            "PAPERCLIP_CURSOR_CLOUD_RELAY_URL",
+            "PAPERCLIP_CURSOR_CLOUD_RELAY_EXPIRES_AT",
+        ] {
+            assert!(
+                CURSOR_CLOUD_PROVIDER_ENVIRONMENT_KEYS.contains(&name),
+                "{name}"
+            );
+        }
+        for name in [
+            "CURSOR_AUTH_TOKEN",
+            "OPENAI_API_KEY",
+            "CODEX_API_KEY",
+            "OPENROUTER_API_KEY",
+            "GITHUB_TOKEN",
+            "PAPERCLIP_API_KEY",
+            "PAPERCLIP_NATIVE_MCP_TOKEN",
+            "NODE_OPTIONS",
+            "NODE_PATH",
+        ] {
+            assert!(
+                !CURSOR_CLOUD_PROVIDER_ENVIRONMENT_KEYS.contains(&name),
+                "{name}"
+            );
+        }
     }
 
     #[test]

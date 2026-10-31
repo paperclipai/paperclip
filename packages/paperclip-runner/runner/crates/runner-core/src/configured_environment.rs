@@ -144,6 +144,7 @@ fn eligible_key(key: &str) -> bool {
             "GIT_CONFIG_",
             "PAPERCLIP_RUNNER_",
             "PAPERCLIP_NATIVE_",
+            "PAPERCLIP_CURSOR_CLOUD_",
             "PAPERCLIP_GITHUB_",
             "PAPERCLIP_ACPX_",
             "PAPERCLIP_VERIFIED_",

@@ -771,6 +771,16 @@ it("reopens Copilot with the current registered files after collecting the previ
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+it("refreshes Cloud instructions on cold rotation without replacing the pinned launch profile", () => {
+  const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "next-run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
+  const provider = { kind: "cursor_cloud", provider: "cursor_cloud", instructions: "Prior instructions.", command: "/pinned/node", args: ["/pinned/proxy.cjs"], model: "pinned-model", conversationMode: "task" };
+  const payload = runnerdRecoveryInternals.rotatedRunAttachPayload({ runAttachTemplate: { provider } }, identity, null, undefined,
+    null, { text: "Current instructions.", context: null });
+  expect(payload.provider).toEqual({ ...provider, instructions: "Current instructions." });
+  expect(provider.instructions).toBe("Prior instructions.");
+  expect(runnerdRecoveryInternals.rotatedRunAttachPayload({ runAttachTemplate: { provider } }, identity, null, undefined).provider).toEqual(provider);
+});
+
 it.each(["claude", "codex", "cursor", "pi", "copilot"])("keeps %s's pinned grants on same-run recovery", (agent) => {
   const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "same-run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
   const provider = { kind: "acpx", agent, runId: identity.runId, instructions: "Pinned instructions.", runtimeContext: assignedRuntimeContext("/skills", "/pinned") };
