@@ -1,3 +1,4 @@
+import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
@@ -14,6 +15,7 @@ export async function notifyExecutionRunWork(transaction: object, scope?: Execut
     await notifyRunDispatch(transaction, scope);
     await notifyStatusCardIssueChange(transaction, scope.companyId);
     await notifyDeferredExecutionEligibility(transaction, scope);
+    await notifyLiveRunRecovery(transaction, scope);
     await notifyRoutineExecutionStatus(transaction, scope.issueId, scope.companyId);
   }
   for (const queue of [DELIVERY_QUEUES.executionStatus, DELIVERY_QUEUES.executionFinalization,
@@ -34,6 +36,7 @@ export function writeExecutionControl<T>(
     if (scope) await notifyAttentionRetentionWork(transaction, scope);
     if (scope) await notifyRoutineExecutionStatus(transaction, scope.issueId, scope.companyId);
     if (scope) await notifyDeferredExecutionEligibility(transaction, scope);
+    if (scope) await notifyLiveRunRecovery(transaction, scope);
     await notifyDeliveryWork(transaction, DELIVERY_QUEUES.issueMonitors);
     for (const topic of typeof queue === "string" ? [queue] : queue) await notifyDeliveryWork(transaction, topic);
     return write(transaction as unknown as Db);

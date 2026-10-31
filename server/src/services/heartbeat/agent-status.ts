@@ -1,3 +1,4 @@
+import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
@@ -92,6 +93,7 @@ export function createHeartbeatAgentStatus(db: Db) {
       )).limit(1);
       const nextStatus = running ? "running" : settledStatus(outcome, options?.keepIdleOnFailure);
       const now = new Date();
+      await notifyStrandedAgentStatus(tx, { companyId: existing.companyId, agentId });
       await notifyAttentionRetentionWork(tx, { companyId: existing.companyId });
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       const [updated] = await tx.update(agents).set({
@@ -111,13 +113,15 @@ export function createHeartbeatAgentStatus(db: Db) {
     publishStatus(result.updated, outcome);
   }
 
-  async function reconcileStrandedAgentStatuses(liveRunIds: () => ReadonlySet<string>) {
+  async function reconcileStrandedAgentStatuses(liveRunIds: () => ReadonlySet<string>, scope: { companyId?: string; agentId?: string; onDeferredDeadline?: (at: number) => void } = {}) {
     const now = new Date();
     const cutoff = new Date(now.getTime() - RECONCILIATION_GRACE_MS);
     const candidates = await db.transaction(async tx => {
       await tx.execute(sql`SET LOCAL statement_timeout = '2s'`);
       return tx.select({ id: agents.id, companyId: agents.companyId }).from(agents)
       .where(and(eq(agents.status, "running"), eq(agents.lifecycleState, "ready"),
+        scope.companyId ? eq(agents.companyId, scope.companyId) : undefined,
+        scope.agentId ? eq(agents.id, scope.agentId) : undefined,
         lte(agents.updatedAt, cutoff), settledAgentWorkCondition(liveRunIds(), now)))
       .orderBy(asc(agents.updatedAt), asc(agents.id)).limit(RECONCILIATION_BATCH_SIZE);
     });
@@ -158,6 +162,21 @@ export function createHeartbeatAgentStatus(db: Db) {
       reconciled.push(updated.id);
       for (const publication of publications) publishActivity(publication);
       publishStatus(updated, "reconciled");
+    }
+    if (scope.companyId && scope.agentId && reconciled.length === 0 && scope.onDeferredDeadline) {
+      const rows = await db.execute(sql`select min(deadline) as deadline from (
+        select r.controller_lease_expires_at as deadline from heartbeat_runs r
+          where r.company_id = ${scope.companyId} and r.agent_id = ${scope.agentId}
+        union all
+        select f.lease_expires_at as deadline from native_run_finalizations f
+          inner join heartbeat_runs r on r.id = f.run_id and r.company_id = f.company_id
+          where r.company_id = ${scope.companyId} and r.agent_id = ${scope.agentId}
+      ) authority where deadline > ${now.toISOString()}::timestamptz`);
+      const deadline = rows[0]?.deadline;
+      if (deadline) {
+        const at = deadline instanceof Date ? deadline.getTime() : Date.parse(String(deadline));
+        if (Number.isFinite(at) && at > Date.now()) scope.onDeferredDeadline(at);
+      }
     }
     return reconciled;
   }

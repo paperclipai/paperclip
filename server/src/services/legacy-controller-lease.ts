@@ -1,3 +1,4 @@
+import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, gt, lte, sql } from "drizzle-orm";
 import { heartbeatRuns, livenessDb, type Db } from "@paperclipai/db";
@@ -40,7 +41,9 @@ export async function renewLegacyControllerLease(
   run: Pick<Run, "id" | "companyId" | "controllerBootId">,
   stage?: "dispatching",
 ): Promise<boolean> {
-  const [renewed] = await db.update(heartbeatRuns).set({
+  const [renewed] = await db.transaction(async tx => {
+    await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id });
+    return tx.update(heartbeatRuns).set({
     controllerLeaseExpiresAt: sql`clock_timestamp() + interval '60 seconds'`,
     ...(stage ? { executionStage: stage } : {}),
   }).where(and(
@@ -49,6 +52,7 @@ export async function renewLegacyControllerLease(
     eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
     gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`),
   )).returning({ id: heartbeatRuns.id });
+  });
   return Boolean(renewed);
 }
 
@@ -105,18 +109,22 @@ export async function revokeExpiredLegacyControllerWithState(
   if (run.runtimeMode === "native" || !run.controllerBootId) {
     return { executionStage: run.executionStage, processPid: run.processPid, processGroupId: run.processGroupId };
   }
-  const [revoked] = await db.update(heartbeatRuns).set({
+  const controllerBootId = run.controllerBootId;
+  const [revoked] = await db.transaction(async tx => {
+    await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id });
+    return tx.update(heartbeatRuns).set({
     controllerBootId: randomUUID(),
     controllerLeaseExpiresAt: sql`clock_timestamp() + interval '60 seconds'`,
   }).where(and(
     eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
     eq(heartbeatRuns.status, "running"),
-    eq(heartbeatRuns.controllerBootId, run.controllerBootId),
+    eq(heartbeatRuns.controllerBootId, controllerBootId),
     lte(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`),
   )).returning({
     executionStage: heartbeatRuns.executionStage,
     processPid: heartbeatRuns.processPid,
     processGroupId: heartbeatRuns.processGroupId,
+  });
   });
   return revoked ?? null;
 }
