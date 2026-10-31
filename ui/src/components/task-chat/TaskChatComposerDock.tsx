@@ -19,13 +19,17 @@ export function TaskChatComposerDock({ children, mobile, streamlined, concealed 
       const scroller = thread.querySelector<HTMLElement>('[data-testid="task-chat-scroller"]');
       if (!scroller) return;
       event.preventDefault();
-      const { deltaX, deltaY, deltaMode } = event;
-      if (!scroller.dispatchEvent(new WheelEvent("wheel", { deltaX, deltaY, deltaMode, bubbles: true, cancelable: true }))) return;
+      const { deltaX, deltaY, deltaMode, altKey, ctrlKey, metaKey, shiftKey } = event;
+      if (!scroller.dispatchEvent(new WheelEvent("wheel", {
+        deltaX, deltaY, deltaMode, altKey, ctrlKey, metaKey, shiftKey, bubbles: true, cancelable: true,
+      }))) return;
       const style = window.getComputedStyle(scroller);
-      const lineHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize);
+      const fontSize = Number.parseFloat(style.fontSize);
+      const lineHeight = Number.parseFloat(style.lineHeight) || fontSize;
       const verticalUnit = deltaMode === WheelEvent.DOM_DELTA_LINE ? lineHeight
         : deltaMode === WheelEvent.DOM_DELTA_PAGE ? scroller.clientHeight : 1;
-      const horizontalUnit = deltaMode === WheelEvent.DOM_DELTA_PAGE ? scroller.clientWidth : verticalUnit;
+      const horizontalUnit = deltaMode === WheelEvent.DOM_DELTA_LINE ? fontSize / 2
+        : deltaMode === WheelEvent.DOM_DELTA_PAGE ? scroller.clientWidth : 1;
       scroller.scrollBy({ left: deltaX * horizontalUnit, top: deltaY * verticalUnit, behavior: "instant" });
     };
     dock.addEventListener("wheel", forwardGapWheel, { passive: false });

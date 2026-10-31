@@ -38,7 +38,8 @@ describe("TaskChatComposerDock", () => {
     const scrollBy = vi.fn();
     scroller.scrollBy = scrollBy;
     Object.defineProperty(scroller, "clientHeight", { value: 400 });
-    vi.spyOn(window, "getComputedStyle").mockReturnValue({ lineHeight: "24px" } as CSSStyleDeclaration);
+    Object.defineProperty(scroller, "clientWidth", { value: 600 });
+    vi.spyOn(window, "getComputedStyle").mockReturnValue({ lineHeight: "24px", fontSize: String(16) } as CSSStyleDeclaration);
     return { dock, scroller, scrollBy, onTranscriptWheel };
   }
 
@@ -56,6 +57,38 @@ describe("TaskChatComposerDock", () => {
     expect(scrollBy).toHaveBeenCalledWith({ top: -top, left: 0, behavior: "instant" });
     expect(onTranscriptWheel).toHaveBeenCalledOnce();
     expect(onTranscriptWheel.mock.calls[0][0].deltaY).toBe(-30);
+  });
+
+  it("does not scroll again when a transcript listener cancels the forwarded wheel", () => {
+    const { dock, scroller, scrollBy, onTranscriptWheel } = render();
+    scroller.addEventListener("wheel", event => event.preventDefault());
+    const event = new WheelEvent("wheel", { deltaY: -30, bubbles: true, cancelable: true });
+
+    dock.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(onTranscriptWheel).toHaveBeenCalledOnce();
+    expect(onTranscriptWheel.mock.calls[0][0].defaultPrevented).toBe(true);
+    expect(scrollBy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [WheelEvent.DOM_DELTA_PIXEL, 3],
+    [WheelEvent.DOM_DELTA_LINE, 24],
+    [WheelEvent.DOM_DELTA_PAGE, 1800],
+  ])("preserves modifiers and horizontal wheel distance with delta mode %i", (deltaMode, left) => {
+    const { dock, scrollBy, onTranscriptWheel } = render();
+    const event = new WheelEvent("wheel", {
+      deltaX: 3, deltaMode, shiftKey: true, altKey: true, metaKey: true, bubbles: true, cancelable: true,
+    });
+
+    dock.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(scrollBy).toHaveBeenCalledWith({ left, top: 0, behavior: "instant" });
+    expect(onTranscriptWheel.mock.calls[0][0]).toMatchObject({
+      deltaX: 3, deltaMode, shiftKey: true, altKey: true, metaKey: true, ctrlKey: false,
+    });
   });
 
   it("keeps editor scrolling and zoom gestures with their original targets", () => {
