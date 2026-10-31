@@ -112,6 +112,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const created = await cards.create(companyId, { interestPrompt: "Blockers", titlePinned: false, agentId, refreshPolicy }, actor);
     const compile = await cards.requestCompile(created.id, actor);
     await writeback(created.id, compile.generatingIssue.id, true);
+    if (!coordinator && mode === "reactive") await cards.tickDueStatusCards();
     return cards.getById(created.id).then(row => row!);
   }
 
@@ -142,6 +143,104 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await db.select().from(statusCardUpdates).then(rows => rows.filter(row => row.generationIssueId === generating?.generatingIssueId)))
       .toMatchObject([{ status: "ok", finishedAt: expect.any(Date) }]);
     expect(errors).toEqual([]);
+  });
+
+  it.each([true, false])("rechecks source hints consumed during summary writeback without forcing unchanged generation (relevant=%s)", async relevant => {
+    const evaluation = statusCardEvaluationService(db, { wakeup });
+    const runs = vi.spyOn(evaluation, "run"), hints = vi.spyOn(evaluation, "changed");
+    await start(evaluation);
+    const created = await card();
+    await quiet();
+    const cards = statusCardService(db);
+    const generation = await cards.requestRefresh(created.id, { trigger: "manual", actor });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
+    await db.update(issues).set({ checkoutRunId: run!.id }).where(eq(issues.id, generation.generatingIssue!.id));
+    const writer = { agentId, runId: run!.id };
+    await settled();
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const factory = companySearch.companySearchService;
+    let hold = true;
+    const searchedCompanies: string[] = [];
+    vi.spyOn(companySearch, "companySearchService").mockImplementation(owner => {
+      const search = factory(owner), actual = search.search;
+      search.search = async (...args) => {
+        searchedCompanies.push(args[0]);
+        const result = await actual(...args);
+        if (hold) { hold = false; entered.resolve(); await release.promise; }
+        return result;
+      };
+      return search;
+    });
+    const writing = cards.writeSummary(created.id, { markdown: "Current blockers", changeSummary: "Completed before source change", generationIssueId: generation.generatingIssue!.id }, writer);
+    await entered.promise;
+    const passes = runs.mock.calls.length;
+    hints.mockClear();
+    try {
+      await issueService(db).create(companyId, { title: "Source committed after summary search", status: relevant ? "blocked" : "backlog", priority: "medium" });
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+        await Promise.allSettled([...evaluations]);
+        expect(hints.mock.calls.some(([scope]) => scope?.has(`changes:${companyId}`))).toBe(true);
+        expect(runs.mock.calls.length).toBeGreaterThan(passes);
+      }, { timeout: 5000 });
+      expect((await cards.getById(created.id))!.generatingIssueId).toBe(generation.generatingIssue!.id);
+      expect(await evaluation.next()).toBeNull();
+      expect(wakeup).not.toHaveBeenCalled();
+      expect(searchedCompanies).toEqual([companyId]);
+    } finally { release.resolve(); }
+    await writing;
+    await settled();
+    if (relevant) {
+      const pending = (await cards.getById(created.id))!;
+      expect(pending.generatingIssueId).toBeNull();
+      expect(pending.pendingChangeCount).toBe(1);
+      expect(pending.nextEvalAt).toBeInstanceOf(Date);
+      expect(wakeup).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(Math.max(0, pending.nextEvalAt!.getTime() - Date.now()));
+      await settled();
+      const generated = (await cards.getById(created.id))!;
+      expect(generated.generatingIssueId).toBeTruthy();
+      expect(wakeup).toHaveBeenCalledOnce();
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+      await writeback(created.id, generated.generatingIssueId!);
+      expect((await db.select().from(statusCardUpdates).where(eq(statusCardUpdates.generationIssueId, generated.generatingIssueId!))))
+        .toMatchObject([{ status: "ok", finishedAt: expect.any(Date) }]);
+    }
+    await quiet();
+    expect(wakeup).toHaveBeenCalledTimes(relevant ? 1 : 0);
+    if (!relevant) expect(searchedCompanies).toEqual([companyId, companyId]);
+    expect(new Set(searchedCompanies)).toEqual(new Set([companyId]));
+    expect(errors).toEqual([]);
+  });
+
+  it("rolls back the summary and its post-commit recheck obligation together", async () => {
+    await start(); const created = await card(); await quiet();
+    const cards = statusCardService(db);
+    const generation = await cards.requestRefresh(created.id, { trigger: "manual", actor });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
+    await db.update(issues).set({ checkoutRunId: run!.id }).where(eq(issues.id, generation.generatingIssue!.id));
+    await settled();
+    const before = (await cards.getById(created.id))!;
+    const revisions = await cards.listSummaryRevisions(created.id);
+    await expect(db.transaction(async tx => {
+      await statusCardService(tx as unknown as typeof db).writeSummary(created.id, { markdown: "Rolled back summary", changeSummary: "Rollback", generationIssueId: generation.generatingIssue!.id }, { agentId, runId: run!.id });
+      throw new Error("summary rollback");
+    })).rejects.toThrow("summary rollback");
+    await quiet();
+    expect((await cards.getById(created.id))!).toMatchObject({ generatingIssueId: before.generatingIssueId, nextEvalAt: before.nextEvalAt, nextEvalReason: before.nextEvalReason });
+    expect(await cards.listSummaryRevisions(created.id)).toEqual(revisions);
+    expect(wakeup).not.toHaveBeenCalled(); expect(errors).toEqual([]);
+  });
+
+  it.each(["manual", "interval"] as const)("preserves %s writeback cadence without a reactive recheck", async mode => {
+    const created = await card(mode), cards = statusCardService(db);
+    const generation = await cards.requestRefresh(created.id, { trigger: "manual", actor });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
+    await db.update(issues).set({ checkoutRunId: run!.id }).where(eq(issues.id, generation.generatingIssue!.id));
+    const result = await cards.writeSummary(created.id, { markdown: "Current blockers", changeSummary: "Complete", generationIssueId: generation.generatingIssue!.id }, { agentId, runId: run!.id });
+    expect(result.card.generatingIssueId).toBeNull();
+    expect(result.card.nextEvalAt?.getTime() ?? null).toBe(mode === "interval" ? result.card.lastGeneratedAt!.getTime() + 15 * 60_000 : null);
+    expect(wakeup).not.toHaveBeenCalled();
   });
 
   it("keeps card deletion scoped to its company and a missing deletion quiet", async () => {
@@ -448,6 +547,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     vi.setSystemTime(pending.nextEvalAt!); await restarted.run(new AbortController().signal);
     expect(wakeup).toHaveBeenCalledOnce();
     await writeback(created.id, (await statusCardService(db).getById(created.id))!.generatingIssueId!);
+    await restarted.run(new AbortController().signal);
     expect((await statusCardService(db).getById(created.id))!.nextEvalReason).toBe("membership");
   });
 
