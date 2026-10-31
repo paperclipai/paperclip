@@ -5,6 +5,7 @@ import type { ConnectionIntentInteraction } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { logActivity } from "./activity-log.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 type AccessTools = NonNullable<ConnectionIntentInteraction["payload"]["accessRequest"]>["tools"];
 
@@ -40,6 +41,7 @@ export async function grantConnectionAgentTools(db: Db, input: {
   // An additive, agent-scoped profile leaves other connection permissions
   // and company-wide assignments intact. The caller supplies the exact reviewed tool set.
   const profileKey = `connection-intent:${connection.id}:${agentId}`;
+  await notifyDeliveryWork(db, DELIVERY_QUEUES.connection);
   const [profile] = await db.insert(toolProfiles).values({
     companyId: connection.companyId, profileKey, name: profileKey, defaultAction: "deny",
     metadata: { source: "connection_intent", connectionId: connection.id, agentId: agentId },

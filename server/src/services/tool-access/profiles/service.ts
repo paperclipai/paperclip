@@ -10,6 +10,7 @@ import { badRequest, conflict, notFound, unprocessable } from "../../../errors.j
 import type { ActorInfo, ToolAccessMutationDb } from "../types.js";
 import { lockProfileEntryReferences, lockToolAssignmentAgents } from "../assignment-locks.js";
 import { normalizeKey } from "../identifiers.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import { toProfile, toProfileEntry, toProfileBinding, profileCatalogColumns, profileReviewCatalogColumns, pendingNewToolsForProfile, buildProfileDetails } from "./projection.js";
 
 export function createToolProfileService(db: Db, now: () => Date) {
@@ -511,6 +512,7 @@ export function createToolProfileService(db: Db, now: () => Date) {
             const [current] = await tx.select().from(toolProfiles).where(eq(toolProfiles.id, profileId)).for("no key update");
             if (!current) throw notFound("Tool profile not found");
             if (input.entries && JSON.stringify(await readReferences()) !== JSON.stringify(oldReferences)) throw referencesChanged;
+            await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
             await db
               .update(toolProfiles)
               .set({
@@ -651,6 +653,7 @@ export function createToolProfileService(db: Db, now: () => Date) {
         );
       }
 
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
       let reassignedBindingCount = 0;
       if (input.reassignToProfileId) {
         if (input.reassignToProfileId === existing.id) {
@@ -730,6 +733,7 @@ export function createToolProfileService(db: Db, now: () => Date) {
       await assertProfileEntryInputs(tx, profile.companyId, [input]);
       await lockProfileEntryReferences(tx, profile.companyId, [input]);
       await tx.select({ id: toolProfiles.id }).from(toolProfiles).where(eq(toolProfiles.id, profile.id)).for("no key update");
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
       const [row] = await db
         .insert(toolProfileEntries)
         .values({
@@ -785,6 +789,7 @@ export function createToolProfileService(db: Db, now: () => Date) {
       await assertProfileEntryInputs(tx, existing.companyId, [next]);
       await lockProfileEntryReferences(tx, existing.companyId, [next]);
       await tx.select({ id: toolProfiles.id }).from(toolProfiles).where(eq(toolProfiles.id, existing.profileId)).for("no key update");
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
       const [row] = await db
         .update(toolProfileEntries)
         .set({
@@ -813,6 +818,7 @@ export function createToolProfileService(db: Db, now: () => Date) {
       const [existing] = await tx.select().from(toolProfileEntries).where(eq(toolProfileEntries.id, entryId));
       if (!existing) throw notFound("Tool profile entry not found");
       await tx.select({ id: toolProfiles.id }).from(toolProfiles).where(eq(toolProfiles.id, existing.profileId)).for("no key update");
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
       const [row] = await db
         .delete(toolProfileEntries)
         .where(eq(toolProfileEntries.id, entryId))
@@ -840,6 +846,7 @@ export function createToolProfileService(db: Db, now: () => Date) {
         input.targetId,
         tx,
       );
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
       const [row] = await db
         .insert(toolProfileBindings)
         .values({
@@ -876,6 +883,7 @@ export function createToolProfileService(db: Db, now: () => Date) {
         input.targetId,
         tx,
       );
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
       const rows = await db
         .delete(toolProfileBindings)
         .where(
