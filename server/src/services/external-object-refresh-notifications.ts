@@ -6,4 +6,3 @@ export async function notifyExternalObjectRefresh(tx: object, companyId?: string
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.externalObjectRefresh,
     companyId ? JSON.stringify({ companyId, ...(typeof object === "string" ? { objectId: object } : object ? { identity: object } : {}) }) : "*");
 }
-

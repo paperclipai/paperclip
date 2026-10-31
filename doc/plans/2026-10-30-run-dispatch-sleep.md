@@ -12,6 +12,15 @@ invalidate retries notify the retry worker in their transaction. Promotion uses
 the existing gate and compare-and-set, and its committed write wakes ordinary
 queued dispatch. A queued run behind occupied capacity waits for the owning
 run's lifecycle transition. Configuration and authority changes also wake it.
+Retry-schedule notifications are separate from ordinary queue eligibility.
+`notifyRunDispatch` wakes only queued dispatch; ordinary issue, agent, budget
+and company edits cannot repeatedly scan the global retry schedule.
+`notifyScheduledRetryDispatch` wakes retry reconciliation as well as dispatch
+for actual retry creation, rescheduling and cancellation. Its producers include
+bounded and operator-requested retries, recovery retries, native capacity and
+safe-replacement successors, and the existing retry-cancellation transition
+boundary. Shared runtime changes do not impose a spacing floor on a saved deadline.
+
 An idle queue has no recurring read or timer-driven dispatch attempt. Notifications batch for one second and carry the changed company to queued dispatch. Known retry deadlines still preempt batching. Cancellation-owned retries stay with their cancellation worker and do not retain a promotion deadline.
 
 The supported writer contract is service writes through the shared database
