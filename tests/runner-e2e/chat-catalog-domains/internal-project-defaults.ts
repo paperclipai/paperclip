@@ -6,18 +6,18 @@ import { collectRunEvents } from "../run-observations.js";
 import type { ChatCatalogCase } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
 import { fixtureWorker, makeDefinition } from "./internal-definition.js";
-import { startRunBriefGate } from "./internal-run-brief.js";
+import { NATIVE_BRIEF_HOLD_MS, startNativeRunBriefGate } from "./internal-native-run-brief.js";
 import { checks, entity, goal, observation, observeInternal, project, sameTask, task, type Entity, type InternalObservation } from "./internal-support.js";
 interface DefaultsObservation extends InternalObservation { futureContext: { project?: Entity; goal?: Entity }; futureComments: Entity[]; futureProjectReads?: { runId: string; projectId: string; callId: string }[] }
 interface PreparedAgent extends Entity { lifecycleState?: string; adapterConfig?: { timeoutSec?: number } }
-export function gradeProjectDefaultsSetup(value: { lead: PreparedAgent; future: PreparedAgent; held: PreparedAgent; task: Entity & { executionRunId?: string }; runs: Entity[]; activeRunId: string; gateCalls: { authorized?: boolean }[] }) {
+export function gradeProjectDefaultsSetup(value: { lead: PreparedAgent; future: PreparedAgent; held: PreparedAgent; task: Entity & { executionRunId?: string }; runs: Entity[]; activeRunId: string; gateCalls: { workerBound?: boolean; workerId?: string }[] }) {
   const c = checks();
   const ready = (agent: PreparedAgent) => agent.lifecycleState === "ready" && ["idle", "active"].includes(agent.status ?? "");
   c.add("lead-ready", ready(value.lead) && value.lead.adapterConfig?.timeoutSec === CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, "The canonical lead is independently ready under the production-default native timeout policy and unchanged finite scenario budget.");
   c.add("future-worker-ready", ready(value.future) && value.future.adapterConfig?.timeoutSec === CHAT_NATIVE_TIMEOUT_POLICY.savedAgentTimeoutSec, "The future-context worker is independently ready under the production-default native timeout policy and unchanged finite scenario budget.");
   c.add("existing-work-actively-owned", value.held.lifecycleState === "ready" && value.held.status === "running" && value.held.adapterConfig?.timeoutSec === 420
     && value.task.assigneeAgentId === value.held.id && value.task.executionRunId === value.activeRunId && value.runs.some(run => run.id === value.activeRunId && run.agentId === value.held.id && run.status === "running")
-    && value.gateCalls.some(call => call.authorized), "Only the deliberately waiting prerequisite has the declared 420-second timeout, spanning the subsequent bounded 150+180-second stages with exact live ownership and authorized gate proof.");
+    && value.gateCalls.some(call => call.workerBound === true && call.workerId === value.held.id), "Only the deliberately waiting prerequisite has the declared 420-second timeout, spanning the subsequent bounded 150+180-second stages with exact live ownership and an owned native brief-read receipt.");
   return c.result();
 }
 function canonical(value: unknown): string { if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`; if (value && typeof value === "object") return `{${Object.entries(value).filter(([, v]) => v !== undefined).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`; return JSON.stringify(value) ?? "null"; }
@@ -76,7 +76,7 @@ export function gradeProjectDefaults(value: unknown) {
   return c.result();
 }
 function defaults(): ChatCatalogCase {
-  let gate: Awaited<ReturnType<typeof startRunBriefGate>> | undefined;
+  let gate: Awaited<ReturnType<typeof startNativeRunBriefGate>> | undefined;
   const base = makeDefinition("projects.project-defaults", async ctx => {
     const worker = await fixtureWorker(ctx); const futureWorker = await fixtureWorker(ctx); await ctx.input.api.patch(`/api/agents/${futureWorker.id}`, { name: "Riley" });
     const original = await ctx.input.api.get<PreparedAgent>(`/api/agents/${worker.id}`);
@@ -88,8 +88,8 @@ function defaults(): ChatCatalogCase {
     const root = `/api/companies/${ctx.input.fixtures.company.id}`;
     for (const scope of [{ scopeType: "company", scopeId: ctx.input.fixtures.company.id }, ...[worker, futureWorker].map(row => ({ scopeType: "agent", scopeId: row.id }))])
       await ctx.input.api.post(`${root}/budgets/policies`, { ...scope, amount: 500, hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
-    gate = await startRunBriefGate(ctx, worker.id);
-    const t = await task(ctx, "Active launch research", p.id, { status: "todo", assigneeAgentId: worker.id, description: "Read the authorized Website Brief app's read_website_brief before proceeding; wait for the actual result. Do not change this brief or other tasks." });
+    gate = await startNativeRunBriefGate(worker.id);
+    const t = await task(ctx, "Active launch research", p.id, { status: "todo", assigneeAgentId: worker.id, description: `Read the pending Website Brief by running this native shell command with a ${NATIVE_BRIEF_HOLD_MS} ms tool timeout. Wait for its actual result before proceeding. Do not change this brief or other tasks. Command: ${gate.command}` });
     const held = await pollUntil({ label: "Real prior active Launch checkout", deadlineAt: Date.now() + 150000,
       load: async () => ({ task: await ctx.input.api.get<Entity & { executionRunId?: string }>(`/api/issues/${t.id}`), runs: await ctx.allRuns() }),
       accept: row => gate!.calls.length > 0 && row.runs.length === 1 && row.runs[0]?.status === "running" && row.task.executionRunId === row.runs[0]?.id });
@@ -102,7 +102,7 @@ function defaults(): ChatCatalogCase {
       ctx.input.api.get<PreparedAgent>(`/api/agents/${ctx.input.fixtures.agent.id}`), ctx.input.api.get<PreparedAgent>(`/api/agents/${entity(state, "futureWorker").id}`), ctx.input.api.get<PreparedAgent>(`/api/agents/${entity(state, "worker").id}`),
       ctx.input.api.get<Entity & { executionRunId?: string }>(`/api/issues/${entity(state, "task").id}`), ctx.allRuns() ]);
       return gradeProjectDefaultsSetup({ lead, future, held, task: t, runs, activeRunId: String(state.activeRunId), gateCalls: gate?.calls ?? [] }); },
-    sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-project-defaults.ts", "chat-catalog-domains/internal-run-brief.ts", "../e2e/fetch-allowed-port.ts", "run-observations.ts"],
+    sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-project-defaults.ts", "chat-catalog-domains/internal-native-run-brief.ts", "../e2e/fetch-allowed-port.ts", "run-observations.ts"],
     async act(ctx, state) {
       const settled = await pollUntil({ label: "Canonical project-defaults turn settles", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150000), load: () => observeInternal(ctx, state),
         accept: o => chatCatalogNativePhaseIsTimely(ctx) && o.runs.some(row => row.agentId === o.leadId && row.status === "succeeded") && ctx.issue()?.conversationState === "waiting" });

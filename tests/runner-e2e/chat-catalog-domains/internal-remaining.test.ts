@@ -7,7 +7,7 @@ import { gradeArchivePartial } from "./internal-archive-partial.js";
 function base(scenarioId: string) { return { scenarioId, origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: {} as Record<string, unknown>, tasks: [] as any[], projects: [] as any[], goals: [] as any[], comments: [] as any[], activity: [] as any[], documents: [], revisions: [], links: [] as string[], reply: "", humanQueries: [], runs: [] as any[] }; }
 it("preserves the exact active prerequisite while independently proving ready canonical and future agents", () => {
   const ready = { id: "ceo", lifecycleState: "ready", status: "idle", adapterConfig: { timeoutSec: 0 } };
-  const prepared = { lead: ready, future: { ...ready, id: "riley" }, held: { ...ready, id: "morgan", status: "running", adapterConfig: { timeoutSec: 420 } }, task: { id: "task", assigneeAgentId: "morgan", executionRunId: "held" }, runs: [{ id: "held", agentId: "morgan", status: "running" }], activeRunId: "held", gateCalls: [{ authorized: true }] };
+  const prepared = { lead: ready, future: { ...ready, id: "riley" }, held: { ...ready, id: "morgan", status: "running", adapterConfig: { timeoutSec: 420 } }, task: { id: "task", assigneeAgentId: "morgan", executionRunId: "held" }, runs: [{ id: "held", agentId: "morgan", status: "running" }], activeRunId: "held", gateCalls: [{ workerBound: true, workerId: "morgan" }] };
   expect(gradeProjectDefaultsSetup(prepared).passed).toBe(true);
   expect(gradeProjectDefaultsSetup({ ...prepared, lead: { ...prepared.lead, adapterConfig: { timeoutSec: 120 } } }).passed).toBe(false);
   expect(gradeProjectDefaultsSetup({ ...prepared, future: { ...prepared.future, adapterConfig: { timeoutSec: 120 } } }).passed).toBe(false);
@@ -15,6 +15,7 @@ it("preserves the exact active prerequisite while independently proving ready ca
   expect(gradeProjectDefaultsSetup({ ...prepared, future: { ...prepared.future, status: "error" } }).passed).toBe(false);
   expect(gradeProjectDefaultsSetup({ ...prepared, held: { ...prepared.held, adapterConfig: { timeoutSec: 120 } } }).passed).toBe(false);
   expect(gradeProjectDefaultsSetup({ ...prepared, gateCalls: [] }).passed).toBe(false);
+  expect(gradeProjectDefaultsSetup({ ...prepared, gateCalls: [{ workerBound: true, workerId: "unrelated" }] }).passed).toBe(false);
 });
 function defaults() {
   const o = base("projects.project-defaults"); const task = { id: "active", status: "in_progress", projectId: "p", assigneeAgentId: "morgan", executionRunId: "prior" }; const future = { id: "future", status: "done", projectId: "p" }; const p = { id: "p", description: "Keyboard navigation; adequate contrast; labeled controls", goalIds: ["growth"], env: null };
