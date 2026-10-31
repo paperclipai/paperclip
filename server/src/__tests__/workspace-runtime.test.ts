@@ -3874,6 +3874,43 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
     expect(worktreeOp!.metadata!.baseRef).toBe("origin/master");
   }, 10_000);
 
+  it("keeps a local checkout the runtime did not create and reports cleanup as done", async () => {
+    const checkout = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-shared-checkout-"));
+    const sharedWorkspace = {
+      id: "execution-workspace-shared",
+      companyId: "company-1",
+      cwd: checkout,
+      providerType: "local_fs",
+      providerRef: null,
+      branchName: null,
+      repoUrl: null,
+      baseRef: null,
+      projectId: "project-1",
+      projectWorkspaceId: "workspace-1",
+      sourceIssueId: "issue-1",
+    };
+    try {
+      const kept = await cleanupExecutionWorkspaceArtifacts({
+        workspace: { ...sharedWorkspace, metadata: {} },
+        projectWorkspace: { cwd: checkout, cleanupCommand: null },
+      });
+      expect(kept).toMatchObject({ cleaned: true, warnings: [] });
+      await expect(fs.access(checkout)).resolves.toBeUndefined();
+
+      const refused = await cleanupExecutionWorkspaceArtifacts({
+        workspace: { ...sharedWorkspace, metadata: { createdByRuntime: true } },
+        projectWorkspace: { cwd: checkout, cleanupCommand: null },
+      });
+      expect(refused.cleaned).toBe(false);
+      expect(refused.warnings).toEqual([
+        `Refusing to remove path "${checkout}" because it contains the project workspace.`,
+      ]);
+      await expect(fs.access(checkout)).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(checkout, { recursive: true, force: true });
+    }
+  });
+
   it("removes a created git worktree and branch during cleanup", async () => {
     const repoRoot = await createTempRepo();
 

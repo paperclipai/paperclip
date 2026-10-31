@@ -945,6 +945,105 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
   }, 20_000);
 
+  async function seedTerminalSharedWorkspace(status: "active" | "cleanup_failed" = "active") {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const issuePrefix = `P${companyId.slice(0, 8).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Shared", status: "in_progress" });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: repoRoot,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Shared workspace",
+      status,
+      providerType: "local_fs",
+      cwd: repoRoot,
+      baseRef: "main",
+      ...(status === "cleanup_failed"
+        ? { closedAt: new Date(), cleanupReason: "issue_terminal" }
+        : {}),
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      identifier: `${issuePrefix}-1`,
+      title: "Finished in the shared checkout",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    return { executionWorkspaceId, sourceIssueId, repoRoot };
+  }
+
+  it("archives a terminal shared workspace and keeps the project checkout", async () => {
+    const seeded = await seedTerminalSharedWorkspace();
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status, cleanupReason: executionWorkspaces.cleanupReason })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const [issue] = await db
+      .select({ executionWorkspaceId: issues.executionWorkspaceId })
+      .from(issues)
+      .where(eq(issues.id, seeded.sourceIssueId));
+
+    expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0 });
+    expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
+    expect(issue?.executionWorkspaceId).toBeNull();
+    await expect(fs.access(path.join(seeded.repoRoot, "README.md"))).resolves.toBeUndefined();
+  }, 20_000);
+
+  it("archives a cleanup_failed workspace again so its cleanup can be retried", async () => {
+    const seeded = await seedTerminalSharedWorkspace("cleanup_failed");
+
+    const result = await svc.archiveWorkspaceUnderLifecycleLock({
+      id: seeded.executionWorkspaceId,
+      patch: { status: "archived" },
+      closedAt: new Date(),
+    });
+
+    expect(result?.outcome).toBe("archived");
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    expect(workspace?.status).toBe("archived");
+    expect(await svc.archiveWorkspaceUnderLifecycleLock({
+      id: seeded.executionWorkspaceId,
+      patch: { status: "archived" },
+      closedAt: new Date(),
+    })).toBeNull();
+  });
+
   it("reads workspace details and company-scoped execution configuration without live Git inspection", async () => {
     const seed = await seedAncestryTerminalWorkspace();
     const service = executionWorkspaceService(db, {
