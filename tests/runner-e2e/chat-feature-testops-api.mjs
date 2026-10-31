@@ -403,11 +403,11 @@ export async function verifyChatUpload(api, env, selected, exported, { wait = ms
     || exported.attachmentMetadata.filter(row => row.name === 'Execution provenance and checks').length !== 1
     || exported.attachmentMetadata.filter(row => row.name === 'Sanitized Product E2E record and accounting').length !== 1
     || exported.status === 'passed' && !exported.attachmentMetadata.some(row => row.contentType === 'image/png')) stopUpload('chat_testops_upload_mismatch', 'attachment_contract', () => ({
-    attachment_rows: [!exported.attachmentMetadata.some(row => allowedAttachments.get(row.name) !== row.contentType
-      || !Number.isSafeInteger(row.contentLength) || row.contentLength <= 0 || row.contentLength > 12 * 1024 * 1024)],
-    provenance_count: [exported.attachmentMetadata.filter(row => row.name === 'Execution provenance and checks').length === 1],
-    record_count: [exported.attachmentMetadata.filter(row => row.name === 'Sanitized Product E2E record and accounting').length === 1],
-    passed_screenshot: [!(exported.status === 'passed' && !exported.attachmentMetadata.some(row => row.contentType === 'image/png'))],
+    attachment_rows: [!exported.attachmentMetadata.some(row => allowedAttachments.get(row?.name) !== row?.contentType
+      || !Number.isSafeInteger(row?.contentLength) || row?.contentLength <= 0 || row?.contentLength > 12 * 1024 * 1024)],
+    provenance_count: [exported.attachmentMetadata.filter(row => row?.name === 'Execution provenance and checks').length === 1],
+    record_count: [exported.attachmentMetadata.filter(row => row?.name === 'Sanitized Product E2E record and accounting').length === 1],
+    passed_screenshot: [!(exported.status === 'passed' && !exported.attachmentMetadata.some(row => row?.contentType === 'image/png'))],
   }));
   const signature = rows => rows.map(row => JSON.stringify([row.name, row.contentType, row.contentLength])).sort();
   const runUrl = `https://github.com/paperclipai/paperclip/actions/runs/${context.runId}`;
@@ -463,9 +463,9 @@ export async function verifyChatUpload(api, env, selected, exported, { wait = ms
         embedded_job: [!(result.jobRun?.job != null && (result.jobRun.job.id !== run.job.id
           || result.jobRun.job.type != null && result.jobRun.job.type !== run.job.type
           || result.jobRun.job.url != null && !publicJobUrl(result.jobRun.job.url, env))), result.jobRun?.job],
-        links_array: [Array.isArray(result.links), result.links], known_links: [Array.isArray(result.links) && !result.links.some(link => typeof link.url === 'string'
-          && (link.url.startsWith('https://github.com/paperclipai/paperclip/actions/runs/') && link.url !== runUrl
-            || link.url.startsWith('https://github.com/paperclipai/paperclip/commit/') && link.url !== sourceUrl))],
+        links_array: [Array.isArray(result.links), result.links], known_links: [Array.isArray(result.links) && !result.links.some(link => typeof link?.url === 'string'
+          && (link?.url.startsWith('https://github.com/paperclipai/paperclip/actions/runs/') && link?.url !== runUrl
+            || link?.url.startsWith('https://github.com/paperclipai/paperclip/commit/') && link?.url !== sourceUrl))],
       }));
       if (!['passed', 'failed', 'broken', 'skipped', 'unknown'].includes(result.status)) stopUpload('chat_testops_upload_mismatch', 'result_status', () => ({
         status_supported: [['passed', 'failed', 'broken', 'skipped', 'unknown'].includes(result.status), result.status],
@@ -483,8 +483,8 @@ export async function verifyChatUpload(api, env, selected, exported, { wait = ms
         total_matches_content: [Array.isArray(attached?.content) && attached.totalElements === attached.content.length],
         pages_integer: [Number.isSafeInteger(attached?.totalPages), attached?.totalPages],
         pages_range: [Number.isSafeInteger(attached?.totalPages) && attached.totalPages >= 0 && attached.totalPages <= 1],
-        unique_ids: [Array.isArray(attached?.content) && new Set(attached.content.map(value => value.id)).size === attached.content.length],
-        attachment_rows: [Array.isArray(attached?.content) && !attached.content.some(value => !id(value.id) || value.missed === true || value.fromTestCase === true)],
+        unique_ids: [Array.isArray(attached?.content) && new Set(attached.content.map(value => value?.id)).size === attached.content.length],
+        attachment_rows: [Array.isArray(attached?.content) && !attached.content.some(value => !id(value?.id) || value?.missed === true || value?.fromTestCase === true)],
       }));
       if (now() < deadline && result.status === exported.status && same(signature(attached.content), signature(exported.attachmentMetadata))) {
         return { schema: 'paperclip.chat-feature-testops-upload-verification/v1', ...context, projectId: 1, planId: selected.planId,

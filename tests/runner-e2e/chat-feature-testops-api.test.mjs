@@ -477,6 +477,20 @@ test('upload diagnostic projection never retains secret values, unknown fields o
   assert.equal(unknown.code, 'unknown_failure'); assert.ok(!Object.hasOwn(unknown, 'verification'));
 });
 
+test('upload diagnostics preserve an early mismatch when later array entries are null', async () => {
+  const result = await uploadFailureDiagnostic(uploadApi({ id: 46, links: [null] }));
+  assert.equal(result.projected.verification.phase, 'result');
+  assert.equal(result.projected.verification.firstFailedPredicate, 'result_id');
+  assert.equal(result.projected.verification.checks.result_id, false);
+  const base = uploadApi();
+  const page = await uploadFailureDiagnostic((route, ...args) => route.startsWith('/api/testresult/attachment?')
+    ? { content: [null], totalElements: 2, totalPages: 1 } : base(route, ...args));
+  assert.equal(page.projected.verification.firstFailedPredicate, 'total_matches_content');
+  const local = await uploadFailureDiagnostic(() => assert.fail('no HTTP'), uploadContext, uploadSelection,
+    { ...uploadReceipt, attachmentMetadata: [{ ...uploadReceipt.attachmentMetadata[0], contentType: 'unexpected' }, null, uploadReceipt.attachmentMetadata[2]] });
+  assert.equal(local.projected.verification.firstFailedPredicate, 'attachment_rows');
+});
+
 test('readback missing result or screenshot metadata is bounded unverified, never a fabricated pass', async () => {
   const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
   let waits = 0;
