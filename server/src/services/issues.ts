@@ -3850,6 +3850,10 @@ async function readIssueBlockerAttentionBatch(
 
   const nodesById = new Map<string, IssueBlockerAttentionNode>();
   const edgesByIssueId = new Map<string, IssueBlockerAttentionEdge[]>();
+  // Returned rows are already bounded by the residual fetch budget. Keep their
+  // positive live-work evidence even when they cannot enter the traversal graph.
+  const observedNodes = new Map<string, IssueBlockerAttentionNode>();
+  const observedChildrenByParent = new Map<string, Set<string>>();
   const admittedRoots = roots.slice(0, BLOCKER_ATTENTION_MAX_NODES);
   for (const root of admittedRoots) nodesById.set(root.id, { ...root });
 
@@ -3946,6 +3950,10 @@ async function readIssueBlockerAttentionBatch(
       );
       for (const row of [...unresolvedExplicitBlockerRows, ...childRows]) {
         if (!row.issueId) continue;
+        observedNodes.set(row.blockerIssueId, row);
+        const observed = observedChildrenByParent.get(row.issueId) ?? new Set<string>();
+        observed.add(row.blockerIssueId);
+        observedChildrenByParent.set(row.issueId, observed);
         if (!nodesById.has(row.blockerIssueId)) {
           if (nodesById.size >= BLOCKER_ATTENTION_MAX_NODES) { complete = false; continue; }
           nodesById.set(row.blockerIssueId, {
@@ -3993,11 +4001,12 @@ async function readIssueBlockerAttentionBatch(
     if (traversal.frontier.length > 0) traversal.truncated = true;
   }
 
-  const nodeIds = [...nodesById.keys()];
+  const evidenceNodes = new Map([...nodesById, ...observedNodes]);
+  const nodeIds = [...evidenceNodes.keys()];
   const activeIssueIds = new Set<string>();
   const agentIds = new Set<string>();
   const issueIdByExecutionRunId = new Map<string, string>();
-  for (const node of nodesById.values()) {
+  for (const node of evidenceNodes.values()) {
     if (node.assigneeAgentId) agentIds.add(node.assigneeAgentId);
     if (node.executionRunId)
       issueIdByExecutionRunId.set(node.executionRunId, node.id);
@@ -4055,7 +4064,7 @@ async function readIssueBlockerAttentionBatch(
     }
   }
 
-  const explicitWaitCandidateIds = [...nodesById.values()]
+  const explicitWaitCandidateIds = [...evidenceNodes.values()]
     .filter((node) => node.status !== "done")
     .map((node) => node.id);
   const explicitWaitingIssueIds = new Set<string>();
@@ -4400,19 +4409,22 @@ async function readIssueBlockerAttentionBatch(
     };
   };
 
+  const nodeHasLiveWork = (node: IssueBlockerAttentionNode) =>
+    node.status === "in_progress" || activeIssueIds.has(node.id) ||
+    explicitWaitingIssueIds.has(node.id) || Boolean(node.assigneeUserId);
+  const observedChildHasLiveWork = (parentId: string) =>
+    [...observedChildrenByParent.get(parentId) ?? []].some(id => {
+      const node = observedNodes.get(id);
+      return node?.companyId === companyId && nodeHasLiveWork(node);
+    });
   const pathHasLiveWork = (nodeId: string, seen: Set<string>, traversal: Traversal): boolean => {
     if (seen.has(nodeId) || !traversal.nodes.has(nodeId)) return false;
     const node = nodesById.get(nodeId);
     if (!node || node.companyId !== companyId) return false;
-    if (
-      node.status === "in_progress" ||
-      activeIssueIds.has(node.id) ||
-      explicitWaitingIssueIds.has(node.id) ||
-      Boolean(node.assigneeUserId)
-    )
-      return true;
+    if (nodeHasLiveWork(node)) return true;
 
     if (!traversal.expanded.has(nodeId)) return false;
+    if (observedChildHasLiveWork(nodeId)) return true;
     const nextSeen = new Set(seen);
     nextSeen.add(nodeId);
     return (edgesByIssueId.get(node.id) ?? []).some((edge) => {
@@ -4539,7 +4551,7 @@ async function readIssueBlockerAttentionBatch(
           stalledEntry?.result.sampleStalledBlockerIdentifier ??
           sampleStalledFromChain ??
           null,
-        blockingTreeLive: topLevelEdges.some((edge) =>
+        blockingTreeLive: observedChildHasLiveWork(root.id) || topLevelEdges.some((edge) =>
           pathHasLiveWork(edge.blockerIssueId, new Set([root.id]), traversal),
         ),
         directBlockerIssueId: sampleEntry?.edge.blockerIssueId ?? null,
