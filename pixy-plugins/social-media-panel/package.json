@@ -1,0 +1,47 @@
+{
+  "name": "@pixy/social-media-panel",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Paperclip sol menusunde Sosyal Medya sekmesi: hesap durumu ve oneriler (dokumandan okur).",
+  "scripts": {
+    "build": "node ./esbuild.config.mjs",
+    "build:rollup": "rollup -c",
+    "dev": "node ./esbuild.config.mjs --watch",
+    "dev:ui": "paperclip-plugin-dev-server --root . --ui-dir dist/ui --port 4177",
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "keywords": [
+    "paperclip",
+    "plugin",
+    "ui"
+  ],
+  "author": "Pixy Digital",
+  "license": "MIT",
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "^2026.1023.0",
+    "@rollup/plugin-node-resolve": "^16.0.1",
+    "@rollup/plugin-typescript": "^12.1.2",
+    "@testing-library/react": "^16.1.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.0",
+    "esbuild": "^0.27.3",
+    "jsdom": "^25.0.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "rollup": "^4.38.0",
+    "tslib": "^2.8.1",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}
