@@ -173,9 +173,11 @@ export function ComposerRunSettingsPicker({
   const exactMatch = models.some((item) => item.id.toLowerCase() === query.toLowerCase());
   const needsProvider = agent && (["opencode_local", "pi_local", "kimi_local"].includes(agent.adapterType)
     || (agent.adapterType === "paperclip_runner" && provider === "opencode"));
-  const manualValid = query.length > 0 && !/\s/.test(query)
+  // Model names may contain spaces (for example "Claude Sonnet 5.5"); adapters
+  // pass the model as a single argument. OpenRouter IDs never contain spaces.
+  const manualValid = query.length > 0
     && (!needsProvider || /^[^/]+\/.+[^/]$/.test(query))
-    && (provider !== "openrouter" || /^openrouter\/[^/]+\/.+[^/]$/.test(query));
+    && (provider !== "openrouter" || (/^openrouter\/[^/]+\/.+[^/]$/.test(query) && !/\s/.test(query)));
 
   const previousAgentId = useRef(agentId);
   useEffect(() => {
@@ -276,7 +278,7 @@ export function ComposerRunSettingsPicker({
       {catalogPending ? <p className="px-2.5 py-2 text-xs text-muted-foreground">Loading models…</p> : null}
       {!catalogPending && !filteredModels.length && query ? <p className="px-2.5 py-2 text-xs text-muted-foreground">No catalog match.</p> : null}
     </div>
-    {query && !exactMatch ? <div className="mt-2 border-t border-border pt-2"><button type="button" disabled={!manualValid} onClick={() => chooseModel(query)} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-accent disabled:opacity-40"><Plus className="size-4 shrink-0" aria-hidden /><span className="min-w-0 flex-1 truncate">Use exact ID <span className="font-mono font-semibold">{query}</span></span></button>{!manualValid ? <p className="px-2.5 text-xs text-destructive">{provider === "openrouter" ? "Use openrouter/provider/model with no spaces." : "Model IDs cannot contain spaces."}</p> : null}</div> : null}
+    {query && !exactMatch ? <div className="mt-2 border-t border-border pt-2"><button type="button" disabled={!manualValid} onClick={() => chooseModel(query)} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-accent disabled:opacity-40"><Plus className="size-4 shrink-0" aria-hidden /><span className="min-w-0 flex-1 truncate">Use exact ID <span className="font-mono font-semibold">{query}</span></span></button>{!manualValid ? <p className="px-2.5 text-xs text-destructive">{provider === "openrouter" ? "Use openrouter/provider/model with no spaces." : "Use provider/model."}</p> : null}</div> : null}
     <p className="px-2.5 pb-1 pt-2 text-xs text-muted-foreground">{provider === "openrouter" ? "Custom IDs: openrouter/provider/model. Provider access is checked when the run starts." : "Custom model IDs can be pasted here. Provider access is checked when the run starts."}</p>
   </div>;
 
