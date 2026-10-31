@@ -11,7 +11,7 @@ const script = job.split("        run: |\n")[1].split("\n").map(line => line.rep
 const sha = "a".repeat(40);
 
 test("canary promotion waits for the standard manifest and keeps its serialized channel", () => {
-  assert.match(job, /needs: \[merge-and-push\]/);
+  assert.match(job, /needs: \[reuse_canary_image, merge-and-push\]/);
   assert.match(job, /group: docker-canary-channel-promotion/);
   assert.match(job, /cancel-in-progress: false/);
 });
