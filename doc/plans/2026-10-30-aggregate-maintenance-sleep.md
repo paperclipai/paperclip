@@ -8,9 +8,10 @@ scheduling, feature toggles, plugin readiness, environment cleanup, idle trackin
 hot-restart shutdown, and conservative sleep-safety checks. This work does not
 qualify actual database or host suspension, Cloud alarms, or cost savings.
 
-The dependency base retains the interval until final recovery integration and
-review repairs converge. The assembled acceptance harness was implemented first
-so that its observation boundary had a positive control before interval removal.
+The preceding domain migrations retain the aggregate interval. This change
+removes its enabled and disabled paths after those owners are assembled. The
+acceptance harness first calibrated its observation boundary against the original
+recurring SQL, then verified the final source without that interval.
 
 ## Duty ownership
 
@@ -70,7 +71,8 @@ receipt is retained; the obsolete recurring-SQL expectation is replaced by the
 final enabled cases. The real-socket raw/prepared execution calibration remains
 in the suite. The two enabled cases are prepared to observe 90 real seconds each
 and two further hours using child-local Date/setTimeout/setInterval control.
-They remain unqualified until run on the final cutover tree. Boot, ordinary HTTP/service producer phases and graceful shutdown advance at real speed. The
+Both cases pass on the final cutover tree. They also require every application
+database connection to close at the existing default 60-second idle timeout. Boot, ordinary HTTP/service producer phases and graceful shutdown advance at real speed. The
 clock freezes after readiness and real socket settlement, then advances at most
 30 seconds per step, settling real I/O between steps. Parent deadlines,
 setImmediate and database sockets remain usable. Receipts distinguish real
@@ -158,12 +160,13 @@ coordinator still holds unresolved transactions. PostgreSQL regressions cover
 committed and uncommitted changes, failed expiry, zero SQL/active work during
 drain, exactly-once resume and existing shutdown/restart behavior.
 
-Remaining acceptance before a removal PR: final reviewed recovery integration,
-aggregate interval removal, both enabled empty/configured-history quiet cases,
-relevant contracts across the combined tree, current-head Greptile 5/5 and
-required CI. Startup failure isolation, producer/lifecycle cases and ordinary
-restore/admission now have actual assembled proofs. No aggregate-removal
-acceptance or deployment claim is made by this preparation checkpoint.
+The final acceptance matrix passes all 34 cases with no skips: 16 actual boot
+cases, three passive protocol observer cases, seven runtime-status cases and
+eight single-flight cases. All 26 PostgreSQL decision-target controls pass.
+All 121 startup contracts and the scoped test TypeScript graph also pass.
+Startup contracts retain independent registration, failure isolation and shutdown
+tracking. Required CI and exact-head review remain PR gates; these measurements
+do not qualify deployment or host suspension.
 
 The assembled routine proof also uses ordinary subtree cancel and restore APIs.
 It requires the same persisted routine run to return to `issue_created`, clears
@@ -179,3 +182,23 @@ for 30 real seconds. Releasing the hold with `wakeAgents: false` launches exactl
 one actual local process with the expected stdout. This phase uses real elapsed
 time through PostgreSQL controller-lease ownership. Clock acceleration begins
 only after the process is terminal and its task is closed.
+
+## Final enabled idle measurements
+
+Both fixtures start the actual server and use its default application database
+idle timeout. The independent fixture client stays outside the passive proxy.
+The real observation follows readiness and complete work settlement.
+
+| Fixture | Real observation | Application SQL | DB connections opened / closed at end | DB bytes during real window | Further qualified clock |
+| --- | --- | --- | --- | --- | --- |
+| Empty | 90,002 ms | 0 | 7 / 7 | 30 frontend, 0 backend | 7,200,000 ms |
+| Configured terminal history | 90,001 ms | 0 | 7 / 7 | 30 frontend, 0 backend | 7,200,000 ms |
+
+Each fixture had already closed one startup connection before observation. The
+remaining six connections each sent one five-byte PostgreSQL Terminate frame.
+No Query, Parse, Bind, Execute or Sync frame occurred during either real window.
+Neither fixture opened another database connection or changed either byte count
+across the following two qualified hours. Both windows also retained zero new
+outgoing HTTP requests, non-database TCP connections and non-database bytes.
+The test requires zero active tracked work throughout the settled boundaries.
+These are application-level observations, not a host or Neon suspension test.
