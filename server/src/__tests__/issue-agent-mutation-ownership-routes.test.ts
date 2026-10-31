@@ -3052,6 +3052,32 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(handoff);
     });
 
+    it("does not intercept a native conversation reply moving to review", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId,
+        conversationAgentId: ownerAgentId, conversationUserId: "board-user" }));
+
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: "in_review" });
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review" });
+    });
+
+    it("leaves a blocked status with dependency edits to the dependency rules", async () => {
+      const blockerId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+      mockIssueService.getById.mockImplementation(async (id: string) => id === blockerId
+        ? makeIssue({ id: blockerId, identifier: "PAP-1650", assigneeAgentId: null, executionRunId: null, checkoutRunId: null })
+        : makeIssue({ executionRunId: ownerRunId, checkoutRunId: ownerRunId }));
+
+      const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status: "blocked", blockedByIssueIds: [blockerId] });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: "blocked" });
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "blocked" });
+    });
+
     it("does not intercept a board user changing the status", async () => {
       const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
 

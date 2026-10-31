@@ -13851,15 +13851,18 @@ export function issueRoutes(
    * is unauthorized, so the run can never settle and recovery blocks the task.
    * Reject the change before it commits, so the run can correct it in the same
    * turn. Handoffs and reassignments are a different path and are unaffected.
+   * Conversation replies keep their review transition, and dependency edits
+   * (blockedByIssueIds) stay with the dependency rules.
    */
   async function assertNativeRunKeepsOwnExecutionLock(
     req: Request,
-    issue: { companyId: string; status: string; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null },
+    issue: { companyId: string; status: string; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null; conversationAgentId?: string | null; conversationUserId?: string | null },
   ) {
     const runId = req.actor.type === "agent" ? req.actor.runId : null;
     if (!runId || !req.actor.agentId || req.actor.agentId !== issue.assigneeAgentId) return;
     if (runId !== issue.executionRunId && runId !== issue.checkoutRunId) return;
     if (req.body.status === undefined || req.body.status === issue.status) return;
+    if (isConversation(issue) || req.body.blockedByIssueIds !== undefined) return;
     const keepsAssignment =
       (req.body.assigneeAgentId === undefined || req.body.assigneeAgentId === issue.assigneeAgentId) &&
       (req.body.assigneeUserId === undefined || req.body.assigneeUserId === issue.assigneeUserId);
