@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const nativeTargets = ["linux-x64", "darwin-arm64", "darwin-x64"];
 
-export function materializePublishManifest(pkg) {
+export function materializePublishManifest(pkg, workspaceVersions = {}) {
   const publishConfig = pkg.publishConfig ?? {};
   const publishManifest = { ...pkg };
 
@@ -24,7 +24,7 @@ export function materializePublishManifest(pkg) {
         if (typeof specifier !== "string" || !specifier.startsWith("workspace:")) return [name, specifier];
         const range = specifier.slice("workspace:".length);
         const prefix = range === "^" || range === "~" ? range : "";
-        return [name, `${prefix}${pkg.version}`];
+        return [name, `${prefix}${workspaceVersions[name] ?? pkg.version}`];
       }),
     );
   }
@@ -394,7 +394,15 @@ export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = 
   }
 
   const deployedPackagePath = resolve(destinationDir, "package.json");
-  const publishManifest = materializePublishManifest(sourcePackage);
+  const packageManifestPath = resolve(sourceRoot, "scripts/release-package-manifest.json");
+  const workspaceVersions = {};
+  if (existsSync(packageManifestPath)) {
+    for (const entry of JSON.parse(readFileSync(packageManifestPath, "utf8"))) {
+      const file = resolve(sourceRoot, entry.dir, "package.json");
+      if (existsSync(file)) workspaceVersions[entry.name] = JSON.parse(readFileSync(file, "utf8")).version;
+    }
+  }
+  const publishManifest = materializePublishManifest(sourcePackage, workspaceVersions);
   const rootPackage = JSON.parse(readFileSync(resolve(sourceRoot, "package.json"), "utf8"));
   const profileData = bundledDependencies.includes("@agentclientprotocol/codex-acp")
     ? JSON.parse(readFileSync(resolve(sourceRoot, "packages/paperclip-runner/acpx-profiles.json"), "utf8")) : undefined;
