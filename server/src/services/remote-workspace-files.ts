@@ -68,6 +68,7 @@ export interface RemoteWorkspaceFileOptions {
     companyId: string;
     workspaceId: string;
     snapshotId: string;
+    signal?: AbortSignal;
   }): Promise<SavedWorkspaceFiles>;
 }
 
@@ -285,7 +286,8 @@ export function createRemoteWorkspaceFiles(db: Db, options: RemoteWorkspaceFileO
         if (!authority.snapshotId || authority.dirty || authority.writerRunId || !options.loadSavedWorkspace) {
           throw fileFailure("workspace_unavailable");
         }
-        saved = await options.loadSavedWorkspace({ companyId: input.companyId, workspaceId: input.workspaceId, snapshotId: authority.snapshotId });
+        saved = await options.loadSavedWorkspace({ companyId: input.companyId, workspaceId: input.workspaceId, snapshotId: authority.snapshotId,
+          ...(input.signal ? { signal: input.signal } : {}) });
         return { root: saved.root, source: { kind: "saved", savedAt: saved.savedAt, snapshotId: authority.snapshotId } as WorkspaceFileSource };
       };
       if (authority.location) {

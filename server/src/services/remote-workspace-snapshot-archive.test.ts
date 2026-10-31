@@ -4,8 +4,16 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { captureRemoteWorkspaceDirectory, remoteWorkspaceArchiveScript, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
+
+const archiveIo = vi.hoisted(() => ({ afterChmod: undefined as ((target: string, mode: number) => void) | undefined }));
+vi.mock("node:fs/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, async chmod(target: string, mode: number) {
+    await actual.chmod(target, mode); archiveIo.afterChmod?.(target, mode);
+  } };
+});
 
 const execute = promisify(execFile);
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull,
@@ -14,7 +22,7 @@ const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-C
 describe("portable remote workspace archives", () => {
   let root: string;
   beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-archive-test-")); });
-  afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
+  afterEach(async () => { archiveIo.afterChmod = undefined; await fs.rm(root, { recursive: true, force: true }); });
   async function source() { const cwd = path.join(root, "source"); await fs.mkdir(cwd); return cwd; }
   async function capture(cwd: string) { const archivePath = path.join(root, "snapshot.pcws"); return { archivePath, ...await captureRemoteWorkspaceDirectory({ cwd, archivePath }) }; }
   async function restore(snapshot: Awaited<ReturnType<typeof capture>>) {
@@ -39,6 +47,31 @@ describe("portable remote workspace archives", () => {
   it("round trips an empty workspace", async () => {
     const snapshot = await capture(await source()); const restored = await restore(snapshot);
     expect(await fs.readdir(restored)).toEqual([]);
+  });
+  it("does not publish an empty archive when restoration was already canceled", async () => {
+    const snapshot = await capture(await source()), targetDir = path.join(root, "canceled");
+    const controller = new AbortController(), reason = new Error("restore canceled"); controller.abort(reason);
+    await expect(restoreRemoteWorkspaceArchive({ archivePath: snapshot.archivePath, targetDir,
+      expectedManifestDigest: snapshot.manifestDigest, signal: controller.signal })).rejects.toBe(reason);
+    await expect(fs.access(targetDir)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await fs.readdir(root)).filter(name => name.startsWith(".workspace-restore-"))).toEqual([]);
+  });
+  it("removes private staging after cancellation during read-only directory mode restoration", async () => {
+    const cwd = await source(), directory = path.join(cwd, "readonly"); await fs.mkdir(directory);
+    await fs.writeFile(path.join(directory, "saved.txt"), "saved content"); await fs.chmod(directory, 0o555);
+    const snapshot = await capture(cwd), targetDir = path.join(root, "interrupted");
+    const controller = new AbortController(), reason = new Error("restore canceled while applying modes");
+    let appliedReadOnlyModes = 0;
+    archiveIo.afterChmod = (target, mode) => {
+      if (target.includes(".workspace-restore-") && mode === 0o555) { appliedReadOnlyModes++; controller.abort(reason); }
+    };
+    try {
+      await expect(restoreRemoteWorkspaceArchive({ archivePath: snapshot.archivePath, targetDir,
+        expectedManifestDigest: snapshot.manifestDigest, signal: controller.signal })).rejects.toBe(reason);
+      expect(appliedReadOnlyModes).toBe(1);
+      await expect(fs.access(targetDir)).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await fs.readdir(root)).filter(name => name.startsWith(".workspace-restore-"))).toEqual([]);
+    } finally { archiveIo.afterChmod = undefined; await fs.chmod(directory, 0o700); }
   });
   it("preserves read-only directory modes without making capture scratch unremovable", async () => {
     const cwd = await source(), directory = path.join(cwd, "readonly"); await fs.mkdir(directory);

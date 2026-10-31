@@ -177,6 +177,7 @@ export async function uploadWorkspaceSnapshot(input: {
 export async function loadWorkspaceSnapshotArchive(input: {
   storage: StorageService; reference: WorkspaceSnapshotRef; targetPath: string; signal?: AbortSignal;
 }): Promise<void> {
+  input.signal?.throwIfAborted();
   const ref = input.reference; validateReference(ref);
   const wrapped = JSON.parse(await localEncryptedProvider.resolveVersion({ material: ref.key, externalRef: null }));
   if (wrapped.schema !== KEY_SCHEMA || wrapped.companyId !== ref.companyId || wrapped.workspaceId !== ref.workspaceId
@@ -184,6 +185,7 @@ export async function loadWorkspaceSnapshotArchive(input: {
     || !Number.isSafeInteger(wrapped.plaintextBytes) || wrapped.plaintextBytes < 0) failure("key_binding_invalid");
   const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-decrypt-"));
   try {
+    input.signal?.throwIfAborted();
     const ciphertext = path.join(scratch, "ciphertext"), plaintext = path.join(scratch, "plaintext");
     const object = await input.storage.getObject(ref.companyId, ref.objectKey, { signal: input.signal });
     let received = 0; const digest = createHash("sha256");

@@ -22,6 +22,8 @@ import type { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { reconcileSafeNativeReplacements } from "./native-runtime/native-safe-replacement.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { createRemoteWorkspaceFiles } from "./remote-workspace-files.js";
+import { workspaceFileResourceService } from "./workspace-file-resources.js";
 
 const exec = promisify(execFile);
 const databaseUrl = process.env.PAPERCLIP_REMOTE_WORKSPACE_TEST_DATABASE_URL;
@@ -136,6 +138,89 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect((await fs.stat(path.join(restored.remoteRoot, "empty-folder"))).isDirectory()).toBe(true);
     const browse = await createSavedWorkspaceLoader(db, storage)({ companyId: ids.company, workspaceId: reserved.id, snapshotId: saved.snapshotId });
     try { expect(await fs.readFile(path.join(browse.root, "report.md"), "utf8")).toContain("useful saved result"); } finally { await browse.cleanup(); }
+  }, 60_000);
+
+  it.runIf(process.platform !== "win32" && process.getuid?.() !== 0)("cleans saved reads with read-only folders without changing modes or following symlinks", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("read-only-sandbox");
+    const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    const locked = path.join(prepared.remoteRoot, "locked"), outside = path.join(root, "outside");
+    await fs.mkdir(locked); await fs.writeFile(path.join(locked, "report.txt"), "saved read-only result\n", { mode: 0o444 });
+    await fs.mkdir(outside); await fs.writeFile(path.join(outside, "keep.txt"), "outside the extraction\n", { mode: 0o444 });
+    await fs.chmod(locked, 0o555); await fs.chmod(outside, 0o555);
+    let extraction: Awaited<ReturnType<ReturnType<typeof createSavedWorkspaceLoader>>> | undefined;
+    try {
+      const saved = await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId: ids.run,
+        lease: prepared.lease, target: first, assertOwned: async () => undefined });
+      const savedTemp = path.join(root, "saved-reads"); await fs.mkdir(savedTemp); vi.stubEnv("TMPDIR", savedTemp);
+      const loadSavedWorkspace = createSavedWorkspaceLoader(db, storage);
+      extraction = await loadSavedWorkspace({ companyId: ids.company, workspaceId: reserved.id, snapshotId: saved.snapshotId });
+      expect((await fs.stat(path.join(extraction.root, "locked"))).mode & 0o777).toBe(0o555);
+      expect((await fs.stat(path.join(extraction.root, "locked", "report.txt"))).mode & 0o777).toBe(0o444);
+      expect(await fs.readFile(path.join(extraction.root, "locked", "report.txt"), "utf8")).toBe("saved read-only result\n");
+      // Cleanup must unlink a symlink without changing its external target.
+      await fs.symlink(outside, path.join(extraction.root, "outside-link"));
+      await extraction.cleanup();
+      await expect(fs.access(path.dirname(extraction.root))).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await fs.stat(outside)).mode & 0o777).toBe(0o555);
+      expect((await fs.stat(path.join(outside, "keep.txt"))).mode & 0o777).toBe(0o444);
+      expect(await fs.readFile(path.join(outside, "keep.txt"), "utf8")).toBe("outside the extraction\n");
+      expect((await fs.stat(locked)).mode & 0o777).toBe(0o555);
+      const current = await workspace(reserved.id), authority = readRemoteWorkspaceAuthority(current.metadata)!;
+      await db.update(executionWorkspaces).set({ metadata: { ...current.metadata, remoteWorkspace: { ...authority, location: null } } })
+        .where(eq(executionWorkspaces.id, reserved.id));
+      const files = workspaceFileResourceService(db, undefined, { remoteFiles: createRemoteWorkspaceFiles(db, { loadSavedWorkspace }) });
+      expect(await files.readContent(ids.issue, { workspace: "execution", path: "locked/report.txt" }))
+        .toMatchObject({ content: { data: "saved read-only result\n" }, resource: { source: { kind: "saved" } } });
+      expect(await fs.readdir(savedTemp)).toEqual([]);
+      expect(await files.list(ids.issue, { workspace: "execution", mode: "all" })).toMatchObject({ state: "available" });
+      expect(await fs.readdir(savedTemp)).toEqual([]);
+      await expect(files.readContent(ids.issue, { workspace: "execution", path: "missing.txt" })).rejects.toMatchObject({ status: 404 });
+      expect(await fs.readdir(savedTemp)).toEqual([]);
+    } finally {
+      if (extraction) {
+        await fs.chmod(path.join(extraction.root, "locked"), 0o700).catch(() => undefined);
+        await fs.rm(path.dirname(extraction.root), { recursive: true, force: true });
+      }
+      await fs.chmod(locked, 0o700); await fs.chmod(outside, 0o700);
+    }
+  }, 60_000);
+
+  it("forwards cancellation through saved file access and removes failed extraction scratch", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("cancelled-saved-read");
+    const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "report.txt"), "saved result\n");
+    const saved = await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId: ids.run,
+      lease: prepared.lease, target: first, assertOwned: async () => undefined });
+    const current = await workspace(reserved.id), authority = readRemoteWorkspaceAuthority(current.metadata)!;
+    await db.update(executionWorkspaces).set({ metadata: { ...current.metadata, remoteWorkspace: { ...authority, location: null } } })
+      .where(eq(executionWorkspaces.id, reserved.id));
+    const savedTemp = path.join(root, "cancelled-reads"); await fs.mkdir(savedTemp); vi.stubEnv("TMPDIR", savedTemp);
+    for (const mode of ["abort", "storage_failure"] as const) {
+      const controller = new AbortController(), failure = new Error("Saved object unavailable");
+      let observedSignal: AbortSignal | undefined;
+      const interruptedStorage: StorageService = { ...storage, getObject: async (companyId, objectKey, options) => {
+        observedSignal = options?.signal;
+        if (mode === "storage_failure") throw failure;
+        const object = await storage.getObject(companyId, objectKey, options);
+        controller.abort(new DOMException("Saved read cancelled", "AbortError"));
+        return object;
+      } };
+      const remoteFiles = createRemoteWorkspaceFiles(db, { loadSavedWorkspace: createSavedWorkspaceLoader(db, interruptedStorage) });
+      let readError: unknown;
+      const access = await remoteFiles.open({ companyId: ids.company, workspaceId: reserved.id, signal: controller.signal })
+        .catch(error => { readError = error; return null; });
+      await access?.close();
+      expect(observedSignal).toBe(controller.signal);
+      if (mode === "storage_failure") expect(readError).toBe(failure);
+      else expect(readError).toMatchObject({ name: "AbortError" });
+      expect(await fs.readdir(savedTemp)).toEqual([]);
+    }
+    const cancelled = new DOMException("Already cancelled", "AbortError");
+    const getObject = vi.fn(storage.getObject.bind(storage));
+    await expect(createSavedWorkspaceLoader(db, { ...storage, getObject })({ companyId: ids.company,
+      workspaceId: reserved.id, snapshotId: saved.snapshotId, signal: AbortSignal.abort(cancelled) })).rejects.toBe(cancelled);
+    expect(getObject).not.toHaveBeenCalled();
+    expect(await fs.readdir(savedTemp)).toEqual([]);
   }, 60_000);
 
   it("reconnects to the same live folder without replaying preparation or overwriting unsaved edits", async () => {

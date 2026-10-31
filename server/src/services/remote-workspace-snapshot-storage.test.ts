@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { applyPendingMigrations, closeRegisteredClients, createDb, executionWorkspaceSnapshots } from "@paperclipai/db";
@@ -101,5 +102,46 @@ suite("remote workspace snapshot storage", () => {
     await fs.writeFile(targetPath, "existing");
     await expect(loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath })).rejects.toMatchObject({ code: "EEXIST" });
     expect(await fs.readFile(targetPath, "utf8")).toBe("existing");
+  });
+  it("does not start object retrieval for an already canceled snapshot load", async () => {
+    const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
+    const getObject = vi.spyOn(storage, "getObject");
+    const controller = new AbortController(), reason = new Error("request already canceled");
+    controller.abort(reason);
+    const targetPath = path.join(root, "canceled.pcws");
+    const error = await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath, signal: controller.signal }).catch(error => error);
+    expect(getObject).not.toHaveBeenCalled();
+    expect(error).toBe(reason);
+    await expect(fs.access(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("cancels an active object body and removes private decryption scratch before rejecting", async () => {
+    const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
+    const ciphertext = await fs.readFile(path.join(root, "objects", ref.objectKey));
+    const controller = new AbortController();
+    let produced = 0, closed = false;
+    const body = new Readable({
+      highWaterMark: 1,
+      read() {
+        if (produced === 2) { controller.abort(new Error("client disconnected")); return; }
+        this.push(ciphertext.subarray(produced, ++produced));
+      },
+      destroy(error, callback) { closed = true; callback(error); },
+    });
+    storage.getObject = vi.fn(async (_companyId, _objectKey, options) => {
+      expect(options?.signal).toBe(controller.signal);
+      return { stream: body, contentLength: ciphertext.length };
+    });
+    const scratchRoot = path.join(root, "private-scratch"); await fs.mkdir(scratchRoot);
+    const temp = vi.spyOn(os, "tmpdir").mockReturnValue(scratchRoot);
+    const targetPath = path.join(root, "interrupted.pcws");
+    try {
+      await expect(loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath, signal: controller.signal }))
+        .rejects.toMatchObject({ name: "AbortError" });
+      expect(closed).toBe(true); expect(body.destroyed).toBe(true);
+      expect(produced).toBeGreaterThan(0); expect(produced).toBeLessThan(ciphertext.length);
+      const atRejection = produced; await new Promise(resolve => setImmediate(resolve)); expect(produced).toBe(atRejection);
+      expect(await fs.readdir(scratchRoot)).toEqual([]);
+      await expect(fs.access(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { temp.mockRestore(); }
   });
 });

@@ -16,6 +16,7 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import { getStorageService, type StorageService } from "../storage/index.js";
 import { loadConfig } from "../config.js";
 import { conflict, forbidden } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess } from "./task-workspace-access.js";
@@ -29,6 +30,7 @@ import {
   beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, uploadWorkspaceSnapshot,
 } from "./remote-workspace-snapshot-storage.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
+import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { attachPreservedWorkspaceSnapshots } from "./workspace-recovery-snapshot.js";
 import { notifyRemoteWorkspaceSnapshots } from "./remote-workspace-snapshot-retention.js";
 import { provisionRemoteWorkspace } from "./remote-workspace-provisioning.js";
@@ -435,18 +437,27 @@ export async function prepareRemoteWorkspaceRepository(input: {
 }
 
 export function createSavedWorkspaceLoader(db: Db, storage: StorageService = getStorageService()) {
-  return async (input: { companyId: string; workspaceId: string; snapshotId: string }) => {
+  return async (input: { companyId: string; workspaceId: string; snapshotId: string; signal?: AbortSignal }) => {
+    input.signal?.throwIfAborted();
     const [row] = await db.select().from(executionWorkspaceSnapshots).where(and(eq(executionWorkspaceSnapshots.companyId, input.companyId),
       eq(executionWorkspaceSnapshots.executionWorkspaceId, input.workspaceId), eq(executionWorkspaceSnapshots.id, input.snapshotId),
       eq(executionWorkspaceSnapshots.status, "committed")));
     const saved = row ? await getWorkspaceSnapshot(db, input) : null;
+    input.signal?.throwIfAborted();
     if (!saved) throw new Error("remote_workspace_snapshot_unavailable");
     const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-files-"));
+    // Source modes stay intact while reading. Cleanup changes only private directories and skips symlinks.
+    const cleanup = () => removeTaskDirectoryTree(scratch);
     try {
       const archive = path.join(scratch, "archive.pcws"), root = path.join(scratch, "files");
-      await loadWorkspaceSnapshotArchive({ storage, reference: saved, targetPath: archive });
-      await restoreRemoteWorkspaceArchive({ archivePath: archive, targetDir: root, expectedManifestDigest: saved.manifestDigest });
-      return { root, savedAt: row!.updatedAt.toISOString(), cleanup: () => rm(scratch, { recursive: true, force: true }) };
-    } catch (error) { await rm(scratch, { recursive: true, force: true }); throw error; }
+      await loadWorkspaceSnapshotArchive({ storage, reference: saved, targetPath: archive, signal: input.signal });
+      await restoreRemoteWorkspaceArchive({ archivePath: archive, targetDir: root, expectedManifestDigest: saved.manifestDigest, signal: input.signal });
+      return { root, savedAt: row!.updatedAt.toISOString(), cleanup };
+    } catch (error) {
+      try { await cleanup(); } catch (cleanupError) {
+        logger.warn({ err: cleanupError }, "Failed to remove saved workspace extraction");
+      }
+      throw error;
+    }
   };
 }

@@ -23,9 +23,11 @@ async function workspaceArchive(input: {
   type Entry = { path: string; type: "directory" | "file" | "symlink"; mode?: number; size?: number; sha256?: string; target?: string };
   const fail = (reason: string): never => { throw new Error(`remote_workspace_archive_${reason}`); };
   const check = () => input.signal?.throwIfAborted();
+  check();
   const hashFile = async (file: string) => {
+    check();
     const hash = crypto.createHash("sha256"); let size = 0;
-    for await (const bytes of createReadStream(file)) { check(); hash.update(bytes); size += bytes.length; }
+    for await (const bytes of createReadStream(file, { signal: input.signal })) { check(); hash.update(bytes); size += bytes.length; }
     return { sha256: hash.digest("hex"), byteSize: size };
   };
   const safeRelative = (value: unknown): value is string => typeof value === "string" && value.length > 0
@@ -146,7 +148,7 @@ async function workspaceArchive(input: {
             if (!before.isFile() || BigInt(stat.dev) !== before.dev || BigInt(stat.ino) !== before.ino || await fs.realpath(source) !== source) fail("changed");
             if (target) output = await fs.open(target, "wx", 0o600);
             const digest = crypto.createHash("sha256"); let bytes = 0;
-            for await (const part of handle.createReadStream({ autoClose: false })) {
+            for await (const part of handle.createReadStream({ autoClose: false, signal: input.signal })) {
               check(); digest.update(part); bytes += part.length;
               await output?.writeFile(part);
             }
@@ -234,7 +236,7 @@ async function workspaceArchive(input: {
       try {
         await output.writeFile(Buffer.concat([magic, length, body]));
         for (const entry of entries) if (entry.type === "file") {
-          for await (const bytes of createReadStream(path.join(tree, entry.path))) { check(); await output.writeFile(bytes); }
+          for await (const bytes of createReadStream(path.join(tree, entry.path), { signal: input.signal })) { check(); await output.writeFile(bytes); }
         }
       } finally { await output.close(); }
       if (input.manifestPath) await fs.writeFile(input.manifestPath, body, { flag: "wx", mode: 0o600 });
@@ -248,14 +250,17 @@ async function workspaceArchive(input: {
   try {
     const prefix = Buffer.alloc(magic.length + 4);
     if ((await archive.read(prefix, 0, prefix.length, 0)).bytesRead !== prefix.length || !prefix.subarray(0, magic.length).equals(magic)) fail("invalid_header");
+    check();
     const manifestSize = prefix.readUInt32BE(magic.length);
     if (manifestSize > 64 * 1024 * 1024) fail("manifest_too_large");
     const bytes = Buffer.alloc(manifestSize);
     if ((await archive.read(bytes, 0, manifestSize, prefix.length)).bytesRead !== manifestSize) fail("truncated");
+    check();
     const manifest = JSON.parse(bytes.toString("utf8")) as { schema: string; entries: Entry[] };
     if (manifest.schema !== schema || !Array.isArray(manifest.entries) || manifestHash(manifest) !== input.expectedManifestDigest) fail("manifest_mismatch");
     const kinds = new Map<string, string>(); let bodySize = 0;
     for (const entry of manifest.entries) {
+      check();
       if (!entry || !safeRelative(entry.path) || kinds.has(entry.path)) fail("invalid_entry");
       const parent = path.posix.dirname(entry.path);
       if (parent !== "." && kinds.get(parent) !== "directory") fail("invalid_parent");
@@ -271,6 +276,7 @@ async function workspaceArchive(input: {
     const parent = await fs.realpath(path.dirname(input.targetDir!));
     const existing = await fs.lstat(input.targetDir!).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return null; });
     if (existing && (!existing.isDirectory() || existing.isSymbolicLink() || (await fs.readdir(input.targetDir!)).length)) fail("target_not_empty");
+    check();
     staging = await fs.mkdtemp(path.join(parent, ".workspace-restore-"));
     let offset = prefix.length + manifestSize;
     const buffer = Buffer.alloc(1024 * 1024);
@@ -293,9 +299,13 @@ async function workspaceArchive(input: {
         await fs.chmod(target, entry.mode!);
       }
     }
-    for (const entry of manifest.entries.filter(entry => entry.type === "directory").reverse()) await fs.chmod(path.join(staging, entry.path), entry.mode!);
+    for (const entry of manifest.entries.filter(entry => entry.type === "directory").reverse()) {
+      check(); await fs.chmod(path.join(staging, entry.path), entry.mode!);
+    }
+    const content = await hashFile(input.archivePath);
+    check();
     await fs.rename(staging, input.targetDir!); staging = undefined;
-    return { schema, manifestDigest: input.expectedManifestDigest!, ...await hashFile(input.archivePath), entries: manifest.entries.length };
+    return { schema, manifestDigest: input.expectedManifestDigest!, ...content, entries: manifest.entries.length };
   } finally {
     await archive.close();
     if (staging) {
