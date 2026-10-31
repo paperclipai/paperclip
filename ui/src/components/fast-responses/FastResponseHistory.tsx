@@ -41,5 +41,5 @@ export function FastResponseHistory({
         </Button>
       </div>
     );
-  return <DecisionHistoryTable entries={query.data ?? []} fastResponse connectionsEnabled={enabled} />;
+  return <DecisionHistoryTable entries={query.data ?? []} fastResponse fastResponsesEnabled={enabled} />;
 }

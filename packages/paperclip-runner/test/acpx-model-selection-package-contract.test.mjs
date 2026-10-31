@@ -37,8 +37,8 @@ async function fixture(t, agent, behavior = {}) {
           options:[{value:'advertised-model',name:'Advertised'},{value:'custom/model[variant=x]',name:'Variant'}]}];
         readline.createInterface({input:process.stdin}).on('line',line=>{
           const m=JSON.parse(line);
-          if(m.method==='initialize') send({id:m.id,result:{protocolVersion:1,agentCapabilities:{loadSession:true},authMethods:[]}});
-          else if(m.method==='session/new'||m.method==='session/load') send({id:m.id,result:{sessionId:'session-1',
+          if(m.method==='initialize') send({id:m.id,result:{protocolVersion:1,agentCapabilities:${JSON.stringify({loadSession:true,...(behavior.resume ? {sessionCapabilities:{resume:{}}} : {})})},authMethods:[]}});
+          else if(m.method==='session/new'||m.method==='session/load'||m.method==='session/resume') send({id:m.id,result:{sessionId:'session-1',
             ...(${JSON.stringify(response === "missing")} ? {} : {configOptions:config(${JSON.stringify(behavior.currentModel ?? "default")}),
             models:{currentModelId:${JSON.stringify(behavior.currentModel ?? "default")},availableModels:[{modelId:'advertised-model',name:'Advertised'},{modelId:'custom/model[variant=x]',name:'Variant'}]}})}});
           else if(m.method==='session/set_config_option') {
@@ -72,7 +72,7 @@ async function fixture(t, agent, behavior = {}) {
     async open() {
       const runtime = createAcpRuntime(options), owner = { runtime, handle: null };
       runtimes.push(owner);
-      owner.handle = await runtime.ensureSession({ sessionKey: "model-selection", agent, mode: "persistent", cwd, sessionOptions: { model: selectedModel } });
+      owner.handle = await runtime.ensureSession({ sessionKey: "model-selection", agent, mode: "persistent", cwd, sessionOptions: { model: selectedModel, ...behavior.sessionOptions } });
       return owner;
     },
     async prompt(owner) {
@@ -142,4 +142,29 @@ test("Cursor command detection never expands a model into an advertised variant"
   const owner = await f.open();
   assert.equal((await f.prompt(owner)).status, "completed");
   assert.deepEqual(f.selected(), [selectedModel]);
+});
+
+for (const includeUserSettings of [false, true]) for (const resume of [false, true]) test(`Claude ${resume ? "resume" : "load"} preserves native session options (user settings ${includeUserSettings})`, { timeout: 10_000 }, async t => {
+  const prior = process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS;
+  if (includeUserSettings) process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS = "1";
+  else delete process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS;
+  t.after(() => { if (prior === undefined) delete process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS; else process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS = prior; });
+  const f = await fixture(t, "claude", {
+    resume, agentCommand: "/paperclip-verified/claude-agent-acp",
+    sessionOptions: { allowedTools: ["mcp__fixture__*"], maxTurns: 5, systemPrompt: { append: "Fixture instructions" } },
+  });
+  const first = await f.open();
+  assert.equal((await f.prompt(first)).status, "completed");
+  await f.close(first);
+  const second = await f.open();
+  assert.equal((await f.prompt(second)).status, "completed");
+  const created = f.requests.find(r => r.method === "session/new");
+  const restored = f.requests.find(r => r.method === (resume ? "session/resume" : "session/load"));
+  assert.ok(restored, "the provider session reconnects");
+  assert.equal(created.params._meta.claudeCode.options.model, selectedModel);
+  assert.equal(created.params._meta.claudeCode.options.maxTurns, 5);
+  assert.deepEqual(created.params._meta.systemPrompt, { append: "Fixture instructions" });
+  assert.deepEqual(created.params._meta.claudeCode.options.allowedTools, ["mcp__fixture__*"]);
+  assert.deepEqual(created.params._meta.claudeCode.options.settingSources, includeUserSettings ? ["user", "project", "local"] : ["project", "local"]);
+  assert.deepEqual(restored.params._meta, created.params._meta, "reconnect must preserve the requested native launch settings");
 });

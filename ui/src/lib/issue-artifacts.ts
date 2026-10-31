@@ -1,5 +1,10 @@
 import type { IssueAttachment, IssueDocumentSummary, IssueWorkProduct } from "@paperclipai/shared";
-import { getAttachmentArtifactWorkProductMetadata } from "@paperclipai/shared";
+import { getAttachmentArtifactWorkProductMetadata, isArtifactReviewDocumentKey, isSystemIssueDocumentKey } from "@paperclipai/shared";
+
+/** Documents authored here; Plans and file reviews retain their own workflows. */
+export function isGeneralTaskDocumentKey(key: string): boolean {
+  return key.trim().toLowerCase() !== "plan" && !isArtifactReviewDocumentKey(key) && !isSystemIssueDocumentKey(key);
+}
 
 /**
  * Selectors for the properties pane's Artifacts tab (PAP-491): which

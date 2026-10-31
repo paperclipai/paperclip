@@ -79,7 +79,18 @@ const meta = {
   id: "private-tasks-05-projects",
   title: "Getting started and access/Login, invitations, and access/Private tasks/05 Projects",
   decorators: [privacyDecorator],
-  parameters: { ...privacyParameters, docs: { description: { component: "Project settings → Manage access. Human and agent identities appear in the search dropdown and selected value. Owner, reader, error, loading and mobile states use production components." } } },
+  parameters: { ...privacyParameters, docs: { description: { component: "Project settings → Manage access. Human and agent identities appear in the search dropdown and selected value. Owner, reader, error, loading and mobile states use production components." } },
+    paperclip: {
+      "capabilities": [
+        "access/resources",
+        "tasks/properties",
+        "projects/lifecycle"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
   args: { projectName: "Executive planning" },
   argTypes: { projectName: { control: "text" } },
   render: (args) => <ProjectStory {...args} />,

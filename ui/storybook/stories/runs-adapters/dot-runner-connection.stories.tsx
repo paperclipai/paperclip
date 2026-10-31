@@ -35,7 +35,16 @@ function ConnectionForm() {
 const meta = {
   id: "assistant-connections-dot-runner",
   title: "Agents and reusable capabilities/Runs, harnesses, and model accounts/Assistant connections/Dot Runner", component: ConnectionForm,
-  parameters: { layout: "padded", docs: { description: { component: "Production Dot pairing component. API responses, pairing code and account state are synthetic. This preview does not qualify a real Dot account." } } },
+  parameters: { layout: "padded", docs: { description: { component: "Production Dot pairing component. API responses, pairing code and account state are synthetic. This preview does not qualify a real Dot account." } },
+    paperclip: {
+      "capabilities": [
+        "runs-adapters/validation",
+        "gateways-profiles/client-connect"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   beforeEach: ({ parameters }) => installFixture(Boolean(parameters.connected)),
 } satisfies Meta<typeof ConnectionForm>;
 export default meta;

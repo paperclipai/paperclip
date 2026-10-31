@@ -1,6 +1,6 @@
 import { hireApprovalService as approvalRecords, type HireDecisionTarget } from "./adapters/approvals.js";
 import { agents } from "@paperclipai/db";
-import { and, asc, eq, gt, inArray } from "drizzle-orm";
+import { inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { LifecycleEffects } from "./adapters/effects.js";
 export type { LifecycleEffects } from "./adapters/effects.js";
@@ -8,17 +8,20 @@ import { updateAgentConfiguration } from "./adapters/configuration.js";
 import type { AgentConfigurationPatch, UpdateAgentOptions } from "../../lib/agent-records.js";
 import { purgeAgent } from "./adapters/deletion.js";
 import { agentRecords } from "./adapters/records.js";
-import { assertRootDatabase, createLifecycleStore } from "./adapters/postgres.js";
+import { assertRootDatabase, createLifecycleStore, pendingLifecycleWork } from "./adapters/postgres.js";
+import { hasCompanyHoldMismatch, projectCompanyHolds } from "./adapters/company-policy.js";
 import { createLifecycleWorker } from "./application/worker.js";
 import type { LifecycleDriver } from "./application/ports.js";
 
-export { AgentLifecycleConflict, canConfigureAgentConnection, isAgentAwaitingSetup } from "./domain/policy.js";
+export { applyAgentPolicyHoldsInTransaction } from "./adapters/postgres.js";
+export { companyHoldMismatch, fenceActiveCompanyAgentStopsInTransaction } from "./adapters/company-policy.js";
+
+export { AgentLifecycleConflict, canConfigureAgentConnection, isAgentAwaitingSetup, isAgentSetupDraft } from "./domain/policy.js";
 
 export type { HireDecisionTarget } from "./adapters/approvals.js";
 export type { LifecycleDriver, LifecycleAgent, LifecycleFailure } from "./application/ports.js";
 
-const policyStates = ["preparing", "verifying", "ready", "pausing", "paused", "resuming"] as const;
-const policyPageSize = 100;
+const wakes = new WeakMap<Db, () => void>();
 
 const workers = new WeakMap<Db, ReturnType<typeof createLifecycleWorker>>();
 export function configureAgentLifecycle(db: Db, effects: LifecycleEffects, driver: LifecycleDriver, canRun = () => true) {
@@ -28,8 +31,16 @@ export function configureAgentLifecycle(db: Db, effects: LifecycleEffects, drive
   return worker;
 }
 export function scheduleAgentLifecycle(db: Db, id: string) {
-  // The periodic sweep retries work if the process stops before this call.
+  const wake = wakes.get(db);
+  if (wake) { wake(); return; }
+  // Standalone/test owners may explicitly configure a worker without a coordinator.
   return workers.get(db)?.process(id).catch(() => {});
+}
+
+/** Destructive deletion must establish this agent's completed cleanup before
+ * purging dependent records. Ordinary producers only schedule asynchronous work. */
+export function processAgentLifecycle(db: Db, id: string): Promise<void> {
+  return workers.get(db)?.process(id) ?? Promise.resolve();
 }
 
 export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
@@ -66,7 +77,6 @@ export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
       if (!existing) return null;
       const agent = await effects.transaction(db, existing.companyId, (tx, publications) =>
         updateAgentConfiguration(tx, effects, id, data, options, publications));
-      if (data.budgetMonthlyCents !== undefined) await effects.enforceBudget(db, existing.companyId, id);
       scheduleAgentLifecycle(db, id);
       return agent;
     },
@@ -78,20 +88,8 @@ export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
         await createLifecycleStore(tx, effects).change(id, command, { reason: command === "resume" ? "user" : "manual" });
         return agentRecords(tx, effects).getById(id);
       });
-      if (data.budgetMonthlyCents !== undefined) await effects.enforceBudget(db, existing.companyId, id);
       scheduleAgentLifecycle(db, id);
       return agent;
-    },
-    async reconcilePolicyHolds(companyId: string, agentId?: string | null) {
-      if (agentId === null) return;
-      const rows = await db.select({ id: agents.id }).from(agents).where(and(
-        eq(agents.companyId, companyId), agentId ? eq(agents.id, agentId) : undefined,
-        inArray(agents.lifecycleState, policyStates),
-      ));
-      for (const row of rows) {
-        await store.change(row.id, "reconcile");
-        scheduleAgentLifecycle(db, row.id);
-      }
     },
     pauseAgent: (id: string, reason = "manual") => change(id, "pause", reason),
     resumeAgent: (id: string, reason = "user") => change(id, "resume", reason),
@@ -106,39 +104,40 @@ export function startAgentLifecycle(db: Db, effects: LifecycleEffects, driver: L
   const worker = configureAgentLifecycle(db, effects, driver, canRun);
   let running: Promise<void> | undefined;
   let stopped = false;
-  let nextPolicySweep = 0;
-  let policyCursor: string | undefined;
-  const store = createLifecycleStore(db, effects);
-  function sweep() {
-    if (stopped || !canRun()) return Promise.resolve();
-    return running ??= (async () => {
-      if (Date.now() >= nextPolicySweep) {
-        try {
-          const rows = await db.select({ id: agents.id }).from(agents).where(and(
-            inArray(agents.lifecycleState, policyStates), policyCursor ? gt(agents.id, policyCursor) : undefined,
-          )).orderBy(asc(agents.id)).limit(policyPageSize);
-          for (const row of rows) {
-            await store.change(row.id, "reconcile");
-            scheduleAgentLifecycle(db, row.id);
-            policyCursor = row.id;
-          }
-          if (rows.length < policyPageSize) policyCursor = undefined;
-        }
-        catch (error) { effects.reportFailure({ stage: "policy_scan" }, error); throw error; }
-        nextPolicySweep = Date.now() + 60_000;
-      }
-      await worker.sweep();
-    })().finally(() => { running = undefined; });
-  }
-  const timer = setInterval(() => { void sweep().catch(() => {}); }, 5_000);
-  timer.unref?.();
+  let nextDeadline: number | null = null;
+  // The coordinator supplies the wake after construction. No direct work escapes it.
+  wakes.set(db, () => {});
   return {
-    sweep,
+    setWake(wake: () => void) { wakes.set(db, wake); },
+    nextRunAt: () => nextDeadline,
+    async hasPending() {
+      if (stopped) { nextDeadline = null; return false; }
+      const [pending] = await db.select({ due: sql<number | null>`min(greatest(
+        coalesce(extract(epoch from (${agents.lifecycleOperation}->>'leaseUntil')::timestamptz) * 1000, 0),
+        coalesce(extract(epoch from (${agents.lifecycleOperation}->>'retryAt')::timestamptz) * 1000, 0)))::double precision` })
+        .from(agents).where(pendingLifecycleWork);
+      const due = pending?.due == null ? null : Number(pending.due);
+      const now = Date.now();
+      // Already-due work uses the coordinator's bounded retry. A zero-delay
+      // deadline would spin if plugins are not ready to process it yet.
+      nextDeadline = due !== null && due > now ? due : null;
+      return (due !== null && due <= now) || await hasCompanyHoldMismatch(db);
+    },
+    sweep() {
+      if (stopped || !canRun()) return Promise.resolve();
+      return running ??= (async () => {
+        try { await projectCompanyHolds(db, effects); }
+        catch (error) { effects.reportFailure({ stage: "policy_scan" }, error); throw error; }
+        await worker.sweep();
+      })().finally(() => { running = undefined; });
+    },
     async stop() {
       stopped = true;
-      clearInterval(timer);
+      wakes.delete(db);
       workers.delete(db);
       try { await running; } finally { await worker.stop(); }
     },
   };
 }
+
+export { lifecycleFailureCode } from "./application/failure.js";

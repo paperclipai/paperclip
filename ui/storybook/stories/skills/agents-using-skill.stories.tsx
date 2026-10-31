@@ -121,7 +121,15 @@ function Seed({ skill, children }: { skill: CompanySkillDetail; children: ReactN
 const meta: Meta = {
   id: "skill-studio-agentsusingskill",
   title: "Agents and reusable capabilities/Skills and Skill Studio/Skill Studio/AgentsUsingSkill",
-  parameters: { layout: "centered" },
+  parameters: { layout: "centered",
+    paperclip: {
+      "capabilities": [
+        "skills/policy"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 

@@ -114,7 +114,18 @@ const meta = {
   id: "connections-chat-management",
   title: "Apps, channels, and extensions/External chat and email/Connections/Chat management",
   component: ChatManagementPage,
-  parameters: { layout: "fullscreen", a11y: { test: "off" } },
+  parameters: { layout: "fullscreen", a11y: { test: "off" },
+    paperclip: {
+      "capabilities": [
+        "chat-channels/lifecycle",
+        "chat-channels/identity",
+        "chat-channels/conversation"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Task-workspace reconciliation: the mounted endpoint adds connection and destination editors. Local endpoint PATCH/resource PUT preserve defaults; workspace-choice requests now return only active/idle, unclosed fixture workspaces. Browser save/error/reload and new-conversation inheritance remain unverified. Inspected channel task-default controls, optional API fields, avatar rendering and matching fixture updates; live defaults inheritance and permission checks remain outside these stories. Access, InvitePeople, ConnectAndTest and Conversations render the shipped endpoint detail with simulated identity linking and conversation data. External delivery and identity authorization are not live."
+    },
+  },
   args: { tab: "settings", scenario: "populated" },
   argTypes: { tab: { control: "select", options: ["settings", "access", "conversations"] }, scenario: { control: "select", options: ["populated", "empty", "error", "channel-added"] } },
 } satisfies Meta<typeof ChatManagementPage>;

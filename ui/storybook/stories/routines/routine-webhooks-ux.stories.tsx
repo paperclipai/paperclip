@@ -194,7 +194,15 @@ const meta = {
   id: "product-routines-webhooks-ux-preview",
   title: "Automation and structured work/Routines, schedules, and triggers/Product/Routines/Webhooks UX preview",
   component: Prototype,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "routines/triggers"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   args: { stage: "setup", sender: "custom", page: "triggers", triggerKind: "choose", wizardStep: 0, scheduleSaved: false, checkResult: "waiting" },
   argTypes: { triggerKind: { control: "radio", options: ["choose", "schedule", "webhook"] }, scheduleSaved: { control: "boolean" }, checkResult: { control: "select", options: ["waiting", "received", "rejected", "no_event"] }, stage: { control: "select", options: ["setup", "credentials", "waiting", "received", "failure"] }, sender: { control: "radio", options: ["custom", "github"] }, page: { control: "radio", options: ["triggers", "overview", "activity"] } },
 } satisfies Meta<typeof Prototype>;

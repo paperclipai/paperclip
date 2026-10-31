@@ -26,6 +26,12 @@ it.each([undefined, "ready", "paused", "pending_approval", "terminated", "reject
   expect(agentLifecycleRefetchInterval(lifecycleState)).toBe(30_000);
 });
 
+it("does not promise automatic retry of a failed configuration check", () => {
+  const html = renderToStaticMarkup(<AgentLifecycleStatus agent={{ lifecycleState: "verifying", lifecycleError: "Update Configuration or choose Retry now." }} onRetry={() => {}} retryPending={false} />);
+  expect(html).toContain("Retry now");
+  expect(html).not.toContain("Paperclip retries automatically");
+});
+
 it("retries a failed step once while pending and removes the failure after recovery", async () => {
   const container = document.createElement("div");
   const root = createRoot(container);
@@ -34,7 +40,9 @@ it("retries a failed step once while pending and removes the failure after recov
   try {
     await act(async () => root.render(<AgentLifecycleStatus agent={agent} onRetry={retry} retryPending={false} />));
     expect(container.textContent).toContain(agent.lifecycleError);
-    expect(container.textContent).toContain("Termination is not complete");
+    expect(container.textContent).toContain("Agent cleanup failed");
+    expect(container.textContent).toContain("Paperclip retries automatically");
+    expect(container.textContent).not.toContain("Required resources are being removed");
     await act(async () => container.querySelector("button")!.click());
     expect(retry).toHaveBeenCalledOnce();
     await act(async () => root.render(<AgentLifecycleStatus agent={agent} onRetry={retry} retryPending />));

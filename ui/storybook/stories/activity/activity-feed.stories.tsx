@@ -156,7 +156,16 @@ function Seeded({ events }: { events: ToolGatewayActivityEvent[] }) {
 const meta: Meta = {
   id: "tools-activity-audit-feed",
   title: "Oversight and operation/Dashboards and audit trails/Tools/Activity (audit feed)",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "activity/activity",
+        "gateways-profiles/activity"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 

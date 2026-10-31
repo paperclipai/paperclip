@@ -50,7 +50,9 @@ function assistantChannel(
 ): "progress" | "final" | "unknown" {
   const item = normalizedItem(payload);
   const value = text(payload.channel) ?? text(item.channel);
-  if (value === "progress" || value === "final" || value === "unknown") return value;
+  if (value === "progress" || value === "final") return value;
+  if ((!value || value === "unknown") && record(payload.update)?.channel === "progress") return "progress";
+  if (value === "unknown") return value;
   return fallback;
 }
 
@@ -586,7 +588,6 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
   const entries: TranscriptEntry[] = [];
   const startedToolIds = new Set<string>();
   const completedToolIds = new Set<string>();
-  let hasFinalAssistantMessage = false;
   let usageSummary: {
     ts: string;
     inputTokens: number;
@@ -601,7 +602,6 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     cachedTokens: number;
     costUsd: number;
   } | null = null;
-  let runResultFallback: { ts: string; text: string } | null = null;
   const seenSourceEventIds = new Set<string>();
   const orderedEvents = [...events]
     .sort((a, b) => a.seq - b.seq)
@@ -739,7 +739,6 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       // Before that point the deltas still provide the live streaming view.
       if (completedAgentMessageIds.has(itemId)) continue;
       const channel = itemIdentity.assistantChannel;
-      if (channel !== "progress") hasFinalAssistantMessage = true;
       entries.push({ kind: "assistant", ts, text: value, delta: true, channel, itemId });
       continue;
     }
@@ -748,7 +747,6 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       const value = normalizedItemText(payload);
       if (!value) continue;
       const channel = itemIdentity.assistantChannel;
-      if (channel !== "progress") hasFinalAssistantMessage = true;
       entries.push({ kind: "assistant", ts, text: value, channel, ...(itemId ? { itemId } : {}) });
       continue;
     }
@@ -1023,10 +1021,6 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
         }
         hasRunResult = true;
       }
-      const summary = text(result.summary);
-      if (!hasFinalAssistantMessage && summary && !runResultFallback) {
-        runResultFallback = { ts, text: summary };
-      }
       continue;
     }
   }
@@ -1055,18 +1049,6 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
         sourceEventId: candidate.sourceEventId,
       };
     }
-  }
-
-  // A structured result can be proposed before its originating final item is
-  // durably completed. Delay the fallback until every event has been examined
-  // so the explicit assistant reply wins regardless of source ordering.
-  if (!hasFinalAssistantMessage && runResultFallback) {
-    entries.push({
-      kind: "assistant",
-      ts: runResultFallback.ts,
-      text: runResultFallback.text,
-      channel: "final",
-    });
   }
 
   if (usageSummary) {

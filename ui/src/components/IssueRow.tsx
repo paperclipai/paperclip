@@ -1,8 +1,8 @@
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
-import type { ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Archive, Flag } from "lucide-react";
+import { Archive, Flag, CircleAlert } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -19,13 +19,18 @@ import {
   readRecoveryRetryLineage,
   type RecoveryLivenessContext,
 } from "../lib/recovery-lineage";
-import { StatusIcon } from "./StatusIcon";
+import { StatusIcon, getStatusIconLabel } from "./StatusIcon";
 import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
 import { ExternalObjectStatusSummary } from "./ExternalObjectStatusSummary";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { TaskRowColumnCells, useTaskListColumns, type TaskRowColumnValues } from "./TaskListColumns";
+import { CellMarquee, HoveredCellContext, useCellMarqueeHover } from "./CellMarquee";
 
 export type IssueRowUnreadState = "hidden" | "visible" | "fading";
 export type IssueRowPresentation = "legacy" | "task";
+export type IssueRowAppearance = "default" | "refreshed";
+export type IssueRowDensity = "comfortable" | "compact";
 
 export interface IssueRowProps {
   issue: Issue;
@@ -33,6 +38,14 @@ export interface IssueRowProps {
   selected?: boolean;
   /** Opt-in canonical collection layout. Legacy remains the default until each surface migrates. */
   presentation?: IssueRowPresentation;
+  /** Reviewed in Storybook before adoption; only applies to the canonical task presentation. */
+  appearance?: IssueRowAppearance;
+  /** Refreshed task rows share their anatomy at either density. */
+  density?: IssueRowDensity;
+  /** Reserve collection geometry while optional diagnostics arrive. */
+  stableLayout?: boolean;
+  /** Opt-in complete column contract for refreshed task lists. */
+  columnValues?: TaskRowColumnValues;
   /** Interactive disclosure or selection control before the canonical status glyph. */
   leadingControl?: ReactNode;
   /** Optional status override; defaults to the task's shared StatusIcon. */
@@ -122,6 +135,10 @@ export function IssueRow({
   issueLinkState,
   selected = false,
   presentation = "legacy",
+  appearance = "default",
+  density = "comfortable",
+  stableLayout = false,
+  columnValues,
   leadingControl,
   statusSlot,
   metadata,
@@ -151,12 +168,15 @@ export function IssueRow({
   chevronInGuide = false,
   showDivider = false,
 }: IssueRowProps) {
+  const visibleColumns = useTaskListColumns();
+  const { hoveredCell, onMouseMove: handleCellHover, clearHoveredCell } = useCellMarqueeHover();
+  const [titleFocused, setTitleFocused] = useState(false);
+
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
-  // A row participates in the unread system whenever `unreadState` is supplied.
-  // Canonical rows overlay this affordance in their shared gutter, while legacy
-  // inbox rows retain their reserved slot until that presentation is migrated.
-  const showUnreadSlot = unreadState != null;
+  // Refreshed task rows communicate unread state through title typography alone.
+  // Existing presentations retain their unread control and its reserved space.
+  const showUnreadSlot = unreadState != null && !(presentation === "task" && appearance === "refreshed");
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
   const unreadDotButton = (
     <button
@@ -200,7 +220,9 @@ export function IssueRow({
   const recoveryAction = issue.activeRecoveryAction ?? null;
   // The row already carries the issue's own scheduled retry, so the chip can tell a retry the
   // scheduler is actually running from one whose due time simply passed.
-  const recoveryIndicator = recoveryAction && !requiresExecutionReconciliation(recoveryAction.cause)
+  const recoveryIndicator = issue.interruption?.responsibility === "system" && issue.interruption.state !== "resolved"
+    ? null
+    : recoveryAction && !requiresExecutionReconciliation(recoveryAction.cause)
     ? renderRecoveryChip(recoveryAction, selected, { scheduledRetry: issue.scheduledRetry ?? null })
     : null;
   const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
@@ -216,139 +238,219 @@ export function IssueRow({
 
   if (presentation === "task") {
     const isUnread = unreadState === "visible" || unreadState === "fading";
-    return (
-      <div
-        onMouseEnter={onMouseEnter}
-        data-slot="task-row"
-        data-unread={isUnread ? "true" : undefined}
+    const refreshed = appearance === "refreshed";
+    const statusLabel = getStatusIconLabel(issue.status, issue.externalConversationState, issue.blockerAttention);
+    const statusIcon = <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />;
+    const status = statusSlot ?? (refreshed ? (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Link
+            to={createIssueDetailPath(issuePathId)}
+            state={detailState}
+            disableIssueQuicklook
+            issuePrefetch={issue}
+            onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
+            aria-label={`Open task ${identifier} (${statusLabel})`}
+            className="task-row-status-link"
+            data-slot="task-row-status"
+          >
+            {statusIcon}
+          </Link>
+        </TooltipTrigger>
+        <TooltipContent className="task-row-status-tooltip">{statusLabel}</TooltipContent>
+      </Tooltip>
+    ) : statusIcon);
+    const taskLink = (
+      <Link
+        to={createIssueDetailPath(issuePathId)}
+        state={detailState}
+        disableIssueQuicklook
+        issuePrefetch={issue}
+        data-inbox-issue-link
+        id={checklistRowId}
+        aria-current={checklistCurrentStep ? "step" : undefined}
+        onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
+        onFocus={appearance === "refreshed" ? () => setTitleFocused(true) : undefined}
+        onBlur={appearance === "refreshed" ? () => setTitleFocused(false) : undefined}
+        onKeyDown={appearance === "refreshed" ? (event) => {
+          if (event.key === "Escape") {
+            clearHoveredCell();
+            setTitleFocused(false);
+          }
+        } : undefined}
         className={cn(
-          "group relative flex min-w-0 items-start gap-2 rounded-lg py-2.5 pr-2 text-sm no-underline text-inherit sm:items-center sm:py-2",
-          showUnreadSlot ? "pl-4" : "pl-2 sm:pl-4",
-          "[&_button]:relative [&_button]:z-10",
-          selected ? "bg-accent/50 hover:bg-accent/50" : "hover:bg-accent/50",
-          checklistCurrentStep && "bg-primary/5",
-          className,
+          "absolute inset-0 rounded-lg no-underline text-inherit focus-visible:z-10 focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring",
+          refreshed && "task-row-link",
         )}
       >
-        <Link
-          to={createIssueDetailPath(issuePathId)}
-          state={detailState}
-          disableIssueQuicklook
-          issuePrefetch={issue}
-          data-inbox-issue-link
-          id={checklistRowId}
-          aria-current={checklistCurrentStep ? "step" : undefined}
-          onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
-          className="absolute inset-0 rounded-lg no-underline text-inherit focus-visible:z-10 focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring"
-        >
-          <span className="sr-only">Open {identifier}: {issue.title}</span>
-        </Link>
-
-        {showUnreadSlot ? (
-          <span
-            data-testid="issue-row-unread-slot"
-            className="absolute left-0 top-3 inline-flex h-4 w-4 items-center justify-center sm:top-1/2 sm:-translate-y-1/2"
-          >
-            {showUnreadDot ? unreadDotButton : null}
-          </span>
-        ) : null}
-
-        <span data-slot="task-row-leading" className="flex shrink-0 items-start self-stretch gap-1 pt-px sm:items-center sm:pt-0">
-          {treeGuides > 0
-            ? Array.from({ length: treeGuides }, (_, level) => {
-              const gapForChevron = chevronInGuide && level === treeGuides - 1;
-              return (
-                <span
-                  key={`task-guide-${level}`}
-                  data-slot="task-row-tree-guide"
-                  aria-hidden="true"
-                  className="relative block w-4 shrink-0 self-stretch"
-                >
-                  <span
-                    data-slot="task-row-tree-connector"
-                    className="absolute -inset-y-3 left-7 w-px bg-background"
-                  >
-                    {gapForChevron ? (
-                      <span className="absolute inset-0 flex flex-col">
-                        <span className="flex-1 bg-border" />
-                        <span className="h-3.5 shrink-0" />
-                        <span className="flex-1 bg-border" />
-                      </span>
-                    ) : (
-                      <span className="absolute inset-0 bg-border" />
-                    )}
-                  </span>
-                </span>
-              );
-            })
-            : null}
-          {leadingControl}
-          {statusSlot ?? (
-            <StatusIcon
-              status={issue.status} externalConversationState={issue.externalConversationState}
-              blockerAttention={issue.blockerAttention}
-              size="md"
-              className={selectedStatusClass}
-            />
+        <span className="sr-only">Open {identifier}: {issue.title}</span>
+      </Link>
+    );
+    return (
+      <HoveredCellContext.Provider value={hoveredCell}>
+        <div
+          onMouseEnter={onMouseEnter}
+          onMouseMove={refreshed ? handleCellHover : undefined}
+          onMouseLeave={refreshed ? () => { clearHoveredCell(); setTitleFocused(false); } : undefined}
+          role={refreshed && columnValues ? "row" : undefined}
+          data-slot="task-row"
+          data-issue-id={issue.id}
+          data-issue-row-details={issue.id}
+          data-unread={isUnread ? "true" : undefined}
+          data-appearance={refreshed ? "refreshed" : undefined}
+          data-density={refreshed ? density : undefined}
+          data-columns={refreshed && columnValues ? "all" : undefined}
+          data-status-hidden={refreshed && columnValues && !visibleColumns.includes("task") ? "true" : undefined}
+          data-title-hidden={refreshed && columnValues && !visibleColumns.includes("task") ? "true" : undefined}
+          style={refreshed ? { "--task-row-depth": treeGuides } as CSSProperties : undefined}
+          data-selected={selected ? "true" : undefined}
+          data-current-step={checklistCurrentStep ? "true" : undefined}
+          className={cn(
+            "group relative flex min-w-0 items-start gap-2 rounded-lg py-2.5 pr-2 text-sm no-underline text-inherit sm:items-center sm:py-2",
+            !refreshed && (showUnreadSlot ? "pl-4" : "pl-2 sm:pl-4"),
+            "[&_button]:relative [&_button]:z-10",
+            selected ? "bg-accent/50 hover:bg-accent/50" : "hover:bg-accent/50",
+            checklistCurrentStep && "bg-primary/5",
+            refreshed && "task-row-refreshed",
+            stableLayout && !refreshed && "task-row-stable",
+            className,
           )}
-          {parkedBlockerIndicator}
-        </span>
+        >
+          {taskLink}
 
-        <span className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
-          <span data-slot="task-row-title-cluster" className="flex min-w-0 flex-1 items-baseline gap-1.5 sm:items-center">
+          {showUnreadSlot ? (
             <span
-              data-slot="task-row-title"
-              className={cn(
-                "min-w-0 line-clamp-2 text-sm sm:truncate sm:line-clamp-none",
-                isUnread && "font-semibold",
-                titleClassName,
-              )}
+              data-testid="issue-row-unread-slot"
+              className="absolute left-0 top-3 inline-flex h-4 w-4 items-center justify-center sm:top-1/2 sm:-translate-y-1/2"
             >
-              {issue.title}{titleSuffix}
+              {showUnreadDot ? unreadDotButton : null}
             </span>
-            {recoveryIndicator}
-            {mobileTitleMeta ? (
-              <span className="ml-auto shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground sm:hidden">
-                {mobileTitleMeta}
-              </span>
+          ) : null}
+
+          <span role={refreshed && columnValues ? "cell" : undefined} data-slot="task-row-leading" data-marquee-cell={refreshed ? "task" : undefined} className="flex shrink-0 items-start self-stretch gap-1 pt-px sm:items-center sm:pt-0">
+            {treeGuides > 0
+              ? Array.from({ length: treeGuides }, (_, level) => {
+                const gapForChevron = chevronInGuide && level === treeGuides - 1;
+                return (
+                  <span
+                    key={`task-guide-${level}`}
+                    data-slot="task-row-tree-guide"
+                    data-chevron-gap={gapForChevron ? "true" : undefined}
+                    aria-hidden="true"
+                    className="relative block w-4 shrink-0 self-stretch"
+                  >
+                    <span
+                      data-slot="task-row-tree-connector"
+                      className="absolute -inset-y-3 left-7 w-px bg-background"
+                    >
+                      {gapForChevron ? (
+                        <span className="absolute inset-0 flex flex-col">
+                          <span data-slot="task-row-tree-line" className="flex-1 bg-border" />
+                          <span data-slot="task-row-tree-gap" className="h-3.5 shrink-0" />
+                          <span data-slot="task-row-tree-line" className="flex-1 bg-border" />
+                        </span>
+                      ) : (
+                        <span data-slot="task-row-tree-line" className="absolute inset-0 bg-border" />
+                      )}
+                    </span>
+                  </span>
+                );
+              })
+              : null}
+            {refreshed ? (
+              <span data-slot="task-row-leading-control">{leadingControl}</span>
+            ) : leadingControl}
+            {refreshed && columnValues && !visibleColumns.includes("task") ? null : status}
+            {parkedBlockerIndicator}
+          </span>
+
+          <span role={refreshed && columnValues ? "cell" : undefined} data-slot="task-row-content" data-marquee-cell={refreshed ? "task" : undefined} className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
+            <span data-slot="task-row-title-cluster" className="flex min-w-0 flex-1 items-baseline gap-1.5 sm:items-center">
+              {refreshed ? (
+                <CellMarquee cell="task" active={titleFocused} slot="task-row-title" contentSlot="task-row-title-text" tabbable={false} className={cn("min-w-0", isUnread && "font-semibold", titleClassName)}>
+                  {issue.title}{titleSuffix}
+                </CellMarquee>
+              ) : <span
+                data-slot="task-row-title"
+                className={cn(
+                  "min-w-0 line-clamp-2 text-sm sm:truncate sm:line-clamp-none",
+                  isUnread && "font-semibold",
+                  titleClassName,
+                )}
+              >
+                {issue.title}{titleSuffix}
+              </span>}
+              {stableLayout ? (
+                <span data-slot="task-row-recovery">
+                  <span className="hidden sm:inline">{recoveryIndicator}</span>
+                  {recoveryIndicator ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span tabIndex={0} aria-label="Task recovery status" className="relative z-10 inline-flex text-muted-foreground sm:hidden">
+                          <CircleAlert className="h-4 w-4" />
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>{recoveryIndicator}</TooltipContent>
+                    </Tooltip>
+                  ) : null}
+                </span>
+              ) : recoveryIndicator}
+              {mobileTitleMeta ? (
+                <span className="ml-auto shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground sm:hidden">
+                  {mobileTitleMeta}
+                </span>
+              ) : null}
+            </span>
+            {checklistDependencyChips ? (
+              <span className="flex flex-wrap gap-1">{checklistDependencyChips}</span>
+            ) : null}
+            {mobileMeta ? (
+              <span className="text-xs text-muted-foreground sm:hidden">{mobileMeta}</span>
             ) : null}
           </span>
-          {checklistDependencyChips ? (
-            <span className="flex flex-wrap gap-1">{checklistDependencyChips}</span>
-          ) : null}
-          {mobileMeta ? (
-            <span className="text-xs text-muted-foreground sm:hidden">{mobileMeta}</span>
-          ) : null}
-        </span>
 
-        <span
-          data-slot="task-row-trailing"
-          className="ml-auto hidden min-w-0 shrink-0 items-center gap-2 sm:flex"
-        >
-          {externalObjectSummary ? (
-            <ExternalObjectStatusSummary summary={externalObjectSummary} compact />
-          ) : null}
-          {metadata ? <span data-slot="task-row-metadata" className="min-w-0">{metadata}</span> : null}
-          {desktopTrailing}
-          {actions ? <span data-slot="task-row-actions" className="flex shrink-0 items-center gap-1">{actions}</span> : null}
-          {onArchive ? <InboxArchiveButton onArchive={onArchive} disabled={archiveDisabled} compact /> : null}
-          {showIdentifier ? (
-            <span data-slot="task-row-identifier" className="w-20 shrink-0 text-right font-mono text-xs text-muted-foreground">
-              {identifier}
-            </span>
-          ) : null}
-          {trailingMeta ? (
-            <span data-slot="task-row-timestamp" className="w-24 shrink-0 truncate text-right text-xs text-muted-foreground">
-              {trailingMeta}
-            </span>
-          ) : null}
-        </span>
-      </div>
+          <span
+            data-slot="task-row-trailing"
+            className="ml-auto hidden min-w-0 shrink-0 items-center gap-2 sm:flex"
+          >
+            {refreshed && columnValues ? (
+              <>
+                <TaskRowColumnCells identifier={identifier} values={columnValues} />
+                {actions ? <span data-slot="task-row-actions" className="flex shrink-0 items-center gap-1">{actions}</span> : null}
+                {onArchive ? <InboxArchiveButton onArchive={onArchive} disabled={archiveDisabled} compact /> : null}
+              </>
+            ) : (
+              <>
+                {stableLayout ? (
+                  <span data-slot="task-row-external"><ExternalObjectStatusSummary summary={externalObjectSummary} compact /></span>
+                ) : externalObjectSummary ? (
+                  <ExternalObjectStatusSummary summary={externalObjectSummary} compact />
+                ) : null}
+                {metadata ? <span data-slot="task-row-metadata" data-marquee-cell={refreshed ? "metadata" : undefined} className="min-w-0">{refreshed ? <CellMarquee cell="metadata">{metadata}</CellMarquee> : metadata}</span> : null}
+                {desktopTrailing}
+                {actions ? <span data-slot="task-row-actions" className="flex shrink-0 items-center gap-1">{actions}</span> : null}
+                {onArchive ? <InboxArchiveButton onArchive={onArchive} disabled={archiveDisabled} compact /> : null}
+                {showIdentifier ? (
+                  <span data-slot="task-row-identifier" data-marquee-cell={refreshed ? "identifier" : undefined} className="w-20 shrink-0 text-right font-mono text-xs text-muted-foreground">
+                    {refreshed ? <CellMarquee cell="identifier">{identifier}</CellMarquee> : identifier}
+                  </span>
+                ) : null}
+                {trailingMeta ? (
+                  <span data-slot="task-row-timestamp" data-marquee-cell={refreshed ? "timestamp" : undefined} className="w-24 shrink-0 truncate text-right text-xs text-muted-foreground">
+                    {refreshed ? <CellMarquee cell="timestamp">{trailingMeta}</CellMarquee> : trailingMeta}
+                  </span>
+                ) : null}
+              </>
+            )}
+          </span>
+        </div>
+      </HoveredCellContext.Provider>
     );
   }
 
   return (
     <div
+      data-issue-row-details={issue.id}
       onMouseEnter={onMouseEnter}
       className={cn(
         // No color transition on the row band: hover/selection must snap

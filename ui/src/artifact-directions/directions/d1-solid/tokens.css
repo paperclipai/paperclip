@@ -1,0 +1,111 @@
+/*
+  Direction 1 — SOLID. Custom properties, scoped to the wrapper every frame puts
+  around a kit slot. Everything here is achromatic: the only chroma in the
+  direction is the product's own status vocabulary (see StateMarker.tsx).
+
+  The fill ladder, by value only (OKLCH lightness; canvas is --background).
+  Each step is named for what it is, and each is a visible step from the one
+  it sits on (contrast in brackets, Y = L³ for greys):
+
+    light   canvas 1.000 → slab 0.900 [1.35] → slab-hover 0.865 → slab-press 0.830
+            button 0.800 [1.39 on slab]        sheet 1.000 [1.35 on slab]
+    dark    canvas 0.205 → slab 0.325 [1.44] → slab-hover 0.365 → slab-press 0.400
+            button 0.400 [1.35 on slab]        sheet 0.430 [1.54 on slab]
+
+  SHEET is where an artifact's own content is set (an excerpt, a file's facts):
+  the lightest fill short of ink in both themes — paper on a mat.
+
+  A gallery pile steps the other way: what is behind a stack's face is nearer
+  the canvas, in both themes.
+
+    light   slab 0.900 → pile-1 0.920 → pile-2 0.945
+    dark    slab 0.325 → pile-1 0.290 → pile-2 0.265
+
+  and one inverted fill, INK, for the kind block, the kind tab, and the primary
+  action of a hovered slab or of an artifact that waits for review:
+
+    light   ink 0.205 / on-ink 0.985
+    dark    ink 0.800 / on-ink 0.205   (silver, not white: it must not out-shout the prose)
+
+  Text contrast, all ≥ 4.5:1:
+    --solid-meta on slab          light 5.8   dark 6.2
+    --solid-meta on slab-hover    light 5.2   dark 5.3
+    --solid-meta on pile-1        light 6.1   dark 7.1
+    --solid-sheet-text on sheet   light 10.4  dark 6.4
+    --foreground on sheet         light 19.3  dark 7.8
+    --foreground on button        light 10.3  dark 8.8
+    --solid-ink-foreground on ink light 17.2  dark 9.6
+*/
+
+[data-direction="d1-solid"] {
+  /* Fills */
+  --solid-slab: oklch(0.9 0 0);
+  --solid-slab-hover: oklch(0.865 0 0);
+  --solid-slab-press: oklch(0.83 0 0);
+  --solid-button: oklch(0.8 0 0);
+  --solid-sheet: oklch(1 0 0);
+  --solid-ink: oklch(0.205 0 0);
+  /* A gallery pile: the slabs behind a stack's face, each one step nearer the canvas. */
+  --solid-pile-1: oklch(0.92 0 0);
+  --solid-pile-2: oklch(0.945 0 0);
+
+  /* Text on those fills */
+  --solid-ink-foreground: oklch(0.985 0 0);
+  /* Secondary text on a slab or a pile. --muted-foreground is 3.4:1 on the light slab. */
+  --solid-meta: oklch(0.44 0 0);
+  /* Body text on a sheet: a step under --foreground, well over the meta tone. */
+  --solid-sheet-text: oklch(0.37 0 0);
+
+  /* State dots: the product's status hues. */
+  --solid-state-review: var(--status-task-icon-in_review);
+  --solid-state-changes: var(--status-task-icon-blocked);
+
+  /* Geometry */
+  /* The kind block and every gallery preview: one landscape plate (72×44 in a thread row). */
+  --solid-plate-ratio: 18 / 11;
+  /* A picture or a video leading a panel card. */
+  --solid-lead-ratio: 16 / 9;
+  /* The attachments block: as many equal slabs as fit, never narrower than 16rem; a file is one 52px row, a picture two. */
+  --solid-attach-cols: repeat(auto-fill, minmax(16rem, 1fr));
+  --solid-attach-row: 3.25rem;
+  /* The panel's cards: one column in the docked pane; a maximized pane sets as many 22rem columns as fit, row by row. */
+  --solid-panel-cols: repeat(auto-fill, minmax(min(22rem, 100%), 1fr));
+  /*
+    Text on a gallery sheet: as many WHOLE lines as the sheet has room for above
+    the band kept clear for the kind tab. Resolved where it is used, against
+    the sheet as a size container: 100cqh is the sheet inside its own inset, so
+    taking 1rem more off leaves a band of that inset + 1rem under the text
+    (32px on a plate, 24px in a mosaic cell).
+  */
+  --solid-sheet-fit: round(down, calc(100cqh - 1rem), 1lh);
+  /*
+    A joint of a corner bite: a 6px box with one rounded corner, whose shadow
+    (its own shape grown by 3px and moved 3px right and down, so it starts at
+    the box's own top-left) paints only what lies outside the quarter circle.
+    The colour is the box's currentColor — the slab's fill, at any step.
+  */
+  --solid-joint: 0.1875rem 0.1875rem 0 0.1875rem currentColor;
+}
+
+.dark [data-direction="d1-solid"] {
+  --solid-slab: oklch(0.325 0 0);
+  --solid-slab-hover: oklch(0.365 0 0);
+  --solid-slab-press: oklch(0.4 0 0);
+  --solid-button: oklch(0.4 0 0);
+  --solid-sheet: oklch(0.43 0 0);
+  --solid-ink: oklch(0.8 0 0);
+  --solid-pile-1: oklch(0.29 0 0);
+  --solid-pile-2: oklch(0.265 0 0);
+
+  --solid-ink-foreground: oklch(0.205 0 0);
+  --solid-meta: oklch(0.78 0 0);
+  --solid-sheet-text: oklch(0.92 0 0);
+
+  /* The product's blocked red (#dc2626) is 2.6:1 on the dark slab; a 6px dot that stands for a state needs 3:1. */
+  --solid-state-changes: oklch(0.704 0.191 22.216);
+}
+
+/* A gallery sheet is a size container, so its text can be fitted to whole lines of its own height (--solid-sheet-fit). */
+[data-direction="d1-solid"] [data-solid-sheet="fit"] {
+  container-type: size;
+}

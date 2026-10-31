@@ -98,7 +98,21 @@ function Host(props: { screen?: Screen }) {
 const meta = {
   id: "connections-imessage-photon",
   title: "Apps, channels, and extensions/External chat and email/Connections/iMessage Photon", component: Host,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "chat-channels/conversation",
+        "chat-channels/providers",
+        "chat-channels/identity",
+        "chat-channels/lifecycle",
+        "connection-setup/channel-setup",
+        "connection-setup/failure"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Task-workspace reconciliation reviewed the endpoint editor addition; this suite selects setup/access and locally simulated conversation states. Endpoint PATCH retains fields, but settings workspace-choice requests and default selection are not covered by these scenarios. Inspected channel task-default controls, optional API fields, avatar rendering and matching fixture updates; live defaults inheritance and permission checks remain outside these stories. Catalog, ChooseAgent, Credentials, Access, Reconnect and ProviderOutageRecovery render shipped setup/detail states with simulated provider data. No live iMessage connection, delivery or recovery claim."
+    },
+  },
   beforeEach: ({ parameters }) => {
     const scenario = (parameters.photonScenario ?? {}) as Scenario;
     resetFixture(scenario);

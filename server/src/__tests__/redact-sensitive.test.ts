@@ -237,3 +237,10 @@ describe("stripSecretBearingUrlParts", () => {
     ).toBe("/api/tools/oauth/callback");
   });
 });
+
+it("redacts Grok routine URL and key in setup failure logs", () => {
+  const payload = { webhookUrl: "https://bot.example/routine/url-canary", webhookKey: "key-canary" };
+  expect(JSON.stringify(redactSensitive(payload))).not.toContain("canary");
+  expect(collectSensitiveStringValues(payload)).toContain(payload.webhookUrl);
+  expect(collectSensitiveStringValues(payload)).toContain(payload.webhookKey);
+});

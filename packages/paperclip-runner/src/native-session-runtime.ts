@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { nativeSystemInstructions } from "./backends/runtime-context.js";
 
 import type {
   CheckpointControlPlaneSessionOptions,
@@ -1197,11 +1198,15 @@ async function consumeTurn(
         );
       }
       if (sessionGoalObserved) {
+        if (isTurnTerminal(event) && providerFailure && !providerFailure.recoverable) {
+          throw providerFailure;
+        }
         if (sessionGoal && payload.requestId === sessionGoal.requestId) {
           goalControlObserved = true;
         }
         if (
           goalControlObserved &&
+          (providerFailure === null || providerFailure.recoverable) &&
           eventGoal !== undefined &&
           goalStatus(eventGoal) !== "active" &&
           payload.workingNow !== true
@@ -1565,7 +1570,7 @@ function checkpointCursor(cursor: string | null | undefined): number {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
 
-async function reconcileRecoveryCursor(input: {
+async function reconcileRecoveryCheckpoint(input: {
   controlPlane: ControlPlanePort;
   checkpoint: PersistedNativeSession;
   runId: string;
@@ -1575,6 +1580,8 @@ async function reconcileRecoveryCursor(input: {
   const checkpointHighWater = checkpointCursor(input.checkpoint.cursor);
   let afterSourceSeq = checkpointHighWater;
   let persistedHighWater = checkpointHighWater;
+  let proposalTurnId = input.checkpoint.activeTurnId ?? null;
+  let recoveredResult: PrpStructuredRunResult | null = null;
   while (true) {
     const replay = await input.controlPlane.replayEvents(
       {
@@ -1587,6 +1594,34 @@ async function reconcileRecoveryCursor(input: {
     );
     input.signal.throwIfAborted();
     if (replay.events.length === 0) break;
+    for (const event of replay.events) {
+      if (event.eventType === "turn.started" && event.turnId !== proposalTurnId) {
+        proposalTurnId = null;
+        recoveredResult = null;
+      }
+      if (
+        proposalTurnId &&
+        event.turnId === proposalTurnId &&
+        event.eventType === "run.result.proposed"
+      ) {
+        const validation = validatePrpStructuredRunResult(event.payload);
+        if (
+          !validation.ok ||
+          event.runId !== input.runId ||
+          event.normalizedSessionId !== input.checkpoint.identity.sessionId ||
+          event.sourceInstanceId !== input.sourceInstanceId
+        ) {
+          throw new NativeSessionProtocolIntegrityError("source_event_replay_conflict");
+        }
+        const previous = recoveredResult ?? input.checkpoint.semanticResult;
+        const normalize = (result: PrpStructuredRunResult) =>
+          canonicalJson(input.controlPlane.normalizeReplayPayload?.(result) ?? result);
+        if (previous && normalize(previous) !== normalize(validation.result)) {
+          throw new NativeSessionProtocolIntegrityError("source_event_replay_conflict");
+        }
+        recoveredResult = validation.result;
+      }
+    }
     const pageHighWater = replay.events.reduce(
       (highest, event) => Math.max(highest, event.sourceSeq),
       afterSourceSeq,
@@ -1599,11 +1634,16 @@ async function reconcileRecoveryCursor(input: {
   }
   if (
     persistedHighWater === checkpointHighWater &&
-    input.checkpoint.cursor === String(checkpointHighWater)
+    input.checkpoint.cursor === String(checkpointHighWater) &&
+    recoveredResult === null
   ) {
     return input.checkpoint;
   }
-  return { ...input.checkpoint, cursor: String(persistedHighWater) };
+  return {
+    ...input.checkpoint,
+    cursor: String(persistedHighWater),
+    ...(recoveredResult === null ? {} : { semanticResult: recoveredResult }),
+  };
 }
 
 async function replayCheckpointedTurnTerminal(input: {
@@ -2004,7 +2044,12 @@ export async function executeNativeSession(
     // state). Prove the provider attachment before opening durable
     // control-plane state because ControlPlanePort has no rollback operation.
     try {
-      await options.existingSession.attachRun({ identity });
+      await options.existingSession.attachRun({ identity,
+        ...(input.provider.kind === "acpx" && input.provider.agent === "copilot"
+          ? { currentRunGrant: { runtimeContext: "runtimeContext" in input ? input.runtimeContext : null,
+              instructions: nativeSystemInstructions(input) } }
+          : {}),
+      });
     } catch (error) {
       // attachRun has no transactional guarantee: a provider may bind the new
       // run before reporting a later failure. Conservatively quarantine the
@@ -2030,7 +2075,7 @@ export async function executeNativeSession(
       timeoutMs: recoveryTimeoutMs,
       timeoutMessage: `native session recovery replay timed out after ${recoveryTimeoutMs}ms`,
       operation: (signal) =>
-        reconcileRecoveryCursor({
+        reconcileRecoveryCheckpoint({
           controlPlane: options.controlPlane,
           checkpoint: recoveryCheckpoint,
           runId: input.binding.runId,
@@ -2042,6 +2087,7 @@ export async function executeNativeSession(
     const providerRecoveryCheckpoint = persistedSession;
 
     const replacementAllowed =
+      !("homeMode" in input && input.homeMode === "preconfigured") &&
       providerRecoveryCheckpoint.providerRecoveryPolicy ===
       "allow_replacement_after_resume_failure";
     const failedProviderSession =
@@ -2062,6 +2108,7 @@ export async function executeNativeSession(
             operation: (signal) =>
               options.backend.recoverSession!(providerRecoveryCheckpoint, {
                 signal,
+                normalizeReplayPayload: options.controlPlane.normalizeReplayPayload?.bind(options.controlPlane),
               }),
             onLateResolution: async (lateRecovery) => {
               if (lateRecovery.session) {
@@ -2558,6 +2605,9 @@ export async function executeNativeSession(
           if (!(dispositionOnlyRecovery && !effectFreeInitialAcpxTurn) && "requestedSkills" in modelEnvelope && options.backend.preparedTaskConstraints) {
             modelEnvelope.constraints = [...options.backend.preparedTaskConstraints];
           }
+          if ("workspace" in modelEnvelope && modelEnvelope.workspace && recoveredSnapshot.workingDirectory) {
+            modelEnvelope.workspace.cwd = recoveredSnapshot.workingDirectory;
+          }
           await session.startTurn({
             message: { role: "user", text: JSON.stringify(modelEnvelope) },
             ...(recovered && modelEnvelope.schema === "paperclip.native-continuation.v1"
@@ -2761,7 +2811,8 @@ export async function executeNativeSession(
           if (
             expected === undefined ||
             existing.eventType !== expected.eventType ||
-            canonicalJson(existing.payload) !== canonicalJson(expected.payload)
+            canonicalJson(options.controlPlane.normalizeReplayPayload?.(existing.payload) ?? existing.payload)
+              !== canonicalJson(options.controlPlane.normalizeReplayPayload?.(expected.payload) ?? expected.payload)
           ) {
             throw new Error(
               `native_control_event_replay_conflict:${existing.sourceSeq}`,

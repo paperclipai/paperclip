@@ -31,7 +31,16 @@ const meta: Meta<typeof ProjectProperties> = {
   id: "workspaces-project-runtime-provision-command",
   title: "Projects and execution/Projects and repositories/Workspaces/Project runtime provision command",
   component: ProjectProperties,
-  parameters: { layout: "padded" },
+  parameters: { layout: "padded",
+    paperclip: {
+      "capabilities": [
+        "projects/defaults",
+        "workspaces/provisioning"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 
 export default meta;

@@ -92,7 +92,16 @@ function MemoryReview({ provider = "mem0", scenario = "catalog" }: { provider?: 
   </QueryClientProvider>;
 }
 const meta = { id: "apps-connections-memory",
-  title: "Apps, channels, and extensions/Connection setup/Apps/Connections/Memory", component: MemoryReview, parameters: { layout: "fullscreen" } } satisfies Meta<typeof MemoryReview>;
+  title: "Apps, channels, and extensions/Connection setup/Apps/Connections/Memory", component: MemoryReview, parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "connection-setup/credentials",
+        "agents/instructions"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  } } satisfies Meta<typeof MemoryReview>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const CatalogAndSetup: Story = { args: { scenario: "catalog" } };

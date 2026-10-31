@@ -25,6 +25,16 @@ const meta = {
           "Production runner turn with deterministic event playback. Each commentary boundary starts a separate activity group. Compact groups roll through one tool or thinking item at a time. Expand a group to keep its history growing inline, and click any expanded row to inspect its detail. Pause, Next, and Replay control simulated events; no runner or task API is called.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "tasks/discussion",
+        "runs-adapters/runs"
+      ],
+      "status": "current",
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
   },
 } satisfies Meta<typeof RunnerActivityPreview>;
 export default meta;

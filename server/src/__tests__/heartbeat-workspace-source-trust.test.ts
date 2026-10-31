@@ -21,11 +21,11 @@ import { createHeartbeatWorkspaceResolver } from "../services/heartbeat/workspac
 import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { issueService } from "../services/issues.js";
 import { accessService } from "../services/access.js";
-import { assertExecutionWorkspaceRootWriteAccess } from "../services/execution-workspace-repositories.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { findNativeChatWorkspaceScope } from "../services/native-runtime/native-chat-workspace.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
+import { executionWorkspaceService } from "../services/execution-workspaces.js";
 
 const execute = vi.hoisted(() => vi.fn(async (_input: any) => ({ exitCode: 0, signal: null, timedOut: false })));
 vi.mock("../adapters/index.js", () => ({
@@ -71,7 +71,7 @@ suite("heartbeat physical workspace source trust", () => {
     });
   });
 
-  it.each(["current", "retained", "sandbox", "provision_current", "provision_retained"] as const)("enforces physical source containment before dispatch (%s)", async scenario => {
+  it.each(["current", "retained", "sandbox", "provision_current", "provision_retained"] as const)("uses current selected trust without inferring policy from unrelated physical aliases (%s)", async scenario => {
     const sandbox = scenario === "sandbox";
     const provision = scenario.startsWith("provision_");
     const companyId = randomUUID(), projectId = randomUUID(), sourceId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
@@ -134,9 +134,8 @@ suite("heartbeat physical workspace source trust", () => {
       expect(calls[0][0].context.paperclipEnvironment.driver).toBe("sandbox");
       await expect(readFile(path.join(cwd, "provision-ran"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     } else {
-      expect(await driver.getRun(run!.id)).toMatchObject({ status: "failed", error: expect.stringContaining("Physical workspace source trust is incompatible") });
-      expect(execute.mock.calls.filter(([input]) => input.runId === run!.id)).toHaveLength(0);
-      if (provision) await expect(readFile(path.join(cwd, "provision-ran"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await driver.getRun(run!.id)).toMatchObject({ status: "succeeded", error: null });
+      expect(execute.mock.calls.filter(([input]) => input.runId === run!.id)).toHaveLength(1);
     }
   });
 
@@ -149,6 +148,7 @@ suite("heartbeat physical workspace source trust", () => {
     ["configured", "both", "local_default"], ["builtin", "both", "local_default"],
     ["configured", "both", "local_new_default"], ["builtin", "both", "local_new_default"],
     ["configured", "both", "local_new_primary"], ["builtin", "both", "local_new_primary"],
+    ["configured", "agent", "local_effective_strategy"], ["builtin", "agent", "local_effective_strategy"],
   ] as const)("places standard source %s provisioning with %s grants on %s", async (provisionKind, grants, placement) => {
     const implicitDefault = placement.startsWith("local_");
     const newerDefault = placement === "local_new_default" || placement === "local_new_primary";
@@ -171,16 +171,18 @@ suite("heartbeat physical workspace source trust", () => {
     } });
     if (newerDefault) await db.insert(projectWorkspaces).values({ id: randomUUID(), companyId, projectId, name: "Older source", sourceType: "local_path", cwd: path.join(root, companyId, "older-source"), isPrimary: placement === "local_new_default", createdAt: new Date(0) });
     await db.insert(projectWorkspaces).values({ id: sourceId, companyId, projectId, name: "Source", sourceType: "local_path", cwd, repoUrl: pathToFileURL(cwd).href, isPrimary: placement !== "local_new_default" });
-    await db.insert(agents).values({ id: agentId, companyId, name: "Reader", status: "idle", adapterType: "codex_local", adapterConfig: { fullAuto: grants === "both" }, permissions: {} });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Reader", status: "idle", adapterType: "codex_local", adapterConfig: { fullAuto: grants === "both",
+      ...(placement === "local_effective_strategy" ? { workspaceStrategy: { type: "project_primary" } } : {}) }, permissions: {} });
     await db.insert(companyMemberships).values({ companyId, principalType: "agent", principalId: agentId, status: "active", membershipRole: "member" });
     const taskInput = { id: issueId, companyId, projectId: implicitDefault ? projectId : null, title: "Read-only isolated source", status: "todo" as const, assigneeAgentId: agentId,
       projectWorkspaceId: sourceId, executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "git_worktree",
         worktreeParentDir: path.join(root, companyId, "worktrees"), ...(provisionKind === "configured" ? { provisionCommand: `printf host-script-ran > '${marker}'` } : {}) } },
       workspaceSelection: implicitDefault ? null : { version: 1 as const, source: "explicit" as const, selection: { kind: "configured_source" as const, projectWorkspaceId: sourceId, mode: "managed_isolated" as const } } };
-    if (newerDefault) {
+    if (newerDefault || placement === "local_effective_strategy") {
       const { projectWorkspaceId: _source, workspaceSelection: _selection, ...createInput } = taskInput;
       const created = await issueService(db).create(companyId, createInput);
       expect(created.projectWorkspaceId).toBe(sourceId);
+      expect(created.workspaceSelection).toMatchObject({ source: "project" });
     } else await db.insert(issues).values(taskInput);
     if (grants !== "none") await db.insert(principalPermissionGrants).values({ companyId, principalType: "agent", principalId: agentId,
       permissionKey: "tasks:assign_scope", scope: { projectId, assigneeAgentId: agentId } });
@@ -189,6 +191,12 @@ suite("heartbeat physical workspace source trust", () => {
     const actor = { type: "agent" as const, agentId, companyId, source: "agent_jwt" as const, onBehalfOfUserId: "responsible-user" };
     expect(await accessService(db).decide({ actor, action: "project:read", resource: { type: "project", companyId, projectId } })).toMatchObject({ allowed: true });
     expect(await accessService(db).decide({ actor, action: "project:write_workspace", resource: { type: "issue", companyId, projectId, issueId, assigneeAgentId: agentId }, scope: { projectId, assigneeAgentId: agentId } })).toMatchObject({ allowed: grants === "both" });
+    if (placement === "local_effective_strategy") {
+      const selection = { kind: "configured_source" as const, projectWorkspaceId: sourceId, mode: "managed_isolated" as const };
+      await expect(executionWorkspaceService(db).validateSelection({ companyId, actor, issueId, selection })).resolves.toMatchObject({ projectWorkspaceId: sourceId });
+      await expect(executionWorkspaceService(db).validateSelection({ companyId, actor, issueId,
+        selection: { ...selection, mode: "shared" }, preserveImplicitDefaultSettings: true })).rejects.toThrow("Task workspace default changed");
+    }
     const environmentId = randomUUID();
     await db.insert(environments).values({ id: environmentId, name: `Standard sandbox ${companyId}`, driver: "sandbox", status: "active", config: { provider: "fake", image: "fake:test" } });
     await db.update(agents).set({ defaultEnvironmentId: placement === "sandbox" ? environmentId : null }).where(eq(agents.id, agentId));
@@ -205,6 +213,7 @@ suite("heartbeat physical workspace source trust", () => {
     const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, bound.executionWorkspaceId!));
     expect(workspace.cwd).not.toBe(cwd);
     expect(await readFile(path.join(workspace.cwd!, "source.txt"), "utf8")).toBe("read-only source bytes");
+    expect(await readFile(path.join(cwd, "source.txt"), "utf8")).toBe("read-only source bytes");
     const calls = execute.mock.calls.filter(([input]) => input.runId === run!.id);
     expect(calls).toHaveLength(1);
     expect(calls[0][0].context.paperclipEnvironment.driver).toBe(placement === "sandbox" ? "sandbox" : "local");
@@ -213,7 +222,6 @@ suite("heartbeat physical workspace source trust", () => {
     await rm(marker, { force: true });
     if (grants === "none") await rm(workspace.cwd!, { recursive: true, force: true });
     await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
-    const { executionWorkspaceService } = await import("../services/execution-workspaces.js");
     if (placement === "local" && grants === "both") await db.update(issues).set({ projectId, workspaceSelection: null }).where(eq(issues.id, issueId));
     await executionWorkspaceService(db).update(workspace.id, { metadata: { ...workspace.metadata,
       _controllerProvisionCopyOnly: false, config: { provisionCommand: `printf host-script-ran > '${marker}'` } } });

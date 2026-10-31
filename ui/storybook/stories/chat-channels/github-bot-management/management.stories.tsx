@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { useQueryClient } from "@tanstack/react-query";
 import { githubChatApi } from "@/api/githubChat";
 import { chatEndpointsApi } from "@/api/chatEndpoints";
+import { expect, userEvent, within } from "storybook/test";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Routes, Route } from "@/lib/router";
 import { PluginLauncherProvider } from "@/plugins/launchers";
@@ -47,12 +48,22 @@ const meta = {
           "Production pages and components. Start with **01 Journey / Settings**, then use the actual contextual sidebar to visit Access, Reviews, and Conversations. Try editing instructions, switch tabs, and save or discard the shared draft. **01 Journey / Connected** opens the production confirmation modal over the same bot Settings. Close it with Done, the ×, or Escape and continue editing Settings. **02 States** covers empty, loading, recoverable error, long content, and mobile. **03 Components** isolates the policy editor, people access, repository access, review rows and detail, pending review, and conversations. Provider operations use isolated fixture APIs; these stories are not live GitHub evidence.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "chat-channels/providers",
+        "chat-channels/conversation",
+        "chat-channels/lifecycle"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Task-workspace reconciliation: mounted repository and endpoint editors use simulated defaults. Endpoint PATCH now persists omitted/null/concrete values across GET and resets on remount; repository PUT already preserves them. Choice caches intentionally contain no projects/workspaces. Browser editor interactions, access denials and new-task inheritance remain unverified. Inspected channel task-default controls, optional API fields, avatar rendering and matching fixture updates; live defaults inheritance and permission checks remain outside these stories."
+    },
   },
   args: { state: "populated" as FixtureState },
   argTypes: {
     state: {
       control: "select",
-      options: ["populated", "empty", "loading", "error", "long", "many", "setup", "skills", "guests", "mentions"],
+      options: ["populated", "empty", "loading", "error", "long", "many", "setup", "skills", "guests", "mentions", "disconnected", "repair-error", "repair-checking"],
     },
   },
   render: ({ state }) => (
@@ -323,4 +334,96 @@ export const MentionsOnly: Story = {
   name: "02 States / All linked members with automatic runs off",
   args: { state: "mentions" },
   parameters: route("access"),
+};
+
+const reconnectRoute = {
+  initialEntries: [`/PAP/apps/chat/connect?provider=github&resume=${endpoint.id}&reconnect=1`],
+};
+export const DisconnectedSettings: Story = {
+  name: "04 Recovery / Disconnected settings",
+  args: { state: "disconnected" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("heading", { name: "GitHub connection needs repair" })).toBeVisible();
+    await expect(canvas.getByRole("link", { name: "Reconnect GitHub" })).toBeVisible();
+  },
+};
+export const ReconnectSavedApp: Story = {
+  name: "04 Recovery / Reconnect saved App",
+  args: { state: "disconnected" },
+  parameters: reconnectRoute,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("button", { name: "Reconnect saved App" })).toBeEnabled();
+    await expect(canvas.queryByLabelText("Private key", { exact: true })).not.toBeInTheDocument();
+  },
+};
+export const ReplaceAppCredentials: Story = {
+  name: "04 Recovery / Find App ID and private key",
+  args: { state: "disconnected" },
+  parameters: reconnectRoute,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Replace App credentials…" }));
+    await expect(canvas.getByLabelText("App ID", { exact: true })).toHaveValue("123456");
+    await expect(canvas.getByRole("link", { name: "Open GitHub App settings" })).toHaveAttribute("href", "https://github.com/organizations/acme/settings/apps/maya-reviews");
+    await expect(canvas.getByRole("button", { name: "Verify and reconnect" })).toBeDisabled();
+  },
+};
+export const ReconnectFailed: Story = {
+  name: "04 Recovery / Saved key rejected",
+  args: { state: "repair-error" },
+  parameters: reconnectRoute,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Reconnect saved App" }));
+    await expect(await canvas.findByRole("alert")).toHaveTextContent("Could not reconnect the saved App");
+    await expect(canvas.getByRole("button", { name: "Reconnect saved App" })).toBeEnabled();
+  },
+};
+export const PrivateKeyLoaded: Story = {
+  name: "04 Recovery / Private key loaded",
+  args: { state: "disconnected" },
+  parameters: reconnectRoute,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Replace App credentials…" }));
+    await userEvent.upload(canvas.getByLabelText("Upload private key PEM file"), new File([
+      "-----BEGIN RSA PRIVATE KEY-----\nfixture-only\n-----END RSA PRIVATE KEY-----",
+    ], "storybook-fixture.pem", { type: "application/x-pem-file" }));
+    await expect(await canvas.findByText("Private key loaded. Paste or upload another key to replace it.")).toBeVisible();
+    await expect(canvas.getByLabelText("Private key", { exact: true })).toHaveValue("");
+    await expect(canvas.getByRole("button", { name: "Verify and reconnect" })).toBeEnabled();
+  },
+};
+export const ReconnectChecking: Story = {
+  name: "04 Recovery / Checking saved App",
+  args: { state: "repair-checking" },
+  parameters: reconnectRoute,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Reconnect saved App" }));
+    await expect(canvas.getByRole("button", { name: "Checking GitHub…" })).toBeDisabled();
+  },
+};
+export const Reconnected: Story = {
+  name: "04 Recovery / Restored connection",
+  args: { state: "disconnected" },
+  parameters: reconnectRoute,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Reconnect saved App" }));
+    await expect(await within(document.body).findByRole("dialog")).toBeVisible();
+    await expect(canvas.queryByRole("heading", { name: "GitHub connection needs repair" })).not.toBeInTheDocument();
+  },
+};
+export const RecoveryMobile: Story = {
+  ...ReplaceAppCredentials,
+  name: "04 Recovery / Mobile credential instructions",
+  globals: { viewport: { value: "mobile1", isRotated: false } },
+};
+export const RecoveryLight: Story = {
+  ...DisconnectedSettings,
+  name: "04 Recovery / Light disconnected settings",
+  globals: { theme: "light" },
 };

@@ -341,7 +341,16 @@ function VercelConnectProvenanceHost() {
 const meta: Meta = {
   id: "apps-notion-mcp-connect-flow-pap-16650",
   title: "Apps, channels, and extensions/Connection setup/Apps/Notion MCP connect flow (PAP-16650)",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "connection-setup/credentials",
+        "connection-setup/failure"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 

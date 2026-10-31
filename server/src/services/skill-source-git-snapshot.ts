@@ -11,6 +11,8 @@ import { MAX_REPOSITORY_BYTES, MAX_REPOSITORY_FILES } from './skill-repository-p
 export type GitSkillTreeEntry = { path: string; type: string; mode: string; sha: string; size?: number };
 export interface GitSkillSnapshot {
   commitSha: string;
+  treeSha?: string;
+  downloadBytes?: number;
   entries: GitSkillTreeEntry[];
   readBlob: (entry: GitSkillTreeEntry, signal?: AbortSignal) => Promise<Buffer>;
   readBlobs?: (entries: GitSkillTreeEntry[], signal?: AbortSignal) => Promise<Map<string, Buffer>>;
@@ -26,7 +28,7 @@ const MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024;
 const MAX_TREE_BYTES = 32 * 1024 * 1024;
 const CACHE_TTL_MS = 10 * 60_000;
 const MAX_CACHED_SNAPSHOTS = 4;
-const snapshots = new Map<string, { directory: string; commitSha: string; entries: GitSkillTreeEntry[]; users: number; expires: number; timer?: NodeJS.Timeout }>();
+const snapshots = new Map<string, { directory: string; commitSha: string; treeSha: string; entries: GitSkillTreeEntry[]; users: number; expires: number; timer?: NodeJS.Timeout }>();
 let activeDownloads = 0;
 
 /** Only structured numeric progress crosses the process boundary; never forward stderr. */
@@ -180,11 +182,11 @@ async function discard(key: string) {
   await rm(cached.directory, { recursive: true, force: true });
 }
 
-function acquire(cached: NonNullable<ReturnType<typeof snapshots.get>>, key: string): GitSkillSnapshot {
+function acquire(cached: NonNullable<ReturnType<typeof snapshots.get>>, key: string, downloadBytes = 0): GitSkillSnapshot {
   cached.users++;
   clearTimeout(cached.timer);
   let released = false;
-  return { commitSha: cached.commitSha, entries: cached.entries,
+  return { commitSha: cached.commitSha, treeSha: cached.treeSha, downloadBytes, entries: cached.entries,
     readBlob: async (entry, signal) => {
       if (released || !/^[a-f0-9]{40}$/.test(entry.sha) || entry.type !== 'blob' || (entry.size ?? Infinity) > 1024 * 1024) throw unprocessable('Invalid snapshot file.');
       return runGit(cached.directory, ['cat-file', 'blob', entry.sha], '', { signal, maxOutput: 1024 * 1024 });
@@ -253,17 +255,20 @@ export async function openGitSkillSnapshot(input: { repositoryUrl: string; ref: 
     if (!input.commitSha && !/^[a-f0-9]{40}$/i.test(input.ref)) await runGit(directory, ['check-ref-format', '--branch', input.ref], '', options);
     await runGit(directory, ['-c', 'fetch.unpackLimit=1', 'fetch', '--depth=1', '--no-tags', '--no-recurse-submodules', '--no-auto-maintenance', '--progress',
       '--', `${parsed.repositoryUrl}.git`, input.commitSha ?? input.ref], input.token, { ...options, download: true });
-    if (await directoryBytes(directory) > MAX_DOWNLOAD_BYTES) throw unprocessable('Repository download exceeds the 128 MB limit. Use a smaller skills repository.');
+    const downloadBytes = await directoryBytes(directory);
+    if (downloadBytes > MAX_DOWNLOAD_BYTES) throw unprocessable('Repository download exceeds the 128 MB limit. Use a smaller skills repository.');
     const commitSha = (await runGit(directory, ['rev-parse', '--verify', 'FETCH_HEAD^{commit}'], '', options)).toString('utf8').trim();
     if (!/^[a-f0-9]{40}$/.test(commitSha) || (input.commitSha && commitSha !== input.commitSha.toLowerCase())) throw unprocessable('The downloaded commit did not match the requested snapshot.');
+    const treeSha = (await runGit(directory, ['rev-parse', '--verify', `${commitSha}^{tree}`], '', options)).toString('utf8').trim();
+    if (!/^[a-f0-9]{40}$/.test(treeSha)) throw unprocessable('Git did not return an immutable tree.');
     const entries = parseTree(await runGit(directory, ['ls-tree', '-r', '-l', '-z', '--full-tree', commitSha], '', options));
     const key = `${prefix}${commitSha}`;
     const duplicate = snapshots.get(key);
-    if (duplicate) return acquire(duplicate, key);
-    const cached = { directory, commitSha, entries, users: 0, expires: Date.now() + CACHE_TTL_MS };
+    if (duplicate) return acquire(duplicate, key, downloadBytes);
+    const cached = { directory, commitSha, treeSha, entries, users: 0, expires: Date.now() + CACHE_TTL_MS };
     snapshots.set(key, cached);
     directory = undefined;
-    return acquire(cached, key);
+    return acquire(cached, key, downloadBytes);
   } finally {
     activeDownloads--;
     if (directory) await rm(directory, { recursive: true, force: true });

@@ -30,6 +30,8 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-ease-scroll-pill-in", group: "Easing", kind: "easing" },
   { name: "--motion-ease-scroll-pill-out", group: "Easing", kind: "easing" },
   { name: "--motion-ease-in", group: "Easing", kind: "easing" },
+  { name: "--motion-ease-pane-width-reset", group: "Easing", kind: "easing" },
+  { name: "--motion-ease-pane-reveal", group: "Easing", kind: "easing" },
 
   // Duration primitives
   { name: "--motion-duration-instant", group: "Durations", kind: "time", min: 0, max: 1000, step: 10 },
@@ -59,6 +61,13 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-count-tween", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-streaming-cursor-blink", group: "States", kind: "time", min: 0, max: 3000, step: 20 },
   { name: "--motion-turn-fold", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-conversation-handoff-fade", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-conversation-handoff-fold", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-conversation-word-fade", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-conversation-tool-shimmer", group: "States", kind: "time", min: 0, max: 5000, step: 50 },
+  { name: "--motion-sandbox-playback-step", group: "Preview", kind: "time", min: 0, max: 10000, step: 100 },
+  { name: "--motion-sandbox-stream-tick", group: "Preview", kind: "time", min: 0, max: 1000, step: 10 },
+  { name: "--motion-sandbox-word-tick", group: "Preview", kind: "time", min: 0, max: 1000, step: 10 },
   { name: "--motion-turn-meta", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-line-scroll", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-interstitial-dwell", group: "States", kind: "time", min: 0, max: 10000, step: 100 },
@@ -68,6 +77,8 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-mobile-nav-exit", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-scrollbar-idle-delay", group: "States", kind: "time", min: 0, max: 2000, step: 10 },
   { name: "--motion-pane-glide", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-pane-reveal", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-pane-width-reset", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-side-panel-tab", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
 ];
 

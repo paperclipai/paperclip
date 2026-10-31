@@ -125,6 +125,14 @@ const meta: Meta = {
     a11y: {
       test: "off",
     },
+    paperclip: {
+      "capabilities": [
+        "secrets/company-secrets",
+        "secrets/vault-import"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 };
 

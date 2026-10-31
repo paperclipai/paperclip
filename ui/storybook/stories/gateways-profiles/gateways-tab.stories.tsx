@@ -244,7 +244,15 @@ function GatewaysHost({ gateways }: { gateways: ToolMcpGatewayWithTokens[] }) {
 const meta: Meta = {
   id: "tools-gateways-pap-11182",
   title: "Apps, channels, and extensions/Tool gateways and access profiles/Tools/Gateways (PAP-11182)",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "gateways-profiles/gateway"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 

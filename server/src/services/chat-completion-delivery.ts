@@ -1,8 +1,9 @@
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
-import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import { agents, agentWakeupRequests, chatCompletionDeliveries as deliveries, chatTaskHandoffs as handoffs,
-  heartbeatRuns, issueComments, issueDocuments, issues, type Db } from "@paperclipai/db";
+  heartbeatRuns, issueComments, issueDocuments, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { instanceSettingsService } from "./instance-settings.js";
+import { conflict, forbidden, notFound } from "../errors.js";
 
 export const CHAT_COMPLETION_WAKE_REASON = "chat_task_completed";
 const MAX_ATTEMPTS = 5;
@@ -18,6 +19,34 @@ function ids(run: Run): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }
 
+/** Human-confirmed suggestions use the same durable audience as native create_task.
+ * The source must be read/authorized by the caller; ownership and generation are
+ * rechecked under the creation transaction so reset chats cannot receive new work. */
+export async function lockAcceptedChatHandoffSource(tx: Connection, input: {
+  companyId: string; conversationId: string; sessionGeneration: number;
+  userId?: string | null; agentId?: string | null;
+}) {
+  const [source] = await tx.select().from(issues).where(and(eq(issues.id, input.conversationId),
+    eq(issues.companyId, input.companyId))).for("update");
+  if (!source?.conversationAgentId) throw notFound("Originating conversation not found");
+  if (source.conversationSessionGeneration !== input.sessionGeneration) {
+    throw conflict("The originating conversation was reset; request a new task suggestion");
+  }
+  if (input.userId ? source.conversationUserId !== input.userId : source.conversationAgentId !== input.agentId) {
+    throw forbidden("Task handoff requires the originating conversation's participant");
+  }
+  return source;
+}
+
+export async function recordAcceptedChatHandoff(tx: Connection, task: Issue, source: Issue) {
+  if (!source.conversationAgentId || source.companyId !== task.companyId || task.conversationAgentId) {
+    throw forbidden("Task handoff requires an execution task in the originating conversation's company");
+  }
+  await tx.insert(handoffs).values({ taskId: task.id, companyId: task.companyId,
+    conversationId: source.id, agentId: source.conversationAgentId,
+    sessionGeneration: source.conversationSessionGeneration }).onConflictDoNothing();
+}
+
 export async function recordChatHandoff(tx: Connection, task: Issue, actorRunId: string | null | undefined) {
   if (!actorRunId || task.conversationAgentId || !task.createdByAgentId) return;
   const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, actorRunId),
@@ -27,8 +56,7 @@ export async function recordChatHandoff(tx: Connection, task: Issue, actorRunId:
   const [source] = await tx.select().from(issues).where(and(eq(issues.id, sourceId), eq(issues.companyId, task.companyId)));
   if (!source?.conversationAgentId || source.conversationAgentId !== run.agentId ||
     source.conversationSessionGeneration !== run.contextSnapshot?.conversationSessionGeneration) return;
-  await tx.insert(handoffs).values({ taskId: task.id, companyId: task.companyId,
-    conversationId: source.id, agentId: source.conversationAgentId, sessionGeneration: source.conversationSessionGeneration }).onConflictDoNothing();
+  await recordAcceptedChatHandoff(tx, task, source);
 }
 
 /** Must run on the same transaction as status projection (including native arbitration). */
@@ -65,9 +93,33 @@ async function taskResult(tx: Connection, task: Issue) {
   // by the server; the saved work remains on its normal access-controlled task.
   const documents = await tx.select({ id: issueDocuments.documentId }).from(issueDocuments)
     .where(and(eq(issueDocuments.companyId, task.companyId), eq(issueDocuments.issueId, task.id))).limit(1);
+  // A bounded receipt projection gives the coordinator actual verdicts to link,
+  // rather than asking it to infer whether the worker's prose needs another review.
+  // These are historical decisions on their named versions, not publication authority.
+  const reviews = await tx.select().from(issueThreadInteractions).where(and(
+    eq(issueThreadInteractions.companyId, task.companyId), eq(issueThreadInteractions.issueId, task.id),
+    inArray(issueThreadInteractions.kind, ["request_confirmation", "request_item_verdicts"]),
+    inArray(issueThreadInteractions.status, ["accepted", "answered"]),
+  )).orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.id)).limit(20);
+  const recordedOutputDecisions = reviews.flatMap(review => {
+    const payload = review.payload as Record<string, any>, result = (review.result ?? {}) as Record<string, any>;
+    const candidates = review.kind === "request_confirmation" ? [{ target: payload.target, outcome: "approve", human: Boolean(review.resolvedByUserId) && !review.resolvedByAgentId }]
+      : (Array.isArray(result.items) ? result.items : []).map((item: any) => ({
+        target: (Array.isArray(payload.items) ? payload.items : []).find((entry: any) => entry.id === item.id)?.target ?? payload.target,
+        outcome: item.verdict, human: Boolean(item.resolvedByUserId) && !item.resolvedByAgentId,
+      }));
+    return candidates.filter(candidate => candidate.human && ["approve", "reject", "defer"].includes(candidate.outcome) &&
+      candidate.target && ["issue_document", "issue_attachment"].includes(candidate.target.type) &&
+      (!candidate.target.issueId || candidate.target.issueId === task.id) && candidate.target.key !== "plan")
+      .map(candidate => ({ interactionId: review.id, outcome: candidate.outcome,
+        target: candidate.target.type === "issue_document"
+          ? { type: "issue_document", key: candidate.target.key, revisionId: candidate.target.revisionId }
+          : { type: "issue_attachment", attachmentId: candidate.target.attachmentId, assetId: candidate.target.assetId, sha256: candidate.target.sha256 },
+        url: `/issues/${task.identifier ?? task.id}#interaction-${review.id}` }));
+  }).slice(0, 30);
   return { id: task.id, identifier: task.identifier, status: task.status,
     completedAt: task.completedAt, url: `/issues/${task.identifier ?? task.id}`,
-    hasSavedDocuments: documents.length > 0 };
+    hasSavedDocuments: documents.length > 0, recordedOutputDecisions };
 }
 
 /** A completed onboarding parent still owes the result of its own child handoff.
@@ -129,7 +181,7 @@ export async function prepareChatCompletionTurn(db: Db, run: Run): Promise<Run> 
 
 export function chatCompletionInstruction(context: Record<string, unknown>) {
   if (!Array.isArray(context.chatCompletionUpdates) || !context.chatCompletionUpdates.length) return "";
-  return `\n\nDelegated work has completed. Tell the user in this conversation what finished and provide access using the supplied task links. Report completion only for the tasks listed in this update; other tasks receive their own completion updates. Use the recorded status and result locations; do not repeat a promise to do work that is already Done. Do not start more work or change these tasks. The following JSON contains server-recorded lifecycle facts and result locations:\n${JSON.stringify(context.chatCompletionUpdates)}`;
+  return `\n\nDelegated work has completed. Tell the user in this conversation what finished and provide access using the supplied task links. Report completion only for the tasks listed in this update; other tasks receive their own completion updates. Use the recorded status and result locations; do not repeat a promise to do work that is already Done. Do not start more work, change these tasks, or create duplicate review requests. Reuse and link the task’s existing canonical review/decision; completion updates are notifications, not fresh quality-review authority. recordedOutputDecisions are human verdicts on the exact versions shown. Link them instead of re-requesting review of those versions; do not treat approval as permission to publish. A separate explicit user request may authorize a new review. Keep opaque IDs and hashes out of your visible reply. The following JSON contains server-recorded lifecycle facts and result locations:\n${JSON.stringify(context.chatCompletionUpdates)}`;
 }
 
 /** Called under the comment transaction, before insertion. An event can publish only once. */

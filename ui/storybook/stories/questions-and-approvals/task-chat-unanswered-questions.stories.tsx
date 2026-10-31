@@ -5,7 +5,17 @@ import { QuestionChat } from "../../fixtures/unansweredQuestionChat";
 const meta = {
   id: "chat-comments-task-chat-unanswered-questions",
   title: "Tasks and conversations/Questions and approvals/Chat & Comments/Task Chat Unanswered Questions",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "questions-and-approvals/dismiss-and-reopen",
+        "tasks/discussion"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Production task thread with simulated request decisions and dismissal saves. Covers questions and completion reviews; browser draft persistence is real, while server authorization and agent continuation require separate tests."
+    },
+  },
   component: QuestionChat,
   args: { conversationMode: false },
 } satisfies Meta<typeof QuestionChat>;
@@ -14,6 +24,7 @@ type Story = StoryObj<typeof meta>;
 
 // Keep the test-drive story's dismissal preference across actual page reloads.
 export const TestDrive: Story = {};
+export const CompletionReview: Story = { args: { review: true } };
 export const MovedOn: Story = { args: { movedOn: true } };
 export const MultipleUnanswered: Story = { args: { multiple: true } };
 export const AnsweredHistory: Story = { args: { answered: true } };

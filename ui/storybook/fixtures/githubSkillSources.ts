@@ -91,7 +91,7 @@ export function importedSkill(source: SkillSource, entry: SkillSourceEntry): Com
 export type RepositoryScenario = 'single' | 'multiple' | 'none' | 'empty' | 'partial-error' | 'error' | 'loading';
 
 /** Scoped API fixtures keep the production page interactive without contacting GitHub. */
-export function installFixtures(empty: boolean, needsConnection: boolean, options: { packageScenario?: PackageScenario; journey?: boolean; refreshed?: boolean; assigned?: boolean; repositories?: RepositoryScenario; scan?: "live" | "large" | "interrupted"; saving?: boolean } = {}) {
+export function installFixtures(empty: boolean, needsConnection: boolean, options: { packageScenario?: PackageScenario; journey?: boolean; refreshed?: boolean; assigned?: boolean; repositories?: RepositoryScenario; scan?: "live" | "large" | "interrupted"; saving?: boolean; disconnected?: boolean } = {}) {
   const fixtureController = new AbortController();
   const wait = (ms: number, signal = fixtureController.signal) => new Promise<void>((resolve, reject) => {
     signal.throwIfAborted();
@@ -181,6 +181,13 @@ export function installFixtures(empty: boolean, needsConnection: boolean, option
     return structuredClone({ source, imported, updated: [], unchanged, warnings });
   }
   skillSourcesApi.list = async () => structuredClone(sources);
+  skillSourcesApi.projectRepositories = async () => [];
+  skillSourcesApi.settings = async (_companyId, id, input) => {
+    const source = sources.find(item => item.id === id)!;
+    Object.assign(source, { automaticUpdates: input.automaticUpdates ?? source.automaticUpdates ?? true,
+      importNewSkills: input.importNewSkills ?? source.importNewSkills ?? false, revision: source.revision + 1 });
+    return structuredClone(source);
+  };
   const repositoryScenario = options.repositories ?? 'single';
   skillSourcesApi.repositories = async () => {
     if (repositoryScenario === 'loading') return new Promise(() => {});
@@ -262,7 +269,7 @@ export function installFixtures(empty: boolean, needsConnection: boolean, option
     if (options.saving) await wait(3600000);
     const source = sourceFixture();
     Object.assign(source, { id: `source-${sources.length + 1}`, packageMode: input.packageMode, repositoryPackage: input.packageMode === 'repository' ? repositoryFixture(options.packageScenario) : null, repositoryUrl: input.repositoryUrl, fullName: input.repositoryUrl.replace("https://github.com/", ""), trackingRef: input.trackingRef || "main", connectionId: input.connectionId ?? null });
-    source.entries = repositoryCandidates(options.packageScenario).filter(entry => discoveryCandidates.some(candidate => candidate.path === entry.path)).map((entry, index) => ({ ...entry, id: `entry-${index}`, sourceId: source.id, present: true, selection: 'new', skillId: null }));
+    source.entries = repositoryCandidates(options.packageScenario).filter(entry => discoveryCandidates.some(candidate => candidate.path === entry.path)).map((entry, index) => ({ ...entry, id: `entry-${sources.length * 100 + index}`, sourceId: source.id, present: true, selection: 'new', skillId: null }));
     sources.push(source);
     return save(source, input.selectedPaths, input.excludedFolders ?? []);
   };
@@ -284,10 +291,12 @@ export function installFixtures(empty: boolean, needsConnection: boolean, option
     source.lastSuccessAt = new Date();
     return structuredClone({ source, imported: [], updated: [], unchanged: source.entries.filter(entry => entry.selection === "selected").length, warnings: [] });
   };
-  skillSourcesApi.disconnect = async (_companyId, id) => {
+  if (options.disconnected) sources.forEach(source => { source.enabled = false; });
+  skillSourcesApi.disconnect = async (_companyId, id, input) => {
     const source = sources.find(item => item.id === id)!;
-    source.enabled = false;
-    return structuredClone(source);
+    const count = source.entries.filter(entry => entry.skillId).length;
+    sources.splice(sources.findIndex(item => item.id === id), 1);
+    return { id, copiedCount: input.skills === 'copy' ? count : 0, deletedCount: input.skills === 'delete' ? count : 0 };
   };
   return () => {
     fixtureController.abort();

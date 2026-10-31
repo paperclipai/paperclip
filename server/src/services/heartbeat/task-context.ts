@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Db, agents, agentTaskSessions, heartbeatRuns, issueComments } from "@paperclipai/db";
+import type { Db, agents, agentTaskSessions, heartbeatRuns } from "@paperclipai/db";
 import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody } from "@paperclipai/shared";
 import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
 import { parseObject } from "../../adapters/utils.js";
@@ -12,10 +12,13 @@ import type { issueService } from "../issues.js";
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import { redactQuarantinedBodyForHigherTrust, sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
 import { getTaskPlanContext } from "../task-plan-context.js";
+import { caseExecutionMarkdown, getCaseExecutionContext } from "../case-context.js";
 import type { TrustPresetResolution } from "../trust-preset-resolver.js";
 import { liveVoiceExecutionGuidance } from "../voice/voice-execution-guidance.js";
-import { buildPaperclipWakePayload, PAPERCLIP_WAKE_PAYLOAD_KEY, type createHeartbeatRunPreparation } from "./run-preparation.js";
+import { buildPaperclipWakePayload, ConfigurationIncompleteFailure, readHeartbeatWakeComments, PAPERCLIP_WAKE_PAYLOAD_KEY, type createHeartbeatRunPreparation } from "./run-preparation.js";
 import { buildPaperclipTaskMarkdown } from "./task-markdown.js";
+import { deriveCommentId, extractWakeCommentIds } from "../../modules/run-dispatch/index.js";
+import { workspacePreferenceService } from "../workspace-preferences.js";
 
 type RunPreparation = ReturnType<typeof createHeartbeatRunPreparation>;
 type IssueContext = NonNullable<Awaited<ReturnType<RunPreparation["getIssueExecutionContext"]>>>;
@@ -28,14 +31,13 @@ export interface HeartbeatTaskContextInput {
       "id" | "identifier" | "title" | "status" | "priority" | "workMode" |
       "conversationAgentId" | "description" | "projectId"> | null;
     issueContext: IssueContext | null;
-    wakeCommentContext: Pick<typeof issueComments.$inferSelect,
-      "id" | "body" | "sourceTrust" | "presentation" | "metadata"> | null;
     context: Record<string, unknown>;
     taskSession: Pick<typeof agentTaskSessions.$inferSelect, "lastRunId"> | null;
   };
   policy: {
+    recovering?: boolean;
     trustPreset: Pick<TrustPresetResolution, "kind">;
-    experimentalInstanceSettings: { enableSimplifiedEnglishInteractions?: boolean };
+    experimentalInstanceSettings: { enableSimplifiedEnglishInteractions?: boolean; enableCases?: boolean };
   };
   services: {
     issuesSvc: Pick<ReturnType<typeof issueService>, "getAncestors">;
@@ -50,12 +52,52 @@ function readNonEmptyString(value: unknown): string | null {
 /** Rebuilds task prompt fields on the run's context; acquires no execution resources. */
 export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskContextInput) {
   const { run, agent } = input;
-  const { issueRef, issueContext, wakeCommentContext, context, taskSession } = input.task;
+  const { issueRef, issueContext, context, taskSession } = input.task;
   const { trustPreset, experimentalInstanceSettings } = input.policy;
   const { issuesSvc, getPinnedSkillTestContext } = input.services;
-  const continuationSummary = issueRef && !isConversation(issueContext)
-    ? await getIssueContinuationSummaryDocument(db, issueRef.id)
-    : null;
+  const admittedScope = parseObject(context.paperclipAgentJwtScope);
+  if (!input.policy.recovering || (admittedScope.kind !== "standard" && admittedScope.kind !== "skill_test")) {
+    const savedIssue = parseObject(context.paperclipIssue);
+    const skillTest = input.policy.recovering
+      ? savedIssue.workMode === "skill_test" || Boolean(context.paperclipSkillTest)
+      : issueRef?.workMode === "skill_test";
+    context.paperclipAgentJwtScope = skillTest && issueRef
+      ? { kind: "skill_test", issueId: issueRef.id }
+      : { kind: "standard" };
+  }
+  const isSkillTest = parseObject(context.paperclipAgentJwtScope).kind === "skill_test";
+  const wakeCommentId = deriveCommentId(context, null);
+  const commentIds = [...new Set([...extractWakeCommentIds(context), ...(wakeCommentId ? [wakeCommentId] : [])])];
+  const [summary, ancestors, pinnedSkillTestRead, wakeComments] = await Promise.allSettled([
+    issueRef && !isConversation(issueContext) ? getIssueContinuationSummaryDocument(db, issueRef.id) : Promise.resolve(null),
+    issueRef ? issuesSvc.getAncestors(issueRef.id) : Promise.resolve([]),
+    isSkillTest && issueRef ? getPinnedSkillTestContext(agent.companyId, issueRef.id) : Promise.resolve(null),
+    readHeartbeatWakeComments(db, agent.companyId, readNonEmptyString(context.issueId), commentIds),
+  ]);
+  if (summary.status === "rejected") throw summary.reason;
+  if (ancestors.status === "rejected") throw ancestors.reason;
+  if (pinnedSkillTestRead.status === "rejected") throw pinnedSkillTestRead.reason;
+  if (wakeComments.status === "rejected") throw wakeComments.reason;
+  const wakeCommentRows = wakeComments.value;
+  const selectedWakeComment = issueRef && wakeCommentId ? wakeCommentRows.find(comment => comment.id === wakeCommentId && comment.issueId === issueRef.id) ?? null : null;
+  const wakeCommentContext = selectedWakeComment ? {
+    id: selectedWakeComment.id,
+    body: selectedWakeComment.deletedAt ? "" : selectedWakeComment.body,
+    authorType: selectedWakeComment.authorType,
+    authorAgentId: selectedWakeComment.authorAgentId,
+    authorUserId: selectedWakeComment.authorUserId,
+    presentation: selectedWakeComment.deletedAt ? null : selectedWakeComment.presentation,
+    metadata: selectedWakeComment.deletedAt ? null : selectedWakeComment.metadata,
+    deletedAt: selectedWakeComment.deletedAt,
+    deletedByType: selectedWakeComment.deletedByType,
+    deletedByAgentId: selectedWakeComment.deletedByAgentId,
+    deletedByUserId: selectedWakeComment.deletedByUserId,
+    deletedByRunId: selectedWakeComment.deletedByRunId,
+    sourceTrust: selectedWakeComment.sourceTrust,
+  } : null;
+  const continuationSummary = summary.value;
+  const issueAncestors = ancestors.value;
+  const pinnedSkillTestContext = pinnedSkillTestRead.value;
   const exposeLowTrustRaw = trustPreset.kind === "low_trust_review";
   const safeContinuationSummary =
     continuationSummary && !exposeLowTrustRaw
@@ -65,9 +107,6 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     wakeCommentContext && !exposeLowTrustRaw
       ? sanitizeQuarantinedCommentForHigherTrust(wakeCommentContext)
       : wakeCommentContext;
-  const issueAncestors = issueRef
-    ? await issuesSvc.getAncestors(issueRef.id)
-    : [];
   if (continuationSummary) {
     context.paperclipContinuationSummary = {
       key: safeContinuationSummary!.key,
@@ -79,10 +118,11 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
   } else {
     delete context.paperclipContinuationSummary;
   }
-  const pinnedSkillTestContext =
-    issueRef?.workMode === "skill_test"
-      ? await getPinnedSkillTestContext(agent.companyId, issueRef.id)
-      : null;
+  if (isSkillTest && !pinnedSkillTestContext) {
+    throw new ConfigurationIncompleteFailure("The skill test's saved version is unavailable.", {
+      configurationIncomplete: { reason: "skill_unavailable", actionUrl: "/skills" },
+    });
+  }
   if (pinnedSkillTestContext) {
     context.paperclipSkillTest = {
       ...pinnedSkillTestContext,
@@ -113,6 +153,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     agentId: agent.id,
     runId: run.id,
     contextSnapshot: context,
+    wakeCommentRows,
     continuationSummary,
     issueSummary: issueRef
       ? {
@@ -125,6 +166,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
           workMode: issueRef.workMode,
           projectId: issueRef.projectId,
           executionPolicy: issueContext?.executionPolicy ?? null,
+          originKind: issueContext?.originKind ?? null,
         }
       : null,
     exposeLowTrustRaw,
@@ -188,7 +230,17 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     issueContext?.chatAssignedAgentId === agent.id
       ? issueContext.chatCommunicationGuidance
       : null;
+  // Use the standing chat owner's saved presentation choice, never worker text.
+  // Recovery retains the admitted choice instead of silently changing its prompt.
+  const coordinatorWorkspace = agent.adapterType === "paperclip_runner" && isConversation(issueContext)
+    && issueContext?.conversationUserId
+    ? input.policy.recovering
+      ? context.paperclipCoordinatorWorkspaceEnabled === true
+      : (await workspacePreferenceService(db).get(issueContext.conversationUserId)).coordinatorWorkspaceEnabled
+    : false;
+  context.paperclipCoordinatorWorkspaceEnabled = Boolean(coordinatorWorkspace);
   const taskMarkdownInput = {
+    coordinatorWorkspace: Boolean(coordinatorWorkspace),
     conversationConfirmations: issueRef && isConversation(issueContext)
       ? await getConversationConfirmationContext({ db, companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id })
       : null,
@@ -200,6 +252,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
           titleNeedsGeneration: issueContext?.titleNeedsGeneration,
           workMode: issueRef.workMode,
           conversationAgentId: issueContext?.conversationAgentId,
+          executionPolicy: issueContext?.executionPolicy,
           description: issueRef.description,
         }
       : null,
@@ -255,18 +308,25 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
   // Unlike the frozen initial communication preferences, live-call context
   // must also reach resumed turns. Rebuild it from server records each wake.
   const liveVoiceTaskPrefix = liveVoiceGuidance ? `${liveVoiceGuidance}\n\n` : "";
-  let taskMarkdown = liveVoiceTaskPrefix + buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan }) + chatCompletionInstruction(context);
-  let taskMarkdownAssignment = liveVoiceTaskPrefix + buildPaperclipTaskMarkdown({
+  context.paperclipCasesEnabled = experimentalInstanceSettings.enableCases === true;
+  const workflowCase = issueRef && experimentalInstanceSettings.enableCases
+    ? await getCaseExecutionContext(db, { companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id, runId: run.id, exposeLowTrustRaw })
+    : null;
+  if (workflowCase) context.paperclipCase = workflowCase;
+  else delete context.paperclipCase;
+  const assignmentPrefix = liveVoiceTaskPrefix + caseExecutionMarkdown(workflowCase);
+  let taskMarkdown = assignmentPrefix + buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan }) + chatCompletionInstruction(context);
+  let taskMarkdownAssignment = assignmentPrefix + buildPaperclipTaskMarkdown({
     ...taskMarkdownInput,
     taskPlan,
     includeWakeComments: false,
   }) + chatCompletionInstruction(context);
-  const taskMarkdownCompact = liveVoiceTaskPrefix + buildPaperclipTaskMarkdown({
+  const taskMarkdownCompact = assignmentPrefix + buildPaperclipTaskMarkdown({
     ...taskMarkdownInput,
     taskPlan,
     includeDescription: false,
   }) + chatCompletionInstruction(context);
-  const taskMarkdownAssignmentCompact = liveVoiceTaskPrefix + buildPaperclipTaskMarkdown({
+  const taskMarkdownAssignmentCompact = assignmentPrefix + buildPaperclipTaskMarkdown({
     ...taskMarkdownInput,
     taskPlan,
     includeDescription: false,
@@ -314,6 +374,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
       db,
     ).redactForIssue(agent.companyId, issueRef.id, {
       paperclipIssue: context.paperclipIssue,
+      paperclipCase: context.paperclipCase,
       paperclipWakeComment: context.paperclipWakeComment,
       paperclipTaskCommunicationGuidance: context.paperclipTaskCommunicationGuidance,
       paperclipTaskMarkdown: context.paperclipTaskMarkdown,
@@ -322,6 +383,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
       paperclipTaskMarkdownAssignmentCompact: context.paperclipTaskMarkdownAssignmentCompact,
     });
     context.paperclipIssue = redactedWakeContext.paperclipIssue;
+    if (redactedWakeContext.paperclipCase) context.paperclipCase = redactedWakeContext.paperclipCase;
     context.paperclipTaskCommunicationGuidance = redactedWakeContext.paperclipTaskCommunicationGuidance;
     if (redactedWakeContext.paperclipWakeComment) {
       context.paperclipWakeComment =
@@ -372,5 +434,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
   } else {
     delete context.paperclipTurnContext;
   }
-  return { continuationSummary, executionContinuation, paperclipWakePayload, safeWakeComments, safeWakeCommentContext };
+  const pinnedSkillTest = pinnedSkillTestContext
+    ? { key: pinnedSkillTestContext.skillKey, versionId: pinnedSkillTestContext.skillVersionId } : null;
+  return { continuationSummary, executionContinuation, paperclipWakePayload, safeWakeComments, safeWakeCommentContext, pinnedSkillTest };
 }

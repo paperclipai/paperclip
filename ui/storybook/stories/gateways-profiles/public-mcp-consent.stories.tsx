@@ -8,7 +8,16 @@ const meta = {
   id: "assistant-connections-consent",
   title: "Apps, channels, and extensions/Tool gateways and access profiles/Assistant connections/Consent",
   component: McpConnectPage,
-  parameters: { layout: "padded", initialEntries: [`/mcp-connect/${request.id}`], docs: { description: { component: "Production consent page at /mcp-connect/:id. API fixtures are isolated. Successful consent stays in this preview; no OAuth credentials are issued." } } },
+  parameters: { layout: "padded", initialEntries: [`/mcp-connect/${request.id}`], docs: { description: { component: "Production consent page at /mcp-connect/:id. API fixtures are isolated. Successful consent stays in this preview; no OAuth credentials are issued." } },
+    paperclip: {
+      "capabilities": [
+        "gateways-profiles/client-connect"
+      ],
+      "status": "current",
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   beforeEach: ({ parameters }) => installPublicMcpFixture(parameters.fixture),
   render: () => <Routes><Route path="/mcp-connect/:id" element={<McpConnectPage />} /><Route path="/assistant-connections" element={<AssistantConnectionsPage />} /></Routes>,
 } satisfies Meta<typeof McpConnectPage>;

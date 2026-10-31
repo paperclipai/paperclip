@@ -9,7 +9,15 @@ const meta: Meta<typeof TextAttachmentPreview> = {
   id: "components-csv-file-tab",
   title: "Tasks and conversations/Documents, attachments, and work products/Components/CSV File Tab",
   component: TextAttachmentPreview,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "documents-artifacts/attachments"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   decorators: [(Story) => <div className="h-screen bg-background text-foreground"><Story /></div>],
 };
 export default meta;

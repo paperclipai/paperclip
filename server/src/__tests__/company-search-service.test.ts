@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -10,6 +11,7 @@ import {
   issueDocuments,
   issueAccessGrants,
   issueLabels,
+  issueWorkProducts,
   issues,
   labels,
   projectAccessMembers,
@@ -28,12 +30,13 @@ import {
 import { issueReadSqlCondition, projectReadSqlCondition } from "../services/authorization.js";
 import { issueService } from "../services/issues.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_COMPANY_SEARCH_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
-    `Skipping embedded Postgres company search tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+    `Skipping embedded Postgres company search tests on this host: ${("reason" in embeddedPostgresSupport ? embeddedPostgresSupport.reason : "unsupported environment")}`,
   );
 }
 
@@ -80,8 +83,11 @@ describeEmbeddedPostgres("companySearchService", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-search-");
-    db = createDb(tempDb.connectionString);
+    if (!externalDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-search-");
+    db = createDb(externalDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 6 });
+    // External suites can reuse this dedicated database sequentially. Match
+    // the fresh embedded fixture before this suite creates its own rows.
+    if (externalDatabaseUrl) await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
     svc = companySearchService(db);
     await db.execute(sql.raw("CREATE EXTENSION IF NOT EXISTS pg_trgm"));
   }, 20_000);
@@ -100,6 +106,7 @@ describeEmbeddedPostgres("companySearchService", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -167,6 +174,87 @@ describeEmbeddedPostgres("companySearchService", () => {
     });
     return id;
   }
+
+  it("paginates issue-result-only searches before unrelated entity competition", async () => {
+    const companyId = await createCompany();
+    const now = Date.now();
+    const older = await createIssue(companyId, { title: "Launch older", updatedAt: new Date(now - 2_000) });
+    await createIssue(companyId, { title: "Launch newer", updatedAt: new Date(now - 1_000) });
+    await createAgent(companyId, { name: "Launch agent", updatedAt: new Date(now) });
+    await createProject(companyId, { name: "Launch project", updatedAt: new Date(now + 1_000) });
+    const holder = await createIssue(companyId, { title: "Artifact holder" });
+    await db.insert(issueWorkProducts).values({ companyId, issueId: holder, type: "artifact", provider: "paperclip",
+      title: "Launch artifact", status: "ready", updatedAt: new Date(now + 2_000) });
+    const query = companySearchQuerySchema.parse({ q: "launch", scope: "all", sort: "updated", limit: 1, offset: 1 });
+    const mixed = await svc.search(companyId, { ...query, limit: 10, offset: 0 });
+    expect(new Set(mixed.results.map(row => row.type))).toEqual(new Set(["issue", "agent", "project", "artifact"]));
+    const result = await svc.search(companyId, query, { issueResultsOnly: true });
+    expect(result.results.map(row => row.id)).toEqual([older]);
+    expect(result.countsByType).toMatchObject({ issue: 2, agent: 0, project: 0, artifact: 0 });
+    expect(result.filterOptionCounts.status.todo).toBe(2);
+    expect(result.hasMore).toBe(false);
+    for (const scope of ["agents", "projects", "artifacts"] as const) {
+      let membership: Date | null | undefined;
+      const excluded = await svc.search(companyId, { ...query, scope }, {
+        issueResultsOnly: true, onNextMembershipChange: at => { membership = at; },
+      });
+      expect(excluded.results).toEqual([]);
+      expect(Object.values(excluded.countsByType).every(count => count === 0)).toBe(true);
+      expect(excluded.filterOptionCounts.status).toEqual({});
+      expect(excluded.hasMore).toBe(false);
+      expect(membership).toBeNull();
+    }
+    let deadline: Date | null = null;
+    await svc.search(companyId, { ...query, updatedWithin: "1h" }, {
+      issueResultsOnly: true, onNextMembershipChange: at => { deadline = at; },
+    });
+    expect(deadline).toEqual(new Date(now - 2_000 + 3_600_001));
+  });
+
+  it.each(["all", "comments", "documents"] as const)("preserves issue-result-only %s text matching and read boundaries", async scope => {
+    const previous = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+    process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+    try {
+      const companyId = await createCompany();
+      const comment = await createIssue(companyId, { title: "Comment context" });
+      const document = await createIssue(companyId, { title: "Document context" });
+      const privateId = randomUUID();
+      await createIssue(companyId, { id: privateId, title: "Private context", visibility: "private",
+        privacyRootIssueId: privateId, responsibleUserId: "private-owner" });
+      const foreign = await createIssue(await createCompany(), { title: "Foreign context" });
+      const hidden = await createIssue(companyId, { title: "Hidden context", hiddenAt: new Date() });
+      for (const issueId of [comment, privateId, hidden]) await db.insert(issueComments).values({ companyId, issueId, body: "Needle context" });
+      const foreignCompany = await db.select({ companyId: issues.companyId }).from(issues).where(sql`${issues.id} = ${foreign}`);
+      await db.insert(issueComments).values({ companyId: foreignCompany[0]!.companyId, issueId: foreign, body: "Needle context" });
+      for (const issueId of [document, privateId, hidden]) {
+        const id = randomUUID();
+        await db.insert(documents).values({ id, companyId, title: "Context", latestBody: "Needle context", format: "markdown" });
+        await db.insert(issueDocuments).values({ companyId, issueId, documentId: id, key: "brief" });
+      }
+      const condition = await issueReadSqlCondition(db, { type: "board", userId: "reader", source: "session" });
+      const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "needle", scope }), {
+        issueResultsOnly: true, issueReadCondition: condition,
+      });
+      expect(new Set(result.results.map(row => row.id))).toEqual(new Set(scope === "all" ? [comment, document] : [scope === "comments" ? comment : document]));
+      expect(result.results.every(row => row.type === "issue")).toBe(true);
+      expect(result.countsByType).toMatchObject({ agent: 0, project: 0, artifact: 0 });
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previous;
+    }
+  });
+
+  it("keeps issue-result-only loosen counts inside the selected result kinds", async () => {
+    const companyId = await createCompany();
+    await createIssue(companyId, { title: "Launch done", status: "done" });
+    await createAgent(companyId, { name: "Launch agent" });
+    await createProject(companyId, { name: "Launch project" });
+    const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "launch", status: "todo" }), { issueResultsOnly: true });
+    expect(result.results).toEqual([]);
+    expect(result.zeroResults).toMatchObject({ unfilteredTotal: 1,
+      loosenSuggestions: [{ filter: "status", resultCount: 1, additionalCount: 1 }] });
+    expect(result.filterOptionCounts.status.done).toBe(1);
+  });
 
   it("keeps exact entity names ahead of speculative task typos and rejects empty quotes", async () => {
     const companyId = await createCompany();

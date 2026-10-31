@@ -52,6 +52,14 @@ const meta: Meta = {
   parameters: {
     layout: "fullscreen",
     a11y: { test: "off" },
+    paperclip: {
+      "capabilities": [
+        "routines/definition",
+        "secrets/runtime-delivery"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 };
 

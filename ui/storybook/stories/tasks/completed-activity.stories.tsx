@@ -25,6 +25,16 @@ const meta = {
           "Production runner activity group. Completed commentary groups collapse to short action summaries. No failure counts in either state. Expand to see the original one-line activity rows and their full details. The live stories show a group settling while the next group starts.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "tasks/discussion",
+        "runs-adapters/runs"
+      ],
+      "status": "current",
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
   },
 } satisfies Meta<typeof CompletedActivityPreview>;
 export default meta;

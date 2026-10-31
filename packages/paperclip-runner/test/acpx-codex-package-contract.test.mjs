@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 
 const runnerPackage = JSON.parse(
@@ -87,6 +90,7 @@ test("the package exposes only the reviewed runner CLI binaries", () => {
     "paperclip-runner-eval-session": "./dist/cli/eval-session.js",
     "paperclip-runner-codex-proxy": "./dist/cli/codex-app-server-unix-proxy.js",
     "paperclip-runner-acpx-sidecar": "./dist/cli/acpx-runtime-sidecar.js",
+    "paperclip-runner-copilot-metadata-probe": "./dist/cli/copilot-metadata-probe.js",
     "paperclip-runner-opencode-proxy":
       "./dist/cli/opencode-app-server-proxy.js",
   });
@@ -215,4 +219,40 @@ test("the Claude patch removes ambient project and local configuration", () => {
       new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
     );
   }
+});
+
+test("Claude preserves user permission modes when its working directory is home", async (t) => {
+  const packagePath = createRequire(import.meta.url).resolve("@agentclientprotocol/claude-agent-acp/package.json");
+  const settingsModule = pathToFileURL(resolve(dirname(packagePath), "dist/settings.js")).href;
+  const root = await mkdtemp(join(tmpdir(), "claude-settings-origin-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  const project = join(root, "project");
+  await mkdir(join(home, ".claude"), { recursive: true });
+  await mkdir(join(project, ".claude"), { recursive: true });
+  const userFile = join(home, ".claude/settings.json");
+  const env = { ...process.env, HOME: home };
+  delete env.CLAUDE_CONFIG_DIR;
+  delete env.PAPERCLIP_ACPX_ISOLATED_CONTEXT;
+  const inspect = (cwd) => JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", `
+    import { SettingsManager } from ${JSON.stringify(settingsModule)};
+    const manager = new SettingsManager(${JSON.stringify(cwd)});
+    try {
+      await manager.initialize();
+      console.log(JSON.stringify(manager.getSettings()));
+    } finally { manager.dispose(); }
+  `], { env, encoding: "utf8", timeout: 10_000 }));
+  for (const defaultMode of ["bypassPermissions", "acceptEdits", "auto", "plan", "default"]) {
+    const content = JSON.stringify({ permissions: { defaultMode, deny: ["Read(./private)"] } });
+    await writeFile(userFile, content);
+    assert.deepEqual(inspect(home).permissions, { defaultMode, deny: ["Read(./private)"] });
+    assert.equal(await readFile(userFile, "utf8"), content, "discovery does not rewrite the profile");
+  }
+  await writeFile(userFile, JSON.stringify({ permissions: { defaultMode: "bypassPermissions" } }));
+  for (const defaultMode of ["bypassPermissions", "acceptEdits", "auto"]) {
+    await writeFile(join(project, ".claude/settings.json"), JSON.stringify({ permissions: { defaultMode } }));
+    assert.equal(inspect(project).permissions?.defaultMode, undefined, "real project escalation stays filtered");
+  }
+  await writeFile(join(home, ".claude/settings.local.json"), JSON.stringify({ permissions: { defaultMode: "plan" } }));
+  assert.equal(inspect(home).permissions.defaultMode, "plan", "local restrictions still win");
 });

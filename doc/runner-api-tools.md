@@ -3,7 +3,7 @@
 `search_api` and `call_api` extend the native runner when an available dedicated
 operation cannot express the requested work. Use `set_task_monitor` to schedule or clear a one-shot task check; after confirming
 the receipt, finish with `yielded` and `continuation.kind: "monitor"` to await that
-task’s timer. `call_api` still rejects monitor/execution-policy lifecycle writes.
+task’s timer. The monitor workflow remains preferred; REST calls use the same route authorization as legacy agents.
 Existing tools remain preferred;
 agents do not have to search before using them. Only two tool definitions are
 advertised. The API catalog is returned on demand, never injected into the
@@ -28,7 +28,7 @@ preparing any files. Existing dedicated tools remain available. Operators must
 update the environment of each server process and restart it for deployment-level
 changes; this environment switch is not a live settings API.
 
-All company, run, work-mode, credential, and lifecycle checks below still apply.
+All company, run, work-mode, credential, and route authorization checks below still apply.
 
 ## Discovery and requests
 
@@ -64,7 +64,10 @@ inspect its state rather than retrying it to obtain a smaller response.
 
 Connection setup and stalled response reads time out after 30 seconds. An active
 capture has a 10-minute total download deadline. Responses above 24 KiB stream
-into a private temporary file, then into a company-owned asset. Memory stays
+into a private temporary file, then into a company-owned asset scoped to the
+issuing agent and responsible user (plus authorized board administrators).
+Ordinary task or run visibility does not grant access to another actor’s API
+snapshot. Explicit deliverables use the existing attachment/work-product flow. Memory stays
 bounded by the inline prefix and stream buffers. Binary responses also become
 assets; text previews are limited to 2,000 bytes.
 
@@ -163,23 +166,25 @@ failed to return a valid response.
 The server revalidates the active native run, assigned task and actor, then
 creates a server-held agent JWT bound to that company and run. Requests go
 through the actual HTTP router with its authorization, validation and domain
-audit behavior. An additional `runner.api_called` receipt attributes mutations
+audit behavior. Skill-test runs retain the same task-scoped `skill_test` JWT
+as legacy REST runs, including after later edits to the task mode. An additional `runner.api_called` receipt attributes mutations
 to the run even where older route audit events omit that field.
 The run and work mode are checked again after asynchronous file preparation, so
 a stopped run cannot dispatch an upload prepared under its earlier binding.
 
-Ask and pre-acceptance Plan permit reads through the escape hatch. Existing
-dedicated-tool exceptions are unchanged. Runner-owned checkout, completion,
-status/assignment transitions, approval decisions and execution-control actions
-cannot be bypassed through generic calls. Routine creation, schedule/trigger
-changes and manual/public routine execution require the existing scheduling
-clients. Direct workspace runtime commands, runtime-slot stop/restart, case
-automation retries and skill test-run controls also require their existing
-execution clients. Gateway session credentials cannot enter generic results.
-Routine metadata remains readable; annotation threads, comments and thread
-resolution remain available through the fallback. API-only ordinary fields, such as a
-task's `billingCode`, remain accessible even when a dedicated tool covers other
-fields on that endpoint.
+`call_api` is an authenticated REST transport, with the same endpoint and payload
+permissions as a legacy agent using REST. It does not maintain a second denylist
+for routines, runtime services, skill tests, recovery, invitations, secrets,
+exports, lifecycle fields or approval routes. Existing HTTP routes enforce their
+company/resource scope, ownership, grants, redaction, run requirements and board
+or approval gates. A board-only route still denies an agent call. Dedicated tools
+remain preferred for common workflows, including native completion and monitors.
+
+Ask and pre-acceptance Plan retain their existing read restrictions and specific
+mutation exceptions (task titles and conversational confirmation recording).
+Protocol endpoints still require their existing clients. Active-run validation,
+server-owned credentials, file containment, transfer bounds and replay handling
+also remain in place. REST parity does not grant board identity or new permissions.
 
 Mutation call IDs reserve a durable receipt in the run's existing `resultJson`
 before dispatch. Replays return the recorded result. Reusing an ID with different
@@ -190,13 +195,34 @@ run. No database migration is needed.
 Workspace uploads use the existing workspace resource containment checks,
 no-symlink file opens covering every path component, and bounded descriptor reads.
 Local uploads require Linux or macOS; authorized artifacts work on other hosts.
-Lifecycle-sensitive endpoints require an inline JSON object, so a raw uploaded
-JSON file cannot hide protected fields from policy checks. Artifacts must belong
-to the bound company. Secret-value access, credential management, secret proposals
-and company exports require their existing secure clients. Search describes these
-operations as restricted. `call_api` rejects them before creating a replay receipt
-or making an HTTP request. Safe secret metadata listing remains available.
-Agent credentials are never returned to the model. Streaming, WebSocket, MCP and authentication
+Artifacts must belong to the bound company and pass the same actor access checks
+as downloads, before and after reading their bytes. Private API response snapshots
+cannot be used as public company logos or bundled into company exports. An owner
+can explicitly publish a copy through the existing attachment upload path.
+Request bodies and uploads go
+through the route's validation and authorization; the fallback does not reject
+fields that an agent can supply through REST. Route-authorized responses normally use the bounded inline/artifact capture and
+replay mechanism. Credential-bearing responses (secret values, issued keys,
+invites, webhook secrets (including restored triggers) and gateway credentials) stay inline, with a 10 MiB
+response bound. They never spill into plaintext files or saved response assets.
+Their durable mutation receipts encrypt the response with the existing local
+secret provider. Replays decrypt it only inside the authorized run; no HTTP
+request repeats. A working secret store is checked before credential dispatch.
+Other API responses retain the existing 24 KiB inline and 1 GiB capture limits.
+
+API request and response bodies are omitted from persisted native tool events,
+checkpoints and completion results. Saved events retain operation identity, HTTP
+status and a payload digest for replay conflict detection. The model still receives
+the original authorized HTTP response; this redaction affects durable history.
+Completion retries compare expected and persisted events through the same
+idempotent redaction projection. Repeated projection preserves the original
+payload digest. Provider recovery uses the same projection to compare saved
+completion results with provider history. Changed private bodies still conflict.
+Restart preparation preserves the run's admitted REST credential scope, even
+when the task mode changes. See [the run-log guide](run-log-events.md) for stored fields.
+
+The server-issued REST credential for the bound run is never returned to the model.
+Streaming, WebSocket, MCP and authentication
 handshakes are documented as protocol operations requiring their existing clients.
 
 ## Catalog maintenance

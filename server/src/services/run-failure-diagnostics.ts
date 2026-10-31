@@ -1,7 +1,7 @@
 import { readWorkspaceBaseRefDiagnostic } from "./workspace-base-ref-diagnostics.js";
 import { getEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
 import type { heartbeatRuns } from "@paperclipai/db";
-import { readRunCancellation } from "./run-cancellation.js";
+import { readControllerLeaseLoss, readControllerLeaseLossCause, readRunCancellation } from "./run-cancellation.js";
 import { readProcessLossDiagnostic } from "./process-loss-diagnostics.js";
 import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
@@ -9,7 +9,8 @@ import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/w
 import { ACP_TOOL_KINDS } from "@paperclipai/adapter-utils/acpx-engine/constants";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
-import { readNativeModelRejectionDiagnostic } from "./native-runtime/native-provider-failure.js";
+import { readNativeModelRejectionDiagnostic, readNativeTurnFailureDiagnostic } from "./native-runtime/native-provider-failure.js";
+import { readRemoteRunnerRecoveryDiagnostic, readRemoteRunnerRecoveryError } from "./native-runtime/remote-runner-recovery-diagnostics.js";
 import { MANAGED_GIT_WORKTREE_REASON_CODES, PERSISTED_WORKSPACE_SOURCE_REASON_CODES, readManagedGitInspectionDiagnostic } from "./workspace-validation-diagnostics.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
@@ -23,6 +24,11 @@ export interface RunFailureReportOptions {
   phase?: "setup" | "execute";
   /** Runtime-only values to redact; never included in the captured event. */
   secretValues?: readonly string[];
+  /**
+   * The caught native session error. Only an unrecoverable-close settlement is
+   * read, as closed labels and counts; its message and stack are never copied.
+   */
+  nativeCloseFailure?: unknown;
 }
 
 export interface RunFailureException {
@@ -51,6 +57,11 @@ function readAcpPendingToolKinds(value: unknown): string | null {
   return kinds.every((kind) => ACP_PENDING_TOOL_KIND_LABELS.has(kind)) ? value : null;
 }
 
+/** One closed ACP tool-kind label, or nothing. */
+function readAcpToolKind(value: unknown): string | null {
+  return typeof value === "string" && ACP_PENDING_TOOL_KIND_LABELS.has(value) ? value : null;
+}
+
 function read(value: unknown, key: string): unknown {
   if (!value || typeof value !== "object") return undefined;
   try {
@@ -58,6 +69,65 @@ function read(value: unknown, key: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+const NATIVE_CLOSE_COMMAND_STATUSES: ReadonlySet<unknown> = new Set(["pending", "completed", "failed", "rejected", "indeterminate"]);
+const NATIVE_CLOSE_RUNNER_LIFECYCLES: ReadonlySet<unknown> = new Set(["ready", "suspended", "closed", "recoverable_failure"]);
+
+function boundedCount(value: unknown): number | undefined {
+  if (Array.isArray(value)) return value.length;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * Which close-barrier condition failed. Tool identities, digests and provider
+ * turn ids stay in the run log; only booleans, fixed labels and counts leave.
+ */
+function readNativeCloseSettlement(error: unknown): Context | null {
+  let candidate = error;
+  for (let depth = 0; depth < 4 && candidate && typeof candidate === "object"; depth++) {
+    if (read(candidate, "code") === "native_session_close_unrecoverable") break;
+    candidate = read(candidate, "cause");
+  }
+  if (read(candidate, "code") !== "native_session_close_unrecoverable") return null;
+  const settlement = read(candidate, "settlement");
+  const result: Context = {};
+  for (const [field, key] of [["runnerSuspended", "closeRunnerSuspended"], ["providerDrained", "closeProviderDrained"]] as const) {
+    const value = read(settlement, field);
+    if (typeof value === "boolean") result[key] = value;
+  }
+  const suspension = read(settlement, "suspensionState");
+  const commandStatus = read(suspension, "commandStatus");
+  if (NATIVE_CLOSE_COMMAND_STATUSES.has(commandStatus)) result.closeSuspendCommandStatus = commandStatus as string;
+  else if (suspension && commandStatus === null) result.closeSuspendCommandStatus = "not_queued";
+  const lifecycle = read(suspension, "runnerLifecycle");
+  if (NATIVE_CLOSE_RUNNER_LIFECYCLES.has(lifecycle)) result.closeRunnerLifecycle = lifecycle as string;
+  else if (suspension && lifecycle === null) result.closeRunnerLifecycle = "unobserved";
+  const identityMatches = read(suspension, "runnerIdentityMatches");
+  if (typeof identityMatches === "boolean") result.closeRunnerIdentityMatches = identityMatches;
+  const provider = read(settlement, "finalProviderState");
+  if (provider === null) result.closeProviderState = "not_local";
+  else if (provider === "unreadable") result.closeProviderState = "unreadable";
+  else if (provider && typeof provider === "object") {
+    const settled = read(provider, "providerSettled");
+    if (typeof settled === "boolean") result.closeProviderState = settled ? "settled" : "unsettled";
+    const pending = boundedCount(read(provider, "pendingEventCount"));
+    if (pending !== undefined) result.closeProviderPendingEventCount = pending;
+    const activeTurn = read(provider, "activeProviderTurnId");
+    if (activeTurn === null || typeof activeTurn === "string") result.closeProviderTurnActive = activeTurn !== null;
+  }
+  const tools = read(settlement, "semanticTools");
+  const persistenceFailed = read(tools, "persistenceFailed");
+  if (typeof persistenceFailed === "boolean") result.closeSemanticResultPersistenceFailed = persistenceFailed;
+  for (const [field, key] of [
+    ["pending", "closeSemanticToolsPending"],
+    ["deliveries", "closeSemanticToolDeliveriesOpen"],
+    ["failures", "closeSemanticResultFailures"],
+  ] as const) {
+    const count = boundedCount(read(tools, field));
+    if (count !== undefined) result[key] = count;
+  }
+  return result;
 }
 
 function scalars(value: unknown, fields: readonly string[]): Context {
@@ -90,14 +160,15 @@ const PUBLIC_BOOLEAN_ENV_KEYS = new Set([
   "CI", "NO_COLOR", "FORCE_COLOR",
   "VITEST", "MALLOCNANOZONE", "CODEX_CI", "CODEX_SHELL", "CODEX_SAGE_BACKFILL_TRACKER_TAB_REUSE",
   "DEV", "PROD", "SSR", "PAPERCLIP_REQUIRE_SENTRY_TEST_SDK",
-  "PAPERCLIP_DB_BACKUP_ENABLED", "PAPERCLIP_AUTH_DISABLE_SIGN_UP", "PAPERCLIP_ENABLE_COMPANY_DELETION",
+  "PAPERCLIP_DB_BACKUP_ENABLED", "PAPERCLIP_WORKSPACE_COMPACTION_ENABLED", "PAPERCLIP_AUTH_DISABLE_SIGN_UP", "PAPERCLIP_ENABLE_COMPANY_DELETION",
   "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE", "PAPERCLIP_SECRETS_STRICT_MODE",
   "SERVE_UI", "PAPERCLIP_UI_DEV_MIDDLEWARE", "HEARTBEAT_SCHEDULER_ENABLED", "PAPERCLIP_ANNOUNCEMENTS_ENABLED",
   "GITHUB_ACTIONS", "GITHUB_REF_PROTECTED", "RUNNER_DEBUG", "ACTIONS_RUNNER_DEBUG", "ACTIONS_STEP_DEBUG",
 ]);
 const PUBLIC_NUMBER_ENV_KEYS = new Set([
   "PORT", "PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES", "PAPERCLIP_DB_BACKUP_RETENTION_DAYS",
-  "PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS", "HEARTBEAT_SCHEDULER_INTERVAL_MS",
+  "PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS", "PAPERCLIP_WORKSPACE_COMPACTION_DELAY_HOURS",
+  "HEARTBEAT_SCHEDULER_INTERVAL_MS",
   "GITHUB_RUN_ATTEMPT", "GITHUB_RUN_NUMBER", "GITHUB_RUN_ID", "GITHUB_RETENTION_DAYS",
 ]);
 
@@ -117,7 +188,8 @@ export function collectRunFailureSecretValues(
       PUBLIC_ENV_KEYS.has(key.toUpperCase()) ||
       (PUBLIC_NUMBER_ENV_KEYS.has(key.toUpperCase()) && /^\d+$/.test(value)) ||
       (key === "BASE_URL" && value === "/") ||
-      (key === "MODE" && /^(?:test|development|production)$/.test(value))
+      (key === "MODE" && /^(?:test|development|production)$/.test(value)) ||
+      (key === "PAPERCLIP_SENTRY_RUN_FAILURES" && /^(?:off|unexpected|all)$/.test(value))
     )) ||
       (PUBLIC_BOOLEAN_ENV_KEYS.has(key.toUpperCase()) && /^(?:0|1|true|false)$/i.test(value));
     if (declared.has(key) || !publicSetting) values.push(value);
@@ -155,11 +227,33 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
     "runtimeMode", "executionStage", "nativePhase", "driverKind", "driverVersion",
   ]);
   if (options.phase) execution.failurePhase = options.phase;
+  const providerConfig = read(read(run.runnerProfileJson, "nativeExecutionInput"), "provider");
+  const providerKind = read(providerConfig, "kind");
+  const model = read(providerConfig, "model");
+  if (typeof providerKind === "string") execution.providerKind = providerKind;
+  if (typeof model === "string") execution.model = model;
+  for (const field of ["startedAt", "finishedAt"] as const) {
+    const value = run[field];
+    if (value instanceof Date && Number.isFinite(value.getTime())) execution[field] = value.toISOString();
+  }
+  const originalFailureCode = read(run.resultJson, "originalFailureCode");
+  if (typeof originalFailureCode === "string" && /^[a-z][a-z0-9_]{1,99}$/.test(originalFailureCode)) {
+    execution.originalFailureCode = originalFailureCode;
+  }
   if (run.startedAt && run.finishedAt) {
     const durationMs = run.finishedAt.getTime() - run.startedAt.getTime();
     if (Number.isFinite(durationMs) && durationMs >= 0) execution.durationMs = durationMs;
   }
   const result = run.resultJson;
+  // Restart reattachment can fail before the native coordinator saves its
+  // result. The thrown error then reaches the generic run failure path, so
+  // read the same closed labels from the error.
+  const remoteRunnerRecovery = readRemoteRunnerRecoveryDiagnostic(read(result, "remoteRunnerRecovery")) ??
+    readRemoteRunnerRecoveryError(options.error);
+  if (remoteRunnerRecovery) {
+    execution.remoteRunnerRecoveryStage = remoteRunnerRecovery.stage;
+    execution.remoteRunnerRecoveryReason = remoteRunnerRecovery.reason;
+  }
   const configuration = read(result, "configurationIncomplete");
   if (run.errorCode === "configuration_incomplete" && read(configuration, "reason") === "workspace_base_ref_unresolved") {
     const diagnostic = readWorkspaceBaseRefDiagnostic(read(configuration, "baseRefDiagnostic"));
@@ -199,9 +293,19 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
     execution.cancellationSource = cancellation.source;
     execution.cancellationExpected = cancellation.expected;
     execution.cancellationInitiatorType = cancellation.initiator.type;
+    const leaseLossCause = readControllerLeaseLossCause(cancellation);
+    if (leaseLossCause) execution.controllerLeaseLossCause = leaseLossCause;
   } else if (run.status === "cancelled") {
     execution.cancellationSource = "unknown";
     execution.cancellationExpected = false;
+  }
+  const leaseLoss = readControllerLeaseLoss(read(result, "controllerLeaseLoss"));
+  if (leaseLoss) {
+    execution.controllerLeaseLossCause = leaseLoss.cause;
+    if (leaseLoss.sinceRenewalMs !== undefined) execution.controllerLeaseSinceRenewalMs = leaseLoss.sinceRenewalMs;
+    if (leaseLoss.renewalPendingMs !== undefined) execution.controllerLeaseRenewalPendingMs = leaseLoss.renewalPendingMs;
+    if (leaseLoss.deadlineLateMs !== undefined) execution.controllerLeaseDeadlineLateMs = leaseLoss.deadlineLateMs;
+    if (leaseLoss.renewalCount !== undefined) execution.controllerLeaseRenewalCount = leaseLoss.renewalCount;
   }
   Object.assign(execution, scalars(result, [
     "mode", "stopReason", "timeoutFired", "timeoutSource", "timeoutConfigured",
@@ -209,13 +313,23 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
   ]));
   for (const field of [
     "acpLastEventAgeMs", "acpObservedEventCount", "acpPendingToolCount",
-    "acpLastEventAgeAtStopMs", "acpOldestPendingToolAgeAtStopMs",
+    "acpLastEventAgeAtStopMs", "acpOldestPendingToolAgeAtStopMs", "acpStalledToolSilentMs",
+    "acpPendingToolPermissionRequestedCount", "acpSettledSameKindToolCount",
+    "acpSettledSameKindToolPermissionRequestedCount",
   ]) {
     const value = read(result, field);
     if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) execution[field] = value;
   }
+  const closeSettlement = readNativeCloseSettlement(options.nativeCloseFailure);
+  if (closeSettlement) Object.assign(execution, closeSettlement);
   const pendingToolKinds = readAcpPendingToolKinds(read(result, "acpPendingToolKinds"));
   if (pendingToolKinds) execution.acpPendingToolKinds = pendingToolKinds;
+  const stalledToolKind = readAcpToolKind(read(result, "acpStalledToolKind"));
+  if (stalledToolKind) execution.acpStalledToolKind = stalledToolKind;
+  const stalledToolPermissionRequested = read(result, "acpStalledToolPermissionRequested");
+  if (typeof stalledToolPermissionRequested === "boolean") {
+    execution.acpStalledToolPermissionRequested = stalledToolPermissionRequested;
+  }
   const toolInventoryComplete = read(result, "acpToolInventoryComplete");
   if (typeof toolInventoryComplete === "boolean") execution.acpToolInventoryComplete = toolInventoryComplete;
   const restoreFailure = read(result, "workspaceRestoreFailure");
@@ -243,6 +357,8 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
   const provider = scalars(read(result, "terminalSessionFailure"), ["category", "title", "details"]);
   const nativeProviderFailure = readNativeModelRejectionDiagnostic(read(result, "nativeProviderFailure"));
   if (nativeProviderFailure) Object.assign(provider, nativeProviderFailure);
+  const nativeTurnFailure = readNativeTurnFailureDiagnostic(read(result, "nativeTurnFailure"));
+  if (nativeTurnFailure) Object.assign(provider, nativeTurnFailure);
   const truncatedFields: string[] = [];
   const providerTruncation = read(read(result, "terminalSessionFailure"), "truncatedFields");
   if (Array.isArray(providerTruncation)) {
@@ -299,6 +415,10 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
       const value = read(error, field);
       if (typeof value === "string") entry[field] = value;
       else if (field === "code" && typeof value === "number" && Number.isFinite(value)) entry.code = String(value);
+    }
+    if (entry.code === undefined) {
+      const reasonCode = read(error, "reasonCode");
+      if (typeof reasonCode === "string") entry.code = reasonCode;
     }
     const status = read(error, "status") ?? read(error, "statusCode");
     if (typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599) entry.status = status;

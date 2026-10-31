@@ -1,3 +1,6 @@
+import { notifyGitHubWebhookRecovery } from "./chat-channels/github/webhook-recovery-notifications.js";
+import type { AuthorizationActor } from "./authorization.js";
+import { connectionManagementService, type ConnectionManagementContext } from "./connection-management.js";
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
@@ -33,6 +36,7 @@ import {
   type PaperclipCloudConnector,
 } from "./paperclip-cloud-connector.js";
 import { paperclipCloudConnectorEnrollmentStatus } from "./paperclip-cloud-connector-enrollment.js";
+import { pollGitHubBotCloudSetupEvents } from "./chat-github-cloud-ingress.js";
 
 /** Loopback aliases are equivalent locally, but Cloud requires the approved exact origin. */
 export function githubWizardBrowserOrigin(
@@ -72,6 +76,7 @@ export function githubChatWizardService(
       endpointId: string,
       userId: string,
       input: GitHubAppRegistrationInput,
+      managementContext?: ConnectionManagementContext,
     ) => Promise<{
       registrationUrl: string;
       manifest: Record<string, unknown>;
@@ -80,16 +85,18 @@ export function githubChatWizardService(
     resumeDirect?: (
       endpointId: string,
       userId: string,
+      managementContext?: ConnectionManagementContext,
     ) => Promise<{
       registrationUrl: string;
       manifest: Record<string, unknown>;
       expiresAt: string;
     }>;
-    completeDirect?: (state: string, code: string) => Promise<string>;
+    completeDirect?: (state: string, code: string, managementContext?: ConnectionManagementContext) => Promise<string>;
     storeApp: (
       endpointId: string,
       userId: string,
       credentials: Record<string, string>,
+      managementContext?: ConnectionManagementContext,
     ) => Promise<unknown>;
     storeCredentials: (
       endpointId: string,
@@ -99,16 +106,17 @@ export function githubChatWizardService(
     refreshRepositories: (
       endpointId: string,
       userId: string,
+      managementContext?: ConnectionManagementContext,
     ) => Promise<Resource[]>;
     resources: (endpointId: string) => Promise<Resource[]>;
     replaceResources: (
       endpointId: string,
       updates: Array<{ id: string; enabled: boolean }>,
       userId: string,
-      options?: { initialGitHubImport?: boolean },
+      options?: { initialGitHubImport?: boolean; managementContext?: ConnectionManagementContext },
     ) => Promise<unknown>;
-    configure: (endpointId: string, userId: string) => Promise<unknown>;
-    finish: (endpointId: string, userId: string) => Promise<unknown>;
+    configure: (endpointId: string, userId: string, managementContext?: ConnectionManagementContext) => Promise<unknown>;
+    finish: (endpointId: string, userId: string, managementContext?: ConnectionManagementContext) => Promise<unknown>;
   },
 ) {
   const fetchImpl = options.fetch ?? fetch;
@@ -164,18 +172,22 @@ export function githubChatWizardService(
     bot: Endpoint,
     values: Partial<NonNullable<Endpoint["setup"]["github"]>>,
   ) {
-    await db
-      .update(chatEndpoints)
-      .set({
-        setup: sql`jsonb_set(${chatEndpoints.setup}, '{github}', coalesce(${chatEndpoints.setup}->'github','{}'::jsonb) || ${JSON.stringify(values)}::jsonb)`,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(chatEndpoints.id, bot.id),
-          eq(chatEndpoints.companyId, bot.companyId),
-        ),
-      );
+    await db.transaction(async tx => {
+      if (values.cloudRegistrationId !== undefined)
+        await notifyGitHubWebhookRecovery(tx, { kind: "endpoint", id: bot.id });
+      await tx
+        .update(chatEndpoints)
+        .set({
+          setup: sql`jsonb_set(${chatEndpoints.setup}, '{github}', coalesce(${chatEndpoints.setup}->'github','{}'::jsonb) || ${JSON.stringify(values)}::jsonb)`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(chatEndpoints.id, bot.id),
+            eq(chatEndpoints.companyId, bot.companyId),
+          ),
+        );
+    });
   }
   async function resume(bot: Endpoint) {
     const [company] = await db
@@ -213,8 +225,9 @@ export function githubChatWizardService(
   async function start(
     id: string,
     userId: string,
-    input: GitHubAppRegistrationInput,
+    input: GitHubAppRegistrationInput, managementContext?: ConnectionManagementContext,
   ) {
+    await managementContext?.reauthorize();
     const bot = await endpoint(id, userId);
     if (bot.botExternalId)
       throw conflict(
@@ -228,13 +241,13 @@ export function githubChatWizardService(
         throw conflict(
           "Recover the existing App from GitHub settings; its registration cannot safely be repeated.",
         );
-      if (prior.handoff) return advance(id, userId);
+      if (prior.handoff) return advance(id, userId, managementContext);
       // The direct flow's hashed state cannot be reconstructed. Do not create a duplicate App.
       throw conflict(
         "An App registration is already pending. Complete its open GitHub page, or use existing-App recovery.",
       );
     }
-    await saveDraft(id, userId, input);
+    await saveDraft(id, userId, input, managementContext);
     // Only a fresh registration may import GitHub's initial selection. Old
     // drafts without this marker retain even an entirely disabled selection.
     if (
@@ -248,7 +261,7 @@ export function githubChatWizardService(
         return {
           endpointId: id,
           state: "create",
-          registration: await options.startDirect(id, userId, input),
+          registration: await options.startDirect(id, userId, input, managementContext),
         } satisfies GitHubAppWizardState;
       return {
         endpointId: id,
@@ -301,13 +314,12 @@ export function githubChatWizardService(
           ownerLogin: input.ownerLogin,
           appName: input.name,
           expiresAt: new Date(Date.now() + 30 * 60_000),
-          handoff: { cloudId: nonce(), returnState, redemptionId: nonce() },
+          handoff: { cloudId: nonce(), returnState, redemptionId: nonce(), ...(managementContext?.actor.type === "board" && managementContext.actor.sessionId ? { browserSessionId: managementContext.actor.sessionId } : {}) },
         })
         .returning();
       await logActivity(tx as unknown as Db, {
         companyId: bot.companyId,
-        actorType: "user",
-        actorId: userId,
+        ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }),
         action: "chat_github.registration_started",
         entityType: "tool_connection",
         entityId: bot.connectionId,
@@ -402,6 +414,7 @@ export function githubChatWizardService(
   async function exchangeCloudManifest(
     session: typeof chatGitHubRegistrations.$inferSelect,
     claimId: string,
+    managementContext?: ConnectionManagementContext,
   ) {
     const cloud = connector();
     if (!cloud || !session.handoff)
@@ -470,6 +483,7 @@ export function githubChatWizardService(
           app.owner.login?.toLowerCase() !== session.ownerLogin.toLowerCase())
       )
         throw forbidden("GitHub returned an App owned by a different account");
+      await managementContext?.reauthorize();
       await options.storeApp(session.endpointId, session.userId, {
         appId: String(app.id),
         privateKey: app.pem,
@@ -477,7 +491,7 @@ export function githubChatWizardService(
         clientId: app.client_id,
         clientSecret: app.client_secret,
         slug: app.slug,
-      });
+      }, managementContext);
       await db
         .update(chatGitHubRegistrations)
         .set({
@@ -499,7 +513,8 @@ export function githubChatWizardService(
       session.expiresAt <= new Date() && !session.consumedAt &&
       !session.handoff.manifestClaimId;
   }
-  async function restartRegistration(id: string, userId: string, registrationId: string) {
+  async function restartRegistration(id: string, userId: string, registrationId: string, managementContext?: ConnectionManagementContext) {
+    await managementContext?.reauthorize();
     const bot = await endpoint(id, userId);
     const cloud = connector();
     if (!cloud) throw conflict("Restore Paperclip Cloud enrollment before continuing");
@@ -531,20 +546,21 @@ export function githubChatWizardService(
         handoff: { cloudId: nonce(), returnState, redemptionId: nonce(), renewalOf: prior.id },
       }).returning();
       await logActivity(tx as unknown as Db, {
-        companyId: bot.companyId, actorType: "user", actorId: userId,
+        companyId: bot.companyId, ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }),
         action: "chat_github.registration_restarted", entityType: "tool_connection", entityId: bot.connectionId,
         details: { endpointId: id, registrationId: next!.id, previousRegistrationId: prior.id, appNotCreated: true },
       });
       return next!;
     });
     await setup(bot, { cloudRegistrationId: created.handoff!.cloudId, registrationStatus: "pending", stage: "connect" });
-    return advance(id, userId);
+    return advance(id, userId, managementContext);
   }
   async function saveDraft(
     id: string,
     userId: string,
-    input: GitHubAppRegistrationInput,
+    input: GitHubAppRegistrationInput, managementContext?: ConnectionManagementContext,
   ) {
+    await managementContext?.reauthorize();
     const bot = await endpoint(id, userId);
     await db.transaction(async (tx) => {
       await tx
@@ -570,8 +586,7 @@ export function githubChatWizardService(
         .where(eq(chatEndpoints.id, id));
       await logActivity(tx as unknown as Db, {
         companyId: bot.companyId,
-        actorType: "user",
-        actorId: userId,
+        ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }),
         action: "chat_github.draft_saved",
         entityType: "tool_connection",
         entityId: bot.connectionId,
@@ -580,7 +595,8 @@ export function githubChatWizardService(
     });
     return { saved: true as const };
   }
-  async function repairCloud(id: string, userId: string) {
+  async function repairCloud(id: string, userId: string, managementContext?: ConnectionManagementContext) {
+    await managementContext?.reauthorize();
     const bot = await endpoint(id, userId),
       session = await registration(bot),
       cloud = connector();
@@ -607,8 +623,7 @@ export function githubChatWizardService(
       throw conflict("Restore this App's Cloud gateway before continuing");
     await logActivity(db, {
       companyId: bot.companyId,
-      actorType: "user",
-      actorId: userId,
+      ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }),
       action: "chat_github.webhook_repair_started",
       entityType: "tool_connection",
       entityId: bot.connectionId,
@@ -658,8 +673,7 @@ export function githubChatWizardService(
     }
     await logActivity(db, {
       companyId: bot.companyId,
-      actorType: "user",
-      actorId: userId,
+      ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }),
       action: "chat_github.webhook_repaired",
       entityType: "tool_connection",
       entityId: bot.connectionId,
@@ -668,12 +682,23 @@ export function githubChatWizardService(
   }
   async function advance(
     id: string,
-    userId: string,
+    userId: string, managementContext?: ConnectionManagementContext,
   ): Promise<GitHubAppWizardState> {
+    await managementContext?.reauthorize();
+    // Bind an agent-created handoff when its addressed human opens the saved setup.
+    if (managementContext?.actor.type === "board" && managementContext.actor.sessionId) {
+      const bot = await endpoint(id, userId);
+      const session = await registration(bot);
+      if (session && session.userId === userId && !session.handoff?.browserSessionId) {
+        await db.update(chatGitHubRegistrations).set({
+          handoff: sql`coalesce(${chatGitHubRegistrations.handoff}, '{}'::jsonb) || ${JSON.stringify({ browserSessionId: managementContext.actor.sessionId })}::jsonb`,
+        }).where(and(eq(chatGitHubRegistrations.id, session.id), sql`${chatGitHubRegistrations.handoff}->>'browserSessionId' is null`));
+      }
+    }
     // Multiple open tabs for this manager share one operation, not concurrent vault writes.
     const key = `${id}:${userId}`;
     if (pending.has(key)) return pending.get(key)!;
-    const work = advanceOnce(id, userId);
+    const work = advanceOnce(id, userId, managementContext);
     pending.set(key, work);
     try {
       return await work;
@@ -683,8 +708,9 @@ export function githubChatWizardService(
   }
   async function advanceOnce(
     id: string,
-    userId: string,
+    userId: string, managementContext?: ConnectionManagementContext,
   ): Promise<GitHubAppWizardState> {
+    await managementContext?.reauthorize();
     let bot = await endpoint(id, userId);
     if (["paused", "revoked"].includes(bot.status))
       return {
@@ -736,7 +762,7 @@ export function githubChatWizardService(
         session.handoff.manifestClaimId &&
         !hasAppCredentials
       ) {
-        await exchangeCloudManifest(session, session.handoff.manifestClaimId);
+        await exchangeCloudManifest(session, session.handoff.manifestClaimId, managementContext);
         bot = await endpoint(id, userId);
         const [savedConnection] = await db
           .select({ refs: toolConnections.credentialSecretRefs })
@@ -789,7 +815,7 @@ export function githubChatWizardService(
           session.handoff.webhookSecretHash !==
             hash(stored.webhookSecret ?? ""))
       ) {
-        await repairCloud(id, userId);
+        await repairCloud(id, userId, managementContext);
         bot = await endpoint(id, userId);
       }
       if (session.status !== "completed")
@@ -825,7 +851,7 @@ export function githubChatWizardService(
           return {
             endpointId: id,
             state: "create",
-            registration: await options.resumeDirect(id, userId),
+            registration: await options.resumeDirect(id, userId, managementContext),
           };
         return {
           endpointId: id,
@@ -856,7 +882,7 @@ export function githubChatWizardService(
       bot.setup.github?.initialSetupPending
     ) {
       try {
-        await options.refreshRepositories(id, userId);
+        await options.refreshRepositories(id, userId, managementContext);
       } catch (error) {
         return {
           endpointId: id,
@@ -891,7 +917,7 @@ export function githubChatWizardService(
             .filter((resource) => resource.availability === "available")
             .map((resource) => ({ id: resource.id, enabled: true })),
           userId,
-          { initialGitHubImport: true },
+          { initialGitHubImport: true, managementContext },
         );
       }
       if (initializeApp && saved.revision === 0 && bot.status !== "active")
@@ -910,7 +936,9 @@ export function githubChatWizardService(
             },
           },
           userId,
+          managementContext,
         );
+      await managementContext?.reauthorize();
       await setup(bot, {
         initialRepositoriesImported: true,
         initialSetupPending: false,
@@ -920,6 +948,10 @@ export function githubChatWizardService(
     // Keep the same vaulted App in the wizard instead of throwing JSON from
     // the browser callback or relaxing the configure action's signature gate.
     bot = await endpoint(id, userId);
+    if (!bot.setup.webhookVerifiedAt && bot.setup.github?.cloudRegistrationId) {
+      await pollGitHubBotCloudSetupEvents(db);
+      bot = await endpoint(id, userId);
+    }
     if (!bot.setup.webhookVerifiedAt)
       return {
         endpointId: id,
@@ -941,7 +973,7 @@ export function githubChatWizardService(
       bot.status !== "active" &&
       (bot.status !== "verifying" || bot.setup.step === "provider_setup")
     )
-      await options.configure(id, userId);
+      await options.configure(id, userId, ...(managementContext ? [managementContext] : []));
     bot = await endpoint(id, userId);
     let linked = await linkedIdentity(bot, userId);
     if (!linked) {
@@ -998,7 +1030,7 @@ export function githubChatWizardService(
     );
     const connectionReady = connectionChecks.every((check) => check.ok);
     if (connectionReady && bot.status !== "active")
-      await options.finish(id, userId);
+      await options.finish(id, userId, ...(managementContext ? [managementContext] : []));
     return {
       endpointId: id,
       state: connectionReady ? "connected" : "verify",
@@ -1097,19 +1129,32 @@ export function githubChatWizardService(
         );
     }
   }
-  async function startIdentity(id: string, userId: string) {
+  async function authorizeBrowserReturn(session: typeof chatGitHubRegistrations.$inferSelect, actor?: AuthorizationActor, identity = false) {
+    // Internal provider workflows already own their authenticated subject. HTTP
+    // callbacks always pass their actual browser actor before consuming state.
+    if (!actor) return;
+    const sessionId = identity ? session.handoff?.identitySessionId : session.handoff?.browserSessionId;
+    if (actor.type !== "board" || actor.userId !== session.userId || (sessionId && actor.sessionId !== sessionId)) throw forbidden("Open this saved setup in the configuring user's browser session");
+    const bot = await endpoint(session.endpointId, session.userId);
+    return connectionManagementService(db).authorize(actor, "connections:configure", {
+      type: "connection_management", companyId: bot.companyId, connectionId: bot.connectionId,
+      targetAgentId: bot.assignedAgentId, purpose: "chat", provider: "github", operation: "github.authentication.return",
+    });
+  }
+  async function startIdentity(id: string, userId: string, actor?: AuthorizationActor) {
     const bot = await endpoint(id, userId),
       session = await registration(bot);
     if (!session || session.userId !== userId)
       throw forbidden("The configuring member must link their GitHub account");
     return withIdentityLease(session.id, (assertOwned) =>
-      startIdentityLocked(id, userId, assertOwned),
+      startIdentityLocked(id, userId, assertOwned, actor),
     );
   }
   async function startIdentityLocked(
     id: string,
     userId: string,
     assertOwned: () => Promise<void>,
+    actor?: AuthorizationActor,
   ) {
     const bot = await endpoint(id, userId),
       session = await registration(bot);
@@ -1133,7 +1178,7 @@ export function githubChatWizardService(
     await db
       .update(chatGitHubRegistrations)
       .set({
-        handoff: sql`(${chatGitHubRegistrations.handoff} - 'identity') || ${JSON.stringify({ identityStateHash: hash(state), identityExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), identityRedemptionId: nonce() })}::jsonb`,
+        handoff: sql`(${chatGitHubRegistrations.handoff} - 'identity') || ${JSON.stringify({ ...(actor?.type === "board" && actor.sessionId ? { identitySessionId: actor.sessionId } : {}), identityStateHash: hash(state), identityExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), identityRedemptionId: nonce() })}::jsonb`,
       })
       .where(eq(chatGitHubRegistrations.id, session.id));
     const challenge = createHash("sha256").update(verifier).digest("base64url");
@@ -1174,6 +1219,7 @@ export function githubChatWizardService(
     session: typeof chatGitHubRegistrations.$inferSelect,
     code: string,
     redirectUri: string,
+    actor?: AuthorizationActor,
   ) {
     return withIdentityLease(session.id, async (assertOwned) => {
       const [current] = await db
@@ -1186,7 +1232,7 @@ export function githubChatWizardService(
           session.handoff?.identityStateHash
       )
         return resume(await endpoint(session.endpointId, session.userId));
-      return completeIdentityLocked(current, code, redirectUri, assertOwned);
+      return completeIdentityLocked(current, code, redirectUri, assertOwned, actor);
     });
   }
   async function completeIdentityLocked(
@@ -1194,6 +1240,7 @@ export function githubChatWizardService(
     code: string,
     redirectUri: string,
     assertOwned: () => Promise<void>,
+    actor?: AuthorizationActor,
   ) {
     const bot = await endpoint(session.endpointId, session.userId);
     if (
@@ -1278,6 +1325,7 @@ export function githubChatWizardService(
       !/^[A-Za-z0-9-]{1,39}$/.test(user.login)
     )
       throw conflict("GitHub returned an invalid account");
+    await authorizeBrowserReturn(session, actor, true);
     // OAuth token remains transient; only an expiring observed identity is saved.
     await assertOwned();
     const identity = {
@@ -1298,7 +1346,7 @@ export function githubChatWizardService(
     });
     return resume(bot);
   }
-  async function directCallback(state: string, code: string) {
+  async function directCallback(state: string, code: string, actor?: AuthorizationActor) {
     const [session] = await db
       .select()
       .from(chatGitHubRegistrations)
@@ -1310,15 +1358,16 @@ export function githubChatWizardService(
       session.trustedOrigin !== origin()
     )
       throw forbidden("GitHub return did not match this instance");
+    const managementContext = await authorizeBrowserReturn(session, actor);
     const bot = await endpoint(session.endpointId, session.userId);
     if (session.status === "failed" || session.status === "exchanging")
       return resume(bot);
     if (session.status === "pending") {
       if (!options.completeDirect)
         throw conflict("GitHub registration is unavailable");
-      await options.completeDirect(state, code);
+      await options.completeDirect(state, code, managementContext);
     }
-    const progress = await advance(bot.id, session.userId);
+    const progress = await advance(bot.id, session.userId, managementContext);
     return progress.state === "install" && progress.installationUrl
       ? progress.installationUrl
       : resume(bot);
@@ -1327,6 +1376,7 @@ export function githubChatWizardService(
     state: string,
     registrationId: string,
     claimId?: string,
+    actor?: AuthorizationActor,
   ) {
     const [session] = await db
       .select()
@@ -1337,6 +1387,7 @@ export function githubChatWizardService(
       .limit(1);
     if (!session?.handoff || !claimId)
       throw forbidden("GitHub return did not match this instance");
+    const managementContext = await authorizeBrowserReturn(session, actor, session.handoff.identityStateHash === hash(state));
     const cloud = connector();
     if (!cloud) throw conflict("Restore Paperclip Cloud enrollment");
     const opened = await cloud.claimGitHubApp({
@@ -1417,7 +1468,7 @@ export function githubChatWizardService(
       });
       if (opened.redirectUri !== route.callbackUrls.oauth)
         throw forbidden("GitHub identity callback did not match");
-      return completeIdentity(session, opened.code, route.callbackUrls.oauth);
+      return completeIdentity(session, opened.code, route.callbackUrls.oauth, actor);
     }
     if (manifestReturn && session.status === "pending") {
       await db
@@ -1432,12 +1483,12 @@ export function githubChatWizardService(
           ),
         );
     }
-    const progress = await advance(session.endpointId, session.userId);
+    const progress = await advance(session.endpointId, session.userId, managementContext);
     return progress.state === "install" && progress.installationUrl
       ? progress.installationUrl
       : resume(bot);
   }
-  async function identityCallback(state: string, code: string) {
+  async function identityCallback(state: string, code: string, actor?: AuthorizationActor) {
     const [session] = await db
       .select()
       .from(chatGitHubRegistrations)
@@ -1447,6 +1498,7 @@ export function githubChatWizardService(
       .limit(1);
     if (!session || session.trustedOrigin !== origin())
       throw forbidden("GitHub identity return did not match");
+    await authorizeBrowserReturn(session, actor, true);
     await endpoint(session.endpointId, session.userId);
     if (!code) {
       await db
@@ -1466,6 +1518,7 @@ export function githubChatWizardService(
       session,
       code,
       `${origin()}/api/chat-github/identity/callback`,
+      actor,
     );
   }
   async function confirmIdentity(

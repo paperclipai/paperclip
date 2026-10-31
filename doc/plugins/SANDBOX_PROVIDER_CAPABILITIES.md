@@ -28,10 +28,16 @@ Drivers that omit the declaration keep the existing fallback. The host does not
 infer this budget from config-schema defaults: a field named `timeoutMs` can
 describe sandbox lifetime instead of the time needed to acquire it.
 
-This declaration does not change provider config, lease expiry, the resume
-deadline, or other lifecycle calls. Providers must still enforce their operation
-timeouts and report uncertain allocations for cleanup. A bundled plugin must bump
-its manifest version when adding the field so existing installations receive it.
+For reusable sandbox acquisition, the host also uses this budget for
+`environmentResumeLease`, with the same explicit-config precedence, bridge
+extension, and RPC margin. Resume attempts and transient retries share one
+deadline. Without a configured or declared budget, resume keeps its one-minute
+host default. Generic plugin-driver resume keeps its existing behavior.
+
+This declaration does not change provider config, lease expiry, or other
+lifecycle calls. Providers must still enforce their operation timeouts and
+report uncertain allocations for cleanup. A bundled plugin must bump its
+manifest version when adding the field so existing installations receive it.
 
 ## How the host resolves an effective capability
 
