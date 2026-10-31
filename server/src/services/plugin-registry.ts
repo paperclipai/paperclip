@@ -88,6 +88,14 @@ export function pluginRegistryService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function writeWorkspaceProviderChange<T>(reconsiderWorkspaces: boolean, write: (database: Db) => Promise<T>): Promise<T> {
+    if (!reconsiderWorkspaces) return write(db);
+    return db.transaction(async tx => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.terminalWorkspaces);
+      return write(tx as unknown as Db);
+    });
+  }
+
   async function nextInstallOrder(): Promise<number> {
     const result = await db
       .select({ maxOrder: sql<number>`coalesce(max(${plugins.installOrder}), 0)` })
@@ -239,12 +247,14 @@ export function pluginRegistryService(db: Db) {
         setClause.categories = data.manifest.categories;
       }
 
-      return db
+      const workspaceProviderChanged = data.manifest !== undefined
+        && !isDeepStrictEqual(plugin.manifestJson.workspaceProvider, data.manifest.workspaceProvider);
+      return writeWorkspaceProviderChange(workspaceProviderChanged, database => database
         .update(plugins)
         .set(setClause)
         .where(eq(plugins.id, id))
         .returning()
-        .then((rows) => rows[0] ?? null);
+        .then((rows) => rows[0] ?? null));
     },
 
     // ----- Status ---------------------------------------------------------
@@ -254,7 +264,9 @@ export function pluginRegistryService(db: Db) {
       const plugin = await getById(id);
       if (!plugin) throw notFound("Plugin not found");
 
-      return db
+      const workspaceProviderActivated = Boolean(plugin.manifestJson.workspaceProvider)
+        && plugin.status !== "ready" && input.status === "ready";
+      return writeWorkspaceProviderChange(workspaceProviderActivated, database => database
         .update(plugins)
         .set({
           status: input.status,
@@ -263,7 +275,7 @@ export function pluginRegistryService(db: Db) {
         })
         .where(eq(plugins.id, id))
         .returning()
-        .then((rows) => rows[0] ?? null);
+        .then((rows) => rows[0] ?? null));
     },
 
     // ----- Uninstall / Remove --------------------------------------------
@@ -478,6 +490,10 @@ export function pluginRegistryService(db: Db) {
             eq(pluginCompanySettings.companyId, companyId),
           ))
           .then((rows) => rows[0] ?? null);
+
+        if (plugin.manifestJson.workspaceProvider && existing?.enabled === false && input.enabled === true) {
+          await notifyDeliveryWork(db, DELIVERY_QUEUES.terminalWorkspaces);
+        }
 
         if (existing) {
           return db

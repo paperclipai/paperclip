@@ -1,3 +1,6 @@
+import { notifyRoutineExecutionStatus } from "../routine-execution-status-notifications.js";
+import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
+import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { and, eq, gt, inArray, ne, notInArray, or, sql } from "drizzle-orm";
@@ -179,6 +182,7 @@ export async function reconstructNativeWorkspace(input: {
         ...(source.interveningExecutions.length ? { interveningExecutions: source.interveningExecutions } : {}) } };
     await markExecutionReconciliation(db, source.action, decision, input.actorId);
     const now = new Date();
+    await notifyAttentionRetentionWork(tx, { companyId: input.companyId });
     await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.issueId });
     await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "handed_back", resolvedAt: now, updatedAt: now,
       resolutionNote: "workspace_reconstruction_authorized", nextAction: "Continue from saved sources. The original unexported edits are lost; verify the selected attachments before rebuilding. Do not repeat completed external actions or reset the original work limits.",
@@ -187,6 +191,8 @@ export async function reconstructNativeWorkspace(input: {
     }).where(eq(issueRecoveryActions.id, source.action.id));
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+    await notifyRoutineExecutionStatus(tx, input.issueId, input.companyId);
+    await notifyStatusCardIssueChange(tx, input.companyId);
     await tx.update(issues).set({ status: "todo", unblockDescriptor: null, blockedTransitionAt: null,
       blockedOwnerNotifiedAt: null, updatedAt: now }).where(eq(issues.id, issue.id));
     const publication = await persistActivity(db, { companyId: input.companyId, actorType: "user", actorId: input.actorId,

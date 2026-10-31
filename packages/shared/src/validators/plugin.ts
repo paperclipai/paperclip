@@ -808,6 +808,7 @@ export const pluginManifestV1Schema = z.object({
   agentLifecycle: z.literal(true).optional(),
   workspaceProvider: z.object({
     finalizationVersion: z.literal(1).optional(),
+    supportsMergeAncestry: z.boolean().optional(),
     freshWorkspaceVersion: z.literal(1).optional(),
     modes: z.array(z.enum(["shared_workspace", "isolated_workspace", "operator_branch"])).min(1).max(3),
     strategies: z.array(z.enum(["project_primary", "git_worktree"])).min(1).max(2),

@@ -1,3 +1,4 @@
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../modules/external-agents/index.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
@@ -14,6 +15,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 export type NativeFinalizationWorkScope = { companyId: string; runId?: string; issueId?: string };
 
 export async function notifyNativeFinalizationWork(transaction: object, scope: NativeFinalizationWorkScope) {
+  await notifyAttentionRetentionWork(transaction, { companyId: scope.companyId });
   if (scope.issueId || scope.runId) {
     await notifyNativeEnvironmentSettlement(transaction, scope);
     await notifyExternalAgentSettlement(transaction, scope);

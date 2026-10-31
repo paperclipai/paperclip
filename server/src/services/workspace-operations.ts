@@ -1,3 +1,4 @@
+import { notifyAttentionRetentionWork, notifyIssueAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyNativeResultCommit } from "./native-result-commit-notifications.js";
 import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
@@ -480,8 +481,14 @@ export function workspaceOperationService(db: Db) {
 
         async recordOperation(recordInput) {
           async function writeState<T>(write: (database: Db) => Promise<T>): Promise<T> {
-            if (recordInput.phase !== "workspace_finalize" || !input.heartbeatRunId) return write(db);
+            if (recordInput.phase !== "workspace_finalize" || (!input.heartbeatRunId && !executionWorkspaceId && !input.issueId)) return write(db);
             return db.transaction(async tx => {
+              if (!input.heartbeatRunId) {
+                // An export clears barriers for every issue sharing this workspace.
+                if (executionWorkspaceId) await notifyAttentionRetentionWork(tx, { companyId: input.companyId, sourceKind: "blocker_attention" });
+                else await notifyIssueAttentionRetentionWork(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined });
+                return write(tx as unknown as Db);
+              }
               await notifyNativeResultCommit(tx, { companyId: input.companyId,
                 runId: input.heartbeatRunId!, issueId: input.issueId ?? undefined });
               await notifyNativeWorkspaceFinalization(tx, { companyId: input.companyId,
