@@ -258,6 +258,38 @@ describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () =>
     } finally { unsubscribe(); }
   });
 
+  it.each(["setRunStatus", "setRunStatusIfRunning"] as const)("wakes retained cleanup only after the outer %s terminal write commits", async operation => {
+    const { run } = await fixture();
+    const hints: unknown[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.retainedNativeSessionCleanup, (event, scopes) => {
+      if (event === "settled") for (const scope of scopes ?? []) hints.push(JSON.parse(scope));
+    });
+    try {
+      await db.transaction(async transaction => {
+        const tx = transaction as unknown as Db;
+        await createHeartbeatLifecycle(tx, callbacks(tx))[operation](run.id, "succeeded", { finishedAt: new Date() });
+        expect(hints).toEqual([]);
+        expect((await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("succeeded");
+      });
+      expect(hints).toEqual([{ companyId: run.companyId, runId: run.id }]);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].finishedAt).not.toBeNull();
+      hints.length = 0;
+
+      await createHeartbeatLifecycle(db, callbacks(db)).setRunStatus(run.id, "succeeded", { error: "repaired metadata" });
+      expect(hints).toEqual([{ companyId: run.companyId, runId: run.id }]);
+    } finally { unsubscribe(); }
+  });
+
+  it("does not wake retained cleanup for running progress", async () => {
+    const { run } = await fixture();
+    const settled = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.retainedNativeSessionCleanup, settled);
+    try {
+      await createHeartbeatLifecycle(db, callbacks(db)).setRunStatus(run.id, "running");
+      expect(settled).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
+
   it("does not request accounting for an unchanged running status", async () => {
     const { run } = await fixture();
     const settled = vi.fn();

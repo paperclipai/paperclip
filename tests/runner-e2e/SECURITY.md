@@ -1,8 +1,9 @@
 # Runner E2E security for a public repository
 
 The explicit [chat feature evals](CHAT-FEATURES.md) use synthetic project briefs
-and a privately supplied Codex subscription login through the existing isolated
-company staging helper. Only source-chat screenshots are captured. Task, document
+and either a privately supplied Codex subscription login through the existing
+isolated company staging helper or the OpenCode profile's encrypted OpenRouter
+secret reference. Only source-chat screenshots are captured. Task, document
 and run evidence stays behind the existing sanitizer and publication allowlist;
 the YAML catalog contains no credentials. The suite's accounted-work budgets do
 not cover production setup probes or imply zero subscription cost.
@@ -40,9 +41,27 @@ does not attribute a product cause or authorize acceptance.
 
 ## Attended connection authentication
 
+The [Antigravity saved-subscription journey](ANTIGRAVITY-AGENT-JOURNEY.md) attaches
+only to its declared same-host loopback macOS ARM64 test target. Configured pins
+assert the trusted startup candidate authority; they cannot create it. The
+signed-in browser user must own the exact pre-existing personal default Google
+grant. No provider secret or OAuth code enters test configuration or prompts,
+and no MCP connection is required. Ownership receipts, actual authenticated
+screenshots and concrete account/session bindings stay private and receive no
+public-fixture marker. Recovery validates target/company/execution and immutable
+owned resources, stops only owned work and retains the supplied Google account
+and default grant. It neither resets the attached instance nor clears accounting
+holds. Two work turns, finite deadlines and zero automatic retries bound the
+selected cell; unknown subscription prices remain unknown.
+
 See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
 `provider-connections` suite, local/staging target ownership, dedicated browser
 profiles, credential handoffs, private evidence, and cleanup contract.
+
+`ConnectionApi.postSensitive` keeps credential bodies outside Playwright traces.
+Adapters must preserve this transport when wrapping APIs. Its optional abort
+signal and bounded timeout stop the actual HTTP request; setup cleanup must
+wait for that request to retire before it certifies resource absence.
 
 Provider-connection results may retain closed diagnostic codes and terminal run
 status before managed-instance teardown. Only error records and failed tool
@@ -136,6 +155,15 @@ new immutable SHA before upgrading an action. The credential-free security test
 rejects mutable tag or branch references.
 
 ## Secrets and protected environments
+
+Kimi's explicit-only `kimi-qualification` cells use `KIMI_API_KEY`, delivered
+through the launcher's normal encrypted company-secret fixture path. All ambient
+`KIMI_*` values, including legacy model keys and login-home aliases, are removed
+from the product server environment. Neither the catalog nor evidence stores
+the key. The maintained Code profile does not borrow an ambient OAuth cache or
+fall back to `KIMI_MODEL_API_KEY`. This registration does not add a hosted paid
+workflow credential grant; hosted authorization and secret delivery remain a
+separate change.
 
 Explicit Grok subscription campaigns may select `GROK_AUTH_JSON` from the same
 protected paid environment. Deliver it only to that subscription profile's paid
@@ -569,3 +597,8 @@ Runner hook performs it. Only synthetic source bytes and proof JSON enter the
 existing private attempt evidence and registered-artifact verification pipeline.
 A failed attempt remains retained. These development checks are not staging or
 Slack qualification, and they do not publish trusted archives or credentials.
+
+
+Report identities preserve legacy chat tasks and exact `area.case` chat catalog
+tasks. Additional task segments, path separators and dotted nonchat tasks remain
+invalid. This parsing does not qualify a result or grant a new execution.

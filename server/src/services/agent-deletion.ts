@@ -1,3 +1,6 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
@@ -32,7 +35,11 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   if (classifierHold) throw conflict("Wait for active prompt injection checks or resolve their unknown charges in Costs before deleting this agent", {
     code: "agent_prompt_injection_accounting_pending",
   });
+  await notifyExternalConversationSettlement(tx, { companyId });
   await issueThreadInteractionService(tx).cancelPendingForDeletedAddressee(companyId, id);
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+  await notifyStatusCardIssueChange(tx, companyId);
   await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
   await tx
     .update(issues)

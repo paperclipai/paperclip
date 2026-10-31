@@ -1,3 +1,5 @@
+import { notifyNativeStatusWakeWork } from "../deferred-execution-notifications.js";
+import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { lockCurrentNativeWorkAssessmentEvidence } from "./work-assessments.js";
 import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finalization-recovery-state.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
@@ -65,6 +67,7 @@ import {
   resolveExternalChatResponseWaitAuthorizationInTransaction,
 } from "./chat-attachment-reuse.js";
 import { issueService } from "../issues.js";
+import { companySkillService } from "../company-skills.js";
 import { syncRoutineRunStatusForIssue } from "../routine-run-status.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -476,6 +479,7 @@ async function enqueueWake(input: {
     .limit(1)
     .then((rows) => rows[0] ?? null);
   if (existing) return existing.id;
+  await notifyNativeStatusWakeWork(input.tx, { companyId: input.companyId });
   const inserted = await input.tx
     .insert(agentWakeupRequests)
     .values({
@@ -1098,6 +1102,7 @@ async function materializeDecisionEffect(input: {
           ),
         );
     }
+    await notifyExternalAgentSettlement(input.tx, { companyId: input.companyId, runId: input.runId });
     await notifyInstructionCollection(input.tx, { companyId: input.companyId, runId: input.runId });
     await notifyCancelledWorkspacePreservation(input.tx, { companyId: input.companyId, runId: input.runId });
     await notifyUnsafeWorkspaceExportRecovery(input.tx, { companyId: input.companyId, issueId: input.issue.id });
@@ -2228,6 +2233,31 @@ export async function commitNativeStatusDecision(input: {
       updated = projected;
       if (updated.originKind === "routine_execution") {
         await syncRoutineRunStatusForIssue(tx as unknown as Db, input.issueId);
+      }
+      // Native task completion bypasses the REST issue route. Commit the Studio
+      // output with the authoritative task status so restart cannot lose it.
+      // The durable test row, not a mutable task mode, identifies the obligation.
+      if (issue.status !== updated.status && (updated.status === "done" || updated.status === "cancelled")) {
+        const testRun = await companySkillService(tx as unknown as Db).completeTestRunForIssue({
+          companyId: input.companyId,
+          issueId: input.issueId,
+          outcome: updated.status === "done" ? "succeeded" : "cancelled",
+          error: updated.status === "cancelled" ? "Harness issue was cancelled" : null,
+        });
+        if (testRun) {
+          const { publication } = await persistActivity(tx as unknown as Db, {
+            companyId: input.companyId,
+            actorType: "system",
+            actorId: "native-status-committer",
+            runId: input.runId,
+            action: "company.skill_test_run_completed",
+            entityType: "company_skill_test_run",
+            entityId: testRun.id,
+            issueId: input.issueId,
+            details: { issueId: input.issueId, status: testRun.status, outputDocumentKey: testRun.outputDocumentKey },
+          });
+          publications.push(publication);
+        }
       }
       materialized.unshift({
         effectKind: "issue_status_projection",

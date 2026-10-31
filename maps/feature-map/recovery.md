@@ -39,8 +39,19 @@ Agent access: [companion](../agent-access-map/recovery.md).
   workspace link when the destination is disabled. Local PostgreSQL and real
   filesystem regressions cover native and legacy recovery and one-time delivery;
   hosted provider recovery remains separate acceptance.
+  Daytona directory export can stream its archive when the sandbox cannot store
+  a temporary tar. The transfer remains bounded and validates archive completion
+  and paths before import. The [capacity regression](../../packages/plugins/sandbox-providers/daytona/src/file-sync-capacity.test.ts)
+  exercises a real local PTY and file-size limit. The credential-gated
+  [provider test](../../packages/plugins/sandbox-providers/daytona/src/file-sync-capacity.live.test.ts)
+  covers stop/start, an ENOSPC archive sink, safe-link filtering, and a second
+  export. Neither test proves the original task's continuation or repairs lost
+  provider session state.
   Native finalization deadline failures also retain the exact prepared source
   for the same stop-and-save workflow before Retry admits another executor.
+  A blocked native restart records that preservation obligation atomically with
+  its failure. PostgreSQL regressions cover exact source binding, live ownership,
+  rollback, and no replacement run or wake from file preservation.
   Retry reconstructs missing preservation for historical failures only from an
   exact prepared source without a live finalization owner.
   New messages and orphan cleanup can register missing preservation automatically
@@ -261,6 +272,15 @@ provider restart. For that journey, interrupt a disposable deployment after
 workspace preparation and before its first executor claim, then confirm one
 provider turn starts on the original run through the normal admission gates.
 
+The same suite's `diskless` and `diskless-per-turn` cases exercise three native
+controller processes with both native projections removed between completed
+turns. They check history and invocation counts through the real executor and
+admission snapshot rebinder. The workspace and sandbox remain available, and
+the processes use the same source revision. Separate Postgres tests cover
+metadata import, bounded discovery, ownership holds and incomplete-publication
+retention. These cases do not qualify full webserver disk loss, distinct releases,
+HTTP traffic continuity, or the live Daytona provider path.
+
 The [Runner transport regressions](../../packages/paperclip-runner/runner/crates/runner-core/src/durable/transport.rs)
 exercise a real WebSocket welcome delayed beyond two seconds. Authentication
 uses the ten-second connection setup budget, clipped by the current lifecycle
@@ -276,8 +296,10 @@ historical provider outage or successful hosted task recovery.
 
 Active remote process supervision distinguishes a failed health read from a
 confirmed exit. The [executor tests](../../server/src/services/native-runtime/native-session-executor.test.ts)
-exercise timeout recovery with a real listening process, unchanged ownership,
-and rejected identity evidence. The Runner restart tests require positive exit
+exercise timeout and repeated gateway-failure recovery with a real listening
+process, unchanged ownership, and rejected identity evidence. Read-only probes
+use their shared deadline with bounded backoff; fast failures do not exhaust a
+three-attempt limit. Signal requests remain single-attempt. The Runner restart tests require positive exit
 evidence before replacement. The executor regressions also retire a real child
 during its metadata read, keep unknown adopted-process ownership held, and reject
 launch before detachment when Node is unavailable. The diagnostic tests cover
@@ -388,7 +410,18 @@ For a source with a retained-file protection marker, exercise recovery through
 the assembled environment runtime. Its exact preservation owner may reopen the
 stopped allocation to read saved files; ordinary resume stays blocked. Reject a
 changed claim, missing stop intent, wrong lease or wrong environment before a
-provider call. Verify saved and newer local files, one preservation receipt, and
+provider call. Repeat accepted-native-result copyback for both reusable lease policies. Require
+the exact accepted result and completion contract; reject a rejected or unselected
+result, another allocation owner, and an active host writer. Verify no provider
+turn or wake is created, then finalize the original result once. Reject malformed
+or oversized Git metadata through native finalization: the run must fail and
+retain its file-recovery barrier, rather than successfully omitting the export.
+Exercise both an oversized sender file and an oversized transfer report. Verify
+one rejected export, no payload read after rejection, and unchanged host files.
+Reload a large-result run and its activity: the failure code and task recovery
+notice remain visible, and metadata repair offers no new provider turn. These database
+and filesystem controls do not qualify a deployed provider.
+Verify saved and newer local files, one preservation receipt, and
 no additional agent turn. The PostgreSQL regression covers this boundary; the
 opt-in provider probe also uses this runtime path with the protection marker.
 

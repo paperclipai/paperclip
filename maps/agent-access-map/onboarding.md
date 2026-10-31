@@ -96,6 +96,10 @@ testing an existing agent; interactive account login additionally requires a
 board user and owner-bound session. An agent's right to hire is not login or
 instance-environment administration authority.
 
+First-agent onboarding limits the provider picker to Claude and Codex. Other
+providers remain available through normal agent creation; this UI choice does
+not change adapter APIs or hiring permissions.
+
 A name-only, held setup has no provider selection yet, so the wizard omits its
 runner choice until the provider is chosen. The existing board-only setup and
 saved-agent update permissions remain; normal runner compatibility validation
@@ -194,6 +198,22 @@ conversational resolution with a genuine later same-task user message supplies
 acceptance; an agent-only resolution does not. A plan approval must name the
 current same-task revision. Newer pending/rejected proposals stop new creation.
 Already admitted task replay and ordinary delegation retain their existing rules.
+Native proposal metadata `version` and `supersedeOnUserComment` stays inside
+`request_human_input.payload`. Invalid root metadata is rejected before dispatch;
+repair guidance keeps the approval kind instead of replacing it with questions.
+The shipped recipes are checked against the advertised schema and the real
+interaction service. Idempotent proposal replay still needs a saved human decision.
+An accepted onboarding execution cannot create a new task blocked by its
+authenticated onboarding source. Native and REST creation return a recoverable
+input error before committing that task or its wake. The same source restriction
+applies to later blocker edits, using database UUID identity. A child's own agent
+run also cannot add its server-owned onboarding parent as a blocker. Native dependency
+edits carry their authenticated run. Empty-list corrections and other blockers
+remain available without a new proposal decision. The API keeps its normal
+attempt audit. A corrected creation call retains
+the human acceptance and can reuse the unconsumed command key. Other blocker
+relationships remain available. The child needs self-contained approved inputs;
+the parent uses `set_dependencies` to wait on the child, not the reverse.
 
 Native `paperclip_finish` does not grant completion authority from an opening
 answer. The onboarding parent requires a trusted saved human decision on its

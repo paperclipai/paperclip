@@ -1,3 +1,5 @@
+import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
+import { notifyExternalAgentSettlement } from "../modules/external-agents/index.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyNativeFinalizationWork } from "./native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRunChange } from "./unsafe-workspace-export-notifications.js";
@@ -190,9 +192,11 @@ export async function reconcileAbandonedExecutionControl(
               })
               .where(eq(nativeRunFinalizations.runId, run.id));
           await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
+          await notifyExternalAgentSettlement(tx, { companyId: run.companyId, runId: run.id });
+          await notifyNativeEnvironmentSettlement(tx, { companyId: run.companyId, runId: run.id });
           await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
           await notifyUnsafeWorkspaceExportRunChange(tx, run);
-          await notifyExecutionRunWork(tx);
+          await notifyExecutionRunWork(tx, { companyId: run.companyId });
           const [updatedRun] = await tx
             .update(heartbeatRuns)
             .set({

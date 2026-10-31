@@ -1,5 +1,7 @@
 import { nativeResponsePresentationWork } from "./native-response-presentation-work.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
+import { plugins } from "@paperclipai/db";
+import { readTaskPanelActivations } from "../plugin-task-panels.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { asc, eq, sql } from "drizzle-orm";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
@@ -46,6 +48,7 @@ import {
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
+import { nativeSha256 } from "./canonical.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { finalizeNativeRun, repairCommittedNativeChatResponse } from "./native-run-finalizer.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
@@ -311,6 +314,63 @@ describe("PaperclipControlPlanePort conformance", () => {
     }
   });
 
+  it("publishes native recovery metadata in the existing snapshot transaction and fences stale generations", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    const owner = { ...identity, authorityRunId: identity.runId, bootId: randomUUID(), generation: 1, leaseOwner: "snapshot-owner" };
+    await db.insert(heartbeatRuns).values({ id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId, nativeSessionId: identity.sessionId,
+      runnerInstanceId: runnerId, completionContractId: contractId, completionContractSha256: contractSha,
+      runnerProfileJson: { unrelated: "preserve" } });
+    await db.insert(nativeRunFinalizations).values({ runId: identity.runId, companyId: identity.companyId, issueId: identity.issueId,
+      phase: "observed",
+      controllerBootId: owner.bootId, controllerGeneration: owner.generation, leaseOwner: owner.leaseOwner,
+      leaseExpiresAt: new Date(Date.now() + 60_000) });
+    const port = new PaperclipControlPlanePort(db, { ...identity, completionContractId: contractId,
+      completionContractSha256: contractSha, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: "snapshot-control" }, {
+      nativeRecovery: { owner, compatibility: { configDigest: `sha256:${"a".repeat(64)}`, processConfigDigest: null } },
+    });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const snapshot = { backendKind: "mock" as const, sessionId: identity.sessionId, identity };
+    const statements: string[] = [];
+    const previousDebug = db.$client.options.debug;
+    db.$client.options.debug = (_connection, statement) => { statements.push(statement); };
+    try { await port.checkpointSession(snapshot); }
+    finally { db.$client.options.debug = previousDebug; }
+    expect(statements.filter(statement => /^begin\b/i.test(statement.trim()))).toHaveLength(1);
+    expect(statements.filter(statement => /^update\s+"heartbeat_runs"/i.test(statement.trim()))).toHaveLength(1);
+    expect(statements.filter(statement => /^(?:with|select)\b/i.test(statement.trim()))).toHaveLength(1);
+    const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    expect(saved.runnerProfileJson).toMatchObject({ unrelated: "preserve", sessionCheckpoint: snapshot,
+      nativeControllerRecovery: { schema: "paperclip.native-controller-recovery.v1", snapshotSha256: nativeSha256(saved.runnerProfileJson?.sessionCheckpoint),
+        checkpoint: null, processConfigDigest: null } });
+    // Missing PRP is an explicit incomplete publication, never fabricated authority.
+    await db.update(nativeRunFinalizations).set({ controllerGeneration: 2 }).where(eq(nativeRunFinalizations.runId, identity.runId));
+    await expect(port.checkpointSession({ ...snapshot, providerSessionId: "stale" })).rejects.toThrow("checkpoint_owner_lost");
+    await expect(port.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL }))
+      .rejects.toThrow("checkpoint_owner_lost");
+    const [unchanged] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    expect(unchanged.runnerProfileJson).toEqual(saved.runnerProfileJson);
+    // A valid coordinator lock does not certify a lease that expires while the
+    // subsequent run-row lock waits. Recheck time at the actual write boundary.
+    await db.update(nativeRunFinalizations).set({ controllerGeneration: 1, leaseExpiresAt: new Date(Date.now() + 150) })
+      .where(eq(nativeRunFinalizations.runId, identity.runId));
+    let locked!: () => void, release!: () => void;
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const blocker = db.transaction(async tx => {
+      await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId)).for("update");
+      locked();
+      await held;
+    });
+    await acquired;
+    const waiting = port.checkpointSession(snapshot);
+    const rejected = expect(waiting).rejects.toThrow("checkpoint_owner_lost");
+    try { await new Promise(resolve => setTimeout(resolve, 200)); }
+    finally { release(); await blocker; }
+    await rejected;
+  });
+
   it("permits only read-only admission while an existing startup drains", async () => {
     const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
     const runnerId = randomUUID();
@@ -405,6 +465,8 @@ describe("PaperclipControlPlanePort conformance", () => {
   });
 
   it("persists panel activation under the authenticated run and recovers it across source replay", async () => {
+    await db.insert(plugins).values({ pluginKey: "example.live-view", packageName: "example-live-view", version: "1.0.0", status: "ready",
+      manifestJson: { ui: { slots: [{ type: "detailTab", id: "screen", entityTypes: ["agent"], taskSidePanel: { availabilityPath: "/agents/:entityId/ready", activation: { namespace: "example.runtime", activityKey: "desktop.used" } } }] } } as never });
     const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
     const runnerId = randomUUID();
     await db.insert(heartbeatRuns).values({
@@ -433,10 +495,13 @@ describe("PaperclipControlPlanePort conformance", () => {
     });
     try { await port.appendEvent(event); } finally { unsubscribe(); }
     expect(notifications).toEqual(["runtime.activity.recorded"]);
+    expect(await readTaskPanelActivations(db, identity.companyId, identity.runId)).toEqual([{ pluginKey: "example.live-view", slotId: "screen" }]);
     const restarted = new PaperclipControlPlanePort(db, replayBinding);
     expect((await restarted.appendEvent(event)).disposition).toBe("duplicate");
     const activations = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
     expect(activations.filter(row => row.eventType === "runtime.activity.recorded")).toHaveLength(1);
+    expect(await readTaskPanelActivations(db, identity.companyId, CONTROL_PLANE_CONFORMANCE_OPEN.identity.runId)).toEqual([]);
+    expect(await readTaskPanelActivations(db, randomUUID(), identity.runId)).toEqual([]);
   });
 
   it("omits API credentials from persisted tool events and checkpoints without changing wire results", async () => {
@@ -484,6 +549,49 @@ describe("PaperclipControlPlanePort conformance", () => {
       expect(JSON.stringify(saved)).toContain("apiPayloadRedacted");
     }
     expect(result.data.credentials).toBe("private-history-fixture-value");
+  });
+
+  it.each(["call_api", "create_case"])("retains bounded %s schema-denial guidance through persistence and replay", async operationId => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const observed: PrpEvent[] = [];
+    const port = new PaperclipControlPlanePort(db, {
+      ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `api-${identity.runId}`,
+    }, { onCommittedEvent: async event => { observed.push(event); } });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const payload = {
+      provider: "codex", code: "semantic_tool_denied", operationId, callId: "schema-denied",
+      message: `provider arguments for ${operationId} failed JSON Schema validation`, paperclipExecuted: false,
+      inputSchemaGuidance: "Invalid tool arguments. Check these input schema locations: /required (missing title).",
+    };
+    const event: PrpEvent = {
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, eventType: "harness.diagnostic", schemaVersion: 1,
+      priority: 0, emittedAt: new Date().toISOString(), payload,
+      debug: { operationId, data: { value: "private-diagnostic-debug" } },
+    };
+    await port.appendEvent(event);
+    expect(observed[0]?.payload).toEqual(payload);
+    expect(observed[0]?.debug).toMatchObject({ apiPayloadRedacted: true });
+    expect(JSON.stringify(observed[0])).not.toContain("private-diagnostic-debug");
+    expect((await port.appendEvent(event)).disposition).toBe("duplicate");
+    expect(port.normalizeReplayPayload(payload)).toEqual(port.normalizeReplayPayload(observed[0]!.payload));
+    const saved = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+    expect(saved).toHaveLength(1);
+    expect((saved[0]!.payload?.prpEvent as unknown as PrpEvent).payload).toEqual(payload);
+    expect(JSON.stringify(saved)).not.toContain("private-diagnostic-debug");
+    await expect(port.appendEvent({ ...event, payload: {
+      ...payload, inputSchemaGuidance: "Invalid tool arguments. Check these input schema locations: /properties/title/type.",
+    } })).rejects.toThrow();
   });
 
   it("redacts identity private material before persisting native events and checkpoints", async () => {
@@ -1070,6 +1178,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       credentialBindings: [],
       runtimeContext: nativeRuntimeContextFixture(),
     });
+    let resultCommitMarkers = 0;
     const port = new PaperclipControlPlanePort(db, {
       companyId: identity.companyId,
       issueId: taskIssueId,
@@ -1080,7 +1189,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       completionContractSha256: "phase6-task-contract",
       sourceInstanceId: taskRunnerId,
       controlPlaneSourceInstanceId: "phase6-control-plane",
-    });
+    }, {onResultCommitted:async()=>{resultCommitMarkers++;}});
     const completed = await executeNativeSession({
       input: execution,
       backend,
@@ -1160,6 +1269,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       callerResultId: `phase6-scripted-runner:${taskRunId}:result`,
       callerDedupeKey: `${taskRunId}:phase6-task-contract`,
     })).rejects.toThrow("structured_result_replay_conflict");
+    expect(resultCommitMarkers).toBe(1);
     await Promise.all([
       finalizeNativeRun({ db, runId: taskRunId, workspaceFinalizeStatus: "succeeded" }),
       finalizeNativeRun({ db, runId: taskRunId, workspaceFinalizeStatus: "succeeded" }),
@@ -1295,10 +1405,14 @@ describe("PaperclipControlPlanePort conformance", () => {
       nativeSessionId: identity.sessionId, runnerInstanceId: conformanceRunnerId,
       completionContractId: contractId, completionContractSha256: contractSha,
     });
+    let resultCommitted = false;
     const port = kind === "port" ? new PaperclipControlPlanePort(db, {
       ...identity, runId, completionContractId: contractId, completionContractSha256: contractSha,
       sourceInstanceId: conformanceRunnerId, controlPlaneSourceInstanceId: "result-lock-order",
-    }) : new NativeRunCoordinatorStore(db, {
+    }, {onResultCommitted:async()=>{
+      const rows=await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId,runId));
+      expect(rows).toHaveLength(1);resultCommitted=true;
+    }}) : new NativeRunCoordinatorStore(db, {
       ...identity, runId, completionContractId: contractId, completionContractSha256: contractSha,
       normalizedSessionId: identity.sessionId, runnerSourceInstanceId: conformanceRunnerId,
       completionContractRevision: "standalone-v1", completionContractCriterionIds: ["objective"],
@@ -1321,11 +1435,13 @@ describe("PaperclipControlPlanePort conformance", () => {
           await new Promise(resolve => setTimeout(resolve, 10));
         }
         expect(waiting).toBe(true);
+        expect(resultCommitted).toBe(false);
         await tx.execute(sql`set local lock_timeout = '1s'`);
         await tx.update(heartbeatRuns).set({ updatedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
       });
     } finally {
       expect(await completion).toBeNull();
+      expect(resultCommitted).toBe(kind === "port");
     }
   });
 

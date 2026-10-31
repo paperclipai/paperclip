@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { effectiveProjectWorkspacePolicy } from "./project-workspace-provider.js";
 import { inspectPluginWorkspace, removePluginWorkspace, restorePluginWorkspace, type WorkspaceWorkers } from "./plugin-workspaces.js";
 import { acquireExecutionWorkspaceLifecycleLock, withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
@@ -31,6 +32,8 @@ import { taskWorkspaceSelectionSchema, type TaskWorkspaceSelection, type TaskWor
 import { authorizationService, executionWorkspaceReadSqlCondition, projectReadSqlCondition, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import type { SQL } from "drizzle-orm";
 import { createWorkspaceGitInspectionCache } from "./workspace-git-inspection-cache.js";
+import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
+import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { notifyTerminalWorkspaceWork, TERMINAL_WORKSPACE_RETRY_MS } from "./terminal-workspace-work.js";
 import {
   deleteWorkspaceCompactionTrash,
@@ -1401,9 +1404,22 @@ async function hasPendingTaskWorkspaceRecovery(tx: DbTransaction, input: {
   for (const operation of operations) {
     if (operation.runId && !latest.has(operation.runId)) latest.set(operation.runId, operation.status);
   }
+  const bootstrapRunIds = rows.filter(({ finalization, run }) => {
+    const recovery = parseObject(run.resultJson?.executionRecovery);
+    return run.runtimeMode === "native" && run.status === "failed" && run.finishedAt !== null
+      && finalization.phase === "terminal_failure" && finalization.resultId === null
+      && run.processPid === null && run.processGroupId === null
+      && recovery.kind === "bootstrap" && recovery.providerWorkStarted === false
+      && !hasWorkspaceRestoreFailure(run.resultJson)
+      && run.runnerProfileJson?.nativeWorkspaceSync == null
+      && run.runnerProfileJson?.nativeWorkspaceFinalizationOwner == null
+      && latest.get(run.id) === "failed";
+  }).map(({ run }) => run.id);
+  const providerEvidence = await nativeSessionProviderEvidence(tx, bootstrapRunIds);
+  const noWorkFailures = new Set(bootstrapRunIds.filter(id => !providerEvidence.has(id)));
   return rows.some(({ finalization, run }) => {
     const status = latest.get(run.id);
-    if (status !== undefined) return status !== "succeeded";
+    if (status !== undefined) return status !== "succeeded" && !noWorkFailures.has(run.id);
     return finalization.phase === "terminal_failure" && finalization.resultId !== null;
   });
 }
@@ -1575,6 +1591,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       await validateSelection(input, tx);
       const intent: TaskWorkspaceIntent = { version: 1, request: { key: input.requestKey, expectedBindingRevision: input.expectedBindingRevision }, selection: input.selection, source: input.source ?? "explicit" };
       const nextRevision = task.workspaceBindingRevision + 1;
+      await notifyStatusCardIssueChange(tx, task.companyId);
       await tx.update(issues).set({ workspaceBindingRevision: nextRevision,
         workspacePendingSelection: { version: 1, requestKey: input.requestKey,
           expectedBindingRevision: nextRevision, intent }, updatedAt: new Date() }).where(eq(issues.id, task.id));
@@ -1618,6 +1635,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           }
         }
       }
+      await notifyStatusCardIssueChange(tx, task.companyId);
       await tx.update(issues).set({ ...patch, assigneeAdapterOverrides, workspaceSelection: pending.intent, workspacePendingSelection: null,
         workspaceBindingRevision: task.workspaceBindingRevision + 1, updatedAt: new Date() }).where(eq(issues.id, task.id));
       return true;
@@ -1636,6 +1654,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const pendingAfterFirstBinding = !task.executionWorkspaceId && pending?.expectedBindingRevision === task.workspaceBindingRevision
         ? { ...pending, expectedBindingRevision: nextRevision }
         : pending;
+      await notifyStatusCardIssueChange(tx, companyId);
       const [bound] = await tx.update(issues).set({ ...patch, executionWorkspaceId: workspaceId,
         workspaceBindingRevision: nextRevision, workspacePendingSelection: pendingAfterFirstBinding, updatedAt: new Date() })
         .where(eq(issues.id, issueId)).returning();
@@ -2511,13 +2530,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         forceWorktreeRemoval: false,
       });
       if (cleanup.cleaned && workspace.mode === "shared_workspace") {
-        await db
+        await db.transaction(async tx => {
+          await notifyStatusCardIssueChange(tx, workspace.companyId);
+          await tx
           .update(issues)
           .set({ executionWorkspaceId: null, updatedAt: now() })
           .where(and(
             eq(issues.companyId, workspace.companyId),
             eq(issues.executionWorkspaceId, workspace.id),
           ));
+        });
       }
       const cleanupReason = [ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON, ...cleanup.warnings].join(" | ");
       if (!cleanup.cleaned || cleanup.warnings.length > 0) {

@@ -12,7 +12,7 @@ import {
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
 import { githubReviewCheckService } from "./chat-github-checks.js";
-import { githubReviewHeading } from "./chat-channels/github/review-heading.js";
+import { githubReviewSummary } from "./chat-channels/github/review-heading.js";
 import { githubPublicationRetry, GITHUB_INLINE_RETRY_WINDOW_MS, GITHUB_INLINE_MAX_ATTEMPTS } from "./chat-channels/github/retry.js";
 import { createHash } from "node:crypto";
 import { githubResponseCommentService, writeGitHubResponseComment } from "./chat-github-response-comments.js";
@@ -1244,12 +1244,14 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
               ? ` · [Review history](${board}/apps/chat/${source.endpoint.id}/reviews)`
               : "";
             const summary = projectSafeChatPublicationText(
-              `${githubReviewHeading({
+              `${githubReviewSummary({
                 botDisplayName: source.endpoint.botDisplayName,
                 botUsername: source.endpoint.botUsername,
                 agentName: source.agent.name,
                 score: assessment.complete ? assessment.score : null,
-              })}\n\n${assessment.summary}\n\n${assessment.rationale}\n\nReviewed commit: \`${review.headSha}\`\n\nCoverage: ${assessment.coverage.reviewedPaths.length} files.\n${assessment.coverage.limitations.join("\n")}\n\nTask: ${taskLink} · ${runLink}${historyLink}`,
+                summary: assessment.summary,
+                rationale: assessment.rationale,
+              })}\n\nReviewed commit: \`${review.headSha}\`\n\nCoverage: ${assessment.coverage.reviewedPaths.length} files.\n${assessment.coverage.limitations.join("\n")}\n\nTask: ${taskLink} · ${runLink}${historyLink}`,
             );
             const summaryMarker = marker(
               "review",

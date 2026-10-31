@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { randomUUID } from "node:crypto";
@@ -94,7 +95,7 @@ export async function retryNativeWorkspaceExport(input: {
           // Persist cleanup authority before any provider call. A lost resume
           // reply or controller restart must not leave a running sandbox behind
           // an old stopped receipt. The pending claim fences the cleanup sweeper.
-          await notifyEnvironmentCleanup(tx);
+          await notifyEnvironmentCleanup(tx, { companyId: input.companyId, runId: input.runId });
           const [lease] = await tx.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed",
             releasedAt: now, failureReason: "workspace_export_resume_pending", updatedAt: now,
             metadata: { ...current.lease.metadata, remoteExecutionTermination: undefined,
@@ -141,10 +142,11 @@ export async function retryNativeWorkspaceExport(input: {
         await tx.update(heartbeatRuns).set({ status: "running", finishedAt: null, error: null, errorCode: null,
           nativePhase: "result_accepted", nativePhaseUpdatedAt: now,
           resultJson: { ...current.run.resultJson, workspaceExportRetry: retry, finalizationPhase: "result_accepted", failureCode: null, originalFailureCode: null, nextAttemptAt: null }, updatedAt: now }).where(eq(heartbeatRuns.id, current.run.id));
+        await notifyStatusCardIssueChange(tx, current.run.companyId);
         await tx.update(issues).set({ executionRunId: current.run.id, updatedAt: now }).where(eq(issues.id, current.issue.id));
         // Reclaim the same lease only for control-plane copyback. The normal
         // finalization settlement will stop/retain it again on success or failure.
-        await notifyEnvironmentCleanup(tx);
+        await notifyEnvironmentCleanup(tx, { companyId: input.companyId, runId: input.runId });
         await tx.update(environmentLeases).set({ status: "active", releasedAt: null, cleanupStatus: null, failureReason: null,
           metadata: { ...current.lease.metadata, remoteExecutionTermination: undefined,
             // Keep stop-only authority through copyback and commitment. A crash

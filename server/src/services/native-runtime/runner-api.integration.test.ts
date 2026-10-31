@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, writeFile, symlink, mkdir, open } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { and, eq } from "drizzle-orm";
-import { agents, agentWakeupRequests, assets, documents, heartbeatRuns, issues, projects, routineDocuments, routines, runnerApiResponseReservations, companySkills, companyMemberships, principalPermissionGrants } from "@paperclipai/db";
+import { agents, agentWakeupRequests, assets, documents, heartbeatRuns, issues, projects, routineDocuments, routines, runnerApiResponseReservations, companySkills, companySkillVersions, companySkillTestRuns, companyMemberships, principalPermissionGrants } from "@paperclipai/db";
 import { initializeRunIdentity } from "../run-identity.js";
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { secretService } from "../secrets.js";
@@ -16,6 +16,7 @@ import { createLocalAgentJwt } from "../../agent-auth-jwt.js";
 import { RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES } from "./runner-api-response-limits.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { prepareHeartbeatTaskContext } from "../heartbeat/task-context.js";
+import { createHeartbeatRunPreparation } from "../heartbeat/run-preparation.js";
 import { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import type { ToolGatewayService } from "../tool-gateway.js";
 import { RUNNER_TOOL_RESULT_MAX_BYTES } from "./runner-tool-results.js";
@@ -496,9 +497,10 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const [agent] = await server.db.select().from(agents).where(eq(agents.id, fixture.agentId));
     const context = structuredClone(run.contextSnapshot ?? {});
     await prepareHeartbeatTaskContext(server.db, { run, agent,
-      task: { issueRef: issue, issueContext: null, wakeCommentContext: null, context, taskSession: null },
+      task: { issueRef: issue, issueContext: null, context, taskSession: null },
       policy: { recovering: true, trustPreset: { kind: "standard" }, experimentalInstanceSettings: {} },
-      services: { issuesSvc: { getAncestors: async () => [] }, getPinnedSkillTestContext: async () => null },
+      services: { issuesSvc: { getAncestors: async () => [] },
+        getPinnedSkillTestContext: createHeartbeatRunPreparation(server.db).getPinnedSkillTestContext },
     });
     await server.db.update(heartbeatRuns).set({ contextSnapshot: context }).where(eq(heartbeatRuns.id, fixture.runId));
   }
@@ -510,7 +512,17 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     } }).where(eq(heartbeatRuns.id, fixture.runId));
     await server.db.update(issues).set({ workMode: "skill_test" }).where(eq(issues.id, fixture.issueId));
     await server.db.update(issues).set({ workMode: "standard" }).where(eq(issues.id, fixture.issueId));
+    await expect(reprepareRun(fixture)).rejects.toThrow("The skill test's saved version is unavailable");
+    const [skill] = await server.db.insert(companySkills).values({ companyId: fixture.companyId,
+      key: `company/${fixture.companyId}/scope-test`, slug: "scope-test", name: "Scope test", markdown: "# Scope test", sourceType: "managed" }).returning();
+    const [version] = await server.db.insert(companySkillVersions).values({ companyId: fixture.companyId,
+      companySkillId: skill.id, revisionNumber: 1, fileInventory: [{ path: "SKILL.md", kind: "skill", content: "# Scope test" }] }).returning();
+    await server.db.insert(companySkillTestRuns).values({ companyId: fixture.companyId, skillId: skill.id,
+      skillVersionId: version.id, agentId: fixture.agentId, issueId: fixture.issueId, inputSnapshot: "Exercise the saved scope" });
     await reprepareRun(fixture);
+    const [prepared] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(prepared.contextSnapshot).toMatchObject({ paperclipAgentJwtScope: { kind: "skill_test", issueId: fixture.issueId },
+      paperclipSkillTest: { skillKey: skill.key, skillVersionId: version.id } });
     const body = { kind: "secret", name: "parity/skill-test", value: "disposable-skill-test-value", justification: "Must remain denied" };
     const token = createLocalAgentJwt(fixture.agentId, fixture.companyId, "paperclip_runner", fixture.runId,
       fixture.responsibleUserId, { kind: "skill_test", issueId: fixture.issueId });

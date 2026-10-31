@@ -1,3 +1,5 @@
+import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
@@ -95,9 +97,14 @@ export async function deleteCompany(
           .where(eq(companies.id, id)).for("no key update");
         if (!existing) return null;
         await beforeDelete?.(tx);
+        await notifyIssueRecovery(tx, { companyId: id });
         await notifyChatCompanyConfiguration(tx, id);
         await chatCompanyDeletion.deleteCompanyData(tx, id);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillPackages);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+          await notifyStatusCardEvaluation(tx, id);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.secretProposalExpiry, id);
         await notifyToolReviewChange(tx, id);
         await agentObservabilityService(tx as unknown as Db).removeForCompanyDeletion(id);

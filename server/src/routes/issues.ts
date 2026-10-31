@@ -1,3 +1,5 @@
+import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
+import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../services/unsafe-workspace-export-notifications.js";
 import { notifyChatInboundWakeNotices } from "../services/chat-inbound-wake-notice-notifications.js";
@@ -9,6 +11,8 @@ import { issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/share
 import { listIssueSummaries } from "../services/issue-summaries.js";
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
 import { assertLegacyRunTaskOwnership } from "../legacy-run-task-ownership.js";
+import { withConversationReadState } from "../services/agent-chat-read-state.js";
+import { markIssueReadSchema } from "@paperclipai/shared";
 import { enqueueFastResponse } from "../services/fast-responses.js";
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "../services/workspace-restore-recovery-state.js";
 import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../services/native-runtime/native-workspace-finalization-recovery-state.js";
@@ -32,6 +36,7 @@ import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from ".
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
+import { assertOnboardingFirstTaskDependenciesAllowed } from "../services/onboarding-first-task-admission.js";
 import { resolveChatTaskAssignment } from "../services/chat-task-assignment.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
 import { inspectWorkspaceSource } from "../services/workspace-source-inspection.js";
@@ -9425,11 +9430,16 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await timing.time("authorization", () => assertIssueReadAllowed(req, res, issue, { allowBreakGlass: true })))) return;
-    // The cold-open read owns only the task row. Related objects and recovery
-    // projections retain their existing authorized detail path.
+    // Saved cards are structural conversation data. Include their local
+    // projection before first paint, independently of slow recovery, workspace
+    // and related-task enrichment. This never refreshes external providers.
     if (req.query.view === "core") {
+      const [documentPayload, workProducts] = await Promise.all([
+        timing.time("documents", () => documentsSvc.getIssueDocumentPayload(issue)),
+        timing.time("work_products", () => workProductsSvc.listForIssue(issue.id)),
+      ]);
       res.setHeader("Server-Timing", timing.header());
-      res.json(issue);
+      res.json({ ...issue, ...documentPayload, workProducts });
       return;
     }
     const inboxArchiveFieldsPromise =
@@ -9933,6 +9943,7 @@ export function issueRoutes(
                 );
               }
               await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: lockedIssue.companyId, issueId: lockedIssue.id });
+              await notifyNativeRecoveryNotices(tx, { companyId: lockedIssue.companyId, issueId: lockedIssue.id });
               const [reopened] = await tx
                 .update(issueRecoveryActions)
                 .set({ status: "active", outcome: null, resolvedAt: null })
@@ -12099,11 +12110,22 @@ export function issueRoutes(
       res.status(403).json({ error: "Board user context required" });
       return;
     }
+    const input = markIssueReadSchema.parse(req.body ?? {});
+    let readAt: Date | SQL = new Date();
+    if (input.throughCommentId) {
+      if (!issue.conversationAgentId || issue.conversationUserId !== req.actor.userId) throw forbidden("Only the chat owner can mark a conversation message read");
+      const [comment] = await db.select({ createdAt: sql<string>`${issueComments.createdAt}::text` }).from(issueComments).where(and(
+        eq(issueComments.id, input.throughCommentId), eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id),
+        isNull(issueComments.deletedAt),
+      ));
+      if (!comment) throw notFound("Chat message not found");
+      readAt = sql`${comment.createdAt}::timestamptz`;
+    }
     const readState = await svc.markRead(
       issue.companyId,
       issue.id,
       req.actor.userId,
-      new Date(),
+      readAt,
     );
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -13836,6 +13858,51 @@ export function issueRoutes(
     if (active) throw conflict("An agent currently owns execution. Wait for it to finish, or manage execution in Paperclip.", { code: "MCP_ACTIVE_EXECUTION" });
   }
 
+  /**
+   * A native run reports its outcome through paperclip_finish/paperclip_block,
+   * and the status arbiter applies the task status. A status change sent here
+   * by that same run (for example through call_api) releases the run's own
+   * execution lock. Every runner tool after that, paperclip_finish included,
+   * is unauthorized, so the run can never settle and recovery blocks the task.
+   * Reject the change before it commits, so the run can correct it in the same
+   * turn. Handoffs and reassignments are a different path and are unaffected.
+   *
+   * Conversation tasks are excluded: a conversation turn settles from its final
+   * reply (nativeConversationReplyResult), not from a runner tool, so a reply
+   * that moves the conversation to review still settles without the lock.
+   */
+  async function assertNativeRunKeepsOwnExecutionLock(
+    req: Request,
+    issue: { companyId: string; status: string; parentId: string | null; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null; conversationAgentId?: string | null; conversationUserId?: string | null },
+  ) {
+    const runId = req.actor.type === "agent" ? req.actor.runId : null;
+    if (!runId || !req.actor.agentId || req.actor.agentId !== issue.assigneeAgentId) return;
+    if (runId !== issue.executionRunId && runId !== issue.checkoutRunId) return;
+    if (req.body.status === undefined || req.body.status === issue.status) return;
+    if (isConversation(issue)) return;
+    const keepsAssignment =
+      (req.body.assigneeAgentId === undefined || req.body.assigneeAgentId === issue.assigneeAgentId) &&
+      (req.body.assigneeUserId === undefined || req.body.assigneeUserId === issue.assigneeUserId);
+    if (!keepsAssignment) return;
+    const run = await heartbeat.getRun(runId);
+    if (!run || run.runtimeMode !== "native" || run.status !== "running"
+      || run.agentId !== req.actor.agentId || run.companyId !== issue.companyId) return;
+    // A blocker that the dependency rules reject anyway keeps its specific
+    // error; otherwise the run reports the block with paperclip_block.
+    if (Array.isArray(req.body.blockedByIssueIds) && req.body.blockedByIssueIds.length > 0) {
+      await assertOnboardingFirstTaskDependenciesAllowed(db, {
+        companyId: issue.companyId, actorAgentId: req.actor.agentId, actorRunId: runId,
+        blockedByIssueIds: req.body.blockedByIssueIds, parentIssueId: issue.parentId,
+      });
+    }
+    throw conflict(
+      "This run owns the task's execution, so it cannot change the task status directly; doing so would end its access to the task before it reports. " +
+        "Report the outcome with paperclip_finish instead: reportedWorkDisposition \"needs_review\" for review, \"done\" when complete, or \"yielded\" with continuation.kind \"monitor\" to wait on a scheduled monitor. " +
+        "Use paperclip_block for a blocker. Paperclip sets the task status from that report.",
+      { code: "native_run_status_reported_by_finish", requestedStatus: req.body.status },
+    );
+  }
+
   router.patch(
     "/issues/:id",
     (req, _res, next) => {
@@ -13866,6 +13933,7 @@ export function issueRoutes(
       );
       if (!existing) return;
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
+      await assertNativeRunKeepsOwnExecutionLock(req, existing);
       if (req.body.expectedStatusVersion !== undefined && (
         existing.statusVersion !== req.body.expectedStatusVersion || existing.status !== "backlog"
       )) {
@@ -16442,12 +16510,23 @@ export function issueRoutes(
   router.get("/issues/:id/recent-comments", async (req, res) => {
     const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    if (issue.conversationAgentId) {
+      const recent = await svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 21 });
+      const comments = recent.slice(0, 20);
+      res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, {
+        comments,
+        latestCommentId: comments[0]?.id ?? null,
+        oldestCommentId: comments.at(-1)?.id ?? null,
+        hasMore: recent.length > 20,
+      }));
+      return;
+    }
     const [recent, human, firstInstruction] = await Promise.all([
-      svc.listComments(issue.id, { order: "desc", limit: 5 }),
-      svc.listComments(issue.id, { order: "desc", limit: 1, humanOnly: true }),
+      svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 5 }),
+      svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 1, humanOnly: true }),
       issue.description?.trim()
         ? Promise.resolve([])
-        : svc.listComments(issue.id, { order: "asc", limit: 1, humanOnly: true }),
+        : svc.listComments(issue.id, { companyId: issue.companyId, order: "asc", limit: 1, humanOnly: true }),
     ]);
     const comments = [...new Map([...firstInstruction, ...human, ...recent.slice(0, 4)].map((comment) => [comment.id, comment])).values()];
     res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, {
@@ -16487,7 +16566,8 @@ export function issueRoutes(
       limitRaw && Number.isFinite(limitRaw) && limitRaw > 0
         ? Math.min(Math.floor(limitRaw), MAX_ISSUE_COMMENT_LIMIT)
         : null;
-    const comments = await svc.listComments(id, {
+    const comments = await svc.listComments(issue.id, {
+      companyId: issue.companyId,
       afterCommentId,
       order,
       limit,
@@ -16655,6 +16735,7 @@ export function issueRoutes(
         }
         // The click is durable fresh user intent, including when the message
         // predates a failed run's stop. Keep its content and original attribution.
+        await notifyDeferredExecutionWork(tx, { companyId: issue.companyId, requestId: locked.wake.id });
         await tx.update(agentWakeupRequests).set({
           payload: { ...readObject(locked.wake.payload), queuedCommentInterrupt: {
             actorId: actor.actorId, requestedAt: new Date().toISOString(),
@@ -18525,7 +18606,7 @@ export function issueRoutes(
     if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Board user access required");
     if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
     const conversations = await svc.listConversations(companyId, req.actor.userId);
-    res.json(await filterIssuesForActor(req, conversations));
+    res.json(await withConversationReadState(db, companyId, req.actor.userId, await filterIssuesForActor(req, conversations)));
   });
 
   // GET stays read-only. POST resolves the single chat on explicit add or first send/upload.
@@ -18541,7 +18622,10 @@ export function issueRoutes(
       const agent = resolved.agent;
       const existing = await svc.getConversation(companyId, agent.id, req.actor.userId);
       if (existing && !(await assertIssueReadAllowed(req, res, existing))) return;
-      if (existing || method === "get") { res.json(existing); return; }
+      if (existing || method === "get") {
+        res.json(existing ? (await withConversationReadState(db, companyId, req.actor.userId, [existing]))[0] : null);
+        return;
+      }
       const issue = await svc.create(companyId, {
         title: `Chat with ${agent.name}`, assigneeAgentId: agent.id,
         conversationAgentId: agent.id, conversationUserId: req.actor.userId,
@@ -18550,7 +18634,7 @@ export function issueRoutes(
       await logActivity(db, { companyId, actorType: "user", actorId: req.actor.userId,
         action: "issue.conversation_opened", entityType: "issue", entityId: issue.id,
         details: { agentId: agent.id } });
-      res.json(issue);
+      res.json((await withConversationReadState(db, companyId, req.actor.userId, [issue]))[0]);
     });
   }
 

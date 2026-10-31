@@ -1,4 +1,5 @@
 import { isOpenRouterUrl, openRouterClaudeHeaders } from "../openrouter-attribution.js";
+import { sanitizeAntigravityEnvironment } from "./antigravity-environment.js";
 import { providerObservabilityEnvironment } from "../agent-observability.js";
 import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, configuredEnvironmentKeys } from "../../configured-environment.js";
 import { PI_CREDENTIAL_NAMES, PI_GENERAL_IAM_CREDENTIAL_NAMES, piCredentialNames } from "./pi-provider-config.js";
@@ -7,7 +8,9 @@ import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 
 export const ACPX_CREDENTIAL_BINDING_ENV = "PAPERCLIP_ACPX_CREDENTIAL_BINDING";
 export const ACPX_CREDENTIAL_NAMES: Readonly<Record<QualifiedAcpxAgent, readonly string[]>> = {
+  antigravity: ["GEMINI_API_KEY", "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET"],
   grok: ["XAI_API_KEY"],
+  kimi: ["KIMI_API_KEY"],
   pi: PI_CREDENTIAL_NAMES,
   cursor: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
   copilot: ["COPILOT_GITHUB_TOKEN"],
@@ -25,7 +28,17 @@ function removePiIamCredentials(environment: NodeJS.ProcessEnv): void {
   }
 }
 
-const isCandidate = (agent: QualifiedAcpxAgent) => agent === "pi" || agent === "cursor" || agent === "copilot";
+function removeKimiRuntimeOverrides(environment: NodeJS.ProcessEnv): void {
+  const isOverride = (name: string) => /^KIMI_MODEL_/.test(name.toUpperCase())
+    || ["KIMI_SECONDARY_MODEL", "KIMI_CODE_HOME"].includes(name.toUpperCase());
+  const names = configuredEnvironmentKeys(environment);
+  for (const name of Object.keys(environment)) if (isOverride(name)) delete environment[name];
+  if (environment[CONFIGURED_ENVIRONMENT_KEYS] !== undefined) {
+    environment[CONFIGURED_ENVIRONMENT_KEYS] = JSON.stringify(names.filter(name => !isOverride(name)));
+  }
+}
+
+const isCandidate = (agent: QualifiedAcpxAgent) => agent === "pi" || agent === "cursor" || agent === "copilot" || agent === "kimi" || agent === "antigravity";
 
 /** Mint only at the controller's explicit task-environment boundary, never by copying a marker. */
 export function createAcpxCredentialBinding(
@@ -77,6 +90,8 @@ export function createAcpxSidecarHostEnvironment(
     }
   }
   if (agent === "pi") removePiIamCredentials(result);
+  if (agent === "kimi") removeKimiRuntimeOverrides(result);
+  if (agent === "antigravity") sanitizeAntigravityEnvironment(result);
   return result;
 }
 
@@ -129,11 +144,16 @@ export function createSanitizedAcpxSpawnInput(
     "all_proxy",
     "RUST_BACKTRACE",
     "PAPERCLIP_NATIVE_MCP_NAME",
+    "PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT",
+    "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER",
     "PAPERCLIP_NATIVE_MCP_URL",
     ...(environment === undefined ? [] : ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"]),
     ...credentialNames,
     ...(agent === "claude" ? CLAUDE_ROUTING_ENV_KEYS : []),
+    // The environment owner supplies helper paths, not a replacement provider executable.
     ...(agent === "claude" && environment !== undefined ? ["MCP_TOOL_TIMEOUT"] : []),
+    ...(agent === "claude" && environment?.PAPERCLIP_GITHUB_LAUNCHER_DIR?.trim()
+      ? ["BASH_ENV", "ZDOTDIR", "GH_CONFIG_DIR", "PAPERCLIP_GITHUB_LAUNCHER_DIR"] : []),
     ...(usesPreconfiguredHome(source) ? [...PRECONFIGURED_HOME_KEYS, "PAPERCLIP_RUNNER_HOME_MODE", "ACPX_CLAUDE_INCLUDE_USER_SETTINGS"] : []),
     ...(agent === "claude" && environment?.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME
       ? [...PRECONFIGURED_HOME_KEYS, "PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME"] : []),
@@ -156,6 +176,11 @@ export function createSanitizedAcpxSpawnInput(
     result[key] = value;
   }
   if (agent === "pi") removePiIamCredentials(result);
+  if (agent === "kimi") removeKimiRuntimeOverrides(result);
+  if (agent === "antigravity") sanitizeAntigravityEnvironment(result);
+  // The controller-to-sidecar document is staged under a lifetime fence. The
+  // native child receives the private token file, never its launch document.
+  if (agent === "antigravity") delete result.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET;
   if (agent === "claude" && isOpenRouterUrl(result.ANTHROPIC_BASE_URL)) {
     result.ANTHROPIC_CUSTOM_HEADERS = openRouterClaudeHeaders(result.ANTHROPIC_CUSTOM_HEADERS);
   }

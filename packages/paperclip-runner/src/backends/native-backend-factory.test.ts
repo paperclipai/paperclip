@@ -654,31 +654,23 @@ describe("native backend factory", () => {
     })).toThrow("ACPX candidate direct execution requires completed qualification");
   });
 
+  // The last source-bound Copilot, Grok and Pi identities, and retained Cursor declarations.
   it.each([
+    ["copilot", { agentProfileVersion: 91, commandDigest: "sha256:e4383c48ad21898dfe38609fdc8c0fa9a76dfcb8582a64b5415f107846904aa9" }],
+    ["grok", { agentProfileVersion: 19, commandDigest: "sha256:5205c2197b94cfbd3e62fbeea027f2e80d092f736ca52656dda2f7044ba9a5ca" }],
+    ["pi", { agentProfileVersion: 36, commandDigest: "sha256:faafb66c09c1efc7eb4eda6baaa5813c975e8a992f9cd333687695aa5522d7dc" }],
     ["cursor", "../../test/fixtures/cursor-acp/profile-v7-identity.json"],
-    ["copilot", "../../test/fixtures/copilot-profile-v74-identity.json"],
-    ["copilot", "../../test/fixtures/copilot-profile-v75-identity.json"],
-    ["copilot", "../../test/fixtures/copilot-profile-v76-identity.json"],
-    ["copilot", "../../test/fixtures/copilot-profile-v77-identity.json"],
-    ["cursor", "../../test/fixtures/cursor-acp/profile-v10-identity.json"],
-    ["copilot", "../../test/fixtures/copilot-profile-v14-identity.json"],
-    ["copilot", "../../test/fixtures/copilot-profile-v60-identity.json"],
-    ["pi", "../../test-fixtures/pi-acp/profile-v13-identity.json"],
-    ["pi", "../../test-fixtures/pi-acp/profile-v14-identity.json"],
-    ["pi", "../../test-fixtures/pi-acp/profile-v18-identity.json"],
     ["cursor", "../../test/fixtures/cursor-acp/profile-v9-identity.json"],
-    ["copilot", "../../test/fixtures/copilot-profile-v7-identity.json"],
-    ["copilot", "../../test/fixtures/copilot-profile-v9-identity.json"],
-    ["copilot", "../../test/fixtures/copilot-profile-v10-identity.json"],
-    ["copilot", "../../test/fixtures/copilot-profile-v11-identity.json"],
-    ["pi", "../../test-fixtures/pi-acp/profile-v9-identity.json"],
-  ] as const)("rejects the exact historical %s identity before runtime startup", (agent, path) => {
-    const historical = JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"));
+    ["cursor", "../../test/fixtures/cursor-acp/profile-v10-identity.json"],
+  ] as const)("rejects the exact historical %s identity before runtime startup", (agent, source) => {
+    const historical = typeof source === "string"
+      ? (({ declaration, commandDigest }) => ({ agentProfileVersion: declaration.agentProfileVersion, commandDigest }))(JSON.parse(readFileSync(new URL(source, import.meta.url), "utf8")))
+      : source;
     const input = acpxExecution();
     if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
     const current = resolveQualifiedAcpxProfile(agent, agent === "pi" ? "custom/explicit-test-model" : "explicit-fixture-model");
     Object.assign(input.provider, { agent, model: current.qualificationModel, profile: { ...current,
-      agentProfileVersion: historical.declaration.agentProfileVersion, commandDigest: historical.commandDigest } });
+      agentProfileVersion: historical.agentProfileVersion, commandDigest: historical.commandDigest } });
     expect(() => createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" }))
       .toThrow("does not match the qualified agentProfileVersion");
     input.provider.profile.agentProfileVersion = current.agentProfileVersion;

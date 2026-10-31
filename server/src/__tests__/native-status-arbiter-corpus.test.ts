@@ -1,3 +1,4 @@
+import { retainedNativeSessionCleanupWork } from "../services/native-runtime/retained-native-session-cleanup-work.js";
 import { pendingNativeGovernance } from "../services/native-runtime/native-governance.js";
 import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
 import { ensureNativeCompletionContract } from "../services/native-runtime/completion-contracts.js";
@@ -3070,6 +3071,55 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     expect(results).toEqual([expect.objectContaining({ reconciliationAction: delivery === "queued"
       ? "native_child_completion_pending" : "decision_superseded_by_new_evidence" })]);
     expect((await issueService(db).getById(seeded.issueId))!.status).toBe(delivery === "queued" ? "in_progress" : "done");
+  }, 30_000);
+
+  it("wakes retained cleanup after a decision signal was consumed before terminal projection", async () => {
+    const seeded = await seedFixture({ ...corpus.fixtures[0]!, id: `cleanup-projection-${randomUUID()}` });
+    await db.update(completionContracts).set({ risk: "low", completionAuthority: "agent_claim_policy" })
+      .where(eq(completionContracts.id, seeded.contractId!));
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null, errorCode: "adapter_failed",
+      error: "provider_transport_failed: runner did not durably suspend before checkpoint" })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+    const cleanup = vi.fn(async (input: { companyId: string; runId: string }) => {
+      await db.update(nativeRunFinalizations).set({ recoveryHistory: [{ kind: "native_cleanup_maintenance", phase: "settled" }] })
+        .where(eq(nativeRunFinalizations.runId, input.runId));
+      return { runId: input.runId, status: "settled" as const };
+    });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = retainedNativeSessionCleanupWork(db, cleanup).register(coordinator, () => true);
+    const flush = () => vi.waitFor(() => {
+      expect(idleWorkSnapshot().active).toBe(0);
+      expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    let consumedBeforeProjection = false;
+    const transaction = db.transaction.bind(db);
+    const boundary = vi.spyOn(db, "transaction").mockImplementation(async (...args) => {
+      const result = await transaction(...args);
+      if (!consumedBeforeProjection) {
+        const [row] = await db.select({ phase: nativeRunFinalizations.phase, status: heartbeatRuns.status })
+          .from(nativeRunFinalizations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
+          .where(eq(heartbeatRuns.id, seeded.runId));
+        if (row?.phase === "committed" && row.status === "running") {
+          consumedBeforeProjection = true;
+
+
+          await flush();
+          expect(cleanup).not.toHaveBeenCalled();
+        }
+      }
+      return result;
+    });
+    try {
+      await worker.ready;
+      await finalizeNativeRun({ db, runId: seeded.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true,
+        skipNativeResponsePresentation: true, skipNativeReviewResponse: true });
+      expect(consumedBeforeProjection).toBe(true);
+      await flush();
+      expect(cleanup).toHaveBeenCalledExactlyOnceWith({ companyId, runId: seeded.runId });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0].status).toBe("succeeded");
+      expect(errors).toEqual([]);
+    } finally { boundary.mockRestore(); worker.stop(); await coordinator.stop(); }
   }, 30_000);
 
   it("completes a new merge run after an old CI review and bounds repeated incomplete results", async () => {

@@ -1,5 +1,6 @@
+import { retiredReusableLeasePredecessors } from "./environment-lease-handoff.js";
 import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
-import { environmentLeases, environments, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, environments, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { SystemRecoveryFailure } from "./system-recovery-state.js";
@@ -98,6 +99,19 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
   if (coordinator?.leaseOwner || adapterExecutionControls.has(run.id) ||
       (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()))
     throw new SystemRecoveryFailure("agent_stop_unconfirmed", "recheck_evidence");
+  // Reusable allocations can still owe copyback for a completed native result.
+  // This authorizes only preservation of the exact descriptor, never reuse for
+  // agent execution. Stop verification and physical ownership checks remain below.
+  const acceptedExportResult = reference && workspaceExportCauses.includes(action.cause)
+    && run.runtimeMode === "native" && coordinator?.issueId === input.issueId
+    && coordinator.resultId && run.completionContractId
+    ? (await db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
+      eq(nativeRunResults.companyId, input.companyId), eq(nativeRunResults.issueId, input.issueId),
+      eq(nativeRunResults.runId, run.id), eq(nativeRunResults.id, coordinator.resultId),
+      eq(nativeRunResults.completionContractId, run.completionContractId),
+      eq(nativeRunResults.schemaStatus, "accepted"),
+      sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'succeeded'`,
+    )).limit(1))[0] : null;
   const sources = [];
   for (const leaseId of leaseIds as string[]) {
     const [lease] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
@@ -109,16 +123,41 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
     if (!lease.environmentId) throw invalid("lease_environment_missing");
     if (!lease.providerLeaseId) throw invalid("lease_allocation_missing");
     if (!lease.provider || lease.provider === "local") throw invalid("lease_provider_invalid");
-    if (!["retain_on_failure", "ephemeral"].includes(lease.leasePolicy)) throw invalid("lease_policy_not_retained", lease.leasePolicy);
+    const reusableExport = descriptor && acceptedExportResult
+      && ["reuse_by_environment", "reuse_by_execution_workspace"].includes(lease.leasePolicy);
+    if (!["retain_on_failure", "ephemeral"].includes(lease.leasePolicy) && !reusableExport)
+      throw invalid("lease_policy_not_retained", lease.leasePolicy);
     if (typeof remoteCwd !== "string" || !remoteCwd.startsWith("/")) throw invalid("lease_cwd_invalid");
     if (descriptor && lease.providerLeaseId !== descriptor.providerLeaseId) throw invalid("allocation_reference_mismatch");
     if (descriptor && remoteCwd !== descriptor.remoteCwd) throw invalid("cwd_reference_mismatch");
     if (descriptor && lease.executionWorkspaceId && lease.executionWorkspaceId !== descriptor.workspaceId)
       throw invalid("workspace_reference_mismatch");
-    const [other] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+    const history = await db.select().from(environmentLeases).where(and(
       ne(environmentLeases.id, lease.id), eq(environmentLeases.provider, lease.provider),
-      eq(environmentLeases.providerLeaseId, lease.providerLeaseId))).limit(1);
-    if (other) throw new SystemRecoveryFailure("allocation_ownership_ambiguous", "service_required");
+      eq(environmentLeases.providerLeaseId, lease.providerLeaseId)));
+    const predecessors = retiredReusableLeasePredecessors(lease, history);
+    if (!predecessors || (predecessors.length && (run.runtimeMode !== "native" || !descriptor || lease.metadata?.agentId !== run.agentId)))
+      throw new SystemRecoveryFailure("allocation_ownership_ambiguous", "service_required");
+    const predecessorRuns = predecessors.map(item => item.heartbeatRunId!);
+    const priors = predecessorRuns.length ? await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, input.companyId), inArray(heartbeatRuns.id, predecessorRuns))) : [];
+    const priorOwners = predecessorRuns.length ? await db.select({ runId: nativeRunFinalizations.runId,
+      phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations).where(and(
+        eq(nativeRunFinalizations.companyId, input.companyId), inArray(nativeRunFinalizations.runId, predecessorRuns),
+        eq(nativeRunFinalizations.issueId, input.issueId))) : [];
+    for (const predecessor of predecessors) {
+      const prior = priors.find(item => item.id === predecessor.heartbeatRunId);
+      const priorReference = readNativeWorkspaceSyncReference(prior?.runnerProfileJson?.nativeWorkspaceSync);
+      const priorOwner = priorOwners.find(item => item.runId === predecessor.heartbeatRunId);
+      if (!prior || prior.runtimeMode !== "native" || prior.agentId !== run.agentId || prior.nativeIssueId !== input.issueId ||
+          !terminalWorkspaceRunStates.includes(prior.status) || adapterExecutionControls.has(prior.id) ||
+          (prior.controllerLeaseExpiresAt && prior.controllerLeaseExpiresAt > new Date()) ||
+          !priorOwner || priorOwner.leaseOwner || !["committed", "terminal_failure", "applied"].includes(priorOwner.phase) ||
+          !priorReference || priorReference.state !== "finalized" || !priorReference.finalHostSha256 ||
+          priorReference.leaseId !== predecessor.id || priorReference.providerLeaseId !== lease.providerLeaseId ||
+          priorReference.workspaceId !== descriptor!.workspaceId || priorReference.remoteCwd !== remoteCwd)
+        throw new SystemRecoveryFailure("allocation_ownership_ambiguous", "service_required");
+    }
     // Snapshot export writes only a new staging directory. A native baseline
     // merge additionally needs exclusive ownership of its host destination.
     if (descriptor) {

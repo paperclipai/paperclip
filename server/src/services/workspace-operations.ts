@@ -1,3 +1,5 @@
+import { notifyNativeResultCommit } from "./native-result-commit-notifications.js";
+import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
@@ -480,6 +482,10 @@ export function workspaceOperationService(db: Db) {
           async function writeState<T>(write: (database: Db) => Promise<T>): Promise<T> {
             if (recordInput.phase !== "workspace_finalize" || !input.heartbeatRunId) return write(db);
             return db.transaction(async tx => {
+              await notifyNativeResultCommit(tx, { companyId: input.companyId,
+                runId: input.heartbeatRunId!, issueId: input.issueId ?? undefined });
+              await notifyNativeWorkspaceFinalization(tx, { companyId: input.companyId,
+                runId: input.heartbeatRunId!, issueId: input.issueId ?? undefined });
               await notifyNativeStatusReassessment(tx, { companyId: input.companyId,
                 runId: input.heartbeatRunId!, issueId: input.issueId ?? undefined });
               return write(tx as unknown as Db);

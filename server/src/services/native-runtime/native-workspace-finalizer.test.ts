@@ -131,7 +131,7 @@ describe("native workspace finalization recovery", () => {
     const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_WORKSPACE_FINALIZER_TEST_DATABASE_URL");
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-workspace-finalizer-");
     connectionString = external ?? temporary!.connectionString;
-    db = createDb(connectionString);
+    db = createDb(connectionString, { maxConnections: 6 });
 
     await db.insert(companies).values([
       { id: companyId, name: "Native workspace owner", issuePrefix: "NWO" },
@@ -213,7 +213,7 @@ describe("native workspace finalization recovery", () => {
   it("releases only the verified owner and resumes the saved result without changing its disposition", async () => {
     const seed = await seedAbandonedCopyback();
     const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seed.runId));
-    expect(await withNativeWorkspaceFinalizationOwnership(seed, async () => "unexpected")).toEqual({ acquired: false });
+    expect(await withNativeWorkspaceFinalizationOwnership(seed, async () => "unexpected")).toEqual({ acquired: false, reason: "owner_unverified" });
     const observed: Array<Promise<unknown>> = [];
     const stop = subscribeDeliveryWork(db, DELIVERY_QUEUES.nativeStatusReassessment, () => {
       observed.push(db.select({ profile: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns)
@@ -337,7 +337,7 @@ describe("native workspace finalization recovery", () => {
       const worker = { provider: "railway" as const, projectId: "p", environmentId: "e", serviceId: "s", deploymentId: "d" };
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId));
       await db.update(heartbeatRuns).set({ runnerProfileJson: { ...run.runnerProfileJson, nativeWorkspaceFinalizationOwner: { ...seed.owner, worker } } }).where(eq(heartbeatRuns.id, seed.runId));
-      const probe = vi.spyOn(platformProof, "requestWorkspaceWorkerStopProof").mockResolvedValue({ v: 1, iss: "paperclip-cloud", aud: "paperclip-workspace-worker-stop/v1", sub: "stack", runId: seed.runId, ownerToken: seed.owner.token, worker, stopped: true, iat: 1, exp: 61 });
+      const probe = vi.spyOn(platformProof, "requestWorkspaceWorkerStopProof").mockResolvedValue({ status: "verified", proof: { v: 1, iss: "paperclip-cloud", aud: "paperclip-workspace-worker-stop/v1", sub: "stack", runId: seed.runId, ownerToken: seed.owner.token, worker, stopped: true, iat: 1, exp: 61 } });
       try { await reconcileNativeFinalizations(db, [seed.runId]); } finally { probe.mockRestore(); }
     }
 
@@ -452,7 +452,7 @@ describe("native workspace finalization recovery", () => {
     const seeded = await seedRun({ executionWorkspaceId: randomUUID(), title: "Live copyback" });
     const live = await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId: seeded.runId }, async (ownership) => {
       await ownership.assertHeld();
-      expect(await resumeNativeWorkspaceFinalization({ db: createDb(connectionString), runId: seeded.runId })).toBeNull();
+      expect(await resumeNativeWorkspaceFinalization({ db: createDb(connectionString, { maxConnections: 6 }), runId: seeded.runId })).toBeNull();
       expect(await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, seeded.runId))).toEqual([]);
       return "copied";
     });
@@ -476,8 +476,8 @@ describe("native workspace finalization recovery", () => {
     try {
       await entered;
       await db.execute(sql`select pg_terminate_backend(pid) from pg_locks where locktype = 'advisory' and database = (select oid from pg_database where datname = current_database()) and pid <> pg_backend_pid()`);
-      const second = await withNativeWorkspaceFinalizationOwnership({ db: createDb(connectionString), companyId, runId: seeded.runId }, async () => "must not run");
-      expect(second).toEqual({ acquired: false });
+      const second = await withNativeWorkspaceFinalizationOwnership({ db: createDb(connectionString, { maxConnections: 6 }), companyId, runId: seeded.runId }, async () => "must not run");
+      expect(second).toEqual({ acquired: false, reason: "busy" });
       const [held] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
       expect(held.runnerProfileJson?.nativeWorkspaceFinalizationOwner).toBeTruthy();
     } finally { finish(); }
@@ -489,7 +489,7 @@ describe("native workspace finalization recovery", () => {
 
   it("recovers its own joined copyback receipt after the application pool disconnects during cleanup", async () => {
     const seeded = await seedRun({ executionWorkspaceId: randomUUID(), title: "Reconnect joined copyback" });
-    const interruptedDb = createDb(connectionString);
+    const interruptedDb = createDb(connectionString, { maxConnections: 6 });
     let joined = false;
     await expect(withNativeWorkspaceFinalizationOwnership({ db: interruptedDb, companyId, runId: seeded.runId }, async () => {
       await fs.writeFile(path.join(workspaceRoot, "joined-copyback.txt"), "durable work");
@@ -504,10 +504,10 @@ describe("native workspace finalization recovery", () => {
       await db.update(heartbeatRuns).set({ runnerProfileJson: { ...beforeReconnect.runnerProfileJson, nativeWorkspaceFinalizationOwner: unknown } })
         .where(eq(heartbeatRuns.id, seeded.runId));
       expect(await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId: seeded.runId }, async () => "must not run"))
-        .toEqual({ acquired: false });
+        .toEqual({ acquired: false, reason: "owner_unverified" });
     }
     await db.update(heartbeatRuns).set({ runnerProfileJson: beforeReconnect.runnerProfileJson }).where(eq(heartbeatRuns.id, seeded.runId));
-    expect(await withNativeWorkspaceFinalizationOwnership({ db: createDb(connectionString), companyId, runId: seeded.runId }, async () => "resumed"))
+    expect(await withNativeWorkspaceFinalizationOwnership({ db: createDb(connectionString, { maxConnections: 6 }), companyId, runId: seeded.runId }, async () => "resumed"))
       .toEqual({ acquired: true, value: "resumed" });
   });
 
@@ -529,7 +529,7 @@ describe("native workspace finalization recovery", () => {
         token: randomUUID(), hostname: os.hostname(), pid: parent.pid, processStartedAt: startedAt,
       } } }).where(eq(heartbeatRuns.id, seeded.runId));
       const work = vi.fn(async () => "second physical writer");
-      expect(await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId: seeded.runId }, work)).toEqual({ acquired: false });
+      expect(await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId: seeded.runId }, work)).toEqual({ acquired: false, reason: "owner_unverified" });
       expect(work).not.toHaveBeenCalled();
       const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, seeded.issueId));
       expect(action).toMatchObject({ ownerType: "board", cause: "native_workspace_finalization_owner_unverified", wakePolicy: null });
@@ -564,7 +564,7 @@ describe("native workspace finalization recovery", () => {
     await db.update(issueRecoveryActions).set({ fingerprint: nativeSha256({ runId: seed.runId, owner }), evidence: { runId: seed.runId, owner, preserved: "recovery evidence" } }).where(eq(issueRecoveryActions.id, seed.actionId));
     const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seed.runId));
     const proof = { v: 1 as const, iss: "paperclip-cloud" as const, aud: "paperclip-workspace-worker-stop/v1" as const, sub: "stack", runId: seed.runId, ownerToken: owner.token, worker, stopped: true as const, iat: 1, exp: 61 };
-    const probe = vi.spyOn(platformProof, "requestWorkspaceWorkerStopProof").mockResolvedValue(proof);
+    const probe = vi.spyOn(platformProof, "requestWorkspaceWorkerStopProof").mockResolvedValue({ status: "verified", proof });
     try {
       const work = vi.fn(async () => {
         const [recovery] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, seed.actionId));
@@ -590,18 +590,18 @@ describe("native workspace finalization recovery", () => {
     const worker = { provider: "railway" as const, projectId: "p", environmentId: "e", serviceId: "s", deploymentId: "d" };
     const owner = { ...seed.owner, worker };
     await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner } }).where(eq(heartbeatRuns.id, seed.runId));
-    const probe = vi.spyOn(platformProof, "requestWorkspaceWorkerStopProof").mockResolvedValue(null);
+    const probe = vi.spyOn(platformProof, "requestWorkspaceWorkerStopProof").mockResolvedValue({ status: "pending" });
     const work = vi.fn();
     try {
-      expect(await withNativeWorkspaceFinalizationOwnership(seed, work)).toEqual({ acquired: false });
+      expect(await withNativeWorkspaceFinalizationOwnership(seed, work)).toEqual({ acquired: false, reason: "platform_stop_pending" });
       const [recovery] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, seed.issueId), eq(issueRecoveryActions.fingerprint, nativeSha256({ runId: seed.runId, owner }))));
       expect(recovery.evidence?.workspaceOwnerRecovery).toEqual({ state: "operator_required" });
       const replacement = { ...owner, token: randomUUID() };
       probe.mockImplementation(async () => {
         await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: replacement } }).where(eq(heartbeatRuns.id, seed.runId));
-        return { v: 1, iss: "paperclip-cloud", aud: "paperclip-workspace-worker-stop/v1", sub: "stack", runId: seed.runId, ownerToken: owner.token, worker, stopped: true, iat: 1, exp: 61 };
+        return { status: "verified", proof: { v: 1, iss: "paperclip-cloud", aud: "paperclip-workspace-worker-stop/v1", sub: "stack", runId: seed.runId, ownerToken: owner.token, worker, stopped: true, iat: 1, exp: 61 } };
       });
-      expect(await withNativeWorkspaceFinalizationOwnership(seed, work)).toEqual({ acquired: false });
+      expect(await withNativeWorkspaceFinalizationOwnership(seed, work)).toEqual({ acquired: false, reason: "binding_changed" });
       expect(work).not.toHaveBeenCalled();
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId));
       expect(run.runnerProfileJson?.nativeWorkspaceFinalizationOwner).toEqual(replacement);
@@ -635,11 +635,11 @@ describe("native workspace finalization recovery", () => {
           createdAt: new Date(run.createdAt.getTime() + (changed === "newer run" ? 60_000 : -60_000)),
         });
       }
-      return { v: 1, iss: "paperclip-cloud", aud: "paperclip-workspace-worker-stop/v1", sub: "stack", runId: seed.runId, ownerToken: owner.token, worker, stopped: true, iat: 1, exp: 61 };
+      return { status: "verified", proof: { v: 1, iss: "paperclip-cloud", aud: "paperclip-workspace-worker-stop/v1", sub: "stack", runId: seed.runId, ownerToken: owner.token, worker, stopped: true, iat: 1, exp: 61 } };
     });
     const copyback = vi.fn(async () => fs.writeFile(file, "old sandbox work"));
     try {
-      expect(await withNativeWorkspaceFinalizationOwnership(seed, copyback)).toEqual({ acquired: false });
+      expect(await withNativeWorkspaceFinalizationOwnership(seed, copyback)).toEqual({ acquired: false, reason: "binding_changed" });
       expect(copyback).not.toHaveBeenCalled();
       expect(await fs.readFile(file, "utf8")).toBe("new task work");
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId));
@@ -653,7 +653,7 @@ describe("native workspace finalization recovery", () => {
     const worker = { provider: "railway" as const, projectId: "p", environmentId: "e", serviceId: "s", deploymentId: "d" };
     const owner = { ...seed.owner, worker };
     await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner } }).where(eq(heartbeatRuns.id, seed.runId));
-    const probe = vi.spyOn(platformProof, "requestWorkspaceWorkerStopProof").mockResolvedValue({ v: 1, iss: "paperclip-cloud", aud: "paperclip-workspace-worker-stop/v1", sub: "stack", runId: seed.runId, ownerToken: owner.token, worker, stopped: true, iat: 1, exp: 61 });
+    const probe = vi.spyOn(platformProof, "requestWorkspaceWorkerStopProof").mockResolvedValue({ status: "verified", proof: { v: 1, iss: "paperclip-cloud", aud: "paperclip-workspace-worker-stop/v1", sub: "stack", runId: seed.runId, ownerToken: owner.token, worker, stopped: true, iat: 1, exp: 61 } });
     const write = vi.fn();
     try {
       await expect(withNativeWorkspaceFinalizationOwnership(seed, async ownership => {
@@ -677,7 +677,7 @@ describe("native workspace finalization recovery", () => {
       ...(changed === "closed" ? { status: "done" } : { executionRunId: null }),
     }).where(eq(issues.id, seed.issueId));
     await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner } }).where(eq(heartbeatRuns.id, seed.runId));
-    const probe = vi.spyOn(platformProof, "requestWorkspaceWorkerStopProof").mockResolvedValue({ v: 1, iss: "paperclip-cloud", aud: "paperclip-workspace-worker-stop/v1", sub: "stack", runId: seed.runId, ownerToken: owner.token, worker, stopped: true, iat: 1, exp: 61 });
+    const probe = vi.spyOn(platformProof, "requestWorkspaceWorkerStopProof").mockResolvedValue({ status: "verified", proof: { v: 1, iss: "paperclip-cloud", aud: "paperclip-workspace-worker-stop/v1", sub: "stack", runId: seed.runId, ownerToken: owner.token, worker, stopped: true, iat: 1, exp: 61 } });
     try {
       await reconcileNativeFinalizations(db, [seed.runId]);
       expect(probe).toHaveBeenCalledOnce();
@@ -692,7 +692,7 @@ describe("native workspace finalization recovery", () => {
     const owner = { token: randomUUID(), hostname: "other-controller.invalid", pid: 42, processStartedAt: new Date().toISOString() };
     await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner } }).where(eq(heartbeatRuns.id, seeded.runId));
     const work = vi.fn();
-    expect(await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId: seeded.runId }, work)).toEqual({ acquired: false });
+    expect(await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId: seeded.runId }, work)).toEqual({ acquired: false, reason: "owner_unverified" });
     expect(work).not.toHaveBeenCalled();
     const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, seeded.issueId));
     expect(action).toMatchObject({ ownerType: "board", cause: "native_workspace_finalization_owner_unverified", wakePolicy: null, evidence: { runId: seeded.runId, owner } });

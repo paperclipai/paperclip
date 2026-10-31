@@ -447,7 +447,7 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
         selection: any,
       ) => {
         const query = select(selection);
-        return selection?.resultJson === nativeRunResults.resultJson
+        return selection?.terminalState
           ? wrap(query)
           : query;
       }) as typeof db.select);

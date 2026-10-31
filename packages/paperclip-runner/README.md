@@ -214,6 +214,21 @@ are unavailable. Accepting a native plan ends the planning run successfully whil
 the task waits for the next instruction. See the
 [Cursor release report](../../doc/plans/2026-10-03-cursor-production-readiness.md).
 
+Google Antigravity is an **unqualified, pending** native ACPX integration. The
+explicit `paperclipai runtime setup antigravity` command installs the verified
+Antigravity ACP 1.4.3 distribution and its owned admission patch on macOS ARM64.
+It verifies both the official vendor closure and the separately pinned patched
+closure; npm installation downloads no Antigravity runtime. This setup installs
+assets only. Global release qualification remains pending and normal execution
+admission stays closed. An isolated operator can admit one company, exact model,
+local platform and pinned native closure/profile until a fixed expiry through
+trusted server startup authority. The candidate supports a managed saved Google
+subscription; the recorded acceptance reused the same owner's personal default
+grant and `gemini-3.8-flash-low` on macOS ARM64. This does not qualify fresh Google
+consent or the separate API-key route. Google Workspace OAuth does not substitute
+for a runtime credential. See the
+[integration contract and evidence](../../doc/plans/2026-10-28-antigravity-integration.md).
+
 A release includes all four platform daemons and the Linux provider-pack identity
 from its matching Daytona image. Run `stage:release-binaries` with a manifest that
 binds each daemon path and SHA-256, plus `remoteProviderPacks: {"linux-x64": {path, sha256}, "linux-arm64": {path, sha256}}` for
@@ -296,7 +311,8 @@ installation journey or a paid provider task on ARM64.
 Automatic creation selects legacy execution when a Linux host has musl, unknown
 libc, or a measured GNU libc version below the baseline. Existing agents retain
 their stored runner. Windows, 32-bit ARM, and Alpine/musl native qualification
-remain deferred.
+remain deferred. The `Runner Windows` workflow builds and tests the Rust
+workspace on Windows x64. It does not qualify Windows agent runs.
 
 Native release jobs cache Cargo dependencies per platform and OS baseline,
 including compiler, lockfile, and external generated-contract inputs. Workspace
@@ -469,6 +485,12 @@ stable free-text option IDs. Legacy callers remain supported. Calls that supply
 both forms must describe the same complete form; partial forms remain invalid.
 The native recovery bridge uses the same projection for answer delivery.
 
+OpenCode 1.18.34 native questions allow a written answer by default when `custom`
+is omitted. The driver preserves that default and explicit `custom:false`; the
+native flag takes precedence over the legacy `allowCustom` alias. Choice options
+remain intact. Questions without options remain text-only, without a separate
+custom-answer field. See the [pinned native question contract](https://github.com/anomalyco/opencode/blob/v1.18.34/packages/schema/src/v1/question.ts).
+
 The server validates canonical answer constraints before persistence. Regex
 matching runs in isolated workers with a one-second deadline and at most four
 active workers. A timeout or capacity error leaves the question pending. The
@@ -537,6 +559,13 @@ pnpm --filter @paperclipai/paperclip-runner verify
 The verification command requires a stable Rust toolchain with `cargo` on
 `PATH`, in addition to Node.js 24.11+ and pnpm 9+.
 
+Rust development builds use `debug = "line-tables-only"` to reduce build storage
+while retaining file names and line numbers in backtraces. The default test
+profile inherits this setting. Incremental compilation remains enabled, and
+release profiles keep their existing settings. For full debugger support,
+including local variables and types, set `CARGO_PROFILE_DEV_DEBUG=2` and
+`CARGO_PROFILE_TEST_DEBUG=2` for the build or test command.
+
 Minimal Debian/Ubuntu hosts without root access can extract the required
 Playwright browser libraries into a user-owned cache and run the same acceptance
 sequence with:
@@ -594,6 +623,22 @@ pnpm --filter @paperclipai/paperclip-runner demo:standalone
 Live console provider-backed routes are loopback-only and reject wildcard/LAN
 binds. Browser mutations require same-origin Fetch Metadata, matching Origin,
 and JSON content; see the protocol-server tutorial for direct `curl` examples.
+
+The runtime activity publisher has an offline final-command regression against the
+qualified Codex executable. Run it on a host that supports Codex's OS sandbox,
+with the pinned executable and the matching freshly built Runner helper:
+
+```sh
+CODEX_NOTIFICATION_SANDBOX_COMMAND=/absolute/path/to/pinned/codex \
+PAPERCLIP_RUNTIME_NOTIFICATION_HELPER=/absolute/path/to/paperclip-runnerd \
+cargo test --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --lib \
+  publisher_crosses_real_codex_tool_boundary_without_runner_state_access -- --ignored
+```
+
+This uses `app-server command/exec` without credentials or a model call. It checks
+actual shell discovery, successful durable activity recording, and denial of unrelated
+Runner state, descriptor writes and ambient secrets. The normal suite covers
+bounded framing, concurrent publishers, fixed-path cleanup and attachment fencing.
 
 ## Direct live protocol qualification
 
@@ -941,3 +986,63 @@ the host restarts that resource with a new socket. Do not remove its lock marker
 while daemon work might still be running. The socket and its parent must be private,
 canonical paths owned by the same account. Local stdio assignment requires Unix;
 other platforms retain the HTTP path.
+
+## Kimi Code
+
+Kimi Code uses the pinned `@moonshot-ai/kimi-code@2.3.3` distribution through
+ACPX through the qualified native profile. Ordinary selection and Runtime Test
+require no candidate grant.
+The installation targets are macOS ARM64 and Linux x64. Platform startup,
+authenticated driver checks, and product acceptance are separate evidence levels.
+
+Run `paperclipai runtime setup kimi` on the execution host to install its complete
+verified runtime. Setup downloads public pinned dependencies without model calls
+or provider credentials. An invalid existing installation fails without ambient
+Kimi fallback. Bind a company secret as `KIMI_API_KEY` and select an exact model.
+This release uses the global Code endpoint at `https://api.kimi.ai/coding/v1`.
+Model suggestions are empty; a compatible typed model is decided by the provider.
+The account needs Kimi Code entitlement. Runtime Test verifies installation and
+queries the authenticated Code model catalog for the exact selected model. It
+sends no model prompt; an actual task verifies inference and tool execution.
+
+The qualified native profile uses ordinary setup, hiring, metadata Test and task
+startup on these two supported targets without operator admission flags. Protected
+candidate startup records remain reserved for future pending profiles; saved agent
+configuration and public requests cannot supply that authority.
+
+Existing legacy Kimi agents retain their runtime and history. Managed Kimi connections,
+ambient login borrowing, other regions/platforms, steering, native child work,
+and per-run token/dollar accounting are outside this release. Read-only Kimi work
+uses scoped Paperclip tools; native filesystem and shell tools are denied.
+The provider-owned patch binds native instructions, preserves permission arguments,
+and removes provider auth from tool subprocesses. See the
+[protocol dossier](src/providers/kimi/README.md) and
+[release ledger](../../doc/plans/2026-10-28-kimi-code-runner-integration.md) for
+current evidence and limits.
+
+## ACPX controller replacement regression tests
+
+`src/control-plane/acpx-controller-recovery.test.ts` runs the production Rust
+Runner and authenticated PRP controller with a scripted ACPX peer. It covers
+active-turn reconnection, checkpoint restoration after deleting controller
+storage, native transport adoption and old-controller finalization, completion
+while disconnected, a provider crash, and an explicitly closed provider.
+It builds the debug Runner before execution and requires Cargo and a POSIX host.
+No model credentials, provider requests, application server or database are used.
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner exec vitest run \
+  src/control-plane/acpx-controller-recovery.test.ts --maxWorkers=1
+```
+
+Set `PAPERCLIP_ACPX_REPRO_BINARY` to an existing Runner executable to skip the
+Cargo build. All five tests still run. Set `PAPERCLIP_ACPX_REPRO_PROFILES` to an
+alternate `acpx-profiles.json` when that executable uses a different profile
+manifest. Both overrides are optional.
+
+The failure controls distinguish a lost provider from a controller outage;
+matching a diagnostic after explicit close does not identify the cause of a
+hosted failure. Real Claude/ACPX acceptance, server/Postgres recovery, and
+Daytona deployment continuity need their own evidence. See the
+[remote continuity guide](../../doc/testing-native-remote-continuity.md) and the
+[Daytona Product E2E suite](../../tests/runner-e2e/README.md).

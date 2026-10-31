@@ -1,3 +1,4 @@
+import { externalConversationSettlementWork } from "../../services/external-conversation-settlement-work.js";
 import { nativeStatusReassessmentWork } from "../../services/native-runtime/native-status-reassessment-work.js";
 import { nativeReviewResponseWork } from "../../services/native-runtime/native-review-response-work.js";
 import { nativeResponsePresentationWork } from "../../services/native-runtime/native-response-presentation-work.js";
@@ -378,7 +379,7 @@ describe("iMessage Photon channel control plane", () => {
       },
     };
   }
-  it.each([DELIVERY_QUEUES.nativeResponsePresentation, DELIVERY_QUEUES.nativeReviewResponse, DELIVERY_QUEUES.nativeStatusReassessment])(
+  it.each([DELIVERY_QUEUES.nativeResponsePresentation, DELIVERY_QUEUES.nativeReviewResponse, DELIVERY_QUEUES.nativeStatusReassessment, DELIVERY_QUEUES.externalConversationSettlement])(
     "keeps repeated active Photon ownership assertions out of %s reconstruction and wakes once on recovery", async queue => {
     const t = await setup();
     await t.start();
@@ -386,7 +387,8 @@ describe("iMessage Photon channel control plane", () => {
     const errors: unknown[] = [];
     const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
     coordinators.push(coordinator);
-    const work = queue === DELIVERY_QUEUES.nativeResponsePresentation ? nativeResponsePresentationWork(db)
+    const work = queue === DELIVERY_QUEUES.externalConversationSettlement ? externalConversationSettlementWork(db)
+      : queue === DELIVERY_QUEUES.nativeResponsePresentation ? nativeResponsePresentationWork(db)
       : queue === DELIVERY_QUEUES.nativeReviewResponse ? nativeReviewResponseWork(db) : nativeStatusReassessmentWork(db);
     const worker = work.register(coordinator, () => true);
     const debug = db.$client.options.debug;
@@ -403,7 +405,8 @@ describe("iMessage Photon channel control plane", () => {
       await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
         .toEqual({ active: 0, next: null });
       db.$client.options.debug = (_connection, query) => {
-        if (query.startsWith("select") && query.includes("native_run_finalizations")) queries.push(query);
+        if (query.startsWith("select") && (queue === DELIVERY_QUEUES.externalConversationSettlement
+          ? query.includes("exists (select 1 from chat_conversations c") : query.includes("native_run_finalizations"))) queries.push(query);
       };
       const assertOwned = t.callbacks().onPhotonAssertOwned!;
       for (let i = 0; i < 5; i++) await assertOwned();

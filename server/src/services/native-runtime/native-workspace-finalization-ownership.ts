@@ -1,3 +1,5 @@
+import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
+import { notifyNativeWorkspaceFinalization, releaseNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { beginRunPhase } from "../execution-preparation-timing.js";
 import { logActivity } from "../activity-log.js";
@@ -29,6 +31,7 @@ export async function tryLockNativeWorkspaceFinalization(tx: Db, input: { compan
 }
 
 const activeOwnerTokens = new Set<string>();
+const activeRunOwners = new Map<string, { token: string; db: Db }>();
 // Positive same-boot evidence, retained only when durable cleanup could not be
 // confirmed. Absence from the active set alone never proves another token joined.
 const joinedOwnerTokens = new Set<string>();
@@ -40,6 +43,13 @@ type Owner = {
   processStartedAt: string;
   worker?: WorkspaceWorker;
 };
+export type NativeWorkspaceFinalizationWaitReason =
+  | "busy"
+  | "owner_active"
+  | "platform_stop_pending"
+  | "owner_unverified"
+  | "binding_changed";
+
 export type NativeWorkspaceFinalizationOwnership = {
   token: string;
   /** Recheck both the physical lock connection and the durable owner before publishing. */
@@ -72,7 +82,7 @@ function readOwner(value: unknown): Owner | null {
 export async function withNativeWorkspaceFinalizationOwnership<T>(
   input: { db: Db; companyId: string; runId: string; retainedRepairActionId?: string },
   action: (ownership: NativeWorkspaceFinalizationOwnership) => Promise<T>,
-): Promise<{ acquired: false; reason?: "owner_unverified" } | { acquired: true; value: T }> {
+): Promise<{ acquired: false; reason: NativeWorkspaceFinalizationWaitReason } | { acquired: true; value: T }> {
   const identity = await currentNativeControllerIdentity();
   const owner: Owner = {
     token: randomUUID(), controllerBootId: identity.bootId, hostname: os.hostname(), pid: identity.pid,
@@ -81,6 +91,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
   const scope = and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
     input.retainedRepairActionId ? inArray(heartbeatRuns.runtimeMode, ["native", "legacy"]) : eq(heartbeatRuns.runtimeMode, "native"));
   const owned = and(scope, sql`${heartbeatRuns.runnerProfileJson}->${OWNER_KEY}->>'token' = ${owner.token}`);
+  const runKey = nativeWorkspaceFinalizationLockKey(input.companyId, input.runId);
   let claimed = false;
   let actionPromise: Promise<T> | undefined;
   const finishAcquisition = beginRunPhase("execution.workspace_ownership_wait");
@@ -88,7 +99,10 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
     return await withDedicatedDbConnection(input.db, (dedicated) => dedicated.transaction(async (lock) => {
       const rows = await lock.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(${nativeWorkspaceFinalizationLockKey(input.companyId, input.runId)}, 0)) as acquired,
         (select setting::bigint from pg_settings where name = 'idle_in_transaction_session_timeout') as idle_timeout_ms`);
-      if (rows[0]?.acquired !== true) return { acquired: false } as const;
+      if (rows[0]?.acquired !== true) return {
+        acquired: false,
+        reason: !input.retainedRepairActionId && activeRunOwners.get(runKey)?.db === input.db ? "owner_active" : "busy",
+      } as const;
       return withWorkspaceLockKeepalive(lock as unknown as Db, Number(rows[0].idle_timeout_ms), async () => {
         // Reads and durable progress use the ordinary pool, not the lock transaction.
         const [run] = await input.db.select({ profile: heartbeatRuns.runnerProfileJson,
@@ -130,6 +144,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
           }) : null;
         };
         let platformProof: WorkspaceWorkerStopProof | null = null;
+        let platformStopPending = false;
         if (rawPrior != null) {
           const requireStopVerification = async () => {
             if (input.retainedRepairActionId) return { acquired: false, reason: "owner_unverified" } as const;
@@ -150,7 +165,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
                   sql`(${issueRecoveryActions.nextAction} is distinct from ${nextAction} or ${issueRecoveryActions.evidence}#>>'{workspaceOwnerRecovery,state}' is distinct from 'operator_required')`,
                 ));
               }
-              return { acquired: false } as const;
+              return { acquired: false, reason: platformStopPending ? "platform_stop_pending" : "owner_unverified" } as const;
             }
             if (run.issueId) await recovery.upsertSourceScoped({
               companyId: input.companyId, sourceIssueId: run.issueId,
@@ -161,11 +176,20 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
               nextAction,
               wakePolicy: null, maxAttempts: 1, supersedeOnIdentityChange: true,
             });
-            return { acquired: false } as const;
+            return { acquired: false, reason: platformStopPending ? "platform_stop_pending" : "owner_unverified" } as const;
           };
           // The harness checks the exact owned deployment, including orphaned children.
           // A live deployment, unsigned answer or older receipt stays fenced.
-          if (prior?.worker) platformProof = await requestWorkspaceWorkerStopProof({ runId: input.runId, ownerToken: prior.token, worker: prior.worker });
+          if (prior?.controllerBootId === identity.bootId && prior.pid === identity.pid
+            && activeOwnerTokens.has(prior.token)) {
+            return { acquired: false, reason: input.retainedRepairActionId ? "owner_unverified"
+              : activeRunOwners.get(runKey)?.db === input.db ? "owner_active" : "busy" } as const;
+          }
+          if (prior?.worker) {
+            const check = await requestWorkspaceWorkerStopProof({ runId: input.runId, ownerToken: prior.token, worker: prior.worker });
+            platformProof = check.status === "verified" ? check.proof : null;
+            platformStopPending = check.status === "pending";
+          }
           if (!prior) return requireStopVerification();
           if (!platformProof && prior.hostname !== owner.hostname) return requireStopVerification();
           const knownJoinedHere = prior.controllerBootId === identity.bootId
@@ -194,6 +218,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
         // only our token even if the server committed but its response was lost.
         const claimOwner = async (db: Db) => {
           activeOwnerTokens.add(owner.token);
+          activeRunOwners.set(runKey, { token: owner.token, db: input.db });
           claimed = true;
           const [claimedRun] = await db.update(heartbeatRuns).set({
             runnerProfileJson: sql`jsonb_set(coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb), array[${OWNER_KEY}], ${JSON.stringify(owner)}::jsonb) || ${JSON.stringify(platformProof ? { nativeWorkspaceOwnerStopProof: platformProof } : {})}::jsonb`,
@@ -212,7 +237,14 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
           if (claimedRun) automaticResultId = result.id;
           return claimedRun;
         }) : await claimOwner(input.db);
-        if (!claimedRun) return { acquired: false } as const;
+        if (!claimedRun) {
+
+
+          activeOwnerTokens.delete(owner.token);
+          if (activeRunOwners.get(runKey)?.token === owner.token) activeRunOwners.delete(runKey);
+          claimed = false;
+          return { acquired: false, reason: "binding_changed" } as const;
+        }
         if (platformProof && run.issueId) await logActivity(input.db, {
           companyId: input.companyId, actorType: "system", actorId: "workspace-recovery",
           action: "issue.workspace_owner_stop_verified", entityType: "issue", entityId: run.issueId,
@@ -263,9 +295,12 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
     await actionPromise?.catch(() => undefined);
     if (claimed) {
       activeOwnerTokens.delete(owner.token);
+      if (activeRunOwners.get(runKey)?.token === owner.token) activeRunOwners.delete(runKey);
       joinedOwnerTokens.add(owner.token);
       try {
         await input.db.transaction(async tx => {
+          await notifyNativeResultCommit(tx, { companyId: input.companyId, runId: input.runId });
+          await notifyNativeWorkspaceFinalization(tx, { companyId: input.companyId, runId: input.runId });
           await notifyNativeStatusReassessment(tx, { companyId: input.companyId, runId: input.runId });
           await tx.update(heartbeatRuns).set({
             runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) - ${OWNER_KEY}`,
@@ -275,6 +310,8 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
       } catch {
         // A reconnect in this exact controller boot can use the positive join
         // receipt. A new boot still needs durable barrier or operator proof.
+      } finally {
+        releaseNativeWorkspaceFinalization(input.db, { companyId: input.companyId, runId: input.runId });
       }
     }
   }

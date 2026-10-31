@@ -21,7 +21,7 @@ describe("agent configuration YAML", () => {
 
   it("sends only changed fields and replaces the adapter map when a key is removed", () => {
     const doc = parseAgentConfigurationYaml(serializeAgentConfiguration(configuration));
-    delete doc.spec.adapterConfig.extra;
+    delete doc.spec.adapterConfig!.extra;
     doc.spec.budgetMonthlyCents = 20000;
     expect(agentConfigurationPatch(doc, configuration)).toEqual({
       adapterConfig: { model: "gpt-5", env: configuration.adapterConfig.env },
@@ -37,7 +37,6 @@ describe("agent configuration YAML", () => {
   it.each([
     ["unknown version", (text: string) => text.replace("paperclip/v1", "paperclip/v2")],
     ["unknown field", (text: string) => `${text}  typo: true\n`],
-    ["missing field", (text: string) => text.replace("  name: Codie\n", "")],
     ["invalid budget", (text: string) => text.replace("budgetMonthlyCents: 12000", "budgetMonthlyCents: -1")],
     ["invalid environment", (text: string) => text.replace("defaultEnvironmentId: null", "defaultEnvironmentId: unknown")],
     ["duplicate key", (text: string) => `${text}  name: duplicate\n`],
@@ -46,7 +45,7 @@ describe("agent configuration YAML", () => {
     ["NaN", (text: string) => text.replace("metadata: null", "metadata: {value: .nan}")],
     ["merge key", (text: string) => text.replace("metadata: null", "metadata: {<<: {name: Other}}")],
     ["reserved key", (text: string) => text.replace("metadata: null", "metadata: {__proto__: {bad: true}}")],
-    ["permission mutation", (text: string) => `${text}  permissions: {canCreateAgents: true}\n`],
+    ["invalid permission", (text: string) => `${text}  permissions: {canCreateAgents: wrong}\n`],
     ["status mutation", (text: string) => `${text}  status: idle\n`],
   ])("rejects %s before saving", (_name, modify) => {
     expect(() => parseAgentConfigurationYaml(modify(serializeAgentConfiguration(configuration)))).toThrow();

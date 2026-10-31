@@ -1,3 +1,5 @@
+import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
+import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
 import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../../../services/cancelled-workspace-preservation-notifications.js";
@@ -54,6 +56,7 @@ export type QueuedCommentQueuePostgresAdapterDeps = {
 function buildTransaction(tx: Db, companyId: string, issueId: string, deps: QueuedCommentQueuePostgresAdapterDeps): QueuedCommentQueueTransaction {
   return {
     async updateCommentBody({ issueId, commentId, body, updatedAt }) {
+      await notifyStatusCardIssueChange(tx, companyId);
       const updated = await tx
         .update(issueComments)
         .set({ body, updatedAt })
@@ -64,6 +67,7 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
     },
 
     async touchIssueUpdatedAt({ issueId, updatedAt }) {
+      await notifyStatusCardIssueChange(tx, companyId);
       await tx.update(issues).set({ updatedAt }).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
     },
 
@@ -109,6 +113,7 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
     async cancelQueueRun({ queueRunId, reason, now }) {
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId });
       await notifyInstructionCollection(tx, { companyId, runId: queueRunId });
+      await notifyExternalAgentSettlement(tx, { companyId, runId: queueRunId });
       await notifyCancelledWorkspacePreservation(tx, { companyId, runId: queueRunId });
       await notifyChatRunMilestones(tx, { companyId, issueId });
       const row = await tx

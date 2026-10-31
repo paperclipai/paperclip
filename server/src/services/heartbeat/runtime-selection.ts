@@ -137,7 +137,7 @@ export interface HeartbeatRuntimeSelectionInput {
     resolvedConfig: Record<string, unknown>;
     managedAiRuntime: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
   };
-  recovery: { nativeLeaseOwner?: string; nativeRestartRecovery?: NativeRestartRecoveryClaim };
+  recovery: { nativeLeaseOwner?: string; nativeRestartRecovery?: NativeRestartRecoveryClaim; onNativeExecutionLeaseAcquired?: () => Promise<void> };
   trace: { providerTraceRequested: boolean; providerTraceCapture: { metadata: { id: string } } | null };
   issuesSvc: Pick<ReturnType<typeof issueService>, "addComment">;
   runtimeEnv: Record<string, string | undefined>;
@@ -729,6 +729,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
           )
         : agent.adapterConfig;
       const requestedNativeProvider = resolvePaperclipRunnerNativeProviderInput({
+        companyId: agent.companyId,
         backend: nativeRuntimeResolution.profile.backend,
         adapterConfig: nativeProviderConfig, managedProfile, agentCoreProfile, dotBinding, museBinding,
       });
@@ -741,6 +742,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
           }) : null;
       const nativeProvider = codexCliVersion
         ? resolvePaperclipRunnerNativeProviderInput({
+            companyId: agent.companyId,
             backend: nativeRuntimeResolution.profile.backend,
             adapterConfig: nativeProviderConfig, codexCliVersion, managedProfile, agentCoreProfile, dotBinding, museBinding,
           }) : requestedNativeProvider;
@@ -865,6 +867,10 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       }
       nativeSessionId = nativeExecutionWithCheckpoint.normalizedSessionId;
     }
+    if (nativeResumeCheckpoint && nativeExecution.provider.kind === "acpx"
+      && nativeExecution.provider.agent === "antigravity") {
+      nativeResumeCheckpoint = { ...nativeResumeCheckpoint, providerRecoveryPolicy: "same_session_only" };
+    }
     const nativeSandboxLifecycle = resolveNativeSandboxLifecycle({
       adapterType: agent.adapterType,
       lifecyclePolicy: nativeExecution.session.lifecyclePolicy,
@@ -940,6 +946,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         .update(heartbeatRuns)
         .set({
           runtimeMode: "native",
+          controllerBootId: null,
+          controllerLeaseExpiresAt: null,
+          executionStage: null,
           runtimeModeResolverVersion:
             lockedRun.runtimeModeResolverVersion ??
             nativeRuntimeResolution.resolverVersion,
@@ -967,6 +976,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
               : {}),
             nativeExecutionInput:
               lockedProfile.nativeExecutionInput ?? nativeExecution,
+            nativeResourceDisposition: providerResourceDispositionForRun,
             nativeToolContractFingerprint:
               nativeToolContractFingerprintForTarget(
                 executionTarget?.kind ?? "local",
@@ -1048,6 +1058,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       restartRecovery: runOptions.nativeRestartRecovery,
       sameRunRecovery: Boolean(runOptions.nativeLeaseOwner),
       resourceDisposition: providerResourceDispositionForRun,
+      workspaceGitIndexRefresh: nativeExecution?.provider.kind === "opencode",
       onCheckpoint: input.workspace.onCheckpoint,
       onPhase: input.workspace.onPhase,
       onEvent: onAdapterEvent,

@@ -10,6 +10,7 @@
 type RunnerModule = typeof import("@paperclipai/paperclip-runner");
 
 export type {
+  AcpxCandidateAdmission,
   DotHarnessDriver,
   DotAssignment,
   PaperclipJsonValue,
@@ -93,12 +94,18 @@ export const RUNNER_PRP_PROTOCOL_MIN = runner.RUNNER_PRP_PROTOCOL_MIN;
 export const RUNNER_PRP_PROTOCOL_MAX = runner.RUNNER_PRP_PROTOCOL_MAX;
 export const runnerCodexDynamicToolsFit = runner.runnerCodexDynamicToolsFit;
 export const inspectWarmRunTransition = runner.inspectWarmRunTransition;
+export const inspectStagedRunAttachment = runner.inspectStagedRunAttachment;
+export const inspectStagedRunAttachmentHeader = runner.inspectStagedRunAttachmentHeader;
+export type StagedRunAttachment = import("@paperclipai/paperclip-runner").StagedRunAttachment;
 export const readRunnerdArtifactBinding = runner.readRunnerdArtifactBinding;
 export const readLinuxProcessStartedAt = runner.readLinuxProcessStartedAt;
+export const NativeSessionCloseUnrecoverableError =
+  runner.NativeSessionCloseUnrecoverableError;
 export const NativeSessionCleanupQuarantinedError =
   runner.NativeSessionCleanupQuarantinedError;
 export const NativeSessionProtocolIntegrityError =
   runner.NativeSessionProtocolIntegrityError;
+export const NativeEnvironmentProbeCleanupError = runner.NativeEnvironmentProbeCleanupError;
 export const SemanticToolOutcomeUnknownError = runner.SemanticToolOutcomeUnknownError;
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
 export const CAPABILITY_SEMANTIC_TOOL_CATALOG =
@@ -112,6 +119,7 @@ export const PAPERCLIP_EXECUTION_PROMPT_REVISION =
   runner.PAPERCLIP_EXECUTION_PROMPT_REVISION;
 export const acpxRuntimeSessionDirectoryName =
   runner.acpxRuntimeSessionDirectoryName;
+export const resolveAcpxRuntimeRoot = runner.resolveAcpxRuntimeRoot;
 export const OPENCODE_ISOLATED_HOMES_DIRECTORY =
   runner.OPENCODE_ISOLATED_HOMES_DIRECTORY;
 export const opencodeRuntimeSessionDirectoryName =
@@ -151,11 +159,13 @@ export const parsePaperclipQuestionSet = runner.parsePaperclipQuestionSet;
 export const parsePaperclipQuestionResponse =
   runner.parsePaperclipQuestionResponse;
 export const resolveQualifiedAcpxProfile = runner.resolveQualifiedAcpxProfile;
+export const parseAcpxCandidateAdmission = runner.parseAcpxCandidateAdmission;
 export const resolveClaudeEffort = runner.resolveClaudeEffort;
 export const resolveGrokEffort = runner.resolveGrokEffort;
 export const QUALIFIED_ACPX_PROFILES = runner.QUALIFIED_ACPX_PROFILES;
 export const QUALIFIED_ACPX_VERSION = runner.QUALIFIED_ACPX_VERSION;
 export const CURSOR_DISTRIBUTION_PINS = runner.CURSOR_DISTRIBUTION_PINS;
+export const KIMI_DISTRIBUTION_CLOSURE_SHA256 = runner.KIMI_DISTRIBUTION_CLOSURE_SHA256;
 export const resolveSourceCodexHome = runner.resolveSourceCodexHome;
 export const resolveCodexCommand = runner.resolveCodexCommand;
 export const resolvePinnedCodexCommand = runner.resolvePinnedCodexCommand;
@@ -173,6 +183,11 @@ export const completeTerminatedLocalNativeSessionCleanup = runner.completeTermin
 export const probeAcpxClaudeInstallation = runner.probeAcpxClaudeInstallation;
 export const probeAcpxGrokInstallation = runner.probeAcpxGrokInstallation;
 export const probeAcpxPiInstallation = runner.probeAcpxPiInstallation;
+export const startAntigravityBrowserLogin = runner.startAntigravityBrowserLogin;
+export const verifyAntigravityCredential = runner.verifyAntigravityCredential;
+export const sanitizeAntigravityCredential = runner.sanitizeAntigravityCredential;
+export const discoverAntigravityModels = runner.discoverAntigravityModels;
+export const AntigravityModelDiscoveryCleanupError = runner.AntigravityModelDiscoveryCleanupError;
 export const PROVIDER_PACK_COMPATIBILITY = runner.PROVIDER_PACK_COMPATIBILITY;
 export const bundledRemoteProviderPackManifestPath = runner.bundledRemoteProviderPackManifestPath;
 export const bundledRemoteRunnerBinary = runner.bundledRemoteRunnerBinary;

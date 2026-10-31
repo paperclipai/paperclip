@@ -1,6 +1,7 @@
 export * from "./configured-environment.js";
 export * from "./catalog/index.js";
 export { CURSOR_DISTRIBUTION_PINS } from "./drivers/acpx/generated-profiles.js";
+export { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "./drivers/acpx/kimi-closure-pins.js";
 export * from "./contracts/control-plane-port.js";
 export * from "./contracts/completion-result.js";
 export * from "./contracts/codex.js";
@@ -37,6 +38,9 @@ export {
   RUNNER_PRP_PROTOCOL_MIN,
   RUNNER_PRP_PROTOCOL_MAX,
   inspectWarmRunTransition,
+  inspectStagedRunAttachment,
+  inspectStagedRunAttachmentHeader,
+  type StagedRunAttachment,
   type DurablePrpControlPlaneOptions,
   type DurablePrpCheckpoint,
   decodeDurablePrpCheckpoint,
@@ -56,6 +60,9 @@ export { runnerBinaryTarget } from "./live/runner-binary.js";
 export * from "./drivers/opencode/opencode-server-driver.js";
 export * from "./drivers/opencode/mcp-bridge.js";
 export * from "./drivers/acpx/qualified-profiles.js";
+export { parseAcpxCandidateAdmission, type AcpxCandidateAdmission } from "./drivers/acpx/candidate-admission.js";
+export { startAntigravityBrowserLogin, verifyAntigravityCredential, sanitizeAntigravityCredential } from "./drivers/acpx/antigravity-auth.js";
+export { AntigravityModelDiscoveryCleanupError, discoverAntigravityModels, type AntigravityModelCatalog } from "./drivers/acpx/antigravity-models.js";
 export { acpxRuntimeSessionDirectoryName, resolveAcpxRuntimeRoot } from "./drivers/acpx/recovery-identity.js";
 export {
   probeQualifiedAcpxEnvironment,
@@ -69,6 +76,7 @@ export * from "./drivers/runner-tool-bridge.js";
 export {
   createRunnerdCodexTransport,
   probeNativeRunnerEnvironment,
+  NativeEnvironmentProbeCleanupError,
   runnerCodexDynamicToolsFit,
   defaultCapabilityRunnerdBinary,
   readRunnerdArtifactBinding,
@@ -97,7 +105,7 @@ export * as acceptedCapabilitySemanticTools from "./semantic-tools/index.js";
 export * from "./compatibility.js";
 
 export { probeAcpxClaudeInstallation, probeAcpxGrokInstallation } from "./drivers/acpx/installation-integrity.js";
-export { probeAcpxPiInstallation } from "./drivers/acpx/profile-installation.js";
+export { probeAcpxPiInstallation, probeAcpxKimiInstallation } from "./drivers/acpx/profile-installation.js";
 export { PROVIDER_PACK_COMPATIBILITY, bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary } from "./live/bundled-remote-provider-pack.js";
 
 export { RunnerdMuseDriver, describeRunnerdMuseDriver, type RunnerdMuseDriverOptions } from "./drivers/muse/runnerd-muse-driver.js";
@@ -105,7 +113,7 @@ export { RunnerdDotDriver, type RunnerdDotDriverOptions } from "./drivers/dot/ru
 
 export type { RunnerExecutionDriver } from "./control-plane/runner-execution-driver.js";
 
-export { bindRunnerLaunchResources, createRunnerProviderLaunch, runnerProviderLaunchRequirements, runnerLaunchRequirementsDigest, validatePreparedRunnerLaunch } from "./live/runner-provider-launch.js";
+export { RUNNER_GITHUB_LAUNCHER_VERSION, bindRunnerLaunchResources, createRunnerProviderLaunch, runnerProviderLaunchRequirements, runnerLaunchRequirementsDigest, validatePreparedRunnerLaunch } from "./live/runner-provider-launch.js";
 export type { RunnerProviderLaunchRequirements, RunnerProviderLaunchEnvironment, PreparedRunnerProviderLaunch, RunnerLaunchPreparer } from "./live/runner-provider-launch.js";
 
 export { resolveGrokDisableWebSearch } from "./drivers/acpx/grok-web-search.js";

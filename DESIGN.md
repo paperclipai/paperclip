@@ -68,15 +68,23 @@ message scroller and a normal flex footer for the composer. Navigation stays at
 the layout viewport bottom, behind the keyboard.
 
 Cold task opens reveal the instruction and recent conversation independently of
-plans, related metadata, and historical run activity. Show the latest human
+recovery, related metadata, and historical run activity. Saved document cards,
+the saved plan, and the bounded latest turn arrive before first reveal so they
+cannot insert rows into an already readable conversation. Show the latest human
 follow-up, recent saved replies, and text or pending requests from the latest run.
 Put older messages and diagnostic activity behind **More messages**. Fetch those
 only when expanded; never download all history just to calculate a count.
 Retain messages and runs observed while the task stays open, preserve expansion
-on return within the session, and load linked older comments when requested.
+on return within the session. Wait for the personal workspace preference before
+selecting Classic full history; loading that preference must not expand a
+Coordinator task. No URL fragment expands history. Document links,
+including continuation summaries, open their pane. Older comment links fetch
+only the requested comment and preserve the recent conversation.
 Background refreshes and history expansion keep the conversation and composer
 mounted. A failed history request shows an inline retry without hiding readable
 content. Full-history and classic views retain the bounded 15-second initial wait.
+
+Standing agent chats open with the latest 20 contiguous messages and hydrate only their runs. Upward scrolling requests earlier pages; a fixed-height status slot says “Loading earlier messages…” while the page is pending. Preserve the logical row anchor and mounted composer through prepends and background refresh. Retry failed history inline without automatic retry loops. Answer receipts and created-task history use the same scrolling affordance.
 
 Only the viewer's own human comments sit on the right in blue bubbles. Agents
 and other humans sit on the left on the page surface, with their own name and
@@ -91,6 +99,8 @@ Keep the runner turn's avatar, name, status header and current-activity slot
 in place from message submission through queued admission and native startup.
 Saving the human comment does not end startup feedback. Keep the identity mounted
 until its run appears or a newer execution outcome ends admission.
+Use the sent message's selected recipient through reassignment. Choosing the
+recipient for a later draft must not change the response already starting.
 Runtime discovery must not replace the turn with a generic spinner or a
 "run started" receipt. Queued and running headers use the same spacing.
 

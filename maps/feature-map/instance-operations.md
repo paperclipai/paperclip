@@ -19,7 +19,7 @@ Agent access: [companion](../agent-access-map/instance-operations.md).
 - `configuration`: `instance-operations/configuration` — configure database, server binding, storage, secrets, and available experimental settings.
 - `diagnostics`: `instance-operations/diagnostics` — use doctor/health output to distinguish readiness from a listening port.
 - `backup`: `instance-operations/backup` — create and inspect backups and verify restore only into a separate disposable target.
-- `runtime-setup`: `instance-operations/runtime-setup` — install verified Pi/Cursor runtime assets or import a release-matched Linux Pi companion into an owned published installation.
+- `runtime-setup`: `instance-operations/runtime-setup` — install verified Pi/Cursor runtime assets, stage pending Antigravity assets on macOS ARM64, or import a release-matched Linux Pi companion into an owned published installation.
 
 ## How to get to it (user POV)
 
@@ -33,7 +33,7 @@ Use currently visible instance settings for experiments/access and `paperclipai 
 
 ### `runtime-provisioning`
 
-On an owned published server installation, use `paperclipai runtime setup pi`, `paperclipai runtime setup cursor`, or `paperclipai runtime import-remote <companion-directory> --sha256 <trusted-companion-json-digest>`. Run as the OS user operating that installation; this is separate from source-checkout dependency installation.
+On an owned published server installation, use `paperclipai runtime setup pi`, `paperclipai runtime setup cursor`, `paperclipai runtime setup antigravity`, or `paperclipai runtime import-remote <companion-directory> --sha256 <trusted-companion-json-digest>`. Run as the OS user operating that installation; this is separate from source-checkout dependency installation. Antigravity setup stages a pinned patched macOS ARM64 runtime; it remains unavailable for tasks until native acceptance passes.
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -61,9 +61,48 @@ served by the admitted application before it finishes. Repeat with a disconnect
 before headers arrive. Confirm that neither leaves a permanent request hold. An
 unfinished application write must still prevent sleep after its client leaves.
 
+Automated: [historical cleanup](../../server/src/__tests__/historical-cleanup-verification.test.ts)
+exercises the runtime inspection path for failed Cloud sandbox leases, including
+verification leases without a run. A signed cleanup-only absence observation
+can remove this blocker without changing failed outcomes or granting run
+continuation. An unresolved provider resource still prevents idle sleep.
+Manual: on an owned Cloud staging workspace, confirm the exact published build,
+reconcile failed test allocations, then verify actual provider suspension and
+normal hosted entry after wake. Local tests do not prove that hosted journey.
+
 ### `settings-backup`
 
+Cloud startup reads nonsecret application choices from a private, versioned
+PostgreSQL singleton after a bounded one-time legacy config seed. A fresh
+process and different home restore the saved choices without consulting a stale
+`.env` file. Invalid saved data or an unavailable database prevents startup;
+saved telemetry opt-out applies before client creation. The
+[database controls](../../server/src/__tests__/cloud-runtime-config.test.ts) and
+[startup-order controls](../../server/src/__tests__/server-startup-feedback-export.test.ts)
+cover these local boundaries. See [field ownership](../../doc/cloud-runtime-configuration.md).
+These controls do not qualify a deployed Cloud rollout or durable file storage.
+
 Automated: [experimental settings](../../ui/src/pages/InstanceExperimentalSettings.test.tsx) and [database backup routes](../../server/src/__tests__/instance-database-backups-routes.test.ts) cover their UI/API contracts.
+
+Cloud migration: in one maintenance window, stop legacy file writers and run the
+[configuration/package qualification command](../../doc/cloud-configuration-migration.md).
+Inspect its database receipt, update a saved preference, then repeat against a
+second owned application/image root with the first home unavailable. Use an
+explicit package evidence digest for same-package comparison. Confirm stale
+qualification and missing legacy files cannot clear blockers. This recipe covers
+configuration/packages and does not qualify whole-server zero downtime, secret
+bytes, or volume removal. [Local PostgreSQL evidence path](../../server/src/__tests__/cloud-configuration-migration-postgres.test.ts)
+includes a real fixture worker; it does not establish a hosted replacement.
+
+Managed adapters: change a visible adapter preference as an instance admin,
+then use a second application process against the same disposable database to
+confirm catalog and new-agent selection reflect it. Verify saved agents remain
+usable. Restart with an operator adapter declaration, confirm its effective
+list, and reject conflicting toggles. Remove the declaration and confirm saved
+preferences return. [Database tests](../../server/src/services/adapter-settings-postgres.test.ts)
+cover local persistence, concurrent writers, audit rollback, and failure responses;
+[local compatibility tests](../../server/src/services/adapter-settings-local.test.ts)
+cover the legacy file. No deployed walkthrough is claimed.
 
 Manual: Change a harmless experimental setting, reload, and confirm the affected route honors it. Back up a disposable instance, inspect the reported file and metadata, and restore using the documented procedure into a second isolated target. Verify a known record after restoration.
 
@@ -89,6 +128,13 @@ Automated: [Runtime commands](../../cli/src/__tests__/runtime.test.ts), [setup](
 Manual: Use a disposable published installation and its exact runtime release. Run setup for the intended host runtime, inspect verified version/path, and repeat to confirm the existing installation is reused. Test a corrupt, linked, or foreign installation and verify rejection preserves unrelated files. Import a matching Linux x64 Pi companion with an independently trusted manifest digest; repeat for verified_existing, then alter manifest, inventory, source/profile identity, or target files and verify failure without replacing unrelated state. Inspect cleanup/cancellation. Finally use the selected adapter/account to run a bounded task separately: installed bytes do not prove model execution.
 
 Sources: [Runtime CLI](../../cli/src/commands/runtime.ts), [instance-config bypass](../../cli/src/index.ts), [Pi provisioning](../../packages/paperclip-runner/scripts/provision-pi.mjs), [Cursor provisioning](../../packages/paperclip-runner/scripts/provision-cursor.mjs), and [companion importer](../../server/src/services/native-runtime/remote-pi-companion.ts).
+
+Antigravity: [provisioning](../../packages/paperclip-runner/scripts/provision-antigravity.mjs),
+[closure/integrity regressions](../../packages/paperclip-runner/scripts/materialize-antigravity-distribution.test.mjs),
+and [pending admission tests](../../packages/paperclip-runner/src/drivers/acpx/antigravity-models.test.ts).
+Exercise public-layout setup and verify both native files and cleanup; separately
+verify that configuration/API/driver/sidecar reject the pending provider. These
+checks do not establish authenticated task execution.
 
 ## Gotchas
 

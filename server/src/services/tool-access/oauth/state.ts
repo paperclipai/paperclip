@@ -1,4 +1,4 @@
-import { notifyNativeReviewState } from "../../native-review-state-notifications.js";
+import { notifyIssueReviewState } from "../../issue-review-state-notifications.js";
 import type { ActorInfo } from "../types.js";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -164,7 +164,7 @@ async function rejectPendingOAuthInteraction(
     }
     if (!linked) return;
     await db.transaction(async tx => {
-      await notifyNativeReviewState(tx, { companyId: stateRow.companyId, issueId: linked.issueId });
+      await notifyIssueReviewState(tx, { companyId: stateRow.companyId, issueId: linked.issueId });
       await tx
         .update(issueThreadInteractions)
         .set({

@@ -1,5 +1,11 @@
 # Paperclip evaluation guide
 
+The explicit-only [Kimi Code qualification suite](../tests/runner-e2e/README.md#kimi-code-qualification)
+registers twenty candidate cells across local and Daytona. It reuses the
+browser, semantic interaction, file/artifact, Stop and continuation oracles with
+scoped candidate admission and an encrypted Code credential. Registration does
+not establish a live pass, native question/plan support or usable cost accounting.
+
 The public directory calls full-product testing **E2E tests**. Suites describe
 what is tested; deployment targets describe which app instance was tested.
 QA smoke is a named selection of existing journeys against QA, and appears in
@@ -39,14 +45,19 @@ only index HTML and history/pointer JSON; it does not upload evidence or change
 retained campaign bundles.
 
 The explicit-only [chat feature evals](../tests/runner-e2e/CHAT-FEATURES.md) promote
-two natural-language task scenarios into local native Product E2E cells. They
+two natural-language task scenarios into local native Codex subscription and
+OpenCode Product E2E cells. They
 verify saving an unstarted task and delegating a saved announcement back to chat,
 using ordinary production instructions, real browser messages and independent
-state/provenance checks. The broader YAML catalog remains planning inventory.
+state/provenance checks. A separately selected native OpenCode/DeepSeek1017
+backlog cell measures TestOps integration acceptance with the same oracle and
+original bounds. Its source registration is not an AWS or TestOps pass. The
+broader YAML catalog remains planning inventory.
 
 The explicit-only [Daytona restart continuity journey](../tests/runner-e2e/README.md)
-extends the existing native restart oracle to a 125-second controller outage,
-using the recorded Claude and Codex models in disposable development fixtures.
+extends the existing native restart oracle to a 300-second controller outage
+and another replacement after completion, using the recorded Claude and Codex
+models in disposable development fixtures.
 It requires same-process adoption, saved files and finalization without replay;
 local regression checks and catalog discovery are separate from live acceptance.
 
@@ -57,15 +68,32 @@ self-hosted/Cloud targets and separately selected local/Daytona agents. Account
 and credential bindings stay in the private eval repo; registration and oracle
 tests do not establish a completed live pass or unattended CI qualification.
 
+The deployment-targeted `question-answer-resume` journey reuses the classic
+two-question scenario and native continuation oracle on an attached target.
+It checks the actual board answers, one to three bound work runs, an agent-authored
+task document and browser readback after reload. It accepts provider questions and
+durable questions proven by an applied semantic receipt or an immutable completed
+native API mutation receipt. It does not qualify named-tool selection. Its provider owns target setup,
+usage and cleanup. Registration and local calibration do not establish a fresh
+Cloud pass or inclusion in a recurring selection.
+
 The explicit-only [necessary free-text question journey](../tests/runner-e2e/README.md#necessary-free-text-question)
 checks one essential input, the rendered prompt and context, the real answer,
 one bound continuation, and an exact saved confirmation. Its four development
 cells use the recorded Codex and Claude models. Registration and calibration do
 not establish Slack, staging authentication, warm lifecycle, or live qualification.
 
+The explicit `followup-while-running` [Product journey](../tests/runner-e2e/PRODUCT-JOURNEYS.md#active-follow-up)
+checks a saved message during independently observed native work, one attributed
+reply with the late requirement, and persistence after reload. Its attached and
+managed targets share the same story and permit one steered run or one normal
+successor. Registration and calibration are separate from a live staging pass.
+
 [Reusable Product journeys](../tests/runner-e2e/PRODUCT-JOURNEYS.md) add explicit
 deployment targets and starting-state recipes. The shared task-properties
-journey uses no model; Cloud onboarding supplies reusable verified state. Cloud
+journey and task-document create/edit/reopen journey use no model; Cloud
+onboarding supplies reusable verified state. The document journey checks exact
+saved content and both revision records through independent API reads. Cloud
 fleet operations and trusted CI remain private. Local eval gateway qualification
 does not qualify Cloud routes, and these selections stay outside `--all`.
 
@@ -101,6 +129,14 @@ or that a real Slack interaction completes.
 The explicit-only [live provider connection suite](../tests/runner-e2e/PROVIDER-CONNECTIONS.md)
 is a Product E2E workflow for fresh subscription/API-key/gateway connections,
 with attended login and independent artifact checks against local or staging targets.
+
+The explicit-only [Antigravity additional-agent journey](../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+converts the saved-subscription setup and two-turn file walkthrough into one
+local native cell. It measures agent creation through the ordinary UI,
+instruction-dependent downloaded bytes, same native conversation, durable Done
+lineage and owned runtime cleanup. Current support requires an attached
+self-hosted loopback macOS ARM64 candidate; fresh OAuth, Cloud/remote execution
+and global release qualification are separate gates.
 
 The bounded [personal Muse receiver probe](muse-personal-agent.md#bounded-24-hour-probe)
 uses ordinary task APIs and retained native receipts to measure unattended
@@ -535,7 +571,7 @@ any qualification claim; catalog presence alone is not a pass.
 
 The explicit-only [native question/resume qualification](../tests/runner-e2e/README.md#task-continuation)
 separates a completed two-answer user journey from semantic-tool documentation
-qualification. It verifies the exact provider-pause or semantic-response-wake
+qualification. It verifies the exact provider-pause or native response-wake
 binding for each answer and preserves prior grades when the definition changes.
 
 ## Lifecycle behavior baseline

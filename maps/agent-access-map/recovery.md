@@ -11,8 +11,14 @@ The server also retires an unowned failed sandbox retry after its linked explici
 Retry completes. This only registers exact-source preservation; it neither changes
 the current task nor supplies stop or saved-file proof.
 
+Daytona's directory-export capacity fallback stays inside this server-owned file
+preservation path. It changes the archive transport, grants no new agent entry
+point, and still requires the caller's exact stopped-source and workspace fences.
+Provider transfer tests do not establish task admission or agent authority.
+
 Remote process probes remain server-owned. Confirmed exit requires `ESRCH` or a
-zombie with the saved generation. Unknown adopted-process ownership rejects the
+zombie with the saved generation. Read-only transport retries use the existing
+shared deadline with backoff; signal requests remain single-attempt. Unknown adopted-process ownership rejects the
 probe and grants no permission to replace a runner, signal a different process,
 or replay work. Launch requires a working Node probe before detachment.
 
@@ -316,7 +322,7 @@ API: `present` — POST /api/issues/{id}/recovery-actions/recover-workspace with
 
 Agent access: `restricted` — board task-read and issue:mutate; not runtime:manage. Agents denied through REST/native fallback.
 
-Policy: Exact terminal retained source/lease/reference; independent stop and physical ownership checks; no newer writer. Bounded queued repair preserves newer files and has retry state. Matching key/recovered state dedupes; permanent blocked source refuses. Recovery starts no provider turn.
+Policy: Exact terminal retained source/lease/reference; independent stop and physical ownership checks; no newer writer. Bounded queued repair preserves newer files and has retry state. Matching key/recovered state dedupes; permanent blocked source refuses. Recovery starts no provider turn. For native export repair, a reusable lease is eligible only with its exact descriptor and the finalizer-selected accepted successful result under the same company/task/run/completion contract. This does not change actor access or permit another allocation owner or host writer. Invalid Git metadata is a non-retryable persistence failure requiring service repair; it cannot use unsafe-archive omission to complete the result. Run-detail/activity projections retain the allowlisted code, including bounded large-result retrieval, and cancelled-preservation discovery honors the same hold.
 
 Evidence: `source-only` — [recovery routes](../../server/src/routes/issues.ts), [retained recovery](../../server/src/services/workspace-recovery.ts); reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`. No live provider proof.
 

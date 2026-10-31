@@ -31,7 +31,9 @@ import { heartbeatService } from "../services/heartbeat.ts";
 import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSUE_MONITOR_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -46,8 +48,8 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   const seededAgentIds = new Set<string>();
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-monitor-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-monitor-");
+    db = createDb(external ?? tempDb!.connectionString);
   }, 20_000);
 
   async function waitForHeartbeatIdle(timeoutMs = 3_000) {
@@ -259,9 +261,9 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     const unrelatedPolicy = { commentRequired: false, futureAuthorization: { preserve: true } };
     await db.update(issues).set({ executionPolicy: { ...before.executionPolicy, ...unrelatedPolicy } }).where(eq(issues.id, issueId));
 
-    const result = await heartbeat.tickTimers(tickAt);
+    const result = await heartbeat.tickIssueMonitors(tickAt);
 
-    expect(result.enqueued).toBe(1);
+    expect(result.triggered).toBe(1);
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
     expect(issue.monitorNextCheckAt).toBeNull();

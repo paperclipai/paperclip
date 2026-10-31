@@ -1,3 +1,6 @@
+import { resolveCommittedNativeRecoveryNotices, pendingNativeRecoveryNotices } from "../services/native-runtime/native-recovery-notices.js";
+import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
+import { projectCommittedRun } from "../services/native-runtime/native-run-projection.js";
 import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
 import { nativeResponsePresentationWork } from "../services/native-runtime/native-response-presentation-work.js";
 import { notifyChatRunMilestones } from "../services/chat-run-milestone-notifications.js";
@@ -2981,6 +2984,27 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       )))[0];
       return { ...f, service, head, assessment, provider, action, inline, checks, writes };
     }
+    it("publishes one score heading when a newly configured bot submits a formatted summary", async () => {
+      const f = await publicationRetryFixture();
+      await db.update(chatEndpoints).set({ botDisplayName: "Fresh Review Bot" }).where(eq(chatEndpoints.id, f.endpoint.id));
+      const submit = (await githubBotToolsForSession(db, f.session)).find(tool => tool.upstreamToolName === "submit_review")!;
+      expect(submit.parametersSchema).toMatchObject({ properties: {
+        summary: { description: expect.stringContaining("Review body only") },
+        rationale: { description: expect.stringContaining("Do not repeat the summary") },
+      } });
+      const assessment = { ...f.assessment, summary: "## Fresh Review Bot — 2/5\n\n## Fresh Review Bot — 3/5\n\nAdvisory review\n\n### Findings\n\nKeep this section." };
+      const result = await f.service.execute(f.session, "submit_review", assessment, "formatted-summary");
+      expect(result).toMatchObject({ status: "processed", score: 3 });
+      const body = [...f.responseComments.values()][0].body;
+      expect(body).toMatch(/^## Fresh Review Bot — 3\/5\n\nAdvisory review/);
+      expect(body.match(/^## Fresh Review Bot — /gm)).toHaveLength(1);
+      expect(body).toContain("### Findings\n\nKeep this section.");
+      expect(body).toContain(f.assessment.rationale);
+      expect(body).toContain(`Reviewed commit: \`${f.head}\``);
+      expect(f.responseComments.size).toBe(1);
+      const [review] = await readChatGitHubReviewsByEndpointId(f.endpoint.id);
+      expect(review.assessment?.summary).toBe(assessment.summary);
+    });
     it("preserves the published GitHub assessment during passive-response maintenance", async () => {
       const f = await publicationRetryFixture();
       await f.service.execute(f.session, "submit_review", f.assessment, "published-before-passive-reply");
@@ -6969,7 +6993,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(f.wakeup).not.toHaveBeenCalled();
       const allowed = { ...payload, sender: { id: 42, login: "octocat", type: "User" }, issue: { ...payload.issue, user: payload.sender } };
       await send(allowed);
-      await expect.poll(async () => (await readChatConversationsByEndpointId(f.endpoint.id)).length).toBe(1);
+      // A transient `chat_endpoints` row lock defers admission with a retry
+      // floor of 1000 ms (`chat-channels/inbound/wakeups.ts`), so allow one
+      // deferred retry instead of the 1000 ms poll default.
+      await expect.poll(async () => (await readChatConversationsByEndpointId(f.endpoint.id)).length, { timeout: 10_000 }).toBe(1);
       const [conversation] = await readChatConversationsByEndpointId(f.endpoint.id);
       const comments = await readIssueCommentsByIssueId(conversation.issueId!);
       expect(comments).toHaveLength(1);
@@ -16291,7 +16318,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await expect.poll(async () => (await f.checkpoint()).value, { timeout: 5000 }).toMatchObject({
           generation: Number(oldWindow.generation) + 1, outcome: "epoch_initialized" });
         expect(f.requests).toEqual([]);
-        expect(coordinator.nextWakeAt()!).toBeLessThan(Date.now() + 90_000);
+        // The checkpoint commits before this coordinator pass rearms its deadline.
+        await expect.poll(() => {
+          const next = coordinator.nextWakeAt();
+          return next !== null && next < Date.now() + 90_000;
+        }, { timeout: 5000 }).toBe(true);
       } finally { release?.(); await pending; await coordinator.stop(); }
     });
 
@@ -16310,9 +16341,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           await tx.update(toolConnections).set({ credentialSecretRefs: connection.credentialSecretRefs.map(ref => ({ ...ref,
             versionSelector: ref.versionSelector === "1" ? "latest" : "1" })) }).where(eq(toolConnections.id, connection.id));
         });
-        await expect.poll(async () => ((await f.checkpoint()).value as Record<string, unknown>).credentialFingerprint,
-          { timeout: 5000 }).not.toBe(oldWindow.credentialFingerprint);
-        expect((await f.checkpoint()).value).toMatchObject({ generation: oldWindow.generation, outcome: "epoch_initialized" });
+        // Credential synchronization and epoch initialization commit separately.
+        // Require the final epoch receipt, not just the intermediate fingerprint.
+        await expect.poll(async () => {
+          const value = (await f.checkpoint()).value as Record<string, unknown>;
+          return { ...value, fingerprintChanged: typeof value.credentialFingerprint === "string"
+            && value.credentialFingerprint !== oldWindow.credentialFingerprint };
+        }, { timeout: 5000 }).toMatchObject({
+          fingerprintChanged: true, generation: oldWindow.generation, outcome: "epoch_initialized",
+        });
         expect(f.requests).toEqual([]);
       } finally { await coordinator.stop(); }
     });
@@ -36850,7 +36887,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await expect.poll(async () => db.select({ status: chatActions.status }).from(chatActions)
         .where(and(eq(chatActions.endpointId, lane.endpoint.id), eq(chatActions.kind, "slack_session_sync"))),
         { timeout: 10_000 }).toEqual([{ status: "processed" }]);
-      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 10_000 });
+      await vi.waitFor(() => {
+        expect(coordinator.nextWakeAt()).toBeNull();
+        expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 10_000 });
       const scans = vi.spyOn(db, "select");
       try {
         await new Promise(resolve => setTimeout(resolve, 1200));
@@ -61004,7 +61044,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const beforeComments = await db
           .select({ id: issueComments.id })
           .from(issueComments)
-          .where(eq(issueComments.issueId, conversation.issueId));
+          .where(eq(issueComments.issueId, conversation.issueId))
+          .orderBy(issueComments.id);
         const beforeWakes = wakeup.mock.calls.length;
         const providerRuntime = runtime.endpoints.get(endpoint.id)!;
         const beforeProvider = {
@@ -61161,7 +61202,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           db
             .select({ id: issueComments.id })
             .from(issueComments)
-            .where(eq(issueComments.issueId, conversation.issueId)),
+            .where(eq(issueComments.issueId, conversation.issueId))
+            .orderBy(issueComments.id),
         ).resolves.toEqual(beforeComments);
         expect(wakeup.mock.calls.length).toBe(beforeWakes);
         expect({
@@ -64432,7 +64474,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
-  it.each(["contained", "prior_denied_intent", "observability_warning", "observability_reason", "observability_revision", "observability_provenance", "observability_extra", "other_reason", "wrong_issue", "provider_started", "result_extra", "profile", "usage", "output",
+  it.each(["contained", "prior_denied_intent", "observability_opencode", "observability_warning", "observability_reason", "observability_revision", "observability_provenance", "observability_extra", "other_reason", "wrong_issue", "provider_started", "result_extra", "profile", "usage", "output",
     "process", "controller", "active_control", "lease", "accepted_result", "event_source", "extra_event", "source_edited", "principal_revoked"] as const)(
     "retries an authenticated GitHub request after isolated-directory validation failed before allocation: %s", async mode => {
     const f = await failedChatRetryFixture("github", "42", true, false, true);
@@ -64452,7 +64494,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await db.insert(companyObservability).values({ companyId, revision: randomUUID(), enabled: true,
           destination: { provider: "otlp", endpointBaseUrl: "https://collector.example/otel" },
           capture: { userPrompts: false, assistantResponses: false, toolDetails: false, toolContent: false } });
-        const [agent] = await db.update(agents).set({ adapterConfig: { provider: "opencode", model: "openrouter/synthetic", homeMode: "preconfigured" } })
+        const [agent] = await db.update(agents).set({ adapterConfig: mode === "observability_opencode"
+          ? { provider: "opencode", model: "openrouter/synthetic", homeMode: "preconfigured" }
+          : { provider: "acpx", acpxAgent: "pi", model: "synthetic", homeMode: "preconfigured" } })
           .where(eq(agents.id, agentId)).returning();
         const [run] = await readHeartbeatRunsById(f.runId);
         const prepared = await prepareHeartbeatExecutionConfiguration(db, { run, agent,
@@ -64470,8 +64514,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           onFailureSecretsResolved: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {},
         });
         expect(prepared.prepared).toBe(true);
-        expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId)))
-          .toMatchObject([{ eventType: "agent_observability.unavailable", payload: { reason: "unsupported_harness" } }]);
+        const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
+        if (mode === "observability_opencode") {
+          if (!prepared.prepared) throw new Error("Configuration preparation did not finish");
+          expect(prepared.observability?.kind).toBe("opencode");
+          expect(prepared.observability?.environment).toMatchObject({ PAPERCLIP_OBSERVABILITY_OPENCODE: "1",
+            OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector.example/otel/v1/traces" });
+          expect(events.filter(event => event.eventType === "agent_observability.unavailable")).toHaveLength(0);
+          expect(JSON.stringify(prepared.runtimeConfig)).not.toContain("collector.example");
+        } else {
+          expect(events).toMatchObject([{ eventType: "agent_observability.unavailable", payload: { reason: "unsupported_harness" } }]);
+        }
       }
       await appendHeartbeatRunEvent(db, { companyId, agentId, runId: f.runId,
         eventType: "error", stream: "system", level: "error", message: diagnostic });
@@ -64549,7 +64602,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         if (mode === "source_edited") await db.update(issueComments).set({ body: "Changed after Retry acceptance" }).where(eq(issueComments.id, String(f.action.payload.commentId)));
         await f.service.processFailedChatRunRetry(response.body.chatActionId);
       }
-      if (!["contained", "prior_denied_intent", "observability_warning"].includes(mode)) {
+      if (!["contained", "prior_denied_intent", "observability_opencode", "observability_warning"].includes(mode)) {
         expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(0);
         return;
       }
@@ -74468,6 +74521,54 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       repair,
     };
   }
+
+  it("repairs a committed reply and its recovery notice without reversing row locks", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const scope = { companyId: context.fixture.companyId, issueId: context.issue.id, runId: context.runId };
+    let response: Promise<boolean> | undefined;
+    try {
+      const [run] = await readHeartbeatRunsById(context.runId);
+      await projectCommittedRun({ db, run, coordinator: context.coordinator });
+      const notice = await issueRecoveryActionService(db).upsertSourceScoped({
+        companyId: scope.companyId, sourceIssueId: scope.issueId, kind: "active_run_watchdog",
+        ownerType: "system", cause: "native_workspace_sync_out_failed", fingerprint: scope.runId,
+        evidence: { runId: scope.runId }, nextAction: "Retry finalization",
+        wakePolicy: { kind: "resume_native_run", runId: scope.runId },
+      });
+      expect(await pendingNativeRecoveryNotices(db, scope)).toHaveLength(1);
+      await db.transaction(async tx => {
+
+
+        await tx.select().from(nativeRunFinalizations)
+          .where(eq(nativeRunFinalizations.runId, scope.runId)).for("update");
+        const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`) as unknown as Array<{ pid: number }>;
+        response = recoverCommittedNativeChatResponse(db, { ...scope, onlyWhenDue: true });
+
+        void response.catch(() => {});
+        await vi.waitFor(async () => {
+          const [state] = await db.execute(sql`select exists (
+            select 1 from pg_stat_activity where datname = current_database()
+              and ${backend.pid} = any(pg_blocking_pids(pid))
+          ) as blocked`) as unknown as Array<{ blocked: boolean }>;
+          expect(state.blocked).toBe(true);
+        });
+        await tx.execute(sql`set local lock_timeout = '1s'`);
+        await resolveCommittedNativeRecoveryNotices(tx as unknown as Db, scope, true);
+      });
+      await expect(response).resolves.toBe(true);
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, notice.id)))[0])
+        .toMatchObject({ status: "resolved", outcome: "restored" });
+      const comments = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, scope.runId));
+      expect(comments).toHaveLength(1);
+      expect(comments[0].body).toBe(context.result.summary);
+      expect(await readChatPublicationsByCommentId(comments[0].id)).toHaveLength(1);
+      await expect(recoverCommittedNativeChatResponse(db, scope)).resolves.toBe(false);
+      expect(await pendingNativeRecoveryNotices(db, scope)).toEqual([]);
+    } finally {
+      await response?.catch(() => {});
+      await context.service.shutdown();
+    }
+  });
 
   it.each(["slack", "telegram"] as const)(
     "recovers a committed %s answer once without rerunning or changing review/quarantine evidence",

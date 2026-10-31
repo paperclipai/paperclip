@@ -57,3 +57,33 @@ export const agentConfigurationResourceShape = {
 };
 
 export type AgentConfigurationResources = z.infer<z.ZodObject<typeof agentConfigurationResourceShape>>;
+
+const resources = agentConfigurationResourceShape;
+const tools = resources.tools.unwrap().shape;
+const profileReferenceSchema = tools.profiles.element.partial().extend({
+  profileKey: id.optional(),
+}).refine(value => value.profileId || value.profileKey || value.configuration, {
+  message: "Specify profileKey, profileId, or a new profile configuration.",
+}).refine(value => value.profileId !== null || !value.profileKey, {
+  message: "A new profile (profileId: null) cannot also reference an existing profileKey.",
+});
+
+// Omission preserves saved values. Arrays and open configuration maps, when
+// explicitly supplied, still replace their saved counterparts.
+export const agentConfigurationInputResourceShape = {
+  permissions: resources.permissions.unwrap().partial().optional(),
+  instructions: resources.instructions.unwrap().partial().extend({
+    files: z.record(filePath, z.string().max(1024 * 1024).nullable()).optional(),
+  }).optional(),
+  skills: resources.skills,
+  tools: z.object({
+    connections: z.array(tools.connections.element.partial({ installed: true })).optional(),
+    profiles: z.array(profileReferenceSchema).optional(),
+    policies: tools.policies.optional(),
+  }).strict().optional(),
+  channels: z.array(resources.channels.unwrap().element.partial().required({ id: true })).optional(),
+  apiKeys: resources.apiKeys.unwrap().partial().optional(),
+  revisions: resources.revisions,
+  secrets: resources.secrets.unwrap().partial().optional(),
+  channelOperations: resources.channelOperations.unwrap().partial().optional(),
+};

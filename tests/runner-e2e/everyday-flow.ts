@@ -1,10 +1,14 @@
+import { stopAndRedirectThroughUi } from "./stop-redirect-flow.js";
+import { downloadStoryArtifact } from "./story-artifact.js";
+import { editCreatedSkillThroughStudio } from "./skill-studio-flow.js";
+import { decideProtectedActionThroughUi, readServiceBriefing, serviceBriefingChecks } from "./protected-action-flow.js";
 import { gradeAgentmailSetup } from "./agentmail-setup-evidence.js";
 import { CONNECTION_GUIDANCE_SUITE, CONNECTION_GUIDANCE_BUDGET_CENTS } from "./connection-guidance-cases.js";
 import { gradeConnectionGuidanceDecline, hasConnectionGuidanceDeclineReply, explainsConnectionUnavailable, type ConnectionGuidanceDeclineInput } from "./connection-guidance-evidence.js";
 import { expect, type Page } from "@playwright/test";
 import { runnerApiToolsEnabled } from "../../server/src/services/native-runtime/runner-api-rollout.js";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -22,6 +26,7 @@ import { hasPersistedSource, isSavedSourceCheckpoint } from "./everyday-interrup
 import { collectRunEvents } from "./run-observations.js";
 import { gradeRemoteRestart, observeRemoteRestartBoundary, projectRemoteRestartEvents, projectRemoteRestartRun, waitForRemoteRestartBoundary, type RemoteRestartEvidence } from "./everyday-remote-restart.js";
 import { controllerOutageForExecution, type ControllerOutageReceipt } from "./controller-outage.js";
+import { gradeRetainedControllerContinuation, retainedControllerRun, retainedControllerFollowupTransport, submitRetainedControllerComment, onePersistedRetainedControllerComment } from "./retained-controller-continuation.js";
 import { setupAggregatorFixture } from "./aggregator-fixture.js";
 import { gradeProviderChoice, gradeProviderOutcome, requireProviderAccessCard } from "./connection-routing-evidence.js";
 import { setupConnectionReview } from "./connection-reviews.js";
@@ -40,6 +45,8 @@ import {
   storyLifecycleChecks,
   storyRepliesConsumed,
   storyHasAgentReply,
+  storyAgentReplyMatches,
+  retainedControllerReplyMatcher,
   storyHasPendingHumanInteraction,
   storyReviewContinuationTimeoutDetail,
   storyHasStrandedBlockedLeaf,
@@ -55,6 +62,7 @@ import {
   type StoryCheck,
   type StoryIssue,
   type StoryRun,
+  type StoryReplyExpectation,
 } from "./everyday-observations.js";
 
 type Row = Record<string, any>;
@@ -183,6 +191,8 @@ export async function runEverydayFlow(input: Input) {
   let providerAccessDecision: { id: string; connectionId: string } | undefined;
   let stoppedWorkspace: Record<string, string> | undefined;
   let settledAgentReply: Row | undefined;
+  let postControllerApiFollowup = false;
+  let retainedFollowupCommentId: string | undefined;
   let reviewHandoffBoundary: {
     childId: string;
     assigneeAgentId: string | null | undefined;
@@ -276,7 +286,7 @@ export async function runEverydayFlow(input: Input) {
       ),
     ];
   }
-  async function reply(message: string, target: StoryIssue = parent!) {
+  async function reply(message: string, target: StoryIssue = parent!, transport: "browser" | "task_comment_api" = "browser") {
     const priorFailures = ev.checks.filter((c) => !c.passed);
     if (priorFailures.length)
       throw new Error(
@@ -284,7 +294,9 @@ export async function runEverydayFlow(input: Input) {
       );
     const before = await api.get<Row[]>(`/api/issues/${target.id}/comments`);
     lastSubmissionAt = Date.now();
-    await submitTaskReply(page, message);
+    const submitted = transport === "task_comment_api"
+      ? await submitRetainedControllerComment(api, target.id, message, randomUUID())
+      : (await submitTaskReply(page, message), undefined);
     const after = await pollUntil({
       label: "one persisted user reply",
       deadlineAt: Date.now() + 30_000,
@@ -299,11 +311,12 @@ export async function runEverydayFlow(input: Input) {
     );
     check(
       `reply-${ev.timeline.length}-stored-once`,
-      added.length === 1,
-      "A composer submission creates exactly one user message.",
+      transport === "task_comment_api" ? onePersistedRetainedControllerComment({ added, commentId: submitted?.id ?? "", body: message }) : added.length === 1,
+      transport === "task_comment_api" ? "The production comment API creates exactly one matching user message." : "A composer submission creates exactly one user message.",
     );
     submittedCommentIds.push(...added.map((c) => c.id));
-    note("composer-message-persisted", {
+    if (submitted) retainedFollowupCommentId = submitted.id;
+    note(transport === "task_comment_api" ? "task-api-message-persisted" : "composer-message-persisted", {
       issueId: target.id,
       commentIds: added.map((c) => c.id),
     });
@@ -320,7 +333,7 @@ export async function runEverydayFlow(input: Input) {
       sameConnections: false,
     };
   }
-  async function settled(expectedAgentReply?: string) {
+  async function settled(expectedAgentReply?: StoryReplyExpectation, readback: "browser" | "api" = "browser") {
     const settledState = await pollUntil({
       label: `everyday ${caseId} settled`,
       deadlineAt: input.deadlineAt,
@@ -385,16 +398,14 @@ export async function runEverydayFlow(input: Input) {
     if (expectedAgentReply) {
       const issue = settledState.issues.find((candidate) => candidate.id === parent?.id);
       const reply = issue?.comments?.find(
-        (comment) =>
-          comment.authorAgentId === fixtures.agent.id &&
-          String(comment.body ?? "").includes(expectedAgentReply),
+        (comment) => storyAgentReplyMatches(comment, fixtures.agent.id, expectedAgentReply),
       );
       if (reply) {
         // Keep the exact snapshot that satisfied the readiness predicate. A
         // later refresh may return a newer projection and must not change the
         // evidence used by the assertion below.
         settledAgentReply = { ...reply };
-        note("expected-agent-reply-visible-at-settlement", {
+        note(readback === "api" ? "expected-agent-reply-persisted-at-settlement" : "expected-agent-reply-visible-at-settlement", {
           issueId: issue?.id,
           commentId: reply.id,
           authorAgentId: reply.authorAgentId,
@@ -403,14 +414,16 @@ export async function runEverydayFlow(input: Input) {
         });
       }
     }
-    await openParent();
-    await expect(
-      page.getByTestId("issue-detail-header").getByRole("button", {
-        name: "Change status (current: Done)",
-        exact: true,
-      }),
-    ).toBeVisible();
-    note("all-tasks-done");
+    if (readback === "browser") {
+      await openParent();
+      await expect(
+        page.getByTestId("issue-detail-header").getByRole("button", {
+          name: "Change status (current: Done)",
+          exact: true,
+        }),
+      ).toBeVisible();
+    }
+    note("all-tasks-done", { readback });
   }
   async function downloadDelegated(
     mode: "base" | "separator" | "max-length",
@@ -477,41 +490,15 @@ export async function runEverydayFlow(input: Input) {
     if (!attachment) throw new Error("Selected delivery is no longer available");
     const issue = ev.issues.find((i) => i.id === issueId)!;
     await openTask(issue);
-    const links = page.locator(
-      `a[href*="/api/attachments/${attachment.id}/content"]`,
-    );
-    const link = links.filter({ hasText: /Download/i }).first();
-    await expect(link).toBeVisible({ timeout: 15_000 });
-    const pending = page.waitForEvent("download", { timeout: 30_000 });
-    await link.click();
-    const file = await pending;
-    const target = path.join(input.privateDir, "snapshots", `${phase}.zip`);
-    await file.saveAs(target);
-    const bytes = await readFile(target);
-    const digest = createHash("sha256").update(bytes).digest("hex");
-    const result = await runCommand(process.env.PYTHON ?? "python3", [
-      path.join(import.meta.dirname, "everyday-artifact.py"),
-      target,
-      "--mode",
-      mode,
-    ], Math.max(1, Math.min(60_000, input.deadlineAt - Date.now())));
-    const oracle = JSON.parse(result.stdout) as { checks: StoryCheck[] };
-    ev.checks.push(
-      ...oracle.checks.map((c) => ({ ...c, id: `${phase}.${c.id}` })),
-    );
-    ev.downloads.push({
-      phase,
-      attachmentId: attachment.id,
-      issueId,
-      sha256: digest,
-      bytes: bytes.length,
-      filename: file.suggestedFilename(),
-      mode,
-    });
+    const delivered = await downloadStoryArtifact({ page, attachmentId: attachment.id,
+      directory: path.join(input.privateDir, "snapshots"), phase, mode, deadlineAt: input.deadlineAt });
+    ev.checks.push(...delivered.checks.map(c => ({ ...c, id: `${phase}.${c.id}` })));
+    const { checks: _checks, ...receipt } = delivered;
+    ev.downloads.push({ phase, issueId, mode, ...receipt });
     note("download-verified", {
       phase,
       attachmentId: attachment.id,
-      sha256: digest,
+      sha256: delivered.sha256,
     });
     await openParent();
   }
@@ -596,6 +583,7 @@ export async function runEverydayFlow(input: Input) {
       "everyday-delivery.ts",
       "everyday-observations.ts",
       "everyday-remote-restart.ts",
+      "retained-controller-continuation.ts",
       "controller-outage.ts",
       "controller-recovery-observer.ts",
       "upgrade-artifacts.ts",
@@ -921,24 +909,20 @@ export async function runEverydayFlow(input: Input) {
           "Fault boundary was not exercised: no active execution",
         );
       if (caseId === "stop-redirect") {
-        await page.getByTestId("task-chat-composer-stop").last().click();
         ev.allowedInterruptedRuns.push(active.id);
-        note("stop-clicked", { runId: active.id });
-        await pollUntil({
-          label: "owned runner stopped",
-          deadlineAt: input.deadlineAt,
-          load: () => runnerStopped(active),
-          accept: Boolean,
-          intervalMs: 250,
+        await stopAndRedirectThroughUi({ page, nonce,
+          awaitRetirement: async () => {
+            note("stop-clicked", { runId: active.id });
+            await pollUntil({ label: "owned runner stopped", deadlineAt: input.deadlineAt,
+              load: () => runnerStopped(active), accept: Boolean, intervalMs: 250 });
+          },
+          beforeRedirect: async () => {
+            await recordSource("source-saved-after-interruption", "source-after-interruption.json");
+            stoppedWorkspace = await workspaceFiles();
+            note("stopped-workspace-snapshot", stoppedWorkspace);
+          },
+          reply: async message => { await reply(message); note("new-direction-submitted"); },
         });
-        await recordSource("source-saved-after-interruption", "source-after-interruption.json");
-        stoppedWorkspace = await workspaceFiles();
-        note("stopped-workspace-snapshot", stoppedWorkspace);
-        await reply(
-          `Change direction. Leave the project as it is. Reply with just this short note: "The studio is ready. Reference ${nonce}."`,
-        );
-        note("new-direction-submitted");
-        await page.reload();
       } else {
         await reply(LATE_REQUIREMENT);
         note("followup-submitted-before-interruption");
@@ -1122,19 +1106,24 @@ export async function runEverydayFlow(input: Input) {
           .getByRole("button", { name: "Not now", exact: true })
           .click();
       } else {
-        const dismiss = page.getByRole("button", {
-          name: "Dismiss Approve tool action",
-        });
-        if (await dismiss.isVisible()) await dismiss.click();
-        await page
-          .getByRole("button", { name: "Review request", exact: true })
-          .click();
-        await page
-          .getByRole("button", {
-            name: declining ? "Decline" : "Approve & run",
-            exact: true,
-          })
-          .click();
+        if (review) await decideProtectedActionThroughUi({ page,
+          rows: [pendingInteraction], connectionId: review.connectionId, decline: declining,
+          invocationCount: review.invocationCount });
+        else {
+          const dismiss = page.getByRole("button", {
+            name: "Dismiss Approve tool action",
+          });
+          if (await dismiss.isVisible()) await dismiss.click();
+          await page
+            .getByRole("button", { name: "Review request", exact: true })
+            .click();
+          await page
+            .getByRole("button", {
+              name: declining ? "Decline" : "Approve & run",
+              exact: true,
+            })
+            .click();
+        }
       }
       const decisionStatus = declining ? "rejected" : "accepted";
       const decided = await pollUntil({
@@ -1178,56 +1167,13 @@ export async function runEverydayFlow(input: Input) {
       );
       if (created) {
         await openParent();
-        const card = page.getByRole("article", {
-          name: "Skill created: release-readiness-checklist",
-        });
-        await expect(card).toHaveCount(1);
-        await expect(card).toBeVisible();
-        await card.getByRole("button").click();
-        await expect(page.getByRole("heading", { name: "release-readiness-checklist" })).toBeVisible();
-        await expect(page.getByText("Verify checks.", { exact: true })).toBeVisible();
-        check("feed-card-opened", true, "The task thread card opened the created skill sidebar.");
-        const openStudio = page.getByRole("button", { name: "Open in Skill Studio", exact: true });
-        await expect(openStudio).toBeVisible();
-        await openStudio.click();
-        await expect(page).toHaveURL(new RegExp(`/skills/studio/${created.id}$`));
-        // Studio's skill selector identifies the resource. Headings inside the
-        // authored document can differ from its canonical skill name.
-        await expect(page.getByRole("combobox").filter({ hasText: "release-readiness-checklist" })).toBeVisible();
-        const editor = page.getByRole("textbox", { name: "editable markdown", exact: true });
-        await editor.click();
-        await editor.press("ControlOrMeta+End");
-        await editor.press("Enter");
-        await editor.press("Enter");
-        await editor.pressSequentially("Studio edit marker: verified");
-        await page.getByRole("button", { name: /^Save$/ }).click();
-        await pollUntil({
-          label: "Skill Studio edit persisted",
-          deadlineAt: Math.min(input.deadlineAt, Date.now() + 30_000),
-          load: () => api.get<Row>(
-            `/api/companies/${fixtures.company.id}/skills/${encodeURIComponent(String(created.id))}`,
-          ),
-          accept: (detail) => JSON.stringify(detail).includes("Studio edit marker: verified"),
-        });
-        const detail = await api.get<Row>(
-          `/api/companies/${fixtures.company.id}/skills/${encodeURIComponent(String(created.id))}`,
-        );
-        check(
-          "studio-edit-persisted",
-          JSON.stringify(detail).includes("Studio edit marker: verified"),
-          "The Skill Studio edit remains in the persisted skill after returning to the page.",
-        );
-        check("studio-opened", true, "The skill detail opened in Skill Studio.");
-        await page.goBack();
-        await expect(page).toHaveURL(new RegExp(`/issues/`));
-        const returnedCard = page.getByRole("article", {
-          name: "Skill created: release-readiness-checklist",
-        });
-        await expect(returnedCard).toBeVisible();
-        await returnedCard.getByRole("button").click();
-        await expect(page.getByRole("heading", { name: "release-readiness-checklist" })).toBeVisible();
-        await expect(page.getByText("Studio edit marker: verified", { exact: true })).toBeVisible();
-        check("return-content-persisted", true, "Returning to the task shows the saved Skill Studio edit.");
+        await editCreatedSkillThroughStudio({ page, skillId: created.id, skillName: created.name,
+          marker: "Studio edit marker: verified", deadlineAt: input.deadlineAt,
+          read: () => api.get(`/api/companies/${fixtures.company.id}/skills/${created.id}`) });
+        check("feed-card-opened", true, "The task activity card opens the created skill.");
+        check("studio-opened", true, "The skill opens in Skill Studio.");
+        check("studio-edit-persisted", true, "The Studio edit persists across reload.");
+        check("return-content-persisted", true, "The saved edit is readable from the task card.");
       }
     }
     if (providerChoice) {
@@ -1504,13 +1450,39 @@ export async function runEverydayFlow(input: Input) {
           artifactGradeModeForPhase("reviewed-delivery"),
           "reviewed-delivery",
         );
-    } else if (caseId === "recover-controller")
+    } else if (caseId === "recover-controller") {
       await download(
         parent!.id,
         artifactGradeModeForPhase("recovered-delivery"),
         "recovered-delivery",
       );
-    else if (caseId === "stop-redirect")
+      if (execution.suite.definitionMetadata?.retainedControllerContinuation === true) {
+        const prior = ev.runs.filter(run => run.status === "succeeded" && run.agentId === fixtures.agent.id)
+          .sort((a, b) => Date.parse(b.finishedAt ?? "") - Date.parse(a.finishedAt ?? ""))[0];
+        if (!prior) throw new Error("Retained continuation requires a completed source run");
+        const before = retainedControllerRun(prior), priorIds = new Set(ev.runs.map(run => run.id));
+        const outage = await input.restart();
+        const followupTransport = retainedControllerFollowupTransport(execution);
+        postControllerApiFollowup = followupTransport === "task_comment_api";
+        if (!postControllerApiFollowup) await openParent();
+        note("retained-controller-followup-entry", { transport: followupTransport,
+          browserNavigationVerified: !postControllerApiFollowup });
+        const requestedAt = new Date().toISOString(), marker = `CONTINUED_${nonce}`;
+        const expectedReply = retainedControllerReplyMatcher(marker);
+        await reply(`Run the existing delivered slugify.py on "  Queue--Ready!!  " with --separator _ and --max-length 7. Report its output after the marker ${marker}. Use the saved project; do not rebuild it.`, parent!, followupTransport);
+        await settled(expectedReply, postControllerApiFollowup ? "api" : "browser");
+        const after = ev.runs.filter(run => !priorIds.has(run.id) && run.status === "succeeded" && run.agentId === fixtures.agent.id)
+          .sort((a, b) => Date.parse(b.finishedAt ?? "") - Date.parse(a.finishedAt ?? ""))[0];
+        if (!after) throw new Error("Retained continuation produced no new successful run");
+        const events = await collectRunEvents<Row>((afterSeq, limit) => api.get(`/api/heartbeat-runs/${after.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
+        const evidence = { before, after: retainedControllerRun(after), outage: outage || undefined, requestedAt,
+          followupTransport, followupCommentId: retainedFollowupCommentId,
+          completedTool: events.some(row => row.payload?.prpEvent?.eventType === "tool.execution.completed" && row.payload.prpEvent.payload?.status === "completed"),
+          usefulReply: storyAgentReplyMatches(settledAgentReply, fixtures.agent.id, expectedReply) };
+        ev.checks.push(...gradeRetainedControllerContinuation(evidence));
+        await input.evidence("retained-controller-continuation.json", evidence);
+      }
+    } else if (caseId === "stop-redirect")
       check(
         "new-direction-delivered",
         settledAgentReply?.authorAgentId === fixtures.agent.id &&
@@ -1538,53 +1510,13 @@ export async function runEverydayFlow(input: Input) {
         "Exactly one approved service call; none after decline.",
       );
       if (caseId === "service-approve") {
-        const docs = await api.get<Row[]>(
-          `/api/issues/${parent!.id}/documents`,
-        );
-        const bodies = await Promise.all(
-          docs.map((d) =>
-            api.get<Row>(
-              `/api/issues/${parent!.id}/documents/${encodeURIComponent(d.key)}`,
-            ),
-          ),
-        );
-        const attachments = await api.get<Row[]>(
-          `/api/issues/${parent!.id}/attachments`,
-        );
-        for (const attachment of attachments.filter(
-          (a) =>
-            /\.(?:md|txt)$/i.test(a.originalFilename ?? a.filename ?? "") ||
-            ["text/markdown", "text/plain"].includes(a.contentType),
-        )) {
-          const url = `/api/attachments/${attachment.id}/content`;
-          const response = await api.request.get(url);
-          if (!response.ok()) continue;
-          await expect(page.locator(`a[href*="${url}"]`).first()).toBeVisible();
-          bodies.push({
-            id: attachment.id,
-            title: attachment.originalFilename ?? attachment.filename,
-            body: await response.text(),
-            source: "delivered-attachment",
-          });
-        }
-        const text = bodies
-          .map((d) => String(d.body ?? d.revision?.body ?? ""))
-          .join("\n");
-        check(
-          "briefing-uses-real-result",
-          text.includes(`SERVICE_${nonce}`),
-          "A delivered issue document or Markdown attachment contains the actual service verification code.",
-        );
-        check(
-          "briefing-includes-page-titles",
-          text.includes("Roadmap") && text.includes("Meeting notes"),
-          "The briefing includes both page titles returned by the service.",
-        );
+        const bodies = await readServiceBriefing({ page, api, issueId: parent!.id });
+        for (const result of serviceBriefingChecks(bodies, `SERVICE_${nonce}`)) check(result.id, result.passed, result.detail);
         ev.documents = bodies;
         ev.issues.find((i) => i.id === parent!.id)!.documents = bodies;
       }
     }
-    await page.reload();
+    if (!postControllerApiFollowup) await page.reload();
     await refresh();
     check(
       "submitted-replies-consumed",
@@ -1679,25 +1611,30 @@ export async function runEverydayFlow(input: Input) {
       ),
       "No completion confirmation or unanswered interaction remains.",
     );
-    if (providerChoice || nativeProviderCase) await openParent();
-    else {
-      await waitForTaskIdentity(page, taskUrl(parent!), parent!.identifier ?? parent!.id);
-      await waitForTaskChatRendered(page);
+    if (!postControllerApiFollowup) {
+      if (providerChoice || nativeProviderCase) await openParent();
+      else {
+        await waitForTaskIdentity(page, taskUrl(parent!), parent!.identifier ?? parent!.id);
+        await waitForTaskChatRendered(page);
+      }
+      const latestAgentComment = ev.issues
+        .find((i) => i.id === parent!.id)
+        ?.comments?.filter((c: Row) => c.authorAgentId)
+        .at(-1);
+      if (latestAgentComment && !providerChoice && !nativeProviderCase) {
+        const response = page.locator(`[id="comment-${latestAgentComment.id}"]`);
+        await expect(response).toBeVisible();
+        await response.scrollIntoViewIfNeeded();
+      }
+      await input.capture(
+        "final-state",
+        "Finished everyday workflow",
+        "final-state.png",
+      );
+    } else {
+      note("final-state-api-readback", { browserNavigationVerified: false, renderedStatusVerified: false });
+      await input.capture("final-state", "Browser state retained after API-verified native continuation; browser reconnection unqualified", "final-state.png");
     }
-    const latestAgentComment = ev.issues
-      .find((i) => i.id === parent!.id)
-      ?.comments?.filter((c: Row) => c.authorAgentId)
-      .at(-1);
-    if (latestAgentComment && !providerChoice && !nativeProviderCase) {
-      const response = page.locator(`[id="comment-${latestAgentComment.id}"]`);
-      await expect(response).toBeVisible();
-      await response.scrollIntoViewIfNeeded();
-    }
-    await input.capture(
-      "final-state",
-      "Finished everyday workflow",
-      "final-state.png",
-    );
     const failed = ev.checks.filter((c) => !c.passed);
     if (failed.length)
       throw new Error(
