@@ -41,6 +41,32 @@ export function nativeRetryCancellationEligible(input: {
       && !!native.acknowledgementAuditId && native.acknowledgementAuditId !== native.intentAuditId));
 }
 
+export function pendingFailedNativeRetryCancellationCondition() {
+  const native = sql`${heartbeatRuns.resultJson}->'nativeCancellation'`;
+  const continuingStop = sql`${nativeRunFinalizations.phase} = 'terminal_failure'
+    and ${nativeRunFinalizations.failureCode} = 'native_retry_cancelled'
+    and ${native}->>'schema' = 'paperclip.native-cancellation.v1'
+    and jsonb_typeof(${native}->'intentId') = 'string' and length(${native}->>'intentId') > 0
+    and ${native}->>'runId' = ${heartbeatRuns.id}::text
+    and ${native}->>'companyId' = ${heartbeatRuns.companyId}::text
+    and ${native}->>'issueId' = ${heartbeatRuns.nativeIssueId}::text
+    and ${native}->>'scope' = 'run'
+    and ${native}->>'dispatchState' in ('pending', 'acknowledged')
+    and jsonb_typeof(${native}->'dispatched') = 'boolean'
+    and jsonb_typeof(${native}->'intentAuditId') = 'string' and length(${native}->>'intentAuditId') > 0
+    and (${native}->>'dispatchState' = 'pending' or (
+      jsonb_typeof(${native}->'acknowledgementAuditId') = 'string'
+      and length(${native}->>'acknowledgementAuditId') > 0
+      and ${native}->>'acknowledgementAuditId' <> ${native}->>'intentAuditId'))`;
+  return sql`${heartbeatRuns.runtimeMode} = 'native' and ${heartbeatRuns.status} = 'failed'
+    and exists (select 1 from ${nativeRunFinalizations}
+      where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+        and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
+        and ${nativeRunFinalizations.issueId} = ${heartbeatRuns.nativeIssueId}
+        and (${nativeRunFinalizations.phase} = 'retryable_failure' or (${continuingStop}))
+        and ${nativeRunFinalizations.resultId} is null)`;
+}
+
 /** Final failed -> cancelled CAS: a later board/recovery outcome must win.
  * The row-locking subquery prevents a coordinator-only writer from changing
  * the retry disposition between this check and the status update. */

@@ -1,3 +1,4 @@
+import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
 import { registerLiveRecoveryWork } from "./live-recovery-work.js";
 import { nativeEnvironmentSettlementDisposition, nativeEnvironmentSettlementWork } from "../native-runtime/native-environment-settlement-work.js";
 import { nativeWorkspaceFinalizationWork } from "../native-runtime/native-workspace-finalization-work.js";
@@ -2127,9 +2128,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         and(
           scope.companyId ? eq(heartbeatRuns.companyId, scope.companyId) : undefined,
           scope.runId ? eq(heartbeatRuns.id, scope.runId) : undefined,
-          inArray(heartbeatRuns.status, [
+          or(inArray(heartbeatRuns.status, [
             ...CANCELLABLE_HEARTBEAT_RUN_STATUSES,
-          ]),
+          ]), pendingFailedNativeRetryCancellationCondition()),
           sql`${heartbeatRuns.contextSnapshot} -> ${NATIVE_QUESTION_CANCELLATION_CONTEXT_KEY} is not null`,
         ),
       );
@@ -2295,7 +2296,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         runningProcesses.has(run.id) ||
         activeRunExecutions.has(run.id) ||
         coordinatorOwnedByCurrentController;
-      if (nativeRun && !locallyTracked && nativeControllerLeaseExpiresAt && nativeControllerLeaseExpiresAt > now) {
+      if (nativeRun && !locallyTracked && nativeControllerBootId && nativeControllerPid
+        && nativeControllerProcessStartedAt && nativeControllerLeaseExpiresAt && nativeControllerLeaseExpiresAt > now) {
         scope.onDeferredDeadline?.(nativeControllerLeaseExpiresAt.getTime());
         continue;
       }

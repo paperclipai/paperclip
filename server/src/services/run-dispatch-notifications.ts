@@ -7,6 +7,11 @@ export async function notifyRunDispatch(transaction: object, scope?: RunDispatch
   await notifyIssueRecovery(transaction, scope ? { companyId: scope.companyId } : undefined);
   const hint = scope ? JSON.stringify({ companyId: scope.companyId }) : "*";
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.nativeProcessSessions, hint);
-  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.scheduledRetryDispatch, hint);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.queuedRunDispatch, hint);
+}
+
+/** Only a retry row or deadline change needs to re-read the saved retry schedule. */
+export async function notifyScheduledRetryDispatch(transaction: object, scope?: RunDispatchScope) {
+  await notifyRunDispatch(transaction, scope);
+  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.scheduledRetryDispatch);
 }

@@ -44,7 +44,11 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
   beforeAll(async () => {
     if (databaseUrl) await applyPendingMigrations(databaseUrl);
     else temporaryDatabase = await startEmbeddedPostgresTestDatabase("paperclip-github-work-");
-    db = createDb(databaseUrl ?? temporaryDatabase!.connectionString, { maxConnections: 4 });
+    // Only scheduler time is virtual here. Driver housekeeping must not expire
+    // a real socket connection while that fake clock advances across idle windows.
+    db = createDb(databaseUrl ?? temporaryDatabase!.connectionString, {
+      maxConnections: 4, idleTimeoutSeconds: 0, connectTimeoutSeconds: 0, maxLifetimeSeconds: 0,
+    });
     // This explicitly assigned external test database is exclusive to this suite.
     await db.transaction(async tx => { await tx.execute(sql`SET LOCAL client_min_messages = warning`); await tx.execute(sql`TRUNCATE companies CASCADE`); });
     server = createServer(async (req, res) => {
@@ -409,7 +413,8 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
     const schedule = f.service.githubConnectionContinuitySchedule.bind(f.service);
     const load = vi.spyOn(f.service, "githubConnectionContinuitySchedule").mockImplementation(companyId => { loadTimes.push(Date.now()); return schedule(companyId); });
     const sweep = vi.spyOn(f.service, "sweepGitHubConnectionContinuity");
-    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
     const continuity = registerGitHubConnectionContinuityWork(db, coordinator, f.service, () => true);
     const events = registerGitHubConnectionEventWork(db, coordinator, githubConnectionEventService(db, { connector: f.connector }), () => true);
     try {
@@ -423,6 +428,7 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
       }
       await vi.advanceTimersByTimeAsync(10_000);
       expect(load).not.toHaveBeenCalled(); expect(sweep).not.toHaveBeenCalled(); expect(leases).toBe(1);
+      expect(errors).toEqual([]);
       for (let index = 0; index < 30; index++) await db.transaction(async tx => { await notifyGitHubCredentialChange(tx, f.connection); });
       expect(leases).toBeLessThanOrEqual(2);
       await vi.advanceTimersByTimeAsync(6_000);
@@ -442,6 +448,7 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
       const quiet = { leases, loads: load.mock.calls.length };
       await vi.advanceTimersByTimeAsync(60_000);
       expect({ leases, loads: load.mock.calls.length }).toEqual(quiet);
+      expect(errors).toEqual([]);
     } finally { await events.stop(); await continuity.stop(); await coordinator.stop(); }
   });
 

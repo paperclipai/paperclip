@@ -66,7 +66,7 @@ suite("settled native run process identity", () => {
 
   beforeAll(async () => {
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("native-settled-process-");
-    db = createDb(external ?? temporary!.connectionString);
+    db = createDb(external ?? temporary!.connectionString, { maxConnections: 6 });
     if (external) await db.execute(sql`truncate companies cascade`);
     companyId = randomUUID();
     agentId = randomUUID();
@@ -245,6 +245,17 @@ suite("settled native run process identity", () => {
     },
   );
 
+  it.each(["absent", "live", "foreign host", "known birth mismatch"])("preserves exact legacy null-birth compatibility without clearing unsafe identity: %s", async kind => {
+    const child = kind === "live" ? startDetached() : undefined;
+    if (child) children.push(child);
+    const { runId, pid } = await seed({ ...(child ? { pid: child.pid! } : {}),
+      ...(kind === "foreign host" ? { hostname: `${os.hostname()}-foreign` } : {}) });
+    await db.update(heartbeatRuns).set({ processStartedAt: kind === "known birth mismatch" ? new Date(0) : null })
+      .where(eq(heartbeatRuns.id, runId));
+    expect(await releaseSettledNativeRunProcess(db, runId)).toBe(kind === "absent" ? "released" : kind === "live" ? "pending" : "skipped");
+    expect((await readRun(runId)).processPid).toBe(kind === "absent" ? null : pid);
+    expect(await hasNativeLocalProcessStop(db, companyId, runId)).toBe(kind === "absent");
+  });
   it("keeps the identity while the process is still alive, then releases it after exit", async () => {
     const child = startDetached();
     children.push(child);

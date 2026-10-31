@@ -25,7 +25,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {
     if (!external) database = await startEmbeddedPostgresTestDatabase("legacy-controller-");
-    db = createDb(external ?? database.connectionString);
+    db = createDb(external ?? database.connectionString, { maxConnections: 6 });
   }, 30000);
   afterAll(async () => { await closeLivenessDb(db, 1); await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
   async function seed() {
@@ -178,7 +178,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("renews on one private pool per client that shutdown can end", async () => {
     const run = await seed();
-    const owner = createDb(external ?? database.connectionString);
+    const owner = createDb(external ?? database.connectionString, { maxConnections: 6 });
     const pool = livenessDb(owner);
     expect(pool).not.toBe(owner);
     expect(livenessDb(owner)).toBe(pool);

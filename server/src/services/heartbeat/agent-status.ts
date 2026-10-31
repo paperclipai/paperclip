@@ -134,7 +134,13 @@ export function createHeartbeatAgentStatus(db: Db) {
         const [locked] = await tx.select({ id: agents.id }).from(agents).where(and(
           eq(agents.id, candidate.id), eq(agents.companyId, candidate.companyId),
         )).for("update", { skipLocked: true });
-        if (!locked) return null;
+        if (!locked) {
+          const [pending] = await tx.select({ id: agents.id }).from(agents).where(and(
+            eq(agents.id, candidate.id), eq(agents.companyId, candidate.companyId),
+          ));
+          if (pending) scope.onDeferredDeadline?.(Date.now() + 30_000);
+          return null;
+        }
         const [current] = await tx.select().from(agents).where(and(
           eq(agents.id, candidate.id), eq(agents.companyId, candidate.companyId),
           eq(agents.status, "running"), eq(agents.lifecycleState, "ready"),

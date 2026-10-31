@@ -1,5 +1,5 @@
 import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, exists, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
@@ -146,6 +146,22 @@ export async function readNativeLocalProcessStop(db: Db, companyId: string, runI
 
 type SettledProcessRelease = "released" | "pending" | "skipped";
 
+export function settledNativeProcessIdentityCondition(db: Db) {
+  const identity = db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, heartbeatRuns.companyId), eq(heartbeatRunEvents.runId, heartbeatRuns.id),
+    eq(heartbeatRunEvents.eventType, PROCESS_IDENTITY_RECORDED), isNull(heartbeatRunEvents.sourceEventId),
+  )).orderBy(desc(heartbeatRunEvents.seq)).limit(1).as("settled_process_identity");
+  return or(isNotNull(heartbeatRuns.processStartedAt), exists(db.select({ id: environmentLeases.id })
+    .from(environmentLeases).where(and(eq(environmentLeases.companyId, heartbeatRuns.companyId),
+      eq(environmentLeases.heartbeatRunId, heartbeatRuns.id), sql`${environmentLeases.provider} <> 'local'`))),
+    and(gt(heartbeatRuns.processPid, 1), eq(heartbeatRuns.processPid, heartbeatRuns.processGroupId),
+      exists(db.select({ payload: identity.payload }).from(identity).where(and(
+        sql`${identity.payload}->>'targetKind' = 'local'`, sql`${identity.payload}->>'hostname' = ${os.hostname()}`,
+        sql`${identity.payload}->>'processPid' = ${heartbeatRuns.processPid}::text`,
+        sql`${identity.payload}->>'processGroupId' = ${heartbeatRuns.processGroupId}::text`,
+      )))));
+}
+
 export async function releaseSettledNativeRunProcess(db: Db, runId: string, options: { onDeferredDeadline?: (at: number) => void } = {}): Promise<SettledProcessRelease> {
   const outcome = await db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
@@ -174,7 +190,8 @@ export async function releaseSettledNativeRunProcess(db: Db, runId: string, opti
       )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
       if (identity?.payload?.targetKind !== "local" || identity.payload.hostname !== os.hostname() ||
           identity.payload.processPid !== run.processPid || identity.payload.processGroupId !== run.processGroupId ||
-          !run.processStartedAt || identity.payload.processStartedAt !== run.processStartedAt.toISOString()) return "skipped";
+          (run.processStartedAt ? identity.payload.processStartedAt !== run.processStartedAt.toISOString()
+            : !Number.isSafeInteger(run.processPid) || run.processPid! <= 1 || run.processGroupId !== run.processPid)) return "skipped";
       if (!(await recordNativeLocalProcessStop(tx, run))) {
         options.onDeferredDeadline?.(Date.now() + 30_000);
         return "pending";
