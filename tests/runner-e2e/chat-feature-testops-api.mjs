@@ -24,7 +24,7 @@ const uploadFailureChecks = {
   result_status: ['status_supported', 'status_matches_export'],
   attachment_page: ['content_array', 'content_limit', 'total_integer', 'total_matches_content', 'pages_integer', 'pages_range',
     'unique_ids', 'ids_valid', 'not_inherited', 'attachment_rows'],
-  attachment_readiness: ['attachment_page_observed', 'attachments_not_missed', 'attachment_signatures_match', 'result_status_matches'],
+  attachment_readiness: ['attachment_page_observed', 'attachments_not_missed', 'attachment_signatures_match', 'result_status_matches', 'attachments_ready'],
 };
 const uploadFailures = new WeakMap();
 function stopUpload(code, phase, readChecks, attachmentReadiness) {
@@ -422,6 +422,7 @@ export async function verifyChatUpload(api, env, selected, exported, { wait = ms
     attachments_not_missed: [attachmentReadiness.at(-1)?.missedCount === 0],
     attachment_signatures_match: [attachmentReadiness.at(-1)?.signaturesMatch === true],
     result_status_matches: [attachmentReadiness.at(-1)?.resultStatusMatches === true],
+    attachments_ready: [attachmentReadiness.at(-1)?.ready === true],
   }), attachmentReadiness);
   const get = async route => {
     const remaining = deadline - now();
@@ -486,8 +487,8 @@ export async function verifyChatUpload(api, env, selected, exported, { wait = ms
       const attached = await get(`/api/testresult/attachment?${new URLSearchParams({ testResultId: String(row.id), page: '0', size: '100' })}`);
       if (!Array.isArray(attached?.content) || attached.content.length > 10 || !Number.isSafeInteger(attached.totalElements)
         || attached.totalElements !== attached.content.length || !Number.isSafeInteger(attached.totalPages) || attached.totalPages < 0 || attached.totalPages > 1
-        || new Set(attached.content.map(value => value.id)).size !== attached.content.length
-        || attached.content.some(value => !id(value.id) || value.fromTestCase === true)) stopUpload('chat_testops_upload_mismatch', 'attachment_page', () => ({
+        || new Set(attached.content.map(value => value?.id)).size !== attached.content.length
+        || attached.content.some(value => !id(value?.id) || value?.fromTestCase === true)) stopUpload('chat_testops_upload_mismatch', 'attachment_page', () => ({
         content_array: [Array.isArray(attached?.content), attached?.content], content_limit: [Array.isArray(attached?.content) && attached.content.length <= 10],
         total_integer: [Number.isSafeInteger(attached?.totalElements), attached?.totalElements],
         total_matches_content: [Array.isArray(attached?.content) && attached.totalElements === attached.content.length],
@@ -499,11 +500,11 @@ export async function verifyChatUpload(api, env, selected, exported, { wait = ms
         attachment_rows: [Array.isArray(attached?.content) && !attached.content.some(value => !id(value?.id) || value?.fromTestCase === true)],
       }));
       const withinDeadline = now() < deadline;
-      const missedCount = attached.content.filter(value => value.missed === true).length;
+      const missedCount = attached.content.filter(value => value?.missed === true).length;
       const signaturesMatch = same(signature(attached.content), signature(exported.attachmentMetadata));
       const resultStatusMatches = result.status === exported.status;
       const ready = withinDeadline && resultStatusMatches && missedCount === 0 && signaturesMatch;
-      attachmentReadiness.push({ poll: poll + 1, attachmentCount: attached.content.length, missedCount, signaturesMatch, resultStatusMatches, ready });
+      attachmentReadiness.push({ poll: poll + 1, attachmentCount: attached.content.length, missedCount, signaturesMatch, resultStatusMatches, withinDeadline, ready });
       if (ready) {
         return { schema: 'paperclip.chat-feature-testops-upload-verification/v1', ...context, projectId: 1, planId: selected.planId,
           jobId: selected.jobId, allureJobRunId: selected.allureJobRunId, launchId: selected.launchId, caseId: selected.caseId,

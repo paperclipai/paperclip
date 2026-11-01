@@ -800,3 +800,31 @@ test('a completed attachment with the wrong byte count never satisfies the final
   });
   assert.equal(pages, 12);
 });
+
+test('a null attachment row retains the controlled invalid-ID rejection', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  const base = uploadApi();
+  await assert.rejects(verifyChatUpload(async (...args) => {
+    if (args[0].startsWith('/api/testresult/attachment?')) return { content: [null], totalElements: 1, totalPages: 1 };
+    return base(...args);
+  }, uploadContext, uploadSelection, uploadReceipt, { now: () => 0, wait: async () => assert.fail('malformed rows must not wait') }), error => {
+    assert.equal(error.code, 'chat_testops_upload_mismatch');
+    assert.equal(failureProjection(error, 'upload_verification').verification.firstFailedPredicate, 'ids_valid'); return true;
+  });
+});
+
+test('deadline crossing after a complete attachment GET keeps the exact readiness refusal', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  const base = uploadApi(); let lastGet = false, reads = 0;
+  await assert.rejects(verifyChatUpload(async (...args) => {
+    const value = await base(...args);
+    if (args[0].startsWith('/api/testresult/attachment?')) lastGet = true;
+    return value;
+  }, uploadContext, uploadSelection, uploadReceipt, { now: () => lastGet && ++reads >= 2 ? 120_000 : 0,
+    wait: async () => assert.fail('expired observation must not wait') }), error => {
+    assert.equal(error.code, 'chat_testops_upload_unverified');
+    const projected = failureProjection(error, 'upload_verification');
+    assert.equal(projected.verification.firstFailedPredicate, 'attachments_ready');
+    assert.equal(projected.verification.attachmentReadiness[0].withinDeadline, false); return true;
+  });
+});
