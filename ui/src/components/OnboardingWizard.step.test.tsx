@@ -585,6 +585,31 @@ describe("OnboardingWizard — which step it lands on", () => {
       await press(tiles[0]!);
     }
 
+    it("creates agent setup without randomUUID on an HTTP origin", async () => {
+      const getRandomValues = vi.fn(crypto.getRandomValues.bind(crypto));
+      vi.stubGlobal("crypto", { getRandomValues });
+      try {
+        await openOnAgentStep();
+        await nameAgent("Ada");
+        await press(stepCta());
+
+        expect(mockAgentsApi.create).toHaveBeenCalledWith(
+          "company-1",
+          expect.objectContaining({
+            name: "Ada",
+            setupId: expect.stringMatching(
+              /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+            ),
+          }),
+        );
+        expect(getRandomValues).toHaveBeenCalled();
+        expect(currentStep()).toBe("other");
+        expect(document.body.querySelectorAll("button[aria-checked]").length).toBeGreaterThan(0);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
     it("hires under the neutral role, with the name the customer typed", async () => {
       // The arc stopped asking for a role, so every onboarding hire is filed
       // as `general` — and the hire guard returns *silently* when the role is
