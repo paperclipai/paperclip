@@ -295,6 +295,7 @@ function resolveOwnerName(
 ): { label: string | null; isAgent: boolean } {
   const owner = row.attention.owner;
   if (owner.label) return { label: owner.label, isAgent: owner.type === "agent" };
+  if (owner.type === "external") return { label: "External", isAgent: false };
   if (owner.agentId) {
     return { label: agentNameById.get(owner.agentId) ?? null, isAgent: true };
   }

@@ -309,6 +309,30 @@ describe("BlockedInboxView", () => {
     act(() => root.unmount());
   });
 
+  it("shows External as the owner of an external wait", async () => {
+    mockIssuesApi.list.mockResolvedValue([
+      makeIssue(
+        "issue-external",
+        "PAP-43",
+        "Waiting on a vendor",
+        attention({
+          state: "external_wait",
+          reason: "external_owner_action",
+          owner: { type: "external", agentId: null, userId: null, label: null },
+          action: { label: "External owner action", detail: null },
+          redaction: { externalDetailsRedacted: true, secretFieldsOmitted: true },
+        }),
+      ),
+    ]);
+
+    const { root } = renderWithClient(<BlockedInboxView {...blockedViewProps} presentation="task" />, container);
+    await waitFor(() => container.textContent?.includes("Waiting on a vendor") === true);
+
+    expect(container.querySelector('[data-testid="blocked-row-owner-mobile"]')?.textContent).toBe("External");
+
+    act(() => root.unmount());
+  });
+
   it("filters rows by search query against title, identifier, owner and action", async () => {
     const issues: Issue[] = [
       makeIssue(
