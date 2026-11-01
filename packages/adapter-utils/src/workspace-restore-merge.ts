@@ -598,9 +598,35 @@ async function withCanonicalDirectoryMergeLock<T>(
   }
 }
 
-async function copySnapshotEntry(sourceDir: string, targetDir: string, relative: string, entry: SnapshotEntry): Promise<void> {
+async function directoryContainsExcludedEntry(directory: string, relative: string, exclude: readonly string[]): Promise<boolean> {
+  if (exclude.length === 0) return false;
+  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+    const child = path.posix.join(relative, entry.name);
+    if (shouldExcludePath(child, exclude)) return true;
+    if (entry.isDirectory() && await directoryContainsExcludedEntry(path.join(directory, entry.name), child, exclude)) return true;
+  }
+  return false;
+}
+
+async function replacementWouldDiscardExcludedEntry(targetPath: string, relative: string, exclude: readonly string[]): Promise<boolean> {
+  const existing = await fs.lstat(targetPath).catch(() => null);
+  if (!existing?.isDirectory()) return false;
+  if (!(await directoryContainsExcludedEntry(targetPath, relative, exclude))) return false;
+  console.warn(`workspace restore: skipped replacing ${relative} because it contains paths excluded from the restored snapshot`);
+  return true;
+}
+
+async function copySnapshotEntry(
+  sourceDir: string,
+  targetDir: string,
+  relative: string,
+  entry: SnapshotEntry,
+  exclude: readonly string[],
+): Promise<void> {
   const sourcePath = path.join(sourceDir, relative);
   const targetPath = path.join(targetDir, relative);
+
+  if (entry.kind !== "dir" && await replacementWouldDiscardExcludedEntry(targetPath, relative, exclude)) return;
 
   if (entry.kind === "dir") {
     const existing = await fs.lstat(targetPath).catch(() => null);
@@ -797,7 +823,7 @@ export async function mergeDirectoryWithBaseline(input: {
         }
         for (const [relative, entry] of orderedEntries(source)) {
           if (!entriesMatch(input.baseline.entries.get(relative), entry) &&
-              !(input.conflictPolicy === "reject" && entriesMatch(current.entries.get(relative), entry))) await copySnapshotEntry(input.sourceDir, canonicalTargetDir, relative, entry);
+              !(input.conflictPolicy === "reject" && entriesMatch(current.entries.get(relative), entry))) await copySnapshotEntry(input.sourceDir, canonicalTargetDir, relative, entry, input.baseline.exclude);
         }
         await input.afterApply?.();
       } finally { await disposeDirectorySnapshot(current); }

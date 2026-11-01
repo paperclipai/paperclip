@@ -928,6 +928,41 @@ describe("conflict-preserving directory restore", () => {
 });
 
 
+it("preserves excluded descendants when a non-strict restore replaces their parent with a file", async () => {
+  const root = await fsPromises.realpath(await mkdtemp(path.join(os.tmpdir(), "directory-excluded-replacement-")));
+  const target = path.join(root, "target"), source = path.join(root, "source");
+  await mkdir(path.join(target, "repo", ".git"), { recursive: true });
+  await writeFile(path.join(target, "repo", ".git", "config"), "[core]\n\trepositoryformatversion = 0\n");
+  await writeFile(path.join(target, "repo", "tracked.txt"), "host\n");
+  const baseline = await captureDirectorySnapshot(target, { exclude: [...GIT_ARCHIVE_EXCLUDES], diskBacked: true });
+  try {
+    await mkdir(source);
+    await writeFile(path.join(source, "repo"), "replacement");
+    await writeFile(path.join(source, "independent"), "applied");
+    await mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: target });
+    expect((await lstat(path.join(target, "repo"))).isDirectory()).toBe(true);
+    expect(await readFile(path.join(target, "repo", ".git", "config"), "utf8")).toContain("repositoryformatversion");
+    expect(await readFile(path.join(target, "independent"), "utf8")).toBe("applied");
+  } finally { await disposeDirectorySnapshot(baseline); await rm(root, { recursive: true, force: true }); }
+});
+
+
+it.skipIf(process.platform === "win32")("preserves excluded descendants when a non-strict restore replaces their parent with a symlink", async () => {
+  const root = await fsPromises.realpath(await mkdtemp(path.join(os.tmpdir(), "directory-excluded-replacement-link-")));
+  const target = path.join(root, "target"), source = path.join(root, "source");
+  await mkdir(path.join(target, "repo", ".git"), { recursive: true });
+  await writeFile(path.join(target, "repo", ".git", "config"), "[core]\n\trepositoryformatversion = 0\n");
+  const baseline = await captureDirectorySnapshot(target, { exclude: [...GIT_ARCHIVE_EXCLUDES], diskBacked: true });
+  try {
+    await mkdir(source);
+    await symlink(root, path.join(source, "repo"));
+    await mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: target });
+    expect((await lstat(path.join(target, "repo"))).isDirectory()).toBe(true);
+    expect(await readFile(path.join(target, "repo", ".git", "config"), "utf8")).toContain("repositoryformatversion");
+  } finally { await disposeDirectorySnapshot(baseline); await rm(root, { recursive: true, force: true }); }
+});
+
+
 it("strict preflight preserves excluded descendants when a directory becomes a file", async () => {
   const root = await fsPromises.realpath(await mkdtemp(path.join(os.tmpdir(), "directory-excluded-cas-")));
   const target = path.join(root, "target"), source = path.join(root, "source");
