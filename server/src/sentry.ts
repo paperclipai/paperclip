@@ -59,6 +59,7 @@ import os from "node:os";
 import { AdapterStopTimeoutError } from "./services/adapter-stop-timeout.js";
 import { CloudPortfolioError } from "./services/cloud-portfolio-error.js";
 import { storageFailureDiagnosticsFor } from "./storage/failure-diagnostics.js";
+import { directoryMergeLockTimeoutDiagnosticsFor } from "@paperclipai/adapter-utils/directory-merge-lock-diagnostics";
 import type { RunFailureDiagnostics } from "./services/run-failure-diagnostics.js";
 import { readBuildCommit } from "./build-commit.js";
 import { checkExactPeerVersions } from "./peer-version-check.js";
@@ -117,6 +118,7 @@ export function captureException(error: unknown, reference?: SentryRunReference)
       ...(reference.agentId ? { agent_id: reference.agentId } : {}),
     } : {};
     const storageFailure = storageFailureDiagnosticsFor(error);
+    const lockTimeout = directoryMergeLockTimeoutDiagnosticsFor(error);
     if (error instanceof AdapterStopTimeoutError) {
       // Event-local, fixed-shape context: no ambient scope or raw error fields.
       const exception = new Error(error.message);
@@ -140,6 +142,14 @@ export function captureException(error: unknown, reference?: SentryRunReference)
       sentryHandle.captureException(error, {
         tags: { ...tags, storage_operation: storageFailure.operation, storage_error_code: storageFailure.errorCode },
         contexts: { storage_failure: { ...storageFailure } },
+        fingerprint: ["{{ default }}"],
+      });
+    } else if (lockTimeout) {
+      // Holder evidence distinguishes contention from a stuck owner. The
+      // allowlisted record omits the owner's process id.
+      sentryHandle.captureException(error, {
+        tags: { ...tags, error_code: "workspace_restore_lock_timeout" },
+        contexts: { directory_merge_lock: { ...lockTimeout } },
         fingerprint: ["{{ default }}"],
       });
     } else if (reference) {
