@@ -45,9 +45,13 @@
     "dist",
     "skills"
   ],
+  "bin": {
+    "paperclip-opencode-refresh-dev-models": "./dist/cli/refresh-dev-models.js"
+  },
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
+    "refresh-dev-models": "node dist/cli/refresh-dev-models.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

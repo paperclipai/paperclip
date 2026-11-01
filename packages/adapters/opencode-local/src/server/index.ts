@@ -71,3 +71,15 @@ export {
   resetOpenCodeModelsCacheForTests,
 } from "./models.js";
 export { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+export {
+  refreshDevModels,
+  applyDevModelRefresh,
+  fetchOllamaModelNames,
+  deriveOllamaBaseUrl,
+  buildDevModelsBlock,
+  extractOllamaModelNames,
+  parseJsonc,
+  RefreshDevModelsError,
+  type RefreshDevModelsOptions,
+  type RefreshDevModelsResult,
+} from "./refresh-dev-models.js";
