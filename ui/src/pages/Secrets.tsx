@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -690,6 +690,7 @@ export function Secrets() {
   );
   const [usageDialogSecretId, setUsageDialogSecretId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const createProviderAutoDefaultRef = useRef(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importInitialVaultId, setImportInitialVaultId] = useState<string | null>(null);
   const [secretValueProvider, setSecretValueProvider] = useState<SecretValueProvider>("company");
@@ -827,6 +828,20 @@ export function Secrets() {
     () => secrets.find((secret) => secret.id === usageDialogSecretId) ?? null,
     [secrets, usageDialogSecretId],
   );
+  const defaultCreateProviderId: SecretProvider =
+    PROVIDER_ORDER.find(
+      (provider) =>
+        provider !== "local_encrypted" &&
+        providerConfigs.some(
+          (config) =>
+            config.provider === provider &&
+            config.isDefault &&
+            !getProviderConfigBlockReason(config),
+        ),
+    ) ??
+    providerConfigs.find(
+      (config) => config.isDefault && !getProviderConfigBlockReason(config),
+    )?.provider ?? "local_encrypted";
   const selectedCreateProvider = useMemo(
     () => providers.find((provider) => provider.id === createForm.provider) ?? null,
     [providers, createForm.provider],
@@ -1029,6 +1044,8 @@ export function Secrets() {
 
   function openCreateSecret() {
     const prefix = folderPath ? `${folderPath}/` : null;
+    const defaultProviderId = defaultCreateProviderId;
+    createProviderAutoDefaultRef.current = true;
     setEditingDefinition(null);
     setCreateNamePrefix(prefix);
     setSecretValueProvider("company");
@@ -1043,13 +1060,17 @@ export function Secrets() {
       description: "",
       usageGuidance: "",
       externalRef: "",
-      provider: "local_encrypted",
-      providerConfigId: getDefaultProviderConfigId(providerConfigs, "local_encrypted"),
+      provider: defaultProviderId,
+      providerConfigId: getDefaultProviderConfigId(
+        providerConfigs,
+        defaultProviderId,
+      ),
     });
     setCreateOpen(true);
   }
 
   function openEditDefinition(definition: UserSecretDefinition) {
+    createProviderAutoDefaultRef.current = false;
     setEditingDefinition(definition);
     setCreateNamePrefix(null);
     setSecretValueProvider("user");
@@ -1367,6 +1388,18 @@ export function Secrets() {
       });
     },
   });
+
+  useEffect(() => {
+    if (!createOpen || !createProviderAutoDefaultRef.current) return;
+    if (providerConfigsQuery.isPending) return;
+    createProviderAutoDefaultRef.current = false;
+    if (defaultCreateProviderId === createForm.provider) return;
+    setCreateForm((form) => ({
+      ...form,
+      provider: defaultCreateProviderId,
+      providerConfigId: getDefaultProviderConfigId(providerConfigs, defaultCreateProviderId),
+    }));
+  }, [createOpen, createForm.provider, defaultCreateProviderId, providerConfigs, providerConfigsQuery.isPending]);
 
   useEffect(() => {
     if (!createOpen || providers.length === 0) return;
@@ -2814,6 +2847,7 @@ export function Secrets() {
                     onChange={(event) =>
                       setCreateForm((current) => {
                         const provider = event.target.value as SecretProvider;
+                        createProviderAutoDefaultRef.current = false;
                         return {
                           ...current,
                           provider,
@@ -2836,6 +2870,7 @@ export function Secrets() {
                         )}
                       >
                         {provider.label}
+                        {provider.id === defaultCreateProviderId ? " (default)" : ""}
                         {provider.configured === false &&
                         !getSelectableProviderConfig(providerConfigs, provider.id)
                           ? " (deployment default missing)"
@@ -3567,10 +3602,17 @@ export function ProviderVaultsTab({
   }
 
   const providerMap = new Map(providers.map((provider) => [provider.id, provider]));
+  const localEncryptedIsDefault = !providerConfigs.some(
+    (config) =>
+      config.provider !== "local_encrypted" &&
+      config.isDefault &&
+      !getProviderConfigBlockReason(config),
+  );
   const providerRows = PROVIDER_ORDER.map((providerId) => ({
     id: providerId,
     provider: providerMap.get(providerId),
     Icon: providerFamilyIcon(providerId),
+    isDefault: providerId === "local_encrypted" && localEncryptedIsDefault,
     isComingSoonFamily: providerId === "gcp_secret_manager" || providerId === "vault",
     configs: providerConfigs.filter((config) => config.provider === providerId),
   }));
@@ -3579,25 +3621,31 @@ export function ProviderVaultsTab({
     <div className="flex min-h-full gap-6">
       <aside className="hidden w-56 shrink-0 md:block">
         <nav className="sticky top-0 space-y-1">
-          {providerRows.map(({ id, provider, Icon }) => (
+          {providerRows.map(({ id, provider, Icon, isDefault }) => (
             <a
               key={id}
               href={`#provider-vaults-${id}`}
               className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent/50 hover:text-foreground"
             >
               <Icon className="h-4 w-4" />
-              <span className="truncate">{provider?.label ?? id.replaceAll("_", " ")}</span>
+              <span className="truncate">
+                {provider?.label ?? id.replaceAll("_", " ")}
+                {isDefault ? " (default)" : ""}
+              </span>
             </a>
           ))}
         </nav>
       </aside>
 
       <div className="min-w-0 flex-1 space-y-6">
-        {providerRows.map(({ id, provider, Icon, isComingSoonFamily, configs }) => (
+        {providerRows.map(({ id, provider, Icon, isDefault, isComingSoonFamily, configs }) => (
           <section key={id} id={`provider-vaults-${id}`} className={cn("scroll-mt-6 space-y-2", isComingSoonFamily && "opacity-50")}>
             <div className="flex flex-wrap items-center gap-2">
               <Icon className="h-4 w-4 text-muted-foreground" />
-              <h2 className="text-sm font-semibold">{provider?.label ?? id.replaceAll("_", " ")}</h2>
+              <h2 className="text-sm font-semibold">
+                {provider?.label ?? id.replaceAll("_", " ")}
+                {isDefault ? " (default)" : ""}
+              </h2>
               {isComingSoonFamily ? (
                 <span className="ml-auto text-xs text-muted-foreground">Coming soon</span>
               ) : (
