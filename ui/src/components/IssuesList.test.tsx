@@ -158,6 +158,7 @@ vi.mock("./IssueRow", () => ({
   }) => (
     <div
       data-testid="issue-row"
+      data-issue-row-details={issue.id}
       data-presentation={presentation}
       data-tree-guides={treeGuides ?? 0}
       data-show-identifier={showIdentifier ? "true" : "false"}
@@ -377,6 +378,61 @@ describe("IssuesList", () => {
   afterEach(() => {
     vi.useRealTimers();
     container.remove();
+  });
+
+  it("observes replacement rows after grouping changes without changing task order", async () => {
+    const observed = new Set<Element>();
+    let reportIntersection: IntersectionObserverCallback = () => undefined;
+    vi.stubGlobal("IntersectionObserver", class {
+      constructor(callback: IntersectionObserverCallback) { reportIntersection = callback; }
+      observe(node: Element) { observed.add(node); }
+      unobserve(node: Element) { observed.delete(node); }
+      disconnect() { observed.clear(); }
+    });
+    const rows = [
+      createIssue({ id: "task-one", title: "First task", status: "todo" }),
+      createIssue({ id: "task-two", title: "Second task", status: "todo" }),
+    ];
+    const { root, queryClient } = renderWithQueryClient(
+      <IssuesList issues={rows} agents={[]} projects={[]}
+        viewStateKey="paperclip:test-issues" enableAgentCreatedVisibilityFilter
+        rowPresentation="task" onUpdateIssue={() => undefined} />,
+      container,
+    );
+    try {
+      await waitForAssertion(() => expect(observed.size).toBe(2));
+      const originalNodes = [...observed];
+      await act(() => {
+        container.querySelector<HTMLButtonElement>('button[title="Group"]')!.click();
+      });
+      await act(() => {
+        const status = [...document.body.querySelectorAll("button")]
+          .find((button) => button.textContent?.trim() === "Status");
+        expect(status).toBeTruthy();
+        status!.click();
+      });
+      await waitForAssertion(() => {
+        const replacements = [...container.querySelectorAll("[data-issue-row-details]")];
+        expect(replacements).toHaveLength(2);
+        expect(replacements.map((node) => node.getAttribute("data-issue-row-details")))
+          .toEqual(originalNodes.map((node) => node.getAttribute("data-issue-row-details")));
+        expect(replacements.every((node) => !originalNodes.includes(node))).toBe(true);
+        expect(replacements.every((node) => observed.has(node))).toBe(true);
+      });
+      const newlyVisible = [...observed][1];
+      await act(() => reportIntersection([
+        { target: newlyVisible, isIntersecting: true } as IntersectionObserverEntry,
+      ], {} as IntersectionObserver));
+      await waitForAssertion(() => expect(mockIssuesApi.list).toHaveBeenCalledWith(
+        "company-1", expect.objectContaining({
+          ids: [newlyVisible.getAttribute("data-issue-row-details")], projection: "rows",
+        }), expect.anything(),
+      ));
+    } finally {
+      await act(() => root.unmount());
+      queryClient.clear();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("waits for the initial tree but keeps loaded rows visible while new ancestors load", async () => {
