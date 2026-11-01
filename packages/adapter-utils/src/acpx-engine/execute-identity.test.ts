@@ -177,6 +177,14 @@ describe("acpx identity split and launch environment", () => {
     });
   });
 
+  it.each(["codex", "claude"])("preserves Windows host context for %s without admitting unrelated secrets", agent => {
+    const windows = { SystemRoot: "C:\\Windows", WINDIR: "C:\\Windows", SystemDrive: "C:",
+      ComSpec: "C:\\Windows\\System32\\cmd.exe", PATHEXT: ".EXE;.CMD", TEMP: "C:\\Temp", TMP: "C:\\Temp" };
+    const inherited = { ...windows, HOST_SERVICE_TOKEN: "unrelated", NODE_OPTIONS: "--require host-hook.cjs" };
+    expect(projectAcpxInheritedHostEnvironment(inherited, agent, true)).toEqual(windows);
+    expect(projectAcpxInheritedHostEnvironment(inherited, agent, false)).toEqual({});
+  });
+
   it("does not project any ambient host environment across a remote boundary", () => {
     const inherited = {
       PATH: "/host/bin",

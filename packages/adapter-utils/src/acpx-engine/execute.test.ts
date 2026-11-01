@@ -798,6 +798,16 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(configOptions).toEqual([]);
   });
 
+  it("preserves Windows shell prerequisites in the Codex startup policy without per-agent env", async () => {
+    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    try {
+      const { meta } = await runExecutor({ agent: "codex" });
+      const env = meta[0]?.env as Record<string, string>;
+      expect(JSON.parse(env.CODEX_CONFIG).shell_environment_policy.include_only)
+        .toEqual(expect.arrayContaining(["SystemRoot", "WINDIR", "SystemDrive", "ComSpec", "PATHEXT", "TEMP", "TMP"]));
+    } finally { platform.mockRestore(); }
+  });
+
   it.each(["claude", "codex", "gemini", "kimi", "custom"])("delivers the shared owned sections at the %s ACP turn boundary", async (agent) => {
     const root = await makeTempRoot();
     const context = createPromptContextFixture();

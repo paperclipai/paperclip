@@ -583,6 +583,7 @@ const ACPX_INHERITED_HOST_ENV_KEYS = new Set([
   "PATH",
   "PATHEXT",
   "SYSTEMROOT",
+  "SYSTEMDRIVE",
   "WINDIR",
   "COMSPEC",
   "HOME",
