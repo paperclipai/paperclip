@@ -494,7 +494,7 @@ export async function execute(
   if (!isResume) args.push("--yolo");
 
   // Failed resumes remain failures. Do not infer a safe restart from CLI text.
-  if (isResume) args.push("--resume", sessionId);
+  if (sessionId) args.push("--resume", sessionId);
   if (extraArgs?.length) args.push(...extraArgs);
 
   // ── Build environment ──────────────────────────────────────────────────
