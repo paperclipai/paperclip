@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeManagedShim, flipCurrentAtomic, initializeInstallStore, payloadPathFor, readInstallManifest, resolveInstallStorePaths, writeInstallManifestAtomic, type InstallManifest, type InstallRecord } from "../install-store.js";
 import type { CommandRunner } from "../commands/install.js";
@@ -9,6 +10,23 @@ import { compareVersions, detectInstallMode, resolveUpdateRequest, rollbackManag
 let root: string;
 let previousHome: string | undefined;
 let previousPaperclipHome: string | undefined;
+
+const PATCHED_POSTGRES_SOURCE = path.resolve(
+  path.dirname(createRequire(path.resolve(__dirname, "../../../packages/db/package.json")).resolve("postgres")),
+  "../..",
+);
+
+function addPatchedPostgres(payloadPath: string): void {
+  const nodeModules = path.join(payloadPath, "node_modules");
+  const dbRoot = path.join(nodeModules, "@paperclipai", "db");
+  fs.mkdirSync(dbRoot, { recursive: true });
+  fs.writeFileSync(path.join(dbRoot, "package.json"), JSON.stringify({ name: "@paperclipai/db", version: "0.3.1" }));
+  const drizzleRoot = path.join(nodeModules, "drizzle-orm");
+  fs.mkdirSync(path.join(drizzleRoot, "postgres-js"), { recursive: true });
+  fs.writeFileSync(path.join(drizzleRoot, "package.json"), JSON.stringify({ name: "drizzle-orm", version: "0.45.2" }));
+  fs.writeFileSync(path.join(drizzleRoot, "postgres-js", "driver.js"), "import pgClient from \"postgres\";\n");
+  fs.cpSync(PATCHED_POSTGRES_SOURCE, path.join(nodeModules, "postgres"), { recursive: true, dereference: true });
+}
 
 function record(payloadPath: string, version: string, channel: "latest" | "canary" | "pinned" = "latest"): InstallRecord {
   return { source: "npm", version, channel, payloadPath, installedAt: `2026-07-22T00:00:0${version}.000Z` };
@@ -120,6 +138,7 @@ describe("update command", () => {
     const newPayload = payloadPathFor(paths, "git", newSha.slice(0, 12));
     createPayload(newPayload, "0.3.1");
     fs.writeFileSync(path.join(newPayload, "node_modules", "paperclipai", "package.json"), JSON.stringify({ version: "0.3.1" }));
+    addPatchedPostgres(newPayload);
     flipCurrentAtomic(oldPayload, paths);
     writeInstallManifestAtomic({ schemaVersion: 1, source: "git", version: "0.3.1", channel: "pinned", repo: "paperclipai/paperclip", ref: "master", sha: oldSha, payloadPath: oldPayload, installedAt: "2026-07-22T00:00:00.000Z", previous: [] }, paths);
     writeManagedShim(paths);
