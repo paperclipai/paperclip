@@ -4,12 +4,18 @@ import { promisify } from "node:util";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { reviewedChatProfile } from "./chat-runtime-profile.js";
+import { chatCatalogScenarios } from "./chat-catalog-inventory.js";
 import type { MatrixExecution } from "./types.js";
 
 const workflow = "paperclipai/paperclip/.github/workflows/runner-full-stack-e2e.yml@refs/heads/master";
 const testOpsWorkflow = "paperclipai/paperclip/.github/workflows/chat-completion-testops.yml@refs/heads/master";
 const testOpsPilotIds = new Set(["projects.project-work", "projects.project-defaults", "instance-operations.restart-service"]
   .map(scenario => `chat-features.runner-opencode.local.${scenario}`));
+const catalogTestOpsWorkflow = "paperclipai/paperclip/.github/workflows/chat-catalog-testops.yml@refs/heads/master";
+const catalogTestOpsIds = new Set(chatCatalogScenarios.map(row => {
+  const task = row.id === "tasks.create-backlog" ? "create-backlog" : row.id === "tasks.delegate-announcement" ? "delegate-announcement" : row.id;
+  return `chat-features.runner-opencode.local.${task}`;
+}));
 type Selection = Pick<MatrixExecution, "id" | "suite" | "profile" | "environment" | "task">;
 type Environment = Record<string, string | undefined>;
 export interface RemoteHostDependencies {
@@ -35,10 +41,10 @@ export async function prepareChatRemoteHost(input: { executions: readonly Select
   const persist = () => writeFile(filename, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
   let reason = "trusted-github-linux-source-required";
   try {
-    const testOpsPilot = env.GITHUB_WORKFLOW_REF === testOpsWorkflow && env.PAPERCLIP_CHAT_COMPLETION_TESTOPS === "v1"
+    const testOpsPilot = (env.GITHUB_WORKFLOW_REF === testOpsWorkflow || env.GITHUB_WORKFLOW_REF === catalogTestOpsWorkflow) && env.PAPERCLIP_CHAT_COMPLETION_TESTOPS === "v1"
       && env.GITHUB_RUN_ATTEMPT === "1" && /^[1-9][0-9]{0,15}$/.test(env.ALLURE_JOB_RUN_ID ?? "")
       && Number.isSafeInteger(Number(env.ALLURE_JOB_RUN_ID))
-      && input.executions.every(execution => testOpsPilotIds.has(execution.id)
+      && input.executions.every(execution => (env.GITHUB_WORKFLOW_REF === testOpsWorkflow ? testOpsPilotIds : catalogTestOpsIds).has(execution.id)
         && execution.id === `chat-features.runner-opencode.local.${execution.task.id}`);
     if (env.GITHUB_ACTIONS !== "true" || env.GITHUB_REPOSITORY !== "paperclipai/paperclip" || env.GITHUB_REF !== "refs/heads/master"
       || env.GITHUB_WORKFLOW_REF !== workflow && !testOpsPilot

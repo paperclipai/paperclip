@@ -6,6 +6,7 @@ import path from "node:path";
 import type { MatrixExecution } from "./types.js";
 import { prepareChatRemoteHost, selectsRemoteChat } from "./chat-remote-host.js";
 import { CHAT_OPENCODE_MODEL } from "./chat-runtime-profile.js";
+import { chatCatalogScenarios } from "./chat-catalog-inventory.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 async function fixture(lifecycle = "spot") {
@@ -22,6 +23,21 @@ async function fixture(lifecycle = "spot") {
     receipt: async () => JSON.parse(await readFile(path.join(root, "chat-remote-host.json"), "utf8")) };
 }
 describe("remote-only chat host qualification without native/provider calls", () => {
+  it("admits the finite 244-case catalog only through its own trusted TestOps workflow", async () => {
+    const f = await fixture();
+    f.env.GITHUB_WORKFLOW_REF = "paperclipai/paperclip/.github/workflows/chat-catalog-testops.yml@refs/heads/master";
+    Object.assign(f.env, { PAPERCLIP_CHAT_COMPLETION_TESTOPS: "v1", ALLURE_JOB_RUN_ID: "77" });
+    f.executions = chatCatalogScenarios.map(row => {
+      const id = row.id === "tasks.create-backlog" ? "create-backlog" : row.id === "tasks.delegate-announcement" ? "delegate-announcement" : row.id;
+      return { ...f.executions[0]!, id: `chat-features.runner-opencode.local.${id}`, task: { ...f.executions[0]!.task, id } };
+    });
+    expect(f.executions).toHaveLength(244);
+    expect(await prepareChatRemoteHost(f)).toMatchObject({ maxAutomaticRetries: 0 });
+    const invalid = { ...f.executions[0]!, id: "chat-features.runner-opencode.local.foreign", task: { ...f.executions[0]!.task, id: "foreign" } };
+    f.fetch.mockClear(); f.executions = [invalid];
+    await expect(prepareChatRemoteHost(f)).rejects.toThrow("trusted-github-linux-source-required");
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
   it.each(["projects.project-work", "projects.project-defaults", "instance-operations.restart-service"])("admits only the bound TestOps pilot cell %s on the actual AWS host", async scenario => {
     const f = await fixture();
     f.env.GITHUB_WORKFLOW_REF = "paperclipai/paperclip/.github/workflows/chat-completion-testops.yml@refs/heads/master";
