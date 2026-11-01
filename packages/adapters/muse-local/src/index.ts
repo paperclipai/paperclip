@@ -1,5 +1,3 @@
-import { createServerAdapter } from "./server/index.js";
-
 export const type = "muse_local";
 export const label = "Muse Code";
 export const DEFAULT_MUSE_LOCAL_MODEL = "muse-wonder-1.0";
@@ -43,5 +41,3 @@ Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
 `;
-
-export { createServerAdapter };

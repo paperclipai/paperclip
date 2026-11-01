@@ -20,7 +20,10 @@ import {
   DEFAULT_ACP_ENGINE_PERMISSION_MODE,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "@paperclipai/adapter-utils/acpx-engine/constants";
-import type { AcpxEngineExecutorOptions } from "@paperclipai/adapter-utils/acpx-engine/execute";
+import {
+  findAncestorBin,
+  type AcpxEngineExecutorOptions,
+} from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
   asNumber,
   asString,
@@ -111,7 +114,12 @@ export function buildMuseAcpConfig(config: Record<string, unknown>): Record<stri
     ...(stateDir ? { stateDir } : {}),
   };
   const model = asString(next.model, "").trim();
-  if (!model || model === DEFAULT_MUSE_LOCAL_MODEL) delete next.model;
+  next.model = model || DEFAULT_MUSE_LOCAL_MODEL;
+  const effort = firstNonEmptyString(config.reasoningEffort, config.effort, config.modelReasoningEffort);
+  if (effort && effort !== "auto") {
+    next.reasoningEffort = effort;
+    next.effort = effort;
+  }
   next.summaryStrategy = "lastOutputSegment";
   next.coalescePlaceholderToolUpdates = true;
   return next;
@@ -200,11 +208,16 @@ async function commandIsResolvable(
   });
   if (target?.kind === "remote") {
     try {
+      const configEnv = parseObject(input?.config?.env) as Record<string, string>;
+      const probeEnv: Record<string, string> = {
+        MUSE_NO_AUTO_UPDATE: "1",
+        ...configEnv,
+      };
       await ensureAdapterExecutionTargetCommandResolvable(
         token,
         target,
-        resolveAdapterExecutionTargetCwd(target, asString(input?.config.cwd, ""), process.cwd()),
-        process.env,
+        resolveAdapterExecutionTargetCwd(target, asString(input?.config?.cwd, ""), process.cwd()),
+        probeEnv,
       );
       return true;
     } catch {
@@ -215,9 +228,11 @@ async function commandIsResolvable(
   return (await findCommandOnPath(token, pathValue)) !== null;
 }
 
-function resolveMuseAcpCommand(config: Record<string, unknown>): string {
+async function resolveMuseAcpCommand(config: Record<string, unknown>): Promise<string> {
   const configured = firstNonEmptyString(config.agentCommand, config.acpAgentCommand);
   if (configured) return configured;
+  const ancestor = await findAncestorBin(packageRootDir, "muse-acp");
+  if (ancestor) return ancestor;
   return "muse-acp";
 }
 
@@ -243,17 +258,9 @@ async function museAcpUnavailableReason(
   if (!nodeVersionMeetsMuseAcpMinimum()) {
     return `Node ${process.version} (${process.execPath}) does not satisfy Muse ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
   }
-  const command = resolveMuseAcpCommand(input.config);
-  // If muse-acp is not globally on path, check if muse executable itself exists
-  const isAcpResolvable = await commandIsResolvable(command, resolveConfigPath(input.config), input);
-  if (!isAcpResolvable) {
-    const museCommand = firstNonEmptyString(input.config.command) ?? "muse";
-    const isMuseResolvable =
-      (await commandIsResolvable(museCommand, resolveConfigPath(input.config), input)) ||
-      (await pathExists(path.join(os.homedir(), ".local/bin/muse")));
-    if (!isMuseResolvable) {
-      return `Muse executable is not available on PATH or in ~/.local/bin/muse.`;
-    }
+  const command = await resolveMuseAcpCommand(input.config);
+  if (!(await commandIsResolvable(command, resolveConfigPath(input.config), input))) {
+    return `Muse ACP command is not available: ${command}.`;
   }
   return null;
 }
@@ -306,43 +313,6 @@ export async function testMuseAcpEnvironment(
       level: "error",
       message: err instanceof Error ? err.message : "Invalid working directory",
       detail: cwd,
-    });
-  }
-
-  checks.push({
-    code: nodeVersionMeetsMuseAcpMinimum() ? "muse_acp_node_supported" : "muse_acp_node_unsupported",
-    level: nodeVersionMeetsMuseAcpMinimum() ? "info" : "error",
-    message: nodeVersionMeetsMuseAcpMinimum()
-      ? `Node ${process.version} satisfies ACP runtime requirements.`
-      : `Node ${process.version} (${process.execPath}) does not satisfy ACP runtime requirements.`,
-    hint: nodeVersionMeetsMuseAcpMinimum()
-      ? undefined
-      : `Run Muse ACP with Node >=${MIN_ACP_NODE_VERSION} or switch engine=cli.`,
-  });
-
-  const command = resolveMuseAcpCommand(config);
-  const commandResolvable = await commandIsResolvable(command, resolveConfigPath(config), {
-    config,
-    executionTarget: ctx.executionTarget,
-  });
-  const fallbackMuseResolvable =
-    (await commandIsResolvable(asString(config.command, "muse"), resolveConfigPath(config), {
-      config,
-      executionTarget: ctx.executionTarget,
-    })) || (await pathExists(path.join(os.homedir(), ".local/bin/muse")));
-
-  if (commandResolvable || fallbackMuseResolvable) {
-    checks.push({
-      code: "muse_acp_command_resolvable",
-      level: "info",
-      message: `Muse ACP command is executable: ${commandResolvable ? command : "muse (via internal bridge)"}`,
-    });
-  } else {
-    checks.push({
-      code: "muse_acp_command_missing",
-      level: "error",
-      message: `Muse ACP command is not available: ${command}`,
-      hint: "Ensure muse is installed on PATH or set agentCommand to a valid ACP server command.",
     });
   }
 

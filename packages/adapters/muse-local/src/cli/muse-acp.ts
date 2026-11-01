@@ -8,12 +8,14 @@ import os from "node:os";
 
 // Version info
 const VERSION = "1.0.0";
+const DEFAULT_MODEL = "muse-wonder-1.0";
 
-// Ensure all console logs go to stderr to preserve stdout for JSON-RPC
-console.log = console.error;
-console.info = console.error;
-console.warn = console.error;
-console.debug = console.error;
+export function redirectConsoleToStderr() {
+  console.log = console.error;
+  console.info = console.error;
+  console.warn = console.error;
+  console.debug = console.error;
+}
 
 process.on("unhandledRejection", (reason) => {
   console.error("[muse-acp] Unhandled rejection:", reason);
@@ -43,7 +45,7 @@ export interface CliOptions {
 
 export function parseArgs(argv: string[]): { options: CliOptions; showVersion: boolean; showHelp: boolean } {
   let provider = process.env.MUSE_PROVIDER || "meta";
-  let model = process.env.MUSE_MODEL || "muse-spark-1.3";
+  let model = process.env.MUSE_MODEL || DEFAULT_MODEL;
   let reasoningEffort = process.env.MUSE_REASONING_EFFORT;
   let command = process.env.MUSE_COMMAND || "muse";
   let disableSandbox = true;
@@ -154,7 +156,7 @@ export class MuseAcpBridge {
       "--model",
       this.options.model,
     ];
-    if (this.options.reasoningEffort) {
+    if (this.options.reasoningEffort && this.options.reasoningEffort !== "auto") {
       args.push("--reasoning-effort", this.options.reasoningEffort);
     }
     if (this.options.disableSandbox) {
@@ -205,7 +207,6 @@ export class MuseAcpBridge {
     const req: any = { jsonrpc: "2.0", method, params };
     let promise: Promise<any> = Promise.resolve();
     if (id !== undefined) {
-      req.id = id;
       promise = new Promise((resolve, reject) => {
         this.mspPendingRequests.set(id, { resolve, reject });
       });
@@ -228,36 +229,41 @@ export class MuseAcpBridge {
         }
         // Handle handshake completion
         if (msg.id === 1 && msg.result) {
-          this.sendMsp("initialized", {});
           this.resolveInitialized();
         }
         return;
       }
 
-      // Handle MSP streaming notifications
-      this.handleMspNotification(msg.method, msg.params);
+      // Handle MSP notifications from muse serve
+      if (msg.method) {
+        this.handleMspNotification(msg.method, msg.params);
+      }
     } catch (err) {
-      console.error("[muse-acp] Failed to parse MSP line:", err);
+      console.error("[muse-acp] Error parsing MSP line:", err, line);
     }
   }
 
   private handleMspNotification(method: string, params: any) {
-    if (!params) return;
     switch (method) {
+      case "session/started": {
+        const sessionId = params.sessionId || params.session?.sessionId;
+        if (sessionId) {
+          this.activeSessionId = sessionId;
+        }
+        break;
+      }
       case "item/started": {
         const item = params.item;
         if (item && item.id) {
-          this.itemKinds.set(item.id, item.kind);
+          this.itemKinds.set(item.id, item.kind || "message");
           if (item.kind === "toolCall") {
             this.sendAcpNotification("session/update", {
               sessionId: this.activeSessionId,
               update: {
                 sessionUpdate: "tool_call",
                 toolCallId: item.id,
-                title: item.title || item.name || "Tool",
-                kind: "execute",
-                status: "in_progress",
-                rawInput: item.args || item.input,
+                title: item.title || item.toolName || "Tool Call",
+                rawInput: item.arguments || {},
               },
             });
           }
@@ -265,8 +271,10 @@ export class MuseAcpBridge {
         break;
       }
       case "item/delta": {
-        const { itemId, delta } = params;
-        if (!delta) break;
+        const itemId = params.itemId;
+        const delta = params.delta;
+        if (!itemId || !delta) break;
+
         const kind = this.itemKinds.get(itemId);
         if (kind === "reasoning") {
           this.sendAcpNotification("session/update", {
@@ -335,11 +343,19 @@ export class MuseAcpBridge {
           });
         }
         if (this.currentTurnResolver) {
-          const stopReason =
-            params.terminal === "cancelled" || params.terminal === "interrupted"
-              ? "cancelled"
-              : "end_turn";
-          this.currentTurnResolver.resolve({ stopReason });
+          if (params.terminal === "failed" || params.status === "failed" || params.error) {
+            const errorMsg =
+              typeof params.error === "string"
+                ? params.error
+                : params.error?.message || params.message || `Muse turn failed: terminal=${params.terminal}`;
+            this.currentTurnResolver.reject(new Error(errorMsg));
+          } else {
+            const stopReason =
+              params.terminal === "cancelled" || params.terminal === "interrupted"
+                ? "cancelled"
+                : "end_turn";
+            this.currentTurnResolver.resolve({ stopReason });
+          }
           this.currentTurnResolver = null;
         }
         break;
@@ -397,6 +413,7 @@ export class MuseAcpBridge {
               commandId: uuidv7(),
               workspaceRoot,
               approvalMode: "allowAll",
+              ...(this.options.model ? { model: this.options.model } : {}),
             },
             this.nextMspId++
           );
@@ -414,6 +431,32 @@ export class MuseAcpBridge {
           );
           this.activeSessionId = sessionId;
           this.sendAcpResponse(id ?? null, { sessionId });
+          break;
+        }
+        case "session/set_model": {
+          const modelId = params.modelId || params.model;
+          if (modelId) {
+            this.options.model = modelId;
+          }
+          this.sendAcpResponse(id ?? null, { modelId: this.options.model });
+          break;
+        }
+        case "session/set_config_option": {
+          const configId = params.configId || params.key;
+          const value = params.value;
+          if (configId === "model" && value) {
+            this.options.model = value;
+          } else if (
+            (configId === "effort" || configId === "reasoning_effort" || configId === "thought_level") &&
+            value
+          ) {
+            this.options.reasoningEffort = value;
+          }
+          this.sendAcpResponse(id ?? null, {
+            configOptions: [
+              { id: configId, currentValue: value },
+            ],
+          });
           break;
         }
         case "session/prompt": {
@@ -441,12 +484,27 @@ export class MuseAcpBridge {
               commandId: uuidv7(),
               sessionId,
               input: inputParts,
+              ...(this.options.model ? { model: this.options.model } : {}),
+              ...(this.options.reasoningEffort && this.options.reasoningEffort !== "auto"
+                ? { reasoningEffort: this.options.reasoningEffort }
+                : {}),
             },
             this.nextMspId++
           );
 
-          const turnResult = await turnPromise;
-          this.sendAcpResponse(id ?? null, turnResult);
+          try {
+            const turnResult = await turnPromise;
+            this.sendAcpResponse(id ?? null, turnResult);
+          } catch (turnErr: any) {
+            this.sendAcpResponse(id ?? null, undefined, {
+              code: -32603,
+              message: turnErr?.message || "Muse turn execution failed",
+              data: {
+                sessionId,
+                error: turnErr?.message || String(turnErr),
+              },
+            });
+          }
           break;
         }
         case "session/cancel": {
@@ -494,6 +552,7 @@ export class MuseAcpBridge {
 }
 
 export async function main() {
+  redirectConsoleToStderr();
   const { options, showVersion, showHelp } = parseArgs(process.argv);
   if (showVersion) {
     process.stdout.write(VERSION + "\n");
@@ -506,7 +565,7 @@ Usage: muse-acp [options]
 
 Options:
   --provider <meta|local|echo>   Startup provider (default: meta)
-  --model <model>                Model identifier (default: muse-spark-1.3)
+  --model <model>                Model identifier (default: muse-wonder-1.0)
   --reasoning-effort <effort>    Reasoning effort: none|minimal|low|medium|high|xhigh|max|ultra
   --command <path>               Path to muse executable (default: muse or ~/.local/bin/muse)
   --disable-sandbox              Disable OS sandboxing (default: true)

@@ -20,6 +20,20 @@ export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
   const engineSelection = await resolveMuseExecutionEngineForRun(ctx);
+  if (engineSelection.unavailableReason) {
+    return {
+      adapterType: "muse_local",
+      status: "fail",
+      checks: [
+        {
+          code: "adapter_engine_unavailable",
+          level: "error",
+          message: engineSelection.unavailableReason,
+        },
+      ],
+      testedAt: new Date().toISOString(),
+    };
+  }
   if (engineSelection.engine === "acp") {
     return testMuseAcpEnvironment(ctx);
   }
