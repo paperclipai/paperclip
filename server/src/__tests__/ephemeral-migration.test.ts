@@ -175,4 +175,20 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
     expect((await db.select().from(providerTraceRecords).where(eq(providerTraceRecords.companyId, companyId)))
       .every(trace => trace.status === "expired" && trace.deletedAt !== null)).toBe(true);
   }, 120_000);
+
+  it("accepts an unavailable directory only after its owner confirms stop and no-save cleanup", async () => {
+    const row = await agent();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: row.id, status: "succeeded" }).returning();
+    await db.insert(agentInstructionWorkingCopies).values({ runId: run!.id, companyId, agentId: row.id,
+      responsibleUserId: "fixture", entryFile: "AGENTS.md", baseHash: "fixture", localRoot: path.join(home, "rejected-copy"),
+      executionRoot: path.join(home, "rejected-copy"), location: "local", state: "unavailable",
+      errorCode: "AGENT_FILES_LIMIT_EXCEEDED", receipt: { schema: "paperclip.agent-files.v1", cleanupPending: true } });
+    await expect(migrate()).rejects.toThrow("local_instruction_copies_require_settlement");
+    await db.update(agentInstructionWorkingCopies).set({ receipt: { schema: "paperclip.agent-files.v1", cleanupPending: false } })
+      .where(eq(agentInstructionWorkingCopies.runId, run!.id));
+    await expect(migrate()).rejects.toThrow("local_instruction_copies_require_settlement");
+    await db.update(agentInstructionWorkingCopies).set({ processStoppedAt: new Date() })
+      .where(eq(agentInstructionWorkingCopies.runId, run!.id));
+    expect((await migrate()).eligibility.eligible).toBe(true);
+  });
 });
