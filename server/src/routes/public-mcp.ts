@@ -71,7 +71,7 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
     next();
   });
   router.get(agentConnection ? ["/.well-known/oauth-protected-resource" + endpoint] : ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource" + endpoint], (_req, res) => res.json({
-    resource, authorization_servers: [issuer], scopes_supported: agentConnection ? DOT_RUNNER_MCP_SCOPES : ["paperclip:read", "paperclip:write", "paperclip:configure"], bearer_methods_supported: ["header"],
+    resource, authorization_servers: [issuer], scopes_supported: agentConnection ? DOT_RUNNER_MCP_SCOPES : PUBLIC_MCP_SCOPES, bearer_methods_supported: ["header"],
     resource_name: agentConnection ? "Paperclip agent" : "Paperclip",
   }));
   router.get(metadataPath, (_req, res) => res.json({
@@ -99,7 +99,7 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
     let principal;
     try { if (!token) throw new Error(); principal = await oauth.authenticate(token); }
     catch {
-      res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${resourceMetadata}", scope="${agentConnection ? "paperclip:agent" : "paperclip:read paperclip:write paperclip:configure"}", error="invalid_token"`);
+      res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${resourceMetadata}", scope="${agentConnection ? "paperclip:agent" : PUBLIC_MCP_SCOPES.join(" ")}", error="invalid_token"`);
       res.status(401).json({ error: "invalid_token" }); return;
     }
     if (req.method !== "POST") { res.setHeader("Allow", "POST"); res.status(405).end(); return; }

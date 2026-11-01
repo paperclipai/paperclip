@@ -1,4 +1,5 @@
 import { applyPendingMigrations } from "@paperclipai/db";
+import { PUBLIC_MCP_SCOPES } from "@paperclipai/shared";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -105,7 +106,10 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       expect(metadata.body.resource).toBe(config.resource);
       expect(select).toHaveBeenCalled();
       expect((await request(app).get("/mcp/setup.md")).status).toBe(200);
-      expect((await request(app).post("/mcp/paperclip")).status).toBe(401);
+      expect(metadata.body.scopes_supported).toEqual(expect.arrayContaining([...PUBLIC_MCP_SCOPES]));
+      const challenge = await request(app).post("/mcp/paperclip");
+      expect(challenge.status).toBe(401);
+      expect(challenge.headers["www-authenticate"]).toContain(`scope="${PUBLIC_MCP_SCOPES.join(" ")}"`);
     } finally {
       select.mockRestore();
     }
