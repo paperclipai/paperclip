@@ -6850,7 +6850,7 @@ it.each([
               execFileSync(
                 "ps",
                 ["-o", "lstart=", "-p", String(handles[0]!.child.pid)],
-                { encoding: "utf8", timeout: 1_500 },
+                { encoding: "utf8", timeout: 1_500, env: { ...process.env, LC_ALL: "C" } },
               ).trim(),
             ).toISOString()
           : null;
