@@ -16,6 +16,9 @@ describe("codex model CLI floors", () => {
   it("records the oldest Codex CLI verified to run each gated model with ChatGPT sign-in", () => {
     expect(minimumCodexCliVersionForModel("gpt-6.1-sol")).toBe("0.159.0");
     expect(minimumCodexCliVersionForModel(" gpt-6.1-sol ")).toBe("0.159.0");
+    // Codex 0.165.0 ("Added GPT-6.1 Terra to the model catalogs"); 0.164.0 and older reject it.
+    expect(minimumCodexCliVersionForModel("gpt-6.1-terra")).toBe("0.165.0");
+    expect(minimumCodexCliVersionForModel(" gpt-6.1-terra ")).toBe("0.165.0");
     expect(minimumCodexCliVersionForModel("gpt-6-sol")).toBe("0.157.0");
     expect(minimumCodexCliVersionForModel("gpt-6-luna")).toBe("0.157.0");
   });
@@ -76,8 +79,9 @@ describe("codex local adapter metadata", () => {
     // alias, so it must not be advertised or used as the default (it triggers a fallback warning).
     expect(DEFAULT_CODEX_LOCAL_MODEL).toBe("gpt-5.6-sol");
     // Ordered like the ChatGPT app: newest version first, then by capability within a version (#14878).
-    expect(modelIds.slice(0, 13)).toEqual([
+    expect(modelIds.slice(0, 14)).toEqual([
       "gpt-6.1-sol",
+      "gpt-6.1-terra",
       "gpt-6-astra",
       "gpt-6-sol",
       "gpt-6-luna",
@@ -95,12 +99,13 @@ describe("codex local adapter metadata", () => {
     expect(isCodexLocalFastModeSupported(DEFAULT_CODEX_LOCAL_MODEL)).toBe(true);
     expect(isCodexLocalFastModeSupported("gpt-6-astra")).toBe(true);
     expect(isCodexLocalFastModeSupported("gpt-6.1-sol")).toBe(true);
+    expect(isCodexLocalFastModeSupported("gpt-6.1-terra")).toBe(true);
     expect(isCodexLocalFastModeSupported("gpt-6-sol")).toBe(true);
     expect(modelIds).not.toContain("gpt-5.3-codex");
     expect(modelIds).not.toContain("gpt-5.3-codex-spark");
   });
 
-  it.each(["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", " gpt-6-sol ", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6"])("uses the reasoning efforts advertised for %s", (model) => {
+  it.each(["gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol", " gpt-6-sol ", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6"])("uses the reasoning efforts advertised for %s", (model) => {
     expect(codexLocalReasoningEffortsForModel(model)).toEqual([
       "low",
       "medium",

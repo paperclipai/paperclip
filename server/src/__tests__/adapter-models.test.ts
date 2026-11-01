@@ -51,6 +51,7 @@ describe("adapter model listing", () => {
     // The bare gpt-5.6 alias is intentionally not advertised (Codex has no metadata for it).
     expect(models.some((model) => model.id === "gpt-5.6")).toBe(false);
     expect(models.some((model) => model.id === "gpt-6.1-sol")).toBe(true);
+    expect(models.some((model) => model.id === "gpt-6.1-terra")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-sol")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-terra")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-luna")).toBe(true);
