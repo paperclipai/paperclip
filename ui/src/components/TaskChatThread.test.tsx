@@ -376,19 +376,41 @@ it.each([true, false])("defers hidden content until history is ready and keeps i
 
 it.each([true, false])("coordinates compact cards before first reveal and retains content during refresh (mobile=%s)", async (mobile) => {
   sidebarState.isMobile = mobile;
-  const props = { issueId: "cold-issue", compactHistory: true, comments: createLongThreadComments(), historyControl: <button>More messages</button>, onAdd: async () => {} };
+  const props = { issueId: "cold-issue", compactHistory: true, comments: createLongThreadComments(), threadHeader: <h2>Saved task title</h2>, historyControl: <button>More messages</button>, onAdd: async () => {} };
   render(<TaskChatThread {...props} initialHistoryPending />);
   expect(container.querySelector('[data-testid="task-chat-history-loading"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')?.textContent).not.toContain("Saved task title");
   render(<TaskChatThread {...props} initialHistoryPending={false} />);
   await settleThreadLayout();
   expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
   expect(container.textContent).toContain("Thread message 1");
+  expect(container.textContent).toContain("Saved task title");
   expect(container.textContent).toContain("More messages");
   const editor = container.querySelector('[data-testid="mock-editor"]');
   expect(editor).not.toBeNull();
   render(<TaskChatThread {...props} initialHistoryPending />);
   expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+});
+
+it.each([false, true])("waits for fonts but bounds a stalled request (stalled=%s)", async (stalled) => {
+  const original = Object.getOwnPropertyDescriptor(document, "fonts");
+  const fonts = { status: "loading" };
+  Object.defineProperty(document, "fonts", { configurable: true, value: fonts });
+  vi.useFakeTimers();
+  try {
+    render(<TaskChatThread issueId="font-readiness" comments={createLongThreadComments()} onAdd={async () => {}} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).not.toBeNull();
+    if (!stalled) fonts.status = "loaded";
+    await act(async () => { await vi.advanceTimersByTimeAsync(stalled ? 3100 : 100); });
+    expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-thread"] > [aria-busy="false"]')).not.toBeNull();
+  } finally {
+    if (original) Object.defineProperty(document, "fonts", original);
+    else Reflect.deleteProperty(document, "fonts");
+    vi.useRealTimers();
+  }
 });
 
 it("keeps revealed history scrollable while metadata for another page is pending", async () => {
