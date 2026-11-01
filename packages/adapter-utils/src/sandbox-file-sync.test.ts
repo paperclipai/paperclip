@@ -450,6 +450,26 @@ describe("assertSyncOperationsConfined", () => {
     { operationId: "sync-op-1", files: [{ sourcePath, targetPath, kind: "directory" }] },
   ];
 
+  it("confines Windows host uploads and downloads separately from POSIX sandbox paths", () => {
+    expect(() => assertSyncOperationsConfined(op("/remote/ws/file", "C:\\staging\\file"), {
+      sourceRoots: ["C:\\staging"], targetRoots: ["/remote/ws"], sourcePathStyle: "win32",
+    })).not.toThrow();
+    expect(() => assertSyncOperationsConfined(op("c:\\STAGING\\file", "/remote/ws/file"), {
+      sourceRoots: ["/remote/ws"], targetRoots: ["C:\\staging"], targetPathStyle: "win32",
+    })).not.toThrow();
+    for (const source of ["C:\\staging-escape\\file", "C:\\staging\\..\\secret", "D:\\staging\\file", "C:staging\\file", "\\staging\\file"]) {
+      expect(() => assertSyncOperationsConfined(op("/remote/ws/file", source), {
+        sourceRoots: ["C:\\staging"], targetRoots: ["/remote/ws"], sourcePathStyle: "win32",
+      })).toThrow(/confined absolute path|escapes its confinement root/);
+    }
+    expect(() => assertSyncOperationsConfined(op("C:\\sandbox\\file", "C:\\staging\\file"), {
+      sourceRoots: ["C:\\staging"], targetRoots: ["C:\\sandbox"], sourcePathStyle: "win32",
+    })).toThrow(/confined absolute path/);
+    expect(() => assertSyncOperationsConfined(op("/remote/ws/file", "\\\\server\\share\\staging\\file"), {
+      sourceRoots: ["\\\\server\\share\\staging"], targetRoots: ["/remote/ws"], sourcePathStyle: "win32",
+    })).not.toThrow();
+  });
+
   it("accepts targets within an allowed root", () => {
     expect(() => assertSyncOperationsConfined(op("/remote/ws/sub"), {
       sourceRoots: ["/host/src"], targetRoots: ["/remote/ws"],

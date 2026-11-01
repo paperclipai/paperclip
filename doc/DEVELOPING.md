@@ -130,6 +130,14 @@ Current implementation status:
 - Node.js 24.11+
 - pnpm 9+
 
+On native Windows, use the Node installation that includes npm. Packaging scripts
+run `npm-cli.js` through Node, so an installation path with spaces is supported.
+The local POSIX sandbox tests require Git for Windows in its standard
+`Program Files/Git` location. These fixtures use Git Bash and POSIX sandbox paths;
+host file transfers retain Windows drive paths. Full workspace typechecking also
+requires Rust and Cargo for the native Runner. POSIX mode-bit assertions do not
+validate Windows ACLs.
+
 ## Dependency Lockfile Policy
 
 GitHub Actions owns `pnpm-lock.yaml`.
