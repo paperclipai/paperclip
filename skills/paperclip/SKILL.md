@@ -793,3 +793,19 @@ provider, and keep the agent assigned with `continuationPolicy: "wake_assignee"`
 so the answer resumes verification. A handoff comment asking the user to comment
 back or reassign the task is not a confirmation card. The card records the user's
 answer; verify the provider's gate and publish result before continuing.
+
+**QA failure handoffs.**
+
+A QA/review issue can finish `done` with a `NEEDS_FIX` verdict, but its comment
+and a PR comment do not assign or wake a programmer. Before closing that review,
+check the source issue and PR for an existing open fix covering the same head and
+findings. If none exists, create one assigned to the source programmer with the
+failing head, reproduction, and links to the QA evidence. Create or reuse a
+re-QA issue assigned to the reviewer and blocked by that exact fix issue;
+include the new-head CI check in its instructions. Read back both assignments
+and the blocker edge before marking the review `done`. Use stable creation
+idempotency keys when available. If the reviewer cannot create or assign the
+successor, report the concrete failed operation on its own review issue so the
+source owner can act; do not claim that a comment or mention delivered a wake.
+A later QA failure repeats this check against the new head, not an old completed
+fix.
