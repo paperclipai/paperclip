@@ -25,7 +25,7 @@ function fixture() {
     select: () => query(), selectDistinct: () => query(true),
     transaction: async (callback: (tx: any) => Promise<unknown>) => callback({ execute, select: db.select, selectDistinct: db.selectDistinct, transaction: db.transaction }),
   });
-  const state = { draining: false, standby: false, suppressed: false, deadline: null as number | null, fail: false, incomplete: false };
+  const state = { draining: false, standby: false, suppressed: false, deadline: null as number | null, fail: false, incomplete: false, watchdogFailed: false };
   const check = vi.fn(async (scope: { onDeferredDeadline(at: number): void }) => {
     if (state.fail) throw new Error("database unavailable");
     if (state.deadline !== null && state.deadline > Date.now()) scope.onDeferredDeadline(state.deadline);
@@ -33,7 +33,7 @@ function fixture() {
   const orphanBlockers = vi.fn(async () => {}), recoveryActions = vi.fn(async () => {});
   const suppression = vi.fn(async () => state.suppressed);
   const owner = { orphanBlockers, recoveryActions, stranded: check, dependencies: async (scope: any) => { await check(scope); return { enqueueFailed: 0 }; },
-    locks: check, watchdogs: async (scope: any) => { await check(scope); return { incomplete: state.incomplete ? 1 : 0 }; },
+    locks: check, watchdogs: async (scope: any) => { await check(scope); return { incomplete: state.incomplete ? 1 : 0, failed: state.watchdogFailed ? 1 : 0 }; },
     schedulingSuppressed: suppression };
   const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !state.standby,
     canReconcile: () => !state.standby, onError: vi.fn() });
@@ -127,6 +127,14 @@ describe("issue recovery obligation lifecycle", () => {
     const f = fixture(); f.rows.watchdogs.push({ id: "watchdog", companyId: "selected" }); f.state.incomplete = true;
     await f.worker.ready; expect(f.coordinator.nextWakeAt()).toBe(1_030_000);
     const loaded = f.load.mock.calls.length; f.state.incomplete = false;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.check).toHaveBeenCalledTimes(2); expect(f.load).toHaveBeenCalledTimes(loaded);
+    expect(f.coordinator.nextWakeAt()).toBeNull();
+  });
+  it("keeps a failed watchdog reconciliation as concrete retry debt", async () => {
+    const f = fixture(); f.rows.watchdogs.push({ id: "watchdog", companyId: "selected" }); f.state.watchdogFailed = true;
+    await f.worker.ready; expect(f.coordinator.nextWakeAt()).toBe(1_030_000);
+    const loaded = f.load.mock.calls.length; f.state.watchdogFailed = false;
     await vi.advanceTimersByTimeAsync(30_000);
     expect(f.check).toHaveBeenCalledTimes(2); expect(f.load).toHaveBeenCalledTimes(loaded);
     expect(f.coordinator.nextWakeAt()).toBeNull();
