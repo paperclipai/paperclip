@@ -100,7 +100,8 @@ The separate explicit-only `rolling-web-deployment` suite uses the same syntheti
 projectless workflow, four-admission budget, thirty-minute limit, and independent
 run/file oracles. Its supervisor starts an independent empty-home server, waits
 for `/api/ready`, moves ingress, sends SIGTERM to the predecessor, and deletes
-that predecessor's whole home and build. Continuous ordinary task reads and
+that predecessor's whole home and build. Cleanup makes read-only cache directories
+removable only after shutdown, without following dependency symlinks. Continuous ordinary task reads and
 comment saves must have zero failures, and every accepted save must be read back
 exactly once. Forced process cleanup fails graceful qualification even if the
 successor recovers the execution. The read-only observer shares the controllers'
