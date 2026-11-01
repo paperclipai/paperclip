@@ -95,7 +95,15 @@ async function resolveTrustedExecutable(
   if (commandName.includes("/") || commandName.includes("\\")) {
     return null;
   }
-  const pathValue = trustedEnv.PATH ?? trustedEnv.Path ?? "";
+  const windowsPathKey =
+    process.platform === "win32"
+      ? Object.keys(trustedEnv).find((key) => key.toUpperCase() === "PATH")
+      : undefined;
+  const pathValue =
+    trustedEnv.PATH ??
+    trustedEnv.Path ??
+    (windowsPathKey ? trustedEnv[windowsPathKey] : undefined) ??
+    "";
   const delimiter = process.platform === "win32" ? ";" : ":";
   const dirs = pathValue.split(delimiter).filter(Boolean);
   const exts =
