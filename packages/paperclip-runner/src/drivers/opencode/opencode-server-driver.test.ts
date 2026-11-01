@@ -34,6 +34,9 @@ import { localIntegrityBoundaryGolden } from "../../../test-support/local-integr
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 import {
   OpenCodeServerDriver,
+  harnessRoutingSessionId,
+  isOpenCodeGoBaseUrl,
+  openCodeGoProviderHeaders,
   openCodeServerDriverInternals,
 } from "./opencode-server-driver.js";
 
@@ -750,6 +753,77 @@ describe("OpenCodeServerDriver", () => {
       session = undefined;
       expect(await pendingText).toBe("aborted");
       await expect(fetch(url, { method: "POST", headers, body: JSON.stringify(payload) })).rejects.toThrow();
+    } finally {
+      await session?.close({ reason: "test" });
+      await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); });
+    }
+  });
+
+  it("adds the OpenCode Go routing session header only for the Go endpoint", () => {
+    expect(isOpenCodeGoBaseUrl("https://opencode.ai/zen/go/v1")).toBe(true);
+    expect(isOpenCodeGoBaseUrl("https://opencode.ai/zen/go/v1/")).toBe(true);
+    expect(isOpenCodeGoBaseUrl("https://opencode.ai/zen/v1")).toBe(false);
+    expect(isOpenCodeGoBaseUrl("https://opencode.ai.evil.test/zen/go/v1")).toBe(false);
+    expect(isOpenCodeGoBaseUrl("https://gateway.example/v1")).toBe(false);
+    expect(isOpenCodeGoBaseUrl("not a url")).toBe(false);
+    expect(openCodeGoProviderHeaders("https://opencode.ai/zen/go/v1", "session-1")).toEqual({
+      "x-opencode-session": "session-1",
+    });
+    // The harness identity wins so a resumed session keeps one routing identity.
+    expect(openCodeGoProviderHeaders("https://opencode.ai/zen/go/v1", "session-1", "ses_open")).toEqual({
+      "x-opencode-session": "ses_open",
+    });
+    expect(openCodeGoProviderHeaders("https://opencode.ai/zen/go/v1", "session-1", "  ")).toEqual({
+      "x-opencode-session": "session-1",
+    });
+    expect(openCodeGoProviderHeaders("https://opencode.ai/zen/go/v1", "")).toEqual({});
+    expect(openCodeGoProviderHeaders("https://gateway.example/v1", "session-1", "ses_open")).toEqual({});
+  });
+
+  it("reads the harness routing identity under the header name the harness sends", () => {
+    // opencode 1.18.34 on a projected paperclip provider sends these three
+    // headers and never sends x-opencode-session.
+    expect(harnessRoutingSessionId({
+      "x-opencode-session-id": "ses_open",
+      "x-session-affinity": "ses_open",
+      "x-session-id": "ses_open",
+    })).toBe("ses_open");
+    expect(harnessRoutingSessionId({ "x-session-affinity": "ses_affinity", "x-session-id": "ses_affinity" })).toBe("ses_affinity");
+    expect(harnessRoutingSessionId({ "x-opencode-session": "ses_explicit", "x-session-affinity": "ses_other" })).toBe("ses_explicit");
+    expect(harnessRoutingSessionId({ "x-session-affinity": ["ses_first", "ses_second"] })).toBe("ses_first");
+    expect(harnessRoutingSessionId({ "x-session-affinity": "  " })).toBeUndefined();
+    expect(harnessRoutingSessionId({})).toBeUndefined();
+  });
+
+  it("passes an explicit harness routing session through to the gateway", async () => {
+    await chmod(fixture, 0o755);
+    const received: Array<Record<string, string | string[] | undefined>> = [];
+    const upstream = createHttpServer((request, response) => {
+      received.push(request.headers);
+      request.resume();
+      response.writeHead(200, { "content-type": "text/event-stream" }).end("data: [DONE]\n\n");
+    });
+    await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture address");
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-session-header-"));
+    roots.push(root);
+    let session: Awaited<ReturnType<OpenCodeServerDriver["openSession"]>> | undefined;
+    try {
+      const driver = new OpenCodeServerDriver({
+        model: "paperclip/team/model-alias", runtimeDirectory: root, command: fixture,
+        environment: { PATH: process.env.PATH, PAPERCLIP_AI_PROVIDER_URL: `http://127.0.0.1:${address.port}/custom/v1`, PAPERCLIP_AI_PROVIDER_KEY: "fixture-key" },
+      });
+      session = await driver.openSession({ runId: "session-header", normalizedSessionId: "session-header", workingDirectory: root });
+      const config = JSON.parse(await readFile(join(root, "session-header", "config", "opencode", "opencode.json"), "utf8"));
+      const { baseURL, apiKey } = config.provider.paperclip.options;
+      const url = `${baseURL}/chat/completions`;
+      const body = JSON.stringify({ model: "team/model-alias", stream: true, messages: [] });
+      const base = { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
+      expect((await fetch(url, { method: "POST", headers: { ...base, "x-opencode-session": "opencode-session-fixture" }, body })).status).toBe(200);
+      expect((await fetch(url, { method: "POST", headers: base, body })).status).toBe(200);
+      expect(received[0]?.["x-opencode-session"]).toBe("opencode-session-fixture");
+      expect(received[1]?.["x-opencode-session"]).toBeUndefined();
     } finally {
       await session?.close({ reason: "test" });
       await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); });
