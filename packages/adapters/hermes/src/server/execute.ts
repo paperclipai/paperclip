@@ -458,41 +458,43 @@ export async function execute(
   const args: string[] = ["chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
-  if (model) {
+  const isResume = Boolean(sessionId);
+
+  if (model && !isResume) {
     args.push("-m", model);
   }
 
   // Always pass --provider when we have a resolved one (not "auto").
   // "auto" means Hermes will decide on its own — no need to pass it.
-  if (resolvedProvider !== "auto") {
+  if (resolvedProvider !== "auto" && !isResume) {
     args.push("--provider", resolvedProvider);
   }
 
-  if (toolsets) {
+  if (toolsets && !isResume) {
     args.push("-t", toolsets);
   }
 
-  if (maxTurns && maxTurns > 0) {
+  if (maxTurns && maxTurns > 0 && !isResume) {
     args.push("--max-turns", String(maxTurns));
   }
 
-  if (worktreeMode) args.push("-w");
-  if (checkpoints) args.push("--checkpoints");
+  if (worktreeMode && !isResume) args.push("-w");
+  if (checkpoints && !isResume) args.push("--checkpoints");
   if (cfgBoolean(config.verbose) === true) args.push("-v");
 
   // Tag sessions as "tool" source so they don't clutter the user's session history.
   // Requires hermes-agent >= PR #3255 (feat/session-source-tag).
-  args.push("--source", "tool");
+  if (!isResume) args.push("--source", "tool");
 
   // Bypass Hermes dangerous-command approval prompts.
   // Paperclip agents run as non-interactive subprocesses with no TTY,
   // so approval prompts would always timeout and deny legitimate commands
   // (curl, python3 -c, etc.). Agents operate in a sandbox — the approval
   // system is designed for human-attended interactive sessions.
-  args.push("--yolo");
+  if (!isResume) args.push("--yolo");
 
   // Failed resumes remain failures. Do not infer a safe restart from CLI text.
-  if (sessionId) args.push("--resume", sessionId);
+  if (isResume) args.push("--resume", sessionId);
   if (extraArgs?.length) args.push(...extraArgs);
 
   // ── Build environment ──────────────────────────────────────────────────
