@@ -298,6 +298,13 @@ provider has stopped or change native cancellation acknowledgement.
 
 A known execution hold is a waiting condition, not a new execution attempt. Every issue wake must read the current effective reconciliation hold under the issue admission lock before creating a run. Resolved recovery bookkeeping can still carry a no-replay hold; only clearing the effective hold makes admission eligible again. The final dispatch gate remains required for changes after admission.
 
+When the board reconciles one legacy no-replay hold for a source run, sibling
+holds that share the same company, task, kind, cause, fingerprint, and run id
+share that verified decision and lose their projecting `automaticRecovery.replay`
+block (one continuation owner). Settled no-replay holds on a `done` or `cancelled`
+task clear in place when the requested disposition matches the current status,
+without a reopen→`todo` status flip.
+
 A queued legacy run denied by that final gate is still a wait. Its matching
 dispatch-gate receipt, task identity, and absence of runtime selection, execution
 ownership, environment leases, coordinator, or execution events prove that it
