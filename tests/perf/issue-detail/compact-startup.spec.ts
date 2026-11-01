@@ -76,7 +76,7 @@ test("a delayed Coordinator preference cannot expand a cold task through Classic
   });
   try {
     await page.goto(`/${fixture.prefix}/issues/${fixture.identifier}`);
-    await expect(page.getByRole("status", { name: "Loading conversation", exact: true })).toBeVisible();
+    await expect(page.getByTestId("shell-configuration-loading")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Review the latest investigation", exact: true })).not.toBeVisible();
     expect(historyRequests).toEqual([]);
     release();
