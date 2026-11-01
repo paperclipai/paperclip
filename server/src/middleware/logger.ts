@@ -110,8 +110,14 @@ export function createHttpLogger(baseLogger: Logger) {
             url: privateWebhookLogUrl(req.url),
           };
         }
+        const headers = req.headers as Record<string, unknown> | undefined;
         return {
           ...req,
+          ...(headers ? { headers: {
+            ...headers,
+            ...Object.fromEntries(["referer", "referrer"].filter(key => typeof headers[key] === "string")
+              .map(key => [key, stripSecretBearingUrlParts(headers[key] as string)])),
+          } } : {}),
           url:
             typeof req.url === "string"
               ? stripSecretBearingUrlParts(req.url)
