@@ -180,6 +180,10 @@ const URL_PREAMBLE_RE = /the url below to sign in/i;
 // characters and spaces. The pattern rejects the phrase when other prose shares
 // the line.
 const PROMPT_LINE_RE = /^Paste code here if prompted\b[\s>*]*$/;
+// Claude can insert a terminal copy hint between the OAuth URL and code input.
+// Ignore only that known decorative line, not arbitrary intervening output.
+const NATIVE_COPY_HINT_RE = /^Hold\s+Shift\s+while\s+selecting\b.{0,180}\bnative\s+copy\b/i;
+
 
 // The maximum number of characters between the end of the URL preamble line and
 // the start of the URL. The Claude UI prints the URL right after the preamble.
@@ -368,6 +372,7 @@ function reassembleUrl(lines: string[], startLine: number): SetupTokenUrlMatch |
  * Returns null when the first non-blank, non-repeat line is not the prompt.
  */
 function findBrowserCodePrompt(lines: string[], endLine: number, url: string): string | null {
+  let skippedNativeCopyHint = false;
   for (let i = endLine + 1; i < lines.length; i += 1) {
     const trimmed = lines[i].trim();
     if (trimmed.length === 0) continue;
@@ -375,6 +380,11 @@ function findBrowserCodePrompt(lines: string[], endLine: number, url: string): s
     // punctuation first, the same way the repeated-URL comparison needs, so a
     // repeated URL with a trailing punctuation mark still matches.
     if (trimmed.replace(TRAILING_PUNCTUATION_RE, "") === url) continue;
+    // Skip at most one known UI hint. All other unexpected text still fails.
+    if (!skippedNativeCopyHint && NATIVE_COPY_HINT_RE.test(trimmed)) {
+      skippedNativeCopyHint = true;
+      continue;
+    }
     return PROMPT_LINE_RE.test(trimmed) ? SETUP_TOKEN_PROMPT : null;
   }
   return null;

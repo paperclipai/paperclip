@@ -109,6 +109,31 @@ describe("parseSetupTokenPrompt", () => {
     expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
   });
 
+  it("ignores the native-copy hint inserted before the code prompt", () => {
+    // Simulates Claude's headless PTY display, including cursor-positioned
+    // words and doubled CRs. Every URL parameter is fabricated test data.
+    const copyHint = chaSpaced([
+      "Hold", "Shift", "while", "selecting", "to", "use", "your",
+      "terminal's", "native", "copy",
+    ]);
+    const text = [
+      PREAMBLE_LINE,
+      hardWrap(CLAUDE_COM_URL, 72),
+      copyHint,
+      chaSpaced(["Paste", "code", "here", "if", "prompted", ">"]),
+    ].join("\r\r\n");
+    const result = parseSetupTokenPrompt(text);
+    expect(result?.url).toBe(CLAUDE_COM_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
+  it("rejects unrelated text between the URL and code prompt", () => {
+    const text = [PREAMBLE_LINE, CLAUDE_COM_URL, "Sign in at an unrelated site", PROMPT_LINE].join(
+      "\n",
+    );
+    expect(parseSetupTokenPrompt(text)).toBeNull();
+  });
+
   it("reassembles the claude.ai URL from the 2.1.19 hard-wrapped plain-text form", () => {
     // `claude` 2.1.19 emits the URL as plain text with a hard line wrap and no
     // OSC 8 hyperlink. The parser joins the URL-character-only physical lines and
