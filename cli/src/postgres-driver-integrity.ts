@@ -47,50 +47,59 @@ function assertPatchedDriver(packageRoot: string, label: string): void {
   }
 }
 
-type PackageInventory = { packages: { name: string; directory: string }[]; links: string[] };
+type PackageInventory = { name: string; directory: string }[];
 
-function inventoryPackages(nodeModules: string, inventory: PackageInventory = { packages: [], links: [] }, depth = 0): PackageInventory {
+function inventoryPackages(nodeModules: string, inventory: PackageInventory = [], depth = 0): PackageInventory {
   if (depth > 32 || !fs.existsSync(nodeModules)) return inventory;
-  if (fs.lstatSync(nodeModules).isSymbolicLink()) { inventory.links.push(nodeModules); return inventory; }
   for (const entry of fs.readdirSync(nodeModules, { withFileTypes: true })) {
-    if (entry.name.startsWith(".")) continue;
+    if (entry.name.startsWith(".") || !entry.isDirectory()) continue;
     const directory = path.join(nodeModules, entry.name);
-    if (entry.isSymbolicLink()) { inventory.links.push(directory); continue; }
-    if (!entry.isDirectory()) continue;
-    const packages: string[] = [];
-    if (entry.name.startsWith("@")) {
-      for (const child of fs.readdirSync(directory, { withFileTypes: true })) {
-        if (child.isSymbolicLink()) inventory.links.push(path.join(directory, child.name));
-        else if (child.isDirectory()) packages.push(path.join(directory, child.name));
-      }
-    } else packages.push(directory);
+    const packages = entry.name.startsWith("@")
+      ? fs.readdirSync(directory, { withFileTypes: true }).filter((child) => child.isDirectory()).map((child) => path.join(directory, child.name))
+      : [directory];
     for (const packageDirectory of packages) {
-      inventory.packages.push({ name: path.relative(nodeModules, packageDirectory), directory: packageDirectory });
+      inventory.push({ name: path.relative(nodeModules, packageDirectory), directory: packageDirectory });
       inventoryPackages(path.join(packageDirectory, "node_modules"), inventory, depth + 1);
     }
   }
   return inventory;
 }
 
+function findForbiddenLinks(payloadRoot: string): string[] {
+  const forbidden: string[] = [];
+  const pending = [payloadRoot];
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const location = path.join(directory, entry.name);
+      if (entry.isDirectory()) pending.push(location);
+      else if (entry.isSymbolicLink()) {
+        const binLink = path.basename(directory) === ".bin" && path.basename(path.dirname(directory)) === "node_modules";
+        const target = fs.existsSync(location) ? fs.realpathSync(location) : null;
+        if (!binLink || !target || !inside(payloadRoot, target) || fs.statSync(location).isDirectory()) forbidden.push(location);
+      }
+    }
+  }
+  return forbidden;
+}
+
 const copiesOf = (inventory: PackageInventory, name: string) =>
-  inventory.packages.filter((entry) => entry.name === name).map((entry) => entry.directory);
+  inventory.filter((entry) => entry.name === name).map((entry) => entry.directory);
 
 export async function verifyPostgresDriverPayload(payloadPath: string): Promise<PostgresDriverResolution[]> {
   const payloadRoot = fs.realpathSync(payloadPath);
   const nodeModules = path.join(payloadRoot, "node_modules");
-  const inventory = inventoryPackages(nodeModules);
-  if (inventory.links.length > 0) {
-    throw new Error(`Payload node_modules must not contain linked packages; found ${inventory.links.map((link) => path.relative(payloadRoot, link)).join(", ")}.`);
+  const links = findForbiddenLinks(payloadRoot);
+  if (links.length > 0) {
+    throw new Error(`Payload must not contain linked files or packages; found ${links.slice(0, 10).map((link) => path.relative(payloadRoot, link)).join(", ")}.`);
   }
+  const inventory = inventoryPackages(nodeModules);
   const copies = copiesOf(inventory, "postgres");
   if (copies.length === 0) throw new Error(`Payload ${payloadPath} contains no postgres driver.`);
   const rootCopy = path.join(nodeModules, "postgres");
   const extra = copies.filter((copy) => copy !== rootCopy);
   if (extra.length > 0 || !copies.includes(rootCopy)) {
     throw new Error(`Payload must contain exactly one postgres driver at node_modules/postgres; found ${copies.map((copy) => path.relative(payloadRoot, copy)).join(", ")}.`);
-  }
-  if (fs.lstatSync(rootCopy).isSymbolicLink() || !inside(payloadRoot, fs.realpathSync(rootCopy))) {
-    throw new Error(`Payload driver node_modules/postgres must be a real directory inside the payload.`);
   }
   assertPatchedDriver(rootCopy, "Payload driver node_modules/postgres");
   const callers: { caller: string; directory: string }[] = POSTGRES_DRIVER_CALLERS.map((caller) => ({ caller, directory: path.join(nodeModules, caller) }));

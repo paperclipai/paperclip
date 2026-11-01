@@ -271,7 +271,7 @@ describe("managed install commands", () => {
     fs.mkdirSync(dbModules, { recursive: true });
     fs.symlinkSync(path.join(outside, "node_modules", "drizzle-orm"), path.join(dbModules, "drizzle-orm"));
     const runCommand = createGitCheckoutRunCommand(linkedSha);
-    await expect(installCommand({ ref: linkedSha, repo: "paperclipai/paperclip", yes: true }, { runCommand })).rejects.toThrow(/must not contain linked packages/);
+    await expect(installCommand({ ref: linkedSha, repo: "paperclipai/paperclip", yes: true }, { runCommand })).rejects.toThrow(/must not contain linked files or packages/);
     expect(runCommand.mock.calls.filter(([command, args]) => command === process.execPath && args.at(-1) === "--version")).toHaveLength(0);
     expect(runCommand.mock.calls.filter(([command, args]) => command === "curl" && args.includes("--output"))).toHaveLength(0);
     expect(readInstallManifest(paths)).toEqual(before);

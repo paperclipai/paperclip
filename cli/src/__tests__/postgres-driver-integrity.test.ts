@@ -47,6 +47,12 @@ describe("postgres driver payload verifier", () => {
     }
   });
 
+  it("accepts npm .bin links that stay inside the payload", async () => {
+    fs.mkdirSync(path.join(payload, "node_modules", ".bin"));
+    fs.symlinkSync("../drizzle-orm/postgres-js/driver.js", path.join(payload, "node_modules", ".bin", "tool"));
+    await expect(verifyPostgresDriverPayload(payload)).resolves.toHaveLength(3);
+  });
+
   it("checks every installed drizzle-orm wherever npm placed it", async () => {
     writeDrizzle(path.join(payload, "node_modules", "paperclipai", "node_modules", "drizzle-orm"));
     const resolutions = await verifyPostgresDriverPayload(payload);
@@ -97,24 +103,50 @@ describe("postgres driver payload verifier", () => {
     it("rejects a linked driver that a caller would load", async () => {
       fs.mkdirSync(dbModules(), { recursive: true });
       fs.symlinkSync(path.join(outside, "node_modules", "postgres"), path.join(dbModules(), "postgres"));
-      await expect(verifyPostgresDriverPayload(payload)).rejects.toThrow(/must not contain linked packages.*@paperclipai\/db\/node_modules\/postgres/);
+      await expect(verifyPostgresDriverPayload(payload)).rejects.toThrow(/must not contain linked files or packages.*@paperclipai\/db\/node_modules\/postgres/);
     });
 
     it("rejects a linked drizzle-orm whose own driver import resolves outside the payload", async () => {
       fs.mkdirSync(dbModules(), { recursive: true });
       fs.symlinkSync(path.join(outside, "node_modules", "drizzle-orm"), path.join(dbModules(), "drizzle-orm"));
-      await expect(verifyPostgresDriverPayload(payload)).rejects.toThrow(/must not contain linked packages.*@paperclipai\/db\/node_modules\/drizzle-orm/);
+      await expect(verifyPostgresDriverPayload(payload)).rejects.toThrow(/must not contain linked files or packages.*@paperclipai\/db\/node_modules\/drizzle-orm/);
     });
 
     it("rejects a linked nested node_modules directory", async () => {
       fs.symlinkSync(path.join(outside, "node_modules"), dbModules());
-      await expect(verifyPostgresDriverPayload(payload)).rejects.toThrow(/must not contain linked packages.*@paperclipai\/db\/node_modules/);
+      await expect(verifyPostgresDriverPayload(payload)).rejects.toThrow(/must not contain linked files or packages.*@paperclipai\/db\/node_modules/);
+    });
+
+    it("rejects a drizzle driver file linked to a driver outside the payload", async () => {
+      const driver = path.join(payload, "node_modules", "drizzle-orm", "postgres-js", "driver.js");
+      fs.rmSync(driver);
+      fs.symlinkSync(path.join(outside, "node_modules", "drizzle-orm", "postgres-js", "driver.js"), driver);
+      await expect(verifyPostgresDriverPayload(payload)).rejects.toThrow(/must not contain linked files or packages.*drizzle-orm\/postgres-js\/driver\.js/);
+    });
+
+    it("rejects a driver source file linked outside the payload even when its bytes match", async () => {
+      const queryFile = path.join(rootDriver(), "src", "query.js");
+      fs.copyFileSync(queryFile, path.join(outside, "query.js"));
+      fs.rmSync(queryFile);
+      fs.symlinkSync(path.join(outside, "query.js"), queryFile);
+      await expect(verifyPostgresDriverPayload(payload)).rejects.toThrow(/must not contain linked files or packages.*postgres\/src\/query\.js/);
+    });
+
+    it("rejects a hidden node_modules entry linked outside the payload", async () => {
+      fs.symlinkSync(path.join(outside, "node_modules"), path.join(payload, "node_modules", ".store"));
+      await expect(verifyPostgresDriverPayload(payload)).rejects.toThrow(/must not contain linked files or packages.*node_modules\/\.store/);
+    });
+
+    it("rejects a .bin link whose target is outside the payload", async () => {
+      fs.mkdirSync(path.join(payload, "node_modules", ".bin"));
+      fs.symlinkSync(path.join(outside, "node_modules", "drizzle-orm", "postgres-js", "driver.js"), path.join(payload, "node_modules", ".bin", "tool"));
+      await expect(verifyPostgresDriverPayload(payload)).rejects.toThrow(/node_modules\/\.bin\/tool/);
     });
 
     it("rejects a linked scoped package", async () => {
       fs.renameSync(path.join(payload, "node_modules", "@paperclipai", "db"), path.join(outside, "db"));
       fs.symlinkSync(path.join(outside, "db"), path.join(payload, "node_modules", "@paperclipai", "db"));
-      await expect(verifyPostgresDriverPayload(payload)).rejects.toThrow(/must not contain linked packages.*@paperclipai\/db/);
+      await expect(verifyPostgresDriverPayload(payload)).rejects.toThrow(/must not contain linked files or packages.*@paperclipai\/db/);
     });
   });
 
