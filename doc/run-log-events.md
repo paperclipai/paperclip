@@ -47,6 +47,23 @@ column decoders, including the lossless payload codec. Callers still wait for
 the durable write before they publish or acknowledge the event. Native-source
 replay and retry-exhaustion deduplication retain their existing transaction path.
 
+Performance diagnostics from the attempt's adapter event sink are the exception
+to callback acknowledgement. Each `run.performance.span` still reads current
+redaction settings and redacts its data before it enters a bounded, serialized
+write queue. The queue holds at most 32 pending writes and 256 KiB of data;
+a single larger event waits for its own write instead of returning early.
+Backpressure waits for existing writes. The attempt closes admission and drains
+accepted diagnostics on success, failure, restart detach, and retained ownership.
+A failed diagnostic write does not prevent later diagnostics or task settlement.
+
+Each diagnostic keeps its own row and is published only after its write commits.
+Its sequence and `created_at` describe persistence order, which can interleave
+differently with semantic events. Span offsets and durations retain the recorded
+execution chronology. Diagnostics do not update live task activity. A hard
+process exit can lose queued diagnostics; missing spans mean unobserved, not
+zero duration. Native source events and their durable acknowledgements are not
+queued. No queued diagnostic grants execution authority or proves completion.
+
 ## Legacy case handoff cleanup
 
 `legacy.case_handoff_cleanup_intent` records local cleanup ownership before

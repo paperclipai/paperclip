@@ -715,6 +715,7 @@ function readRunLiveStatusPatchFromPayload(
   }
 
   if (eventType === "heartbeat.run.event") {
+    if (payload.eventType === "run.performance.span") return null;
     const message = readString(payload.message);
     if (message) patch.message = message;
     patch.updatedAt = readString(payload.updatedAt) ?? eventCreatedAt;
