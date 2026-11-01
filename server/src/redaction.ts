@@ -991,6 +991,24 @@ function redactAgentEnvBinding(value: unknown): unknown {
   return REDACTED_EVENT_VALUE;
 }
 
+export function agentAdapterConfigDisplayDefaults(adapterConfig: Record<string, unknown>): Record<string, unknown> {
+  const env = isPlainObject(adapterConfig.env) ? adapterConfig.env : {};
+  // Present only bounded, non-secret legacy choices as read-only defaults. Keep
+  // every original env binding redacted; never expose source paths or refs.
+  const plain = (key: string) => {
+    const value = env[key];
+    return typeof value === "string" ? value : isPlainObject(value) && value.type === "plain" && typeof value.value === "string" ? value.value : undefined;
+  };
+  const legacyMode = plain("PAPERCLIP_CLAUDE_PLUGIN_IMPORT_MODE")?.trim().toLowerCase();
+  const legacyRetention = plain("PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_ENABLED");
+  const legacyDays = plain("PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_DAYS");
+  return {
+    ...(adapterConfig.profileImportMode === undefined && ["off", "copy", "cache"].includes(legacyMode ?? "") ? { profileImportMode: legacyMode } : {}),
+    ...(adapterConfig.transcriptRetentionEnabled === undefined && ["true", "false"].includes(legacyRetention ?? "") ? { transcriptRetentionEnabled: legacyRetention === "true" } : {}),
+    ...(adapterConfig.transcriptRetentionDays === undefined && legacyDays !== undefined && Number.isInteger(Number(legacyDays)) && Number(legacyDays) >= 1 ? { transcriptRetentionDays: Number(legacyDays) } : {}),
+  };
+}
+
 export function redactAgentAdapterConfig(
   adapterConfig: Record<string, unknown>,
 ): Record<string, unknown> {

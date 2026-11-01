@@ -13,7 +13,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { promises as fs } from "node:fs";
-import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -2096,6 +2096,39 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
     expect(agent.runtimeConfig.aiConnection).toBeUndefined();
   });
+  it("honors an agent's explicit Claude HOME and config directory without cleaning either", async () => {
+    const owner = `claude-fixed-home-${randomUUID()}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const account = await service.save(companyId, owner, {
+      provider: "anthropic", method: "api_key", ownership: "personal", name: owner,
+      apiKey: "fixture-claude-key", agentIds: [], allAgents: true,
+    }, "fixture-claude-key");
+    const configuredHome = path.join(home, "agent-owned", "home");
+    const configuredConfigDir = path.join(home, "agent-owned", "claude-config");
+    await mkdir(configuredHome, { recursive: true });
+    await mkdir(configuredConfigDir, { recursive: true });
+    await writeFile(path.join(configuredHome, "keep.txt"), "agent-owned home");
+    await writeFile(path.join(configuredConfigDir, "keep.txt"), "user Claude config");
+    const runtime = await prepareManagedAiRuntime(db, {
+      ...input,
+      adapterType: "claude_local",
+      responsibleUserId: owner,
+      binding: { provider: "anthropic", method: "api_key", mode: "connection", connectionId: account.connectionId, grantId: account.grantId },
+      config: { env: { HOME: configuredHome, CLAUDE_CONFIG_DIR: configuredConfigDir } },
+    });
+    try {
+      expect(runtime.config.env.HOME).toBe(configuredHome);
+      expect(runtime.config.env.CLAUDE_CONFIG_DIR).toBe(configuredConfigDir);
+      expect(runtime.config.managedAiHomeOverrides).toEqual({ home: true, claudeConfigDir: true });
+      expect(runtime.home).toBeUndefined();
+    } finally {
+      await runtime.cleanup();
+    }
+    await expect(readFile(path.join(configuredHome, "keep.txt"), "utf8")).resolves.toBe("agent-owned home");
+    await expect(access(path.join(configuredHome, "provider"))).resolves.toBeUndefined();
+    await expect(readFile(path.join(configuredConfigDir, "keep.txt"), "utf8")).resolves.toBe("user Claude config");
+  });
+
   it("runs two Claude subscription executions for the same grant at the same time", async () => {
     // Claude writes no auth file back to the grant, so two runs share no
     // mutable state and must not wait for each other.
@@ -2107,6 +2140,28 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(second.identity).toBe(first.identity);
     } finally {
       await Promise.all([first.cleanup(), second.cleanup()]);
+    }
+  });
+  it("keeps Claude subscription homes per-run unless transcript retention is enabled", async () => {
+    const envKey = "PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_ENABLED";
+    const previousValue = process.env[envKey];
+    delete process.env[envKey];
+    const subscription = { ...input, binding: { ...binding, method: "subscription" as const }, responsibleUserId: "alice", config: { model: "same-model" } };
+    try {
+      const account = (await service.list(companyId, "alice")).find(account => account.provider === "anthropic" && account.method === "subscription")!;
+      await service.setDefault(companyId, "alice", account.grantId);
+      const first = await prepareManagedAiRuntime(db, subscription);
+      const firstHome = first.home;
+      await first.cleanup();
+      const second = await prepareManagedAiRuntime(db, subscription);
+      try {
+        expect(second.home).not.toBe(firstHome);
+      } finally {
+        await second.cleanup();
+      }
+    } finally {
+      if (previousValue === undefined) delete process.env[envKey];
+      else process.env[envKey] = previousValue;
     }
   });
   it("runs a same-agent OpenAI subscription child alongside a still-open parent", async () => {

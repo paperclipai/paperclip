@@ -19,6 +19,15 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  		current: state.current,
  		quote: state.quote,
  		escaping: true,
+@@ -2831,7 +2831,7 @@
+ }
+ function buildClaudeCodeOptionsMeta(options, isolateUserSettings = false) {
+ 	const claudeCodeOptions = {};
+-	if (isolateUserSettings) claudeCodeOptions.settingSources = resolveClaudeCodeSettingSources();
++	if (isolateUserSettings) claudeCodeOptions.settingSources = resolveClaudeCodeSettingSources(options?.env);
+ 	if (options) assignClaudeCodeOptions(claudeCodeOptions, options);
+ 	const meta = {};
+ 	if (Object.keys(claudeCodeOptions).length > 0) meta.claudeCode = { options: claudeCodeOptions };
 @@ -2912,8 +2912,8 @@
  	}
  	return protectedKeys;

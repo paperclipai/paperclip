@@ -177,6 +177,7 @@ import {
 import {
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
+  agentAdapterConfigDisplayDefaults,
   redactEventPayload,
 } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
@@ -2946,6 +2947,7 @@ export function agentRoutes(
     return {
       ...agent,
       adapterConfig: redactAgentAdapterConfig(agent.adapterConfig as Record<string, unknown>),
+      adapterConfigDefaults: agentAdapterConfigDisplayDefaults(agent.adapterConfig as Record<string, unknown>),
     };
   }
 
@@ -2964,6 +2966,7 @@ export function agentRoutes(
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
       adapterConfig: redactAgentAdapterConfig(agent.adapterConfig),
+      adapterConfigDefaults: agentAdapterConfigDisplayDefaults(agent.adapterConfig),
       runtimeConfig: redactEventPayload(agent.runtimeConfig),
       permissions: agent.permissions,
       updatedAt: agent.updatedAt,

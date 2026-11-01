@@ -18,6 +18,7 @@ import {
   PRP_V2_EVENT_TYPES,
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
+  agentAdapterConfigDisplayDefaults,
   redactEventPayload,
   redactSensitiveText,
   sanitizeRecord,
@@ -828,6 +829,35 @@ second-line\" status=401`,
 
     expect(result?.args).toEqual(["--api-key", "not-a-command-secret"]);
     expect(result?.argv).toEqual(["--api-key", REDACTED_EVENT_VALUE]);
+  });
+
+  it("exposes only safe typed Claude choices while preserving legacy environment redaction", () => {
+    const config = { env: {
+      PAPERCLIP_CLAUDE_PLUGIN_IMPORT_MODE: { type: "plain", value: "cache" },
+      PAPERCLIP_CLAUDE_PLUGIN_SOURCE_DIR: { type: "plain", value: "private-source-canary" },
+      PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_ENABLED: "true",
+      PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_DAYS: "14",
+    } };
+    const result = redactAgentAdapterConfig(config);
+    expect(agentAdapterConfigDisplayDefaults(config)).toMatchObject({ profileImportMode: "cache", transcriptRetentionEnabled: true, transcriptRetentionDays: 14 });
+    expect(result.profileSourceDir).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain("private-source-canary");
+    expect(redactAgentAdapterConfig({ profileImportMode: "off", env: { PAPERCLIP_CLAUDE_PLUGIN_IMPORT_MODE: "cache" } }).profileImportMode).toBe("off");
+    const secret = redactAgentAdapterConfig({ env: { PAPERCLIP_CLAUDE_PLUGIN_IMPORT_MODE: { type: "secret_ref", secretId: "mode-secret" } } });
+    expect(secret.profileImportMode).toBeUndefined();
+    expect(agentAdapterConfigDisplayDefaults({ profileImportMode: "off", env: { PAPERCLIP_CLAUDE_PLUGIN_IMPORT_MODE: "cache" } })).toEqual({});
+    expect(agentAdapterConfigDisplayDefaults({ env: { PAPERCLIP_CLAUDE_PLUGIN_IMPORT_MODE: { type: "secret_ref", secretId: "private" } } })).toEqual({});
+  });
+
+  it("does not turn inherited Claude choices into saved typed settings", () => {
+    const displayed = redactAgentAdapterConfig({ env: {
+      PAPERCLIP_CLAUDE_PLUGIN_IMPORT_MODE: "cache",
+      PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_ENABLED: "true",
+      PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_DAYS: "14",
+    } });
+    expect(displayed.profileImportMode).toBeUndefined();
+    expect(displayed.transcriptRetentionEnabled).toBeUndefined();
+    expect(displayed.transcriptRetentionDays).toBeUndefined();
   });
 
   it("redacts every plaintext agent env binding while preserving secret references", () => {

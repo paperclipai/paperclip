@@ -38,13 +38,16 @@ import {
   asBoolean,
   asNumber,
   asString,
+  isPaperclipSkillSourceMissing,
   parseObject,
+  readPaperclipRuntimeSkillEntries,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
   prepareSandboxClaudeProbeRuntime,
 } from "./claude-config.js";
+import { managedClaudeProfileEnvironmentIdentity, prepareManagedClaudeAcpConfig } from "./managed-acp-config.js";
 import {
   buildAdapterTestTargetCheck,
   buildClaudeLoginRequiredHint,
@@ -56,7 +59,8 @@ import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
 import { detectClaudeLoginRequired, extractClaudeRetryNotBefore, isClaudeProviderQuotaError, parseClaudeStreamJson } from "./parse.js";
 import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
-import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { resolveClaudeModel, resolveClaudeRuntimeSettings, SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { resolveClaudeDesiredSkillNames } from "./skills.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -313,6 +317,10 @@ async function prepareClaudeRemoteManagedHome(
   });
   // Repoint CLAUDE_CONFIG_DIR onto the in-sandbox config dir.
   env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
+  if (input.config.managedAiConnection) {
+    env.CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL = "1";
+    env.CLAUDE_CODE_PLUGIN_CACHE_DIR = path.posix.join(remoteClaudeConfigDir, "plugins");
+  }
   return { stagedRuntime, teardown: registerWorkspaceSyncBack(stagedRuntime) };
 }
 
@@ -346,6 +354,9 @@ function withClaudeAcpDefaults(options: ClaudeAcpExecutorOptions): AcpxEngineExe
     prepareRemoteManagedHome: prepareClaudeRemoteManagedHome,
     classifyTerminalSessionFailure: classifyClaudeTerminalSessionFailure,
     ...options,
+    sessionEnvironmentIdentity: (env, config) => managedClaudeProfileEnvironmentIdentity(
+      options.sessionEnvironmentIdentity?.(env, config) ?? env, config,
+    ),
     adapterType: "claude_local",
     moduleDir,
     packageRootDir,
@@ -401,10 +412,28 @@ export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}):
       executionTarget: ctx.executionTarget,
       legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
     });
-    const result = await currentExecutor({
-      ...ctx,
-      config: buildClaudeAcpConfig(ctx.config, target?.kind === "remote" ? {} : process.env),
-    });
+    const acpConfig = buildClaudeAcpConfig(ctx.config, target?.kind === "remote" ? {} : process.env);
+    const { profileImportMode } = resolveClaudeRuntimeSettings(acpConfig, parseObject(acpConfig.env));
+    if (acpConfig.managedAiConnection && target?.kind !== "remote" && profileImportMode !== "off") {
+      const availableSkills = await readPaperclipRuntimeSkillEntries(ctx.config, moduleDir);
+      const selectedSkillNames = new Set(resolveClaudeDesiredSkillNames(ctx.config, availableSkills));
+      const excludedSkillNames = availableSkills
+        .filter((entry) => selectedSkillNames.has(entry.key) && !isPaperclipSkillSourceMissing(entry))
+        .map((entry) => entry.runtimeName);
+      const managedConfig = await prepareManagedClaudeAcpConfig({
+        config: acpConfig,
+        configEnv: acpConfig.env,
+        managedAiHomeOverrides: acpConfig.managedAiHomeOverrides,
+        processEnv: process.env,
+        companyId: ctx.agent.companyId,
+        agentId: ctx.agent.id,
+        runId: ctx.runId,
+        excludedSkillNames,
+      });
+      acpConfig.env = managedConfig.env;
+      if (managedConfig.importMessage) await ctx.onLog("stdout", managedConfig.importMessage);
+    }
+    const result = await currentExecutor({ ...ctx, config: acpConfig });
     return mapClaudeAcpAuthErrorCode(result);
   };
 }
