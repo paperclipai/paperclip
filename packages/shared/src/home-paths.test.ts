@@ -8,8 +8,10 @@ import {
   resolveDefaultLogsDir,
   resolveDefaultSecretsKeyFilePath,
   resolveDefaultStorageDir,
+  resolveLegacyInstanceServerLogFilePath,
   resolvePaperclipConfigPathForInstance,
   resolvePaperclipInstanceRoot,
+  resolveServerLogFilePath,
 } from "./home-paths.js";
 
 const ORIGINAL_ENV = { ...process.env };
@@ -30,6 +32,8 @@ describe("home path resolution", () => {
     expect(resolveDefaultEmbeddedPostgresDir()).toBe(path.join(instanceRoot, "db"));
     expect(resolveDefaultBackupDir()).toBe(path.join(instanceRoot, "data", "backups"));
     expect(resolveDefaultLogsDir()).toBe(path.join(instanceRoot, "logs"));
+    expect(resolveServerLogFilePath()).toBe(path.join(instanceRoot, "logs", "server.log"));
+    expect(resolveLegacyInstanceServerLogFilePath()).toBe(path.join(instanceRoot, "server.log"));
     expect(resolveDefaultStorageDir()).toBe(path.join(instanceRoot, "data", "storage"));
     expect(resolveDefaultSecretsKeyFilePath()).toBe(path.join(instanceRoot, "secrets", "master.key"));
   });
