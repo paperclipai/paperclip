@@ -1,3 +1,4 @@
+import { execNpmSync } from "./npm-invocation.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
@@ -252,7 +253,7 @@ test("Linux-produced Claude bundles retain the SDK and install native packages f
   assert.equal(readFileSync(join(bridge, "package.json"), "utf8"), bridgeBefore);
   assert.deepEqual(stageBundledProviderOptionalDependencies(directory, staged, profiles), staged);
   writeFileSync(join(directory, "package.json"), JSON.stringify(staged));
-  const packs = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--offline", "--json"], {
+  const packs = JSON.parse(execNpmSync(["pack", "--ignore-scripts", "--offline", "--json"], {
     cwd: directory, encoding: "utf8", timeout: 30_000,
     env: { ...process.env, HOME: directory, npm_config_cache: join(directory, "cache"), npm_config_update_notifier: "false" },
   }));
@@ -312,7 +313,7 @@ test("Codex bundles retain pinned JavaScript and delegate official consumer plat
   assert.equal(readFileSync(join(runtime, "bin/codex.js"), "utf8"), "// official JavaScript fixture, never executed\n");
   assert.deepEqual(stageBundledProviderOptionalDependencies(directory, staged, profiles), staged);
   writeFileSync(join(directory, "package.json"), JSON.stringify(staged));
-  const packs = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--offline", "--json"], {
+  const packs = JSON.parse(execNpmSync(["pack", "--ignore-scripts", "--offline", "--json"], {
     cwd: directory, encoding: "utf8", timeout: 30_000,
     env: { ...process.env, HOME: directory, npm_config_cache: join(directory, "cache"), npm_config_update_notifier: "false" },
   }));
@@ -604,72 +605,61 @@ test("server package staging applies every bundled runtime patch and preserves t
   }
   t.after(() => rmSync(fixtureDir, { recursive: true, force: true }));
 
-  const writeExecutable = (name, body) => {
-    writeFileSync(join(binDir, name), body, { mode: 0o755 });
+  const toolScript = join(binDir, "fixture-tools.cjs");
+  writeFileSync(toolScript, `
+const fs = require("node:fs"), path = require("node:path"), assert = require("node:assert/strict");
+const [tool, ...args] = process.argv.slice(2);
+fs.appendFileSync(process.env.FAKE_CALL_LOG, tool + " " + args.join(" ") + "\\n");
+if (tool === "npm") {
+  assert.deepEqual(args, ["install", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"]);
+  const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+  assert.equal("devDependencies" in pkg, false);
+  const writePackage = (name, metadata) => {
+    const directory = path.join("node_modules", name);
+    fs.mkdirSync(path.join(directory, "dist"), { recursive: true });
+    fs.writeFileSync(path.join(directory, "package.json"), JSON.stringify({ name, ...metadata }));
   };
-  writeExecutable(
-    "pnpm",
-    `#!/usr/bin/env bash
-set -euo pipefail
-printf 'pnpm %s\\n' "$*" >> "$FAKE_CALL_LOG"
-destination="\${!#}"
-cp "$FAKE_SOURCE_PACKAGE" "$destination/package.json"
-mkdir -p "$destination/node_modules/.pnpm"
-`,
-  );
-  writeExecutable(
-    "npm",
-    `#!/usr/bin/env bash
-set -euo pipefail
-printf 'npm %s\\n' "$*" >> "$FAKE_CALL_LOG"
-[ "$*" = "install --omit=dev --ignore-scripts --no-audit --no-fund" ]
-node -e 'const fs = require("node:fs"); const pkg = require("./package.json"); if ("devDependencies" in pkg) process.exit(1); for (const [name, version] of Object.entries(pkg.dependencies)) { const dir = "node_modules/" + name; fs.mkdirSync(dir + "/dist", { recursive: true }); fs.writeFileSync(dir + "/package.json", JSON.stringify({ name, version })); } for (const [bridge, runtimes] of Object.entries(pkg.overrides ?? {})) { for (const [name, version] of Object.entries(runtimes)) { const dir = "node_modules/" + name; fs.mkdirSync(dir, { recursive: true }); const native = name === "@openai/codex"; const targets = ["linux-x64","linux-arm64","darwin-x64","darwin-arm64","win32-x64","win32-arm64"]; const optionalDependencies = native ? Object.fromEntries(targets.map(target => [name+"-"+target,"npm:"+name+"@"+version+"-"+target])) : name === "@anthropic-ai/claude-agent-sdk" ? Object.fromEntries([...targets,"linux-x64-musl","linux-arm64-musl"].map(target => [name+"-"+target,version])) : undefined; fs.writeFileSync(dir + "/package.json", JSON.stringify({ name, version, optionalDependencies })); } }'
-node -e 'const fs=require("node:fs");fs.cpSync(process.env.FAKE_NATIVE_ARTIFACTS+"/@openai/codex-linux-x64","node_modules/@openai/codex-linux-x64",{recursive:true});fs.mkdirSync("node_modules/@openai/codex/vendor",{recursive:true});fs.writeFileSync("node_modules/@openai/codex/vendor/codex","producer fallback fixture");'
-mkdir -p node_modules/acpx/dist
-node -e 'const fs=require("node:fs");fs.mkdirSync("node_modules/esbuild",{recursive:true});fs.writeFileSync("node_modules/esbuild/package.json",JSON.stringify({name:"esbuild",version:"0.28.2",scripts:{postinstall:"node install.js"},optionalDependencies:Object.fromEntries(["linux-x64","darwin-arm64","darwin-x64"].map(target=>["@esbuild/"+target,"0.28.2"]))}));fs.mkdirSync("node_modules/@esbuild/linux-x64",{recursive:true});fs.writeFileSync("node_modules/@esbuild/linux-x64/package.json",JSON.stringify({name:"@esbuild/linux-x64",version:"0.28.2",os:["linux"],cpu:["x64"]}));'
-printf 'unpatched runtime\\n' > node_modules/acpx/dist/runtime.js
-printf '{"name":"acpx","version":"0.13.1"}\\n' > node_modules/acpx/package.json
-`,
-  );
-  writeExecutable(
-    "patch",
-    `#!/usr/bin/env bash
-set -euo pipefail
-printf 'patch %s\\n' "$*" >> "$FAKE_CALL_LOG"
-target=""
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-d" ]; then
-    target="$2"
-    shift 2
-  else
-    shift
-  fi
-done
-patch_input="$(cat)"
-printf '%s\\n' "$patch_input" > "$target/applied.patch"
-if [[ "$target" != */acpx ]]; then
-  exit 0
-fi
-grep -q spawnEnvironment <<< "$patch_input"
-grep -q spawnAgent <<< "$patch_input"
-grep -q onAgentStderr <<< "$patch_input"
-printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
-`,
-  );
+  for (const [name, version] of Object.entries(pkg.dependencies)) writePackage(name, { version });
+  const targets = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64", "win32-arm64"];
+  for (const runtimes of Object.values(pkg.overrides ?? {})) for (const [name, version] of Object.entries(runtimes)) {
+    const optionalDependencies = name === "@openai/codex"
+      ? Object.fromEntries(targets.map(target => [name + "-" + target, "npm:" + name + "@" + version + "-" + target]))
+      : name === "@anthropic-ai/claude-agent-sdk"
+        ? Object.fromEntries([...targets, "linux-x64-musl", "linux-arm64-musl"].map(target => [name + "-" + target, version])) : undefined;
+    writePackage(name, { version, optionalDependencies });
+  }
+  writePackage("node-pty", { version: pkg.optionalDependencies["node-pty"] });
+  fs.cpSync(path.join(process.env.FAKE_NATIVE_ARTIFACTS, "@openai/codex-linux-x64"), "node_modules/@openai/codex-linux-x64", { recursive: true });
+  fs.mkdirSync("node_modules/@openai/codex/vendor", { recursive: true });
+  fs.writeFileSync("node_modules/@openai/codex/vendor/codex", "producer fallback fixture");
+  writePackage("esbuild", { version: "0.28.2", scripts: { postinstall: "node install.js" }, optionalDependencies: Object.fromEntries(["linux-x64", "darwin-arm64", "darwin-x64"].map(target => ["@esbuild/" + target, "0.28.2"])) });
+  writePackage("@esbuild/linux-x64", { version: "0.28.2", os: ["linux"], cpu: ["x64"] });
+  writePackage("acpx", { version: "0.13.1" });
+  fs.writeFileSync("node_modules/acpx/dist/runtime.js", "unpatched runtime\\n");
+} else if (tool === "patch") {
+  const target = args[args.indexOf("-d") + 1], patch = fs.readFileSync(0, "utf8").trimEnd() + "\\n";
+  fs.writeFileSync(path.join(target, "applied.patch"), patch);
+  if (path.basename(target) === "acpx") {
+    for (const marker of ["spawnEnvironment", "spawnAgent", "onAgentStderr"]) assert.ok(patch.includes(marker));
+    fs.writeFileSync(path.join(target, "dist/runtime.js"), "patched spawnEnvironment runtime\\n");
+  }
+} else throw new Error("Unexpected fixture tool");
+`);
 
   execFileSync(
     process.execPath,
     [
       "--input-type=module", "-e",
-      `import { prepareBundledPackage } from ${JSON.stringify(new URL("./prepare-bundled-package.mjs", import.meta.url).href)}; prepareBundledPackage(process.argv[1], process.argv[2], { sourceRoot: process.argv[3] });`,
+      `import { prepareBundledPackage } from ${JSON.stringify(new URL("./prepare-bundled-package.mjs", import.meta.url).href)}; prepareBundledPackage(process.argv[1], process.argv[2], { sourceRoot: process.argv[3], npmInvocation: { command: process.execPath, argsPrefix: [process.argv[4], "npm"] }, patchInvocation: { command: process.execPath, argsPrefix: [process.argv[4], "patch"] } });`,
       sourceDir,
       destinationDir,
       fixtureSourceRoot,
+      toolScript,
     ],
     {
       env: {
         ...process.env,
-        PATH: `${binDir}:${process.env.PATH}`,
+        PATH: process.env.PATH,
         FAKE_CALL_LOG: callLog,
         FAKE_SOURCE_PACKAGE: join(sourceDir, "package.json"),
         FAKE_NATIVE_ARTIFACTS: fixtureArtifacts,
@@ -701,9 +691,12 @@ printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
   );
   assert.match(
     readFileSync(callLog, "utf8"),
-    /patch -p1 --forward -d .*node_modules\/acpx/,
+    /patch -p1 --forward -d .*node_modules[\\/]acpx/,
   );
-  const patchedBundledDependencies = serverPackage.bundleDependencies.filter(name => rootPackage.pnpm.patchedDependencies[`${name}@${serverPackage.dependencies[name]}`]);
+  const patchedBundledDependencies = serverPackage.bundleDependencies.filter(name => {
+    const version = serverPackage.dependencies[name] ?? serverPackage.optionalDependencies?.[name];
+    return version && rootPackage.pnpm.patchedDependencies[`${name}@${version}`];
+  });
   assert.equal(
     readFileSync(callLog, "utf8")
       .split("\n")
@@ -711,7 +704,8 @@ printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
     patchedBundledDependencies.length,
   );
   for (const name of patchedBundledDependencies) {
-    const specifier = `${name}@${serverPackage.dependencies[name]}`;
+    const version = serverPackage.dependencies[name] ?? serverPackage.optionalDependencies?.[name];
+    const specifier = `${name}@${version}`;
     const patchPath = rootPackage.pnpm.patchedDependencies[specifier];
     assert.equal(
       readFileSync(

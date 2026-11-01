@@ -571,22 +571,32 @@ export interface SandboxManagedRuntimeClient {
  * authors every `targetPath`, but the native transport crosses the host↔sandbox
  * trust boundary, so we canonicalize and confine each mapping's source and target
  * to an orchestrator-owned root before handing the operation to a provider.
- * Absolute escapes and `..` traversal are rejected fail-closed. Sandbox and host
- * paths on the server are POSIX.
+ * Absolute escapes and `..` traversal are rejected fail-closed. Sandbox
+ * paths are POSIX; host paths use the host filesystem syntax.
  */
+const hostPathStyle = process.platform === "win32" ? "win32" : "posix";
+
 export function assertSyncOperationsConfined(
   operations: SandboxSyncOperation[],
-  roots: { sourceRoots: string[]; targetRoots: string[] },
+  roots: {
+    sourceRoots: string[];
+    targetRoots: string[];
+    sourcePathStyle?: "posix" | "win32";
+    targetPathStyle?: "posix" | "win32";
+  },
 ): void {
-  const confine = (candidate: string, allowed: string[], label: string): void => {
-    const normalized = path.posix.normalize(candidate);
-    if (!path.posix.isAbsolute(normalized) || normalized === ".." || normalized.includes("/../") || normalized.endsWith("/..")) {
+  const confine = (candidate: string, allowed: string[], label: string, style: "posix" | "win32"): void => {
+    const paths = style === "win32" ? path.win32 : path.posix;
+    const normalized = paths.normalize(candidate);
+    const absolute = (value: string) => paths.isAbsolute(value) && (style !== "win32" || paths.parse(value).root.length > 1);
+    if (!absolute(normalized)) {
       throw new Error(`sync operation ${label} path is not a confined absolute path: ${candidate}`);
     }
     const within = allowed.some((root) => {
-      const normalizedRoot = path.posix.normalize(root);
-      const prefix = normalizedRoot.endsWith("/") ? normalizedRoot : `${normalizedRoot}/`;
-      return normalized === normalizedRoot || normalized.startsWith(prefix);
+      const normalizedRoot = paths.normalize(root);
+      if (!absolute(normalizedRoot)) return false;
+      const relative = paths.relative(normalizedRoot, normalized);
+      return relative === "" || (!paths.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${paths.sep}`));
     });
     if (!within) {
       throw new Error(`sync operation ${label} path escapes its confinement root: ${candidate}`);
@@ -594,8 +604,8 @@ export function assertSyncOperationsConfined(
   };
   for (const operation of operations) {
     for (const mapping of operation.files) {
-      confine(mapping.sourcePath, roots.sourceRoots, "source");
-      confine(mapping.targetPath, roots.targetRoots, "target");
+      confine(mapping.sourcePath, roots.sourceRoots, "source", roots.sourcePathStyle ?? "posix");
+      confine(mapping.targetPath, roots.targetRoots, "target", roots.targetPathStyle ?? "posix");
     }
   }
 }
@@ -996,7 +1006,7 @@ export async function exportSandboxWorkspaceSnapshot(input: {
     operationId: input.operationId,
     files: [{ sourcePath: input.remoteDir, targetPath: input.stagingDir, kind: "directory", exclude: [".paperclip-runtime"] }],
   }];
-  assertSyncOperationsConfined(operations, { sourceRoots: [input.remoteDir], targetRoots: [input.stagingDir] });
+  assertSyncOperationsConfined(operations, { sourceRoots: [input.remoteDir], targetRoots: [input.stagingDir], targetPathStyle: hostPathStyle });
   if (!input.client.syncOut) throw Object.assign(new Error("Validated workspace export is unavailable for this provider"),
     { code: "WORKSPACE_SNAPSHOT_EXPORT_UNSUPPORTED" });
   await input.client.syncOut(operations);
@@ -1317,9 +1327,20 @@ export async function prepareSandboxManagedRuntime(input: {
   const syncWorkspace = input.syncWorkspace !== false &&
     (await fs.access(input.workspaceLocalDir).then(
       () => true,
-      (error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return false;
-        throw error;
+      async (error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        for (let parent = path.dirname(path.resolve(input.workspaceLocalDir)); ; parent = path.dirname(parent)) {
+          const existing = await fs.stat(parent).catch((cause: NodeJS.ErrnoException) => {
+            if (cause.code === "ENOENT") return null;
+            throw cause;
+          });
+          if (existing) {
+            if (!existing.isDirectory()) throw Object.assign(new Error("Workspace ancestor is not a directory"), { code: "ENOTDIR" });
+            break;
+          }
+          if (parent === path.dirname(parent)) break;
+        }
+        return false;
       },
     ));
   const workspaceInboundMode = input.workspaceInboundMode ?? "host_current";
@@ -1551,6 +1572,7 @@ export async function prepareSandboxManagedRuntime(input: {
       assertSyncOperationsConfined(operations, {
         sourceRoots: params.sourceRoots,
         targetRoots: params.targetRoots,
+        sourcePathStyle: hostPathStyle,
       });
       const upload = makeTransferProgress(
         input.onProgress,
@@ -1883,7 +1905,7 @@ export async function prepareSandboxManagedRuntime(input: {
           const { localPath, projectId, ignoreResolution } = source;
           const label = `project-${projectId}`;
           try {
-            if (!path.posix.isAbsolute(localPath)) {
+            if (!path.isAbsolute(localPath)) {
               throw new Error(`additional source localPath is not an absolute path: ${localPath}`);
             }
             if (
@@ -2116,6 +2138,7 @@ export async function prepareSandboxManagedRuntime(input: {
                       assertSyncOperationsConfined(operations, {
                         sourceRoots: [runtimeRootDir],
                         targetRoots: [tempDir],
+                        targetPathStyle: hostPathStyle,
                       });
                       const syncResult = await input.client.syncOut!(operations);
                       const transferredBytes = sumSyncResultBytes(syncResult);
@@ -2190,7 +2213,7 @@ export async function prepareSandboxManagedRuntime(input: {
                       { sourcePath: inputManifest, targetPath: remoteManifest, kind: "file" },
                       { sourcePath: helper, targetPath: remoteHelper, kind: "file" },
                     ] }];
-                    assertSyncOperationsConfined(inbound, { sourceRoots: [tempDir], targetRoots: [runtimeRootDir] });
+                    assertSyncOperationsConfined(inbound, { sourceRoots: [tempDir], targetRoots: [runtimeRootDir], sourcePathStyle: hostPathStyle });
                     await input.client.syncIn!(inbound);
                     try {
                       let captured = false;
@@ -2205,7 +2228,7 @@ export async function prepareSandboxManagedRuntime(input: {
                         const outbound: SandboxSyncOperation[] = [{ operationId: nextSyncOperationId(), files: [
                           { sourcePath: remoteOutput, targetPath: output, kind: "directory" },
                         ] }];
-                        assertSyncOperationsConfined(outbound, { sourceRoots: [runtimeRootDir], targetRoots: [tempDir] });
+                        assertSyncOperationsConfined(outbound, { sourceRoots: [runtimeRootDir], targetRoots: [tempDir], targetPathStyle: hostPathStyle });
                         await withWorkspaceRestoreStep("workspace_transfer", () => input.client.syncOut!(outbound));
                         checkpointSnapshot = readCheckpointSnapshot(path.join(output, "manifest.sqlite"), checkpointBaseline);
                         await fs.rename(path.join(output, "payload"), extractedDir);
@@ -2238,6 +2261,7 @@ export async function prepareSandboxManagedRuntime(input: {
                   assertSyncOperationsConfined(operations, {
                     sourceRoots: [workspaceRemoteDir],
                     targetRoots: [extractedDir],
+                    targetPathStyle: hostPathStyle,
                   });
                   await fs.mkdir(extractedDir, { recursive: true });
                   const workspaceRestore = makeTransferProgress(

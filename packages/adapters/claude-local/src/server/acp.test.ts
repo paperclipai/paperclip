@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { localSandboxPath as sandboxPath, localSandboxHostPath as sandboxHostPath, localSandboxShell, localSandboxShellArgs } from "@paperclipai/adapter-utils/test-fixtures/local-posix-sandbox";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
@@ -45,9 +46,11 @@ function createLocalSandboxRunner() {
       onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     }) => {
       counter += 1;
-      const command = input.command === "bash" ? "/bin/bash" : input.command;
-      return await runChildProcess(`claude-acp-sandbox-run-${counter}`, command, input.args ?? [], {
-        cwd: input.cwd ?? process.cwd(),
+      const isShell = input.command === "bash" || input.command === "sh";
+      const command = isShell ? localSandboxShell() : input.command;
+      const args = isShell ? localSandboxShellArgs(input.args ?? []) : input.args ?? [];
+      return await runChildProcess(`claude-acp-sandbox-run-${counter}`, command, args, {
+        cwd: input.cwd === "/" ? path.parse(process.cwd()).root : sandboxHostPath(input.cwd ?? process.cwd()),
         env: input.env ?? {},
         stdin: input.stdin,
         timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
@@ -108,7 +111,7 @@ afterEach(async () => {
       .splice(0)
       .map((root) => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })),
   );
-});
+}, process.platform === "win32" ? 30_000 : 10_000);
 
 class FakeRuntime {
   ensureInputs: Array<{
@@ -267,7 +270,7 @@ function buildContext(root: string, overrides: Partial<AdapterExecutionContext> 
   };
 }
 
-describe("claude_local ACP lane", () => {
+describe("claude_local ACP lane", { timeout: process.platform === "win32" ? 60_000 : 5_000 }, () => {
   it("uses the same default model in ACP startup and session identity", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-default-");
     const meta: AdapterInvocationMeta[] = [];
@@ -594,9 +597,9 @@ describe("claude_local ACP lane", () => {
     const root = await makeTempRoot("paperclip-claude-acp-skills-remote-");
     const skill = await createRuntimeSkill(root);
     const localCwd = path.join(root, "worktree");
-    const remoteCwd = path.join(root, "remote-workspace");
+    const remoteCwd = sandboxPath(path.join(root, "remote-workspace"));
     await fs.mkdir(localCwd, { recursive: true });
-    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(sandboxHostPath(remoteCwd), { recursive: true });
 
     const runtimes: FakeRuntime[] = [];
     const execute = createClaudeAcpExecutor({
@@ -654,7 +657,7 @@ describe("claude_local ACP lane", () => {
     expect(prompt).not.toContain(String(skillsAsset!.localDir));
     // ...and it really landed there (local runner extracts to the asset dir).
     await expect(
-      fs.readFile(path.join(inSandboxSkillRoot, "review", "SKILL.md"), "utf8"),
+      fs.readFile(path.join(sandboxHostPath(inSandboxSkillRoot), "review", "SKILL.md"), "utf8"),
     ).resolves.toContain("review skill");
   });
 
@@ -666,9 +669,9 @@ describe("claude_local ACP lane", () => {
     // set (that fallback only fires when `paperclipRuntimeSkills` is absent).
     const skill = await createRuntimeSkill(root);
     const localCwd = path.join(root, "worktree");
-    const remoteCwd = path.join(root, "remote-workspace");
+    const remoteCwd = sandboxPath(path.join(root, "remote-workspace"));
     await fs.mkdir(localCwd, { recursive: true });
-    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(sandboxHostPath(remoteCwd), { recursive: true });
 
     const runtimes: FakeRuntime[] = [];
     const execute = createClaudeAcpExecutor({
@@ -720,9 +723,9 @@ describe("claude_local ACP lane", () => {
     const root = await makeTempRoot("paperclip-claude-acp-skills-no-syncback-");
     const skill = await createRuntimeSkill(root);
     const localCwd = path.join(root, "worktree");
-    const remoteCwd = path.join(root, "remote-workspace");
+    const remoteCwd = sandboxPath(path.join(root, "remote-workspace"));
     await fs.mkdir(localCwd, { recursive: true });
-    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(sandboxHostPath(remoteCwd), { recursive: true });
     await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
 
     const runtimes: FakeRuntime[] = [];
@@ -765,9 +768,9 @@ describe("claude_local ACP lane", () => {
     // during the run, under the in-sandbox skill root the prompt names.
     const prompt = String(runtimes[0]?.startInputs[0]?.text ?? "");
     const inSandboxSkillRoot = prompt.match(/Skill root: (\S+)/)![1]!;
-    expect(inSandboxSkillRoot).toContain(path.join(remoteCwd, ".paperclip-runtime"));
+    expect(inSandboxSkillRoot).toContain(path.posix.join(remoteCwd, ".paperclip-runtime"));
     await expect(
-      fs.readFile(path.join(inSandboxSkillRoot, "review", "SKILL.md"), "utf8"),
+      fs.readFile(path.join(sandboxHostPath(inSandboxSkillRoot), "review", "SKILL.md"), "utf8"),
     ).resolves.toContain("review skill");
     // After the run's workspace restore, the host worktree carries the file the
     // run wrote inside the workspace proper...
@@ -803,9 +806,9 @@ describe("claude_local ACP lane", () => {
   it("creates the ACP session on the in-sandbox workspace cwd for runner-backed remote runs", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-remote-cwd-");
     const localCwd = path.join(root, "worktree");
-    const remoteCwd = path.join(root, "remote-workspace");
+    const remoteCwd = sandboxPath(path.join(root, "remote-workspace"));
     await fs.mkdir(localCwd, { recursive: true });
-    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(sandboxHostPath(remoteCwd), { recursive: true });
     await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
 
     const runtimes: FakeRuntime[] = [];
@@ -845,7 +848,7 @@ describe("claude_local ACP lane", () => {
     );
 
     expect(result.exitCode).toBe(0);
-    await expect(fs.readFile(path.join(remoteCwd, "hello.txt"), "utf8")).resolves.toBe("hi");
+    await expect(fs.readFile(path.join(sandboxHostPath(remoteCwd), "hello.txt"), "utf8")).resolves.toBe("hi");
     expect(runtimes[0]?.ensureInputs[0]?.cwd).toBe(remoteCwd);
     expect(runtimes[0]?.ensureInputs[0]?.cwd).not.toBe(localCwd);
   });
@@ -853,10 +856,10 @@ describe("claude_local ACP lane", () => {
   it("seeds the managed Claude config into the sandbox and repoints CLAUDE_CONFIG_DIR to the in-sandbox path", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-home-seed-");
     const localCwd = path.join(root, "worktree");
-    const remoteCwd = path.join(root, "remote-workspace");
+    const remoteCwd = sandboxPath(path.join(root, "remote-workspace"));
     const sharedClaudeConfig = path.join(root, "shared-claude-config");
     await fs.mkdir(localCwd, { recursive: true });
-    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(sandboxHostPath(remoteCwd), { recursive: true });
     await fs.mkdir(sharedClaudeConfig, { recursive: true });
     // Host shared Claude config the seed is built from.
     await fs.writeFile(
@@ -909,7 +912,7 @@ describe("claude_local ACP lane", () => {
     expect(remappedConfigDir.endsWith("/config")).toBe(true);
     // Seeded: settings.json was materialized into the in-sandbox config dir (the
     // local runner uses the host FS, so this is a real host path).
-    await expect(fs.readFile(path.join(remappedConfigDir, "settings.json"), "utf8")).resolves.toContain(
+    await expect(fs.readFile(path.join(sandboxHostPath(remappedConfigDir), "settings.json"), "utf8")).resolves.toContain(
       "permissions",
     );
     // C4 — no XDG_* variable is introduced for in-sandbox credential discovery.
@@ -919,10 +922,10 @@ describe("claude_local ACP lane", () => {
   it("test_claude_acp_seam_registers_workspace_sync_back", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-syncback-");
     const localCwd = path.join(root, "worktree");
-    const remoteCwd = path.join(root, "remote-workspace");
+    const remoteCwd = sandboxPath(path.join(root, "remote-workspace"));
     const sharedClaudeConfig = path.join(root, "shared-claude-config");
     await fs.mkdir(localCwd, { recursive: true });
-    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(sandboxHostPath(remoteCwd), { recursive: true });
     await fs.mkdir(sharedClaudeConfig, { recursive: true });
     await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
     await fs.writeFile(
@@ -946,7 +949,7 @@ describe("claude_local ACP lane", () => {
       return {
         ...turn,
         result: (async () => {
-          await fs.writeFile(path.join(remoteWorkspaceCwd, "from-sandbox.txt"), "synced", "utf8");
+          await fs.writeFile(path.join(sandboxHostPath(remoteWorkspaceCwd), "from-sandbox.txt"), "synced", "utf8");
           return await turn.result;
         })(),
       };
@@ -997,10 +1000,11 @@ describe("claude_local ACP lane", () => {
     // and name it with a sentinel marker so any leak is easy to spot.
     const root = await makeTempRoot("paperclip-claude-acp-restore-failure-");
     const localCwd = path.join(root, "SENTINEL-HOST-PATH-marker", "worktree");
-    const remoteCwd = path.join(root, "remote-workspace");
+    const remoteCwd = sandboxPath(path.join(root, "remote-workspace"));
     await fs.mkdir(localCwd, { recursive: true });
-    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(sandboxHostPath(remoteCwd), { recursive: true });
     await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
+    if (process.platform === "win32") await fs.writeFile(path.join(localCwd, "from-sandbox.txt"), "original", "utf8");
     process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
     process.env.PAPERCLIP_INSTANCE_ID = "test";
 
@@ -1018,8 +1022,8 @@ describe("claude_local ACP lane", () => {
       return {
         ...turn,
         result: (async () => {
-          await fs.writeFile(path.join(remoteWorkspaceCwd, "from-sandbox.txt"), "synced", "utf8");
-          await fs.chmod(localCwd, 0o500);
+          await fs.writeFile(path.join(sandboxHostPath(remoteWorkspaceCwd), "from-sandbox.txt"), "synced", "utf8");
+          await fs.chmod(process.platform === "win32" ? path.join(localCwd, "from-sandbox.txt") : localCwd, process.platform === "win32" ? 0o400 : 0o500);
           return await turn.result;
         })(),
       };
@@ -1063,19 +1067,21 @@ describe("claude_local ACP lane", () => {
 
       // Preserve the execution's exit code while reporting the restore failure.
       // Only a fixed diagnostic may contain the errno, never the raw error.
+      const errorCode = process.platform === "win32" ? "EPERM" : "EACCES";
       expect(result.exitCode).toBe(0);
       expect(result.resultJson?.workspaceRestoreFailure).toBe("restore_permission_denied");
       expect(result.resultJson?.workspaceRestoreDiagnostic).toEqual({
-        phase: "workspace", step: "directory_merge", errorCode: "EACCES",
+        phase: "workspace", step: "directory_merge", errorCode,
       });
       const allLogs = loggedLines.join("");
       expect(allLogs).not.toContain("SENTINEL-HOST-PATH-marker");
       expect(allLogs).not.toContain(localCwd);
-      const diagnostic = '[paperclip] Workspace restore diagnostic: {"phase":"workspace","step":"directory_merge","errorCode":"EACCES"}\n';
+      const diagnostic = `[paperclip] Workspace restore diagnostic: {"phase":"workspace","step":"directory_merge","errorCode":"${errorCode}"}\n`;
       expect(loggedLines.filter((line) => line.includes("Workspace restore diagnostic:"))).toEqual([diagnostic]);
-      expect(loggedLines.filter((line) => line !== diagnostic).join("")).not.toContain("EACCES");
+      expect(loggedLines.filter((line) => line !== diagnostic).join("")).not.toContain(errorCode);
       expect(allLogs).toContain("permission denied");
     } finally {
+      if (process.platform === "win32") await fs.chmod(path.join(localCwd, "from-sandbox.txt"), 0o600).catch(() => undefined);
       await fs.chmod(localCwd, 0o700).catch(() => undefined);
     }
   });
@@ -1083,9 +1089,9 @@ describe("claude_local ACP lane", () => {
   it("remaps a workspace-relative explicit CLAUDE_CONFIG_DIR onto the in-sandbox workspace path", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-explicit-inworkspace-");
     const localCwd = path.join(root, "worktree");
-    const remoteCwd = path.join(root, "remote-workspace");
+    const remoteCwd = sandboxPath(path.join(root, "remote-workspace"));
     await fs.mkdir(localCwd, { recursive: true });
-    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(sandboxHostPath(remoteCwd), { recursive: true });
     // Operator pins a config dir that lives INSIDE the workspace cwd, so it is
     // staged into the sandbox and its host prefix must be remapped onto the
     // in-sandbox workspace dir (never forwarded as the host path).
@@ -1149,13 +1155,13 @@ describe("claude_local ACP lane", () => {
   it("ignores a host-only explicit CLAUDE_CONFIG_DIR that cannot reach the sandbox and seeds the managed config instead", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-explicit-hostonly-");
     const localCwd = path.join(root, "worktree");
-    const remoteCwd = path.join(root, "remote-workspace");
+    const remoteCwd = sandboxPath(path.join(root, "remote-workspace"));
     const sharedClaudeConfig = path.join(root, "shared-claude-config");
     // An operator-pinned config dir OUTSIDE the workspace cwd: a host-only path the
     // sandbox cannot reach, so it must not be forwarded verbatim.
     const operatorConfigDir = path.join(root, "operator-claude-config");
     await fs.mkdir(localCwd, { recursive: true });
-    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(sandboxHostPath(remoteCwd), { recursive: true });
     await fs.mkdir(sharedClaudeConfig, { recursive: true });
     // Host shared Claude config the managed seed is built from.
     await fs.writeFile(
@@ -1212,7 +1218,7 @@ describe("claude_local ACP lane", () => {
     expect(remappedConfigDir).not.toBe(operatorConfigDir);
     expect(remappedConfigDir).toContain(".paperclip-runtime");
     expect(remappedConfigDir.endsWith("/config")).toBe(true);
-    await expect(fs.readFile(path.join(remappedConfigDir, "settings.json"), "utf8")).resolves.toContain(
+    await expect(fs.readFile(path.join(sandboxHostPath(remappedConfigDir), "settings.json"), "utf8")).resolves.toContain(
       "permissions",
     );
     // Observability: the un-portable override is flagged so the substitution is diagnosable.

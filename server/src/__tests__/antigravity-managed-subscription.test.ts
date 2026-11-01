@@ -39,6 +39,7 @@ vi.mock("@paperclipai/adapter-codex-local/server", () => ({
   decideCodexAuthMerge: vi.fn(), withAccountHomeSecretMutationLock: async (_environment: unknown, _companyId: unknown, work: () => Promise<void>) => work(),
 }));
 import { prepareManagedAiRuntime, withManagedAiProbe } from "../services/ai-connection-runtime.js";
+import { retryTemporaryDirectoryCleanupNow } from "../services/temporary-directory-cleanup.js";
 import { NativeEnvironmentProbeCleanupError } from "../vendor/paperclip-runner/index.js";
 
 const credential = (project?: string, token = "fixture-selected-refresh") => JSON.stringify({
@@ -172,10 +173,13 @@ describe("managed Antigravity subscription projection and writeback", () => {
       return realRm(...args);
     });
     try {
-      await expect(runtime.cleanup()).rejects.toThrow("fixture partial removal");
+      await expect(runtime.cleanup()).rejects.toMatchObject({
+        message: "The selected account credential is awaiting durable recovery. Retry shortly.",
+        cause: { message: "fixture database unavailable" },
+      });
       expect(account.journal).toMatchObject({ value: credential("resolved-project"), google: { verified: true } });
       unavailable = false;
-      await runtime.cleanup();
+      await retryTemporaryDirectoryCleanupNow();
       await expect(access(runtime.home!)).rejects.toMatchObject({ code: "ENOENT" });
       expect(account.rotation).toHaveBeenCalledOnce();
     } finally { unavailable = false; remove.mockRestore(); }

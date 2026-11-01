@@ -13,8 +13,10 @@ import { createCommandManagedRuntimeClient } from "@paperclipai/adapter-utils/co
 import { createTarballFromDirectory, exportSandboxWorkspaceSnapshot, restoreVerifiedSnapshotArchive } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 import { captureDirectorySnapshotOffThread, disposeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { getStorageService, type StorageService } from "../storage/index.js";
+import { logger } from "../middleware/logger.js";
 import { SystemRecoveryFailure } from "./system-recovery-state.js";
 import { recoveryRunAncestry } from "./recovery-run-ancestry.js";
+import { queueTemporaryDirectoryCleanup } from "./temporary-directory-cleanup.js";
 
 const storedFileSchema = z.object({ objectKey: z.string().min(1), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteSize: z.number().int().positive() });
 type StoredFile = z.infer<typeof storedFileSchema>;
@@ -136,7 +138,9 @@ export async function preserveWorkspaceSnapshot(input: {
     await input.db.update(workspaceOperations).set({ status: "succeeded", finishedAt: new Date(), updatedAt: new Date() })
       .where(eq(workspaceOperations.id, operation.id));
     return operation.id;
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally {
+    await queueTemporaryDirectoryCleanup(root);
+  }
 }
 
 /** Recovered files are an attachment to a fresh attempt, never an overlay.
@@ -189,7 +193,9 @@ export async function attachPreservedWorkspaceSnapshots(input: {
         // Never replace an earlier attachment or user edits on a restart.
         await rename(staging, destination);
         results.push({ operationId: operation.id, path: destination, sourceRunId });
-      } finally { await rm(staging, { recursive: true, force: true }); }
+      } finally {
+        await queueTemporaryDirectoryCleanup(staging);
+      }
     }
   }
   return results;
