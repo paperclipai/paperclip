@@ -47,7 +47,6 @@ import { buildPaperclipWakePayload, heartbeatService } from "../services/heartbe
 import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
 import { workspaceOperationService, isNativeWorkspaceFinalizationOperationActive } from "../services/workspace-operations.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
-import { instanceSettingsService } from "../services/instance-settings.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { issueService } from "../services/issues.js";
 import { caseHandoffService } from "../services/case-handoffs.js";
@@ -1589,7 +1588,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       } as const,
     });
 
-    expect(result).toMatchObject(changed);
+    // The upstream escalation guard rejects the stale observation before the
+    // routine-specific path runs. A null result means no recovery write occurred.
+    expect(result).toBeNull();
     const [updated] = await db.select().from(issues).where(eq(issues.id, routineIssue.id));
     expect(updated).toMatchObject(changed);
     const actions = await db

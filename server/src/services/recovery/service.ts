@@ -4235,11 +4235,15 @@ export function recoveryService(
   // Provider-quota waits and issues with real blockers are filtered out by the
   // caller.
   async function cancelStrandedRoutineExecution(input: {
-    issue: typeof issues.$inferSelect;
+    issue: RecoveryIssue;
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
     recoveryCause: StrandedRecoveryCause;
-  }) {
+  },
+    tx: DbTransaction,
+    publications: ActivityPublication[],
+    postCommitActions: IssuePostCommitAction[],
+  ) {
     // Greptile follow-up: decide eligibility and apply the cancellation in one
     // transaction. `escalateStrandedAssignedIssue` already holds the issue row
     // lock (taken after the routine row lock, see there) and rejected a stale
@@ -4254,10 +4258,9 @@ export function recoveryService(
     // does not linger as an "open" routine execution holding the run pointer.
     // Terminal updates in an external transaction queue their activity and
     // native-question cancellations; both run only after the cancellation commits.
-    const publications: ActivityPublication[] = [];
-    const postCommitActions: IssuePostCommitAction[] = [];
-    const transition = await db.transaction(async (tx) => {
-      const locked = await issuesSvc.getByIdForUpdate(input.issue.id, tx);
+    const transactionIssuesSvc = issueService(tx as unknown as Db);
+    const transition = await (async () => {
+      const locked = await transactionIssuesSvc.getByIdForUpdate(input.issue.id, tx);
       if (!locked) return null;
       if (
         locked.status !== input.previousStatus ||
@@ -4274,7 +4277,7 @@ export function recoveryService(
       );
       if (blockerIds.length > 0) return null;
       if (!(await routineExecutionWillFireAgain(locked, tx))) return null;
-      const updated = await issuesSvc.update(input.issue.id, {
+      const updated = await transactionIssuesSvc.update(input.issue.id, {
         status: "cancelled",
         executionRunId: null,
         executionAgentNameKey: null,
@@ -4282,15 +4285,13 @@ export function recoveryService(
         checkoutRunId: null,
       }, tx, publications, postCommitActions);
       return { kind: "cancelled" as const, issue: updated };
-    });
+    })();
     if (!transition) return null;
     if (transition.kind === "stale") return transition.issue;
-    for (const publication of publications) publishActivity(publication);
-    await executeIssuePostCommitActions(db, postCommitActions);
     const updated = transition.issue;
 
     const failureSummary = summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null;
-    await issuesSvc.addComment(
+    await transactionIssuesSvc.addComment(
       input.issue.id,
       [
         "Paperclip cancelled this recurring-run artifact after its execution died and automatic recovery was exhausted.",
@@ -4320,9 +4321,10 @@ export function recoveryService(
           }],
         },
       },
+      tx,
     );
 
-    await logActivity(db, {
+    await logActivity(tx as unknown as Db, {
       companyId: input.issue.companyId,
       actorType: "system",
       actorId: "recovery",
@@ -4343,7 +4345,7 @@ export function recoveryService(
         originKind: input.issue.originKind,
         originId: input.issue.originId,
       },
-    });
+    }, publications);
 
     return updated;
   }
@@ -4478,11 +4480,10 @@ export function recoveryService(
         previousStatus: input.previousStatus,
         latestRun: input.latestRun,
         recoveryCause,
-      });
+      }, tx, publications, postCommitActions);
       if (cancelled) return cancelled;
     }
 
-    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
       previousStatus: input.previousStatus,
