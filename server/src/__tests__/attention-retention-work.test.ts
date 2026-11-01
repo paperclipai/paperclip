@@ -160,8 +160,10 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(parentBlockerAdded).toBe(true);
     expect(await db.select().from(issueRelations).where(and(eq(issueRelations.issueId, child.id),
       eq(issueRelations.relatedIssueId, parent.id)))).toHaveLength(1);
-    await settle(); expect(coordinator!.nextWakeAt()).not.toBeNull();
-    await vi.advanceTimersByTimeAsync(delay + 2000); await archived("review", child.id); await quiet();
+    await settle();
+    const nextWakeAt = coordinator!.nextWakeAt();
+    expect(nextWakeAt).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(Math.max(0, nextWakeAt! - Date.now()) + 2000); await archived("review", child.id); await quiet();
     expect(await db.select().from(decisionArchiveNotificationOutbox).where(eq(decisionArchiveNotificationOutbox.sourceId, child.id))).toHaveLength(1);
   });
 
