@@ -125,7 +125,7 @@ process.exit(result.status ?? 98);
     const bin = path.join(root, "managed");
     await mkdir(bin);
     await exec("git", ["init", root]);
-    await writeFile(path.join(bin, "git"), githubLauncherSource(), { mode: 0o700 });
+    await writeFile(path.join(bin, "git"), githubLauncherSource({ accountHome: path.join(root, "account") }), { mode: 0o700 });
     const env = { ...process.env, ...githubBrokerEnvironment({
       GH_TOKEN: "host-token", GIT_AUTHOR_NAME: "Host", GIT_COMMITTER_NAME: "Host",
     }, { url: "", token: "" }), PATH: `${bin}:${process.env.PATH}` };
@@ -150,7 +150,7 @@ process.exit(result.status ?? 98);
     await exec("git", ["init", root]);
     await exec("git", ["-C", root, "config", "user.name", "Local Author"]);
     await exec("git", ["-C", root, "config", "user.email", "local@example.test"]);
-    await writeFile(path.join(bin, "git"), githubLauncherSource(), { mode: 0o700 });
+    await writeFile(path.join(bin, "git"), githubLauncherSource({ accountHome: path.join(root, "account") }), { mode: 0o700 });
     const server = createServer((_req, res) => { res.writeHead(403); res.end(); });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     const { port } = server.address() as { port: number };
@@ -175,7 +175,7 @@ process.exit(result.status ?? 98);
     cleanups.push(() => rm(root, {recursive:true,force:true}));
     const bin = path.join(root,"managed"), realBin = path.join(root,"real");
     await mkdir(bin); await mkdir(realBin);
-    await writeFile(path.join(bin,"gh"), githubLauncherSource(), {mode:0o700});
+    await writeFile(path.join(bin,"gh"), githubLauncherSource({ accountHome: path.join(root, "account") }), {mode:0o700});
     await writeFile(path.join(realBin,"gh"), '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({token:process.env.GH_TOKEN ?? null}));', {mode:0o700});
     const server = createServer((_req,res) => {
       res.setHeader("content-type","application/json");
@@ -238,7 +238,7 @@ fs.writeFileSync = (file, ...args) => {
     cleanups.push(() => rm(root, {recursive:true,force:true}));
     const bin = path.join(root,"managed"), realBin = path.join(root,"real");
     await mkdir(bin); await mkdir(realBin);
-    await writeFile(path.join(bin,"gh"), githubLauncherSource(), {mode:0o700});
+    await writeFile(path.join(bin,"gh"), githubLauncherSource({ accountHome: path.join(root, "account") }), {mode:0o700});
     await writeFile(path.join(realBin,"gh"), '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({token:process.env.GH_TOKEN ?? null}));', {mode:0o700});
     let requests = 0;
     const server = createServer((_req,res) => {
@@ -261,7 +261,7 @@ fs.writeFileSync = (file, ...args) => {
     cleanups.push(() => rm(root, { recursive: true, force: true }));
     const bin = path.join(root, "managed"), realBin = path.join(root, "real"), repo = path.join(root, "repo");
     for (const dir of [bin, realBin, repo, path.join(bin, "gh-config")]) await mkdir(dir, { recursive: true });
-    for (const name of ["git", "gh"]) await writeFile(path.join(bin, name), githubLauncherSource(), { mode: 0o700 });
+    for (const name of ["git", "gh"]) await writeFile(path.join(bin, name), githubLauncherSource({ accountHome: path.join(root, "account") }), { mode: 0o700 });
     await writeFile(path.join(realBin, "gh"), `#!/usr/bin/env node
 const {execFileSync}=require('node:child_process');
 const identity=execFileSync('git',['var','GIT_AUTHOR_IDENT'],{encoding:'utf8'}).trim();
@@ -328,6 +328,137 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     expect(await git("status", "--porcelain")).toBe(""); // unrelated public/local Git still works
     expect(env.GH_TOKEN).toBe("");
     expect(env.GIT_AUTHOR_NAME).toBe("");
+  });
+
+  it.each([true, false])("applies the account's commit-signing config to managed Git (signing enabled: %s)", async (signing) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-signing-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const accountHome = path.join(root, "account");
+    const bin = path.join(root, "managed");
+    await mkdir(path.join(accountHome, ".ssh"), { recursive: true });
+    await mkdir(bin);
+    const key = path.join(accountHome, ".ssh", "id_ed25519");
+    await exec("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key]);
+    // The account config names the PUBLIC key, as ssh-agent users do; the agent is not inherited.
+    await writeFile(path.join(accountHome, ".gitconfig"), signing
+      ? `[commit]\n\tgpgsign = true\n[gpg]\n\tformat = ssh\n[user]\n\tsigningkey = ${key}.pub\n`
+      : "[user]\n\tname = Account\n");
+    await exec("git", ["init", root]);
+    await exec("git", ["-C", root, "config", "user.name", "Local Author"]);
+    await exec("git", ["-C", root, "config", "user.email", "local@example.test"]);
+    await writeFile(path.join(bin, "git"), githubLauncherSource({ accountHome }), { mode: 0o700 });
+    // Managed environment nulls the global config and redirects HOME, like an agent run.
+    // The launcher reads Git settings from XDG_CONFIG_HOME too: pin it so a developer's own
+    // signing setup cannot turn the unsigned case into a signed one.
+    const env = { ...process.env, ...githubBrokerEnvironment({}, { url: "", token: "" }),
+      HOME: path.join(root, "agent-home"), XDG_CONFIG_HOME: path.join(root, "xdg-empty"), PATH: `${bin}:${process.env.PATH}` };
+    await exec(path.join(bin, "git"), ["commit", "--allow-empty", "-m", "Managed work"], { cwd: root, env });
+    const commit = (await exec("git", ["cat-file", "commit", "HEAD"], { cwd: root })).stdout;
+    expect(/^gpgsig /m.test(commit)).toBe(signing);
+  }, 15_000);
+
+  describe("account commit-signing edge cases", () => {
+    async function signingFixture() {
+      const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-signing-edge-"));
+      cleanups.push(() => rm(root, { recursive: true, force: true }));
+      const accountHome = path.join(root, "account");
+      const bin = path.join(root, "managed");
+      const repo = path.join(root, "repo");
+      await mkdir(path.join(accountHome, ".ssh"), { recursive: true });
+      await mkdir(bin);
+      const key = path.join(accountHome, ".ssh", "id_ed25519");
+      await exec("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key]);
+      await exec("git", ["init", repo]);
+      await exec("git", ["-C", repo, "config", "user.name", "Local Author"]);
+      await exec("git", ["-C", repo, "config", "user.email", "local@example.test"]);
+      await writeFile(path.join(bin, "git"), githubLauncherSource({ accountHome }), { mode: 0o700 });
+      // Managed environment nulls the global config and redirects HOME, like an agent run.
+      const env = { ...process.env, ...githubBrokerEnvironment({}, { url: "", token: "" }),
+        HOME: path.join(root, "agent-home"), XDG_CONFIG_HOME: path.join(root, "xdg-empty"),
+        PATH: `${bin}:${process.env.PATH}` };
+      const git = (args: string[], cwd = repo, extra: NodeJS.ProcessEnv = {}) =>
+        exec(path.join(bin, "git"), args, { cwd, env: { ...env, ...extra } });
+      const signed = async () => /^gpgsig /m.test((await exec("git", ["-C", repo, "cat-file", "commit", "HEAD"])).stdout);
+      return { root, accountHome, bin, repo, key, git, signed, env };
+    }
+    const signingConfig = (key: string, gpgsign: string) =>
+      `[commit]\n\tgpgsign${gpgsign}\n[gpg]\n\tformat = ssh\n[user]\n\tsigningkey = ${key}.pub\n`;
+
+    it("treats a commit.gpgsign key written without a value as true", async () => {
+      const { accountHome, key, git, signed } = await signingFixture();
+      await writeFile(path.join(accountHome, ".gitconfig"), signingConfig(key, ""));
+      await git(["commit", "--allow-empty", "-m", "Managed work"]);
+      expect(await signed()).toBe(true);
+    }, 15_000);
+
+    it("keeps the managed default author when the account signs and the repository has no identity", async () => {
+      const { accountHome, repo, key, git, signed } = await signingFixture();
+      await writeFile(path.join(accountHome, ".gitconfig"), signingConfig(key, " = true"));
+      await exec("git", ["-C", repo, "config", "--unset", "user.name"]);
+      await exec("git", ["-C", repo, "config", "--unset", "user.email"]);
+      await git(["commit", "--allow-empty", "-m", "Managed work"]);
+      expect(await signed()).toBe(true);
+      expect((await exec("git", ["-C", repo, "log", "-1", "--format=%an <%ae>"])).stdout.trim())
+        .toBe("Paperclip <noreply@paperclip.ing>");
+    }, 15_000);
+
+    it.each([["false", "true", false], ["true", "false", true]])(
+      "lets repository commit.gpgsign=%s win over the account's commit.gpgsign=%s", async (repoValue, accountValue, expected) => {
+        const { accountHome, repo, key, git, signed } = await signingFixture();
+        await writeFile(path.join(accountHome, ".gitconfig"), signingConfig(key, ` = ${accountValue}`));
+        await exec("git", ["-C", repo, "config", "commit.gpgsign", repoValue]);
+        await git(["commit", "--allow-empty", "-m", "Managed work"]);
+        expect(await signed()).toBe(expected);
+      }, 15_000);
+
+    it("evaluates includeIf rules in the repository selected with git -C", async () => {
+      const { accountHome, repo, key, git, signed } = await signingFixture();
+      await writeFile(path.join(accountHome, "signing.inc"), signingConfig(key, " = true"));
+      await writeFile(path.join(accountHome, ".gitconfig"), `[includeIf "gitdir:${repo}/"]\n\tpath = ~/signing.inc\n`);
+      await git(["-C", repo, "commit", "--allow-empty", "-m", "Managed work"], accountHome);
+      expect(await signed()).toBe(true);
+    }, 15_000);
+
+    it("reads the account config from a custom XDG_CONFIG_HOME", async () => {
+      const { root, key, git, signed } = await signingFixture();
+      const xdg = path.join(root, "xdg-account");
+      await mkdir(path.join(xdg, "git"), { recursive: true });
+      await writeFile(path.join(xdg, "git", "config"), signingConfig(key, " = true"));
+      await git(["commit", "--allow-empty", "-m", "Managed work"], undefined, { XDG_CONFIG_HOME: xdg });
+      expect(await signed()).toBe(true);
+    }, 15_000);
+
+    it("refuses to create commits when the account signing policy cannot be read", async () => {
+      const { accountHome, repo, git } = await signingFixture();
+      await writeFile(path.join(accountHome, ".gitconfig"), "[commit\n");
+      await expect(git(["commit", "--allow-empty", "-m", "Managed work"])).rejects.toThrow(/signing configuration/);
+      await exec("git", ["-C", repo, "config", "alias.ci", "commit"]);
+      await expect(git(["ci", "--allow-empty", "-m", "Managed work"])).rejects.toThrow(/signing configuration/);
+      await expect(exec("git", ["-C", repo, "rev-parse", "--verify", "HEAD"])).rejects.toThrow();
+      expect((await git(["status", "--porcelain"])).stdout).toBe(""); // commands that create no objects still work
+      // Snapshot plumbing creates no commit or tag, so an unreadable policy must not block it.
+      await git(["symbolic-ref", "HEAD"]);
+      await git(["write-tree"]);
+      await git(["diff-files", "--quiet"]);
+    }, 15_000);
+
+    it("points OpenPGP signing at the account's GnuPG home", async () => {
+      const { root, accountHome, bin, repo, env } = await signingFixture();
+      await mkdir(path.join(accountHome, ".gnupg"));
+      await writeFile(path.join(accountHome, ".gitconfig"), "[commit]\n\tgpgsign = true\n");
+      // A stand-in Git that only reports what the launcher exported; config lookups reach real Git.
+      const stub = path.join(root, "stub");
+      await mkdir(stub);
+      const realGit = (await exec("sh", ["-c", "command -v git"])).stdout.trim();
+      await writeFile(path.join(stub, "git"), `#!/bin/sh\ncase " $* " in *" config "*) exec ${realGit} "$@";; esac\necho "GNUPGHOME=$GNUPGHOME"\n`, { mode: 0o700 });
+      const hermetic: NodeJS.ProcessEnv = { ...env };
+      delete hermetic.GNUPGHOME; // do not inherit the developer's GnuPG home
+      const run = (extra: NodeJS.ProcessEnv) => exec(path.join(bin, "git"), ["version"],
+        { cwd: repo, env: { ...hermetic, PATH: `${bin}:${stub}:${process.env.PATH}`, ...extra } });
+      expect((await run({})).stdout.trim()).toBe(`GNUPGHOME=${path.join(accountHome, ".gnupg")}`);
+      // An explicit GnuPG home is the account's choice and is never replaced.
+      expect((await run({ GNUPGHOME: "/explicit/gnupg" })).stdout.trim()).toBe("GNUPGHOME=/explicit/gnupg");
+    }, 15_000);
   });
   it("keeps local Git commands off the broker and still asks for the rest", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-local-skip-"));

@@ -89,6 +89,25 @@ settles all started uploads before startup rejects; later files and the final
 permission step do not start. This changes startup scheduling, not credentials
 or callback transport selection.
 
+Managed `git` and `gh` run with the global Git configuration disabled, so the account's own
+Git settings do not apply. One exception keeps signed-commit policy intact: the launcher reads
+the signing settings of the account that owns the machine (`commit.gpgsign`, `tag.gpgsign`,
+`gpg.format`, `gpg.ssh.allowedSignersFile` and `user.signingkey`, resolved from the real account
+home, not from `$HOME`; `$XDG_CONFIG_HOME` is honored) and writes them to a per-operation scratch
+global configuration, so the repository's own configuration keeps its normal precedence over them.
+`includeIf` rules are evaluated in the repository selected with `-C`, `--git-dir` or `--work-tree`.
+A key written without a value (`[commit]` / `gpgsign`) means true. No other key is read, and no
+program setting such as `gpg.program` is carried over. For OpenPGP signing the launcher also points
+`GNUPGHOME` at the account's `.gnupg` unless one is already set. Signing uses the key file the
+account names. When `user.signingkey` names a public key (`*.pub`) and the matching private key file
+is readable, the launcher uses that file, because it deliberately does not inherit `ssh-agent`. A key
+that needs a passphrase cannot be used without an agent: the commit then fails and does not become
+unsigned. If the account's signing configuration cannot be read (a broken file, a timeout, an
+unwritable scratch directory), Git commands outside a short list that never create commits or tags
+(`status`, `diff`, `log`, `fetch`, `push`, `checkout`, ...) are refused instead of silently creating
+unsigned objects. Aliases and unknown subcommands are refused too, because they can create commits. An
+account without signing settings keeps today's behavior (unsigned commits).
+
 Scripts that previously read a persistent `GH_TOKEN` must use managed `git`, `gh`, or GitHub gateway tools. Managed execution skips legacy GitHub token bindings in agent, environment, project, and routine configuration before secret preflight. Configure personal or dedicated access through the GitHub connection instead. Directly invoking an unmanaged executable or retaining a token obtained during an earlier invocation is outside the managed invocation contract.
 
 ## Legacy hosts and networking
