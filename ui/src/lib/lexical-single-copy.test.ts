@@ -63,9 +63,13 @@ describe("lexical single copy", () => {
     //
     // With no override, pnpm honours every declared range, and the copy
     // checks below confirm the app and the editor landed on the same one.
-    const manifest = JSON.parse(readFileSync(join(workspaceRoot(), "package.json"), "utf8"));
-    const overrides: Record<string, string> = manifest.pnpm?.overrides ?? {};
-    const forced = Object.keys(overrides).filter(
+    const workspace = readFileSync(join(workspaceRoot(), "pnpm-workspace.yaml"), "utf8");
+    const overridesBlock = workspace.match(/^overrides:\n((?:[ \t].*\n|\n)*)/m)?.[1] ?? "";
+    const overrides = [...overridesBlock.matchAll(/^[ \t]+["']?([^"'\s#][^"']*?)["']?\s*:/gm)].map(
+      (match) => match[1],
+    );
+    expect(overrides.length, "pnpm-workspace.yaml must declare its overrides block").toBeGreaterThan(0);
+    const forced = overrides.filter(
       (name) => name === "lexical" || name.startsWith("@lexical/"),
     );
     expect(

@@ -19,16 +19,22 @@ import test from "node:test";
 import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 
+import { fileURLToPath } from "node:url";
+
 import cliEsbuildConfig from "../cli/esbuild.config.mjs";
 import { bundledCliNpmDependencies } from "./cli-bundled-npm-dependencies.mjs";
 import {
   createBundledInstallManifest,
   configureBundledProviderOverrides,
   materializePublishManifest,
+  readWorkspacePatchedDependencies,
   selectBundledDependencyPatches,
   stageBundledEsbuildOptionalDependencies,
   stageBundledProviderOptionalDependencies,
 } from "./prepare-bundled-package.mjs";
+
+const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+const workspacePatches = readWorkspacePatchedDependencies(repoRoot);
 
 const rootPackage = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const profileData = JSON.parse(await readFile(new URL("../packages/paperclip-runner/acpx-profiles.json", import.meta.url), "utf8"));
@@ -188,12 +194,13 @@ for (const version of ["0.12.0", "0.13.1"]) {
 }
 
 test("published packages preserve the patched ACPX runtime", () => {
+  assert.equal(rootPackage.pnpm, undefined);
   assert.equal(
-    rootPackage.pnpm.patchedDependencies["acpx@0.12.0"],
+    workspacePatches["acpx@0.12.0"],
     "patches/acpx@0.12.0.patch",
   );
   assert.equal(
-    rootPackage.pnpm.patchedDependencies["acpx@0.13.1"],
+    workspacePatches["acpx@0.13.1"],
     "patches/acpx@0.13.1.patch",
   );
   assert.equal(adapterUtilsPackage.dependencies.acpx, "0.12.0");
@@ -413,9 +420,9 @@ test("bundled esbuild cannot follow a platform payload or package namespace outs
 });
 
 test("Paperclip Runner pins the qualified ACPX host callbacks", () => {
-  assert.equal(rootPackage.pnpm.patchedDependencies["acpx@0.13.1"], "patches/acpx@0.13.1.patch");
+  assert.equal(workspacePatches["acpx@0.13.1"], "patches/acpx@0.13.1.patch");
   assert.equal(
-    rootPackage.pnpm.patchedDependencies["@agentclientprotocol/claude-agent-acp@0.73.0"],
+    workspacePatches["@agentclientprotocol/claude-agent-acp@0.73.0"],
     "patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
   );
   assert.equal(runnerPackage.dependencies.acpx, "0.13.1");
@@ -432,7 +439,7 @@ test("Paperclip Runner pins the qualified ACPX host callbacks", () => {
 
 test("published packages preserve the patched embedded-postgres runtime", () => {
   assert.equal(
-    rootPackage.pnpm.patchedDependencies["embedded-postgres@18.1.0-beta.16"],
+    workspacePatches["embedded-postgres@18.1.0-beta.16"],
     "patches/embedded-postgres@18.1.0-beta.16.patch",
   );
   assert.deepEqual(dbPackage.bundleDependencies, ["embedded-postgres"]);
@@ -712,7 +719,7 @@ printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
   );
   for (const name of patchedBundledDependencies) {
     const specifier = `${name}@${serverPackage.dependencies[name]}`;
-    const patchPath = rootPackage.pnpm.patchedDependencies[specifier];
+    const patchPath = workspacePatches[specifier];
     assert.equal(
       readFileSync(
         join(destinationDir, "node_modules", name, "applied.patch"),

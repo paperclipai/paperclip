@@ -2167,7 +2167,7 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
         {
           name: "workspace-root",
           private: true,
-          packageManager: "pnpm@9.15.4",
+          packageManager: "pnpm@11.27.0",
         },
         null,
         2,
@@ -2268,7 +2268,7 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
         {
           name: "workspace-root",
           private: true,
-          packageManager: "pnpm@9.15.4",
+          packageManager: "pnpm@11.27.0",
         },
         null,
         2,
@@ -2355,7 +2355,7 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
           {
             name: "workspace-root",
             private: true,
-            packageManager: "pnpm@9.15.4",
+            packageManager: "pnpm@11.27.0",
           },
           null,
           2,
@@ -2596,7 +2596,7 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
           {
             name: "workspace-root",
             private: true,
-            packageManager: "pnpm@9.15.4",
+            packageManager: "pnpm@11.27.0",
           },
           null,
           2,
@@ -2650,8 +2650,6 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
       await fs.rm(tempRoot, { recursive: true, force: true });
     }
   });
-
-
 
   it("records worktree setup and provision operations when a recorder is provided", async () => {
     const repoRoot = await createTempRepo();

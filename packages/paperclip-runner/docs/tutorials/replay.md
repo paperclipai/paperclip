@@ -13,7 +13,7 @@ The tutorial validates one fixture. It reduces the events in the CLI. It then sh
 ## Prerequisites
 
 - Node.js 20 or newer
-- pnpm 9 or newer
+- pnpm 11 or newer
 - a stable Rust toolchain with `cargo`
 - a Chromium-compatible browser
 

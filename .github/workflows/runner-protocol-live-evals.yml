@@ -225,7 +225,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - name: Resolve target lockfile without lifecycle scripts
         id: lock
@@ -364,7 +364,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - name: Download resolved target lockfile
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -480,7 +480,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - name: Download resolved lockfile for review binding
         if: needs.authorize.outputs.accounting_mode == 'controlled'
@@ -1049,7 +1049,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - name: Download immutable campaign catalog
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1199,7 +1199,7 @@ jobs:
         if: needs.authorize.outputs.accounting_mode == 'legacy'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - name: Verify the actual chat viewer before publication
         if: needs.authorize.outputs.accounting_mode == 'legacy'

@@ -14,8 +14,8 @@ the seed, exposure profile, bounds, and route contract behind what you see here.
 
 ## What you need
 
-- Node.js 20 or newer and pnpm 9 or newer (verified with Node 22.22.2 and pnpm
-  9.15.4).
+- Node.js 20 or newer and pnpm 11 or newer (verified with Node 24 and pnpm
+  11.27.0).
 - A Rust toolchain, because this path builds the real `paperclip-runnerd`
   binary. There is no offline fallback: the clean room is live-only by design.
 - A locally authenticated Codex CLI. The package server owns that

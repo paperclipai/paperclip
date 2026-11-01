@@ -53,8 +53,17 @@ const nativeSessionExecutor = await readFile(
 test("the runner pins every qualified ACPX production dependency", () => {
   assert.equal(runnerPackage.dependencies["@openai/codex"], "0.160.0");
   assert.equal(runnerPackage.dependencies["@anthropic-ai/claude-agent-sdk"], undefined);
-  assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/codex-acp@1.6.2>@openai/codex"], runnerPackage.dependencies["@openai/codex"]);
-  assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk"], "0.3.286");
+  assert.equal(rootPackage.pnpm, undefined);
+  assert.match(
+    workspace,
+    new RegExp(
+      `"@agentclientprotocol/codex-acp@1\\.6\\.2>@openai/codex":\\s*"${runnerPackage.dependencies["@openai/codex"].replaceAll(".", "\\.")}"`,
+    ),
+  );
+  assert.match(
+    workspace,
+    /"@agentclientprotocol\/claude-agent-acp@0\.73\.0>@anthropic-ai\/claude-agent-sdk":\s*"0\.3\.286"/,
+  );
   assert.deepEqual(runnerPackage.optionalDependencies, {
     "@github/copilot-darwin-arm64": "1.0.88",
     "@github/copilot-darwin-x64": "1.0.88",
@@ -96,23 +105,9 @@ test("the package exposes only the reviewed runner CLI binaries", () => {
   });
 });
 
-test("old and new pnpm configuration both apply the exact runtime patches", () => {
-  assert.equal(
-    rootPackage.pnpm.patchedDependencies["acpx@0.13.1"],
-    "patches/acpx@0.13.1.patch",
-  );
-  assert.equal(
-    rootPackage.pnpm.patchedDependencies[
-      "@agentclientprotocol/claude-agent-acp@0.73.0"
-    ],
-    "patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
-  );
-  assert.equal(
-    rootPackage.pnpm.patchedDependencies[
-      "@agentclientprotocol/codex-acp@1.6.2"
-    ],
-    "patches/@agentclientprotocol__codex-acp@1.6.2.patch",
-  );
+test("pnpm-workspace.yaml applies the exact runtime patches and package.json#pnpm is absent", () => {
+  assert.equal(rootPackage.pnpm, undefined);
+  assert.equal(rootPackage.packageManager, "pnpm@11.27.0");
   assert.match(workspace, /acpx@0\.13\.1: patches\/acpx@0\.13\.1\.patch/);
   assert.match(
     workspace,
@@ -122,7 +117,6 @@ test("old and new pnpm configuration both apply the exact runtime patches", () =
     workspace,
     /claude-agent-acp@0\.73\.0["']: patches\/@agentclientprotocol__claude-agent-acp@0\.73\.0\.patch/,
   );
-  assert.equal(rootPackage.pnpm.patchedDependencies["node@24.11.0"], undefined);
   assert.doesNotMatch(workspace, /node@24\.11\.0:/);
   assert.match(
     providerPackBuilder,

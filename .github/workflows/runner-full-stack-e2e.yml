@@ -204,7 +204,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
-          version: 9.15.4
+          version: 11.27.0
           run_install: false
 
       - name: Preflight reviewed report dependencies before paid admission
@@ -255,7 +255,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - name: Resolve target lockfile without lifecycle scripts
         id: lock
@@ -339,7 +339,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -663,7 +663,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -798,7 +798,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -971,7 +971,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - name: Validate actual manual cell against trusted evidence routing
         id: manual_cell_route
@@ -1437,7 +1437,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - name: Apply reviewed reporting lock corrections
         run: node tests/runner-e2e/prepare-report-lock.mjs
@@ -1979,7 +1979,7 @@ jobs:
           NPM_CONFIG_FUND: "false"
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       # Use a job-local store and disable lifecycle scripts throughout install.
       # OIDC is available to every step, even before the AWS credential exchange.

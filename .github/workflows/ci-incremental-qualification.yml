@@ -37,7 +37,7 @@ jobs:
           package-manager-cache: false
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
         with:
-          version: 9.15.4
+          version: 11.27.0
       - uses: ./.github/actions/setup-ci-dependencies
       - name: Prove conservative graphs, exact partitions, manifests and failure fallbacks
         run: node --test scripts/ci/test-selection*.test.mjs scripts/ci/vitest-impact-report.integration.test.mjs
