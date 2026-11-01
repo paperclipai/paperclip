@@ -25,6 +25,7 @@ import {
   heartbeatRuns,
   issueRecoveryActions,
   issueComments,
+  issueThreadInteractions,
   issues,
   nativeRunFinalizations,
   projects,
@@ -547,6 +548,27 @@ export function createPostgresRunDispatchAdapter(
     }));
   }
 
+  async function isPendingInteractionAddressee(
+    dbOrTx: Db,
+    input: { companyId: string; issueId: string; agentId: string; interactionId: string | null },
+  ): Promise<boolean> {
+    if (!input.interactionId) return false;
+    const [row] = await dbOrTx
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.id, input.interactionId),
+          eq(issueThreadInteractions.companyId, input.companyId),
+          eq(issueThreadInteractions.issueId, input.issueId),
+          eq(issueThreadInteractions.addresseeAgentId, input.agentId),
+          eq(issueThreadInteractions.status, "pending"),
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
+  }
+
   async function loadStalenessFacts(
     input: LoadStalenessFactsInput,
     _now: Date,
@@ -655,6 +677,12 @@ export function createPostgresRunDispatchAdapter(
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
       isInteractionWake,
+      isPendingInteractionAddressee: issue && wakeReason === "interaction_pending"
+        ? await isPendingInteractionAddressee(dbOrTx, {
+            companyId: input.companyId, issueId, agentId: input.agentId,
+            interactionId: readNonEmptyString(context.interactionId),
+          })
+        : false,
       isAuthorizedSourceScopedRecovery,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,
