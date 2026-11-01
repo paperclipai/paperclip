@@ -24,7 +24,7 @@ import { HttpError } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { normalizeResponsibleUserDenialCode } from "../responsible-user-denial-run-outcomes.js";
 import { parseObject } from "../../adapters/utils.js";
-import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON, isChatOriginPublicationCandidate, isExternalChatPresentationContext, mergeHeartbeatRunResultJson, resolveHeartbeatRunResponse, type RunPresentationDecision } from "../heartbeat-run-summary.js";
+import { boundHeartbeatRunResultOutput, CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON, isChatOriginPublicationCandidate, isExternalChatPresentationContext, mergeHeartbeatRunResultJson, resolveHeartbeatRunResponse, type RunPresentationDecision } from "../heartbeat-run-summary.js";
 import { normalizeMaxTurnStopReason } from "../heartbeat-stop-metadata.js";
 import { CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
 import { logActivity } from "../activity-log.js";
@@ -628,7 +628,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             ...(adapterResult.nativeFinalization || outcome === "cancelled"
               ? parseObject(latestRun?.resultJson)
               : {}),
-            ...parseObject(adapterResult.resultJson),
+            ...boundHeartbeatRunResultOutput(parseObject(adapterResult.resultJson)),
             ...(adapterResult.executionRecovery
               ? { executionRecovery: adapterResult.executionRecovery }
               : {}),
