@@ -272,6 +272,7 @@ export function Costs({
     queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
   };
 
   const policyMutation = useMutation({

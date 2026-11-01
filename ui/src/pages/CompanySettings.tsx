@@ -16,6 +16,12 @@ import { navigateTopLevel } from "@/lib/browserNavigation";
 import { companiesApi } from "../api/companies";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
+import {
+  budgetDollarsFromCents,
+  formatNumber,
+  MAX_BUDGET_CENTS,
+  parseBudgetDollarsToCents,
+} from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { SlidersHorizontal } from "lucide-react";
 import {
@@ -49,6 +55,7 @@ export function CompanySettings() {
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
+  const [budgetDollars, setBudgetDollars] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
   const [governance, setGovernance] = useState<InteractionResolverGovernance>({});
@@ -58,22 +65,38 @@ export function CompanySettings() {
     if (!selectedCompany) return;
     setCompanyName(selectedCompany.name);
     setDescription(selectedCompany.description ?? "");
+    setBudgetDollars(budgetDollarsFromCents(selectedCompany.budgetMonthlyCents ?? 0));
     setLogoUrl(selectedCompany.logoUrl ?? "");
     setGovernance(selectedCompany.interactionResolverGovernance ?? {});
   }, [selectedCompany]);
 
+  const parsedBudgetMonthlyCents = parseBudgetDollarsToCents(budgetDollars);
+  const budgetMonthlyCents = parsedBudgetMonthlyCents ?? 0;
+  const budgetValid = !budgetDollars.trim() || parsedBudgetMonthlyCents !== undefined;
+  const savedBudgetMonthlyCents = selectedCompany?.budgetMonthlyCents ?? 0;
+  const budgetEdited = budgetDollars.trim() !== budgetDollarsFromCents(savedBudgetMonthlyCents);
+  const budgetDirty = budgetValid && budgetMonthlyCents !== savedBudgetMonthlyCents;
+
   const generalDirty =
     !!selectedCompany &&
     (companyName !== selectedCompany.name ||
-      description !== (selectedCompany.description ?? ""));
+      description !== (selectedCompany.description ?? "") ||
+      budgetEdited);
 
   const generalMutation = useMutation({
     mutationFn: (data: {
       name: string;
       description: string | null;
+      budgetMonthlyCents?: number;
     }) => companiesApi.update(selectedCompanyId!, data),
-    onSuccess: () => {
+    onSuccess: (_company, variables) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      if (variables.budgetMonthlyCents !== undefined && selectedCompanyId) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.budgets.overview(selectedCompanyId)
+        });
+        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId) });
+      }
     }
   });
 
@@ -209,7 +232,8 @@ export function CompanySettings() {
   function handleSaveGeneral() {
     generalMutation.mutate({
       name: companyName.trim(),
-      description: description.trim() || null
+      description: description.trim() || null,
+      ...(budgetDirty ? { budgetMonthlyCents } : {})
     });
   }
 
@@ -251,6 +275,30 @@ export function CompanySettings() {
               placeholder="Optional organization description"
               onChange={(e) => setDescription(e.target.value)}
             />
+          </Field>
+          <Field
+            label="Monthly budget"
+            hint="Monthly spending limit for this organization. Leave blank for no limit."
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">$</span>
+              <input
+                className="w-32 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                data-testid="company-settings-budget-input"
+                type="text"
+                inputMode="decimal"
+                aria-label="Monthly budget in dollars"
+                placeholder="0"
+                value={budgetDollars}
+                onChange={(e) => setBudgetDollars(e.target.value)}
+              />
+              <span className="text-sm text-muted-foreground">/ month</span>
+            </div>
+            {!budgetValid && (
+              <p className="mt-1 text-xs text-destructive">
+                Enter a dollar amount from 0 to {formatNumber(MAX_BUDGET_CENTS / 100)}.
+              </p>
+            )}
           </Field>
         </div>
       </div>
@@ -322,7 +370,7 @@ export function CompanySettings() {
           <Button
             size="sm"
             onClick={handleSaveGeneral}
-            disabled={generalMutation.isPending || !companyName.trim()}
+            disabled={generalMutation.isPending || !companyName.trim() || !budgetValid}
           >
             {generalMutation.isPending ? "Saving..." : "Save changes"}
           </Button>

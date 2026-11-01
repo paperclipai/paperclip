@@ -26,6 +26,7 @@ import {
   type BuiltInAgentState,
 } from "@/api/builtInAgents";
 import { adapterCuratesModelOrder } from "../lib/model-utils";
+import { budgetDollarsFromCents, parseBudgetDollarsToCents } from "../lib/utils";
 
 /** Adapters whose config completeness is keyed on a non-empty `model`. */
 function isModelBasedAdapter(adapterType: string): boolean {
@@ -34,13 +35,6 @@ function isModelBasedAdapter(adapterType: string): boolean {
 
 function defaultAdapterType(state: BuiltInAgentState): string {
   return state.definition.defaultAdapterType ?? state.definition.allowedAdapterTypes?.[0] ?? "codex_local";
-}
-
-function parseBudgetMonthlyCents(value: string): number | undefined {
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  const cents = Math.round(Number(trimmed) * 100);
-  return Number.isFinite(cents) && cents >= 0 ? cents : undefined;
 }
 
 export interface ConfigureBuiltInAgentModalProps {
@@ -84,10 +78,9 @@ export function ConfigureBuiltInAgentModal({
     return typeof defaultModel === "string" ? defaultModel : "";
   });
   const [modelOpen, setModelOpen] = useState(false);
-  const [budgetDollars, setBudgetDollars] = useState<string>(() => {
-    const cents = definition.defaultBudgetMonthlyCents ?? 0;
-    return cents > 0 ? String(cents / 100) : "";
-  });
+  const [budgetDollars, setBudgetDollars] = useState<string>(
+    () => budgetDollarsFromCents(definition.defaultBudgetMonthlyCents ?? 0),
+  );
   const [error, setError] = useState<string | null>(null);
 
   // Restrict adapter choices to the registry's allow-list. Non-model adapters
@@ -120,7 +113,7 @@ export function ConfigureBuiltInAgentModal({
   const modelError = modelKnown
     ? null
     : `Model “${normalizedModel}” is not available for ${adapterType}. Choose a known model.`;
-  const budgetMonthlyCents = parseBudgetMonthlyCents(budgetDollars);
+  const budgetMonthlyCents = parseBudgetDollarsToCents(budgetDollars);
   const budgetValid = !budgetDollars.trim() || budgetMonthlyCents !== undefined;
   const canSubmit =
     budgetValid &&
