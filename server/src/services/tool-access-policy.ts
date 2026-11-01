@@ -52,6 +52,7 @@ import {
   profileIdsInBindingOrder,
 } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { canonicalToolArguments, readSignedToolArgumentsPayload, toolRequestIdentityHash } from "./tool-content-guards.js";
 
 class RejectedInvocationAdmission extends Error {
@@ -833,6 +834,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
       }
 
       const now = new Date();
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
       await tx.execute(sql`UPDATE tool_policies
         SET priority = (requested.ordinality * 100)::integer, updated_at = ${now.toISOString()}
         FROM jsonb_array_elements_text(${JSON.stringify(uniquePolicyIds)}::jsonb)
@@ -869,24 +871,27 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     }
     await input.managementContext?.reauthorize();
     const now = new Date();
-    const [policy] = await db
-      .insert(toolPolicies)
-      .values({
-        companyId: existing.companyId,
-        name,
-        description: existing.description,
-        policyType: existing.policyType,
-        priority: existing.priority + 1,
-        enabled: false,
-        selectors: existing.selectors ?? {},
-        conditions: existing.conditions ?? null,
-        config: existing.config ?? null,
-        createdByAgentId: input.actor?.agentId ?? null,
-        createdByUserId: input.actor?.userId ?? null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
+    const [policy] = await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+      return tx
+        .insert(toolPolicies)
+        .values({
+          companyId: existing.companyId,
+          name,
+          description: existing.description,
+          policyType: existing.policyType,
+          priority: existing.priority + 1,
+          enabled: false,
+          selectors: existing.selectors ?? {},
+          conditions: existing.conditions ?? null,
+          config: existing.config ?? null,
+          createdByAgentId: input.actor?.agentId ?? null,
+          createdByUserId: input.actor?.userId ?? null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+    });
     return policy;
   }
 
@@ -899,24 +904,27 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     assertSupportedGenericPolicyShape(body.policyType, body.conditions ?? null, body.config ?? null);
     await managementContext?.reauthorize();
     const now = new Date();
-    const [policy] = await db
-      .insert(toolPolicies)
-      .values({
-        companyId,
-        name: body.name,
-        description: body.description ?? null,
-        policyType: body.policyType,
-        priority: body.priority ?? 100,
-        enabled: body.enabled ?? true,
-        selectors: body.selectors ?? {},
-        conditions: body.conditions ?? null,
-        config: body.config ?? null,
-        createdByAgentId: actor?.agentId ?? null,
-        createdByUserId: actor?.userId ?? null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
+    const [policy] = await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+      return tx
+        .insert(toolPolicies)
+        .values({
+          companyId,
+          name: body.name,
+          description: body.description ?? null,
+          policyType: body.policyType,
+          priority: body.priority ?? 100,
+          enabled: body.enabled ?? true,
+          selectors: body.selectors ?? {},
+          conditions: body.conditions ?? null,
+          config: body.config ?? null,
+          createdByAgentId: actor?.agentId ?? null,
+          createdByUserId: actor?.userId ?? null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+    });
     return policy;
   }
 
@@ -933,31 +941,37 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     assertSupportedGenericPolicyShape(nextPolicyType, nextConditions, nextConfig);
     await input.managementContext?.reauthorize();
     const now = new Date();
-    const [policy] = await db
-      .update(toolPolicies)
-      .set({
-        ...(input.body.name !== undefined ? { name: input.body.name } : {}),
-        ...(input.body.description !== undefined ? { description: input.body.description ?? null } : {}),
-        ...(input.body.policyType !== undefined ? { policyType: input.body.policyType } : {}),
-        ...(input.body.priority !== undefined ? { priority: input.body.priority } : {}),
-        ...(input.body.enabled !== undefined ? { enabled: input.body.enabled } : {}),
-        ...(input.body.selectors !== undefined ? { selectors: input.body.selectors ?? {} } : {}),
-        ...(input.body.conditions !== undefined ? { conditions: input.body.conditions ?? null } : {}),
-        ...(input.body.config !== undefined ? { config: input.body.config ?? null } : {}),
-        updatedAt: now,
-      })
-      .where(eq(toolPolicies.id, existing.id))
-      .returning();
+    const [policy] = await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+      return tx
+        .update(toolPolicies)
+        .set({
+          ...(input.body.name !== undefined ? { name: input.body.name } : {}),
+          ...(input.body.description !== undefined ? { description: input.body.description ?? null } : {}),
+          ...(input.body.policyType !== undefined ? { policyType: input.body.policyType } : {}),
+          ...(input.body.priority !== undefined ? { priority: input.body.priority } : {}),
+          ...(input.body.enabled !== undefined ? { enabled: input.body.enabled } : {}),
+          ...(input.body.selectors !== undefined ? { selectors: input.body.selectors ?? {} } : {}),
+          ...(input.body.conditions !== undefined ? { conditions: input.body.conditions ?? null } : {}),
+          ...(input.body.config !== undefined ? { config: input.body.config ?? null } : {}),
+          updatedAt: now,
+        })
+        .where(eq(toolPolicies.id, existing.id))
+        .returning();
+    });
     return policy;
   }
 
   async function deletePolicy(input: { companyId: string; policyId: string; managementContext?: ConnectionManagementContext }) {
     const existing = await getGenericPolicyRow(db, input.companyId, input.policyId);
     await input.managementContext?.reauthorize();
-    const [deleted] = await db
-      .delete(toolPolicies)
-      .where(eq(toolPolicies.id, existing.id))
-      .returning();
+    const [deleted] = await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+      return tx
+        .delete(toolPolicies)
+        .where(eq(toolPolicies.id, existing.id))
+        .returning();
+    });
     return deleted;
   }
 
