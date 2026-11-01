@@ -264,6 +264,20 @@ export function isTruthyEnvFlag(value: string | undefined): boolean {
   return v === "true" || v === "1" || v === "yes";
 }
 
+export function isFalseyEnvFlag(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const v = value.trim().toLowerCase();
+  return v === "false" || v === "0" || v === "no" || v === "off";
+}
+
+export type OpenCodePrintLogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
+
+export function resolveOpenCodePrintLogLevel(value: string | undefined): OpenCodePrintLogLevel | null {
+  const v = value?.trim().toUpperCase();
+  if (!v) return null;
+  return v === "DEBUG" || v === "INFO" || v === "WARN" || v === "ERROR" ? v : null;
+}
+
 export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   model?: unknown;
   command?: unknown;
