@@ -4,6 +4,7 @@ import {
   buildIssueBlockersResolvedWakeIdempotencyKey,
   buildIssueBlockersResolvedWakeStateKey,
   buildIssueBlockersResolvedWakeStateKeyWithoutCycle,
+  findRecentCompletedWakeForResolvedBlockerSet,
   findExistingIssueBlockersResolvedWakeForReadyState,
 } from "./issue-dependency-wakeups.js";
 
@@ -227,5 +228,179 @@ describe("findExistingIssueBlockersResolvedWakeForReadyState", () => {
       readyState,
     );
     expect(completed).toBeNull();
+  });
+});
+
+type CompletedWakeRow = {
+  id: string;
+  status: string;
+  payload: Record<string, unknown> | null;
+  requestedAt: Date;
+  finishedAt?: Date | null;
+};
+
+function dbWithCompletedWakes(rows: CompletedWakeRow[]): Db {
+  return {
+    select() {
+      return {
+        from() {
+          return {
+            where() {
+              return {
+                orderBy() {
+                  return {
+                    limit() {
+                      return Promise.resolve(rows);
+                    },
+                  };
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+  } as unknown as Db;
+}
+
+describe("findRecentCompletedWakeForResolvedBlockerSet", () => {
+  const input = {
+    companyId,
+    dependentIssueId,
+    blockerIssueIds: [blockerIssueId],
+  };
+  // One minute after the sample wake: inside the default cooldown window.
+  const nowInCooldown = new Date(firstCycle.getTime() + 60_000);
+
+  it("matches a completed wake for the same dependent and blocker set, ignoring the cycle", async () => {
+    const match = await findRecentCompletedWakeForResolvedBlockerSet(
+      dbWithCompletedWakes([
+        {
+          id: "wake-stale-hold",
+          status: "completed",
+          payload: {
+            issueId: dependentIssueId,
+            resolvedBlockerIssueId: blockerIssueId,
+            blockerIssueIds: [blockerIssueId],
+            mutation: "blocked_dependency_restored",
+          },
+          requestedAt: firstCycle,
+        },
+      ]),
+      { ...input, now: nowInCooldown },
+    );
+    expect(match?.id).toBe("wake-stale-hold");
+  });
+
+  it("matches regardless of blocker id order and duplicates", async () => {
+    const secondBlocker = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const match = await findRecentCompletedWakeForResolvedBlockerSet(
+      dbWithCompletedWakes([
+        {
+          id: "wake-multi",
+          status: "completed",
+          payload: {
+            issueId: dependentIssueId,
+            blockerIssueIds: [secondBlocker, blockerIssueId, secondBlocker],
+          },
+          requestedAt: firstCycle,
+        },
+      ]),
+      { ...input, blockerIssueIds: [blockerIssueId, secondBlocker], now: nowInCooldown },
+    );
+    expect(match?.id).toBe("wake-multi");
+  });
+
+  it("does not suppress once the completed wake is older than the cooldown window", async () => {
+    const rows = [
+      {
+        id: "wake-earlier-episode",
+        status: "completed",
+        payload: {
+          issueId: dependentIssueId,
+          blockerIssueIds: [blockerIssueId],
+        },
+        requestedAt: firstCycle,
+        finishedAt: firstCycle,
+      },
+    ];
+    // Terminal-reset style: a much later blocked cycle must still re-wake.
+    const later = await findRecentCompletedWakeForResolvedBlockerSet(
+      dbWithCompletedWakes(rows),
+      { ...input, now: secondCycle },
+    );
+    expect(later).toBeNull();
+    // Just past the default 30-minute window: no longer suppressing.
+    const expired = await findRecentCompletedWakeForResolvedBlockerSet(
+      dbWithCompletedWakes(rows),
+      { ...input, now: new Date(firstCycle.getTime() + 31 * 60_000) },
+    );
+    expect(expired).toBeNull();
+    // Inside the window: suppressed.
+    const inside = await findRecentCompletedWakeForResolvedBlockerSet(
+      dbWithCompletedWakes(rows),
+      { ...input, now: new Date(firstCycle.getTime() + 29 * 60_000) },
+    );
+    expect(inside?.id).toBe("wake-earlier-episode");
+  });
+
+  it("anchors the cooldown on finishedAt when present", async () => {
+    const match = await findRecentCompletedWakeForResolvedBlockerSet(
+      dbWithCompletedWakes([
+        {
+          id: "wake-slow-run",
+          status: "completed",
+          payload: { issueId: dependentIssueId, blockerIssueIds: [blockerIssueId] },
+          requestedAt: firstCycle,
+          finishedAt: new Date(firstCycle.getTime() + 5 * 60_000),
+        },
+      ]),
+      // now is 34 min after requestedAt (outside the 30-min window) but only
+      // 29 min after finishedAt (inside it): the finishedAt anchor must win.
+      { ...input, now: new Date(firstCycle.getTime() + 34 * 60_000) },
+    );
+    expect(match?.id).toBe("wake-slow-run");
+  });
+
+  it("does not match a different blocker set", async () => {
+    const match = await findRecentCompletedWakeForResolvedBlockerSet(
+      dbWithCompletedWakes([
+        {
+          id: "wake-other-set",
+          status: "completed",
+          payload: {
+            issueId: dependentIssueId,
+            blockerIssueIds: ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"],
+          },
+          requestedAt: firstCycle,
+        },
+      ]),
+      { ...input, now: nowInCooldown },
+    );
+    expect(match).toBeNull();
+  });
+
+  it("does not match rows without a usable payload blocker set", async () => {
+    const match = await findRecentCompletedWakeForResolvedBlockerSet(
+      dbWithCompletedWakes([
+        { id: "wake-no-payload", status: "completed", payload: null, requestedAt: firstCycle },
+        {
+          id: "wake-empty-set",
+          status: "completed",
+          payload: { issueId: dependentIssueId, blockerIssueIds: [] },
+          requestedAt: firstCycle,
+        },
+      ]),
+      { ...input, now: nowInCooldown },
+    );
+    expect(match).toBeNull();
+  });
+
+  it("returns null for an empty queried blocker set", async () => {
+    const match = await findRecentCompletedWakeForResolvedBlockerSet(
+      dbWithCompletedWakes([]),
+      { ...input, blockerIssueIds: [] },
+    );
+    expect(match).toBeNull();
   });
 });
