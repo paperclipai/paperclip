@@ -89,10 +89,10 @@ export async function createAssignedMcpTools(input: {
   /** Bound provider grammar complexity independently of protocol byte capacity. */
   delivery?: "on_demand";
 }) {
-  const listed = await input.gateway.listToolsForNamedGateway({
+  const listed = (await input.gateway.listToolsForNamedGateway({
     gatewayPublicId: input.gatewayPublicId,
     bearerToken: input.bearerToken,
-  });
+  })).tools;
   const tools = new Map<string, ToolGatewayDescriptor>();
   for (const descriptor of deduplicateToolDescriptors(listed)) {
     const name = assignedToolName(descriptor.name);
@@ -126,9 +126,9 @@ export async function createAssignedMcpTools(input: {
     }
     // Intersect fresh grants with this session's pinned catalog. Revocations
     // take effect immediately; newly assigned tools require a new session.
-    const current = new Map(deduplicateToolDescriptors(await input.gateway.listToolsForNamedGateway({
+    const current = new Map(deduplicateToolDescriptors((await input.gateway.listToolsForNamedGateway({
       gatewayPublicId: input.gatewayPublicId, bearerToken: input.bearerToken,
-    })).map(tool => [tool.name, tool]));
+    })).tools).map(tool => [tool.name, tool]));
     const terms = args.query.toLowerCase().trim().split(/\s+/).filter(Boolean);
     const authorized = [...tools].filter(([, tool]) => {
       const fresh = current.get(tool.name);

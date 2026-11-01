@@ -42,9 +42,10 @@ try {
   const assignedMcpTools = await createAssignedMcpTools({
     gatewayPublicId: "fixture", bearerToken: "fixture",
     gateway: {
-      listToolsForNamedGateway: async () => [{ name: "fixture:read_review_file", displayName: "Read review file",
+      listToolsForNamedGateway: async () => ({ tools: [{ name: "fixture:read_review_file", displayName: "Read review file",
         description: "Read the synthetic review file.", parametersSchema: { type: "object", properties: {}, additionalProperties: false },
         pluginId: "fixture", providerType: "mcp_remote_http", risk: "read" }],
+        allowedActions: ["tools/list", "tools/call"] }),
       executeTool: async () => { executions++; return { status: "completed", result: original }; },
     } as unknown as ToolGatewayService,
   });
