@@ -298,6 +298,19 @@ describe("durable, authorized connection routing", () => {
       await expect(resolve(pool.id, "frozen-pin", { overrides, persisted: first })).rejects.toThrow();
     } finally { await db.update(connectionGrants).set({ status: "active" }).where(eq(connectionGrants.id, accountB.grantId)); }
   });
+  it.each(["gateway", "local"] as const)("rejects a pinned %s selection replayed under a harness with a different projection", async (kind) => {
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+    const routing = { kind, protocol: "chat" as const, auth: "bearer" as const, baseUrl: kind === "local" ? "http://127.0.0.1:1234" : "https://gateway.example/v1", models: [{ id: "custom/a" }] };
+    const account = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Harness switch", apiKey: "fixture", allAgents: true, agentIds: [], routing }, "fixture");
+    const member: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", ...account }, profile: { provider: "opencode", model: "custom/a" } };
+    const pool = await makePool({ members: [member] });
+    const pinned = await resolve(pool.id, `harness-switch-${kind}`);
+    expect(pinned.runtimeConfig).toEqual({ provider: "opencode", model: "paperclip/custom/a" });
+    expect(await resolve(pool.id, `harness-switch-${kind}`)).toEqual(pinned);
+    expect(await resolve(pool.id, `harness-switch-${kind}`, { adapterType: "opencode_local" })).toEqual(pinned);
+    await expect(resolve(pool.id, `harness-switch-${kind}`, { adapterType: "hermes_local" })).rejects.toThrow("different harness");
+    await expect(resolve(pool.id, `harness-switch-${kind}`, { adapterType: "hermes_local", persisted: pinned })).rejects.toThrow("different harness");
+  });
   it("authorizes direct OpenRouter members before evaluating fresh and pinned model overrides", async () => {
     const account = await aiConnectionService(db).save(companyId, "alice", { provider: "openrouter", method: "api_key", ownership: "personal", name: "OpenRouter", apiKey: "fixture", allAgents: true, agentIds: [] }, "fixture");
     const member: AiConnectionPoolMember = { id: randomUUID(), binding: { mode: "delegated", provider: "openrouter", method: "api_key", ...account }, profile: { provider: "opencode", model: "anthropic/claude-sonnet-4.5" } };

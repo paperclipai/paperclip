@@ -37,7 +37,9 @@ Pins snapshot the concrete binding, member profile and resolved settings. A
 pinned task keeps its stored model, effort and notes; removing or editing a
 member, or a later composer change, affects only future allocations. Each
 continuation still re-checks authorization and harness and runtime
-compatibility, and fails closed. Session reset and compaction retain the pin.
+compatibility, and fails closed. A stored gateway/local model that is not a valid
+projection for the current harness fails closed; reset the session to reselect it.
+Session reset and compaction retain the pin.
 Revocation requires operator repair.
 
 Gateway/local pool profiles store raw model IDs, up to 256 characters. OpenCode

@@ -83,6 +83,15 @@ export function poolMemberRuntimeConfig(member: AiConnectionPoolMember, adapterT
   return { config, notes };
 }
 
+export function pinnedRoutedModelForHarness(metadata: AiConnectionMetadata, member: AiConnectionPoolMember, adapterType: string, runtimeConfig: Record<string, unknown>) {
+  const routing = metadata.routing;
+  if (!routing || (routing.kind !== "gateway" && routing.kind !== "local")) return;
+  const harness = aiRoutingHarness(adapterType, runtimeConfig.provider, runtimeConfig.acpxAgent);
+  const project = (raw: string) => aiRoutingModelFromRaw(routing, harness, raw);
+  const stored = typeof runtimeConfig.model === "string" ? runtimeConfig.model : "";
+  if (![project(member.profile.model), ...routing.models.map((hint) => project(hint.id))].includes(stored)) throw unprocessable("The pinned pool selection was saved for a different harness; reset this task session to reselect it");
+}
+
 export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerManager) {
   async function owner(pluginKey: string) {
     const [plugin] = await db.select().from(plugins).where(eq(plugins.pluginKey, pluginKey));
@@ -224,9 +233,11 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
 
   async function resolve(input: { companyId: string; poolId: string; agentId: string; userId: string | null; adapterType: string; taskKey: string; overrides?: Record<string, unknown>; existingGrantId?: string; requireExisting?: boolean; persisted?: AiConnectionRouterSelection; validateRuntime?: (config: Record<string, unknown>, metadata: AiConnectionMetadata, phase: "candidate" | "commit" | "persisted", client: Db) => Promise<void> }) {
     const pinWhere = and(eq(aiConnectionTaskPins.companyId, input.companyId), eq(aiConnectionTaskPins.poolId, input.poolId), eq(aiConnectionTaskPins.agentId, input.agentId), eq(aiConnectionTaskPins.taskKey, input.taskKey));
-    const validateSelection = async (selection: AiConnectionRouterSelection, client = db) => {
+    const validateSelection = async (selection: AiConnectionRouterSelection, client = db, member?: AiConnectionPoolMember) => {
       const account = await aiConnectionService(client).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId, adapterType: input.adapterType, binding: selection.binding, model: selection.runtimeConfig.model, runnerProvider: selection.runtimeConfig.provider, acpxAgent: selection.runtimeConfig.acpxAgent });
-      await input.validateRuntime?.(selection.runtimeConfig, aiConnectionMetadataSchema.parse(account.connection.config.ai), input.persisted ? "persisted" : "commit", client);
+      const metadata = aiConnectionMetadataSchema.parse(account.connection.config.ai);
+      if (member) pinnedRoutedModelForHarness(metadata, member, input.adapterType, selection.runtimeConfig);
+      await input.validateRuntime?.(selection.runtimeConfig, metadata, input.persisted ? "persisted" : "commit", client);
       return account;
     };
     if (input.persisted) {
@@ -235,7 +246,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       // Uninstall can remove the virtual connection. Server-owned native recovery
       // evidence still authorizes the original concrete selection, never a new one.
       if (pin && (pin.selection.memberId !== input.persisted.memberId || JSON.stringify(pin.selection.binding) !== JSON.stringify(input.persisted.binding))) throw unprocessable("Persisted pool allocation is inconsistent");
-      await validateSelection(input.persisted);
+      await validateSelection(input.persisted, db, pin?.member);
       return input.persisted;
     }
     await enabled();
@@ -260,6 +271,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
           const metadata = aiConnectionMetadataSchema.parse(account.connection.config.ai);
           const effective = pin ? { config: pin.selection.runtimeConfig, notes: pin.selection.notes } : poolMemberRuntimeConfig(member, input.adapterType, input.overrides, metadata);
           if (!isAiConnectionCompatible(metadata, input.adapterType, effective.config.model, effective.config.provider, effective.config.acpxAgent)) throw unprocessable("Pool member is incompatible with this harness");
+          if (pin) pinnedRoutedModelForHarness(metadata, member, input.adapterType, effective.config);
           await input.validateRuntime?.(effective.config, metadata, "candidate", db);
           candidates.push({ member, runtimeConfig: effective.config, notes: effective.notes });
         } catch (error) { if (pin) throw error; }

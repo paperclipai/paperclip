@@ -197,8 +197,9 @@ including mixed-pool lifecycle verification. Global environment failures must re
 their actionable diagnosis. Legacy OpenCode discovery preserves complete spaced
 model IDs on both local and remote targets.
 Model inventories are hints: retain saved manual member defaults absent from a nonempty inventory;
-qualify task overrides against declared hints when present and allow manual
-overrides when hints are empty. Saving or listing models does not prove provider
+task overrides must exactly equal the member's projected default or the projected ID of
+one of its own hints, otherwise the default is kept with a fallback note, even when hints
+are empty. Saving or listing models does not prove provider
 availability. [Pool routing regressions](../../server/src/__tests__/ai-connection-router.test.ts)
 and [catalog/runtime regressions](../../server/src/__tests__/agent-hire-ai-connections.test.ts)
 cover fixture behavior, not live-provider acceptance.
