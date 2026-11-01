@@ -14,6 +14,7 @@ it("keeps a gate-only receipt scheduled until admission settles it", async () =>
     updatedAt: new Date(start), claimedAt: null, error: null,
     payload: { executionWait: { recoveryActionId: null } },
     delayed: true, interruptedLegacy: false,
+    readmissionEligible: true,
   };
   // Exercise the real registered deadline worker, including its retained entries.
   const query = {
