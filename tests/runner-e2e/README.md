@@ -648,7 +648,9 @@ characters. The agent must read the source through the authenticated API,
 install its saved response with `download_artifact`, and deliver the unchanged
 file. The oracle uses the persisted, redacted API and installation receipts, then
 independently downloads both the stored source and delivered attachment through
-the authorized public API. Their bytes, hashes, source ID and full content must agree.
+the authorized public API. The server audit must identify that exact asset as an
+API capture from the tested company, agent and run. Their bytes, hashes, source
+ID and full content must agree. An uploaded substitute cannot satisfy provenance.
 A missing tool, incomplete receipt, copied substitute or one-byte loss fails.
 The browser must show the same downloadable attachment after reloading.
 

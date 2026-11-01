@@ -17,7 +17,8 @@ export function artifactTransferDescription(nonce: string) {
 }
 
 type TransferEvent = { eventType?: string; payload?: unknown };
-type SourceArtifact = { artifactId: string; content: string; sha256: string };
+type TransferIdentity = { companyId: string; runId: string; agentId: string };
+type SourceArtifact = { artifactId: string; content: string; sha256: string; captureActivity: unknown };
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
@@ -59,7 +60,16 @@ function completedCalls(events: readonly TransferEvent[]) {
   });
 }
 
-export async function readArtifactTransferSource(api: RunnerApi, events: readonly TransferEvent[]): Promise<SourceArtifact | null> {
+function sourceCaptureMatches(value: unknown, identity: TransferIdentity, artifactId: string, byteSize: number) {
+  const activity = record(value);
+  return typeof activity.id === "string" && activity.id.length > 0 &&
+    activity.companyId === identity.companyId && activity.runId === identity.runId &&
+    activity.agentId === identity.agentId && activity.actorType === "agent" && activity.actorId === identity.agentId &&
+    activity.action === "asset.created" && activity.entityType === "asset" && activity.entityId === artifactId &&
+    record(activity.details).source === "runner.call_api" && record(activity.details).byteSize === byteSize;
+}
+
+export async function readArtifactTransferSource(api: RunnerApi, events: readonly TransferEvent[], identity: TransferIdentity): Promise<SourceArtifact | null> {
   const installed = completedCalls(events).find(call => call.name === "download_artifact" &&
     call.result.outcome === "completed" && call.input.destination === "api-response-proof.txt" &&
     typeof call.input.artifactId === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(call.input.artifactId) &&
@@ -69,10 +79,11 @@ export async function readArtifactTransferSource(api: RunnerApi, events: readonl
     call.result.byteSize === call.input.byteSize && call.result.sha256 === call.input.sha256);
   if (!installed) return null;
   const artifactId = String(installed.input.artifactId);
-  const response = await api.request.get(`/api/assets/${encodeURIComponent(artifactId)}/content`);
-  if (!response.ok()) throw new Error(`Source artifact download returned ${response.status()}`);
-  const bytes = await response.body();
-  return { artifactId, content: bytes.toString("utf8"), sha256: createHash("sha256").update(bytes).digest("hex") };
+  const activities = await api.get<unknown[]>(`/api/companies/${encodeURIComponent(identity.companyId)}/activity?entityType=asset&entityId=${encodeURIComponent(artifactId)}&limit=20`);
+  const captureActivity = activities.find(activity => sourceCaptureMatches(activity, identity, artifactId, Number(installed.input.byteSize)));
+  if (!captureActivity) return null;
+  const bytes = await api.bytes(`/api/assets/${encodeURIComponent(artifactId)}/content`);
+  return { artifactId, content: bytes.toString("utf8"), sha256: createHash("sha256").update(bytes).digest("hex"), captureActivity };
 }
 
 export function gradeApiArtifactTransfer(
@@ -81,6 +92,7 @@ export function gradeApiArtifactTransfer(
   proof: { content: string; sha256: string },
   expectedDescription: string,
   capturedSource: SourceArtifact | null,
+  identity: TransferIdentity,
 ) {
   const successful = completedCalls(events);
   const reject = (failure: string) => ({ passed: false as const, failure });
@@ -96,6 +108,9 @@ export function gradeApiArtifactTransfer(
   if (!capturedSource || capturedSource.sha256 !== digest || !Buffer.from(capturedSource.content).equals(bytes)) {
     return reject("Stored source artifact and delivered attachment bytes disagree");
   }
+  if (!sourceCaptureMatches(capturedSource.captureActivity, identity, capturedSource.artifactId, bytes.length)) {
+    return reject("Installed artifact is not a server-recorded API capture from the tested run");
+  }
   if (successful.some(call => call.name === "call_api" && call.input.operationId === "GET /api/issues/{id}" &&
       call.result.ok === true && call.result.status === 200 && call.result.apiOperationId === "GET /api/issues/{id}")) {
     const install = successful.find(candidate => candidate.name === "download_artifact" &&
@@ -105,7 +120,8 @@ export function gradeApiArtifactTransfer(
       candidate.result.destination === "api-response-proof.txt" && candidate.result.byteSize === bytes.length &&
       candidate.result.sha256 === digest);
     if (install) return { passed: true as const, sourceIssueId, artifactId: capturedSource.artifactId,
-      byteSize: bytes.length, sha256: digest, installedDestination: "api-response-proof.txt" };
+      byteSize: bytes.length, sha256: digest, installedDestination: "api-response-proof.txt",
+      captureActivityId: String(record(capturedSource.captureActivity).id), captureRunId: identity.runId };
   }
   return reject("No completed artifact installation matches the source capture and delivered bytes");
 }

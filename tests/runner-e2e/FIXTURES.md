@@ -209,7 +209,9 @@ created through the public API before the tested task. The task carries its ID
 and requires `download_artifact`; the fixture never preinstalls the output.
 The independent oracle reads the stored source through its authorized asset
 endpoint and verifies the full delivered response against that source and the
-completed installation receipt after production run-log redaction. It also compares the seeded
+completed installation receipt after production run-log redaction. The existing
+server asset-created audit must prove API-capture origin in the tested run;
+matching bytes from an uploaded substitute are insufficient. It also compares the seeded
 description, so agreeing attachment metadata cannot hide a missing byte.
 The normal run-attributed public attachment download and reloaded browser link
 remain required. No new credential or private provider hook is introduced.

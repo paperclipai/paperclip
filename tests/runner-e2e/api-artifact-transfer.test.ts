@@ -10,7 +10,11 @@ describe("verified API artifact transfer evidence", () => {
   const sha256 = createHash("sha256").update(content).digest("hex");
   const identity = { artifactId: "22222222-2222-4222-8222-222222222222", byteSize: Buffer.byteLength(content), sha256 };
   const proof = { content, sha256 };
-  const storedSource = { artifactId: identity.artifactId, content, sha256 };
+  const runIdentity = { companyId: "company", runId: "run", agentId: "agent" };
+  const captureActivity = { id: "capture-activity", ...runIdentity, actorType: "agent", actorId: "agent",
+    action: "asset.created", entityType: "asset", entityId: identity.artifactId,
+    details: { source: "runner.call_api", byteSize: identity.byteSize } };
+  const storedSource = { artifactId: identity.artifactId, content, sha256, captureActivity };
   const event = (eventType: string, payload: unknown) => {
     const redacted = redactRunnerApiEvent({ eventType, sourceKind: "runner", payload });
     return { eventType, payload: { prpEvent: redacted } };
@@ -30,7 +34,7 @@ describe("verified API artifact transfer evidence", () => {
     ...identity, destination: "api-response-proof.txt", ...input,
   }, { outcome: "completed", ...identity, destination: "api-response-proof.txt", ...result });
   const grade = (events = [...source(), ...install()], attachment = proof) =>
-    gradeApiArtifactTransfer(events, "source-issue", attachment, description, storedSource);
+    gradeApiArtifactTransfer(events, "source-issue", attachment, description, storedSource, runIdentity);
 
   it("uses exactly 388131 source bytes with multibyte and escaped content", () => {
     expect(Buffer.byteLength(description)).toBe(388131);
@@ -52,19 +56,42 @@ describe("verified API artifact transfer evidence", () => {
     expect(grade(events).passed).toBe(true);
   });
   it("independently downloads the installed source through its authorized public endpoint", async () => {
-    const get = vi.fn().mockResolvedValue({ ok: () => true, body: async () => Buffer.from(content) });
-    const api = { request: { get } } as unknown as RunnerApi;
-    expect(await readArtifactTransferSource(api, [...source(), ...install()])).toEqual(storedSource);
-    expect(get).toHaveBeenCalledExactlyOnceWith(`/api/assets/${identity.artifactId}/content`);
-    get.mockClear();
-    expect(await readArtifactTransferSource(api, source())).toBeNull();
+    const get = vi.fn().mockResolvedValue([captureActivity]);
+    const bytes = vi.fn().mockResolvedValue(Buffer.from(content));
+    const api = { get, bytes } as unknown as RunnerApi;
+    expect(await readArtifactTransferSource(api, [...source(), ...install()], runIdentity)).toEqual(storedSource);
+    expect(get).toHaveBeenCalledExactlyOnceWith(`/api/companies/company/activity?entityType=asset&entityId=${identity.artifactId}&limit=20`);
+    expect(bytes).toHaveBeenCalledExactlyOnceWith(`/api/assets/${identity.artifactId}/content`);
+    get.mockClear(); bytes.mockClear();
+    expect(await readArtifactTransferSource(api, source(), runIdentity)).toBeNull();
     expect(get).not.toHaveBeenCalled();
+    expect(bytes).not.toHaveBeenCalled();
+    get.mockResolvedValue([{ ...captureActivity, details: { source: "runner.output", byteSize: identity.byteSize } }]);
+    expect(await readArtifactTransferSource(api, [...source(), ...install()], runIdentity)).toBeNull();
+    expect(bytes).not.toHaveBeenCalled();
   });
   it("rejects a missing or different stored source even when the attachment and receipt agree", () => {
     const events = [...source(), ...install()];
-    expect(gradeApiArtifactTransfer(events, "source-issue", proof, description, null).passed).toBe(false);
-    expect(gradeApiArtifactTransfer(events, "source-issue", proof, description, { ...storedSource, content: content.slice(1) }).passed).toBe(false);
-    expect(gradeApiArtifactTransfer(events, "source-issue", proof, description, { ...storedSource, artifactId: "other" }).passed).toBe(false);
+    expect(gradeApiArtifactTransfer(events, "source-issue", proof, description, null, runIdentity).passed).toBe(false);
+    expect(gradeApiArtifactTransfer(events, "source-issue", proof, description, { ...storedSource, content: content.slice(1) }, runIdentity).passed).toBe(false);
+    expect(gradeApiArtifactTransfer(events, "source-issue", proof, description, { ...storedSource, artifactId: "other" }, runIdentity).passed).toBe(false);
+  });
+  it("rejects an uploaded substitute with identical bytes and a successful source read", () => {
+    const uploadedSubstitute = { ...storedSource, captureActivity: {
+      companyId: "company", runId: "run", agentId: "agent", actorType: "agent", actorId: "agent",
+      action: "asset.created", entityType: "asset", entityId: identity.artifactId,
+      details: { source: "runner.output", byteSize: identity.byteSize },
+    } };
+    expect(gradeApiArtifactTransfer([...source(), ...install()], "source-issue", proof, description, uploadedSubstitute, runIdentity).passed).toBe(false);
+  });
+  it.each([
+    { companyId: "other" }, { runId: "other" }, { agentId: "other" }, { actorId: "other" },
+    { actorType: "user" }, { entityId: "other" }, { action: "other" }, { entityType: "other" },
+    { details: { source: "runner.assigned_tool", byteSize: identity.byteSize } },
+    { details: { source: "runner.call_api", byteSize: identity.byteSize - 1 } },
+  ])("rejects foreign or mismatched capture provenance %j", mutation => {
+    expect(gradeApiArtifactTransfer([...source(), ...install()], "source-issue", proof, description,
+      { ...storedSource, captureActivity: { ...captureActivity, ...mutation } }, runIdentity).passed).toBe(false);
   });
   it("rejects a correct file without completed installation evidence", () => {
     expect(grade(source()).passed).toBe(false);

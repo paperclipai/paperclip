@@ -2337,9 +2337,10 @@ for (const execution of executions) {
         downloadedResponseProof = await readResponseProof(api, issue.id, run.id);
         fileObservations["api-response-proof.txt"] = downloadedResponseProof.content;
         if (execution.suite.id === "api-artifact-transfer") {
+          const transferIdentity = { companyId: fixtures.company.id, runId: run.id, agentId: fixtures.agent.id };
           const transfer = gradeApiArtifactTransfer(runEventsByRun.flatMap(captured => captured.events),
             apiResponseSourceId ?? "", downloadedResponseProof, artifactTransferDescription(nonce),
-            await readArtifactTransferSource(api, runEventsByRun.flatMap(captured => captured.events)));
+            await readArtifactTransferSource(api, runEventsByRun.flatMap(captured => captured.events), transferIdentity), transferIdentity);
           await writeSanitizedJson(snapshotsDir, "api-artifact-transfer.json", transfer, secrets);
           if (!transfer.passed) invariantFailures.push(`Verified artifact transfer was not proven: ${transfer.failure}`);
           await writeSanitizedJson(snapshotsDir, "downloaded-response-proof.json", {
