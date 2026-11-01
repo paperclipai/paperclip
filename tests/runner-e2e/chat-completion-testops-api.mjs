@@ -40,6 +40,12 @@ function assertPlan(actual, binding) {
 function assertJob(job, binding, workflowId) {
   if (job.id !== binding.jobId || job.type !== 'github' || !isWorkflowUrl(job.url, workflowId)) reject('job_mismatch');
 }
+function assertBranchDefinition(job) {
+  // Observed job-definition DTO, not the id/value plan-override DTO.
+  if (!Array.isArray(job.parameters) || job.parameters.length !== 1 || !positive(job.parameters[0]?.id)
+    || job.parameters[0].name !== 'Branch' || job.parameters[0].defaultValue !== 'refs/heads/master'
+    || Object.hasOwn(job.parameters[0], 'value')) reject('job_parameters');
+}
 
 export async function validatePilotSelection(api, env, context, workflowId) {
   const binding = bindingFromEnv(env);
@@ -124,7 +130,7 @@ export async function bootstrapPilotPlan(api, integrationId, markOnce) {
   return binding;
 }
 
-export async function completePilotRegistration(api, prepared, official, context, workflowId, markOnce) {
+export async function completePilotRegistration(api, prepared, official, context, workflowId, markOnce, observe = async () => {}) {
   const run = await api(`/api/jobrun/${official.jobRunId}`);
   if (run.id !== Number(official.jobRunId) || run.job?.type !== 'github' || !positive(run.job?.id)
     || run.launchId !== official.launchId || run.url !== `https://github.com/paperclipai/paperclip/actions/runs/${context.runId}`) reject('registration');
@@ -133,26 +139,32 @@ export async function completePilotRegistration(api, prepared, official, context
   const binding = { ...prepared, jobId: run.job.id };
   assertPlan(await api(`/api/testplan/${binding.planId}`), binding);
   const job = await api(`/api/job/${binding.jobId}`); assertJob(job, binding, workflowId);
-  // Keep opaque IDs intact. A new fixed workflow needs only the observed
-  // default-branch parameter; ambiguous extra parameters require reconciliation.
-  if (!Array.isArray(job.parameters) || job.parameters.length !== 1 || !positive(job.parameters[0].id)
-    || job.parameters[0].value !== 'refs/heads/master') reject('job_parameters');
+  await observe({ schema: 'paperclip.chat-completion-testops-registration-observed/v1', ...context,
+    projectId: 1, jobId: job.id, launchId: official.launchId, allureJobRunId: official.jobRunId,
+    parameterCount: Array.isArray(job.parameters) ? job.parameters.length : null,
+    parameters: Array.isArray(job.parameters) ? job.parameters.slice(0, 4).map(row => ({
+      id: positive(row?.id) ? row.id : null, name: row?.name === 'Branch' ? 'Branch' : 'UNRESOLVED',
+      defaultValue: row?.defaultValue === 'refs/heads/master' ? 'refs/heads/master' : 'NOT_PROJECTED',
+      runtimeValuePresent: Object.hasOwn(row ?? {}, 'value') })) : null,
+    qualification: 'inspection_only', actualResult: null });
+  assertBranchDefinition(job);
   const assignments = await api(`/api/testplan/${binding.planId}/job`);
   if (!Array.isArray(assignments) || assignments.length > 1 || assignments.some(row => row.job?.id !== binding.jobId || row.testCasesCount !== cases.length)) reject('plan_job_mismatch');
   await markOnce('bind_owned_job');
-  await api(`/api/job/${binding.jobId}`, 'PATCH', { integrationId: binding.integrationId, canRun: true, parameters: job.parameters });
-  assertJob(await api(`/api/job/${binding.jobId}`), binding, workflowId);
+  // PATCH only the documented enable/integration fields. Preserve the opaque
+  // definition exactly; no guessed parameter-definition write codec is used.
+  await api(`/api/job/${binding.jobId}`, 'PATCH', { integrationId: binding.integrationId, canRun: true });
+  const patched = await api(`/api/job/${binding.jobId}`); assertJob(patched, binding, workflowId); assertBranchDefinition(patched);
+  if (!same(patched.parameters, job.parameters) || (Object.hasOwn(patched, 'canRun') && patched.canRun !== true)) reject('job_parameters');
   if (!assignments.length) {
     await markOnce('assign_plan');
     await api(`/api/testplan/${binding.planId}/assign`, 'POST', { jobId: binding.jobId,
       selection: { inverted: false, manual: false, leafsInclude: binding.cases.map(row => row.caseId) } });
   }
-  await markOnce('bind_parameters');
-  await api(`/api/testplan/${binding.planId}/jobparameter`, 'POST', { jobId: binding.jobId, parameters: job.parameters });
   const bound = await api(`/api/testplan/${binding.planId}/job`);
-  if (!Array.isArray(bound) || bound.length !== 1 || bound[0].job?.id !== binding.jobId || bound[0].testCasesCount !== cases.length
-    || !same(bound[0].job.parameters, job.parameters)) reject('plan_job_mismatch');
+  if (!Array.isArray(bound) || bound.length !== 1 || bound[0].job?.id !== binding.jobId || bound[0].testCasesCount !== cases.length) reject('plan_job_mismatch');
   return { schema: 'paperclip.chat-completion-testops-registration/v1', ...context, binding,
+    parametersMode: 'job-defaults', branchDefinition: { id: job.parameters[0].id, name: 'Branch', defaultValue: 'refs/heads/master' },
     planUrl: `${endpoint}/testplan/${binding.planId}`, jobUrl: `${endpoint}/project/1/jobs`, qualification: 'registration_only', actualResult: null };
 }
 
@@ -164,6 +176,7 @@ export async function launchPilotPlan(api, env, context, workflowId, markOnce) {
   for (const row of binding.cases) assertCase(await api(`/api/testcase/${row.caseId}`), row);
   assertPlan(await api(`/api/testplan/${binding.planId}`), binding);
   const job = await api(`/api/job/${binding.jobId}`); assertJob(job, binding, workflowId);
+  assertBranchDefinition(job);
   const assignments = await api(`/api/testplan/${binding.planId}/job`);
   if (!Array.isArray(assignments) || assignments.length !== 1 || assignments[0].job?.id !== binding.jobId
     || assignments[0].testCasesCount !== cases.length) reject('plan_job_mismatch');

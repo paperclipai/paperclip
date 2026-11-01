@@ -86,7 +86,8 @@ export async function run(command, argument, env = process.env, { fetchImpl = fe
       const official = parseOfficialBootstrapContext((await exec('allurectl', ['job-run', 'env'],
         { env, shell: false, timeout: 30_000, maxBuffer: 16_384, encoding: 'utf8' })).stdout);
       const prepared = JSON.parse(await readOwned(path.join(state, 'prepared.json'), env.RUNNER_TEMP, 32_768));
-      const receipt = await completePilotRegistration(api, prepared, official, context, context.workflowId, mutationMarker(state));
+      const receipt = await completePilotRegistration(api, prepared, official, context, context.workflowId, mutationMarker(state),
+        observation => writeReceipt(state, 'registration-observed.json', observation));
       await writeReceipt(state, 'registration.json', receipt); return 0;
     }
     if (command === 'launch-plan') {

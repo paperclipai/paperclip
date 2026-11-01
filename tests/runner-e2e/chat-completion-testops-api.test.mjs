@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cases, targetSha, planName } from './chat-completion-testops-contract.mjs';
-import { validatePilotSelection, verifyPilotUpload, bootstrapPilotPlan } from './chat-completion-testops-api.mjs';
+import { validatePilotSelection, verifyPilotUpload, bootstrapPilotPlan, completePilotRegistration, launchPilotPlan } from './chat-completion-testops-api.mjs';
 
 const selected = cases.map((row, i) => ({ ...row, caseId: 100 + i }));
 const context = { runId: '123', attempt: '1', workflowSha: 'a'.repeat(40), targetSha, operation: 'evaluate' };
@@ -19,6 +19,132 @@ const attachment = { id: 900, name: 'Execution provenance and checks', contentTy
 const screenshot = { ...attachment, id: 901, name: 'Private evidence receipt', contentType: 'application/json', contentLength: 1000 };
 const exported = selected.map(row => ({ caseId: row.caseId, executionId: row.executionId, status: 'passed', cleanup: 'passed',
   attachments: [attachment, screenshot].map(({ id, missed, fromTestCase, ...rest }) => rest) }));
+
+// Observed TestOps job-definition carrier: Branch/defaultValue. This is
+// distinct from the id/value carrier accepted by plan runtime overrides.
+const branchDefinition = { id: 34, name: 'Branch', defaultValue: 'refs/heads/master' };
+function mutationApi({ parameters = [branchDefinition], assignments = [], existingLaunch = false, uncertain = false } = {}) {
+  const calls = [], current = { ...job, parameters: structuredClone(parameters) };
+  let assigned = structuredClone(assignments);
+  const api = async (route, method = 'GET', body) => {
+    calls.push({ route, method, body });
+    if (route === '/api/jobrun/77') return { ...jobrun, stage: 'finished' };
+    if (route === '/api/launch/12') return { id: 12, projectId: 1 };
+    if (route === '/api/testplan/10') return plan;
+    if (route === '/api/job/11') {
+      if (method === 'PATCH') {
+        assert.deepEqual(body, { integrationId: 2, canRun: true });
+        current.canRun = true;
+      }
+      return structuredClone(current);
+    }
+    if (route === '/api/testplan/10/job') return structuredClone(assigned);
+    if (route === '/api/testplan/10/assign') {
+      assert.equal(method, 'POST');
+      assert.deepEqual(body, { jobId: 11, selection: { inverted: false, manual: false, leafsInclude: [100, 101, 102] } });
+      assigned = [{ job: structuredClone(current), testCasesCount: 3 }]; return null;
+    }
+    const selectedCase = selected.find(row => route === `/api/testcase/${row.caseId}`);
+    if (selectedCase) return { ...selectedCase, id: selectedCase.caseId, projectId: 1, automated: true };
+    if (route.startsWith('/api/launch?')) return { content: existingLaunch ? [{ id: 13 }] : [], totalPages: existingLaunch ? 1 : 0 };
+    if (route === '/api/testplan/10/run') {
+      assert.equal(method, 'POST');
+      if (uncertain) throw new Error('uncertain transport');
+      return { id: 13, projectId: 1, name: body.launchName };
+    }
+    assert.fail(route);
+  };
+  return { api, calls, current };
+}
+const prepared = { planId: 10, integrationId: 2, cases: selected };
+const official = { jobRunId: '77', launchId: 12 };
+const operatorEnv = { CHAT_COMPLETION_TESTOPS_BINDING: JSON.stringify(binding), GITHUB_RUN_NUMBER: '5',
+  CHAT_COMPLETION_TESTOPS_LAUNCH_RUN_NUMBER: '5', CHAT_COMPLETION_TESTOPS_LAUNCH_NONCE: 'ab'.repeat(16) };
+
+test('registration preserves the observed Branch definition and binds only the owned three-case job', async () => {
+  const f = mutationApi(), markers = [];
+  const receipt = await completePilotRegistration(f.api, prepared, official, context, 999, async stage => markers.push(stage));
+  assert.deepEqual(receipt.binding.cases, selected);
+  assert.deepEqual(f.current.parameters, [branchDefinition]);
+  assert.deepEqual(markers, ['bind_owned_job', 'assign_plan']);
+  assert.deepEqual(f.calls.filter(row => row.method !== 'GET').map(row => row.route), ['/api/job/11', '/api/testplan/10/assign']);
+});
+
+for (const parameters of [[], [branchDefinition, { id: 35, name: 'operation', defaultValue: 'bootstrap' }], [{ id: 34, value: 'refs/heads/master' }]]) {
+  test(`registration rejects unreviewed parameter carrier/count ${JSON.stringify(parameters)} before writes`, async () => {
+    const f = mutationApi({ parameters });
+    await assert.rejects(completePilotRegistration(f.api, prepared, official, context, 999, async () => assert.fail('no mutation marker')));
+    assert.equal(f.calls.filter(row => row.method !== 'GET').length, 0);
+  });
+}
+
+for (const assignments of [[{ job: { id: 99 }, testCasesCount: 3 }], [{ job, testCasesCount: 2 }], [{ job, testCasesCount: 3 }, { job, testCasesCount: 3 }]]) {
+  test('registration rejects ambiguous assignments before writes', async () => {
+    const f = mutationApi({ assignments });
+    await assert.rejects(completePilotRegistration(f.api, prepared, official, context, 999, async () => assert.fail('no mutation marker')));
+    assert.equal(f.calls.filter(row => row.method !== 'GET').length, 0);
+  });
+}
+
+test('registration keeps an existing exact assignment without assigning it twice', async () => {
+  const f = mutationApi({ assignments: [{ job: { ...job, parameters: [branchDefinition] }, testCasesCount: 3 }] });
+  await completePilotRegistration(f.api, prepared, official, context, 999, async () => {});
+  assert.equal(f.calls.filter(row => row.route.endsWith('/assign')).length, 0);
+});
+
+test('bootstrap retains a closed observation before rejecting an unknown parameter shape', async () => {
+  const f = mutationApi({ parameters: [{ id: 34, name: 'PRIVATE_NAME', defaultValue: 'PRIVATE_DEFAULT', value: 'PRIVATE_VALUE' }] });
+  let observed;
+  await assert.rejects(completePilotRegistration(f.api, prepared, official, context, 999, async () => assert.fail('no mutation marker'), async value => { observed = value; }));
+  assert.equal(observed.qualification, 'inspection_only'); assert.equal(observed.jobId, 11);
+  assert.equal(observed.parameters[0].runtimeValuePresent, true);
+  assert.ok(!JSON.stringify(observed).includes('PRIVATE_'));
+  assert.equal(f.calls.filter(row => row.method !== 'GET').length, 0);
+});
+
+test('the fenced launcher requests one exact three-case TestOps launch', async () => {
+  const f = mutationApi({ assignments: [{ job, testCasesCount: 3 }] }), markers = [];
+  const receipt = await launchPilotPlan(f.api, operatorEnv, context, 999, async stage => markers.push(stage));
+  assert.deepEqual(receipt.caseIds, [100, 101, 102]); assert.deepEqual(markers, ['launch_plan']);
+  assert.deepEqual(f.calls.filter(row => row.method !== 'GET'), [{ route: '/api/testplan/10/run', method: 'POST', body: {
+    launchName: `${planName} · ${operatorEnv.CHAT_COMPLETION_TESTOPS_LAUNCH_NONCE}` } }]);
+});
+
+for (const changed of [{ GITHUB_RUN_NUMBER: '6' }, { CHAT_COMPLETION_TESTOPS_LAUNCH_NONCE: 'not-a-nonce' }, { CHAT_COMPLETION_TESTOPS_LAUNCH_RUN_NUMBER: '' }]) {
+  test(`launcher rejects its invalid fence before requests: ${Object.keys(changed)[0]}`, async () => {
+    const f = mutationApi();
+    await assert.rejects(launchPilotPlan(f.api, { ...operatorEnv, ...changed }, context, 999, async () => assert.fail('no marker')));
+    assert.equal(f.calls.length, 0);
+  });
+}
+
+test('launcher reconciles an existing nonce without requesting a second launch', async () => {
+  const f = mutationApi({ assignments: [{ job, testCasesCount: 3 }], existingLaunch: true });
+  await assert.rejects(launchPilotPlan(f.api, operatorEnv, context, 999, async () => assert.fail('no marker')));
+  assert.equal(f.calls.filter(row => row.method !== 'GET').length, 0);
+});
+
+for (const assignments of [[], [{ job: { id: 99 }, testCasesCount: 3 }], [{ job, testCasesCount: 2 }]]) {
+  test('launcher rejects an unbound or mismatched assignment without requesting work', async () => {
+    const f = mutationApi({ assignments });
+    await assert.rejects(launchPilotPlan(f.api, operatorEnv, context, 999, async () => assert.fail('no mutation marker')));
+    assert.equal(f.calls.filter(row => row.method !== 'GET').length, 0);
+  });
+}
+
+test('launcher rejects a changed default branch before requesting work', async () => {
+  const f = mutationApi({ assignments: [{ job, testCasesCount: 3 }], parameters: [{ ...branchDefinition, defaultValue: 'refs/heads/candidate' }] });
+  await assert.rejects(launchPilotPlan(f.api, operatorEnv, context, 999, async () => assert.fail('no mutation marker')));
+  assert.equal(f.calls.filter(row => row.method !== 'GET').length, 0);
+});
+
+test('an uncertain launch response is never automatically resent', async () => {
+  const f = mutationApi({ assignments: [{ job, testCasesCount: 3 }], uncertain: true }), seen = new Set();
+  const mark = async stage => { if (seen.has(stage)) throw new Error('already attempted'); seen.add(stage); };
+  await assert.rejects(launchPilotPlan(f.api, operatorEnv, context, 999, mark), /uncertain transport/);
+  await assert.rejects(launchPilotPlan(f.api, operatorEnv, context, 999, mark), /already attempted/);
+  assert.equal(f.calls.filter(row => row.method === 'POST').length, 1);
+});
 
 test('registration creates only the three missing cases and the dedicated plan after once markers', async () => {
   const calls = []; let nextCase = 100;
