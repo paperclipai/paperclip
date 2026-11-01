@@ -42,6 +42,18 @@ export function AuthPage() {
     retry: false,
   });
 
+  // Servers that predate the field omit it; keep offering sign-up there, as before.
+  const signUpMode = healthQuery.data?.authSignUpMode ?? "open";
+
+  // Registration can close while the sign-up form is open (a health refresh
+  // sees the new mode). Return to sign-in, which is the only form that works.
+  useEffect(() => {
+    if (signUpMode !== "open" && mode === "sign_up") {
+      setMode("sign_in");
+      setError(null);
+    }
+  }, [signUpMode, mode]);
+
   useEffect(() => {
     if (session) {
       clearCloudSignInAttempt();
@@ -204,19 +216,27 @@ export function AuthPage() {
             </Button>
           </form>
 
-          <div className="mt-5 text-sm text-muted-foreground">
-            {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}
-            <button
-              type="button"
-              className="font-medium text-foreground underline underline-offset-2"
-              onClick={() => {
-                setError(null);
-                setMode(mode === "sign_in" ? "sign_up" : "sign_in");
-              }}
-            >
-              {mode === "sign_in" ? "Create one" : "Sign in"}
-            </button>
-          </div>
+          {signUpMode === "open" ? (
+            <div className="mt-5 text-sm text-muted-foreground">
+              {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}
+              <button
+                type="button"
+                className="font-medium text-foreground underline underline-offset-2"
+                onClick={() => {
+                  setError(null);
+                  setMode(mode === "sign_in" ? "sign_up" : "sign_in");
+                }}
+              >
+                {mode === "sign_in" ? "Create one" : "Sign in"}
+              </button>
+            </div>
+          ) : (
+            <p className="mt-5 text-sm text-muted-foreground" data-testid="auth-sign-up-unavailable">
+              {signUpMode === "invite"
+                ? "Registration on this instance is by invitation only. Open the invite link you received to create an account."
+                : "Registration of new accounts is closed on this instance."}
+            </p>
+          )}
         </div>
       </div>
 

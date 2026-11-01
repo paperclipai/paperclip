@@ -563,6 +563,7 @@ async function main() {
     auth: {
       baseUrlMode: sourceConfig?.auth?.baseUrlMode ?? "auto",
       ...(authPublicBaseUrl ? { publicBaseUrl: authPublicBaseUrl } : {}),
+      ...(sourceConfig?.auth?.signUp ? { signUp: sourceConfig.auth.signUp } : {}),
       disableSignUp: sourceConfig?.auth?.disableSignUp ?? false,
     },
     storage: {
