@@ -753,6 +753,7 @@ export type {
   IssueQueuedCommentSteeringDisposition,
   IssueCommentDerivedAuthorSource,
   IssueCommentMetadata,
+  IssueCommentCrossAssigneeContext,
   IssueCommentMetadataSection,
   IssueCommentMetadataRow,
   IssueCommentMetadataTextRow,
