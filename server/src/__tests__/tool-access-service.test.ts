@@ -5688,6 +5688,7 @@ describeEmbeddedPostgres("tool access service", () => {
         "chat-completions-api",
         "local",
         "telem",
+        "serply",
       ]),
     );
     expect(res.body.apps.length).toBeGreaterThanOrEqual(69);
@@ -20770,6 +20771,18 @@ describe("classifyRisk", () => {
     }
     expect(notionRisk("notion-delete-page")).toBe("destructive");
     expect(classifyRisk({ name: "move_pages" })).toBe("read");
+  });
+
+  it("classifies Serply's Reddit read tools as reads only for the Serply template", () => {
+    for (const toolName of ["reddit_post", "reddit_post_comments"]) {
+      expect(classifyRisk({ name: toolName }, "serply")).toBe("read");
+      expect(
+        classifyRisk({ name: toolName, annotations: { readOnlyHint: false } }, "serply"),
+      ).toBe("write");
+      expect(classifyRisk({ name: toolName })).toBe("write");
+    }
+    expect(classifyRisk({ name: "google_search" }, "serply")).toBe("read");
+    expect(classifyRisk({ name: "create_post" }, "serply")).toBe("write");
   });
 
   it("uses conservative PostHog defaults for unknown and nested-execution tools", () => {
