@@ -2,7 +2,7 @@ import { adoptAgentFiles, inspectAgentFile, fileHash, agentFilePath, MAX_AGENT_F
 import { invalidateAgentFileProjection, persistDurableAgentFiles, restoreDurableAgentFiles } from "./agent-file-durability.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { agentFileRoots, agentInstructionHeads, agents, fileStorageDb, type Db } from "@paperclipai/db";
 import { instructionPath, assertInstructionPathSafe, instructionBytes, readInstructionBytes } from "./agent-instruction-files.js";
 import { notFound, unprocessable } from "../errors.js";
@@ -509,13 +509,14 @@ export function agentInstructionsService(db?: Db) {
   async function getManagedEntryFingerprint(agent: AgentLike): Promise<{ entryFile: string; contentHash: string | null } | null> {
     if (!db || agentInstructionsBundleMode(agent) !== "managed") return null;
     const state = deriveBundleState(agent);
-    const [head] = await db.select({ entries: agentFileRoots.entries }).from(agentFileRoots)
+    const [head] = await db.select({ sha256: sql<string | null>`jsonb_path_query_first(
+      ${agentFileRoots.entries}, '$[*] ? (@.path == $entry && @.kind == "file")',
+      jsonb_build_object('entry', ${state.entryFile}::text)) ->> 'sha256'` }).from(agentFileRoots)
       .where(and(eq(agentFileRoots.companyId, agent.companyId), eq(agentFileRoots.agentId, agent.id)));
     if (!head) return null;
     // This head is the file authority. A missing or retired local projection
     // must not make identical instructions appear to change at admission.
-    const entry = head.entries.find(candidate => candidate.path === state.entryFile);
-    return { entryFile: state.entryFile, contentHash: entry?.kind === "file" ? `sha256:${entry.sha256}` : null };
+    return { entryFile: state.entryFile, contentHash: head.sha256 ? `sha256:${head.sha256}` : null };
   }
   async function assertUnversionedEntry(agent: AgentLike, entryFile: string, connection: Db | Parameters<Parameters<Db["transaction"]>[0]>[0] | undefined = db) {
     if (!connection) throw unprocessable("Bundle initialization requires the database-backed instructions service");

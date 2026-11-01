@@ -1,6 +1,6 @@
 # Zero-downtime web deployments
 
-Date: 2026-10-31. Status (2026-11-01 14:40 UTC): existing-volume staging enrollment
+Date: 2026-10-31. Status (2026-11-01 14:54 UTC): existing-volume staging enrollment
 and manual sleep/wake preserve saved files and read/save behavior. The full local
 active-agent journey, natural database idling and ten-deploy staging campaign
 remain unqualified. No production canary yet.
@@ -41,9 +41,22 @@ cleanup is independently checked after the asynchronous stop/delete transition.
 A three-case regression reproduces this for locked issue, run and coordinator
 rows. The fix skips those locked rows, schedules the same concrete run through
 the existing recovery retry, and avoids a diagnostic write that would wait on the
-same lock. The three claim/retry cases pass; full recovery and caller checks are
-running before another live attempt. Real content, skill-version,
+same lock. All 74 enabled restart recovery tests pass, including the assembled startup
+caller; eight Docker-specific cases were not enabled in that run. Real content, skill-version,
 model, credential and task boundaries remain compatibility checks.
+
+The real retry at `aae8a53d01` reached a different startup failure: the readiness
+gate treated a run still preparing its skill selection as an unmigrated skill
+installation. Saved rows show committed version-backed skills and one admitted
+run whose exact pins had not yet been published. The new PostgreSQL regression
+fails before the fix. Startup now checks installation durability independently
+of active run pinning; maintenance eligibility, migration and cache eviction
+keep their conservative pin requirements. Missing durable versions still refuse
+readiness. All 33 readiness, managed-skill and durable-file tests pass, with server
+typecheck. The failed attempt remains failed evidence; its child credential,
+bucket and all three provider sandboxes were cleaned and checked. Review also
+replaced the whole agent-file manifest read with a scalar SQL digest projection.
+The next live attempt must exercise both replacements and later continuation.
 
 Review also identified save quotas incorrectly applied during cache recovery.
 Recovery uses the existing inbound remote projection and preserves path/link
