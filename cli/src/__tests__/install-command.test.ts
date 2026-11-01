@@ -52,6 +52,15 @@ describe("managed install commands", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  const installedServiceManager = () => {
+    const uninstallService = vi.fn(async () => undefined);
+    const detectServiceManager = vi.fn(async () => ({
+      supported: true as const,
+      manager: { status: vi.fn(async () => ({ installed: true, active: true })), uninstall: uninstallService } as never,
+    }));
+    return { detectServiceManager, uninstallService };
+  };
+
   it("selects stable, canary, and exact-version npm sources", () => {
     expect(resolveNpmInstallRequest({})).toEqual({ spec: "latest", channel: "latest" });
     expect(resolveNpmInstallRequest({ canary: true })).toEqual({ spec: "canary", channel: "canary" });
@@ -345,8 +354,11 @@ describe("managed install commands", () => {
     fs.mkdirSync(paths.cliRoot, { recursive: true });
     fs.writeFileSync(unrelatedFile, "keep");
 
-    await expect(uninstallCommand()).rejects.toThrow("unverified install store");
+    const { detectServiceManager, uninstallService } = installedServiceManager();
+
+    await expect(uninstallCommand({ detectServiceManager })).rejects.toThrow("unverified install store");
     expect(fs.readFileSync(unrelatedFile, "utf8")).toBe("keep");
+    expect(uninstallService).not.toHaveBeenCalled();
   });
 
   it("refuses to uninstall while another store mutation holds the lock", async () => {
@@ -365,13 +377,16 @@ describe("managed install commands", () => {
       previous: [],
     }, paths);
 
+    const { detectServiceManager, uninstallService } = installedServiceManager();
+
     await withInstallStoreLock(
       async () => {
-        await expect(uninstallCommand()).rejects.toThrow("already running");
+        await expect(uninstallCommand({ detectServiceManager })).rejects.toThrow("already running");
       },
       paths,
     );
     expect(fs.existsSync(paths.lockPath)).toBe(false);
+    expect(uninstallService).not.toHaveBeenCalled();
   });
 
   it("refuses a symlinked git payload root before downloading", async () => {
