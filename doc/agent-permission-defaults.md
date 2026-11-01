@@ -39,3 +39,21 @@ Connection management always intersects the current human's authority, including
 See [the authorization and qualification record](plans/2026-10-13-connection-api-parity.md) and the operation-reviewed [agent access maps](../maps/agent-access-map/connection-setup.md). Human consent, credential entry and identity confirmation remain bounded handoffs to saved setup.
 
 Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
+
+## Board administration of agent grants
+
+A board operator with `users:manage_permissions` can list actual agent company
+memberships with `GET /api/companies/:companyId/members?principalType=agent`.
+The default members query still returns human members. Agent records contain
+the membership ID, agent principal ID and explicit grants; they do not use human
+roles or removal affordances.
+
+Use `PATCH /api/companies/:companyId/members/:memberId/permissions` with the
+complete desired `grants` array to replace an agent's grants. An empty array
+revokes all explicit grants. Existing scopes are retained only when included in
+the replacement. `users:manage_permissions` and `joins:approve` cannot be granted
+to agent targets through this route. Other finite company permissions retain
+their existing action-specific checks. An agent cannot use this route to change
+its own or another agent's grants, even if it already holds the management key.
+Each successful change records the board user's audit identity. Human member
+role, owner, self-change and instance-admin protections remain unchanged.

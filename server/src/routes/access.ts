@@ -4454,6 +4454,17 @@ export function accessRoutes(
   router.get("/companies/:companyId/members", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyPermission(req, companyId, "users:manage_permissions");
+    if (req.query.principalType !== undefined && (typeof req.query.principalType !== "string" || !["user", "agent"].includes(req.query.principalType))) {
+      throw badRequest("principalType must be user or agent");
+    }
+    if (req.query.principalType === "agent") {
+      if (req.actor.type !== "board") throw forbidden("Board access is required to manage agent grants");
+      const [members, currentAccess] = await Promise.all([
+        access.listAgentMembers(companyId), loadCompanyAccessSummary(req, access, companyId),
+      ]);
+      res.json({ members, access: currentAccess });
+      return;
+    }
     const [members, currentAccess] = await Promise.all([
       loadCompanyMemberRecords(db, companyId),
       loadCompanyAccessSummary(req, access, companyId),
@@ -4601,6 +4612,22 @@ export function accessRoutes(
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
+      if (memberToUpdate.principalType === "agent") {
+        if (req.actor.type !== "board") throw forbidden("Board access is required to manage agent grants");
+        const target = await agents.getById(memberToUpdate.principalId);
+        if (!target || target.companyId !== companyId) throw notFound("Agent member not found");
+        if (req.body.grants.some((grant: { permissionKey: string }) =>
+          grant.permissionKey === "users:manage_permissions" || grant.permissionKey === "joins:approve")) {
+          throw forbidden("Agent grants cannot include protected membership administration permissions");
+        }
+        const updated = await access.setMemberPermissions(companyId, memberId, req.body.grants, req.actor.userId ?? null);
+        if (!updated) throw notFound("Member not found");
+        await logActivity(db, { companyId, actorType: "user", actorId: req.actor.userId ?? "board",
+          action: "company_member.permissions_updated", entityType: "company_membership", entityId: memberId,
+          details: { grantCount: req.body.grants.length, principalType: "agent", principalId: target.id } });
+        res.json({ ...updated, principalType: "agent", grants: await access.listPrincipalGrants(companyId, "agent", target.id) });
+        return;
+      }
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
       const updated = await access.setMemberPermissions(
         companyId,

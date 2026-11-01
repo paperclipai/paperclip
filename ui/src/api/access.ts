@@ -1,4 +1,4 @@
-import type { AgentAdapterType, JoinRequest, PermissionKey } from "@paperclipai/shared";
+import type { AgentAdapterType, AgentCompanyMemberRecord, AgentCompanyMembersResponse, JoinRequest, PermissionKey } from "@paperclipai/shared";
 import { api } from "./client";
 
 export type HumanCompanyRole = "owner" | "admin" | "operator" | "viewer";
@@ -329,6 +329,13 @@ export const accessApi = {
       status?: "pending" | "active" | "suspended";
     },
   ) => api.patch<CompanyMember>(`/companies/${companyId}/members/${memberId}`, input),
+
+  listAgentMembers: (companyId: string) =>
+    api.get<AgentCompanyMembersResponse>(`/companies/${companyId}/members?principalType=agent`),
+
+  updateAgentMemberPermissions: (companyId: string, memberId: string, input: {
+    grants: Array<{ permissionKey: PermissionKey; scope?: Record<string, unknown> | null }>;
+  }) => api.patch<AgentCompanyMemberRecord>(`/companies/${companyId}/members/${memberId}/permissions`, input),
 
   updateMemberPermissions: (
     companyId: string,

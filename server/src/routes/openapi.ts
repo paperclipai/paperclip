@@ -7221,8 +7221,9 @@ registry.registerPath({
   path: "/api/companies/{companyId}/members",
   tags: ["access"],
   summary: "List company members",
-  request: { params: z.object({ companyId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: { params: z.object({ companyId: z.string() }),
+    query: z.object({ principalType: z.enum(["user", "agent"]).optional() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -7280,7 +7281,7 @@ registry.registerPath({
   method: "patch",
   path: "/api/companies/{companyId}/members/{memberId}/permissions",
   tags: ["access"],
-  summary: "Update explicit company member permissions",
+  summary: "Update explicit company member permissions (agent targets require board authority)",
   request: {
     params: z.object({ companyId: z.string(), memberId: z.string() }),
     body: jsonBody(updateMemberPermissionsSchema),
@@ -7289,6 +7290,7 @@ registry.registerPath({
     200: r.ok(),
     400: r.badRequest,
     401: r.unauthorized,
+    403: r.forbidden,
     404: r.notFound,
   },
 });
