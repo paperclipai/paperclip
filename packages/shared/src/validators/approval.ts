@@ -6,7 +6,7 @@ export const createApprovalSchema = z.object({
   type: z.enum(APPROVAL_TYPES),
   requestedByAgentId: z.string().guid().optional().nullable(),
   payload: z.record(z.string(), z.unknown()),
-  issueIds: z.array(z.string().guid()).optional(),
+  issueIds: z.array(z.string().guid()).nullish(),
 });
 
 export type CreateApproval = z.infer<typeof createApprovalSchema>;
