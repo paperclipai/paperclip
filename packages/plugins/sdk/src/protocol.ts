@@ -2165,6 +2165,10 @@ export interface WorkerToHostMethods {
     params: { agentId: string; companyId: string },
     result: Agent | null,
   ];
+  "agents.getQueuedRunCounts": [
+    params: { companyId: string },
+    result: Array<{ agentId: string; queued: number }>,
+  ];
 
   // Agents (write)
   "agents.pause": [

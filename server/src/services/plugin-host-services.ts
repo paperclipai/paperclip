@@ -3068,6 +3068,40 @@ export function buildHostServices(
         const agent = await agents.getById(params.agentId);
         return (inCompany(agent, companyId) ? agent : null) as Agent | null;
       },
+      async getQueuedRunCounts(params) {
+        const rawCompanyId = params?.companyId;
+        if (typeof rawCompanyId !== "string" || rawCompanyId.trim().length === 0) {
+          throw new Error("companyId is required for this operation");
+        }
+        const companyId = rawCompanyId;
+        await ensurePluginAvailableForCompany(companyId);
+        try {
+          const rows = await db
+            .select({
+              agentId: heartbeatRuns.agentId,
+              queued: sql<number>`count(*)::int`,
+            })
+            .from(heartbeatRuns)
+            .innerJoin(
+              agentsTable,
+              and(
+                eq(agentsTable.id, heartbeatRuns.agentId),
+                eq(agentsTable.companyId, companyId),
+              ),
+            )
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, companyId),
+                eq(heartbeatRuns.status, "queued"),
+              ),
+            )
+            .groupBy(heartbeatRuns.agentId);
+          return rows.map((row) => ({ agentId: row.agentId, queued: Number(row.queued) }));
+        } catch (err) {
+          logger.error({ err, pluginId }, "agents.getQueuedRunCounts query failed");
+          throw new Error("Failed to read queued run counts");
+        }
+      },
       async pause(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);

@@ -389,6 +389,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `issue.relations.read` |
 | | `issue.subtree.read` |
 | | `agents.read` |
+| | `agents.queued_counts.read` |
 | | `goals.read` |
 | | `goals.create` |
 | | `goals.update` |
