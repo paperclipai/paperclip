@@ -3,7 +3,7 @@ import { invalidateAgentFileProjection, persistDurableAgentFiles, restoreDurable
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { agentInstructionHeads, agents, fileStorageDb, type Db } from "@paperclipai/db";
+import { agentFileRoots, agentInstructionHeads, agents, fileStorageDb, type Db } from "@paperclipai/db";
 import { instructionPath, assertInstructionPathSafe, instructionBytes, readInstructionBytes } from "./agent-instruction-files.js";
 import { notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -506,6 +506,17 @@ export function syncInstructionsBundleConfigFromFilePath(
 
 export function agentInstructionsService(db?: Db) {
   if (db) db = fileStorageDb(db);
+  async function getManagedEntryFingerprint(agent: AgentLike): Promise<{ entryFile: string; contentHash: string | null } | null> {
+    if (!db || agentInstructionsBundleMode(agent) !== "managed") return null;
+    const state = deriveBundleState(agent);
+    const [head] = await db.select({ entries: agentFileRoots.entries }).from(agentFileRoots)
+      .where(and(eq(agentFileRoots.companyId, agent.companyId), eq(agentFileRoots.agentId, agent.id)));
+    if (!head) return null;
+    // This head is the file authority. A missing or retired local projection
+    // must not make identical instructions appear to change at admission.
+    const entry = head.entries.find(candidate => candidate.path === state.entryFile);
+    return { entryFile: state.entryFile, contentHash: entry?.kind === "file" ? `sha256:${entry.sha256}` : null };
+  }
   async function assertUnversionedEntry(agent: AgentLike, entryFile: string, connection: Db | Parameters<Parameters<Db["transaction"]>[0]>[0] | undefined = db) {
     if (!connection) throw unprocessable("Bundle initialization requires the database-backed instructions service");
     const [head] = await connection.select().from(agentInstructionHeads).where(and(eq(agentInstructionHeads.companyId, agent.companyId),
@@ -871,6 +882,7 @@ export function agentInstructionsService(db?: Db) {
   }
 
   return {
+    getManagedEntryFingerprint,
     getBundleLocation: (agent: AgentLike) => withProjection(agent, false, getBundleLocation),
     getBundle: (agent: AgentLike) => withProjection(agent, false, getBundle),
     readFile: (agent: AgentLike, relativePath: string) => withProjection(agent, false, current => readFile(current, relativePath)),

@@ -1,36 +1,36 @@
 # Zero-downtime web deployments
 
-Date: 2026-10-31. Status (2026-11-01 14:05 UTC): existing-volume staging enrollment
-is complete and its read/save/file-integrity checks pass. Active-agent recovery,
-natural database idling and the ten-deploy staging campaign remain unqualified.
-No production canary yet.
+Date: 2026-10-31. Status (2026-11-01 14:28 UTC): existing-volume staging enrollment
+and manual sleep/wake preserve saved files and read/save behavior. The full local
+active-agent journey, natural database idling and ten-deploy staging campaign
+remain unqualified. No production canary yet.
 
-Latest critical path: Core #18543 includes runtime admission, immutable-cache
-retirement, remote agent-file projection, and adoption without rematerializing
-launch assets. The live test at `67714af9ff` transferred the same runner/session to
-controller generation two after deleting A's entire home, then failed in the full
-backend constructor: composing system instructions still read A's retired bundle.
-All three owned Daytona sandboxes were independently confirmed absent; the child
-credential was revoked and the test object bucket deleted. This remains failed
-evidence, not a successful deployment qualification.
+Core #18543 merged as `7751fc3107` after 55 successful CI checks, Greptile 5/5
+and no unresolved threads. It supplies runtime admission, immutable-cache
+retirement, remote agent-file projection, and adoption using validated admitted
+Runner instructions without rematerializing retired launch assets. The earlier
+`67714af9ff` deleted-bundle failure is reproduced and fixed; the `cd690de4d3`
+attempt was interrupted because the unrelated probe task blocked the business
+all-tasks-done oracle. The probe now has a separate disposable company; the oracle
+is unchanged. All test credentials, buckets and provider sandboxes were cleaned.
 
-The backend now accepts admitted instructions from a validated same-run Runner
-checkpoint. Runner owns checkpoint/template inspection; Core binds it to the
-current run, normalized session and context digest. Staged attachments select the
-validated target template. Fresh runs and ordinary later continuations still
-compose current instructions. The deleted-bundle reproduction failed before the
-fix, then passed with real backend session recovery and no new thread/turn start.
-All 59 backend factory tests and the focused checkpoint validation tests pass.
-At `cd690de4d3`, the real Codex/Daytona run survives removal of A's entire home,
-reattaches the same runner/session under generation two, and succeeds. Its next
-revision also succeeds. The handoff records 372 reads, 38 saves and 38 verified
-saves with zero failures. Full qualification still fails: the supervisor created
-an unrelated open probe task in the business company, so the unchanged all-tasks-
-done oracle could never advance to the second replacement. The attempt was
-interrupted and retained as incomplete. A regression reproduces this harness
-scope defect; probes now use their own disposable company. The oracle is unchanged.
-Exact-head review of the recovery fix is 5/5 with no unresolved threads; new
-fixture checks and another bounded live attempt are next.
+The complete retry at `f5915fdc33` exercised both replacements with 523 reads,
+53 saves and 53 verified saves, zero probe failures. The original remote execution
+survived with the same runner/session and completed once. Saved project tests,
+file-reference continuity, and the later useful answer passed. The workflow still
+FAILED: its later admission rotated native/provider sessions, and all four public
+run records lacked the native terminal contract. These failures remain acceptance
+blockers, not successful qualification.
+
+The next slice owns those gaps at existing boundaries: instruction authority
+exposes the committed entry digest without reading a disposable cache; heartbeat
+session compatibility identifies immutable skill versions rather than their host
+paths; the native receipt transaction publishes its accepted terminal contract
+without depending on the originating adapter returning. Both regressions failed
+before the changes. All 249 affected workspace/session, durable-file and control-
+plane persistence tests pass, as does server typecheck. Assembled admission suites
+and a fresh real Codex/Daytona journey are next. Real content, skill-version,
+model, credential and task boundaries remain compatibility checks.
 
 Review also identified save quotas incorrectly applied during cache recovery.
 Recovery uses the existing inbound remote projection and preserves path/link
@@ -49,9 +49,9 @@ The original browser tab reconnected and persisted a task title. Server logs lat
 showed old Agents chunks returned 404 and navigation recovered via a page reload:
 this is migration continuity evidence, not uninterrupted old-tab asset loading.
 
-Two eight-minute natural database-idle observations failed. A separate bounded SQL
+Three eight-minute natural database-idle observations failed. A separate bounded SQL
 attribution window saw no other app-database sessions; it is diagnostic stimulus,
-not idle proof, and does not establish the source of provider activity. Automatic
+not idle proof, and does not establish the source of provider activity. The third window, bracketed by closed SQL counter snapshots, recorded 36 transactions and small read deltas on environment setup, leases, environments and plugins; no app-row writes. The source is not yet attributed. Automatic
 idle sleep was correctly refused because this development fixture is not eligible
 for the free/demo policy. Manual sleep with force disabled passed: the registry
 reports sleeping, Railway has no active web deployment or attached volume, and
