@@ -151,6 +151,21 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
+  it.each(["session", "5-hour"])("classifies the '%s limit' wording and parses the 'resets' clock", (limitName) => {
+    const now = new Date("2026-10-28T16:13:00.000Z");
+    const classification = classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: `Claude run failed: subtype=success: You've hit your ${limitName} limit · resets 5:30pm (Europe/Bratislava)`,
+      resultJson: null,
+    }, now);
+
+    expect(classification).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-10-28T16:30:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
   it.each([
     "model_not_found: requested model does not exist",
     "No API credentials were found for this provider",
