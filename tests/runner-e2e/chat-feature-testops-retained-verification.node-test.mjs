@@ -91,8 +91,9 @@ test('actual three-way attachment row refusal retains the precise current protec
     const values = responses();
     Object.assign(values[4].content[0], change, { secret: 'do-not-retain', source: 'unknown-private-url' });
     const result = await snapshotAndReplay(async route => values[routes.indexOf(route)], selection, receipt);
-    assert.equal(result.failure.verification.phase, 'attachment_page');
-    assert.equal(result.failure.verification.firstFailedPredicate, 'attachment_rows');
+    assert.equal(result.failure.verification.phase, change.missed === true ? 'attachment_readiness' : 'attachment_page');
+    assert.equal(result.failure.verification.firstFailedPredicate,
+      change.missed === true ? 'attachments_not_missed' : change.fromTestCase === true ? 'not_inherited' : 'ids_valid');
     const safe = JSON.stringify(result);
     assert.ok(!safe.includes('do-not-retain') && !safe.includes('unknown-private-url'));
     assert.equal(result.verification, undefined);

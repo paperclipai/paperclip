@@ -42,6 +42,7 @@ import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@open
 import { selectHeartbeatEnvironment } from "./environment-selection.js";
 import { assertNativeSessionPreparationAuthority } from "../native-runtime/native-execution-lease.js";
 import { currentNativeControllerIdentity } from "../native-runtime/native-restart-recovery.js";
+import { projectService } from "../projects.js";
 
 const execFile = promisify(execFileCallback);
 const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_WORKSPACE_PREPARATION_TEST_DATABASE_URL");
@@ -508,6 +509,42 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     });
     expect(resolve).not.toHaveBeenCalled();
     expect(acquire).not.toHaveBeenCalled();
+    expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
+  });
+
+  it("reserves private remote task files for an organizational project without a configured source", async () => {
+    const { input, issue, source, envOrchestrator } = await fixture();
+    await db.update(issues).set({ projectWorkspaceId: null }).where(eq(issues.id, issue.id));
+    await db.delete(projectWorkspaces).where(eq(projectWorkspaces.projectId, issue.projectId!));
+    input.task.issueRef = await readIssue(issue.id);
+    const project = (await projectService(db).getById(issue.projectId!))!;
+    expect(project.workspaces).toEqual([]);
+    expect(project.codebase).toMatchObject({ workspaceId: null, repoUrl: null, localFolder: null, origin: "managed_checkout" });
+    await mkdir(project.codebase.managedFolder, { recursive: true });
+    const sentinel = join(project.codebase.managedFolder, "unselected-project-files.txt");
+    await writeFile(sentinel, "Unselected project files\n");
+    configureRemotePersistence();
+    input.agent.adapterType = "paperclip_runner";
+    input.policy.requestedExecutionWorkspaceMode = "agent_default";
+    input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
+      driver: "sandbox", config: { provider: "daytona" } };
+    const resolveHost = vi.spyOn(input.services, "resolveWorkspaceForRun");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun").mockImplementation(async args => {
+      expect(args.persistedExecutionWorkspace).toMatchObject({ companyId: issue.companyId, sourceIssueId: issue.id,
+        projectId: null, projectWorkspaceId: null, providerType: "cloud_sandbox", repoUrl: null,
+        metadata: { remoteWorkspace: { source: { kind: "empty" }, writerRunId: input.run.id } } });
+      throw new Error("private task workspace reached acquisition");
+    });
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("private task workspace reached acquisition");
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(resolveHost).not.toHaveBeenCalled();
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.sourceIssueId, issue.id));
+    expect(workspace).toMatchObject({ companyId: issue.companyId, sourceIssueId: issue.id,
+      projectId: null, projectWorkspaceId: null, providerType: "cloud_sandbox", repoUrl: null });
+    expect(workspace.cwd).toBe(`/workspaces/${workspace.id}`);
+    expect((await readIssue(issue.id))).toMatchObject({ projectId: issue.projectId, executionWorkspaceId: workspace.id });
+    await expect(access(workspace.cwd!)).rejects.toThrow();
+    expect(await readFile(sentinel, "utf8")).toBe("Unselected project files\n");
     expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
   });
 
