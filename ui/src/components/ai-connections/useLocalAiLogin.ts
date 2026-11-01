@@ -10,6 +10,8 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
   const [status, setStatus] = useState<LocalAiLoginStatus["status"] | null>(null);
   const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
   const [code, setCode] = useState<string | null>(null);
+  const [codeSubmitted, setCodeSubmitted] = useState(false);
+  const submittedSession = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [accountLabel, setAccountLabel] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
@@ -33,12 +35,14 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
     setStatus(null);
     setAuthorizationUrl(null);
     setCode(null);
+    setCodeSubmitted(false);
     if (!active || !companyId) return;
     let cancelled = false;
     let checking = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const key = JSON.stringify([companyId, target, generation]);
     if (isolated && current.current?.key !== key) {
+      submittedSession.current = null;
       cancelCurrent();
       const input = { ...latestIntent.current, ...(restartRequested.current ? { restart: true } : {}) };
       restartRequested.current = false;
@@ -89,17 +93,22 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
     command: attempt?.command,
     authorizationUrl,
     code,
+    codeSubmitted,
     accountLabel,
     status,
     preparing: active && !status && !error,
     error,
-    retry: () => { restartRequested.current = true; cancelCurrent(); setGeneration((value) => value + 1); },
+    retry: () => { restartRequested.current = true; submittedSession.current = null; cancelCurrent(); setGeneration((value) => value + 1); },
     submitCode: async (browserCode: string) => {
       if (!companyId || !attempt) throw new Error("Start sign-in before submitting a code.");
+      if (submittedSession.current === attempt.sessionId) return;
+      submittedSession.current = attempt.sessionId;
       try {
         await aiConnectionsApi.submitLocalLoginCode(companyId, attempt.sessionId, browserCode);
+        setCodeSubmitted(true);
       } catch (cause) {
-        setError("Could not submit the authorization code. Start sign-in again.");
+        submittedSession.current = null;
+        setError("Paperclip could not send the authorization code. Start sign-in again.");
         throw cause;
       }
     },

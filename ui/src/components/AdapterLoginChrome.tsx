@@ -471,7 +471,7 @@ export function ProviderApiKeyCard({
 /** Shared instructions for local subscription setup in every authentication host. */
 export function LocalProviderLoginInstructions({ adapterType, login }: {
   adapterType: string;
-  login?: { isolated?: boolean; command?: string; authorizationUrl?: string | null; code?: string | null; accountLabel?: string | null; submitCode?: (code: string) => Promise<void>; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
+  login?: { isolated?: boolean; command?: string; authorizationUrl?: string | null; code?: string | null; codeSubmitted?: boolean; accountLabel?: string | null; submitCode?: (code: string) => Promise<void>; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
 }) {
   const [showCommand, setShowCommand] = useState(false);
   const [browserCode, setBrowserCode] = useState("");
@@ -505,13 +505,16 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
       authorizationUrl={login.authorizationUrl}
       mode={adapterType === "antigravity_runtime" ? "browser_redirect" : adapterType === "claude_local" ? "submitted_code" : "displayed_code"}
     >
-      {adapterType === "claude_local" ? <div className="flex flex-col gap-2">
+      {adapterType === "claude_local" && login?.codeSubmitted
+        ? <p role="status">Code submitted. Waiting for Claude to verify it; do not submit the same code again.</p>
+        : adapterType === "claude_local" ? <div className="flex flex-col gap-2">
         <OnboardingCardField
           value={browserCode}
           onChange={setBrowserCode}
           onSubmit={() => void submitBrowserCode()}
           disabled={submitting}
         />
+        <p className="text-xs">Copy the entire code from Claude, including the #state suffix if shown. Each code can only be submitted once.</p>
         <Button type="button" disabled={!browserCode.trim() || submitting} onClick={() => void submitBrowserCode()}>Submit code</Button>
       </div> : adapterType === "antigravity_runtime" ? <p>Finish signing in in the Google browser window, then return here.</p> : <OnboardingLoginCodeRow code={login.code ?? ""} />}
     </ProviderSubscriptionCard>}
