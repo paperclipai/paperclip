@@ -113,83 +113,68 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
     return { bindings, activeProfiles };
   }
 
-  async function resolveEffectiveProfiles<TEntry extends ProfileCatalogEntry, TAllowedTool>(
+  async function loadEffectiveAssignments<TEntry extends ProfileCatalogEntry>(
     companyId: string,
     agentId: string,
     loadCatalog: () => PromiseLike<TEntry[]>,
-    toAllowedTool: (entry: TEntry) => TAllowedTool,
-  ): Promise<Omit<ToolProfileEffectiveSummary, "allowedTools"> & { allowedTools: TAllowedTool[] }> {
+  ) {
     const { bindings, activeProfiles } = await readEffectiveProfileState(companyId, agentId);
-    if (activeProfiles.length === 0) {
-      return {
-        agentId,
-        profiles: [],
-        entries: [],
-        bindings: bindings.map(toProfileBinding),
-        allowedTools: [],
-        allowedToolNames: [],
-        installedConnections: await resolveInstalledConnectionsForAgent(
-          companyId,
-          agentId,
-        ),
-      };
-    }
     const activeProfileIds = activeProfiles.map((profile) => profile.id);
-    const [entries, catalog, companyAgents] = await Promise.all([
-      db
-        .select()
-        .from(toolProfileEntries)
-        .where(
-          and(
-            eq(toolProfileEntries.companyId, companyId),
-            inArray(toolProfileEntries.profileId, activeProfileIds),
-          ),
-        )
-        .orderBy(asc(toolProfileEntries.createdAt)),
-      loadCatalog(),
-      db
-        .select({ id: agents.id })
-        .from(agents)
-        .where(eq(agents.companyId, companyId)),
+    const [entries, catalog, installedConnections] = await Promise.all([
+      activeProfileIds.length ? db.select().from(toolProfileEntries).where(and(
+        eq(toolProfileEntries.companyId, companyId),
+        inArray(toolProfileEntries.profileId, activeProfileIds),
+      )).orderBy(asc(toolProfileEntries.createdAt)) : [],
+      activeProfileIds.length ? loadCatalog() : [],
+      resolveInstalledConnectionsForAgent(companyId, agentId),
     ]);
-    const entriesByProfile = new Map<
-      string,
-      Array<typeof toolProfileEntries.$inferSelect>
-    >();
-    for (const entry of entries) {
+    const { allowedCatalogIds, allowedToolNames } = resolveCatalogAccess(activeProfiles, entries, catalog);
+    return { bindings, activeProfiles, entries, catalog, allowedCatalogIds,
+      allowedToolNames: [...allowedToolNames].sort((a, b) => a.localeCompare(b)), installedConnections };
+  }
+
+  async function getEffectiveProfilesForAgent(companyId: string, agentId: string): Promise<ToolProfileEffectiveSummary> {
+    const state = await loadEffectiveAssignments(companyId, agentId, () => db.select().from(toolCatalogEntries)
+      .where(and(eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.status, "active")))
+      .orderBy(asc(toolCatalogEntries.toolName)));
+    const companyAgents = state.activeProfiles.length ? await db.select({ id: agents.id }).from(agents)
+      .where(eq(agents.companyId, companyId)) : [];
+    const entriesByProfile = new Map<string, typeof state.entries>();
+    for (const entry of state.entries) {
       const list = entriesByProfile.get(entry.profileId) ?? [];
       list.push(entry);
       entriesByProfile.set(entry.profileId, list);
     }
-    const { allowedCatalogIds, allowedToolNames } = resolveCatalogAccess(activeProfiles, entries, catalog);
     const agentIds = companyAgents.map((agent) => agent.id);
-    const details: ToolProfileWithDetails[] = activeProfiles.map((profile) =>
-      buildProfileDetails({
-        profile,
-        entries: entriesByProfile.get(profile.id) ?? [],
-        bindings: bindings.filter(
-          (binding) => binding.profileId === profile.id,
-        ),
-        catalog,
-        agentIds,
-      }),
-    );
-    const allowedTools = catalog
-      .filter((entry) => allowedCatalogIds.has(entry.id))
-      .map(toAllowedTool);
+    const profiles: ToolProfileWithDetails[] = state.activeProfiles.map((profile) => buildProfileDetails({
+      profile,
+      entries: entriesByProfile.get(profile.id) ?? [],
+      bindings: state.bindings.filter((binding) => binding.profileId === profile.id),
+      catalog: state.catalog,
+      agentIds,
+    }));
+    return {
+      agentId, profiles,
+      entries: state.entries.map(toProfileEntry),
+      bindings: state.bindings.map(toProfileBinding),
+      allowedTools: state.catalog.filter((entry) => state.allowedCatalogIds.has(entry.id)).map(toCatalogEntry),
+      allowedToolNames: state.allowedToolNames,
+      installedConnections: state.installedConnections,
+    };
+  }
+
+  async function getEffectiveToolAssignmentsForAgent(companyId: string, agentId: string) {
+    const state = await loadEffectiveAssignments(companyId, agentId, () => db.select(profileCatalogColumns).from(toolCatalogEntries)
+      .where(and(eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.status, "active")))
+      .orderBy(asc(toolCatalogEntries.toolName)));
     return {
       agentId,
-      profiles: details,
-      entries: entries.map(toProfileEntry),
-      bindings: bindings.map(toProfileBinding),
-      allowedTools,
-      allowedToolNames: [...allowedToolNames].sort((a, b) =>
-        a.localeCompare(b),
-      ),
-      installedConnections: await resolveInstalledConnectionsForAgent(
-        companyId,
-        agentId,
-      ),
+      entries: state.entries.map(toProfileEntry),
+      bindings: state.bindings.map(toProfileBinding),
+      allowedTools: state.catalog.filter((entry) => state.allowedCatalogIds.has(entry.id))
+        .map(({ id, applicationId, connectionId, toolName }) => ({ id, applicationId, connectionId, toolName })),
+      allowedToolNames: state.allowedToolNames,
+      installedConnections: state.installedConnections,
     };
   }
   async function getConnectionAssignmentsForAgent(companyId: string, agentId: string, connectionIds: string[]) {
@@ -234,34 +219,7 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
 
   return {
     getConnectionAssignmentsForAgent,
-    getEffectiveProfilesForAgent: (companyId: string, agentId: string) =>
-      resolveEffectiveProfiles(
-        companyId,
-        agentId,
-        () => db
-          .select()
-          .from(toolCatalogEntries)
-          .where(and(
-            eq(toolCatalogEntries.companyId, companyId),
-            eq(toolCatalogEntries.status, "active"),
-          ))
-          .orderBy(asc(toolCatalogEntries.toolName)),
-        toCatalogEntry,
-      ),
-
-    getEffectiveToolAssignmentsForAgent: (companyId: string, agentId: string) =>
-      resolveEffectiveProfiles(
-        companyId,
-        agentId,
-        () => db
-          .select(profileCatalogColumns)
-          .from(toolCatalogEntries)
-          .where(and(
-            eq(toolCatalogEntries.companyId, companyId),
-            eq(toolCatalogEntries.status, "active"),
-          ))
-          .orderBy(asc(toolCatalogEntries.toolName)),
-        ({ id, applicationId, connectionId, toolName }) => ({ id, applicationId, connectionId, toolName }),
-      )
+    getEffectiveProfilesForAgent,
+    getEffectiveToolAssignmentsForAgent,
   };
 }

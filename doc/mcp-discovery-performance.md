@@ -25,6 +25,26 @@ The stateless gateway and runtime-tools MCP endpoints return HTTP 405 with
 The runtime-tools endpoint still validates its caller before that response.
 See the [MCP transport contract](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports).
 
+## Runtime preparation
+
+Runtime tool assignments use the same profile precedence and include/exclude
+rules as the profile administration endpoint. They omit administrative profile
+summaries and the company-agent inventory read. Context capture and dispatch each
+resolve current assignment inputs. A shared pure projection keeps their filtering
+and digest rules identical; it does not cache authorization across those boundaries.
+
+Standing connection instructions load descriptors only for connections with enabled
+instructions. Per-connection tool lookups use the same scoped catalog path. The
+query also includes connections with the same short UUID prefix before it assigns
+tool names, then removes those peers from the result. Native UUID range predicates
+keep this lookup indexable and preserve the names used by full discovery and
+name-based policies. Policy evaluation can still load broader, narrow catalog
+metadata to apply company and agent profiles.
+
+GitHub discovery can repair a missing catalog entry. Slack assignment preparation
+can synchronize catalogs and bindings. Their existing ordering remains intact;
+these operations are not treated as independent read-only discovery branches.
+
 ## Reproduce the measurements
 
 Build workspace dependencies, then run from `server/`:

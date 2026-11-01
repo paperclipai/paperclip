@@ -32,7 +32,6 @@ import {
   CONNECTION_INTENT_AGENT_GUIDANCE,
   CONNECTION_RUNTIME_TOOL_NAMES,
   envBindingSchema,
-  isToolConnectionAttentionHealth,
   type ChatProvider,
   type RoutineRevisionSnapshotV1,
   type SourceTrustMetadata,
@@ -91,6 +90,7 @@ import {
 } from "../secrets.js";
 import { createToolGatewayService } from "../tool-gateway.js";
 import { toolAccessService } from "../tool-access.js";
+import { projectRuntimeMcpAssignment } from "../runtime-mcp-assignment.js";
 import {
   buildDocumentReviewContext,
   buildPlanReviewContext,
@@ -970,25 +970,12 @@ export async function buildPaperclipRuntimeMcpServers(input: {
         identityContextId: runIdentity?.activeIdentityContextId,
       })).map(tool => tool.connectionId))
     : new Set<string>();
-  const assignedConnections = resolvedInstalledConnections.filter(
-    (connection) =>
-      permittedConnectionIds.has(connection.id) &&
-      connection.status === "active" &&
-      connection.enabled &&
-      ((Boolean(runIdentity?.activeIdentityContextId) &&
-        (connection.config?.sourceTemplateKey === "github" ||
-          connection.transportConfig?.sourceTemplateKey === "github")) ||
-        connection.credentialPolicy === "per_user" ||
-        !isToolConnectionAttentionHealth(connection.healthStatus)) &&
-      (connection.transport === "mcp_remote" ||
-        connection.transport === "local_stdio" || isBrowserUseConnection(connection) || restConnectorFor(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id)),
-  );
-  const assignedConnectionIds = new Set(
-    assignedConnections.map((connection) => connection.id),
-  );
-  const assignedTools = effective.allowedTools.filter((tool) =>
-    assignedConnectionIds.has(tool.connectionId),
-  );
+  const assignment = projectRuntimeMcpAssignment({ agentId: input.agent.id,
+    connections: resolvedInstalledConnections, allowedTools: effective.allowedTools,
+    permittedConnectionIds, identityContextActive: Boolean(runIdentity?.activeIdentityContextId),
+    githubBotConnectionIds, spekoConnectionIds });
+  const assignedConnections = assignment.connections;
+  const assignedTools = assignment.tools;
   const service = createToolGatewayService(input.db);
   if (assignedConnections.length === 0) {
     await service.recordRuntimeMcpDeliveryDiagnostic({
@@ -999,15 +986,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     });
     return [];
   }
-  const assignment = {
-    version: 1,
-    agentId: input.agent.id,
-    connections: assignedConnections.map((connection) => connection.id).sort(),
-    tools: assignedTools.map((tool) => tool.id).sort(),
-  };
-  const assignmentDigest = createHash("sha256")
-    .update(JSON.stringify(assignment))
-    .digest("hex");
+  const assignmentDigest = assignment.digest;
   // Native runs may lose access after their immutable context is captured, but
   // they must never gain a new or changed assignment during dispatch.
   if (

@@ -8,6 +8,8 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, issues, toolApplications, toolCatalogEntries, toolConnections, toolPolicies, toolProfileBindings, toolActionRequests } from "@paperclipai/db";
 import { createToolGatewayService } from "../services/tool-gateway.js";
+import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { recordingDb } from "./helpers/tool-gateway-listing-fixture.js";
 import { toolDiscoveryScheduler } from "../services/tool-discovery-scheduler.js";
 import { toolAccessService, projectedConnectionToolArguments, projectedConnectionToolInputSchema } from "../services/tool-access.js";
 import { composeConnectionInstructions, prepareConnectionInstructionDelivery } from "../services/connection-instructions.js";
@@ -48,18 +50,18 @@ async function createRunFixture(db: ReturnType<typeof createDb>) {
   return { company, agent, issue, run };
 }
 
-async function createRemoteMcpToolFixture(db: ReturnType<typeof createDb>, companyId: string) {
+async function createRemoteMcpToolFixture(db: ReturnType<typeof createDb>, companyId: string, suffix = "") {
   const application = await db.insert(toolApplications).values({
     companyId,
     applicationKey: `remote-${randomUUID().slice(0, 8)}`,
-    name: "Remote MCP",
+    name: `Remote MCP${suffix}`,
     type: "mcp_http",
     status: "active",
   }).returning().then((rows) => rows[0]!);
   const connection = await db.insert(toolConnections).values({
     companyId,
     applicationId: application.id,
-    name: "Remote connection",
+    name: `Remote connection${suffix}`,
     uid: `test/${randomUUID()}`,
     transport: "mcp_remote",
     status: "active",
@@ -205,6 +207,43 @@ async function createRemoteMcpToolFixture(db: ReturnType<typeof createDb>, compa
     const other = await fixture();
     await expect(f.gateway.resolveConnectionInstructionsForRun({ ...f.binding, companyId: other.company.id })).rejects.toMatchObject({ status: 403 });
     await expect(f.gateway.resolveConnectionInstructionsForRun({ ...f.binding, agentId: other.agent.id })).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("reads only instruction candidates and preserves full-discovery names for short-ID collisions", async () => {
+    const f = await fixture();
+    const peerId = f.connection.id.slice(0, 8) + randomUUID().slice(8);
+    const [peer] = await db.insert(toolConnections).values({ id: peerId, companyId: f.company.id,
+      applicationId: f.application.id, name: "Collision peer", uid: randomUUID(), transport: "mcp_remote",
+      status: "active", enabled: true, healthStatus: "ok", config: { url: "https://8.8.8.8/mcp" } }).returning();
+    await db.insert(toolCatalogEntries).values({ companyId: f.company.id, applicationId: f.application.id,
+      connectionId: peer.id, entryKind: "tool", name: f.catalogEntry.name, toolName: f.catalogEntry.toolName,
+      riskLevel: "read", isReadOnly: true, status: "active", versionHash: randomUUID() });
+    const unrelated = await createRemoteMcpToolFixture(db, f.company.id, " unrelated");
+    await db.insert(toolCatalogEntries).values(Array.from({ length: 100 }, (_, index) => ({ companyId: f.company.id,
+      applicationId: unrelated.application.id, connectionId: unrelated.connection.id,
+      name: `unrelated_${index}`, toolName: `unrelated_${index}`, versionHash: randomUUID(),
+      inputSchema: { description: "unrelated schema ".repeat(1000) }, status: "active" as const })));
+    const session = await f.gateway.createSession(f.binding);
+    const fullTool = (await f.gateway.listToolsForSession(session.token)).find(tool => tool.connectionId === f.connection.id)!;
+    expect(fullTool.name).toContain(f.catalogEntry.id.replaceAll("-", "").slice(0, 8));
+    const expected = await f.resolve();
+    const measured = recordingDb(db);
+    const events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(measured.db, { toolCatalogEntries }, capture);
+    try {
+      expect(await createToolGatewayService(measured.db).resolveConnectionInstructionsForRun(f.binding)).toEqual(expected);
+    } finally { capture.flush(); }
+    const catalogReads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+      && event.table === "tool_catalog_entries" && event.operation === "select");
+    expect(catalogReads.length).toBeGreaterThan(0);
+    const descriptorReads = catalogReads.filter(event => Array.isArray(event.callers)
+      && String(event.callers[0]).startsWith("services/tool-gateway.ts:"));
+    expect(descriptorReads.length).toBeGreaterThan(0);
+    expect(descriptorReads.reduce((sum, event) => sum + Number(event.rows), 0)).toBe(2);
+    await db.insert(toolPolicies).values({ companyId: f.company.id, name: "Block exact discovery name",
+      policyType: "block", priority: 1000, selectors: { toolName: fullTool.name } });
+    expect(await f.resolve()).toBeNull();
   });
 
   it("invalidates a pending approval when the configured Honcho workspace changes", async () => {
