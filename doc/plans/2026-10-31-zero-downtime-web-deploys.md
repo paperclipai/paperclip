@@ -1,7 +1,30 @@
 # Zero-downtime web deployments
 
-Date: 2026-10-31. Status: runtime and Cloud overlap policy merged; qualification
-and existing-volume enrollment remain in progress. No hosted acceptance claim.
+Date: 2026-10-31. Status (2026-11-01 13:04 UTC): existing-volume staging enrollment
+is complete and its read/save/file-integrity checks pass. Active-agent recovery
+and the ten-deploy staging campaign remain unqualified. No production canary yet.
+
+Latest critical path: Core #18543 includes the runtime admission correction and
+owned immutable-cache retirement. Review exposed a resolved host-source fallback;
+its fix at `11d6eeefbb` passes all 122 workspace-preparation tests. The live test at
+`a18f6b85a3` gracefully stopped A and deleted its entire home in 50.4 seconds, then
+failed because B treated A's saved agent-directory cache path as execution
+identity. The remote execution did not meet the 420-second reattachment deadline.
+That failure remains failed evidence; all three owned Daytona sandboxes were
+subsequently confirmed absent and the temporary credential revoked. Recovery now
+needs a local projection rebuilt from the exact remote lease with its original
+save baseline preserved. Focused different-home/same-path/foreign-lease cases pass;
+full affected regressions and another live attempt are next.
+
+Cloud #1102 merged as `461c4aea28` and is serving on the staging controller.
+The original enrollment attempt completed using its original qualified image,
+a retained detached volume, and the migrated decision key. Its normal app boot
+became healthy; the post-enrollment probe passed 20 reads and three saves with no
+HTTP/WebSocket failures and verified all 34 files. The original browser tab
+reconnected and saved a new task title; lazy Agents navigation also succeeded.
+This is migrated-data/app continuity evidence, not a qualifying overlap or active
+agent result. Private receipts remain under the task's staging enrollment and
+hosted probe directories; no credential or live target identity belongs here.
 
 ## Outcome and endpoint
 

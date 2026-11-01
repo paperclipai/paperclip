@@ -8,13 +8,14 @@ import fs from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import * as executionTargetTools from "@paperclipai/adapter-utils/execution-target";
+import * as checkpoints from "../services/agent-file-checkpoints.js";
 import * as ssh from "@paperclipai/adapter-utils/ssh";
 const execFile = promisify(execFileCallback);
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { agentFileStore, fileHash, inspectAgentFile, snapshotAgentFiles, MAX_AGENT_FILE_BYTES, MAX_AGENT_DIRECTORY_BYTES, MAX_AGENT_DIRECTORY_ENTRIES } from "../services/agent-file-store.js";
 import { agents, companies, authUsers, companyMemberships, principalPermissionGrants, heartbeatRuns, environmentLeases, environments, agentInstructionWorkingCopies, agentInstructionRevisions, agentInstructionHeads, createDb, fileStorageDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -900,6 +901,79 @@ describe("persistent agent directories", () => {
     expect((await copies.get(companyId, interrupted.runId))?.state).toBe("unavailable");
     await expect(fs.stat(path.dirname(interrupted.localRoot))).rejects.toMatchObject({ code: "ENOENT" });
     expect((await fs.stat(active.localRoot)).isDirectory()).toBe(true);
+  });
+
+  it.each(["new-home", "same-path-empty", "foreign-lease", "other-controller", "missing-collector"] as const)("recovers remote agent files after controller cache loss: %s", async scenario => {
+    const copy = await run({ warm: true });
+    const environmentId = randomUUID(), leaseId = randomUUID(), remoteCwd = "/fixture/retained-task";
+    const executionRoot = path.posix.join(remoteCwd, ".paperclip-runtime", "agent-files", agentId, copy.runId);
+    await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "sandbox" });
+    await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, heartbeatRunId: copy.runId,
+      provider: "daytona", providerLeaseId: "original-sandbox", status: "active", metadata: { remoteCwd } });
+    await db.update(agentInstructionWorkingCopies).set({ location: `remote:${environmentId}`, executionRoot,
+      receipt: { ...copy.receipt, cleanup: { leaseId, remoteCwd } } }).where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+    const saved = (await copies.get(companyId, copy.runId))!;
+    const replacementHome = path.join(home, `replacement-${randomUUID()}`);
+    const remoteFiles = await fs.mkdtemp(path.join(home, "remote-checkpoint-"));
+    await fs.mkdir(path.join(remoteFiles, "files", "policy"), { recursive: true });
+    await fs.writeFile(path.join(remoteFiles, "files", entryFile), "Remote instructions changed during the turn");
+    await fs.writeFile(path.join(remoteFiles, "files", "unsaved.txt"), "Only the running sandbox has this");
+    await fs.rm(path.dirname(copy.localRoot), { recursive: true, force: true });
+    const capture = vi.spyOn(checkpoints, "captureAgentFileCheckpoint").mockResolvedValue({ directory: remoteFiles,
+      manifest: { version: 1, entries: [] }, stats: { hashedBytes: 0, copiedBytes: 0, copiedFiles: 0, scannedEntries: 0 }, cleanup: async () => {} });
+    const transport = vi.spyOn(executionTargetTools, "prepareAdapterExecutionTargetRuntime").mockImplementation(async options => ({
+      target: options.target!, workspaceRemoteDir: options.workspaceRemoteDir!, runtimeRootDir: options.runtimeRootDir!,
+      assetDirs: {}, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null, restoreWorkspace: async () => {},
+    }));
+    const ephemeralBefore = process.env.PAPERCLIP_EPHEMERAL_SERVER;
+    process.env.PAPERCLIP_EPHEMERAL_SERVER = "true";
+    if (scenario === "new-home") process.env.PAPERCLIP_HOME = replacementHome;
+    const remote = { kind: "remote" as const, transport: "sandbox" as const, environmentId,
+      leaseId: scenario === "foreign-lease" ? randomUUID() : leaseId, remoteCwd, runner: { execute: vi.fn() } };
+    try {
+      if (scenario === "missing-collector") {
+        const retained = await copies.collectStopped({ companyId, runId: copy.runId });
+        expect(retained).toMatchObject({ state: "pending_collection", errorCode: "INSTRUCTION_REMOTE_COLLECTOR_UNAVAILABLE", baseHash: saved.baseHash });
+        expect(retained?.receipt?.baseline).toEqual(saved.receipt?.baseline);
+        expect(retained?.nextAttemptAt).toBeInstanceOf(Date);
+        expect(capture).not.toHaveBeenCalled(); expect(transport).not.toHaveBeenCalled();
+        return;
+      }
+      if (scenario === "other-controller") {
+        await db.transaction(async tx => {
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`agent-directory:${companyId}:${agentId}`}, 0))`);
+          await expect(copies.prepare({ ...target(), runId: copy.runId, cwd: remoteCwd, target: remote, warm: true }))
+            .rejects.toThrow("Agent directory operation is already active");
+          expect(capture).not.toHaveBeenCalled(); expect(transport).not.toHaveBeenCalled();
+        });
+        return;
+      }
+      const preparing = copies.prepare({ ...target(), runId: copy.runId, cwd: remoteCwd, target: remote, warm: true });
+      if (scenario === "foreign-lease") {
+        await expect(preparing).rejects.toThrow("Agent directory recovery lease changed");
+        expect(capture).not.toHaveBeenCalled(); expect(transport).not.toHaveBeenCalled();
+        return;
+      }
+      const recovered = (await preparing)!;
+      expect(recovered.executionRoot).toBe(executionRoot);
+      expect(recovered.baseHash).toBe(saved.baseHash);
+      expect(recovered.receipt).toEqual(saved.receipt);
+      if (scenario === "new-home") {
+        expect(recovered.localRoot.startsWith(replacementHome)).toBe(true);
+        await expect(fs.stat(copy.localRoot)).rejects.toMatchObject({ code: "ENOENT" });
+      } else expect(recovered.localRoot).toBe(copy.localRoot);
+      expect(await fs.readFile(path.join(recovered.localRoot, "unsaved.txt"), "utf8")).toBe("Only the running sandbox has this");
+      expect(await fs.readFile(path.join(recovered.localRoot, entryFile), "utf8")).toBe("Remote instructions changed during the turn");
+      expect(capture).toHaveBeenCalledWith(expect.objectContaining({ executionRoot, previous: { version: 1, entries: [] }, target: remote }));
+      expect(transport).toHaveBeenCalledWith(expect.objectContaining({ workspaceLocalDir: recovered.localRoot, workspaceInboundMode: "adopt_remote" }));
+      await copies.prepare({ ...target(), runId: copy.runId, cwd: remoteCwd, target: remote, warm: true });
+      expect(capture).toHaveBeenCalledTimes(1);
+    } finally {
+      process.env.PAPERCLIP_HOME = home;
+      if (ephemeralBefore === undefined) delete process.env.PAPERCLIP_EPHEMERAL_SERVER;
+      else process.env.PAPERCLIP_EPHEMERAL_SERVER = ephemeralBefore;
+      capture.mockRestore(); transport.mockRestore();
+    }
   });
 
   it("retains remote cleanup across restart and failed retries until the original lease is cleaned", async () => {

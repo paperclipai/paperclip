@@ -4181,7 +4181,15 @@ Runner and remote workspace storage. A fresh run still has its initial `legacy`
 label at this phase; that label is not the selected execution mode. The runtime
 selector checks the resolved native warm lifecycle before admission and rejects
 legacy or per-turn execution. External conversation providers keep their existing
-exemption because they own no task filesystem.
+exemption because they own no task filesystem. Source resolution checks this
+contract again before a configured host folder can fall back to local storage.
+
+A replacement controller reconstructs an active remote agent-directory cache
+from the registered sandbox, including unsaved files. The remote directory,
+lease and save baseline remain unchanged; current canonical files are never
+uploaded over the retained execution. Remote collection and cleanup serialize
+through Postgres across controller homes. A missing remote collector retains a
+pending save instead of treating an empty local cache as the agent's files.
 
 ## Cloud startup configuration
 
