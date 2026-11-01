@@ -567,6 +567,22 @@ export type ProjectPrivacyRow = {
   visibility: string;
 };
 
+function taskBridgeScopeIds(
+  scope: TaskBridgeAgentKeyScope,
+  singularKey: "projectId" | "parentIssueId",
+  pluralKey: "projectIds" | "parentIssueIds",
+) {
+  return [
+    ...(typeof scope[singularKey] === "string" ? [scope[singularKey]] : []),
+    ...(Array.isArray(scope[pluralKey]) ? scope[pluralKey] : []),
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+function taskBridgeKeyScopesProject(actor: AuthorizationActor, projectId: string) {
+  if (actor.type !== "agent" || actor.source !== "agent_key" || actor.keyScope?.kind !== "task_bridge") return false;
+  return taskBridgeScopeIds(actor.keyScope, "projectId", "projectIds").includes(projectId);
+}
+
 export function issuePrivacyMode(): "off" | "shadow" | "enforce" {
   const mode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE?.trim().toLowerCase();
   if (mode === "off" || mode === "shadow") return mode;
@@ -1441,17 +1457,6 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     }
 
     return null;
-  }
-
-  function taskBridgeScopeIds(
-    scope: TaskBridgeAgentKeyScope,
-    singularKey: "projectId" | "parentIssueId",
-    pluralKey: "projectIds" | "parentIssueIds",
-  ) {
-    return [
-      ...(typeof scope[singularKey] === "string" ? [scope[singularKey]] : []),
-      ...(Array.isArray(scope[pluralKey]) ? scope[pluralKey] : []),
-    ].filter((value): value is string => typeof value === "string" && value.length > 0);
   }
 
   async function parentIssueMatchesTaskBridgeBoundary(
@@ -2864,15 +2869,14 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     });
   }
 
-  async function decide(input: {
-    actor: AuthorizationActor;
-    action: AuthorizationAction;
-    resource: AuthorizationResource;
-    scope?: Record<string, unknown> | null;
-  }): Promise<AuthorizationDecision> {
-    const agentDecision = await measureWorkspaceAuthorization("authorization.base", () => decideBase(input));
-    const responsibleDecision = await measureWorkspaceAuthorization("authorization.responsible_user", () => applyResponsibleUserIntersection(input, agentDecision));
-    const intersectedDecision = await measureWorkspaceAuthorization("authorization.authorizing_user", () => applyAuthorizingUserIntersection(input, responsibleDecision));
+  async function decideProjectPrivacy(
+    input: {
+      actor: AuthorizationActor;
+      action: AuthorizationAction;
+      resource: AuthorizationResource;
+    },
+    intersectedDecision: AuthorizationDecision,
+  ): Promise<AuthorizationDecision | null> {
     if (
       input.action === "project:read"
       && input.resource.type === "project"
@@ -2913,6 +2917,20 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       });
       if (privacyDecision) return privacyDecision;
     }
+    return null;
+  }
+
+  async function decide(input: {
+    actor: AuthorizationActor;
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+    scope?: Record<string, unknown> | null;
+  }): Promise<AuthorizationDecision> {
+    const agentDecision = await measureWorkspaceAuthorization("authorization.base", () => decideBase(input));
+    const responsibleDecision = await measureWorkspaceAuthorization("authorization.responsible_user", () => applyResponsibleUserIntersection(input, agentDecision));
+    const intersectedDecision = await measureWorkspaceAuthorization("authorization.authorizing_user", () => applyAuthorizingUserIntersection(input, responsibleDecision));
+    const projectPrivacyDecision = await decideProjectPrivacy(input, intersectedDecision);
+    if (projectPrivacyDecision) return projectPrivacyDecision;
     if (
       input.action !== "issue:read"
       || input.resource.type !== "issue"
@@ -2983,8 +3001,28 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     return [...ids];
   }
 
+  async function decideProjectForIssueCreate(input: {
+    actor: AuthorizationActor;
+    companyId: string;
+    projectId: string;
+  }): Promise<AuthorizationDecision> {
+    const readInput = {
+      actor: input.actor,
+      action: "project:read" as const,
+      resource: { type: "project" as const, companyId: input.companyId, projectId: input.projectId },
+    };
+    if (!taskBridgeKeyScopesProject(input.actor, input.projectId)) return decide(readInput);
+    const scoped = allow({
+      action: readInput.action,
+      reason: "allow_explicit_grant",
+      explanation: "Task bridge key is scoped to this project.",
+    });
+    return (await decideProjectPrivacy(readInput, scoped)) ?? scoped;
+  }
+
   return {
     decide,
+    decideProjectForIssueCreate,
     decideReads,
     decideReadsForActors,
     projectDiscoveryCandidateIds,
