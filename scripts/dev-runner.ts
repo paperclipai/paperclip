@@ -80,6 +80,7 @@ const watchedDirectories = [
 
 const watchedFiles = [
   ".env",
+  ".env.local",
   "package.json",
   "pnpm-workspace.yaml",
   "tsconfig.base.json",
