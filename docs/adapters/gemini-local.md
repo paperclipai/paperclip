@@ -43,3 +43,11 @@ Use the "Test Environment" button in the UI to validate the adapter config. It c
 - Working directory is absolute and available (auto-created if missing and permitted)
 - API key/auth hints (`GEMINI_API_KEY` or `GOOGLE_API_KEY`)
 - A live hello probe (`gemini --output-format json "Respond with hello."`) to verify CLI readiness
+
+With the ACP engine (the default), the environment test checks runtime prerequisites
+and credential hints without a live hello probe. For local execution, it also
+checks for readable, non-empty `oauth_creds.json` or `gemini-credentials.json` files
+under `.gemini` in the configured `env.GEMINI_CLI_HOME`, then `env.HOME`, or the
+server process home. A file is only a credential hint; the test does not read its
+contents or verify that the credentials are valid. Local credential files do not
+count as credentials for remote execution targets.
