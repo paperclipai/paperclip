@@ -45,6 +45,7 @@ for (const mobile of [false, true]) test(`a rich task uses one stable loading fr
           const element = document.querySelector(selector);
           if (!element || getComputedStyle(element).visibility !== "visible") return null;
           const rect = element.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) return null;
           return [rect.x, rect.y, rect.width, rect.height];
         };
         const font = (selector: string) => {
