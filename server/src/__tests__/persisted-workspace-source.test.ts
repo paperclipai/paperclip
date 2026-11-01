@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { resolvePersistedGitWorkspaceSource } from "../services/persisted-workspace-source.js";
+import { isSameRepository, resolvePersistedGitWorkspaceSource } from "../services/persisted-workspace-source.js";
 
 const exec = promisify(execFile);
 const roots: string[] = [];
@@ -108,6 +108,26 @@ describe("persisted Git workspace source", () => {
     await expect(resolvePersistedGitWorkspaceSource(input)).rejects.toMatchObject({ resultJson: { workspaceValidation: {
       reasonCode: "source_repository_mismatch",
     } } });
+  });
+
+  it("accepts the same repository stored as an SSH origin when HTTPS was recorded", async () => {
+    const { original, input } = await fixture();
+    await exec("git", ["-C", original, "remote", "set-url", "origin", "git@example.invalid:original.git"]);
+    expect(await resolvePersistedGitWorkspaceSource({ ...input, workspace: {
+      ...input.workspace, repoUrl: "https://example.invalid/owner/original.git",
+    } }).catch(error => error)).toMatchObject({ resultJson: { workspaceValidation: { reasonCode: "source_repository_mismatch" } } });
+    await exec("git", ["-C", original, "remote", "set-url", "origin", "git@example.invalid:owner/original.git"]);
+    expect(await resolvePersistedGitWorkspaceSource({ ...input, workspace: {
+      ...input.workspace, repoUrl: "https://example.invalid/owner/original.git",
+    } })).toBe(original);
+  });
+
+  it("rejects an SSH origin for a different repository", async () => {
+    const { original, input } = await fixture();
+    await exec("git", ["-C", original, "remote", "set-url", "origin", "git@example.invalid:owner/other.git"]);
+    await expect(resolvePersistedGitWorkspaceSource({ ...input, workspace: {
+      ...input.workspace, repoUrl: "https://example.invalid/owner/original.git",
+    } })).rejects.toMatchObject({ resultJson: { workspaceValidation: { reasonCode: "source_repository_mismatch" } } });
   });
 
   it("rejects changed origin identity even at the recorded managed path", async () => {
@@ -293,4 +313,35 @@ describe("persisted Git workspace source", () => {
     expect(await fs.readFile(path.join(worktree, "retained.txt"), "utf8")).toBe("keep this work\n");
   });
 
+});
+
+describe("isSameRepository", () => {
+  it.each([
+    ["git@github.com:phenix3443/paperclip.git", "https://github.com/phenix3443/paperclip.git"],
+    ["ssh://git@github.com/phenix3443/paperclip.git", "https://github.com/phenix3443/paperclip"],
+    ["https://GitHub.com/phenix3443/paperclip/", "https://github.com/phenix3443/paperclip.git"],
+    ["ssh://git@github.com:22/phenix3443/paperclip.git", "https://github.com/phenix3443/paperclip.git"],
+    ["https://git.example:8443/owner/repo.git", "https://git.example:8443/owner/repo"],
+  ])("treats %s and %s as one repository", (origin, recorded) => {
+    expect(isSameRepository(origin, recorded)).toBe(true);
+  });
+
+  it.each([
+    ["git@github.com:phenix3443/paperclip.git", "https://github.com/phenix3443/other.git"],
+    ["git@github.com:phenix3443/paperclip.git", "https://gitlab.com/phenix3443/paperclip.git"],
+    ["git@github.com:Phenix3443/paperclip.git", "https://github.com/phenix3443/paperclip.git"],
+    ["file:///repos/paperclip.git", "https://github.com/phenix3443/paperclip.git"],
+    ["https://git.example:8443/owner/repo.git", "https://git.example:9443/owner/repo.git"],
+    ["ssh://git@git.example:2222/owner/repo.git", "ssh://git@git.example/owner/repo.git"],
+    ["git@git.example:owner/repo.git", "ssh://git@git.example/owner/repo.git"],
+    ["git@git.example:owner/repo.git", "https://git.example:8443/owner/repo.git"],
+  ])("keeps %s and %s distinct", (origin, recorded) => {
+    expect(isSameRepository(origin, recorded)).toBe(false);
+  });
+
+  it("requires exact text for unrecognized forms and rejects a missing origin", () => {
+    expect(isSameRepository("/repos/paperclip", "/repos/paperclip")).toBe(true);
+    expect(isSameRepository("/repos/paperclip", "/repos/other")).toBe(false);
+    expect(isSameRepository(null, "https://github.com/phenix3443/paperclip.git")).toBe(false);
+  });
 });
