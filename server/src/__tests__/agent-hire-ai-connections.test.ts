@@ -649,6 +649,82 @@ describe("hired agents sharing a subscription", () => {
       unregisterServerAdapter(f.adapterType);
     }
   });
+
+  it("strips an explicit AI connection binding from a self-authenticated adapter on create, hire and update", async () => {
+    const f = await fixture("anthropic");
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    for (const endpoint of ["agent-hires", "agents"]) {
+      // The binding would be persisted without ever being installed, and the
+      // first run would then fail with "connection not permitted" (Greptile P1).
+      const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
+        name: `Self-auth ${endpoint}`, role: "engineer", adapterType: "hermes_gateway", reportsTo: f.agentId,
+        runtimeConfig: { aiConnection: f.binding },
+      }));
+      expect(agent.runtimeConfig?.aiConnection).toBeUndefined();
+      expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.targetId, agent.id))).toEqual([]);
+    }
+    // Update path: an explicit binding on a self-authenticated agent is stripped.
+    await db.update(agents).set({ adapterType: "hermes_gateway" }).where(eq(agents.id, f.agentId));
+    const explicit = await request(f.app).patch(`/api/agents/${f.agentId}`).send({ runtimeConfig: { aiConnection: f.binding } });
+    expect(explicit.status, JSON.stringify(explicit.body)).toBe(200);
+    const [afterExplicit] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    expect(afterExplicit.runtimeConfig.aiConnection).toBeUndefined();
+    // A legacy row persisted before the strip is purged on an unrelated update.
+    await db.update(agents).set({ adapterType: "hermes_gateway", runtimeConfig: { aiConnection: f.binding } }).where(eq(agents.id, f.agentId));
+    const purge = await request(f.app).patch(`/api/agents/${f.agentId}`).send({ role: "ceo" });
+    expect(purge.status, JSON.stringify(purge.body)).toBe(200);
+    const [manager] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    expect(manager.runtimeConfig.aiConnection).toBeUndefined();
+  }, 30000);
+
+  it.each([true, false])("drops a stale binding when a self-authenticated agent switches to a managed harness (installed: %s)", async (installed) => {
+    const f = await fixture("anthropic");
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    // Legacy row: an older release saved the binding on a self-authenticated adapter.
+    await db.update(agents).set({ adapterType: "hermes_gateway", runtimeConfig: { aiConnection: f.binding } }).where(eq(agents.id, f.agentId));
+    if (!installed) await db.delete(toolConnectionInstalls).where(and(eq(toolConnectionInstalls.targetType, "agent"), eq(toolConnectionInstalls.targetId, f.agentId)));
+    const installsBefore = await db.select().from(toolConnectionInstalls).where(and(eq(toolConnectionInstalls.targetType, "agent"), eq(toolConnectionInstalls.targetId, f.agentId)));
+    const original = getServerAdapter("claude_local");
+    const probe = vi.fn(async () => ({ adapterType: "claude_local", status: "pass" as const, checks: [], testedAt: new Date().toISOString() }));
+    registerServerAdapter({ ...original, testEnvironment: probe });
+    try {
+      // The binding never ran on the self-authenticated adapter, so it does not
+      // follow the agent and cannot block the switch with "not permitted".
+      const response = await request(f.app).patch(`/api/agents/${f.agentId}`).send({ adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-5" } });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(probe).not.toHaveBeenCalled();
+      const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+      expect(saved.adapterType).toBe("claude_local");
+      expect(saved.runtimeConfig.aiConnection).toBeUndefined();
+      expect(await db.select().from(toolConnectionInstalls).where(and(eq(toolConnectionInstalls.targetType, "agent"), eq(toolConnectionInstalls.targetId, f.agentId)))).toEqual(installsBefore);
+    } finally {
+      unregisterServerAdapter("claude_local");
+    }
+  }, 30000);
+
+  it("validates a connection chosen with the switch away from a self-authenticated adapter", async () => {
+    const f = await fixture("anthropic");
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    await db.update(agents).set({ adapterType: "hermes_gateway", runtimeConfig: { aiConnection: f.binding } }).where(eq(agents.id, f.agentId));
+    const original = getServerAdapter("claude_local");
+    const probe = vi.fn(async () => ({ adapterType: "claude_local", status: "pass" as const, checks: [], testedAt: new Date().toISOString() }));
+    registerServerAdapter({ ...original, testEnvironment: probe });
+    try {
+      // An explicit binding sent with the switch is validated for the new
+      // harness. The fixture key is not a real credential, so validation
+      // reports the provider rejection and the switch is refused.
+      const response = await request(f.app).patch(`/api/agents/${f.agentId}`).send({
+        adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-5" }, runtimeConfig: { aiConnection: f.binding },
+      });
+      expect(probe).toHaveBeenCalled();
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(response.body.code).toBe("ai_connection_validation_failed");
+      const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+      expect(saved.adapterType).toBe("hermes_gateway");
+    } finally {
+      unregisterServerAdapter("claude_local");
+    }
+  }, 30000);
 });
 
 

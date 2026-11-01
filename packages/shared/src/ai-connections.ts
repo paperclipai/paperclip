@@ -68,6 +68,41 @@ export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
 ]);
 export type AiConnectionBinding = z.infer<typeof aiConnectionBindingSchema>;
 export const aiConnectionMetadataSchema = z.object({ ...requirement, routing: aiProviderRoutingSchema.optional() }).strict();
+
+/**
+ * Adapters that own their provider credentials inside their own adapter
+ * configuration (remote gateways and local CLIs with their own login). They
+ * never inherit, validate, install or run a managed AI connection.
+ */
+const SELF_AUTHENTICATED_ADAPTERS = new Set([
+  "cursor_cloud",
+  "hermes_gateway",
+  "kimi_local",
+  "cursor",
+  "openclaw_gateway",
+]);
+
+/** Harnesses that accept a fixed company-shared API key binding. */
+const FIXED_API_KEY_HARNESSES: readonly string[] = [
+  "claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "grok_local", "copilot_runtime",
+];
+
+/**
+ * Adapters and runner harnesses Paperclip can drive with a managed connection:
+ * the Paperclip runner, every harness referenced by AI_CONNECTION_CAPABILITIES
+ * (including `copilot_runtime` and `antigravity_runtime`), and the fixed-binding
+ * harness list. Derived from those tables so a new harness cannot drift out of
+ * it. Keep it disjoint from the self-authenticated set.
+ */
+export function isAiConnectionManagedAdapter(adapterType: string): boolean {
+  return adapterType === "paperclip_runner" || FIXED_API_KEY_HARNESSES.includes(adapterType)
+    || Object.values(AI_CONNECTION_CAPABILITIES).some(({ methods }) =>
+      Object.values(methods).some((method) => method?.adapters.includes(adapterType)));
+}
+
+export function isAiConnectionSelfAuthenticatedAdapter(adapterType: string): boolean {
+  return SELF_AUTHENTICATED_ADAPTERS.has(adapterType);
+}
 export type AiConnectionMetadata = z.infer<typeof aiConnectionMetadataSchema>;
 
 /** Existing integrations only. This table describes compatibility, never routing. */
@@ -126,20 +161,30 @@ export function isAiConnectionCompatible(
   runnerProvider?: unknown,
   acpxAgent?: unknown,
 ): boolean {
-  adapterType = aiRoutingHarness(adapterType, runnerProvider, acpxAgent);
+  const harness = aiRoutingHarness(adapterType, runnerProvider, acpxAgent);
   // Antigravity uses its own Google runtime sign-in or a Gemini API key.
   // Tool OAuth and API-compatible endpoints cannot authenticate this harness.
-  if (adapterType === "antigravity_runtime") return requirement.provider === "google"
+  if (harness === "antigravity_runtime") return requirement.provider === "google"
     && (requirement.method === "api_key" || requirement.method === "subscription")
     && !("routing" in requirement && requirement.routing);
-  if ("routing" in requirement && requirement.routing) return requirement.method === "api_key" && isAiRoutingCompatible(requirement.routing, adapterType);
+  // Routing is a harness capability. Evaluate it before any adapter-family
+  // decision so a routed requirement stays rejected on harnesses that do not
+  // support routing, self-authenticated or not.
+  if ("routing" in requirement && requirement.routing)
+    return requirement.method === "api_key" && isAiRoutingCompatible(requirement.routing, harness);
+  // Self-authenticated and unknown harnesses never run a managed connection, so
+  // no managed binding is compatible with them. Check the resolved harness:
+  // callers pass either a stored adapter type or a runner harness such as
+  // `copilot_runtime`.
+  if (!isAiConnectionManagedAdapter(harness)) return false;
+  adapterType = harness;
   // A fixed binding contains identity only. The service checks authoritative
   // connection metadata before resolving credentials or running the harness.
   if (adapterType === "pi_local") return (requirement.method === "api_key" || ("mode" in requirement && requirement.mode === "responsible_user"))
     && ["openrouter", "openai", "anthropic", "google"].includes(requirement.provider)
     && typeof model === "string" && model.startsWith(`${requirement.provider}/`);
   if ("mode" in requirement && requirement.mode !== "responsible_user" && requirement.method === "api_key")
-    return ["claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "grok_local", "copilot_runtime"].includes(adapterType);
+    return FIXED_API_KEY_HARNESSES.includes(adapterType);
   const methods = AI_CONNECTION_CAPABILITIES[requirement.provider].methods;
   const candidates = "mode" in requirement && requirement.mode === "responsible_user"
     ? Object.values(methods)
