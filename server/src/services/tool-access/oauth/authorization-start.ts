@@ -15,6 +15,8 @@ import type { ConnectionGrantKind, ToolOAuthStartResult } from "@paperclipai/sha
 import { getConnectableAppDefinition } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../../errors.js";
 import { isPaperclipCloudConnectorStrategy, type PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
+import { paperclipCloudConnectorEnrollmentStatus } from "../../paperclip-cloud-connector-enrollment.js";
+import { enrolledBrowserOrigin } from "../../enrolled-browser-origin.js";
 import { deriveVercelConnectSubject, vercelConnectCallbackUrl, VercelConnectClientError, type VercelConnectClient } from "../../vercel-connect.js";
 
 import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
@@ -385,10 +387,18 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
         .delete(toolOauthStates)
         .where(lt(toolOauthStates.expiresAt, now()));
       const state = randomOauthToken();
-      const returnUri = new URL(input.redirectUri);
-      returnUri.pathname = "/api/tools/oauth/cloud-connector/callback";
-      returnUri.search = "";
-      returnUri.hash = "";
+      // The DCR interoperability rewrite in routes/tool-access.ts advertises
+      // `localhost` for non-GET requests. Cloud only accepts the exact origin
+      // this instance enrolled, so derive the return origin from the identity
+      // instead of the rewritten redirect URI. Non-loopback providers keep the
+      // rewrite unchanged.
+      const requestedReturnOrigin = new URL(input.redirectUri).origin;
+      const enrollment = paperclipCloudConnectorEnrollmentStatus();
+      const returnOrigin = enrolledBrowserOrigin(
+        requestedReturnOrigin,
+        enrollment.status === "active" ? enrollment.origins : [],
+      ) ?? requestedReturnOrigin;
+      const returnUri = new URL("/api/tools/oauth/cloud-connector/callback", returnOrigin);
       const session = await cloudConnector.startAuthorization({
         subject: authorizationSubjectAgentId
           ? `agent:${authorizationSubjectAgentId}`
