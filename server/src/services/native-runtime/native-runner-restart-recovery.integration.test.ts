@@ -553,7 +553,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         (controller as ReturnType<typeof spawn>).kill("SIGKILL");
         await exited;
         controller = undefined;
-        if (!perTurn) await expect(executePaperclipNativeSession({ ...nextOptions,
+        if (!resumedAfterSuspension) await expect(executePaperclipNativeSession({ ...nextOptions,
           runnerExecutionTarget: { ...nextOptions.runnerExecutionTarget,
             sandboxLeaseAcquisition: { outcome: "replacement", providerLeaseId: "unrelated-sandbox" } },
         })).rejects.toThrow("prior_owner_terminal_state_indeterminate");

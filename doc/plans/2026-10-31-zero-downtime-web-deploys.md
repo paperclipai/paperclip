@@ -1,9 +1,9 @@
 # Zero-downtime web deployments
 
-Date: 2026-10-31. Status (2026-11-01 14:54 UTC): existing-volume staging enrollment
+Date: 2026-10-31. Status (2026-11-01 15:23 UTC): existing-volume staging enrollment
 and manual sleep/wake preserve saved files and read/save behavior. The full local
-active-agent journey, natural database idling and ten-deploy staging campaign
-remain unqualified. No production canary yet.
+active-agent journey and ten-deploy staging campaign remain unqualified.
+Natural database autosuspension now passes after abandoned test-resource cleanup. No production canary yet.
 
 Core #18543 merged as `7751fc3107` after 55 successful CI checks, Greptile 5/5
 and no unresolved threads. It supplies runtime admission, immutable-cache
@@ -56,7 +56,26 @@ readiness. All 33 readiness, managed-skill and durable-file tests pass, with ser
 typecheck. The failed attempt remains failed evidence; its child credential,
 bucket and all three provider sandboxes were cleaned and checked. Review also
 replaced the whole agent-file manifest read with a scalar SQL digest projection.
-The next live attempt must exercise both replacements and later continuation.
+PR #18552 merged as `c0550e7010` with all required CI green, Greptile 5/5,
+and its scalar-query review findings resolved. The real `a15a12651c` attempt
+passed both web replacements: 765 reads, 78 saves and 78 verified saves with
+zero HTTP probe failures. The active execution survived once; the first three
+turns retained the native/provider session and accepted terminal contract.
+The fourth continuation FAILED: the retained Runner was safely suspended with
+an empty outbox and no pending terminal, but warm recovery attempted live-idle
+reattachment. Its provider state and diagnostics are preserved; all three owned
+sandboxes were independently confirmed absent. The next bounded fix reuses the
+existing per-turn suspended-receipt restoration for warm admission after cache
+loss, preserving physical sandbox binding and ordinary admission fences.
+A real PostgreSQL/Linux Runner regression reproduces the exact live error before
+the fix. Recovery then exposed a second stale-cache read: source reconciliation
+tried to stage new launch assets that the transport deliberately had not created.
+The existing remote process launcher now passes its structured launch identity
+to asset preparation, so reconciliation preserves the previous authority's
+retained launch files. Both new regressions pass: three turns preserve one
+provider thread after two cache deletions, including a failed remote state read
+and retry. The ten-scenario continuity matrix and surrounding boundary checks
+are running before the next exact-build live attempt.
 
 Review also identified save quotas incorrectly applied during cache recovery.
 Recovery uses the existing inbound remote projection and preserves path/link
@@ -77,7 +96,13 @@ this is migration continuity evidence, not uninterrupted old-tab asset loading.
 
 Three eight-minute natural database-idle observations failed. A separate bounded SQL
 attribution window saw no other app-database sessions; it is diagnostic stimulus,
-not idle proof, and does not establish the source of provider activity. The third window, bracketed by closed SQL counter snapshots, recorded 36 transactions and small read deltas on environment setup, leases, environments and plugins; no app-row writes. The source is not yet attributed. Automatic
+not idle proof, and does not establish the source of provider activity. The third window, bracketed by closed SQL counter snapshots, recorded 36 transactions and small read deltas on environment setup, leases, environments and plugins; no app-row writes. A later scoped diagnostic found an abandoned ephemeral setup sandbox still
+archived at the provider despite a historical cleanup-success row. The normal
+verification worker revisited it every five minutes. After deleting that exact
+owned sandbox, the product independently stamped its destroyed-resource proof;
+no historical row or cleanup evidence was manually rewritten. The fresh provider-metadata-only observation passed: the same single volume-free
+web deployment remained serving while Neon automatically suspended after its
+five-minute idle timeout. No app HTTP or SQL was used during the observation. Automatic
 idle sleep was correctly refused because this development fixture is not eligible
 for the free/demo policy. Manual sleep with force disabled passed: the registry
 reports sleeping, Railway has no active web deployment or attached volume, and
