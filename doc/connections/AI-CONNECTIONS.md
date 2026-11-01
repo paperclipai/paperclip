@@ -98,6 +98,10 @@ grant through encrypted vault secret references, with existing consumer bindings
 Safe provider-reported account identity is optional; secret references, tokens,
 and authentication paths are never account labels.
 
+Codex tool shells retain Windows system and profile variables needed by native
+programs, including `SYSTEMROOT` for Windows networking providers. This does not
+admit provider credentials or unassigned host secrets into shell tools.
+
 Company-scoped `/api/companies/:companyId/ai-connections` operations provide list,
 API-key creation/reconnect, personal defaults, completed login references, and
 active-run attribution. The list includes `canManageConnections`, evaluated by

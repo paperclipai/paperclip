@@ -1,5 +1,36 @@
 import { expect, it } from "vitest";
 import { codexShellEnvironmentKeys } from "./codex-shell-environment.js";
+import { createServer } from "node:http";
+import { spawn } from "node:child_process";
+
+it.skipIf(process.platform !== "win32")("preserves the Windows loader environment needed for tool networking", async () => {
+  const server = createServer((_request, response) => {
+    response.setHeader("content-type", "text/plain; charset=utf-8");
+    response.end("connected");
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing test listener");
+    const allowed = new Set(codexShellEnvironmentKeys({}, {}, false).map(key => key.toUpperCase()));
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.has(key.toUpperCase())));
+    const clear = ["SystemRoot", "SystemDrive", "WINDIR"].filter(key => !allowed.has(key.toUpperCase()))
+      .map(key => `Remove-Item Env:${key} -ErrorAction SilentlyContinue;`).join(" ");
+    const child = spawn("pwsh.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", `${clear} $ErrorActionPreference='Stop'; (Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:${address.port}' -TimeoutSec 5).Content`],
+      { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", bytes => { stdout += bytes; });
+    child.stderr.on("data", bytes => { stderr += bytes; });
+    const exitCode = await new Promise<number | null>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(stdout.trim()).toBe("connected");
+  } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+}, 15000);
 
 it("admits assigned service secrets by name while retaining unassigned secret exclusions", () => {
   const assigned = { SLACK_BOT_TOKEN: "slack-canary", SERVICE_API_KEY: "key-canary", APP_SECRET: "secret-canary" };
