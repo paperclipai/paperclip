@@ -1604,6 +1604,53 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect(await service.credential(row)).toBe("");
   });
 
+  it("reactivates an archived provider application when saving an AI connection", async () => {
+    const testCompanyId = randomUUID();
+    await db.insert(companies).values({ id: testCompanyId, name: "Reactivate App Company", issuePrefix: `R${randomUUID().slice(0, 5)}` });
+    await db.insert(companyMemberships).values({ companyId: testCompanyId, principalId: "alice", principalType: "user", status: "active", membershipRole: "member" });
+
+    const key = "app-gallery:openai";
+    const archivedAt = new Date("2026-01-01T00:00:00.000Z");
+    await db
+      .insert(toolApplications)
+      .values({
+        companyId: testCompanyId,
+        applicationKey: key,
+        name: "OpenAI",
+        type: "mcp_http",
+        status: "archived",
+        archivedAt,
+        metadata: { sourceTemplateKey: "openai" },
+        ownerUserId: "alice",
+      });
+
+    const saved = await service.save(
+      testCompanyId,
+      "alice",
+      {
+        provider: "openai",
+        method: "api_key",
+        name: "Revived OpenAI Connection",
+        ownership: "personal",
+        allAgents: true,
+        agentIds: [],
+        apiKey: "fixture-openai-key",
+      },
+      "fixture-openai-secret",
+    );
+
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, saved.connectionId));
+    expect(stored).toBeDefined();
+
+    const [app] = await db
+      .select()
+      .from(toolApplications)
+      .where(and(eq(toolApplications.companyId, testCompanyId), eq(toolApplications.applicationKey, key)));
+    expect(app).toBeDefined();
+    expect(app!.status).toBe("active");
+    expect(app!.archivedAt).toBeNull();
+  });
+
   it.each([
     ["anthropic", false], ["openai", false], ["anthropic", true], ["openai", true],
   ] as const)("turns a %s auth failure into one card and resumes after repair (switch method: %s)", async (provider, switchMethod) => {
