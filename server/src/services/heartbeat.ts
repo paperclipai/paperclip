@@ -44,6 +44,7 @@ import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-wo
 import { nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
 import { selectHeartbeatRuntime } from "./heartbeat/runtime-selection.js";
 import { createHeartbeatRunCompletion } from "./heartbeat/run-completion.js";
+import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 export {
   MAX_TURN_CONTINUATION_WAKE_REASON,
   parseSandboxProviderPluginNotReadyFailureMessage,
@@ -478,6 +479,7 @@ import {
   buildConfigurationIncompleteRecoveryNoticeSeed,
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildImmediateExecutionPathRecoveryNoticeSeed,
+  buildResponsibleUserDenialRecoveryNoticeSeed,
   buildWorkspaceValidationRecoveryNoticeSeed,
   type StrandedRecoveryNoticeSeed,
 } from "./recovery/stranded-notice.js";
@@ -1180,6 +1182,10 @@ export function heartbeatService(
         notice: buildExecutionReviewParticipantRecoveryNoticeSeed(),
         recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE,
       };
+    }
+    if (noticeKind === "responsible_user_denial") {
+      const code = normalizeResponsibleUserDenialCode(input.runRow.errorCode);
+      if (code) return { notice: buildResponsibleUserDenialRecoveryNoticeSeed(code), recoveryCause: undefined };
     }
     return { notice: buildImmediateExecutionPathRecoveryNoticeSeed({ status: input.issueStatus }), recoveryCause: undefined };
   }

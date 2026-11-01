@@ -132,6 +132,11 @@ export function arbitrateNativeStatus(input: {
   providerModelRejected?: boolean;
   providerOverloaded?: boolean;
   providerFailureSuperseded?: boolean;
+  /**
+   * The run row records a responsible-user denial. Recovery owns the next
+   * step, so the native result must not schedule a retry or continuation.
+   */
+  responsibleUserDenied?: boolean;
   failureRetryCount?: number;
   agentId: string;
   priorIssueStatus: NativeAuthoritativeIssueStatus;
@@ -164,6 +169,12 @@ export function arbitrateNativeStatus(input: {
       ],
     };
   }
+  if (input.responsibleUserDenied) return {
+    policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+    statusAction: "preserve", toStatus: input.priorIssueStatus,
+    reasonCode: "responsible_user_denied", unblockDescriptor: null,
+    effects: [{ kind: "release_checkout" }],
+  };
   if (input.providerFailureSuperseded) return {
     policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
     statusAction: "preserve", toStatus: input.priorIssueStatus,
