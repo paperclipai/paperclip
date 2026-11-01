@@ -541,7 +541,7 @@ describeEmbeddedPostgres("reportRunFailure", () => {
 
   function restartInterruptedSetupRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
     return buildRun({
-      error: "Process lost -- server may have restarted; retrying once",
+      error: "Process lost -- the Paperclip control plane has no recorded process id for this run and cannot verify it is still running; retrying once",
       runtimeMode: "legacy", executionStage: "preparing", processPid: null, processGroupId: null,
       resultJson: {
         executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
