@@ -170,14 +170,15 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
   });
 
   it.each([
-    { kind: "empty", repoUrl: null, branchMode: null, fresh: false },
+    { kind: "empty", repoUrl: null, branchMode: null, fresh: false, ephemeral: true },
     { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: null, fresh: false },
     { kind: "git", repoUrl: "ssh://git@github.com/example/remote.git", branchMode: null, fresh: false },
     { kind: "git", repoUrl: "git@github.com:example/remote.git", branchMode: null, fresh: false },
     { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "existing", fresh: false },
     { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "create", fresh: false },
     { kind: "git", repoUrl: "https://github.com/example/remote.git", branchMode: "create", fresh: true },
-  ] as const)("reserves a $kind remote workspace ($repoUrl, branch: $branchMode, fresh: $fresh) without materializing a controller checkout", async ({ kind, repoUrl, branchMode, fresh }) => {
+  ] as const)("reserves a $kind remote workspace ($repoUrl, branch: $branchMode, fresh: $fresh) without materializing a controller checkout", async (scenario) => {
+    const { kind, repoUrl, branchMode, fresh } = scenario;
     const { input, source, issue, envOrchestrator } = await fixture();
     const [savedEnvironment] = await db.insert(environments).values({ name: `Remote ${randomUUID()}`,
       driver: "sandbox", status: "active", config: { provider: "daytona" } }).returning();
@@ -227,10 +228,13 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       throw new Error("reached remote acquisition");
     });
     const configured = { DATABASE_URL: database.connectionString, PAPERCLIP_STORAGE_PROVIDER: "s3",
-      PAPERCLIP_SECRETS_MASTER_KEY: "remote-workspace-preparation-fixture" };
+      PAPERCLIP_SECRETS_MASTER_KEY: "remote-workspace-preparation-fixture",
+      PAPERCLIP_EPHEMERAL_SERVER: "ephemeral" in scenario ? "true" : "false" };
     const previous = new Map(Object.keys(configured).map(key => [key, process.env[key]]));
     Object.assign(process.env, configured);
     try {
+      // Fresh runs are still marked legacy until the runtime selector owns promotion.
+      expect(input.run.runtimeMode).toBe("legacy");
       await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("reached remote acquisition");
       expect(resolve).not.toHaveBeenCalled();
       expect(repositoryPreparation).not.toHaveBeenCalled();

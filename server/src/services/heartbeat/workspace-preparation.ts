@@ -241,7 +241,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       && !projectExecutionWorkspacePolicy?.storageProviderPluginId,
     existingWorkspace: reusableExistingExecutionWorkspace ?? existingExecutionWorkspace,
   });
-  assertEphemeralWorkspaceExecution({ externalConversation: isDotRun, native: run.runtimeMode === "native",
+  assertEphemeralWorkspaceExecution({ externalConversation: isDotRun,
     adapterType: agent.adapterType,
     pluginTaskWorkspace, remoteAuthority });
   const assertRemotePreparationOwned = run.runtimeMode === "native" ? () => assertNativeSessionPreparationAuthority({

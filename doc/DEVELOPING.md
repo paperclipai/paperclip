@@ -4174,6 +4174,15 @@ capabilities, stable keys, operating limits, automatic history migration and qua
 Do not remove a web volume until its complete retained evidence inventory and
 the independent disposable-server requirements are satisfied.
 
+## Volume-free execution admission
+
+With `PAPERCLIP_EPHEMERAL_SERVER=true`, workspace preparation requires Paperclip
+Runner and remote workspace storage. A fresh run still has its initial `legacy`
+label at this phase; that label is not the selected execution mode. The runtime
+selector checks the resolved native warm lifecycle before admission and rejects
+legacy or per-turn execution. External conversation providers keep their existing
+exemption because they own no task filesystem.
+
 ## Cloud startup configuration
 
 Cloud stores nonsecret startup choices in a private PostgreSQL singleton.
