@@ -5668,16 +5668,27 @@ export function agentRoutes(
     }
     if (!isAiConnectionSelfAuthenticatedAdapter(requestedAdapterType)) {
       const nextAiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
-      if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection
+      // A binding persisted on a self-authenticated adapter by an older release
+      // never ran and was never installed for the agent. It does not follow the
+      // agent to a managed harness: the switch saves without it, and a
+      // connection for the new harness is chosen explicitly and validated.
+      const existingAiConnection = isAiConnectionSelfAuthenticatedAdapter(existing.adapterType)
+        ? undefined
+        : existing.runtimeConfig.aiConnection;
+      if (!existingAiConnection && existing.runtimeConfig.aiConnection && !requestedRuntimeConfig?.aiConnection) {
+        requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig) };
+        delete requestedRuntimeConfig.aiConnection;
+      }
+      if (existingAiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection
         && !isAgentSetupDraft(existing)) {
-        const existingBinding = aiRuntimeConnectionBindingSchema.safeParse(existing.runtimeConfig.aiConnection).data;
+        const existingBinding = aiRuntimeConnectionBindingSchema.safeParse(existingAiConnection).data;
         if (existingBinding && agentHarnessType(existing.adapterType, existing.adapterConfig) === agentHarnessType(requestedAdapterType, nextAiConfig)
           && (existingBinding.mode === "router" || isAiConnectionCompatible(existingBinding,
             requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent))) {
           requestedRuntimeConfig.aiConnection = existingBinding;
         }
       }
-      if (!requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
+      if (!requestedRuntimeConfig?.aiConnection && !existingAiConnection
         && !isAgentSetupDraft(existing)
         && requestedAdapterType === "paperclip_runner" && nextAiConfig.provider === "acpx"
         && nextAiConfig.acpxAgent === "copilot"

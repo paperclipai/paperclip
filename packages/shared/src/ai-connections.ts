@@ -82,14 +82,22 @@ const SELF_AUTHENTICATED_ADAPTERS = new Set([
   "openclaw_gateway",
 ]);
 
+/** Harnesses that accept a fixed company-shared API key binding. */
+const FIXED_API_KEY_HARNESSES: readonly string[] = [
+  "claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "grok_local", "copilot_runtime",
+];
+
 /**
- * Harnesses Paperclip can drive with a managed connection: every adapter
- * referenced by AI_CONNECTION_CAPABILITIES plus the fixed-binding harness list
- * in isAiConnectionCompatible below. Keep the two sets disjoint.
+ * Adapters and runner harnesses Paperclip can drive with a managed connection:
+ * the Paperclip runner, every harness referenced by AI_CONNECTION_CAPABILITIES
+ * (including `copilot_runtime` and `antigravity_runtime`), and the fixed-binding
+ * harness list. Derived from those tables so a new harness cannot drift out of
+ * it. Keep it disjoint from the self-authenticated set.
  */
 export function isAiConnectionManagedAdapter(adapterType: string): boolean {
-  return adapterType === "paperclip_runner" ||
-    ["claude_local", "codex_local", "opencode_local", "grok_local", "gemini_local", "hermes_local", "pi_local"].includes(adapterType);
+  return adapterType === "paperclip_runner" || FIXED_API_KEY_HARNESSES.includes(adapterType)
+    || Object.values(AI_CONNECTION_CAPABILITIES).some(({ methods }) =>
+      Object.values(methods).some((method) => method?.adapters.includes(adapterType)));
 }
 
 export function isAiConnectionSelfAuthenticatedAdapter(adapterType: string): boolean {
@@ -164,10 +172,11 @@ export function isAiConnectionCompatible(
   // support routing, self-authenticated or not.
   if ("routing" in requirement && requirement.routing)
     return requirement.method === "api_key" && isAiRoutingCompatible(requirement.routing, harness);
-  // Self-authenticated and unknown adapters never run a managed connection, so
-  // no managed binding is compatible with them. Callers that skip validation
-  // for self-authenticated adapters do so explicitly.
-  if (!isAiConnectionManagedAdapter(adapterType)) return false;
+  // Self-authenticated and unknown harnesses never run a managed connection, so
+  // no managed binding is compatible with them. Check the resolved harness:
+  // callers pass either a stored adapter type or a runner harness such as
+  // `copilot_runtime`.
+  if (!isAiConnectionManagedAdapter(harness)) return false;
   adapterType = harness;
   // A fixed binding contains identity only. The service checks authoritative
   // connection metadata before resolving credentials or running the harness.
@@ -175,7 +184,7 @@ export function isAiConnectionCompatible(
     && ["openrouter", "openai", "anthropic", "google"].includes(requirement.provider)
     && typeof model === "string" && model.startsWith(`${requirement.provider}/`);
   if ("mode" in requirement && requirement.mode !== "responsible_user" && requirement.method === "api_key")
-    return ["claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "grok_local", "copilot_runtime"].includes(adapterType);
+    return FIXED_API_KEY_HARNESSES.includes(adapterType);
   const methods = AI_CONNECTION_CAPABILITIES[requirement.provider].methods;
   const candidates = "mode" in requirement && requirement.mode === "responsible_user"
     ? Object.values(methods)
