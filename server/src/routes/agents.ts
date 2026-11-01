@@ -3274,7 +3274,10 @@ export function agentRoutes(
         await assertCanConfigureAgentSetup(req, savedAgent);
       }
       const testingSetup = savedAgent ? isAgentSetupDraft(savedAgent) : false;
-      const poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
+      // Self-authenticated adapters never use a managed pool, so a requested or
+      // stale saved router binding must not replace the adapter's own probe.
+      const poolBinding = isAiConnectionSelfAuthenticatedAdapter(type) ? undefined
+        : requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
       const requestedEnvironmentId = await resolveAdapterTestEnvironmentId(
         companyId,
         // Omission tests the saved selection. Explicit null tests a prospective

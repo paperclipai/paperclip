@@ -591,6 +591,31 @@ describe("agent test-environment route", () => {
     }
   });
 
+  it.each(["requested", "saved"] as const)("runs the Hermes gateway probe instead of the pool preview for a %s router binding", async source => {
+    const { registerServerAdapter, getServerAdapter, unregisterServerAdapter } = await import("../adapters/index.js");
+    const previous = getServerAdapter("hermes_gateway");
+    unregisterServerAdapter("hermes_gateway");
+    registerServerAdapter({ ...externalAdapter, type: "hermes_gateway" });
+    const agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const routerBinding = { mode: "router", connectionId: "unconfigured-pool" };
+    const adapterConfig = { apiBaseUrl: "https://hermes.example.com" };
+    mockAgentService.getById.mockResolvedValue({ id: agentId, companyId: "company-1", adapterType: "hermes_gateway", adapterConfig,
+      runtimeConfig: source === "saved" ? { aiConnection: routerBinding } : {} });
+    try {
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/hermes_gateway/test-environment")
+        .send({ agentId, adapterConfig, ...(source === "requested" ? { aiConnection: routerBinding } : {}) });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.checks).not.toContainEqual(expect.objectContaining({ code: "ai_connection_pool_task_test_required" }));
+      expect(testEnvironmentSpy).toHaveBeenCalledTimes(1);
+      expect(mockPrepareManagedAiRuntime).not.toHaveBeenCalled();
+    } finally {
+      unregisterServerAdapter("hermes_gateway");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
   // The managed-adoption verdict, all three ways. An api_key account is
   // re-verified against the provider's endpoint at adoption — the same check
   // its save performed, catching a key revoked since — but never through the

@@ -466,6 +466,36 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     expect(runs.filter(run => run.id !== finished.id)).toEqual([expect.objectContaining({ status: "scheduled_retry", scheduledRetryReason: "ai_connection_busy" })]);
   });
 
+  it.each(["fixed", "router"] as const)("dispatches a gateway agent with a stale %s binding without managed credential preparation", async mode => {
+    const f = await seed(true);
+    const gatewayType = "hermes_gateway";
+    const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    const staleBinding = mode === "router" ? { mode: "router", connectionId: "unconfigured-pool" } : agent.runtimeConfig!.aiConnection;
+    await db.update(agents).set({ adapterType: gatewayType, adapterConfig: { url: "wss://gateway.example.test", env: { SHARED_VALUE: "agent" } },
+      runtimeConfig: { aiConnection: staleBinding } }).where(eq(agents.id, f.agentId));
+    registerServerAdapter({
+      type: gatewayType, supportsLocalAgentJwt: false,
+      execute: async input => {
+        captured.set(input.runId, input);
+        await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, String(input.context.issueId)));
+        return { exitCode: 0, signal: null, timedOut: false, resultJson: {} };
+      },
+      testEnvironment: async () => ({ adapterType: gatewayType, status: "pass", checks: [], testedAt: new Date().toISOString() }),
+    });
+    const prepare = vi.spyOn(aiRuntime, "prepareManagedAiRuntime");
+    try {
+      const { finished, input } = await execute(f);
+      expect(finished.status, finished.error ?? undefined).toBe("succeeded");
+      expect(prepare).not.toHaveBeenCalled();
+      expect(input?.context.aiConnection).toBeUndefined();
+      expect(JSON.stringify(input?.config)).not.toContain(f.credential);
+      expect(finished.contextSnapshot?.aiConnection).toBeUndefined();
+      expect(finished.contextSnapshot?.aiRouterSelection).toBeUndefined();
+    } finally {
+      unregisterServerAdapter(gatewayType);
+    }
+  });
+
   it("snapshots only selected immutable skills and omits inaccessible optional assignments", async () => {
     const f = await seed();
     const skills = companySkillService(db);
