@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createServer, type Server } from "node:http";
 import { once } from "node:events";
+import { setImmediate as yieldForIo } from "node:timers/promises";
 import { createCipheriv, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, randomUUID, verify } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { companies, connectionEventDeliveries, connectionGrants, createDb, toolApplications, toolConnections } from "@paperclipai/db";
@@ -38,6 +39,8 @@ const support = await getEmbeddedPostgresTestSupport();
     let origin = "", eventId = randomUUID(), grantId = "", companyId = "";
     const identities: string[] = [];
     const delivered = new Set<string>();
+    let releaseReplacementAck!: () => void;
+    const replacementAck = new Promise<void>(resolve => { releaseReplacementAck = resolve; });
     try {
       server = createServer(async (req, res) => {
         try {
@@ -59,7 +62,11 @@ const support = await getEmbeddedPostgresTestSupport();
             res.end(JSON.stringify({ id: enrollment!.instanceId, environment: "test", origins: [enrollment!.origin] })); return;
           }
           identities.push(claims.iss);
-          if (req.url === "/v1/connector/events/ack") { acknowledged++; delivered.add(eventId); res.end(JSON.stringify({ acknowledged: 1 })); return; }
+          if (req.url === "/v1/connector/events/ack") {
+            acknowledged++; delivered.add(eventId);
+            if (acknowledged === 2) await replacementAck;
+            res.end(JSON.stringify({ acknowledged: 1 })); return;
+          }
           expect(req.url).toBe("/v1/connector/events/lease"); leases++;
           if (delivered.has(eventId)) { res.end(JSON.stringify({ events: [], eventWakeVersion: 1 })); return; }
           const ephemeral = generateKeyPairSync("x25519"), epk = ephemeral.publicKey.export({ format: "jwk" }).x!;
@@ -83,13 +90,37 @@ const support = await getEmbeddedPostgresTestSupport();
       grantId = grant!.id;
       const env = { PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: origin, PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT: "test" };
       const service = githubConnectionEventService(db, { env });
-      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
       coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: e => errors.push(e) });
       const selects = vi.spyOn(db, "select"), transactions = vi.spyOn(db, "transaction"), executes = vi.spyOn(db, "execute");
       worker = registerGitHubConnectionEventWork(db, coordinator, service, () => true);
       await worker.ready;
+      async function observe(assertion: () => void) {
+        const observedAt = Date.now(), until = performance.now() + 1_000;
+        let failure: unknown;
+        do {
+          expect(Date.now()).toBe(observedAt);
+          try { assertion(); return; } catch (error) { failure = error; }
+          await yieldForIo();
+        } while (performance.now() < until);
+        throw failure;
+      }
+      async function drainFollowup(expectedLeases: number) {
+        const observedAt = Date.now();
+        while (leases < expectedLeases) {
+          await observe(() => {
+            expect(leases).toBeLessThanOrEqual(expectedLeases);
+            expect(coordinator!.nextWakeAt() !== null || leases === expectedLeases).toBe(true);
+          });
+          const followup = coordinator!.nextWakeAt();
+          if (followup === null) break;
+          expect(followup - observedAt).toBeLessThanOrEqual(5_000);
+          await vi.advanceTimersByTimeAsync(Math.max(0, followup - Date.now()) + 1);
+        }
+        await observe(() => expect(leases).toBe(expectedLeases));
+      }
       async function quiet(stage: string) {
-        await vi.waitFor(() => { expect(idleWorkSnapshot().active, stage).toBe(0); expect(coordinator!.nextWakeAt(), stage).toBeNull(); });
+        await observe(() => { expect(idleWorkSnapshot().active, stage).toBe(0); expect(coordinator!.nextWakeAt(), stage).toBeNull(); });
         selects.mockClear(); transactions.mockClear(); executes.mockClear(); const before = requests;
         await vi.advanceTimersByTimeAsync(25 * 60_000);
         expect(selects).not.toHaveBeenCalled(); expect(transactions).not.toHaveBeenCalled(); expect(executes).not.toHaveBeenCalled(); expect(requests).toBe(before);
@@ -104,31 +135,29 @@ const support = await getEmbeddedPostgresTestSupport();
       const firstIdentity = await enroll();
       expect(wakeConnectionEvents(db)).toBe(true);
       await vi.advanceTimersByTimeAsync(6_000);
-      await vi.waitFor(() => expect(acknowledged).toBe(1));
+      await observe(() => expect(acknowledged).toBe(1));
       expect(await db.select().from(connectionEventDeliveries).where(eq(connectionEventDeliveries.providerDeliveryId, eventId))).toMatchObject([{ status: "processed" }]);
       expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId)))[0]!.providerTenant!.github!.webhookHealth).toBe("healthy");
       // The applied installation update publishes one credential-change hint.
       // Join that existing minimum-spacing pass once; the broker now has no debt.
-      const followup = coordinator.nextWakeAt(); expect(followup).not.toBeNull();
-      expect(followup! - Date.now()).toBeLessThanOrEqual(5_000);
-      await vi.advanceTimersByTimeAsync(Math.max(0, followup! - Date.now()) + 1);
-      await vi.waitFor(() => expect(leases).toBe(2));
+      await drainFollowup(2);
       await quiet("first event plus its one empty follow-up");
       await rm(paperclipCloudConnectorIdentityPath());
       const oldLeases = leases; expect(wakeConnectionEvents(db)).toBe(true); await vi.advanceTimersByTimeAsync(6_000);
       await quiet("removed identity"); expect(leases).toBe(oldLeases);
       eventId = randomUUID(); const secondIdentity = await enroll(); expect(secondIdentity).not.toBe(firstIdentity);
       expect(wakeConnectionEvents(db)).toBe(true); await vi.advanceTimersByTimeAsync(6_000);
-      await vi.waitFor(() => expect(acknowledged).toBe(2));
+      await observe(() => expect(acknowledged).toBe(2));
       expect(identities).toContain(firstIdentity); expect(identities).toContain(secondIdentity);
       expect(identities.slice(identities.indexOf(secondIdentity))).toEqual(expect.arrayContaining([secondIdentity, secondIdentity]));
       expect(identities.slice(identities.indexOf(secondIdentity)).every(id => id === secondIdentity)).toBe(true);
-      const replacementFollowup = coordinator.nextWakeAt(); expect(replacementFollowup).not.toBeNull();
-      expect(replacementFollowup! - Date.now()).toBeLessThanOrEqual(5_000);
-      await vi.advanceTimersByTimeAsync(Math.max(0, replacementFollowup! - Date.now()) + 1);
-      await vi.waitFor(() => expect(leases).toBe(oldLeases + 2));
+      expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+      expect(coordinator.nextWakeAt()).toBeNull();
+      releaseReplacementAck();
+      await drainFollowup(oldLeases + 2);
       await quiet("replacement event plus its one empty follow-up"); expect(errors).toEqual([]); expect(httpErrors).toEqual([]);
     } finally {
+      releaseReplacementAck();
       await worker?.stop(); await coordinator?.stop(); vi.restoreAllMocks(); vi.useRealTimers();
       if (server) { const closed = once(server, "close"); server.close(); server.closeAllConnections(); await closed; }
       if (previous.home === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previous.home;
