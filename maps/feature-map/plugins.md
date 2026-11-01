@@ -53,6 +53,7 @@ Manual: Open the contributed page by navigation and cold deep link, perform a ha
   reload is not a lifecycle action in the plugin manager.
 
 - Installing a plugin does not authorize every host capability or external action.
+- Issue create/update reject worker-supplied actor, run, and explicit responsible-user attribution. Plugin-origin identity remains the audit source.
 - Runtime synchronization is opt-in and uses durable resource delivery. See
   [the contract](../../doc/plugins/AGENT_RUNTIME_SYNC.md) and
   [database regressions](../../server/src/__tests__/agent-runtime-hooks.test.ts).

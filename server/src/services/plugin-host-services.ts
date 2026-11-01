@@ -40,6 +40,7 @@ import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { issueService } from "./issues.js";
+import { rejectPluginIssueActorClaims, stripPluginIssueUpdateOverrides } from "./plugin-issue-actor-boundary.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { goalService } from "./goals.js";
 import { documentService } from "./documents.js";
@@ -2115,33 +2116,24 @@ export function buildHostServices(
         return issue as Issue;
       },
       async create(params) {
+        rejectPluginIssueActorClaims(params as unknown as Record<string, unknown>, "create");
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const { actorAgentId, actorUserId, actorRunId, originKind, surfaceVisibility, ...issueInput } = params;
+        const { actorAgentId: _actorAgentId, actorUserId: _actorUserId, actorRunId: _actorRunId, originKind, surfaceVisibility, ...issueInput } = params;
         const normalizedOriginKind = normalizePluginOriginKind(
           surfaceVisibility === "plugin_operation" && !originKind
             ? pluginOperationIssueOriginKind(pluginKey)
             : originKind,
         );
         if (issueInput.parentId) await requirePluginReadableIssue(issueInput.parentId, companyId);
-        const sourceRunId = params.originRunId ?? actorRunId;
-        if (sourceRunId) {
-          const [sourceRun] = await db.select().from(heartbeatRuns)
-            .where(and(eq(heartbeatRuns.id, sourceRunId), eq(heartbeatRuns.companyId, companyId)));
-          if (!sourceRun) throw new Error("Origin run not found");
-          if (sourceRun.scopeKind !== "company") {
-            if (!sourceRun.issueId) throw new Error("Origin run not found");
-            await requirePluginReadableIssue(sourceRun.issueId, companyId);
-          }
-        }
         const issue = (await issues.create(companyId, {
           ...(issueInput as any),
           originKind: normalizedOriginKind,
           originId: params.originId ?? null,
-          originRunId: params.originRunId ?? actorRunId ?? null,
-          createdByAgentId: actorAgentId ?? null,
-          createdByUserId: actorUserId ?? null,
-          actorResponsibleUserId: actorUserId ?? null,
+          originRunId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          actorResponsibleUserId: null,
           trustExplicitResponsibleUserId: true,
         })) as Issue;
         await logPluginActivity({
@@ -2149,7 +2141,6 @@ export function buildHostServices(
           action: "issue.created",
           entityType: "issue",
           entityId: issue.id,
-          actor: { actorAgentId, actorUserId, actorRunId },
           details: {
             title: issue.title,
             identifier: issue.identifier,
@@ -2162,31 +2153,26 @@ export function buildHostServices(
         return issue;
       },
       async update(params) {
+        rejectPluginIssueActorClaims(params.patch as Record<string, unknown>, "update");
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const existing = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
         await requirePluginReadableIssue(params.issueId, companyId);
-        const patch = { ...(params.patch as Record<string, unknown>) };
-        const actorAgentId = typeof patch.actorAgentId === "string" ? patch.actorAgentId : null;
-        const actorUserId = typeof patch.actorUserId === "string" ? patch.actorUserId : null;
-        const actorRunId = typeof patch.actorRunId === "string" ? patch.actorRunId : null;
-        delete patch.actorAgentId;
-        delete patch.actorUserId;
-        delete patch.actorRunId;
+        const patch = stripPluginIssueUpdateOverrides(params.patch as Record<string, unknown>);
         if (patch.originKind !== undefined) {
           patch.originKind = normalizePluginOriginKind(patch.originKind);
         }
         const updated = (await issues.update(params.issueId, {
           ...(patch as any),
-          actorAgentId,
-          actorUserId,
+          actorAgentId: null,
+          actorUserId: null,
+          companyGuard: companyId,
         })) as Issue;
         await logPluginActivity({
           companyId,
           action: "issue.updated",
           entityType: "issue",
           entityId: updated.id,
-          actor: { actorAgentId, actorUserId, actorRunId },
           details: {
             identifier: updated.identifier,
             patch,

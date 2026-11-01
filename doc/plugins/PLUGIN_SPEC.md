@@ -742,6 +742,11 @@ Origin rules:
 - Plugin-managed issues use `plugin:<pluginKey>` or a sub-kind such as `plugin:<pluginKey>:feature`.
 - The host derives the default plugin origin from the installed plugin key and rejects attempts to set `plugin:<otherPluginKey>` origins.
 - `originId` is plugin-defined and should be stable for idempotent generated work.
+- Issue create and update use plugin-origin identity. The host rejects non-null
+  worker-supplied actor IDs, `originRunId`, and explicit `responsibleUserId`: these are not authenticated
+  delegation. Optional SDK fields remain for source compatibility. Callers that
+  previously supplied them must omit them or use null. A future host-issued
+  scoped delegation contract would be separate from this API.
 
 Relation and read helpers:
 
@@ -759,7 +764,7 @@ Governance helpers:
 - `ctx.issues.requestWakeups(issueIds, companyId, options)` applies the same host-owned wakeup semantics to a batch and may use an idempotency key prefix for stable coordinator retries.
 - `ctx.issues.createComment(issueId, body, companyId, options)` posts a comment attributed to the plugin's own agent by default (`options.authorAgentId`). Passing `options.actorUserId` instead attributes the comment to that human company member — this requires `issue.comments.create_human_attributed` in addition to `issue.comments.create`, and the host independently verifies `actorUserId` is an active human member of the company before applying it, so a plugin can never forge attribution to an arbitrary or inactive user. A human-attributed comment on a non-terminal-status issue with an assignee also triggers the same assignee wakeup a board user's comment gets.
 
-Plugin-originated issue, relation, document, comment, and wakeup mutations must write activity entries with `actorType: "plugin"` and details fields for `sourcePluginId`, `sourcePluginKey`, `initiatingActorType`, `initiatingActorId`, and `initiatingRunId` when a user or agent run initiated the plugin work.
+Plugin-originated issue, relation, document, comment, and wakeup mutations must write activity entries with `actorType: "plugin"` and details fields for `sourcePluginId`, `sourcePluginKey`, `initiatingActorType`, `initiatingActorId`, and `initiatingRunId` when a user or agent run initiated the plugin work. Issue create and update do not accept worker-supplied initiating actor or run IDs.
 
 Scoped API routes:
 
