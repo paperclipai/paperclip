@@ -55,6 +55,7 @@ import {
 } from "../services/plugin-environment-driver.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+import { hasClientMembershipFor } from "../services/company-member-roles.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "../services/environment-custom-image-runtime.js";
@@ -374,6 +375,11 @@ export function environmentRoutes(
     const allowedCompanies = req.actor.companyIds ?? [];
     if (!allowedCompanies.includes(companyId)) {
       throw forbidden("User does not have access to this company");
+    }
+    // This check is company-scoped but hand-rolled rather than routed through
+    // `assertCompanyAccess`, so the client deny has to be repeated here.
+    if (hasClientMembershipFor(req.actor.memberships, companyId)) {
+      throw forbidden("Client access is limited to client-facing routes");
     }
   }
 

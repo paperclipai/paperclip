@@ -4,6 +4,7 @@ import type { RequestHandler } from 'express';
 import { and, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { activityLog, companySkills, companySkillSources, projectSkillSources, projects, type Db } from '@paperclipai/db';
 import { authorizationService, projectReadSqlCondition, type AuthorizationActor } from './authorization.js';
+import { hasClientMembershipFor } from './company-member-roles.js';
 import { notFound } from '../errors.js';
 
 // Carries the authenticated identity through shared services, including native API dispatch.
@@ -17,6 +18,12 @@ export const skillAccessRequestContext: RequestHandler = (req, _res, next) => wi
 
 export function skillAccessService(db: Db, actor = currentSkillActor()) {
   function canReadCompany(companyId: string) {
+    if (actor?.type === 'board' && actor.source !== 'local_implicit'
+      && hasClientMembershipFor(actor.memberships, companyId)) {
+      // Company-scoped read decided outside `assertCompanyAccess`; clients
+      // have no default read surface.
+      return false;
+    }
     return actor?.type !== 'none' && !(actor?.type === 'agent' && actor.companyId !== companyId)
       && !(actor?.type === 'board' && actor.companyIds && !actor.companyIds.includes(companyId)
         && actor.source !== 'local_implicit' && !actor.isInstanceAdmin);

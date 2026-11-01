@@ -52,6 +52,7 @@ const { WebSocket, WebSocketServer } = require("ws") as {
 import { authorizationService, type AuthorizationActor } from "../services/authorization.js";
 import { getHeartbeatRunReadDecisions } from "../services/heartbeat-run-privacy.js";
 import { canActorReadCase } from "../services/case-access.js";
+import { hasClientMembershipFor, isClientMembershipRole } from "../services/company-member-roles.js";
 
 interface UpgradeContext {
   actor: AuthorizationActor;
@@ -66,6 +67,12 @@ export interface CloudUpgradeActor {
   userId: string;
   /** Companies this actor may subscribe to (primary stack company + real memberships). */
   companyIds: string[];
+  /**
+   * Membership roles behind `companyIds`. Required to tell a staff membership
+   * from a `client` membership: a client has no default read surface and must
+   * not be able to subscribe to a company's live events.
+   */
+  memberships?: Array<{ companyId: string; membershipRole?: string | null; status?: string }>;
 }
 
 interface IncomingMessageWithContext extends IncomingMessage {
@@ -173,11 +180,18 @@ async function authorizeUpgrade(
       const cloudActor = await opts.resolveCloudActor(req);
       if (cloudActor) {
         if (!cloudActor.companyIds.includes(companyId)) return null;
+        if (hasClientMembershipFor(cloudActor.memberships, companyId)) return null;
         return {
           companyId,
           actorType: "board",
           actorId: cloudActor.userId,
-          actor: { type: "board", userId: cloudActor.userId, source: "cloud_tenant", companyIds: cloudActor.companyIds },
+          actor: {
+            type: "board",
+            userId: cloudActor.userId,
+            source: "cloud_tenant",
+            companyIds: cloudActor.companyIds,
+            memberships: cloudActor.memberships,
+          },
         };
       }
     }
@@ -197,7 +211,10 @@ async function authorizeUpgrade(
         .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
         .then((rows) => rows[0] ?? null),
       db
-        .select({ companyId: companyMemberships.companyId })
+        .select({
+          companyId: companyMemberships.companyId,
+          membershipRole: companyMemberships.membershipRole,
+        })
         .from(companyMemberships)
         .where(
           and(
@@ -210,12 +227,22 @@ async function authorizeUpgrade(
 
     const hasCompanyMembership = memberships.some((row) => row.companyId === companyId);
     if (!roleRow && !hasCompanyMembership) return null;
+    // Subscribing to a company's live events is a company-scoped read, and it
+    // never passes through `assertCompanyAccess`. An instance admin still
+    // subscribes; a client never does.
+    if (!roleRow && hasClientMembershipFor(memberships, companyId)) return null;
 
     return {
       companyId,
       actorType: "board",
       actorId: userId,
-      actor: { type: "board", userId, source: "session", companyIds: memberships.map(m => m.companyId) },
+      actor: {
+        type: "board",
+        userId,
+        source: "session",
+        companyIds: memberships.map(m => m.companyId),
+        memberships,
+      },
     };
   }
 
@@ -294,16 +321,40 @@ export function setupLiveEventsWebSocketServer(
         return event;
       }
       if (context!.apiKeyId) {
-        const active = await db.select({ id: agentApiKeys.id }).from(agentApiKeys)
+        const active = await db.select({ id: agentApiKeys.id, responsibleUserId: agentApiKeys.responsibleUserId })
+          .from(agentApiKeys)
           .where(and(eq(agentApiKeys.id, context!.apiKeyId), isNull(agentApiKeys.revokedAt))).limit(1);
         if (!active.length) return null;
+        // An agent key is an agent principal, so this branch has never read a
+        // human membership role — `viewer` is not checked here either. That is
+        // fine for the staff roles, which all carry company access, but it
+        // leaves one way around the client deny: a staff member can mint an
+        // unscoped key, be changed to `client`, and keep the key as a bearer
+        // token on this socket. So when the key names a responsible user, that
+        // user's current role is read per event, exactly as the board branch
+        // below does. A key with no responsible user is unchanged.
+        const responsibleUserId = active[0]?.responsibleUserId?.trim() || null;
+        if (responsibleUserId) {
+          const responsible = await db.select({ membershipRole: companyMemberships.membershipRole })
+            .from(companyMemberships)
+            .where(and(eq(companyMemberships.companyId, context!.companyId), eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.principalId, responsibleUserId), eq(companyMemberships.status, "active"))).limit(1);
+          if (isClientMembershipRole(responsible[0]?.membershipRole)) return null;
+        }
       } else {
-        const membership = await db.select({ id: companyMemberships.id }).from(companyMemberships)
+        const membership = await db.select({ id: companyMemberships.id, membershipRole: companyMemberships.membershipRole })
+          .from(companyMemberships)
           .where(and(eq(companyMemberships.companyId, context!.companyId), eq(companyMemberships.principalType, "user"),
             eq(companyMemberships.principalId, context!.actorId), eq(companyMemberships.status, "active"))).limit(1);
         const admin = context!.actor.source !== "cloud_tenant" && await db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
           .where(and(eq(instanceUserRoles.userId, context!.actorId), eq(instanceUserRoles.role, "instance_admin"))).limit(1).then(rows => rows.length > 0);
         if (!membership.length && !admin) return null;
+        // Re-read the role per event, not only at connect time. This re-read
+        // already exists to catch a membership that changes while the socket
+        // stays open, so it has to read the role too: an owner can change a
+        // connected staff member to `client` mid-stream, and the membership
+        // stays active across that change. An instance admin still receives.
+        if (!admin && isClientMembershipRole(membership[0]?.membershipRole)) return null;
       }
       const payload = event.payload;
       const issueId = typeof payload.issueId === "string" ? payload.issueId
