@@ -7,12 +7,6 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import type { ToolGatewayService } from "../services/tool-gateway.js";
 
-/**
- * A `pcgw_` gateway bearer is not a board key, an agent API key, or an agent
- * JWT — it is verified by the gateway service inside the protocol handler. The
- * database therefore holds no row that could match it, which is exactly the
- * live shape: the only lookups `actorMiddleware` performs must all miss.
- */
 function createEmptyDb() {
   const selectChain = {
     from() {
@@ -30,13 +24,6 @@ function createEmptyDb() {
   } as any;
 }
 
-/**
- * The MCP protocol handler is reached only if `actorMiddleware` lets the
- * request through, so the gateway service is stubbed down to the two calls the
- * `initialize` and `tools/list` methods make. Each records that it ran, which
- * is the assertion that matters: the pre-route middleware did not reject the
- * gateway's own bearer before the route could verify it.
- */
 function createStubGateway(seen: { bearerTokens: string[] }) {
   return {
     async initializeNamedGatewayProtocol(input: { bearerToken: string }) {
@@ -60,12 +47,6 @@ function createStubGateway(seen: { bearerTokens: string[] }) {
   } as unknown as ToolGatewayService;
 }
 
-/**
- * Mirrors `createApp`'s ordering in `app.ts`: `actorMiddleware` is mounted
- * globally, then the public MCP protocol router, then the `/api` router that
- * carries the legacy gateway MCP path. A test that mounts the routers without
- * the middleware cannot observe this behaviour at all.
- */
 function createAppWithActorMiddleware(gateway: ToolGatewayService) {
   const db = createEmptyDb();
   const app = express();
@@ -131,13 +112,6 @@ describe("MCP gateway protocol bearer reaches its route through actorMiddleware"
     expect(seen.bearerTokens).toEqual([token]);
   });
 
-  /**
-   * The exemption must stay anchored on the trailing `/mcp` segment. The token
-   * mint route sits directly beside the protocol route under the same
-   * `/api/tool-gateway/gateways/:gatewayId/` prefix, so it is the closest thing
-   * the exemption could wrongly swallow. An unverifiable bearer there must
-   * still be rejected rather than downgraded to an unauthenticated actor.
-   */
   it("still rejects an unverifiable bearer on the sibling gateway token mint route", async () => {
     const seen = { bearerTokens: [] as string[] };
     const app = createAppWithActorMiddleware(createStubGateway(seen));

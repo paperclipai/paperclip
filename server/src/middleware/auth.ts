@@ -224,11 +224,6 @@ const publicRoutineWebhookPath = /^\/api\/routine-triggers\/public\/[a-f0-9]{24}
 
 const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
 
-// The same MCP protocol handler is also mounted on an older `/api` path. The
-// OpenAPI specification lists this route, and clients may already be configured
-// with it, so accept the same `pcgw_*` bearer here. Match the gateway id as a
-// UUID and require `/mcp` as the final segment, so the sibling routes under the
-// same prefix — `/tokens` above all — keep the normal actor authentication path.
 const legacyMcpGatewayProtocolPath =
   /^\/api\/tool-gateway\/gateways\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/mcp\/?$/i;
 
