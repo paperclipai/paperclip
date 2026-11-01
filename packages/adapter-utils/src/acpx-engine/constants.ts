@@ -62,6 +62,7 @@ export const ACPX_ADAPTER_AGENT_IDS = {
   codex_local: "codex",
   gemini_local: "gemini",
   kimi_local: "kimi",
+  kimchi_local: "kimchi",
   custom_acp: "custom",
 } as const;
 
