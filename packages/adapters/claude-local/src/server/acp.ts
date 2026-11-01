@@ -673,7 +673,7 @@ export async function probeClaudeAcpSandboxLogin(input: {
     dangerouslySkipPermissions: asBoolean(config.dangerouslySkipPermissions, true), targetIsSandbox,
   }));
   const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
-  if (config.managedAiConnection) args.push("--setting-sources", "user");
+  if (config.managedAiConnection) args.push("--setting-sources", "user,project");
   args.push(
     ...buildClaudeProbePermissionArgs({
       dangerouslySkipPermissions: asBoolean(config.dangerouslySkipPermissions, true),
