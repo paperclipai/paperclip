@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  boundHeartbeatRunResultOutput,
+  HEARTBEAT_RUN_PERSISTED_OUTPUT_MAX_CHARS,
   summarizeHeartbeatRunResultJson,
   summarizeRunErrorForModel,
   buildHeartbeatRunIssueComment,
@@ -1091,5 +1093,26 @@ describe("mergeHeartbeatRunResultJson", () => {
       summary: "adapter result",
       stdout: "raw stdout",
     });
+  });
+});
+
+describe("boundHeartbeatRunResultOutput", () => {
+  it("keeps the tail of oversized streams and records the original length", () => {
+    const stdout = "head-".repeat(10_000) + "the failure is at the end";
+    const bounded = boundHeartbeatRunResultOutput({ stdout, stderr: "short", summary: "done" });
+    expect(bounded.stdout).toHaveLength(HEARTBEAT_RUN_PERSISTED_OUTPUT_MAX_CHARS);
+    expect(String(bounded.stdout).endsWith("the failure is at the end")).toBe(true);
+    expect(bounded).toMatchObject({ stdoutTruncated: true, stdoutFullChars: stdout.length, stderr: "short", summary: "done" });
+    expect(bounded).not.toHaveProperty("stderrTruncated");
+  });
+
+  it("bounds stderr independently", () => {
+    const bounded = boundHeartbeatRunResultOutput({ stderr: "e".repeat(20) }, 8);
+    expect(bounded).toEqual({ stderr: "e".repeat(8), stderrTruncated: true, stderrFullChars: 20 });
+  });
+
+  it("returns the same object when nothing exceeds the cap", () => {
+    const resultJson = { stdout: "ok", stderr: 42, usage: { inputTokens: 1 } };
+    expect(boundHeartbeatRunResultOutput(resultJson)).toBe(resultJson);
   });
 });

@@ -6,6 +6,8 @@ import type {
 export const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
 export const HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS = 4_096;
 export const HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES = 64 * 1024;
+/** Persisted tail of adapter stdout/stderr. The run log keeps the full stream. */
+export const HEARTBEAT_RUN_PERSISTED_OUTPUT_MAX_CHARS = 16 * 1024;
 
 /** Operator diagnostics are untrusted provider data, not model handoff prose. */
 export function summarizeRunErrorForModel(error: string | null, terminalFailureCategory?: unknown): string | null {
@@ -60,6 +62,29 @@ export function mergeHeartbeatRunResultJson(
     ...baseResult,
     summary: normalizedSummary,
   };
+}
+
+/**
+ * Bound adapter stdout/stderr before a result is persisted on the run row.
+ * Adapters return the whole captured stream, but the run log already stores it
+ * in full and readers only project a prefix, so the inline copy only grows the
+ * table until bulk run reads exhaust the heap. Keeps the tail, because a
+ * failing run explains itself at the end.
+ */
+export function boundHeartbeatRunResultOutput(
+  resultJson: Record<string, unknown>,
+  maxChars = HEARTBEAT_RUN_PERSISTED_OUTPUT_MAX_CHARS,
+): Record<string, unknown> {
+  let bounded: Record<string, unknown> | null = null;
+  for (const key of ["stdout", "stderr"] as const) {
+    const value = resultJson[key];
+    if (typeof value !== "string" || value.length <= maxChars) continue;
+    bounded ??= { ...resultJson };
+    bounded[key] = value.slice(-maxChars);
+    bounded[`${key}Truncated`] = true;
+    bounded[`${key}FullChars`] = value.length;
+  }
+  return bounded ?? resultJson;
 }
 
 export function summarizeHeartbeatRunResultJson(
