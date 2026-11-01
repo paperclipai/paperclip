@@ -40,23 +40,46 @@ describe("codex model CLI floors", () => {
     expect(modelIds).toEqual(expect.arrayContaining(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]));
   });
 
-  it("compares stable versions numerically and rejects prerelease or ambiguous input", () => {
+  it("compares stable versions numerically and rejects ambiguous input", () => {
     expect(codexCliVersionAtLeast("0.159.0", "0.159.0")).toBe(true);
     expect(codexCliVersionAtLeast("0.160.1", "0.159.0")).toBe(true);
     expect(codexCliVersionAtLeast("1.0.0", "0.159.0")).toBe(true);
     expect(codexCliVersionAtLeast("0.156.1", "0.159.0")).toBe(false);
     expect(codexCliVersionAtLeast("0.16.0", "0.159.0")).toBe(false);
-    expect(codexCliVersionAtLeast("0.160.0-alpha.1", "0.159.0")).toBe(false);
+    expect(codexCliVersionAtLeast("0.160.0-alpha.1", "0.159.0")).toBe(true);
     expect(codexCliVersionAtLeast("", "0.159.0")).toBe(false);
   });
 
-  it("parses only a single stable `codex-cli x.y.z` line from --version output", () => {
+  it("parses only a single valid codex-cli version line", () => {
     expect(parseCodexCliVersionOutput("codex-cli 0.160.0\n")).toBe("0.160.0");
     expect(parseCodexCliVersionOutput("WARNING: PATH unchanged\r\ncodex-cli 0.156.0\r\n")).toBe("0.156.0");
-    expect(parseCodexCliVersionOutput("codex-cli 0.162.0-alpha.17")).toBeNull();
+    expect(parseCodexCliVersionOutput("codex-cli 0.162.0-alpha.17")).toBe("0.162.0-alpha.17");
     expect(parseCodexCliVersionOutput("codex 0.160.0")).toBeNull();
     expect(parseCodexCliVersionOutput("codex-cli 0.149.0\ncodex-cli 0.160.0")).toBeNull();
     expect(parseCodexCliVersionOutput("")).toBeNull();
+  });
+
+  it.each([
+    ["0.164.0-alpha.11.1", "0.157.0", true],
+    ["0.157.0-alpha.1", "0.157.0", false],
+    ["0.156.9-beta", "0.157.0", false],
+    ["0.157.1-rc.1", "0.157.0", true],
+    ["0.158.0-0", "0.157.0", true],
+    ["1.0.0-alpha", "0.999.999", true],
+    ["0.164.0", "0.157.0-alpha", false],
+  ])("checks prerelease %s against stable floor %s", (version, minimum, expected) => {
+    expect(codexCliVersionAtLeast(version, minimum)).toBe(expected);
+  });
+
+  it.each(["0.164.0-", "0.164.0-alpha..1", "0.164.0-alpha.01", "00.164.0-alpha", "0.164.0-alpha+build", "9007199254740992.0.0-alpha"])(
+    "rejects malformed or unsupported version %s", version => {
+      expect(parseCodexCliVersionOutput(`codex-cli ${version}`)).toBeNull();
+      expect(codexCliVersionAtLeast(version, "0.157.0")).toBe(false);
+    },
+  );
+
+  it("rejects ambiguous stable and prerelease output", () => {
+    expect(parseCodexCliVersionOutput("codex-cli 0.164.0-alpha.11.1\ncodex-cli 0.164.0")).toBeNull();
   });
 
   it("matches the backend's ChatGPT model rejection and captures the model", () => {

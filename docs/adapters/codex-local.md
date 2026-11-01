@@ -154,6 +154,11 @@ This is separate from any workspace-level instruction discovery that Codex itsel
 
 ## Environment Test
 
+For models with a minimum CLI version, a prerelease satisfies the check only
+when its numeric base is greater than the stable minimum. For example,
+`0.164.0-alpha.11.1` satisfies `0.157.0`, but `0.157.0-alpha.1` does not.
+Ambiguous output and invalid versions still fail the check.
+
 The environment test checks:
 
 - Codex CLI is installed and accessible

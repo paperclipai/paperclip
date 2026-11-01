@@ -155,6 +155,7 @@ export function codexChatGptRetirementHint(model: string | null | undefined): st
 }
 
 const STABLE_CODEX_CLI_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const PRERELEASE_CODEX_CLI_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)$/;
 
 function stableCodexCliVersionParts(version: string): number[] | null {
   const match = STABLE_CODEX_CLI_VERSION.exec(version.trim());
@@ -163,18 +164,25 @@ function stableCodexCliVersionParts(version: string): number[] | null {
   return parts.every(Number.isSafeInteger) ? parts : null;
 }
 
-/** Read the version from `codex --version` output; prerelease or ambiguous output yields null. */
+function prereleaseCodexCliVersionParts(version: string): number[] | null {
+  const match = PRERELEASE_CODEX_CLI_VERSION.exec(version.trim());
+  if (!match || match[4]!.split(".").some(part => /^\d+$/.test(part) && part.length > 1 && part.startsWith("0"))) return null;
+  const parts = match.slice(1, 4).map(Number);
+  return parts.every(Number.isSafeInteger) ? parts : null;
+}
+
 export function parseCodexCliVersionOutput(output: string): string | null {
   const versions = output
     .split(/\r?\n/)
     .map((line) => /^codex-cli (\S+)$/.exec(line.trim())?.[1])
     .filter((version): version is string => version !== undefined);
-  if (versions.length !== 1 || !stableCodexCliVersionParts(versions[0]!)) return null;
+  if (versions.length !== 1 || !(stableCodexCliVersionParts(versions[0]!) || prereleaseCodexCliVersionParts(versions[0]!))) return null;
   return versions[0]!;
 }
 
 export function codexCliVersionAtLeast(version: string, minimum: string): boolean {
-  const parsedVersion = stableCodexCliVersionParts(version);
+  const stableVersion = stableCodexCliVersionParts(version);
+  const parsedVersion = stableVersion ?? prereleaseCodexCliVersionParts(version);
   const parsedMinimum = stableCodexCliVersionParts(minimum);
   if (!parsedVersion || !parsedMinimum) return false;
   for (let index = 0; index < parsedMinimum.length; index += 1) {
@@ -182,7 +190,7 @@ export function codexCliVersionAtLeast(version: string, minimum: string): boolea
       return parsedVersion[index]! > parsedMinimum[index]!;
     }
   }
-  return true;
+  return stableVersion !== null;
 }
 
 export const CODEX_CHATGPT_MODEL_REJECTION_RE =
