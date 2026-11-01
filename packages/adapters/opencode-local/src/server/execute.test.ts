@@ -356,3 +356,96 @@ describe("ensureRemoteOpenCodeModelConfiguredAndAvailable — probe is non-fatal
     ).rejects.toThrow("Configured OpenCode model is unavailable on the remote execution target");
   });
 });
+
+describe("OpenCode API error retry and classification", () => {
+  let configHome: string;
+
+  beforeEach(async () => {
+    configHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-api-retry-"));
+    vi.stubEnv("XDG_CONFIG_HOME", configHome);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fs.rm(configHome, { recursive: true, force: true });
+  });
+
+  async function runWithResults(name: string, results: Array<Record<string, unknown>>) {
+    const commandPath = path.join(configHome, `fake-opencode-${name}`);
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const logs: string[] = [];
+    runProcessMock.mockReset();
+    for (const result of results) runProcessMock.mockResolvedValueOnce(probeResult(result));
+    const response = await execute({
+      runId: `run-${name}`,
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: "s1", sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: commandPath, cwd: configHome, model: "openai/gpt-5", env: { OPENCODE_ALLOW_ALL_MODELS: "1" } },
+      context: {},
+      onLog: async (_stream, chunk) => { logs.push(chunk); },
+    });
+    return { response, logs };
+  }
+
+  it("retries a transient API error with the same session", async () => {
+    vi.spyOn(global, "setTimeout").mockImplementation((fn: () => void) => { fn(); return 0 as never; });
+    try {
+      const { response, logs } = await runWithResults("retry", [
+        { exitCode: 1, stdout: JSON.stringify({ type: "error", error: "429 Too Many Requests" }) },
+        { exitCode: 0, stdout: JSON.stringify({ type: "text", sessionID: "s1", part: { text: "done" } }) },
+      ]);
+      expect(response.exitCode).toBe(0);
+      expect(logs.some(line => line.includes("API error"))).toBe(true);
+      expect(runProcessMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("does not retry a provider quota wall in-run and classifies it for durable recovery", async () => {
+    const { response, logs } = await runWithResults("quota", [
+      { exitCode: 1, stdout: JSON.stringify({ type: "error", error: "Free usage limit reached. Connect a provider or subscribe to OpenCode Go to keep going, or switch models." }) },
+    ]);
+    expect(response.exitCode).toBe(1);
+    expect(response.errorCode).toBe("provider_quota");
+    expect(response.errorFamily).toBe("provider_quota");
+    expect(response.resultJson).toMatchObject({ errorFamily: "provider_quota" });
+    expect(logs.some(line => line.includes("API error"))).toBe(false);
+    expect(runProcessMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies an exhausted transient upstream failure after bounded retries", async () => {
+    vi.spyOn(global, "setTimeout").mockImplementation((fn: () => void) => { fn(); return 0 as never; });
+    try {
+      const { response } = await runWithResults("exhaust", Array.from({ length: 6 }, () => ({
+        exitCode: 1,
+        stdout: JSON.stringify({ type: "error", error: "Upstream request failed: Endpoint is unavailable." }),
+      })));
+      expect(response.exitCode).toBe(1);
+      expect(response.errorCode).toBe("opencode_transient_upstream");
+      expect(response.errorFamily).toBe("transient_upstream");
+      expect(response.errorMessage).toContain("Endpoint is unavailable");
+      expect(runProcessMock).toHaveBeenCalledTimes(6);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("does not retry or classify a non-transient failure", async () => {
+    const { response } = await runWithResults("no-retry", [
+      { exitCode: 1, stdout: JSON.stringify({ type: "error", error: "Some random error" }) },
+    ]);
+    expect(response.exitCode).toBe(1);
+    expect(response.errorCode).toBeNull();
+    expect(response.errorFamily).toBeNull();
+    expect(runProcessMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry when the attempt timed out", async () => {
+    const { response } = await runWithResults("timeout", [
+      { exitCode: null, timedOut: true, stdout: "", stderr: "" },
+    ]);
+    expect(response.timedOut).toBe(true);
+    expect(runProcessMock).toHaveBeenCalledTimes(1);
+  });
+});
