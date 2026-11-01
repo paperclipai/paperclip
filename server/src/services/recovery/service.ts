@@ -569,6 +569,7 @@ const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
+const PROVIDER_QUOTA_MONITOR_DISPATCH_GRACE_MS = 10 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
@@ -4514,7 +4515,8 @@ export function recoveryService(
     if (
       !latestRun ||
       !issue.monitorNextCheckAt ||
-      issue.monitorNextCheckAt.getTime() <= now.getTime()
+      issue.monitorNextCheckAt.getTime() <=
+        now.getTime() - PROVIDER_QUOTA_MONITOR_DISPATCH_GRACE_MS
     )
       return false;
     const monitor = parseObject(parseObject(issue.executionPolicy).monitor);
