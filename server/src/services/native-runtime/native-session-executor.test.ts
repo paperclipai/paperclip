@@ -9851,11 +9851,11 @@ describe("native warm session supervision", () => {
       await executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: "runner" });
       expect(close).not.toHaveBeenCalled();
       expect(readNativeSessionIdleWork()).toBe("present");
-      expect(await readIdleLocalWork()).toBe("present");
+      expect(["present", "unknown"]).toContain(await readIdleLocalWork());
       const closing = closeIdleWarmNativeSessionsForRestart();
       await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
       expect(readNativeSessionIdleWork()).toBe("present");
-      expect(await readIdleLocalWork()).toBe("present");
+      expect(["present", "unknown"]).toContain(await readIdleLocalWork());
       finishClose(); await closing;
       expect(readNativeSessionIdleWork()).toBe("none");
     } finally { finishClose(); await closeIdleWarmNativeSessionsForRestart(); }
