@@ -1026,6 +1026,10 @@ export const PERMISSION_KEYS = [
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
+export const AUTHORITY_WIDENING_PERMISSION_KEYS = ["agents:configure"] as const;
+export type AuthorityWideningPermissionKey =
+  (typeof AUTHORITY_WIDENING_PERMISSION_KEYS)[number];
+
 export const TOOL_APPLICATION_TYPES = ["rest_api", "mcp_http", "mcp_stdio", "paperclip_plugin", "a2a", "chat"] as const;
 export type ToolApplicationType = (typeof TOOL_APPLICATION_TYPES)[number];
 
