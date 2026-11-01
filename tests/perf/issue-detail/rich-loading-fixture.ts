@@ -29,7 +29,21 @@ export async function richLoadingFixture(request: APIRequestContext): Promise<Ri
   });
   if (saved) {
     const response = await request.get(`/api/issues/${saved.id}`);
-    if (response.ok()) return saved;
+    if (response.ok()) {
+      const issue = await response.json();
+      expect(issue.companyId).toBe(saved.companyId);
+      const agentResponse = await request.get(`/api/agents/${issue.assigneeAgentId}`);
+      expect(agentResponse.ok(), await agentResponse.text()).toBeTruthy();
+      const agent = await agentResponse.json();
+      const heartbeat = agent.runtimeConfig?.heartbeat ?? {};
+      if (heartbeat.enabled !== false || heartbeat.wakeOnDemand !== false) {
+        const update = await request.patch(`/api/agents/${agent.id}`, { data: {
+          runtimeConfig: { ...agent.runtimeConfig, heartbeat: { ...heartbeat, enabled: false, wakeOnDemand: false } },
+        } });
+        expect(update.ok(), await update.text()).toBeTruthy();
+      }
+      return saved;
+    }
     expect(response.status(), await response.text()).toBe(404);
   }
   const create = async (url: string, data: unknown) => {
@@ -40,7 +54,7 @@ export async function richLoadingFixture(request: APIRequestContext): Promise<Ri
   const company = await create("/api/companies", { name: "FrameLab" });
   const agent = await create(`/api/companies/${company.id}/agents`, {
     name: "Investigation author", role: "engineer", status: "idle", adapterType: "claude_local", adapterConfig: {},
-    runtimeConfig: { heartbeat: { enabled: false } },
+    runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } },
   });
   const project = await create(`/api/companies/${company.id}/projects`, { name: "Loading verification" });
   const title = "[Investigation] Failed query selecting a saved task record from a long-running workspace investigation after restoring the archived state (workspace-investigation.ts)";

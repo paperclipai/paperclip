@@ -986,7 +986,7 @@ export function IssueDetailLoadingState({
   const { isMobile } = useSidebar();
   if (!loaded || taskChatShellEnabled) {
     return <div data-task-chat-shell="" className="flex h-full min-h-0 w-full flex-1 flex-col">
-      <TaskChatLoadingShell mobile={isMobile} streamlined={streamlinedUiEnabled} coordinator={coordinatorWorkspaceEnabled || !loaded} />
+      <TaskChatLoadingShell mobile={isMobile} streamlined={streamlinedUiEnabled} coordinator={coordinatorWorkspaceEnabled || !loaded} composerConcealed={!loaded} />
     </div>;
   }
 
@@ -6190,7 +6190,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     externalObjectsState.markdownReferences, uploadAttachment.mutateAsync, feedbackVoteMutation.mutateAsync, agentMap, userProfileMap]);
 
   useLayoutEffect(() => {
-    if (!panelIssue || suppressPanelUntilPlan || (conversation && !conversation.issue) || (taskChatShellEnabled && isMobile)) {
+    if (!taskInterfaceSettingsLoaded || !panelIssue || suppressPanelUntilPlan || (conversation && !conversation.issue) || (taskChatShellEnabled && isMobile)) {
       closePanel();
       return;
     }
@@ -6288,6 +6288,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     externalObjectsState.isError,
     externalObjectsState.refetch,
     documentDeepLink,
+    taskInterfaceSettingsLoaded,
     taskChatShellEnabled,
     taskDocumentEditor,
     currentUserId,

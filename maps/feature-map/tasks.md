@@ -63,7 +63,7 @@ During a cold chat-style open, one loading frame owns the same viewport and
 composer geometry as the resolved conversation. The real title and monitor
 banner stay concealed until the initial reading position is prepared. The
 [rich loading journey](../../tests/perf/issue-detail/loading-layout.spec.ts)
-checks direct and list-based entry, delayed fonts, and desktop/mobile geometry
+checks direct and list-based entry, delayed fonts and preferences, and desktop/mobile geometry
 with a long saved thread, cards, a monitor, and a pending confirmation. This
 synthetic local coverage does not establish a deployed staging pass.
 

@@ -1564,6 +1564,7 @@ describe("IssueDetail", () => {
     expect(mockIssueChatThreadRender).not.toHaveBeenCalled();
     expect(container.querySelector('[data-testid="task-chat-loading-frame"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="issue-detail-header"]')).toBeNull();
+    expect(mockOpenPanel).not.toHaveBeenCalled();
     coordinatorPreference.loaded = true;
     await act(async () => renderIssueView());
     await waitForAssertion(() => expect(mockIssueChatThreadRender).toHaveBeenCalled());

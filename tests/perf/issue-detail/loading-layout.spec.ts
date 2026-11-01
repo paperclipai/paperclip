@@ -13,9 +13,10 @@ test.skip(!process.env.PAPERCLIP_ISSUE_PERF_DATABASE_URL, "The rich loading fixt
 let fixture: RichLoadingFixture;
 test.beforeAll(async ({ request }) => { fixture = await richLoadingFixture(request); });
 
-for (const entry of ["direct", "list", "delayed fonts"] as const) for (const mobile of [false, true]) test(`a rich task reveals once without flashing its header or moving its reading position (${entry}, ${mobile ? "mobile" : "desktop"})`, async ({ page }, info) => {
+for (const entry of ["direct", "list", "delayed fonts", "delayed preferences"] as const) for (const mobile of [false, true]) test(`a rich task reveals once without flashing its header or moving its reading position (${entry}, ${mobile ? "mobile" : "desktop"})`, async ({ page }, info) => {
   await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1280, height: 720 });
   await page.route("**/api/workspace-preferences/me", async route => {
+    if (entry === "delayed preferences") await new Promise(resolve => setTimeout(resolve, 2500));
     const response = await route.fetch();
     await route.fulfill({ json: { ...await response.json(), coordinatorWorkspaceEnabled: true } });
   });
@@ -40,7 +41,7 @@ for (const entry of ["direct", "list", "delayed fonts"] as const) for (const mob
         return getComputedStyle(el).visibility === "visible" && rect.bottom > 60 && rect.top < innerHeight;
       });
       const box = (el: Element | null | undefined) => {
-        if (!el) return null;
+        if (!el || getComputedStyle(el).visibility !== "visible") return null;
         const rect = el.getBoundingClientRect();
         return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
       };
@@ -83,6 +84,12 @@ for (const entry of ["direct", "list", "delayed fonts"] as const) for (const mob
   for (const dimension of ["x", "y", "width", "height"] as const) {
     const values = loadingFrames.map(frame => frame.loading![dimension]);
     expect(Math.max(...values) - Math.min(...values), `loading frame ${dimension}`).toBeLessThanOrEqual(2);
+  }
+  const visibleComposers = loadingFrames.filter(frame => frame.loadingComposer);
+  expect(visibleComposers.length).toBeGreaterThan(2);
+  for (const dimension of ["x", "y", "width", "height"] as const) {
+    const values = visibleComposers.map(frame => frame.loadingComposer![dimension]);
+    expect(Math.max(...values) - Math.min(...values), `loading composer ${dimension}`).toBeLessThanOrEqual(2);
   }
   const revealed = frames.filter(frame => frame.ready && frame.latest);
   expect(revealed.length).toBeGreaterThan(5);
