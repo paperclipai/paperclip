@@ -1,3 +1,7 @@
+import { randomBytes } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, CompanySecret } from "@paperclipai/shared";
@@ -261,6 +265,47 @@ describe("secrets CLI helpers", () => {
     expect(result.status).toBe("pass");
     expect(result.message).toContain("prod-us-1");
     expect(result.message).toContain("AWS_PROFILE/shared config");
+  });
+
+  describe("local encrypted key file permissions", () => {
+    let tempDir: string;
+    let keyFilePath: string;
+
+    beforeEach(() => {
+      delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-secrets-check-"));
+      keyFilePath = path.join(tempDir, "master.key");
+      fs.writeFileSync(keyFilePath, randomBytes(32).toString("base64"), "utf8");
+      process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = keyFilePath;
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it.skipIf(process.platform === "win32")(
+      "warns when the key file is readable by group or others",
+      () => {
+        fs.chmodSync(keyFilePath, 0o644);
+
+        const result = secretsCheck(configWithSecretsProvider("local_encrypted"));
+
+        expect(result.status).toBe("warn");
+        expect(result.message).toContain("key file permissions are 644");
+      },
+    );
+
+    it("does not warn about POSIX permission bits on Windows", () => {
+      fs.chmodSync(keyFilePath, 0o666);
+      vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+
+      const result = secretsCheck(configWithSecretsProvider("local_encrypted"));
+
+      expect(result.status).toBe("pass");
+      expect(result.message).not.toContain("chmod 600");
+      expect(result.repairHint).toBeUndefined();
+    });
   });
 });
 
