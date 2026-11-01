@@ -864,8 +864,23 @@ export function configuredPaperclipApiBaseUrl(): string | null {
 export function paperclipApiBaseUrl(): string {
   const configured = configuredPaperclipApiBaseUrl();
   if (!configured) {
+    throw new Error("PAPERCLIP_API_URL is required for Paperclip REST API access");
+  }
+  return configured;
+}
+
+export function configuredPaperclipMcpBaseUrl(): string | null {
+  const configured = readNonEmptyString(process.env.PAPERCLIP_PUBLIC_URL);
+  return configured
+    ? configured.replace(/\/+$/, "").replace(/\/api$/, "")
+    : configuredPaperclipApiBaseUrl();
+}
+
+export function paperclipMcpBaseUrl(): string {
+  const configured = configuredPaperclipMcpBaseUrl();
+  if (!configured) {
     throw new Error(
-      "PAPERCLIP_API_URL is required to deliver managed runtime MCP servers",
+      "PAPERCLIP_API_URL or PAPERCLIP_PUBLIC_URL is required to deliver managed runtime MCP servers",
     );
   }
   return configured;
@@ -1205,7 +1220,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   return [
     {
       name: ASSIGNED_MCP_SERVER_NAME,
-      url: `${paperclipApiBaseUrl()}/mcp/gateways/${gateway!.gatewayPublicId}`,
+      url: `${paperclipMcpBaseUrl()}/mcp/gateways/${gateway!.gatewayPublicId}`,
       token: token.token,
       connectionId: `assignment:${assignmentDigest}`,
     },
@@ -1240,15 +1255,16 @@ export function createAdapterRuntimeToolAccess(input: {
   // tests invoke heartbeat execution without booting an HTTP server, however;
   // in that context there is no reachable endpoint to advertise and runtime
   // tools should simply remain unavailable instead of failing the run.
-  const baseUrl = configuredPaperclipApiBaseUrl();
-  if (!baseUrl) return undefined;
+  const apiBaseUrl = configuredPaperclipApiBaseUrl();
+  const mcpBaseUrl = configuredPaperclipMcpBaseUrl();
+  if (!apiBaseUrl || !mcpBaseUrl) return undefined;
   return Object.freeze({
     version: 1,
     guidance: CONNECTION_INTENT_AGENT_GUIDANCE,
-    mcpEndpoint: `${baseUrl}/mcp/runtime-tools`,
+    mcpEndpoint: `${mcpBaseUrl}/mcp/runtime-tools`,
     rest: {
-      connectionsSearch: `${baseUrl}/runtime-tools/connections/search`,
-      connectionRequest: `${baseUrl}/runtime-tools/connections/request`,
+      connectionsSearch: `${apiBaseUrl}/runtime-tools/connections/search`,
+      connectionRequest: `${apiBaseUrl}/runtime-tools/connections/request`,
     },
     bearerToken: minted.token,
     expiresAt: minted.expiresAt,
