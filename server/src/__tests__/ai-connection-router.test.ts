@@ -308,8 +308,8 @@ describe("durable, authorized connection routing", () => {
     expect(pinned.runtimeConfig).toEqual({ provider: "opencode", model: "paperclip/custom/a" });
     expect(await resolve(pool.id, `harness-switch-${kind}`)).toEqual(pinned);
     expect(await resolve(pool.id, `harness-switch-${kind}`, { adapterType: "opencode_local" })).toEqual(pinned);
-    await expect(resolve(pool.id, `harness-switch-${kind}`, { adapterType: "hermes_local" })).rejects.toThrow("different harness");
-    await expect(resolve(pool.id, `harness-switch-${kind}`, { adapterType: "hermes_local", persisted: pinned })).rejects.toThrow("different harness");
+    await expect(resolve(pool.id, `harness-switch-${kind}`, { adapterType: "hermes_local" })).rejects.toThrow("saved for a different harness; switch back to the original harness or choose another AI connection");
+    await expect(resolve(pool.id, `harness-switch-${kind}`, { adapterType: "hermes_local", persisted: pinned })).rejects.toThrow("saved for a different harness; switch back to the original harness or choose another AI connection");
   });
   it("authorizes direct OpenRouter members before evaluating fresh and pinned model overrides", async () => {
     const account = await aiConnectionService(db).save(companyId, "alice", { provider: "openrouter", method: "api_key", ownership: "personal", name: "OpenRouter", apiKey: "fixture", allAgents: true, agentIds: [] }, "fixture");

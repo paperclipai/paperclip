@@ -89,7 +89,7 @@ export function pinnedRoutedModelForHarness(metadata: AiConnectionMetadata, memb
   const harness = aiRoutingHarness(adapterType, runtimeConfig.provider, runtimeConfig.acpxAgent);
   const project = (raw: string) => aiRoutingModelFromRaw(routing, harness, raw);
   const stored = typeof runtimeConfig.model === "string" ? runtimeConfig.model : "";
-  if (![project(member.profile.model), ...routing.models.map((hint) => project(hint.id))].includes(stored)) throw unprocessable("The pinned pool selection was saved for a different harness; reset this task session to reselect it");
+  if (![project(member.profile.model), ...routing.models.map((hint) => project(hint.id))].includes(stored)) throw unprocessable("The pinned pool selection was saved for a different harness; switch back to the original harness or choose another AI connection");
 }
 
 export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerManager) {

@@ -38,7 +38,8 @@ pinned task keeps its stored model, effort and notes; removing or editing a
 member, or a later composer change, affects only future allocations. Each
 continuation still re-checks authorization and harness and runtime
 compatibility, and fails closed. A stored gateway/local model that is not a valid
-projection for the current harness fails closed; reset the session to reselect it.
+projection for the current harness fails closed; the pin survives session reset, so
+switch back to the original harness or choose another AI connection.
 Session reset and compaction retain the pin.
 Revocation requires operator repair.
 
