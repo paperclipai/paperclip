@@ -1,36 +1,75 @@
 export const type = "opencode_local";
 export const label = "OpenCode";
 
-// Use OpenCode's official installer instead of `npm install -g opencode-ai`.
-// The npm package reifies four large Linux x64 prebuilt-binary subpackages
-// (linux-x64, linux-x64-musl, linux-x64-baseline, linux-x64-baseline-musl) in
-// parallel even though only one matches the sandbox; on bandwidth-constrained
-// sandboxes (e.g. Cloudflare) that exceeded the 240s install budget. The
-// official installer fetches a single arch-specific binary into
-// `$HOME/.opencode/bin` and tries to add it to PATH via `~/.bashrc`. That
-// rc-file path is only sourced by interactive/login shells, so non-login
-// `sh -c` probe invocations (used by the runtime PATH check) cannot find the
-// binary. We fix that by symlinking the installed binary into a directory on
-// the non-login `sh -c` PATH: prefer `/usr/local/bin` (universally on the
-// default PATH on Linux distros) when root or passwordless sudo is available,
-// otherwise fall back to `$HOME/.local/bin` (which is on the default PATH on
-// the exe.dev sandbox image and most modern home-managed Linux images).
+// Install a pinned OpenCode release binary instead of `npm install -g
+// opencode-ai`. The npm package reifies four large Linux x64 prebuilt-binary
+// subpackages (linux-x64, linux-x64-musl, linux-x64-baseline,
+// linux-x64-baseline-musl) in parallel even though only one matches the
+// sandbox; on bandwidth-constrained sandboxes (e.g. Cloudflare) that exceeded
+// the 240s install budget. Fetching the single matching release tarball keeps
+// the install small.
 //
-// Security tradeoff: this is `curl | bash` without a SHA-256 verification of
-// the install script. We accept this because:
-//   1. The install runs inside an isolated, ephemeral sandbox — blast radius
-//      is bounded to that sandbox's secrets and disk.
-//   2. The prior `npm install -g opencode-ai` is also unverified code
-//      execution from a third-party registry; this is not strictly worse.
-//   3. OpenCode does not publish per-release SHA-256 checksums in a stable
-//      location, and pinning a version + hash here would require manual
-//      version bumps on every OpenCode release.
-// The `set -e` (implied by Bash's default with `-fsSL` upstream of a piped
-// shell) and `curl -fsSL` give us fail-fast behavior on HTTP errors. If
-// OpenCode starts publishing a stable checksum/signature, switch to fetching
-// a versioned tarball + verifying the digest before exec.
+// The tarball is downloaded from the pinned GitHub release and its SHA-256 is
+// checked against the digest pinned below before anything is extracted or run.
+// Piping `https://opencode.ai/install` into a shell ran unverified code: anyone
+// who could serve that URL (a compromised host, or a network attacker holding a
+// mis-issued TLS certificate) got code execution inside the sandbox with its
+// provider credentials. Target selection mirrors OpenCode's own installer
+// (x64 without AVX2 needs the `-baseline` build; musl libc needs `-musl`).
+//
+// To bump: set OPENCODE_SANDBOX_VERSION and copy each linux tarball's
+// `digest` from `gh api repos/anomalyco/opencode/releases/tags/v<version>`.
+export const OPENCODE_SANDBOX_VERSION = "1.19.3";
+
+export const OPENCODE_SANDBOX_SHA256: Readonly<Record<string, string>> = {
+  "linux-x64": "13a8fb2978302071b86f9d7e00da9c8895f9cd846978379c3bdc6a5333536c9b",
+  "linux-x64-musl": "6c84c607077057cf5c8c63704e373d0053684bf29b397979f661d7fe68925487",
+  "linux-x64-baseline": "531cff2441129c30f0edd5878af494108ad07f5feb46d7ee29a2a5b830a5765d",
+  "linux-x64-baseline-musl": "738506562666cc67e3512f04ecac50c0bae833c5bf44e1a59c99e5827a851778",
+  "linux-arm64": "7900818a6a98881edbbadab4b7525940eff3b9750040c200481f9f56cacee405",
+  "linux-arm64-musl": "39c9ff1ea47fd59752613079f97bef40a2d14c30bc6bb5772a91d9d708e2d0b3",
+};
+
+const OPENCODE_RELEASE_BASE_URL = "https://github.com/anomalyco/opencode/releases/download";
+
+export function buildOpenCodeSandboxInstallCommand(
+  version: string = OPENCODE_SANDBOX_VERSION,
+  sha256ByTarget: Readonly<Record<string, string>> = OPENCODE_SANDBOX_SHA256,
+): string {
+  const hashCases = Object.entries(sha256ByTarget)
+    .map(([target, sha]) => `${target}) OC_SHA=${sha} ;; `)
+    .join("");
+  return [
+    'OC_ARCH="$(uname -m)"; ',
+    'case "$OC_ARCH" in x86_64|amd64) OC_ARCH=x64 ;; aarch64|arm64) OC_ARCH=arm64 ;; ',
+    '*) echo "opencode install: unsupported architecture $OC_ARCH" >&2; exit 1 ;; esac; ',
+    'OC_TARGET="linux-$OC_ARCH"; ',
+    'if [ "$OC_ARCH" = x64 ] && ! grep -qwi avx2 /proc/cpuinfo 2>/dev/null; then OC_TARGET="$OC_TARGET-baseline"; fi; ',
+    'if [ -f /etc/alpine-release ] || ldd --version 2>&1 | grep -qi musl; then OC_TARGET="$OC_TARGET-musl"; fi; ',
+    'OC_SHA=; ',
+    `case "$OC_TARGET" in ${hashCases}esac; `,
+    'if [ -z "$OC_SHA" ]; then echo "opencode install: no pinned checksum for $OC_TARGET" >&2; exit 1; fi; ',
+    'OC_TMP="$(mktemp -d)"; ',
+    `curl -fsSL --retry 3 -o "$OC_TMP/opencode.tar.gz" "${OPENCODE_RELEASE_BASE_URL}/v${version}/opencode-$OC_TARGET.tar.gz" || { rm -rf "$OC_TMP"; exit 1; }; `,
+    'if command -v sha256sum >/dev/null 2>&1; then OC_GOT="$(sha256sum "$OC_TMP/opencode.tar.gz" | cut -d" " -f1)"; ',
+    'else OC_GOT="$(shasum -a 256 "$OC_TMP/opencode.tar.gz" | cut -d" " -f1)"; fi; ',
+    'if [ "$OC_GOT" != "$OC_SHA" ]; then echo "opencode install: checksum mismatch for $OC_TARGET (expected $OC_SHA, got $OC_GOT)" >&2; rm -rf "$OC_TMP"; exit 1; fi; ',
+    'tar -xzf "$OC_TMP/opencode.tar.gz" -C "$OC_TMP" opencode && ',
+    'mkdir -p "$HOME/.opencode/bin" && ',
+    'cp "$OC_TMP/opencode" "$HOME/.opencode/bin/opencode" && ',
+    'chmod 0755 "$HOME/.opencode/bin/opencode" && ',
+    'rm -rf "$OC_TMP" && ',
+  ].join("");
+}
+
+// The binary lands in `$HOME/.opencode/bin`, which non-login `sh -c` probe
+// invocations (used by the runtime PATH check) do not search. Symlink it into a
+// directory on that PATH: prefer `/usr/local/bin` (universally on the default
+// PATH on Linux distros) when root or passwordless sudo is available, otherwise
+// fall back to `$HOME/.local/bin` (on the default PATH on the exe.dev sandbox
+// image and most modern home-managed Linux images).
 export const SANDBOX_INSTALL_COMMAND =
-  'curl -fsSL https://opencode.ai/install | bash && ' +
+  buildOpenCodeSandboxInstallCommand() +
   'if [ -x "$HOME/.opencode/bin/opencode" ]; then ' +
   'if [ "$(id -u)" -eq 0 ]; then ' +
   'ln -sf "$HOME/.opencode/bin/opencode" /usr/local/bin/opencode; ' +
