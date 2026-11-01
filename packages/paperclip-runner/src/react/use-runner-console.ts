@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { PrpEvent } from "../protocol/replay-contract.js";
+import { latestSteeringSourceSeq, resolveSteeringChips } from "../browser/steering-chips.js";
 import {
   createSessionSnapshotFromMetadata,
   reduceSessionEvents,
@@ -37,6 +38,10 @@ export interface SteeringChip {
   expectedTurnId: string;
   status: SteeringChipStatus;
   detail: string | null;
+  /** Set once this chip is bound to one acknowledgement. */
+  acknowledgementKey?: string;
+  /** Source sequence already in the log when this chip was created. */
+  afterSourceSeq?: number;
 }
 
 function reduceEvents(
@@ -111,6 +116,8 @@ export function useRunnerConsole(options: RunnerClientOptions = {}): RunnerConso
   const [selectedManifestId, setSelectedManifestId] = useState("chat");
   const [state, setState] = useState<RunnerSessionState | null>(null);
   const [events, setEvents] = useState<PrpEvent[]>([]);
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
   const [connection, setConnection] = useState<ConnectionStatus>("idle");
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [steeringChips, setSteeringChips] = useState<SteeringChip[]>([]);
@@ -293,25 +300,10 @@ export function useRunnerConsole(options: RunnerClientOptions = {}): RunnerConso
     return () => clearTimeout(timer);
   }, [replayPlaying, replayPosition, events.length]);
 
-  // Steering chips resolve against canonical acknowledgements only.
+  // Steering chips bind to their own turn and acknowledgement. An acknowledgement
+  // already consumed by an earlier chip is not reused.
   useEffect(() => {
-    setSteeringChips((chips) => {
-      if (chips.every((chip) => chip.status !== "pending")) return chips;
-      const acknowledged = events.filter(
-        (event) =>
-          event.eventType === "item.completed" &&
-          (event.payload as { kind?: string }).kind === "steering_acknowledgement",
-      );
-      let index = 0;
-      return chips.map((chip) => {
-        if (chip.status !== "pending") return chip;
-        const match = acknowledged[index];
-        index += 1;
-        return match === undefined
-          ? chip
-          : { ...chip, status: "acknowledged" as const, detail: null };
-      });
-    });
+    setSteeringChips((chips) => resolveSteeringChips(chips, events));
   }, [events]);
 
   // The reducer is authoritative for the active turn. Falling back to the
@@ -411,9 +403,10 @@ export function useRunnerConsole(options: RunnerClientOptions = {}): RunnerConso
       const expectedTurnId = activeTurnId;
       if (sessionId === null || expectedTurnId === null) return;
       const chipId = `steer-${Date.now()}-${steeringChips.length}`;
+      const afterSourceSeq = latestSteeringSourceSeq(eventsRef.current);
       setSteeringChips((chips) => [
         ...chips,
-        { id: chipId, text, expectedTurnId, status: "pending", detail: null },
+        { id: chipId, text, expectedTurnId, status: "pending", detail: null, afterSourceSeq },
       ]);
       try {
         adopt(await runnerClient.steerTurn(sessionId, expectedTurnId, text));
