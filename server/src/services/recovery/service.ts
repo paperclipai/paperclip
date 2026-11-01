@@ -45,6 +45,7 @@ import {
   not,
   notExists,
   notInArray,
+  ne,
   or,
   sql,
 } from "drizzle-orm";
@@ -94,6 +95,7 @@ import {
   nativeRunnerOwnershipNotHeldCondition,
 } from "../native-runtime/native-runner-ownership.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
+import { TASK_WATCHDOG_ORIGIN_KIND } from "../task-watchdog-scope.js";
 import { forbidden, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import {
@@ -2975,6 +2977,8 @@ export function recoveryService(
         and(
           eq(issues.companyId, issue.companyId),
           eq(issues.parentId, issue.id),
+          // Watchdog verification is outside the watched business subtree.
+          ne(issues.originKind, TASK_WATCHDOG_ORIGIN_KIND),
           visibleIssueCondition(),
           notInArray(issues.status, ["done", "cancelled"]),
         ),
@@ -2993,6 +2997,8 @@ export function recoveryService(
         and(
           eq(issues.companyId, issue.companyId),
           eq(issues.parentId, issue.id),
+          // Watchdog verification is outside the watched business subtree.
+          ne(issues.originKind, TASK_WATCHDOG_ORIGIN_KIND),
           ...(sameWorkspaceOnly ? [eq(issues.projectWorkspaceId, issue.projectWorkspaceId!)] : []),
           visibleIssueCondition(),
           notInArray(issues.status, ["done", "cancelled"]),
