@@ -888,7 +888,10 @@ export const commandV3Schema = {
                   "accept",
                   "tool",
                   "progress",
-                  "finish"
+                  "finish",
+                  "renew",
+                  "request_user_input",
+                  "consume_input"
                 ]
               },
               "input": {
@@ -1062,6 +1065,140 @@ export const commandV3Schema = {
         },
         "type": "object"
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "external_provider.operation"
+          },
+          "payload": {
+            "properties": {
+              "action": {
+                "const": "renew"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "input": {
+                "type": "object",
+                "properties": {
+                  "expiresAtUnixMs": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "expiresAtUnixMs"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "external_provider.operation"
+          },
+          "payload": {
+            "properties": {
+              "action": {
+                "const": "request_user_input"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "input": {
+                "type": "object",
+                "properties": {
+                  "requestId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "questionSet": {
+                    "$ref": "https://paperclip.dev/schemas/prp/v1/question-set.schema.json"
+                  }
+                },
+                "required": [
+                  "requestId",
+                  "questionSet"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "external_provider.operation"
+          },
+          "payload": {
+            "properties": {
+              "action": {
+                "const": "consume_input"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "input": {
+                "type": "object",
+                "properties": {
+                  "requestId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "inputDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  }
+                },
+                "required": [
+                  "requestId",
+                  "inputDigest"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
     }
   ],
   "additionalProperties": true
@@ -1088,7 +1225,8 @@ export const providerDescriptorSchema = {
         "aws_agentcore",
         "acpx",
         "openai_dot",
-        "grok_bot"
+        "grok_bot",
+        "muse"
       ]
     },
     "driver": {
@@ -1099,7 +1237,8 @@ export const providerDescriptorSchema = {
         "aws_agentcore_harness_api",
         "acpx_runtime",
         "openai_dot_mcp",
-        "grok_bot_mcp"
+        "grok_bot_mcp",
+        "muse_external"
       ]
     },
     "model": {
@@ -1125,7 +1264,8 @@ export const providerDescriptorSchema = {
         "anthropic_managed_agents",
         "aws_bedrock_agentcore_harness",
         "openai_dot",
-        "grok_bot"
+        "grok_bot",
+        "muse"
       ]
     },
     "providerSessionId": {
@@ -1225,6 +1365,27 @@ export const providerDescriptorSchema = {
         "high",
         "max"
       ]
+    },
+    "claudeEffort": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "grokEffort": {
+      "enum": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    },
+    "grokDisableWebSearch": {
+      "type": "boolean"
     }
   },
   "allOf": [
@@ -1241,6 +1402,26 @@ export const providerDescriptorSchema = {
           },
           "agent": {
             "const": "pi"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "claudeEffort"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          },
+          "agent": {
+            "const": "claude"
           }
         },
         "required": [
@@ -1335,6 +1516,19 @@ export const providerDescriptorSchema = {
             },
             "driver": {
               "const": "grok_bot_mcp"
+            },
+            "executionKind": {
+              "const": "remote_service"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "muse"
+            },
+            "driver": {
+              "const": "muse_external"
             },
             "executionKind": {
               "const": "remote_service"
@@ -1509,6 +1703,78 @@ export const providerDescriptorSchema = {
             "const": null
           }
         }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provider": {
+            "const": "muse"
+          }
+        },
+        "required": [
+          "provider"
+        ]
+      },
+      "then": {
+        "required": [
+          "service",
+          "providerSessionId"
+        ],
+        "properties": {
+          "service": {
+            "const": "muse"
+          },
+          "model": {
+            "const": null
+          },
+          "providerSessionId": {
+            "const": null
+          },
+          "agentProcessId": {
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "grokEffort"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          },
+          "agent": {
+            "const": "grok"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "grokDisableWebSearch"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          },
+          "agent": {
+            "const": "grok"
+          }
+        },
+        "required": [
+          "agent"
+        ]
       }
     }
   ],
@@ -3119,6 +3385,75 @@ export const usageSchema = {
     "runDeltaAvailable": {
       "type": "boolean"
     },
+    "runDeltaBasis": {
+      "const": "run"
+    },
+    "reconciliation": {
+      "type": "object",
+      "required": [
+        "reason",
+        "receivedTurnId",
+        "cumulative",
+        "priorOrigin"
+      ],
+      "properties": {
+        "reason": {
+          "const": "accounting_reconciliation_required"
+        },
+        "receivedTurnId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 240
+        },
+        "cumulative": {
+          "$ref": "#/$defs/measurement"
+        },
+        "priorOrigin": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "runnerInstanceId",
+            "runId",
+            "normalizedSessionId",
+            "turnId",
+            "itemId"
+          ],
+          "properties": {
+            "runnerInstanceId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "normalizedSessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "turnId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "itemId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "runDelta": {
       "$ref": "#/$defs/measurement"
     }
@@ -4285,7 +4620,8 @@ export const resultSchema = {
             "retry",
             "delegated_issue",
             "response_wake",
-            "monitor"
+            "monitor",
+            "case_handoff"
           ]
         },
         "summary": {
@@ -4295,8 +4631,31 @@ export const resultSchema = {
         "idempotencyKey": {
           "type": "string",
           "minLength": 1
+        },
+        "handoffId": {
+          "type": "string",
+          "minLength": 1
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "case_handoff"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "handoffId"
+            ]
+          }
+        }
+      ],
       "additionalProperties": true
     }
   },
@@ -4415,6 +4774,7 @@ export const eventSchema = {
         "workspace.diff.recorded",
         "workspace.file.referenced",
         "auth.credentials.updated",
+        "runtime.activity.recorded",
         "harness.starting",
         "harness.ready",
         "harness.exited",
@@ -5052,6 +5412,47 @@ export const eventSchema = {
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "runtime.activity.recorded"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sourceKind": {
+            "const": "runner"
+          },
+          "priority": {
+            "const": 1
+          },
+          "payload": {
+            "type": "object",
+            "required": [
+              "namespace",
+              "activityKey"
+            ],
+            "properties": {
+              "namespace": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              },
+              "activityKey": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
     }
   ],
   "additionalProperties": true
@@ -5138,6 +5539,7 @@ export const eventV2Schema = {
         "workspace.diff.recorded",
         "workspace.file.referenced",
         "auth.credentials.updated",
+        "runtime.activity.recorded",
         "harness.starting",
         "harness.ready",
         "harness.exited",
@@ -5344,6 +5746,47 @@ export const eventV2Schema = {
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "runtime.activity.recorded"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sourceKind": {
+            "const": "runner"
+          },
+          "priority": {
+            "const": 1
+          },
+          "payload": {
+            "type": "object",
+            "required": [
+              "namespace",
+              "activityKey"
+            ],
+            "properties": {
+              "namespace": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              },
+              "activityKey": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
     }
   ],
   "additionalProperties": true
@@ -5523,7 +5966,9 @@ export const eventV3Schema = {
         "run.terminal",
         "external_provider.dispatch_requested",
         "external_provider.operation_settled",
-        "auth.credentials.updated"
+        "external_provider.input_available",
+        "auth.credentials.updated",
+        "runtime.activity.recorded"
       ]
     },
     "schemaVersion": {
@@ -5923,6 +6368,105 @@ export const eventV3Schema = {
       "if": {
         "properties": {
           "eventType": {
+            "const": "external_provider.input_available"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "binding": {
+                "type": "object",
+                "properties": {
+                  "companyId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "agentId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "bindingId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "runId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "normalizedSessionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "turnId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "bindingGeneration": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "assignmentRevision": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "companyId",
+                  "agentId",
+                  "bindingId",
+                  "runId",
+                  "normalizedSessionId",
+                  "turnId",
+                  "bindingGeneration",
+                  "assignmentRevision"
+                ]
+              },
+              "requestId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "turnId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "inputDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "response": {
+                "$ref": "https://paperclip.dev/schemas/prp/v1/question-response.schema.json"
+              }
+            },
+            "required": [
+              "binding",
+              "requestId",
+              "turnId",
+              "inputDigest",
+              "response"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
             "const": "auth.credentials.updated"
           }
         }
@@ -5937,6 +6481,47 @@ export const eventV3Schema = {
           },
           "payload": {
             "$ref": "https://paperclip.dev/schemas/prp/v1/auth-credentials.schema.json"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "runtime.activity.recorded"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sourceKind": {
+            "const": "runner"
+          },
+          "priority": {
+            "const": 1
+          },
+          "payload": {
+            "type": "object",
+            "required": [
+              "namespace",
+              "activityKey"
+            ],
+            "properties": {
+              "namespace": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              },
+              "activityKey": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              }
+            },
+            "additionalProperties": false
           }
         }
       }

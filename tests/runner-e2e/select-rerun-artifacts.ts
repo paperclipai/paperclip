@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, readdir } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { RunnerE2EResult } from "./types.js";
@@ -307,6 +307,11 @@ export async function selectRerunArtifacts(input: SelectRerunArtifactsInput) {
     });
     selections.push({ executionId, workflowAttempt, artifactName });
   }
+  await mkdir(input.selectedRoot, { recursive: true });
+  await writeFile(path.join(input.selectedRoot, "selected-artifacts.json"), JSON.stringify({
+    version: 1, workflowRunId: runId, workflowRunAttempt: currentAttempt,
+    sourceSha: input.sourceSha, sourceRef: input.sourceRef, workflowRunUrl: input.workflowRunUrl, selections,
+  }));
   return selections;
 }
 

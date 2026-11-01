@@ -1,5 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { chatConversations, chatEndpointResources, chatEndpoints, type Db } from "@paperclipai/db";
+import { notifyChatRunMilestones } from "../../chat-run-milestone-notifications.js";
 import type { ChatProviderLifecycleEffect } from "../../chat-provider-lifecycle.js";
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type EndpointRow = typeof chatEndpoints.$inferSelect;
@@ -70,6 +71,18 @@ export async function migrateTelegramResourceConversations(
   resource: { id: string }, previousProviderResourceId: string | undefined,
   providerResourceId: string, migratedLabel: string, now: Date,
 ) {
+  const affected = and(
+    eq(chatConversations.companyId, currentEndpoint.companyId),
+    eq(chatConversations.endpointId, currentEndpoint.id),
+    eq(chatConversations.resourceId, previousResource.id),
+  );
+  const migrated = await tx.select({ issueId: chatConversations.issueId })
+    .from(chatConversations).where(affected).for("update");
+  // Migration restores the binding before generic resource availability runs.
+  // Register the wake here, within the same owning transaction as that change.
+  for (const issueId of new Set(migrated.map(row => row.issueId))) {
+    await notifyChatRunMilestones(tx, { companyId: currentEndpoint.companyId, issueId });
+  }
   const previousThreadPrefix = `telegram:${previousProviderResourceId}`;
   const migratedThreadPrefix = `telegram:${providerResourceId}`;
   await tx
@@ -94,11 +107,5 @@ export async function migrateTelegramResourceConversations(
       state: "active",
       updatedAt: now,
     })
-    .where(
-      and(
-        eq(chatConversations.companyId, currentEndpoint.companyId),
-        eq(chatConversations.endpointId, currentEndpoint.id),
-        eq(chatConversations.resourceId, previousResource.id),
-      ),
-    );
+    .where(affected);
 }

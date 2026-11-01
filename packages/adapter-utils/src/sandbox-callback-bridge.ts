@@ -151,8 +151,16 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/companies\/[^/]+\/approvals$/ },
   { method: "GET", path: /^\/api\/companies\/[^/]+\/routines$/ },
   { method: "GET", path: /^\/api\/companies\/[^/]+\/skills$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/skills\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/skills\/[^/]+\/files$/ },
   { method: "GET", path: /^\/api\/projects\/[^/]+$/ },
   { method: "GET", path: /^\/api\/goals\/[^/]+$/ },
+
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/heartbeat-runs$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/live-runs$/ },
+  { method: "GET", path: /^\/api\/heartbeat-runs\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/heartbeat-runs\/[^/]+\/(?:events|log|workspace-operations|issues)$/ },
+  { method: "GET", path: /^\/api\/issues\/[^/]+\/(?:runs|recovery-actions)$/ },
 
   // Task-bound email actions. Company, inbox ownership, task/run authority,
   // and action policies are enforced by the controller; mailbox setup stays denied.
@@ -164,6 +172,8 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   // Issue lifecycle: read context, checkout, update, comment, document, release
   { method: "GET", path: /^\/api\/issues\/[^/]+$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+\/heartbeat-context$/ },
+  { method: "GET", path: /^\/api\/issues\/[^/]+\/diagnostics\/wakes$/ },
+  { method: "POST", path: /^\/api\/issues\/[^/]+\/monitor\/check-now$/ },
   // The controller still checks company membership and issue read authority.
   { method: "GET", path: /^\/api\/issues\/[^/]+\/activity$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+\/comments(?:\/[^/]+)?$/ },
@@ -180,6 +190,7 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/issues\/[^/]+\/attachments$/ },
   { method: "POST", path: /^\/api\/companies\/[^/]+\/issues\/[^/]+\/attachments$/ },
   { method: "GET", path: /^\/api\/attachments\/[^/]+\/content$/ },
+  { method: "GET", path: /^\/api\/assets\/[^/]+\/content$/ },
 
   // Work products: publish branch/commit/artifact metadata for completed work.
   { method: "GET", path: /^\/api\/issues\/[^/]+\/work-products$/ },

@@ -248,6 +248,9 @@ export const decisionArchiveNotificationOutbox = pgTable(
       table.originAgentId,
     ),
     pendingIdx: index("decision_archive_notification_outbox_pending_idx").on(table.status, table.createdAt),
+    pendingDeliveryIdx: index("decision_archive_notification_outbox_delivery_idx")
+      .on(table.lastAttemptAt.asc().nullsFirst(), table.createdAt, table.id)
+      .where(sql`${table.status} = 'pending'`),
     statusCheck: check(
       "decision_archive_notification_outbox_status_check",
       sql`${table.status} IN ('pending', 'delivering', 'delivered')`,

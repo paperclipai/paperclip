@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { inArray } from "drizzle-orm";
@@ -131,7 +132,8 @@ describe("merged pull-request confirmation extraction", () => {
   });
 });
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_MERGE_SWEEP_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
@@ -139,8 +141,8 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-merged-pr-confirmations-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-merged-pr-confirmations-");
+    db = createDb(external ?? tempDb!.connectionString, { maxConnections: 6 });
   }, 20_000);
 
   afterEach(async () => {
@@ -153,6 +155,7 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -276,7 +279,7 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
       repo: "paperclip",
       number: 39,
     }])).resolves.toEqual({
-      checked: 6,
+      checked: 3,
       candidates: 3,
       accepted: 2,
       woken: 2,

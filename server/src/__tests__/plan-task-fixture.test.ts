@@ -7,6 +7,7 @@ import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
 import { companySkillRoutes } from "../routes/company-skills.js";
+import { companySkillService } from "../services/company-skills.js";
 import { agentRoutes } from "../routes/agents.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -71,17 +72,20 @@ if (!support.supported) console.warn(`Planning fixture API calibration skipped: 
     const selected = await selectPlanSkills(api, companyId, agentId, sources);
     const invocations = planInvocations(sources, selected);
     const contextSkills = [];
-    for (const source of sources.filter(s => s.selected)) {
+    await companySkillService(db).withRuntimeSkillEntries(companyId, {
+      onlyKeys: new Set(sources.filter(source => source.selected).map(source => source.key)), snapshotLatest: true,
+    }, async entries => { for (const source of sources.filter(s => s.selected)) {
       const entry = (selected as any).entries.find((e: any) => e.key === source.key && e.desired);
-      const bytes = await readFile(path.join(entry.sourcePath, "SKILL.md"));
+      const delivered = entries.find(candidate => candidate.key === source.key)!;
+      const bytes = await readFile(path.join(delivered.source, "SKILL.md"));
       expect(planHash(bytes)).toBe(source.sha256);
-      const mode = (await stat(path.join(entry.sourcePath, "SKILL.md"))).mode & 0o555;
+      const mode = (await stat(path.join(delivered.source, "SKILL.md"))).mode & 0o555;
       expect(mode).toBe(0o444);
       const digest = planHash(JSON.stringify([{ path: "SKILL.md", sha256: planHash(bytes), mode, size: bytes.length }]));
       expect(invocations.find(i => i.name === entry.runtimeName)?.assetDigest).toBe(digest);
       contextSkills.push({ key: source.key, runtimeName: entry.runtimeName, versionId: entry.currentVersionId,
         bundle: { rootPath: path.join(root, "runtime-context-assets/bundles", digest) } });
-    }
+    } });
     const context = { skills: contextSkills } as NativeRuntimeContextSnapshot;
     const inputs = nativeTaskSkillInputs(planInvocationPrompt("Business task", invocations), context);
     expect(inputs).toHaveLength(variant === "disabled" ? 0 : 2);

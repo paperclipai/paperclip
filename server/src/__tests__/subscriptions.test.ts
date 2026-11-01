@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, heartbeatRuns, costEvents, activityLog, aiSubscriptions, aiSubscriptionPrices, aiSubscriptionConnections, toolApplications, toolConnections, connectionGrants, connectionGrantMembers } from "@paperclipai/db";
+import { createDb, companies, agents, heartbeatRuns, costEvents, activityLog, aiSubscriptions, aiSubscriptionPrices, aiSubscriptionConnections, companySecrets, toolApplications, toolConnections, connectionGrants, connectionGrantMembers } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { monthlySubscriptionCents, subscriptionPlan, subscriptionPriceSchema } from "@paperclipai/shared";
 import { subscriptionService, type SubscriptionConnection } from "../services/subscriptions.js";
@@ -474,6 +474,39 @@ describe("durable subscription reporting", () => {
     await db.update(aiSubscriptions).set({ lastCheckedAt: new Date(0) }).where(eq(aiSubscriptions.id, id));
     await refreshSubscriptionConnection(db, input, id, fixtureRequest(usage("pro")));
     expect((await subscriptionCostReport(db, c, owner)).accounts[0].price.amountCents).toBe("1750.0000000");
+  });
+  it("keeps one unverified account through OAuth refreshes and separates a reconnect", async () => {
+    const c = await company(), connected = await connection(c, "grok-first", "xai"), service = subscriptionService(db);
+    const secretId = randomUUID();
+    await db.insert(companySecrets).values({ id: secretId, companyId: c, key: `ai-${connected.grantId}`, name: `ai-${connected.grantId}` });
+    await db.update(connectionGrants).set({ credentialSecretRefs: [{ secretId, configPath: "ai.credential" }] }).where(eq(connectionGrants.id, connected.grantId));
+    const input = { ...connected, session: { secretId, epoch: 0 } };
+    const id = await service.register(input);
+    await price(c, id, "3000");
+    for (const credential of ["grok-refreshed", "grok-refreshed-again"]) expect(await service.register({ ...input, credential })).toBe(id);
+    await refreshSubscriptionConnection(db, { ...input, credential: "grok-refreshed-again" }, id, fixtureRequest(usage()));
+    let report = await subscriptionCostReport(db, c, owner);
+    expect(report.accounts.map(account => account.id)).toEqual([id]);
+    expect(report.accounts[0]).toMatchObject({ identityVerified: false, price: { amountCents: "3000.0000000" } });
+    await db.update(companySecrets).set({ aiSessionEpoch: 1 }).where(eq(companySecrets.id, secretId));
+    const reconnected = await service.register({ ...input, credential: "grok-reconnected", session: { secretId, epoch: 1 } });
+    expect(reconnected).not.toBe(id);
+    expect(await service.register({ ...input, credential: "grok-reconnected-refreshed", session: { secretId, epoch: 1 } })).toBe(reconnected);
+    report = await subscriptionCostReport(db, c, owner);
+    expect(report.accounts.map(account => account.id).sort()).toEqual([id, reconnected].sort());
+  });
+  it("rejects an unverified registration from a session older than the latest reconnect", async () => {
+    const c = await company(), connected = await connection(c, "grok-old", "xai"), service = subscriptionService(db);
+    const secretId = randomUUID();
+    await db.insert(companySecrets).values({ id: secretId, companyId: c, key: `ai-${connected.grantId}`, name: `ai-${connected.grantId}` });
+    await db.update(connectionGrants).set({ credentialSecretRefs: [{ secretId, configPath: "ai.credential" }] }).where(eq(connectionGrants.id, connected.grantId));
+    await db.update(companySecrets).set({ aiSessionEpoch: 1 }).where(eq(companySecrets.id, secretId));
+    const current = await service.register({ ...connected, credential: "grok-new", session: { secretId, epoch: 1 } });
+    await expect(service.register({ ...connected, credential: "grok-old-refreshed", session: { secretId, epoch: 0 } })).rejects.toMatchObject({ status: 409 });
+    await expect(service.register({ ...connected, credential: "grok-old-refreshed" })).rejects.toMatchObject({ status: 409 });
+    const [binding] = await db.select().from(aiSubscriptionConnections).where(eq(aiSubscriptionConnections.grantId, connected.grantId));
+    expect(binding.subscriptionId).toBe(current);
+    expect((await subscriptionCostReport(db, c, owner)).accounts.map(account => account.id)).toEqual([current]);
   });
   it("ignores a delayed provider observation after reconnecting another account", async () => {
     const c = await company(), input = await connection(c), service = subscriptionService(db), id = await service.register(input);

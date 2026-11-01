@@ -4,11 +4,42 @@ use std::process::Command;
 
 const MARKER: &str = "PAPERCLIP_CONFIGURED_ENV_KEYS";
 const RESERVED: &[&str] = &[
+    "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG",
+    "PAPERCLIP_OBSERVABILITY_OPENCODE",
+    "CLAUDE_CODE_ENABLE_TELEMETRY",
+    "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+    "ENABLE_ENHANCED_TELEMETRY_BETA",
+    "OTEL_LOGS_EXPORTER",
+    "OTEL_TRACES_EXPORTER",
+    "OTEL_METRICS_EXPORTER",
+    "OTEL_RESOURCE_ATTRIBUTES",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_HEADERS",
+    "OTEL_EXPORTER_OTLP_TIMEOUT",
+    "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
+    "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+    "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+    "OTEL_LOG_USER_PROMPTS",
+    "OTEL_LOG_ASSISTANT_RESPONSES",
+    "OTEL_LOG_TOOL_DETAILS",
+    "OTEL_LOG_TOOL_CONTENT",
+    "OTEL_LOG_RAW_API_BODIES",
     "AGENT_HOME",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "AWS_BEARER_TOKEN_BEDROCK",
     "BASH_ENV",
+    "ZDOTDIR",
+    "GH_CONFIG_DIR",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "CODEX_API_KEY",
     "CODEX_HOME",
@@ -21,6 +52,7 @@ const RESERVED: &[&str] = &[
     "GITHUB_ENTERPRISE_TOKEN",
     "GITHUB_TOKEN",
     "HOME",
+    "KIMI_API_KEY",
     "NODE_OPTIONS",
     "NODE_PATH",
     "OPENAI_API_KEY",
@@ -55,6 +87,8 @@ const RESERVED: &[&str] = &[
     "PAPERCLIP_NATIVE_MCP_NAME",
     "PAPERCLIP_NATIVE_MCP_TOKEN",
     "PAPERCLIP_NATIVE_MCP_URL",
+    "PAPERCLIP_NATIVE_MCP_STDIO",
+    "PAPERCLIP_NATIVE_MCP_PROXY",
     "PAPERCLIP_NORMALIZED_SESSION_ID",
     "PAPERCLIP_PROVIDER_TRACE_MAX_BYTES",
     "PAPERCLIP_PROVIDER_TRACE_PATH",
@@ -67,6 +101,8 @@ const RESERVED: &[&str] = &[
     "PAPERCLIP_RUNTIME_SERVICES_JSON",
     "PAPERCLIP_RUNTIME_SERVICE_INTENTS_JSON",
     "PAPERCLIP_RUN_ID",
+    "PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT",
+    "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER",
     "PAPERCLIP_TASK_ID",
     "PAPERCLIP_WAKE_COMMENT_ID",
     "PAPERCLIP_WAKE_PAYLOAD_JSON",
@@ -166,9 +202,15 @@ mod tests {
             "not-json",
             "[1]",
             "[\"NODE_OPTIONS\"]",
+            "[\"BASH_ENV\"]",
+            "[\"ZDOTDIR\"]",
+            "[\"GH_CONFIG_DIR\"]",
             "[\"PAPERCLIP_API_KEY\"]",
             "[\"PAPERCLIP_RUNNER_BOOTSTRAP_TICKET\"]",
+            "[\"PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT\"]",
+            "[\"PAPERCLIP_RUNTIME_NOTIFICATION_HELPER\"]",
             "[\"OPENAI_API_KEY\"]",
+            "[\"KIMI_API_KEY\"]",
             "[\"LD_PRELOAD\"]",
             "[\"bad=name\"]",
             "[\"CUSTOM\",\"CUSTOM\"]",
@@ -185,6 +227,14 @@ mod tests {
             );
             assert_eq!(command.get_envs().count(), 0);
         }
+        let mut command = Command::new("unused");
+        assert!(apply_configured_environment(&mut command, |key| match key {
+            MARKER => Some("[\"KIMI_API_KEY\"]".into()),
+            "KIMI_API_KEY" => Some("selected-code-key".into()),
+            _ => None,
+        })
+        .is_err());
+        assert_eq!(command.get_envs().count(), 0);
         let mut command = Command::new("unused");
         assert!(
             apply_configured_environment(&mut command, |key| Some(if key == MARKER {

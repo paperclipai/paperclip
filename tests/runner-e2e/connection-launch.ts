@@ -66,7 +66,7 @@ export async function cleanupConnectionCompany(input: {
   else for (const agent of fixtureAgents) await api.delete(`/api/agents/${agent.id}`);
 }
 
-export async function openConnectionBrowser(config: ConnectionConfig, repositoryRoot: string, origin: string) {
+export async function openConnectionBrowser(config: Pick<ConnectionConfig, "browser">, repositoryRoot: string, origin: string) {
   const temporary = config.browser.freshness === "signed-out" || !config.browser.profileDir;
   const profile = temporary ? await mkdtemp(path.join(os.tmpdir(), "paperclip-qa-browser-")) : path.resolve(config.browser.profileDir!);
   await assertOutsideRepository(profile, repositoryRoot);

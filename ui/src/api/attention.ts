@@ -1,7 +1,14 @@
-import type { AttentionFeed, AttentionFeedQuery } from "@paperclipai/shared";
+import type { AttentionFeed, AttentionFeedQuery, AttentionSummary, AttentionTaskIndex, DecisionHistoryPage, DecisionHistoryQuery } from "@paperclipai/shared";
 import { api } from "./client";
 
 export const attentionApi = {
+  summary: (companyId: string) => api.get<AttentionSummary>(`/companies/${companyId}/attention/summary`),
+  taskIndex: (companyId: string) => api.get<AttentionTaskIndex>(`/companies/${companyId}/attention/tasks`),
+  history: (companyId: string, options: DecisionHistoryQuery = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(options)) if (value !== undefined && value !== "") params.set(key, String(value));
+    return api.get<DecisionHistoryPage>(`/companies/${companyId}/attention/history?${params.toString()}`);
+  },
   /**
    * Fetch the ranked Decisions attention feed for a company. The server
    * unions every attention source (approvals, interactions, recovery, reviews,

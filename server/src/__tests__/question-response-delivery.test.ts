@@ -26,6 +26,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import {
   buildQuestionResponseDeliveryEnvelope,
@@ -33,7 +34,8 @@ import {
   questionResponseDeliveryService,
 } from "../services/question-response-delivery.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_QUESTION_DELIVERY_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
   ? describe
   : describe.skip;
@@ -64,10 +66,10 @@ describeEmbeddedPostgres("question response delivery", () => {
   > | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase(
-      "paperclip-question-delivery-",
-    );
-    db = createDb(tempDb.connectionString);
+    if (!externalDatabaseUrl) {
+      tempDb = await startEmbeddedPostgresTestDatabase("paperclip-question-delivery-");
+    }
+    db = createDb(externalDatabaseUrl ?? tempDb!.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -84,6 +86,7 @@ describeEmbeddedPostgres("question response delivery", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end();
     await tempDb?.cleanup();
   });
 

@@ -51,6 +51,8 @@ export const EXECUTION_PREPARATION_SPAN_ATTRS = {
   runId: "paperclip.task.run.run_id",
   fileCount: "paperclip.execution.fileCount",
   bytes: "paperclip.execution.bytes",
+  repositoryCacheOutcome: "paperclip.execution.repositoryCache.outcome",
+  repositoryCacheReferenceSupplied: "paperclip.execution.repositoryCache.reference_supplied",
 } as const;
 
 /**
@@ -93,8 +95,10 @@ export const SANDBOX_STARTUP_SPAN_ATTRS = {
   rootWorkMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}root.work_ms`,
   /** The difference between the work sum and the wall time (overlap). */
   rootDiffMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}root.diff_ms`,
-  /** Whether this bring-up is a cold start (no warm handle). */
+  /** Legacy boolean, emitted only for completely evidenced cold/warm startup. */
   coldStart: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}cold_start`,
+  /** Derived from per-layer receipts: cold, warm, partial_reuse, or unknown. */
+  warmth: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}warmth`,
   /** The clamped region label (through `clampSpanLabel`). */
   region: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}region`,
   /** The hashed image-id label (through `clampSpanLabel`). */
@@ -705,6 +709,7 @@ export interface SandboxRootSpanTimings {
  */
 export interface SandboxRootSpanContext {
   coldStart?: boolean;
+  warmth?: "cold" | "warm" | "partial_reuse" | "unknown";
   provider?: string;
   region?: string;
   imageId?: string;
@@ -729,6 +734,7 @@ export function setSandboxRootSpanAttributes(
   setFiniteNumberAttr(span, A.rootWorkMs, timings.workMs);
   setFiniteNumberAttr(span, A.rootDiffMs, timings.workMs - timings.wallMs);
   if (context.coldStart !== undefined) span.setAttribute(A.coldStart, context.coldStart);
+  if (context.warmth !== undefined) span.setAttribute(A.warmth, context.warmth);
   if (context.provider !== undefined) {
     span.setAttribute(A.provider, normalizeProviderFamily(context.provider));
   }

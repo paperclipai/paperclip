@@ -24,6 +24,8 @@ interface StalledReviewActionsProps {
    * approve" is what every issue already does.
    */
   reviewPolicy?: IssueReviewPolicy | null;
+  /** Explicit task-level wording where a separate asset approval may already exist. */
+  approveLabel?: string;
   className?: string;
 }
 
@@ -49,6 +51,7 @@ export function StalledReviewActions({
   footerSlot,
   onResolved,
   reviewPolicy,
+  approveLabel = "Approve",
   className,
 }: StalledReviewActionsProps) {
   const queryClient = useQueryClient();
@@ -158,7 +161,7 @@ export function StalledReviewActions({
             ) : (
               <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />
             )}
-            Approve
+            {approveLabel}
           </Button>
         </div>
       </div>

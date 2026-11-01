@@ -130,6 +130,7 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
   })();
   return {
     enabled,
+    ...(typeof parsed.storageProviderPluginId === "string" || parsed.storageProviderPluginId === null ? { storageProviderPluginId: parsed.storageProviderPluginId } : {}),
     ...(sharedWorkspaceConcurrency ? { sharedWorkspaceConcurrency } : {}),
     ...(normalizedDefaultMode ? { defaultMode: normalizedDefaultMode } : {}),
     ...(allowIssueOverride !== undefined ? { allowIssueOverride } : {}),
@@ -344,7 +345,7 @@ export function resolveExecutionWorkspaceEnvironmentId(input: {
 export function defaultIssueExecutionWorkspaceSettingsForProject(
   projectPolicy: ProjectExecutionWorkspacePolicy | null,
 ): IssueExecutionWorkspaceSettings | null {
-  if (!projectPolicy?.enabled) return null;
+  if (!projectPolicy?.enabled || projectPolicy.defaultMode === undefined) return null;
   return {
     mode:
       projectPolicy.defaultMode === "isolated_workspace"
@@ -449,7 +450,8 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
   const hasWorkspaceControl = projectHasPolicy || issueHasWorkspaceOverrides || input.legacyUseProjectWorkspace === false;
 
   if (hasWorkspaceControl) {
-    if (input.mode === "isolated_workspace") {
+    if (input.mode === "isolated_workspace" ||
+        (projectHasPolicy && input.projectPolicy?.storageProviderPluginId && input.mode !== "agent_default")) {
       const projectStrategy = projectHasPolicy ? input.projectPolicy?.workspaceStrategy : undefined;
       const issueStrategy = input.issueSettings?.workspaceStrategy;
       // An issue that changes its branch still needs the project's setup hooks.
@@ -457,8 +459,8 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
       const strategy = issueStrategy && projectStrategy?.type === issueStrategy.type
         ? { ...projectStrategy, ...issueStrategy }
         : issueStrategy ?? projectStrategy ??
-        parseExecutionWorkspaceStrategy(nextConfig.workspaceStrategy) ??
-        ({ type: "git_worktree" } satisfies ExecutionWorkspaceStrategy);
+        (input.mode === "isolated_workspace" ? parseExecutionWorkspaceStrategy(nextConfig.workspaceStrategy) : undefined) ??
+        ({ type: input.mode === "isolated_workspace" ? "git_worktree" : "project_primary" } satisfies ExecutionWorkspaceStrategy);
       if (issueStrategy?.existingBranch && issueStrategy.branchTemplate === undefined && strategy !== issueStrategy) {
         delete strategy.branchTemplate;
       }

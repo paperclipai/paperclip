@@ -21,6 +21,7 @@ export function releaseRunnerTargets(contract) {
 export const RELEASE_RUNNER_TARGETS = releaseRunnerTargets(JSON.parse(
   readFileSync(new URL("../release-runner-targets.json", import.meta.url), "utf8"),
 ));
+export const RELEASE_PROVIDER_PACK_TARGETS = Object.freeze(["linux-x64", "linux-arm64"]);
 const required = RELEASE_RUNNER_TARGETS;
 const digest = bytes => "sha256:" + createHash("sha256").update(bytes).digest("hex");
 function regularFile(path, maximumSize) {
@@ -64,10 +65,23 @@ export function releaseDaemonManifest(artifactDirectory, sourceRevision, verifyM
   return { sourceRevision, platforms };
 }
 
-export function existingReleaseProviderPack(packageRoot, sourceRevision) {
-  const file = join(packageRoot, "dist/remote-provider-packs/linux-x64/provider-pack.json");
+export function existingReleaseProviderPack(packageRoot, sourceRevision, target = "linux-x64") {
+  if (!RELEASE_PROVIDER_PACK_TARGETS.includes(target)) throw Error("Unsupported release provider pack target");
+  const file = join(packageRoot, `dist/remote-provider-packs/${target}/provider-pack.json`);
   if (!existsSync(file)) return undefined;
-  return verifyReleaseProviderPack(JSON.parse(regularFile(file, 512 * 1024)), sourceRevision);
+  return verifyReleaseProviderPack(JSON.parse(regularFile(file, 512 * 1024)), sourceRevision, target);
+}
+
+export function releaseProviderPackManifest(artifactDirectory, sourceRevision) {
+  if (readdirSync(artifactDirectory).sort().join() !== [...RELEASE_PROVIDER_PACK_TARGETS].sort().join()) {
+    throw Error("Release provider packs require exactly both Linux target directories");
+  }
+  return Object.fromEntries(RELEASE_PROVIDER_PACK_TARGETS.map(target => {
+    const path = join(resolve(artifactDirectory), target, "provider-pack.json");
+    const bytes = regularFile(path, 512 * 1024);
+    verifyReleaseProviderPack(JSON.parse(bytes), sourceRevision, target);
+    return [target, { path, sha256: digest(bytes) }];
+  }));
 }
 
 async function main() {
@@ -88,11 +102,12 @@ async function main() {
     return;
   }
   const daemonOnly = process.argv[2] === "assemble-daemons";
-  if (daemonOnly ? process.argv.length !== 5 : process.argv.length !== 3) throw Error("Usage: stage-release-runner-binaries.mjs MANIFEST.json | assemble-daemons ARTIFACT_DIRECTORY SOURCE_SHA");
+  if (daemonOnly ? ![5, 6].includes(process.argv.length) : process.argv.length !== 3) throw Error("Usage: stage-release-runner-binaries.mjs MANIFEST.json | assemble-daemons ARTIFACT_DIRECTORY SOURCE_SHA");
   const manifest = daemonOnly
     ? releaseDaemonManifest(process.argv[3], process.argv[4], await metadataContract())
     : JSON.parse(regularFile(resolve(process.argv[2]), 512 * 1024));
   if (!/^[a-f0-9]{40}$/.test(manifest.sourceRevision) || !manifest.platforms || Object.keys(manifest.platforms).sort().join() !== [...required].sort().join()) throw Error("Release daemon manifest must bind one source and all four supported targets");
+  if (daemonOnly && process.argv[5]) manifest.remoteProviderPacks = releaseProviderPackManifest(process.argv[5], manifest.sourceRevision);
   const verified = required.map(target => {
     const artifact = manifest.platforms[target];
     if (!artifact || !isAbsolute(artifact.path) || !/^sha256:[a-f0-9]{64}$/.test(artifact.sha256)) throw Error(`Invalid ${target} release artifact`);
@@ -100,16 +115,26 @@ async function main() {
     if (sha256 !== artifact.sha256 || runnerBinaryTarget(bytes) !== target) throw Error(`Release daemon ${target} digest or architecture mismatch`);
     return { target, source: artifact.path, sha256 };
   });
-  if (!manifest.remoteProviderPack && !daemonOnly) throw Error("Release assembly requires the matching Linux remote provider pack");
-  let packBytes, packIdentity;
-  if (manifest.remoteProviderPack) {
-    const entry = manifest.remoteProviderPack;
-    if (!isAbsolute(entry.path) || !/^sha256:[a-f0-9]{64}$/.test(entry.sha256)) throw Error("Invalid remote provider-pack release artifact");
-    packBytes = regularFile(entry.path, 512 * 1024);
-    if (packBytes.length > 512 * 1024 || "sha256:" + createHash("sha256").update(packBytes).digest("hex") !== entry.sha256) throw Error("Remote provider-pack release manifest digest mismatch");
-    packIdentity = verifyReleaseProviderPack(JSON.parse(packBytes), manifest.sourceRevision);
-  } else if (daemonOnly) {
-    packIdentity = existingReleaseProviderPack(root, manifest.sourceRevision);
+  if (!manifest.remoteProviderPack && !manifest.remoteProviderPacks && !daemonOnly) throw Error("Release assembly requires the matching Linux remote provider pack");
+  if (manifest.remoteProviderPacks && Object.keys(manifest.remoteProviderPacks).sort().join() !== [...RELEASE_PROVIDER_PACK_TARGETS].sort().join()) {
+    throw Error("Release provider packs require exactly both Linux targets");
+  }
+  const packs = {};
+  for (const target of RELEASE_PROVIDER_PACK_TARGETS) {
+    const entry = manifest.remoteProviderPacks?.[target] ?? (target === "linux-x64" ? manifest.remoteProviderPack : undefined);
+    if (entry) {
+      if (!isAbsolute(entry.path) || !/^sha256:[a-f0-9]{64}$/.test(entry.sha256)) throw Error("Invalid remote provider-pack release artifact");
+      const bytes = regularFile(entry.path, 512 * 1024);
+      if (digest(bytes) !== entry.sha256) throw Error("Remote provider-pack release manifest digest mismatch");
+      packs[target] = { bytes, identity: verifyReleaseProviderPack(JSON.parse(bytes), manifest.sourceRevision, target) };
+      if (target === "linux-x64" && manifest.remoteProviderPack && manifest.remoteProviderPacks &&
+        (manifest.remoteProviderPack.path !== entry.path || manifest.remoteProviderPack.sha256 !== entry.sha256)) {
+        throw Error("Conflicting legacy Linux x64 provider-pack identity");
+      }
+    } else if (daemonOnly) {
+      const identity = existingReleaseProviderPack(root, manifest.sourceRevision, target);
+      if (identity) packs[target] = { identity };
+    }
   }
   const platforms = {};
   for (const artifact of verified) {
@@ -121,19 +146,21 @@ async function main() {
     const sha256 = "sha256:" + createHash("sha256").update(readFileSync(destination)).digest("hex");
     platforms[artifact.target] = { path: relative, sha256, sourceSha256: artifact.sha256 };
   }
-  if (packBytes) {
-    const destination = join(root, "dist", "remote-provider-packs", "linux-x64", "provider-pack.json");
+  for (const [target, pack] of Object.entries(packs)) {
+    if (!pack.bytes) continue;
+    const destination = join(root, "dist", "remote-provider-packs", target, "provider-pack.json");
     mkdirSync(dirname(destination), { recursive: true });
     const staged = `${destination}.staging-${process.pid}`;
     try {
-      writeFileSync(staged, packBytes, { mode: 0o444, flag: "wx" });
+      writeFileSync(staged, pack.bytes, { mode: 0o444, flag: "wx" });
       renameSync(staged, destination);
     } finally {
       rmSync(staged, { force: true });
     }
   }
   writeFileSync(join(root, "dist", "bin", "release-manifest.json"), JSON.stringify({schema:"paperclip.runner.release-binaries.v1",sourceRevision:manifest.sourceRevision,platforms,
-    ...(packIdentity ? { remoteProviderPack: { target: "linux-x64", digest: packIdentity.digest, sourceRevision: packIdentity.payload.runnerSourceRevision } } : {})},null,2)+"\n");
+    ...(packs["linux-x64"] ? { remoteProviderPack: { target: "linux-x64", digest: packs["linux-x64"].identity.digest, sourceRevision: packs["linux-x64"].identity.payload.runnerSourceRevision } } : {}),
+    ...(Object.keys(packs).length ? { remoteProviderPacks: Object.fromEntries(Object.entries(packs).map(([target, pack]) => [target, { target, digest: pack.identity.digest, sourceRevision: pack.identity.payload.runnerSourceRevision }])) } : {})},null,2)+"\n");
   console.log("Staged verified release daemons for " + required.join(", "));
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

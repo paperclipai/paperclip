@@ -1,23 +1,30 @@
-import { agents, companies, createDb, issues, routines, routineTriggers } from "@paperclipai/db";
+import { agents, applyPendingMigrations, companies, createDb, issues, routines, routineTriggers } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import type { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, type DeliveryQueue } from "../services/delivery-work-notifications.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { routineService } from "../services/routines.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { registerScheduledWork } from "../services/scheduled-work.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_SCHEDULED_WORK_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("scheduled deadline database queries", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: Db;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("paperclip-scheduled-deadlines");
-    db = createDb(database.connectionString);
+    if (external) await applyPendingMigrations(external);
+    else database = await startEmbeddedPostgresTestDatabase("paperclip-scheduled-deadlines");
+    db = createDb(external ?? database.connectionString);
   }, 30_000);
+  afterEach(() => vi.useRealTimers());
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
-  it("selects future eligible deadlines and excludes inactive, mismatched and past work", async () => {
+  it("retains eligible overdue routines while excluding inactive and mismatched work", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
     const now = Date.now();
     const at = (minutes: number) => new Date(now + minutes * 60_000);
     const [company, pausedCompany] = await db.insert(companies).values([
@@ -30,7 +37,7 @@ describe.skipIf(!support.supported)("scheduled deadline database queries", () =>
       { companyId: company!.id, title: "Paused routine", status: "paused" },
       { companyId: pausedCompany!.id, title: "Paused company routine" },
     ]).returning();
-    const trigger = { companyId: company!.id, routineId: active!.id, kind: "schedule" };
+    const trigger = { companyId: company!.id, routineId: active!.id, kind: "schedule", cronExpression: "0 * * * *", timezone: "UTC" };
     await db.insert(routineTriggers).values([
       { ...trigger, nextRunAt: at(10) },
       { ...trigger, enabled: false, nextRunAt: at(1) },
@@ -54,11 +61,16 @@ describe.skipIf(!support.supported)("scheduled deadline database queries", () =>
     registerScheduledWork({ register: (queue, task) => {
       tasks.set(queue, task);
       return { ready: Promise.resolve(), wake: () => {} };
-    } }, db, { retryMs: 60_000, tickTimers: async () => {}, tickRoutines: async () => {} });
+    } }, { retryMs: 60_000, tickAgentTimers: async () => {}, nextAgentTimerAt: async () => null, tickIssueMonitors: async () => {},
+      nextIssueMonitorAt: () => heartbeatService(db).nextIssueMonitorAt(), tickRoutines: async () => {}, canRun: () => true,
+      nextRoutineRunAt: () => routineService(db).nextScheduledTriggerAt() });
     for (const task of tasks.values()) await task.run(new AbortController().signal);
-    expect(tasks.get(DELIVERY_QUEUES.routineSchedules)!.nextRunAt!()).toBe(at(10).getTime());
-    expect(tasks.get(DELIVERY_QUEUES.issueMonitors)!.nextRunAt!()).toBe(at(15).getTime());
+    expect(await routineService(db).nextScheduledTriggerAt()).toBe(at(-1).getTime());
+    expect(tasks.get(DELIVERY_QUEUES.routineSchedules)!.nextRunAt!()).toBeGreaterThan(now);
+    expect(await heartbeatService(db).nextIssueMonitorAt()).toBe(at(-1).getTime());
+    expect(tasks.get(DELIVERY_QUEUES.issueMonitors)!.nextRunAt!()).toBe(now + 60_000);
     await db.execute(sql`truncate table companies restart identity cascade`);
+    vi.setSystemTime(at(2));
     for (const task of tasks.values()) await task.run(new AbortController().signal);
     for (const task of tasks.values()) expect(task.nextRunAt!()).toBeNull();
   });

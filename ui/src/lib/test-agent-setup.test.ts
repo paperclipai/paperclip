@@ -31,6 +31,12 @@ const ready = {
 };
 beforeEach(() => testEnvironment.mockReset());
 afterEach(() => vi.restoreAllMocks());
+it.each(["environment_agent_required", "environment_agent_preparing", "environment_agent_approval_required"])("does not start a supplementary provider probe while %s", async code => {
+  const pending = { ...ready, status: "warn", checks: [{ code, level: "warn", message: "Waiting for the agent computer" }] };
+  testEnvironment.mockResolvedValue(pending);
+  expect(await testAgentSetup(input)).toEqual(pending);
+  expect(testEnvironment).toHaveBeenCalledTimes(1);
+});
 it("does not launch an ambient provider hello test for a pool preview", async () => {
   testEnvironment.mockResolvedValue({ ...ready, status: "warn", checks: [{ code: "ai_connection_pool_task_test_required", level: "warn", message: "Run a task" }] });
   await testAgentSetup({ ...input, aiConnection: { mode: "router", connectionId: "pool-id" } });
@@ -82,6 +88,14 @@ it("probes native Grok credentials with the pinned prerequisite in the selected 
     adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", engine: "cli", command: "/opt/paperclip/providers/grok/1.0.13/grok" },
   });
   expect(result.checks.some((check) => check.code === "grok_hello_probe_passed")).toBe(true);
+});
+it("accepts verified native API authentication without requiring a Legacy CLI", async () => {
+  testEnvironment.mockResolvedValue({ ...ready, checks: [
+    { code: "acpx_runtime_ready", level: "info", message: "Runtime verified" },
+    { code: "ai_connection_api_key_reverified", level: "info", message: "Key verified" },
+  ] });
+  expect((await testAgentSetup(input)).status).toBe("pass");
+  expect(testEnvironment).toHaveBeenCalledTimes(1);
 });
 it("does not repeat a completed model probe", async () => {
   testEnvironment.mockResolvedValue({

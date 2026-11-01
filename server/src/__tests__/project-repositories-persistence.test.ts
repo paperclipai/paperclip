@@ -33,6 +33,14 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(fetched?.workspaces.filter((workspace) => workspace.isPrimary)).toHaveLength(1);
     expect(fetched?.workspaces.every((workspace) => workspace.companyId === companyId)).toBe(true);
   });
+  it("retains and refreshes repository visibility without replacing the workspace", async () => {
+    const svc = projectService(db);
+    const source = { ...repo("30"), private: true };
+    const created = await svc.createWithRepositories(companyId, { name: "Visibility" }, [source]);
+    expect(created.workspaces[0].metadata).toMatchObject({ githubRepositoryPrivate: true, githubRepositoryUrl: source.url });
+    const updated = await svc.replaceRepositories(created.id, [{ ...source, private: false }]);
+    expect(updated?.workspaces[0]).toMatchObject({ id: created.workspaces[0].id, metadata: { githubRepositoryPrivate: false, githubRepositoryUrl: source.url } });
+  });
   it("adds/removes repos, promotes the remaining primary, and preserves legacy and local config", async () => {
     const svc = projectService(db);
     const created = await svc.createWithRepositories(companyId, { name: "Edit" }, [repo("3"), repo("4")]);

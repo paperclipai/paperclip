@@ -24,10 +24,11 @@ Ordinary PRs do not write timing artifacts or export traces. The exporter job is
 skipped for ordinary run names. Adding another label does not run the CI matrix.
 
 Profiling preserves the existing trusted AWS runner routing. Eligible PR jobs
-use `paperclip-public-pr-x64`; the routing gate uses `paperclip-ci-routing-x64`.
+use `paperclip-public-pr-x64`; the routing gate uses `ubuntu-latest` to verify
+current CI CODEOWNERS before allocating any AWS capacity.
 The existing fail-closed GitHub-hosted fallback still applies if AWS routing
-cannot be authorized. Only the separate post-run Honeycomb exporter uses
-`ubuntu-latest` directly; it is outside the measured PR suite.
+cannot be authorized. The separate post-run Honeycomb exporter also uses
+`ubuntu-latest`; it is outside the measured PR suite.
 
 ## Read the waterfall
 

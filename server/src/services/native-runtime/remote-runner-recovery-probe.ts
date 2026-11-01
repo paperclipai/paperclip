@@ -17,9 +17,12 @@ export async function readRemoteRunnerRecoveryProbe(input: {
   let lastError: unknown = new RemoteRunnerRecoveryError({
     stage: input.stage, reason: "probe_timeout",
   });
-  for (let attempt = 0; attempt < (input.readOnly ? 3 : 1); attempt++) {
+  // A few fast gateway failures can exhaust an attempt count in under a
+  // second. Read-only observations share the caller's deadline instead;
+  // signals still have one attempt because their outcome may be unknown.
+  for (let attempt = 0; ; attempt++) {
     const remaining = input.deadline - Date.now();
-    if (remaining <= 0) break;
+    if (!Number.isFinite(remaining) || remaining <= 0) break;
     try {
       const result = await input.runner.execute({
         ...input.request,
@@ -32,8 +35,9 @@ export async function readRemoteRunnerRecoveryProbe(input: {
         stage: input.stage, reason: "probe_transport_failed",
       });
     }
-    if (!input.readOnly || attempt === 2 || input.deadline - Date.now() <= 250) break;
-    await new Promise<void>(resolve => setTimeout(resolve, 250));
+    const delayMs = Math.min(250 * 2 ** Math.min(attempt, 3), 2_000);
+    if (!input.readOnly || input.deadline - Date.now() <= delayMs) break;
+    await new Promise<void>(resolve => setTimeout(resolve, delayMs));
   }
   throw lastError;
 }

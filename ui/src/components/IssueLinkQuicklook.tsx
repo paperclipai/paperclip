@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StatusGlyph } from "@/components/StatusGlyph";
 import { ProjectTile } from "@/components/ProjectTile";
+import { useFlyoutAppearance } from "@/components/ui/flyout-appearance";
 
 /* ------------------------------------------------------------------ */
 /*  Single-flight quicklook store                                      */
@@ -169,18 +170,19 @@ export function IssueQuicklookCard({
   linkState?: unknown;
   compact?: boolean;
 }) {
+  const appearance = useFlyoutAppearance();
   const description = useMemo(() => summarizeIssueDescription(issue.description), [issue.description]);
   const projectName = issue.project?.name;
 
   return (
-    <div className={cn("space-y-2", compact && "space-y-1.5")}>
-      <div className="flex items-center gap-1">
-        <div className="flex min-w-0 flex-1 items-center gap-1">
+    <div className={appearance === "refreshed" ? "task-hover-card" : cn("space-y-2", compact && "space-y-1.5")}>
+      <div data-slot="task-preview-meta" className="flex items-center gap-1">
+        <div data-slot="task-preview-identity" className="flex min-w-0 flex-1 items-center gap-1">
           <StatusGlyph status={issue.status} size="md" title={statusLabel(issue.status)} />
-          <span className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
+          <span data-slot="task-preview-id" className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
             {issue.identifier ?? issue.id.slice(0, 8)}
           </span>
-          {projectName ? (
+          {projectName && appearance !== "refreshed" ? (
             <>
               <QuicklookSeparator className="shrink-0 text-muted-foreground" />
               <span
@@ -194,12 +196,13 @@ export function IssueQuicklookCard({
             </>
           ) : null}
         </div>
-        <span className="shrink-0 text-(length:--text-micro) text-muted-foreground">
+        <span data-slot="task-preview-time" className="shrink-0 text-(length:--text-micro) text-muted-foreground">
           {timeAgo(new Date(issue.updatedAt))}
         </span>
       </div>
 
       <RouterDom.Link
+        data-slot="task-preview-title"
         to={linkTo}
         state={linkState ?? withIssueDetailHeaderSeed(null, issue)}
         className="block text-sm font-medium leading-snug hover:underline line-clamp-2"
@@ -208,7 +211,7 @@ export function IssueQuicklookCard({
       </RouterDom.Link>
 
       {description ? (
-        <p className="text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] overflow-hidden">
+        <p data-slot="task-preview-description" className="text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] overflow-hidden">
           {description}
         </p>
       ) : null}

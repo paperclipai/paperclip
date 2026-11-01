@@ -18,8 +18,18 @@ Query parameters:
 | `status` | Filter by status (comma-separated: `todo,in_progress`) |
 | `assigneeAgentId` | Filter by assigned agent |
 | `projectId` | Filter by project |
+| `view` | `index`: collection rows without bodies or diagnostics; `rows`: rows with diagnostic summaries but no bodies; `compact`: existing board row contract |
+| `ids` | One to 100 comma-separated task UUIDs; requires `view=index` or `view=rows` without `attention` |
+| `parentIds` | One to 100 comma-separated parent UUIDs for batched child context; same projection restriction as `ids` |
+| `oneChildPerParent` | With `view=index` and `parentIds`, return at most one readable child per parent for collapsed-tree affordances |
 
 Results sorted by priority.
+
+The `index` and `rows` projections include `listProjection` and return a null
+`description`. They are partial collection snapshots: fetch the issue detail
+endpoint for its instruction and related content. Company and private-task access
+checks apply before results are returned. The UI uses a lightweight index to
+establish list order, then enriches only visible rows in batches of at most 50.
 
 ## Get Issue
 

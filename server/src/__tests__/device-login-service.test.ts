@@ -1975,8 +1975,12 @@ describeEmbeddedPostgres("device login service concurrency (embedded postgres)",
 
       const tagged = await reaperRuntime.listTaggedLeases();
       const taggedProviderLeaseIds = tagged.map((lease) => lease.providerLeaseId);
-      expect(taggedProviderLeaseIds).toContain("grok-lease-1");
+      expect(taggedProviderLeaseIds).not.toContain("grok-lease-1");
       expect(taggedProviderLeaseIds).not.toContain("claude-lease-1");
+      await db.update(adapterAuthSessions).set({ status: "failed", providerLeaseId: null })
+        .where(eq(adapterAuthSessions.providerLeaseId, "grok-lease-1"));
+      const orphaned = await reaperRuntime.listTaggedLeases();
+      expect(orphaned.map(lease => lease.providerLeaseId)).toEqual(["grok-lease-1"]);
     });
 
     it("carries the CODEX_HOME variable name on the codex_local profile", () => {

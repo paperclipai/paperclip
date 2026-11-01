@@ -20,6 +20,7 @@ import {
   shouldForwardOpenCodeProxyItem,
 } from "./opencode-proxy-events.js";
 import { enqueueOpenCodeProxyInput, openCodeProxyCompletionFeedback } from "./opencode-proxy-input.js";
+import { createOpenCodeProxyOutput } from "./opencode-proxy-output.js";
 import {
   assertOpenCodeProxyCollaborationMode,
   openCodeProxyCollaborationModes,
@@ -30,6 +31,7 @@ import {
   withoutAmbientOpenCodeCommand,
 } from "./opencode-proxy-command.js";
 import { OpenCodeProxyUsageLedger } from "./opencode-proxy-usage.js";
+import { parseProviderPerformanceSpans, PROVIDER_PERFORMANCE_DIAGNOSTIC } from "../contracts/provider-performance.js";
 
 type RpcMessage = {
   id?: string | number;
@@ -52,13 +54,15 @@ let eventPump: Promise<void> | null = null;
 let cwd = "";
 let activeModel = "";
 let activeTurnId: string | null = null;
+let activeRunId = process.env.PAPERCLIP_RUN_ID ?? "runnerd-run";
 const announcedTurnIds = new Set<string>();
 const launchBinding = trustedOpenCodeLaunchBinding(process.argv.slice(2));
 const usageLedger = new OpenCodeProxyUsageLedger();
 
-function send(value: unknown): void {
+const output = createOpenCodeProxyOutput(value => {
   process.stdout.write(`${JSON.stringify(value)}\n`);
-}
+});
+const send = output.send;
 
 function requestController(method: string, params: unknown, retainEnvelope = false): Promise<unknown> {
   if (controllerInputClosed) return Promise.reject(new Error("OpenCode controller input is closed"));
@@ -150,7 +154,7 @@ async function open(
       driverKind: "opencode_server",
       driverSessionId: threadId,
       providerSessionId: threadId,
-      runId: process.env.PAPERCLIP_RUN_ID ?? "runnerd-run",
+      runId: activeRunId,
       normalizedSessionId:
         process.env.PAPERCLIP_NORMALIZED_SESSION_ID ?? threadId,
       activeTurnId: null,
@@ -162,7 +166,7 @@ async function open(
     session = recovered.session;
   } else {
     session = await driver.openSession({
-      runId: process.env.PAPERCLIP_RUN_ID ?? "runnerd-run",
+      runId: activeRunId,
       normalizedSessionId:
         process.env.PAPERCLIP_NORMALIZED_SESSION_ID ?? `runnerd-${Date.now()}`,
       workingDirectory: cwd,
@@ -307,6 +311,13 @@ async function pumpEvents(opened: HarnessSession): Promise<void> {
       );
       activeTurnId = null;
     } else if (event.eventType === "harness.diagnostic") {
+      if (payload.code === PROVIDER_PERFORMANCE_DIAGNOSTIC) {
+        send({method: "paperclip/providerPerformance", params: {
+          threadId: opened.ids().driverSessionId, turnId: event.turnId,
+          spans: parseProviderPerformanceSpans(payload, Date.now()),
+        }});
+        continue;
+      }
       send({
         method: "warning",
         params: {
@@ -357,6 +368,16 @@ async function handle(message: RpcMessage): Promise<void> {
     case "turn/start": {
       if (!session) throw new Error("OpenCode thread is not open");
       assertOpenCodeProxyCollaborationMode(params);
+      if (params.paperclipRunId !== undefined) {
+        const runId = params.paperclipRunId;
+        if (typeof runId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(runId))
+          throw new Error("Invalid Paperclip run identity");
+        if (runId !== activeRunId) {
+          if (!session.attachRun) throw new Error("OpenCode run attachment unavailable");
+          await session.attachRun({ runId });
+          activeRunId = runId;
+        }
+      }
       const inputItems = Array.isArray(params.input)
         ? params.input.map(record)
         : [];
@@ -392,6 +413,9 @@ async function handle(message: RpcMessage): Promise<void> {
       break;
     case "thread/read":
       if (!session) throw new Error("OpenCode thread is not open");
+      // runnerd reads only turn metadata after resume. Hydrating the retained
+      // OpenCode message history here grows with the session and can exceed
+      // runnerd's bounded stdout frame, which permanently blocks resume.
       result = {
         thread: {
           id: session.ids().driverSessionId,
@@ -400,7 +424,6 @@ async function handle(message: RpcMessage): Promise<void> {
             ? [{ id: activeTurnId, status: "inProgress" }]
             : [],
         },
-        transcript: await session.read?.(),
       };
       break;
     default:
@@ -471,6 +494,10 @@ function shutdown(exitCode = 0): Promise<void> {
       ?.close({ reason: "proxy_shutdown", force: true })
       .catch(() => {});
     await eventPump?.catch(() => {});
+    output.flush();
+    // A failed turn can be the last frame before a fatal exit. Pipe writes
+    // are asynchronous on some platforms, so let it reach runnerd first.
+    await new Promise<void>((resolve) => process.stdout.write("", () => resolve()));
   })().finally(() => process.exit(exitCode));
   return shutdownPromise;
 }

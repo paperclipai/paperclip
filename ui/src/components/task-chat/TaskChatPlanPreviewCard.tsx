@@ -1,6 +1,10 @@
 import type { IssueDocument } from "@paperclipai/shared";
-import { Lightbulb, Maximize2 } from "lucide-react";
+import { FileText, Lightbulb, Maximize2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { SidebarDocumentLink } from "@/components/SidebarDocumentLink";
+import { buildDocumentAnnotationHash } from "@/lib/document-annotation-hash";
+import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
+import { useTaskChatShimmer } from "./TaskChatShimmer";
 import type { TaskChatProviderActivityItem } from "./task-chat-model";
 
 const PLAN_PREVIEW_LINE_COUNT = 3;
@@ -82,6 +86,8 @@ export function TaskChatPlanPreviewCard({
   testId = "task-chat-plan-preview",
   className,
 }: TaskChatPlanPreviewCardProps) {
+  const coordinator = useCoordinatorPresentation();
+  const shimmer = useTaskChatShimmer(source.kind === "live" ? source.activity.id : "saved-plan");
   const revision = planRevision(source);
   const content = source.kind === "saved" && source.document
     ? planPreviewContent(source.document.body)
@@ -89,6 +95,24 @@ export function TaskChatPlanPreviewCard({
       ? { title: source.fallbackTitle?.trim() || "Plan", preview: [] as string[] }
       : livePlanContent(source.activity);
   const live = source.kind === "live";
+  if (coordinator) {
+    const document = source.kind === "saved" ? source.document : null;
+    const targetHref = href === "#document-plan" && document
+      ? `/issues/${document.issueId}${buildDocumentAnnotationHash({ documentKey: document.key,
+        revisionId: document.latestRevisionId ?? undefined, threadId: null, commentId: null })}`
+      : href;
+    const compactClassName = cn("inline-flex max-w-full items-center gap-2 rounded-lg border border-border bg-muted/25 px-3 py-2.5 text-sm text-muted-foreground",
+      targetHref && "transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", className);
+    const compactBody = <><FileText className="size-4 shrink-0" aria-hidden /><span className="shrink-0">{live ? "Writing" : "Open"}</span>{" "}
+      <span className={cn("min-w-0 truncate text-foreground", targetHref && "underline underline-offset-4", live && shimmer && "shimmer-text shimmer-text-muted")}>{content.title}</span>
+      {targetHref ? <span className="hidden shrink-0 sm:inline">{" "}in the sidebar</span> : null}</>;
+    return targetHref ? <SidebarDocumentLink href={targetHref} testId={testId}
+      ariaLabel={ariaLabel ?? `Open ${content.title}${revision == null ? "" : ` revision ${revision}`} in task sidebar`} className={className}>
+      <span className="shrink-0">Open</span>{" "}<span className="min-w-0 truncate text-foreground underline underline-offset-4">{content.title}</span>
+      <span className="hidden shrink-0 sm:inline">{" "}in the sidebar</span>
+    </SidebarDocumentLink>
+      : <section data-testid={testId} aria-label={ariaLabel ?? "Writing plan"} className={compactClassName}>{compactBody}</section>;
+  }
   const headerDetail = revision == null
     ? null
     : `rev ${revision}`;
@@ -99,12 +123,12 @@ export function TaskChatPlanPreviewCard({
           aria-hidden
           className={cn("h-4 w-4 shrink-0", live && "text-(--status-agent-running)")}
         />
-        <span className={cn("font-medium", live && "shimmer-text shimmer-text-muted")} data-testid={live ? "task-chat-plan-streaming-status" : undefined}>
+        <span className={cn("font-medium", live && shimmer && "shimmer-text shimmer-text-muted")} data-testid={live ? "task-chat-plan-streaming-status" : undefined}>
           {live ? "Writing plan" : "Plan"}
         </span>
         {headerDetail ? (
           <span
-            className={cn("text-xs", live && "shimmer-text shimmer-text-muted")}
+            className="text-xs"
           >
             · {headerDetail}
           </span>

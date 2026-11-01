@@ -32,7 +32,12 @@ async function setup(page: Page, request: APIRequestContext, classic: boolean) {
   await page.addLocatorHandler(
     page.getByRole("complementary", { name: "Paperclip announcements", exact: true })
       .getByRole("button", { name: "Dismiss announcement", exact: true }),
-    async (dismiss) => { await dismiss.click(); },
+    async (dismiss) => {
+      const menuOpen = await page.getByRole("menu", { name: "Add to composer", exact: true }).isVisible();
+      if (menuOpen) await page.keyboard.press("Escape");
+      await dismiss.click();
+      if (menuOpen) await page.getByRole("button", { name: "Add to composer", exact: true }).click();
+    },
   );
   const company = await body<{ id: string; issuePrefix: string }>(
     await request.post("/api/companies", {

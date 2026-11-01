@@ -172,7 +172,9 @@ describe("commentsToTaskChatItems", () => {
     expect(agent.presentation).toBeUndefined();
     expect(agent.metadata).toBeUndefined();
     expect(agent.runAgentId).toBeUndefined();
-    expect(agent.createdAtIso).toBeUndefined();
+    // All durable messages retain their source time for the Coordinator
+    // relative footer; the classic preformatted timestamp remains unchanged.
+    expect(agent.createdAtIso).toBe("2026-08-07T09:01:00.000Z");
   });
 
   it("keeps the regular comment time for a causally repositioned steered follow-up", () => {

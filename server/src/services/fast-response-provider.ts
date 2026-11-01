@@ -1,3 +1,6 @@
+import { providerUsageReceipt as fastResponseReceipt } from "./provider-usage.js";
+export { providerUsageReceipt as fastResponseReceipt } from "./provider-usage.js";
+import { isOpenRouterUrl, OPENROUTER_ATTRIBUTION_HEADERS } from "@paperclipai/shared/openrouter-attribution";
 import { generateText, type LanguageModel } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
@@ -8,7 +11,6 @@ import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import {
   FAST_RESPONSE_MAX_BYTES,
   FAST_RESPONSE_MAX_CHARACTERS,
-  centsToUnits,
   unitsToCents,
   usdToUnits,
   type AiConnectionMetadata,
@@ -83,48 +85,8 @@ export function fastResponsePrompt(input: FastResponsePromptInput) {
   return prompt();
 }
 const object = (v: unknown): Record<string, unknown> =>
-  v && typeof v === "object" && !Array.isArray(v)
-    ? (v as Record<string, unknown>)
-    : {};
-const count = (v: unknown) =>
-  typeof v === "number" &&
-  Number.isSafeInteger(v) &&
-  v >= 0 &&
-  v <= 2_147_483_647
-    ? v
-    : null;
-export function fastResponseReceipt(result?: unknown): DecisionProviderReceipt {
-  const value = object(result),
-    usage = object(value.usage),
-    response = object(value.response);
-  const providerUsage = object(
-    object(object(value.providerMetadata).openrouter).usage,
-  );
-  const raw = object(object(response.body).usage);
-  const cost = providerUsage.cost ?? raw.cost ?? object(usage.raw).cost;
-  return {
-    inputTokens:
-      count(usage.inputTokens) ?? count(object(usage.inputTokens).total),
-    outputTokens:
-      count(usage.outputTokens) ?? count(object(usage.outputTokens).total),
-    providerRequestId:
-      typeof response.id === "string" ? response.id.slice(0, 250) : null,
-    costCents:
-      typeof cost === "number" && Number.isFinite(cost) && cost >= 0
-        ? unitsToCents(centsToUnits(cost * 100))
-        : null,
-    costStatus:
-      typeof cost === "number" && Number.isFinite(cost) && cost >= 0
-        ? "reported"
-        : "unpriced",
-    pricingProvenance: {
-      source:
-        typeof cost === "number" && Number.isFinite(cost) && cost >= 0
-          ? "provider_reported"
-          : "unknown",
-    },
-  };
-}
+  v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
+
 export interface FastResponseOutcome {
   text?: string;
   errorCode?: string;
@@ -139,6 +101,9 @@ export function fastResponseModel(
     route = metadata.routing;
   const guardedFetch: typeof fetch = async (url, init) => {
     const headers = new Headers(init?.headers);
+    if (isOpenRouterUrl(String(url))) {
+      for (const [name, value] of Object.entries(OPENROUTER_ATTRIBUTION_HEADERS)) headers.set(name, value);
+    }
     if (route?.auth === "none") {
       headers.delete("authorization");
       headers.delete("x-api-key");

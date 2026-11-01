@@ -275,11 +275,18 @@ function assertNoPrWorkflowCredentials(source) {
 
 test("PR credential guard permits filenames but rejects secret expressions", () => {
   assertNoPrWorkflowCredentials("run: node --test scripts/docker-compose-secrets.test.mjs");
+  assertNoPrWorkflowCredentials("if: ${{ always() }}\nrun: node --test scripts/docker-compose-secrets.test.mjs");
+  assertNoPrWorkflowCredentials("if: ${{ startsWith(github.ref, 'ref') }}\nrun: 'node --test scripts/docker-compose-secrets.test.mjs'");
   for (const source of ["env: ${{ secrets.EXAMPLE }}", "env: ${{ secrets['EXAMPLE'] }}", "env: ${{ toJSON(secrets) }}", "env: ${{ format('}}', secrets.EXAMPLE) }}",
     "# Expressions start with '${{'.\nTOKEN: ${{ secrets.PR_TOKEN }}",
     "name: Example # Expressions start with '${{'.\nTOKEN: ${{ secrets.PR_TOKEN }}"]) {
     assert.throws(() => assertNoPrWorkflowCredentials(source));
   }
+  for (const source of [
+    "${{secrets.EXAMPLE_TOKEN}}", '${{ secrets["EXAMPLE_TOKEN"] }}',
+    "${{ failure() && secrets.EXAMPLE_TOKEN }}", "${{\n secrets.EXAMPLE_TOKEN\n}}",
+    "${{ format('{0}', secrets.EXAMPLE_TOKEN) }}", "HONEYCOMB_CI_API_KEY",
+  ]) assert.throws(() => assertNoPrWorkflowCredentials(source));
   assert.throws(() => assertNoPrWorkflowCredentials("HONEYCOMB_API_KEY: example"));
   assert.throws(() => assertNoPrWorkflowCredentials("${{ format('secrets.EXAMPLE', 'literal') }}"));
 });

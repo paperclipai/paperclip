@@ -22,10 +22,13 @@
 import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { pluginApiUpgrade, proxyPluginApiWebSocket } from "../realtime/plugin-api-ws.js";
+import { trustedBoardMutationOrigin } from "../middleware/board-mutation-guard.js";
+import { authorizationService } from "../services/authorization.js";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { and, desc, eq, gte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -72,6 +75,7 @@ import {
   assertCompanyAccess,
   assertInstanceAdmin,
   getActorInfo,
+  hasCompanyAccess,
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 import {
@@ -466,6 +470,7 @@ interface PluginScopedApiRequest {
 }
 
 interface PluginScopedApiResponse {
+  websocket?: { url: string; headers?: Record<string, string> };
   status?: number;
   headers?: Record<string, string>;
   body?: unknown;
@@ -627,6 +632,17 @@ export function pluginRoutes(
       return typeof value === "string" ? value : null;
     }
 
+    if (resolution.from === "agent") {
+      const id = params[resolution.param];
+      if (!id) return null;
+      const [agent] = await db.select({ id: agents.id, companyId: agents.companyId }).from(agents).where(eq(agents.id, id)).limit(1);
+      if (!agent || !hasCompanyAccess(req, agent.companyId)) throw notFound("Agent not found");
+      assertCompanyAccess(req, agent.companyId);
+      const decision = await authorizationService(db).decide({ actor: req.actor, action: "agent:read", resource: { type: "agent", companyId: agent.companyId, agentId: agent.id } });
+      if (!decision.allowed) throw notFound("Agent not found");
+      return agent.companyId;
+    }
+
     const issueId = params[resolution.param ?? ""];
     if (!issueId) return null;
     const issue = await issuesSvc.getById(issueId);
@@ -679,6 +695,27 @@ export function pluginRoutes(
       throw forbidden("Agent authentication required");
     }
     await issuesSvc.assertCheckoutOwner(issueId, req.actor.agentId, runId);
+  }
+
+  /**
+   * Company ids that bound tenant-attributed plugin reads.
+   *
+   * `plugin_logs`, `plugin_job_runs` and `plugin_webhook_deliveries` carry a
+   * `company_id` attribution (NULL for instance-scope rows). Instance
+   * administrators (and the local implicit board) keep the instance-wide view;
+   * every other board actor is restricted to its own companies, so a member of
+   * one company cannot read another company's operational rows.
+   *
+   * Returns `null` for the unscoped instance-wide view.
+   */
+  function pluginOperationalReadCompanyIds(req: Request): string[] | null {
+    if (req.actor.type !== "board") {
+      return [];
+    }
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
+      return null;
+    }
+    return req.actor.companyIds ?? [];
   }
 
   async function resolvePluginAuditCompanyIds(req: Request): Promise<string[]> {
@@ -1869,6 +1906,20 @@ export function pluginRoutes(
     }
 
     try {
+      const upgrade = (req as Request & { [pluginApiUpgrade]?: unknown })[pluginApiUpgrade];
+      if (match.route.transport === "websocket") {
+        if (!upgrade || req.method !== "GET" || match.route.auth !== "board" || !plugin.manifestJson.capabilities.includes("http.outbound")) {
+          res.status(426).json({ error: "Browser WebSocket required" });
+          return;
+        }
+        if (!req.header("origin") || trustedBoardMutationOrigin(req) !== req.header("origin")?.toLowerCase()) {
+          res.status(403).json({ error: "Trusted browser origin required" });
+          return;
+        }
+      } else if (upgrade) {
+        res.status(400).json({ error: "Route does not accept WebSockets" });
+        return;
+      }
       assertScopedApiAuth(req, match.route);
       const companyId = await resolveScopedApiCompanyId(match.route, match.params, req);
       if (!companyId) {
@@ -1912,6 +1963,14 @@ export function pluginRoutes(
         "handleApiRequest",
         input,
       ) as PluginScopedApiResponse;
+      if (match.route.transport === "websocket") {
+        if (result.websocket) {
+          proxyPluginApiWebSocket(req, res, result.websocket, () => bridgeDeps.workerManager.isRunning(plugin.id));
+        } else {
+          res.status(result.status && result.status >= 400 && result.status <= 599 ? result.status : 502).json({ error: "Plugin connection unavailable" });
+        }
+        return;
+      }
       const status = Number.isInteger(result.status) && Number(result.status) >= 200 && Number(result.status) <= 599
         ? Number(result.status)
         : 200;
@@ -2182,7 +2241,16 @@ export function pluginRoutes(
     const level = req.query.level as string | undefined;
     const since = req.query.since as string | undefined;
 
+    const companyIds = pluginOperationalReadCompanyIds(req);
+    if (companyIds && companyIds.length === 0) {
+      res.json([]);
+      return;
+    }
+
     const conditions = [eq(pluginLogs.pluginId, plugin.id)];
+    if (companyIds) {
+      conditions.push(inArray(pluginLogs.companyId, companyIds));
+    }
     if (level) {
       conditions.push(eq(pluginLogs.level, level));
     }
@@ -2611,7 +2679,11 @@ export function pluginRoutes(
     }
 
     try {
-      const runs = await jobDeps.jobStore.listRunsByJob(jobId, limit);
+      const runs = await jobDeps.jobStore.listRunsByJob(
+        jobId,
+        limit,
+        pluginOperationalReadCompanyIds(req),
+      );
       res.json(runs);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -2995,6 +3067,8 @@ export function pluginRoutes(
       return;
     }
 
+    const companyIds = pluginOperationalReadCompanyIds(req);
+
     // --- Worker diagnostics ---
     let worker: {
       status: string;
@@ -3042,7 +3116,7 @@ export function pluginRoutes(
 
     if (jobDeps) {
       try {
-        const runs = await jobDeps.jobStore.listRunsByPlugin(plugin.id, undefined, 10);
+        const runs = await jobDeps.jobStore.listRunsByPlugin(plugin.id, undefined, 10, companyIds);
         // Also fetch job definitions so we can include jobKey
         const jobs = await jobDeps.jobStore.listJobs(plugin.id);
         const jobKeyMap = new Map(jobs.map((j) => [j.id, j.jobKey]));
@@ -3079,6 +3153,10 @@ export function pluginRoutes(
     }> = [];
 
     try {
+      const deliveryConditions = [eq(pluginWebhookDeliveries.pluginId, plugin.id)];
+      if (companyIds) {
+        deliveryConditions.push(inArray(pluginWebhookDeliveries.companyId, companyIds));
+      }
       const deliveries = await db
         .select({
           id: pluginWebhookDeliveries.id,
@@ -3091,7 +3169,7 @@ export function pluginRoutes(
           createdAt: pluginWebhookDeliveries.createdAt,
         })
         .from(pluginWebhookDeliveries)
-        .where(eq(pluginWebhookDeliveries.pluginId, plugin.id))
+        .where(and(...deliveryConditions))
         .orderBy(desc(pluginWebhookDeliveries.createdAt))
         .limit(10);
 

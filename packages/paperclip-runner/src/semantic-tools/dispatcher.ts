@@ -183,8 +183,8 @@ export class CapabilitySemanticDispatcher {
         context,
         {
           ...scenario,
-          // These descriptors belong to the server's authenticated project
-          // authority. This mock command port has no project/repository binding;
+          // These descriptors belong to the server's authenticated authority.
+          // This mock command port has no project, repository, or case binding;
           // it must neither advertise nor accept them merely for lacking claims.
           denyOperations: [...new Set([
             ...(scenario.denyOperations ?? []),
@@ -195,6 +195,14 @@ export class CapabilitySemanticDispatcher {
             "create_project" as const,
             "list_project_repositories" as const,
             "list_projects" as const,
+            "handoff_case" as const,
+            "read_case" as const,
+            "update_case" as const,
+            "create_case" as const,
+            "list_workflows" as const,
+            "read_workflow" as const,
+            "create_workflow" as const,
+            "update_workflow" as const,
           ])],
         },
         this.options.explicitClaims ?? context.capabilities,

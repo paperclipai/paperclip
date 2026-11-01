@@ -1,0 +1,86 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: agent-chat
+status: planned
+scenarios:
+  - id: agent-chat.reopen-conversation
+    capabilities:
+      - agent-chat/discovery
+      - agent-chat/history
+    context: >-
+      The person previously chatted with Morgan; the conversation is still accessible and Chat
+      is enabled. Opening the page itself must not start work.
+    query: >-
+      Take me back to my conversation with Morgan.
+    expected_outcome: >-
+      The supported human navigation path opens the person's existing conversation, with the
+      right agent and retained history. No duplicate standing chat or provider execution is
+      created just by navigation. The agent does not enumerate another person's private chat
+      list to satisfy the request.
+  - id: agent-chat.remember-and-follow-up
+    capabilities:
+      - agent-chat/history
+    context: >-
+      The previous turn selected a blue design and contains a saved preview file; the browser
+      has since reloaded.
+    query: >-
+      Use the blue design we picked earlier, and show me that preview again.
+    expected_outcome: >-
+      The reply resolves the reference from persisted conversation history and returns the same
+      accessible preview. It preserves the selected design in any follow-up task. The agent asks
+      a focused clarification if the history does not establish the choice rather than
+      fabricating a prior agreement.
+  - id: agent-chat.track-delegated-work
+    capabilities:
+      - agent-chat/handoff
+      - tasks/create
+    context: >-
+      This conversation already created a website task assigned to Morgan, and it is still
+      running.
+    query: >-
+      How is the website coming along?
+    expected_outcome: >-
+      The agent reads the linked task and available execution evidence, gives its current status
+      and links to real output when present. It does not create another website task or convert
+      the standing chat into the execution task. Completion updates remain associated with the
+      original request.
+  - id: agent-chat.multiple-handoffs
+    capabilities:
+      - agent-chat/handoff
+      - agent-chat/history
+    context: >-
+      The conversation has one active website task and a separate completed logo task.
+    query: >-
+      Change the website headline to Launch sooner, and leave the logo alone.
+    expected_outcome: >-
+      The new requirement reaches the existing website task and its authorized worker once. The
+      logo task and delivered logo remain unchanged. Chat identifies the affected task and
+      distinguishes feedback saved for later from feedback consumed by an active run.
+  - id: agent-chat.conference-room
+    capabilities:
+      - agent-chat/conference-room
+    context: >-
+      The separate board conference-room experiment is enabled only in the supported
+      local-trusted deployment; ordinary Agent Chat is also available.
+    query: >-
+      Let us discuss the launch in the conference room.
+    expected_outcome: >-
+      The agent points the person to the gated board discussion surface and explains its actual
+      scope. The journey opens that surface only in the supported deployment and retains normal
+      company context. It does not promise ordinary standing-chat history or execution parity
+      where the board-chat protocol differs.
+  - id: agent-chat.chat-disabled
+    capabilities:
+      - agent-chat/discovery
+      - agent-chat/conference-room
+      - developer-labs/route-gates
+    context: >-
+      Agent Chat or the conference-room experiment is disabled on this target.
+    query: >-
+      Open a chat with Morgan.
+    expected_outcome: >-
+      The user sees a clear unavailable-feature or supported alternative path rather than a
+      broken route or a silently created task claiming to be chat. If changing the gate requires
+      an operator, the response identifies that human step without altering instance settings as
+      an ordinary agent.

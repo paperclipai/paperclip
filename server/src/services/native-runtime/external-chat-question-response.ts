@@ -75,6 +75,23 @@ const ids = (value: unknown): string[] =>
     ? value.filter((id): id is string => typeof id === "string")
     : [];
 
+function completedMultiChoiceMatches(question: Record<string, unknown>, answer: Record<string, unknown>, payload: Record<string, unknown>): boolean {
+  const selected = ids(payload.selectionValues);
+  const answered = ids(answer.optionIds);
+  const mappings = Array.isArray(payload.selectionOptions) ? payload.selectionOptions.map(record) : [];
+  const options = Array.isArray(question.options) ? question.options.map(record) : [];
+  if (question.selectionMode !== "multi" || question.allowOther === true ||
+      !Array.isArray(payload.selectionValues) || selected.length !== payload.selectionValues.length ||
+      !Array.isArray(answer.optionIds) || answered.length !== answer.optionIds.length ||
+      new Set(selected).size !== selected.length || new Set(answered).size !== answered.length ||
+      mappings.length !== options.length || new Set(mappings.map(item => item.value)).size !== mappings.length ||
+      new Set(mappings.map(item => item.optionId)).size !== mappings.length ||
+      (question.required !== false && selected.length === 0) ||
+      selected.length !== answered.length ||
+      mappings.some(item => typeof item.value !== "string" || typeof item.optionId !== "string" || !options.some(option => option.id === item.optionId && option.freeText !== true))) return false;
+  return selected.every((value, index) => mappings.find(item => item.value === value)?.optionId === answered[index]);
+}
+
 function completedQuestionFormMatchesInteraction(
   interaction: AskUserQuestionsInteraction,
   action: typeof chatActions.$inferSelect,
@@ -159,7 +176,7 @@ function completedQuestionFormMatchesInteraction(
 }
 
 /**
- * Resolve a durable provider answer or GitHub's authenticated Board fallback,
+ * Resolve a durable provider answer or an authenticated Board fallback,
  * never a caller-supplied wake marker. This
  * is routing/reading authority only: it never checks out a task or resolves a
  * review. Callers retain their issue/run/actor and current destination checks.
@@ -620,8 +637,8 @@ async function resolveQuestionResponseChain(
         sql`${chatActions.result}->>'interactionId' = ${interaction.id}`,
       ),
     );
-  // GitHub has no executable question callback. Its published link leads to
-  // the ordinary authenticated Board answer route, whose pending→answered CAS
+  // GitHub and Slack forms without native controls use the ordinary
+  // authenticated Board answer route, whose pending→answered CAS
   // creates the response delivery above atomically. Do not fabricate a provider
   // action: bind that distinct receipt to the original linked person instead.
   const boardQuery = tx
@@ -676,7 +693,7 @@ async function resolveQuestionResponseChain(
       and(
         eq(chatEndpoints.id, chatPublications.endpointId),
         eq(chatEndpoints.companyId, chatPublications.companyId),
-        eq(chatEndpoints.provider, "github"),
+        eq(chatEndpoints.provider, provider),
       ),
     )
     .innerJoin(
@@ -709,7 +726,12 @@ async function resolveQuestionResponseChain(
         ),
       ),
     );
-  const evidenceQuery = provider === "github" ? boardQuery : actionQuery;
+  // Slack native actions remain authoritative when present. The Board query
+  // excludes every native answer token, including unfinished ones; its result
+  // is re-read under the same identity and row locks below.
+  const boardAnswer = provider === "github" ||
+    (provider === "slack" && (await boardQuery).length === 1);
+  const evidenceQuery = boardAnswer ? boardQuery : actionQuery;
   let expectedPrincipalId: string | null = null;
   if (lockMode !== "read") {
     // Identity changes take this advisory lock before their row lock. Resolve
@@ -773,7 +795,7 @@ async function resolveQuestionResponseChain(
     const card = record(record(publication.payload).card);
     const links = Array.isArray(card.actions) ? card.actions.map(record) : [];
     if (
-      provider !== "github" ||
+      !boardAnswer ||
       interaction.resolvedByRunId !== null ||
       publication.payload.progressState !== "waiting_for_input" ||
       card.kind !== "question" ||
@@ -781,12 +803,14 @@ async function resolveQuestionResponseChain(
       links.some((link) => link.type !== "link") ||
       !publication.publishedAt ||
       publication.publishedAt > interaction.resolvedAt ||
-      typeof boardGeneration !== "number" ||
-      !Number.isSafeInteger(boardGeneration) ||
-      boardGeneration < 0 ||
-      boardRuntime.generation !== boardGeneration ||
-      typeof boardRuntime.credentialFingerprint !== "string" ||
-      !/^[a-f0-9]{64}$/.test(boardRuntime.credentialFingerprint)
+      (provider === "github" && (
+        typeof boardGeneration !== "number" ||
+        !Number.isSafeInteger(boardGeneration) ||
+        boardGeneration < 0 ||
+        boardRuntime.generation !== boardGeneration ||
+        typeof boardRuntime.credentialFingerprint !== "string" ||
+        !/^[a-f0-9]{64}$/.test(boardRuntime.credentialFingerprint)
+      ))
     )
       return null;
   } else if (action.kind === "question_answer") {
@@ -806,13 +830,16 @@ async function resolveQuestionResponseChain(
       record(action.result).interactionStatus !== "answered" ||
       !selectedAnswer ||
       !selectedQuestion ||
-      selectedQuestion.selectionMode !== "single" ||
-      ids(selectedAnswer.optionIds).length !== 1 ||
-      ids(selectedAnswer.optionIds)[0] !== action.payload.optionId ||
       !Array.isArray(selectedQuestion.options) ||
-      !selectedQuestion.options.some(
-        (option) => record(option).id === action.payload.optionId,
-      )
+      !Array.isArray(answers) || answers.length !== 1 ||
+      !Array.isArray(questions) || questions.length !== 1 ||
+      Boolean(selectedAnswer.otherText) ||
+      (Array.isArray(action.payload.selectionOptions)
+        ? provider !== "slack" || !completedMultiChoiceMatches(selectedQuestion, selectedAnswer, action.payload)
+        : selectedQuestion.selectionMode !== "single" ||
+          ids(selectedAnswer.optionIds).length !== 1 ||
+          ids(selectedAnswer.optionIds)[0] !== action.payload.optionId ||
+          !selectedQuestion.options.some(option => record(option).id === action.payload.optionId))
     )
       return null;
   } else if (action.kind === "photon_interaction") {
@@ -892,10 +919,12 @@ async function resolveQuestionResponseChain(
           }
         : {
             boardResponse: {
-              schema: "paperclip.github_board_question_response.v1",
+              schema: `paperclip.${provider}_board_question_response.v1`,
               principalId: inbound.principalId,
-              runtimeGeneration: boardGeneration,
-              credentialFingerprint: boardRuntime.credentialFingerprint,
+              ...(provider === "github" ? {
+                runtimeGeneration: boardGeneration,
+                credentialFingerprint: boardRuntime.credentialFingerprint,
+              } : {}),
             },
           }),
       publication: {

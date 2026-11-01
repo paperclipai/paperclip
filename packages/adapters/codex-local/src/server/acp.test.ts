@@ -780,11 +780,16 @@ describe("codex_local ACP lane", () => {
     expect(runtimes[0]?.setConfigInputs).toEqual([]);
     expect(meta[0]?.commandNotes?.join("\n")).toContain("Prepared ACPX Codex skill home");
     expect(meta[0]?.env?.CODEX_HOME).toBe(path.join(root, "codex-home"));
-    expect(JSON.parse(String(meta[0]?.env?.CODEX_CONFIG))).toEqual({
+    expect(JSON.parse(String(meta[0]?.env?.CODEX_CONFIG))).toMatchObject({
       model: "gpt-5.5",
       model_reasoning_effort: "high",
       service_tier: "fast",
       features: { fast_mode: true },
+      shell_environment_policy: {
+        inherit: "all",
+        ignore_default_excludes: true,
+        include_only: expect.arrayContaining(["PATH", "CODEX_HOME"]),
+      },
     });
   });
 

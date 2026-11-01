@@ -46,7 +46,7 @@ export function isAiAuthenticationRepairable(run: AuthenticationFailure): boolea
 /** Provider authentication signals only. Tool authorization and quotas need different repairs. */
 export function isAiAuthenticationFailure(code: string | null | undefined): boolean {
   return Boolean(code && (
-    /^(acpx|claude|codex|grok|opencode|gemini|kimi|pi|cursor)_auth_required$/.test(code)
+    /^(acpx|claude|codex|grok|opencode|gemini|kimi|pi|cursor|copilot)_auth_required$/i.test(code)
     || ["adapter_auth_missing", "authentication_required", "auth_required", "refresh_token_reused", "refresh_token_expired", "refresh_token_invalidated"].includes(code)
   ));
 }
@@ -65,8 +65,14 @@ export function aiBindingForAuthRecovery(
   const missingProvider = failure ? missingPersonalAiCredentialProvider(failure) : undefined;
   for (const provider of AI_PROVIDERS) {
     if (missingProvider && missingProvider !== provider) continue;
-    const binding = { provider, method: AI_CONNECTION_CAPABILITIES[provider].methods.subscription ? "subscription" : "api_key", mode: "responsible_user" } as const;
-    if (isAiConnectionCompatible(binding, adapterType, config.model, config.provider, config.acpxAgent)) return binding;
+    for (const method of ["subscription", "api_key"] as const) {
+      if (!AI_CONNECTION_CAPABILITIES[provider].methods[method]) continue;
+      // Recovery presents a concrete sign-in method. A responsible-user binding
+      // normally follows any compatible default, so check exact metadata first.
+      if (isAiConnectionCompatible({ provider, method }, adapterType, config.model, config.provider, config.acpxAgent)) {
+        return { provider, method, mode: "responsible_user" };
+      }
+    }
   }
   return undefined;
 }

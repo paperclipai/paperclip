@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Download } from "lucide-react";
 import { issuesApi } from "@/api/issues";
 import { Button } from "@/components/ui/button";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { CsvPreview } from "@/components/CsvPreview";
 import { isCsvFile } from "@/lib/csv-preview";
 import { MarkdownBody } from "@/components/MarkdownBody";
@@ -16,7 +17,8 @@ export const TEXT_PREVIEW_MAX_BYTES = 512 * 1024;
 
 /** Bound the actual response, not just producer-supplied attachment metadata. */
 export async function readTextPreview(response: Response) {
-  if (!response.ok) throw new Error(`Could not load file (${response.status}).`);
+  // Carry the status so the shared classification can tell an outage (503) from a real failure.
+  if (!response.ok) throw Object.assign(new Error(`Could not load file (${response.status}).`), { status: response.status });
   if (!response.body) throw new Error("The file response is empty.");
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -86,16 +88,27 @@ export function TaskAttachmentPanel({ issueId, attachmentId }: { issueId: string
       { signal, credentials: "same-origin" },
     )),
     enabled: Boolean(eligible),
-    retry: false,
   });
-  if (attachments.isLoading) return <p className="p-4 text-sm" role="status">Loading file…</p>;
-  if (attachments.isError) return <div className="p-4" role="alert">Could not load attachment details. <Button onClick={() => void attachments.refetch()}>Retry</Button></div>;
+  const attachmentsView = useQueryView(attachments);
+  const contentView = useQueryView(content);
+  if (attachments.isLoading || attachmentsView.kind === "reconnecting") return <p className="p-4 text-sm" role="status">Loading file…</p>;
+  if (attachmentsView.kind === "error") {
+    return (
+      <QueryErrorState
+        className="m-4"
+        error={attachments.error}
+        action="load attachment details"
+        onRetry={attachmentsView.retry}
+        retrying={attachmentsView.isFetching}
+      />
+    );
+  }
   if (!attachment) return <p className="p-4 text-sm" role="status">File no longer available. Close this tab or choose another file.</p>;
   const downloadUrl = attachmentDownloadPath(attachment);
-  if (!eligible || content.isError) {
+  if (!eligible || contentView.kind === "error") {
     return (
       <div className="space-y-3 p-4" role="alert">
-        <p className="text-sm">{content.isError ? "Could not preview this file. Retry or download it." : "This file is too large or is not supported for text preview. Download it instead."}</p>
+        <p className="text-sm">{contentView.kind === "error" ? "Could not preview this file. Retry or download it." : "This file is too large or is not supported for text preview. Download it instead."}</p>
         {eligible ? <Button onClick={() => void content.refetch()}>Retry</Button> : null}
         <Button asChild variant="outline"><a href={downloadUrl} download>Download file</a></Button>
       </div>

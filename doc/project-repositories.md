@@ -56,6 +56,9 @@ When the denial is retained, the run stops before the agent starts with a
 is blocked with a notice that tells the owner to push unpublished work and select a
 new workspace, or to grant access to the restricted task, then retry. Paperclip
 does not report this owner action to Sentry as an unexpected run failure.
+This applies to both isolated-source checks and repository admission for a shared
+project workspace. Neither path replaces the existing workspace or retries the
+same access denial automatically.
 Startup validation of these recorded defaults keeps the task's effective workspace
 strategy. It does not substitute the agent's shared strategy or grant project writes.
 Workspace close and reopen use the recorded isolated source. Both operations

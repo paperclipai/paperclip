@@ -47,3 +47,13 @@ export function patchRunStatusInList(
   // or its status already matched) so redundant events don't trigger re-renders.
   return { next: changed ? next : runs, present };
 }
+
+export function liveRunRefetchInterval(
+  connected: boolean,
+  state: { status: "pending" | "error" | "success"; data: unknown },
+  fallbackMs: number,
+): number | false {
+  return connected && state.status === "success" && (state.data === null || (Array.isArray(state.data) && state.data.length === 0))
+    ? false
+    : fallbackMs;
+}

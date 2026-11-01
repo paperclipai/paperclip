@@ -22,14 +22,18 @@ export const endpoint: ChatEndpoint = {
   assignedAgentName: agent.name,
   connectionId: "story-github-tools",
   botLabel: "Maya Reviews",
+  botExternalId: "123456",
   botUsername: "maya-reviews[bot]",
   providerAccountLabel: "acme",
   allowUnlinkedPeople: false,
   setup: {
     step: "complete",
+    webhookVerifiedAt: "2026-10-01T12:00:00.000Z",
     github: {
       stage: "verify",
       appSlug: "maya-reviews",
+      appOwnerType: "organization",
+      appOwnerLogin: "acme",
       ownerType: "organization",
       ownerLogin: "acme",
     },

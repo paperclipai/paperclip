@@ -7,6 +7,7 @@ import type { heartbeatService } from "./heartbeat.js";
 import { issueService } from "./issues.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
+import { connectionDeliveryWaitingForResponse, connectionIntentWaitingForResponse } from "./idle-work-proof.js";
 type Heartbeat = ReturnType<typeof heartbeatService>;
 
 export async function wakeConnectionIntentAfterResolution(
@@ -215,18 +216,31 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
         eq(connectionIntentDeliveries.nextAttemptAt, claimed.nextAttemptAt), isNull(connectionIntentDeliveries.deliveredAt)));
     }
   }
+  let maintenanceAt: number | null = null;
   async function hasPending() {
-    if ((await db.select({ id: connectionIntentDeliveries.interactionId }).from(connectionIntentDeliveries)
-      .where(isNull(connectionIntentDeliveries.deliveredAt)).limit(1)).length > 0) return true;
-    return (await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions)
-      .innerJoin(issues, and(eq(issues.id, issueThreadInteractions.issueId), eq(issues.companyId, issueThreadInteractions.companyId)))
-      .where(and(eq(issueThreadInteractions.kind, "connection_intent"), eq(issueThreadInteractions.status, "pending"),
-        inArray(issues.status, ["in_progress", "in_review"]), isNull(issues.assigneeUserId)))
-      .limit(1)).length > 0;
+    const [state] = await db.execute<{ active: boolean; present: boolean }>(sql`
+      WITH pending_deliveries AS (
+        SELECT (${sql.raw(connectionDeliveryWaitingForResponse('d'))}) IS TRUE AS passive
+        FROM connection_intent_deliveries d WHERE d.delivered_at IS NULL
+      ), pending_intents AS (
+        SELECT (${sql.raw(connectionIntentWaitingForResponse('card', 'task'))}) IS TRUE AS passive
+        FROM issue_thread_interactions card LEFT JOIN issues task ON task.id = card.issue_id AND task.company_id = card.company_id
+        WHERE card.kind = 'connection_intent' AND card.status = 'pending'
+          AND (task.id IS NULL OR (task.status IN ('in_progress', 'in_review') AND task.assignee_user_id IS NULL))
+      ) SELECT EXISTS (SELECT 1 FROM pending_deliveries WHERE NOT passive
+        UNION ALL SELECT 1 FROM pending_intents WHERE NOT passive) AS active,
+        EXISTS (SELECT 1 FROM pending_deliveries UNION ALL SELECT 1 FROM pending_intents) AS present`);
+    if (!state || typeof state.active !== "boolean" || typeof state.present !== "boolean") throw new Error("Connection work state is unknown");
+    // Passive records need no admitted-work hold or wake alarm. While the
+    // process is already awake, keep the existing reconciliation cadence so
+    // new access or responses resume work even without a queue notification.
+    maintenanceAt = !state.active && state.present ? Date.now() + 5_000 : null;
+    return state.active;
   }
-  return { deliver, hasPending, tryDeliver: async (id: string) => { try { await deliver(id); } catch { /* Persisted delivery remains due after its lease. */ } }, sweepPending: async () => {
+  return { deliver, hasPending, nextRunAt: () => maintenanceAt, tryDeliver: async (id: string) => { try { await deliver(id); } catch { /* Persisted delivery remains due after its lease. */ } }, sweepPending: async () => {
     await satisfiedIntents.sweepPending();
-    const rows = await db.select().from(connectionIntentDeliveries).where(and(isNull(connectionIntentDeliveries.deliveredAt), lte(connectionIntentDeliveries.nextAttemptAt, new Date())))
+    const rows = await db.select().from(connectionIntentDeliveries).where(and(isNull(connectionIntentDeliveries.deliveredAt), lte(connectionIntentDeliveries.nextAttemptAt, new Date()),
+      sql`(${sql.raw(connectionDeliveryWaitingForResponse('connection_intent_deliveries'))}) IS NOT TRUE`))
       .orderBy(asc(connectionIntentDeliveries.nextAttemptAt)).limit(50);
     let failed = 0;
     for (const row of rows) { try { await deliver(row.interactionId); } catch { failed += 1; } }

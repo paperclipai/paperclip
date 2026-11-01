@@ -11,6 +11,18 @@ function record(value: unknown): Record<string, unknown> {
 
 type RecoveryValue = { actionId: string; runId: string; props: WorkspaceBaseRefRecoveryNoticeProps };
 const Context = createContext<RecoveryValue | null>(null);
+type RetryValue = { actionId: string; runId: string; unavailableReason: string | null; onRetry: () => Promise<void> };
+const RetryContext = createContext<RetryValue | null>(null);
+
+export function useCurrentWorkspaceRetry() {
+  return useContext(RetryContext);
+}
+
+export function useWorkspaceRetry(metadata: IssueCommentMetadata | null | undefined) {
+  const value = useCurrentWorkspaceRetry();
+  return value && metadata?.sections.some(section => section.rows.some(row => row.type === "key_value" && row.value === value.actionId))
+    ? value : null;
+}
 
 /** Bind the repair to the server-owned action and its latest failed run. */
 export function useWorkspaceBaseRefRecovery(metadata: IssueCommentMetadata | null | undefined) {
@@ -20,21 +32,48 @@ export function useWorkspaceBaseRefRecovery(metadata: IssueCommentMetadata | nul
     ? value : null;
 }
 
-export function WorkspaceBaseRefRecoveryProvider({ issue, agentMap, unavailableReason, onRepaired, children }: {
+export function WorkspaceBaseRefRecoveryProvider({ issue, agentMap, unavailableReason, baseRefUnavailableReason, onRepaired, children }: {
   issue: Issue;
   agentMap: ReadonlyMap<string, Pick<Agent, "name" | "status">>;
   unavailableReason: string | null;
+  baseRefUnavailableReason?: string | null;
   onRepaired: () => void;
   children: ReactNode;
 }) {
   const action = issue.activeRecoveryAction;
-  const runId = action?.cause === "configuration_incomplete" && typeof action.evidence.latestRunId === "string"
-    ? action.evidence.latestRunId : null;
+  const recordedRunId = action?.evidence?.latestRunId ?? action?.evidence?.runId;
+  const runId = typeof recordedRunId === "string" ? recordedRunId : null;
   const { data: run } = useQuery({
     queryKey: ["workspace-base-ref-recovery", issue.companyId, issue.id, runId],
     queryFn: () => heartbeatsApi.get(runId!), enabled: Boolean(runId), staleTime: Infinity, retry: false,
   });
   const failure = record(record(run?.resultJson).configurationIncomplete);
+  const execution = record(record(run?.resultJson).executionRecovery);
+  let retry: RetryValue | null = null;
+  if (action && runId && run?.status === "failed" && run.companyId === issue.companyId
+    && record(run.contextSnapshot).issueId === issue.id && execution.kind === "bootstrap" && execution.providerWorkStarted === false
+    && (failure.reason === "workspace_source_restricted"
+      || (run.errorCode === "setup_failed" && run.error === "Task workspace access is no longer available"))) {
+    const agent = issue.assigneeAgentId ? agentMap.get(issue.assigneeAgentId) : undefined;
+    const stale = action.status !== "active" || issue.status !== "blocked" || action.ownerType !== "board"
+      || !issue.assigneeAgentId || issue.assigneeAgentId !== action.returnOwnerAgentId || run.agentId !== issue.assigneeAgentId;
+    retry = { actionId: action.id, runId,
+      unavailableReason: stale ? "Refresh the task to retry."
+        : unavailableReason
+        ?? (issue.executionRunId || issue.checkoutRunId ? "Wait for the current run to finish." : null)
+        ?? (agent?.status === "paused" || agent?.status === "terminated" ? "The assigned agent is unavailable." : null)
+        ?? (issue.executionState?.status === "pending" ? "Complete the pending review or approval before retrying." : null)
+        ?? (issue.blockedBy?.some(b => b.status !== "done" && b.status !== "cancelled") ? "Resolve the task’s blockers before retrying." : null),
+      onRetry: async () => {
+        try {
+          const receipt = await issuesApi.resolveRecoveryAction(issue.id, { actionId: action.id, outcome: "restored", sourceIssueStatus: "todo" });
+          if (receipt.issue.status !== "todo" || receipt.issue.assigneeAgentId !== issue.assigneeAgentId) {
+            throw new Error("The task changed. Refresh and try again.");
+          }
+        } finally { onRepaired(); }
+      },
+    };
+  }
   let value: RecoveryValue | null = null;
   if (action && runId && run?.companyId === issue.companyId && record(run.contextSnapshot).issueId === issue.id
     && failure.reason === "workspace_base_ref_unresolved" && typeof failure.requestedRef === "string") {
@@ -51,7 +90,7 @@ export function WorkspaceBaseRefRecoveryProvider({ issue, agentMap, unavailableR
     const stale = action.status !== "active" || issue.status !== "blocked" || issue.assigneeAgentId !== action.returnOwnerAgentId
       || run.agentId !== issue.assigneeAgentId || (typeof currentRef === "string" && Boolean(currentRef.trim()) && currentRef !== requestedRef);
     const reason = stale ? "This repair no longer matches the task. Refresh to review its current state."
-      : unavailableReason
+      : baseRefUnavailableReason ?? unavailableReason
       ?? (issue.executionRunId || issue.checkoutRunId ? "Wait for the current run to finish." : null)
       ?? (agent?.status === "paused" || agent?.status === "terminated" ? "The assigned agent is unavailable." : null)
       ?? (issue.executionState?.status === "pending" ? "Complete the pending review or approval before retrying." : null)
@@ -73,5 +112,5 @@ export function WorkspaceBaseRefRecoveryProvider({ issue, agentMap, unavailableR
       },
     } };
   }
-  return <Context.Provider value={value}>{children}</Context.Provider>;
+  return <RetryContext.Provider value={retry}><Context.Provider value={value}>{children}</Context.Provider></RetryContext.Provider>;
 }

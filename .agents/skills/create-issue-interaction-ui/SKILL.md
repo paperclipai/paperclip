@@ -39,22 +39,25 @@ Do NOT install this on production Paperclip agents. This guide is for repository
 
 ## Mental model
 
-Every issue-thread interaction has four moving parts:
+Every issue-thread interaction has five moving parts:
 
 | Layer        | Owns                                                                                              |
 |--------------|---------------------------------------------------------------------------------------------------|
 | Shared       | Kind constant, payload/result interfaces, Zod validators, exported types, shared-test coverage.    |
 | Server       | Service create/accept/reject/respond, staleness, supersede, idempotency, activity log, wake send. |
 | UI           | Card pending/resolved/stale states, fixtures, Storybook, issue-thread/IssueDetail wiring.         |
+| Channels     | Complete question/context, native response or Paperclip handoff, callback authorization, and settled provider cards. |
 | Helpers/Docs | CLI command, MCP tool, plugin SDK type+host+testing path, `skills/paperclip` guidance.            |
 
-The four existing kinds are the canonical prior art. Pick the closest one and
-copy its plumbing rather than inventing parallel mechanics:
+Use the current `ISSUE_THREAD_INTERACTION_KINDS` as the inventory. Pick the
+closest existing kind and reuse its plumbing rather than inventing parallel mechanics:
 
 - `request_confirmation` — single yes/no bound to a `target` with stale/supersede.
 - `request_checkbox_confirmation` — bounded multi-select against an immutable option set.
 - `ask_user_questions` — small typed form, no target binding.
-- `suggest_tasks` — proposes tasks the board can accept individually.
+- `request_item_verdicts` — requests individual decisions on a set of items.
+- `suggest_tasks` — proposes tasks a permitted resolver can accept individually.
+- `connection_intent` — requests authorized connection setup or access.
 
 If your new card needs target binding and a yes/no-style resolution, model it
 after the two `request_*` kinds. If it is a structured form, model it after
@@ -130,15 +133,16 @@ Touch:
 
 Server invariants:
 
-- Board-only resolution. Agent-authored accept/reject must be rejected with
-  the existing 403 path; do not add a per-kind bypass.
+- Resolver authority. Use the current resolver policy, company cap, and named
+  addressee checks in the shared service. Governed actions retain their required
+  human approval; neither a new kind nor a channel callback widens authority.
 - Company scoping. Reads, writes, expiration, and supersede must all filter
   by `companyId`. Never trust an `issueId` alone.
 - Stale target. If `target` was specified at create time and a newer revision
   lands, the interaction expires with `outcome: "stale_target"`. Do not write
   bespoke staleness — call the same helper the other `request_*` kinds use.
-- Supersede on user comment. Default `supersedeOnUserComment: true` unless
-  the payload schema documents otherwise.
+- Supersede on user comment. Preserve the payload schema's default and explicit
+  choice; an ordinary comment must not silently answer a pending question.
 - Idempotency. The deterministic `idempotencyKey` shape from the existing
   kinds (`<kind>:<issueId>:<decisionKey>:<revisionId>`) must be honored;
   duplicate POSTs must return the existing card, not stack.
@@ -182,6 +186,24 @@ UI invariants:
   field name.
 - Stale, superseded, and accepted states render distinct copy; reuse the
   existing resolution-component shell.
+
+### 3a. Channel questions and review cards
+
+Read the [chat channel connector contract](../../../doc/connections/CONNECTOR-PLAYBOOK.md#chat-channel-connectors).
+Every new kind or changed form needs a usable path through each supported
+conversation channel: complete safe question/context plus native response controls
+or an explicit link to the authorized Paperclip surface. Include runtime/composer
+variants; do not assume that adding a board card makes it available in Slack.
+
+Extend the existing presentation, publication, response, and settlement owners.
+Preserve authorization and the existing continuation/delivery receipts. Cover
+resolved, rejected, expired, superseded, and recovery paths so a settled request
+cannot remain actionable in the channel. Keep dismissal distinct from resolution.
+
+Run local serialization and lifecycle tests first, then verify affected forms in
+the actual provider with an authorized test conversation. Capture rendering,
+answer persistence, the intended continuation, and final card/result delivery.
+State clearly when provider HTTP was simulated or live acceptance is outstanding.
 
 ### 4. CLI, MCP, plugin SDK helpers
 
@@ -246,11 +268,14 @@ If UI vitest fails with `act is not a function`, the shell is running with
 - [ ] Service handles create, accept, reject/respond, stale-target,
       supersede-on-user-comment, idempotency, activity log, and continuation
       wake.
-- [ ] Routes honor board-only resolution and company scoping.
+- [ ] Routes and channel callbacks honor current resolver authority and company scoping.
 - [ ] UI renders pending, resolved, stale, disabled/submitting, and
       validation-error states; resolved-state large selections summarize by
       count first.
 - [ ] Fixtures and Storybook entries exist for the new kind.
+- [ ] Every supported channel has a native response or explicit Paperclip handoff
+      for the form, with settlement and continuation coverage. Local simulations
+      and real-provider acceptance are reported separately.
 - [ ] CLI, MCP, and plugin SDK helpers all accept the new payload shape and
       have test coverage.
 - [ ] `skills/paperclip/SKILL.md` and `references/api-reference.md` updated.

@@ -541,3 +541,23 @@ describe("Codex structured question adapter", () => {
     });
   });
 });
+
+
+describe("Codex MCP tool approval", () => {
+  const params = { serverName: "assigned", mode: "form", message: "Allow the tool?", _meta: { codex_approval_kind: "mcp_tool_call" }, requestedSchema: { type: "object", properties: {} }, choices: [{ key: "accept", label: "Allow once" }, { key: "decline", label: "Deny" }] };
+  const request: HarnessRuntimeRequest = {
+    requestId: "scoped-request", requestKind: "permission_approval", method: "mcpServer/elicitation/request",
+    turnId: "turn", itemId: "item", status: "pending", prompt: params.message, details: params,
+    origin: { adapter: "codex-app-server", provider: "codex", method: "mcpServer/elicitation/request" },
+  };
+  it("keeps confirmations on the permission path and ordinary forms on the input path", () => {
+    expect(runtimeRequestKind(request.method, params)).toBe("permission_approval");
+    expect(runtimeRequestKind(request.method, { ...params, requestedSchema: { type: "object", properties: { password: { type: "string" } } } })).toBe("elicitation");
+    expect(runtimeRequestProtocolPayload(request)).toMatchObject({ schema: "paperclip.runtime_request.v2", type: "permission", choices: params.choices });
+    expect(runtimeRequestProtocolPayload(request)).not.toHaveProperty("method");
+  });
+  it("returns only explicit one-time decisions, without granting session authority", () => {
+    for (const action of ["accept", "decline", "cancel"] as const) expect(runtimeRequestResponse(request, { action })).toEqual({ action, content: null, _meta: null });
+    expect(() => runtimeRequestResponse(request, { action: "accept_for_session" })).toThrow(/one-time/);
+  });
+});

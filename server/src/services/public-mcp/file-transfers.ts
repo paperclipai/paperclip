@@ -10,7 +10,7 @@ import { authorizationService } from "../authorization.js";
 import { issueService } from "../issues.js";
 import { prepareExternalDeliverablePublication, readExternalDeliverablePublication } from "../native-runtime/external-deliverable-publication.js";
 import { logActivity } from "../activity-log.js";
-import { hashMcpSecret, type PublicMcpOAuth, type McpPrincipal } from "./oauth.js";
+import { hashMcpSecret, McpOAuthError, type PublicMcpOAuth, type McpPrincipal } from "./oauth.js";
 import { McpCapabilityError, company, task, requestId, pick, object, stable, type ApiDispatch, type Capability } from "./contracts.js";
 
 const lifetime = 10 * 60_000;
@@ -35,7 +35,16 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
   async function workSession(p: McpPrincipal, sessionId: string | undefined, taskId: string, write: boolean, queryDb?: Db) {
     if (p.grant.purpose !== "agent") { if (sessionId || options.agentSession) throw unavailable(); return null; }
     if (!sessionId || !options.agentSession) throw unavailable();
-    return options.agentSession.authorize(p, sessionId, taskId, write, queryDb);
+    try {
+      return await options.agentSession.authorize(p, sessionId, taskId, write, queryDb);
+    } catch (error) {
+      if (error instanceof McpOAuthError && error.code === "access_denied" && error.status === 409) {
+        const workModeDenial = "This task's work mode does not permit deliverable uploads.";
+        if (error.message === workModeDenial) throw new McpCapabilityError(workModeDenial);
+        throw unavailable();
+      }
+      throw error;
+    }
   }
   const svc = issueService(db);
   async function taskAccess(p: McpPrincipal, taskId: string, write = false, queryDb?: Db, sessionId?: string) {
@@ -125,12 +134,9 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
       const [upload] = await tx.select().from(mcpAttachmentUploads).where(eq(mcpAttachmentUploads.id, row.uploadId!)).for("update");
       if (!upload || upload.companyId !== principal.grant.companyId || upload.userId !== principal.grant.userId || upload.workSessionId !== row.workSessionId || upload.grantId && upload.grantId !== row.grantId || upload.storageProvider !== storage.provider) throw unavailable();
       if (upload.sha256 !== digest || upload.byteSize !== bytes.length || req.get("Content-Type")?.split(";")[0]?.trim().toLowerCase() !== upload.contentType) throw new McpCapabilityError("Upload bytes, size or Content-Type do not match the requested file.");
-      // Check access before storage without retaining an agent assignment
-      // lock. Publication locks grant then assignment, matching disconnect;
-      // remote storage must not block revocation. Keep person write checks.
       await taskAccess(principal, upload.taskId, principal.grant.purpose !== "agent", tx as unknown as Db, row.workSessionId ?? undefined);
       const stored = upload.attachmentId ? null : await storage.putFile({ companyId: upload.companyId, namespace: "mcp-transfers", objectKey: upload.objectKey, originalFilename: upload.originalFilename, contentType: upload.contentType, body: bytes });
-      // Recheck after receiving/storing bytes. Lock the grant against concurrent revocation.
+      await workSession(principal, row.workSessionId ?? undefined, upload.taskId, true, tx as unknown as Db);
       const [grant] = await tx.select().from(mcpOauthGrants).where(eq(mcpOauthGrants.id, row.grantId)).for("update");
       if (!grant || grant.revokedAt || row.expiresAt <= new Date()) throw unavailable();
       const current = await oauth.authorizeGrant(row.grantId, tx as unknown as Db);

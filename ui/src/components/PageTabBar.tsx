@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
-import { TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { TabBar, type TabSize } from "./TabBar";
 import { useSidebar } from "../context/SidebarContext";
 
 export interface PageTabItem {
@@ -13,9 +13,10 @@ interface PageTabBarProps {
   value?: string;
   onValueChange?: (value: string) => void;
   align?: "center" | "start";
+  size?: TabSize;
 }
 
-export function PageTabBar({ items, value, onValueChange, align = "center" }: PageTabBarProps) {
+export function PageTabBar({ items, value, onValueChange, align = "center", size = "standard" }: PageTabBarProps) {
   const { isMobile } = useSidebar();
 
   if (isMobile && value !== undefined && onValueChange) {
@@ -39,12 +40,6 @@ export function PageTabBar({ items, value, onValueChange, align = "center" }: Pa
   }
 
   return (
-    <TabsList variant="line" className={align === "start" ? "justify-start" : undefined}>
-      {items.map((item) => (
-        <TabsTrigger key={item.value} value={item.value}>
-          {item.label}
-        </TabsTrigger>
-      ))}
-    </TabsList>
+    <TabBar items={items} size={size} className={align === "start" ? "justify-start" : undefined} />
   );
 }

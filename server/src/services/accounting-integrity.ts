@@ -1,3 +1,4 @@
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { and, eq, sql } from "drizzle-orm";
 import { agents, agentRuntimeState, companies, heartbeatRuns, type Db } from "@paperclipai/db";
 import { normalizeCents, usdToCents, type AccountingFinding, type AccountingHealth, type AccountingInspection } from "@paperclipai/shared";
@@ -75,6 +76,8 @@ export function accountingIntegrityService(db: Db, hooks: BudgetServiceHooks = {
       if (!reason.trim()) throw conflict("A repair reason is required");
       const before = await inspect(tx, companyId);
       if (before.fingerprint !== fingerprint) throw conflict("Accounting changed since inspection; inspect again before repairing");
+      if (before.findings.some(f => f.repairable && f.kind === "agent_projection"))
+        await notifyAttentionRetentionWork(tx, { companyId, sourceKind: "agent_error_alert" });
       for (const finding of before.findings.filter(f => f.repairable)) {
         if (finding.kind === "company_projection") await tx.update(companies).set({ spentMonthlyCents: sql`${finding.expected.cents}::numeric`, updatedAt: new Date() }).where(eq(companies.id, companyId));
         if (finding.kind === "agent_projection") await tx.update(agents).set({ spentMonthlyCents: sql`${finding.expected.cents}::numeric`, updatedAt: new Date() }).where(and(eq(agents.id, finding.entityId), eq(agents.companyId, companyId)));

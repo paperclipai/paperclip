@@ -8,14 +8,14 @@ const html = (value: unknown) =>
         c
       ]!,
   );
-export function renderFirstTaskDetails(result?: RunnerE2EResult) {
+export function renderFirstTaskDetails(result?: RunnerE2EResult, includeConversation = true) {
   const e = result?.firstTask;
   if (!e) return "";
   const prefix = `first-task-${encodeURIComponent(result!.executionId)}`;
   const q = result?.firstTaskQuality;
   const ref = (id: string) => `${prefix}-${encodeURIComponent(id)}`;
   const last = e.checkpoints.at(-1);
-  return `<details class="case-context conversation-details"><summary>Read full conversation</summary>${renderFirstTaskTranscript(e, (id) => `#${ref(id)}`)}</details><details class="case-context"><summary>Onboarding instructions, approval timeline, and quality</summary>
+  return `${includeConversation ? `<details class="case-context conversation-details"><summary>Read full conversation</summary>${renderFirstTaskTranscript(e, (id) => `#${ref(id)}`)}</details>` : ""}<details class="case-context"><summary>Onboarding instructions, approval timeline, and quality</summary>
     <p>Source: ${html(e.source?.sha ?? result?.source?.sha ?? "Unknown")} · ${html(e.source?.ref ?? result?.source?.ref ?? "Unknown")} ${e.source?.dirty ? "(working tree modified; compare instruction hashes)" : ""}</p>
     ${e.runtimeSettings?.onboardingRuntime ? `<p>Setup: ${html((e.runtimeSettings.onboardingRuntime as { mode: string }).mode)}.</p>` : ""}
     <p>Configured model: ${html(e.configuredModel ?? "Provider default")}. Observed: ${html(e.observedModels.join(", ") || "Not reported")}.</p>

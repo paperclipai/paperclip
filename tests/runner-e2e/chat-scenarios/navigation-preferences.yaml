@@ -1,0 +1,85 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: navigation-preferences
+status: planned
+scenarios:
+  - id: navigation-preferences.find-project-view
+    capabilities:
+      - navigation-preferences/navigation
+      - projects/task-context
+    context: >-
+      Launch exists and is visible; browser recents and favorites belong to the person.
+    query: >-
+      Take me to the Launch project and show its open tasks.
+    expected_outcome: >-
+      The response supplies the supported company-scoped project/task link or navigation action
+      and identifies the correct record. The resulting browser shows its open tasks. It does not
+      claim to have changed personal favorites or recents through an unsupported agent mutation.
+  - id: navigation-preferences.sidebar-order
+    capabilities:
+      - navigation-preferences/preferences
+    context: >-
+      The person wants to reorder their own sidebar; preference writes require their board
+      identity and some collapse state is browser-local.
+    query: >-
+      Put Launch first in my sidebar and collapse the other section.
+    expected_outcome: >-
+      The agent guides the person to the supported ordering and collapse controls without
+      pretending those preferences are shared company state. The browser journey verifies
+      persistence at the documented person/company or local scope. Another person's sidebar is
+      unchanged.
+  - id: navigation-preferences.edit-profile
+    capabilities:
+      - navigation-preferences/profile
+    context: >-
+      The current human profile has an outdated display name; personal identity edits require
+      the human session.
+    query: >-
+      Change my display name to Alex Chen.
+    expected_outcome: >-
+      The response directs the person to their profile editor and the saved change appears on
+      the appropriate personal surfaces after the authorized action. It does not rename the CEO
+      agent, another user or the company, and no agent-authenticated write impersonates the
+      person.
+  - id: navigation-preferences.dismiss-announcement
+    capabilities:
+      - navigation-preferences/announcements
+    context: >-
+      A publication is visible in two companies for the same person; dismissal uses the human
+      announcement control.
+    query: >-
+      Hide this announcement for me.
+    expected_outcome: >-
+      The person dismisses the intended publication through the supported control and it stays
+      dismissed across their companies. Other users still see it. The journey preserves
+      validated company membership for audit context and does not treat this instance-wide
+      personal preference as company content deletion.
+  - id: navigation-preferences.broken-link
+    capabilities:
+      - navigation-preferences/fallbacks
+      - access/resources
+    context: >-
+      The user supplies a stale deep link to a removed task; a similarly named task still exists
+      elsewhere.
+    query: >-
+      Open the task from this old link.
+    expected_outcome: >-
+      The browser presents the correct missing-resource state or documented canonical redirect
+      while preserving company and query intent. The agent does not silently open a different
+      task and call it the original. Restricted and missing resources retain their appropriate
+      non-disclosing behavior.
+  - id: navigation-preferences.quick-search
+    capabilities:
+      - navigation-preferences/command-palette
+      - inbox-search/search
+    context: >-
+      The person is in the browser with a supported command palette and a current company
+      selection.
+    query: >-
+      How can I quickly find Launch tasks without leaving what I am doing?
+    expected_outcome: >-
+      The agent explains the actual quick-search entry point and shortcut, then the human
+      browser journey searches within authorized context. Moving to full search preserves query
+      and filters. The response does not imply the agent itself can synthesize keyboard focus
+      through a domain API.

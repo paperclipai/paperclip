@@ -1,3 +1,4 @@
+import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellation-notifications.js";
 import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { badRequest, conflict } from "../../errors.js";
@@ -38,6 +39,32 @@ export function nativeRetryCancellationEligible(input: {
     && typeof native.dispatched === "boolean" && typeof native.intentAuditId === "string" && !!native.intentAuditId
     && (native.dispatchState === "pending" || (typeof native.acknowledgementAuditId === "string"
       && !!native.acknowledgementAuditId && native.acknowledgementAuditId !== native.intentAuditId));
+}
+
+export function pendingFailedNativeRetryCancellationCondition() {
+  const native = sql`${heartbeatRuns.resultJson}->'nativeCancellation'`;
+  const continuingStop = sql`${nativeRunFinalizations.phase} = 'terminal_failure'
+    and ${nativeRunFinalizations.failureCode} = 'native_retry_cancelled'
+    and ${native}->>'schema' = 'paperclip.native-cancellation.v1'
+    and jsonb_typeof(${native}->'intentId') = 'string' and length(${native}->>'intentId') > 0
+    and ${native}->>'runId' = ${heartbeatRuns.id}::text
+    and ${native}->>'companyId' = ${heartbeatRuns.companyId}::text
+    and ${native}->>'issueId' = ${heartbeatRuns.nativeIssueId}::text
+    and ${native}->>'scope' = 'run'
+    and ${native}->>'dispatchState' in ('pending', 'acknowledged')
+    and jsonb_typeof(${native}->'dispatched') = 'boolean'
+    and jsonb_typeof(${native}->'intentAuditId') = 'string' and length(${native}->>'intentAuditId') > 0
+    and (${native}->>'dispatchState' = 'pending' or (
+      jsonb_typeof(${native}->'acknowledgementAuditId') = 'string'
+      and length(${native}->>'acknowledgementAuditId') > 0
+      and ${native}->>'acknowledgementAuditId' <> ${native}->>'intentAuditId'))`;
+  return sql`${heartbeatRuns.runtimeMode} = 'native' and ${heartbeatRuns.status} = 'failed'
+    and exists (select 1 from ${nativeRunFinalizations}
+      where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+        and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
+        and ${nativeRunFinalizations.issueId} = ${heartbeatRuns.nativeIssueId}
+        and (${nativeRunFinalizations.phase} = 'retryable_failure' or (${continuingStop}))
+        and ${nativeRunFinalizations.resultId} is null)`;
 }
 
 /** Final failed -> cancelled CAS: a later board/recovery outcome must win.
@@ -111,6 +138,7 @@ export async function claimCancellationRequest(db: Db, runId: string, companyId:
       return run;
     }
     if (!pendingRetry && !["queued", "running", "scheduled_retry"].includes(run.status)) throw conflict("Correlated Stop run is already terminal");
+    await notifyScheduledRetryCancellation(tx, { companyId, runId });
     const [claimed] = await tx.update(heartbeatRuns).set({ resultJson: { ...result,
       startupCancellation: { requestedAt: new Date().toISOString(), beforeNativeSelection: false, cancellationRequestId: requestId, requestedBy: { type: "board", userId }, ...(run.status === "failed" ? { retryCancellation: true } : {}) },
     } }).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId))).returning();

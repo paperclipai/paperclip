@@ -1,6 +1,23 @@
 # Cursor ACP capability inventory
 
-Current source (2026-10-06): **Cursor profile v14 combines the model-selection correction with mainline ACP resource-not-found handling**.
+## Current profile identity
+
+Cursor runs as **profile 17**. Its `commandDigest` attests the release
+declaration in `cursor-contract.json`: the vendor build, the native patch and
+the admitted mode, question, accounting and model-selection behaviour. It does
+not bind the shared ACPX layer. Every ACPX harness binds the shared ACPX layer the same way: saved inputs must
+match the current ACPX version, and the provider pack's `contractDigest` binds
+the Runner's ACPX patch with the other Runner contracts. Launch and recovery
+admission require the exact current profile and digest. Saved inputs with an
+earlier profile version still decode, so recovery can refuse them.
+
+## Profile chronology
+
+Until 2026-10-30, Cursor's release declaration also bound the ACPX patch. The
+dated sections below record earlier profiles; their versions and digests are not
+current.
+
+Historical source (2026-10-06): **Cursor profile v14 combines the model-selection correction with mainline ACP resource-not-found handling**.
 The bundled ACPX runtime forwards unlisted model IDs unchanged, verifies model
 selection responses, and reapplies a selected model when a loaded session reports
 another model. Its 14 package tests exercise startup and reconnect through a real

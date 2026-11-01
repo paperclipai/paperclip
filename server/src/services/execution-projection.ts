@@ -1,6 +1,10 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   heartbeatRuns,
+  dotAgentBindings,
+  dotRunnerAssignments,
+  museAgentBindings,
+  museRunnerAssignments,
   issueRecoveryActions,
   issueThreadInteractions,
   nativeRunFinalizations,
@@ -10,9 +14,12 @@ import type { ExecutionProjection } from "@paperclipai/shared";
 import { EXECUTION_CONTROL_DEADLINE_MS } from "./execution-control-deadline.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
+import { workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
+import { readTaskDrain } from "./task-admission.js";
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
   id: heartbeatRuns.id,
+  driverKind: heartbeatRuns.driverKind,
   errorCode: heartbeatRuns.errorCode,
   executionControlDeadlineAt: heartbeatRuns.executionControlDeadlineAt,
   finishedAt: heartbeatRuns.finishedAt,
@@ -35,6 +42,7 @@ const executionRunColumns = {
 };
 type Run = Pick<typeof heartbeatRuns.$inferSelect, keyof typeof executionRunColumns>;
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
+type WaitingExternalProvider = "muse" | "openai_dot";
 type Recovery = Pick<
   typeof issueRecoveryActions.$inferSelect,
   "cause" | "nextAction"
@@ -121,6 +129,52 @@ export async function executionProjectionsForRuns(
         )
         .orderBy(desc(issueRecoveryActions.updatedAt)))
     : [];
+  // A live controller is not evidence that an external agent accepted work.
+  // Read each provider journal once for the batch, never once per task.
+  const waitingByRun = new Map<string, WaitingExternalProvider>();
+  const externalRunIds = (driverKind: string) => runs
+    .filter(run => run.status === "running" && run.runtimeMode === "native" && run.driverKind === driverKind)
+    .map(run => run.id);
+  const museRunIds = externalRunIds("muse_external");
+  if (museRunIds.length) {
+    const offered = await read(async () => db
+      .select({ runId: museRunnerAssignments.runId })
+      .from(museRunnerAssignments)
+      .innerJoin(museAgentBindings, and(
+        eq(museAgentBindings.id, museRunnerAssignments.bindingId),
+        eq(museAgentBindings.companyId, museRunnerAssignments.companyId),
+        eq(museAgentBindings.agentId, museRunnerAssignments.agentId),
+        eq(museAgentBindings.generation, museRunnerAssignments.bindingGeneration),
+        isNull(museAgentBindings.revokedAt),
+      ))
+      .where(and(
+        eq(museRunnerAssignments.companyId, companyId),
+        inArray(museRunnerAssignments.runId, museRunIds),
+        inArray(museRunnerAssignments.status, ["offered", "claimed"]),
+        isNull(museRunnerAssignments.nativeAcceptedAt),
+      )));
+    for (const row of offered) waitingByRun.set(row.runId, "muse");
+  }
+  const dotRunIds = externalRunIds("openai_dot_mcp");
+  if (dotRunIds.length) {
+    const offered = await read(async () => db
+      .select({ runId: dotRunnerAssignments.runId })
+      .from(dotRunnerAssignments)
+      .innerJoin(dotAgentBindings, and(
+        eq(dotAgentBindings.id, dotRunnerAssignments.bindingId),
+        eq(dotAgentBindings.companyId, dotRunnerAssignments.companyId),
+        eq(dotAgentBindings.agentId, dotRunnerAssignments.agentId),
+        eq(dotAgentBindings.generation, dotRunnerAssignments.bindingGeneration),
+        isNull(dotAgentBindings.revokedAt),
+      ))
+      .where(and(
+        eq(dotRunnerAssignments.companyId, companyId),
+        inArray(dotRunnerAssignments.runId, dotRunIds),
+        eq(dotRunnerAssignments.status, "offered"),
+        isNull(dotRunnerAssignments.acceptedAt),
+      )));
+    for (const row of offered) waitingByRun.set(row.runId, "openai_dot");
+  }
   const coordinatorByRun = new Map(coordinators.map((row) => [row.runId, row]));
   for (const run of runs) {
     const issueId = run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
@@ -140,6 +194,7 @@ export async function executionProjectionsForRuns(
         pending.filter((row) => row.issueId === issueId),
         action,
         now,
+        waitingByRun.get(run.id),
       ),
     );
   }
@@ -163,6 +218,7 @@ export function projectExecution(
   pending: Array<{ kind: string }>,
   recoveryAction: Recovery | undefined,
   now = new Date(),
+  waitingForProvider?: WaitingExternalProvider,
 ): ExecutionProjection {
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
@@ -191,7 +247,8 @@ export function projectExecution(
     Object.assign(projection, { phase, label });
   if (recoveryAction?.status === "resolved" && recoveryAction.evidence?.automaticRecovery) {
     projection.cause = recoveryAction.cause;
-    projection.nextAction = recoveryAction.nextAction;
+    projection.nextAction = workspaceRecoveryDisplay(recoveryAction.evidence, run.id)?.message
+      ?? recoveryAction.nextAction;
     const continuation = recoveryAction.evidence.explicitUserContinuation as
       { previousRunId?: unknown; runId?: unknown } | undefined;
     const explicitSuccessor = text(continuation?.runId);
@@ -318,9 +375,18 @@ export function projectExecution(
         /* No execution confirmation. */
       }
     }
+    if (leaseConfirmed && waitingForProvider) {
+      projection.nextAction = "The assignment is offered. Waiting for the external agent to accept it.";
+      return set("waiting_for_provider", `Waiting for ${waitingForProvider === "muse" ? "Muse" : "Dot"}`);
+    }
     return leaseConfirmed || processConfirmed
       ? set("working", "Working")
       : set("reconnecting", "Confirming execution");
+  }
+  if (run.status === "queued" && !run.startedAt && readTaskDrain(now)) {
+    projection.cause = "task_drain";
+    projection.nextAction = "This turn will start automatically when maintenance finishes.";
+    return set("queued", "Waiting for maintenance");
   }
   return projection;
 }

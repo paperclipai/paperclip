@@ -6,7 +6,7 @@ export type TaskWorkspaceIntent = {
   version: 1;
   request?: { key: string; expectedBindingRevision: number };
   selection: TaskWorkspaceSelection;
-  source: "explicit" | "parent" | "channel" | "project" | "operator_cwd" | "task_default" | "legacy";
+  source: "explicit" | "parent" | "channel" | "project" | "operator_cwd" | "task_default" | "legacy" | "recovery";
 };
 export type TaskWorkspacePendingSelection = {
   version: 1;

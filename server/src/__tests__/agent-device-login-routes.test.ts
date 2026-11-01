@@ -362,11 +362,15 @@ function boardActor(userId: string, companyIds: string[] = [COMPANY_1, COMPANY_2
   };
 }
 
-async function createApp() {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
+async function loadRouteModules() {
+  return Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
+}
+
+async function createApp() {
+  const [{ agentRoutes }, { errorHandler }] = await loadRouteModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -386,9 +390,11 @@ describe("adapter device-login routes", () => {
   // `afterEach` whether or not the route removed them itself.
   const accountHomeTestDirs: string[] = [];
 
-  beforeAll(() => {
+  beforeAll(async () => {
     vi.resetModules();
-  });
+
+    await loadRouteModules();
+  }, 60_000);
 
   beforeEach(() => {
     vi.clearAllMocks();

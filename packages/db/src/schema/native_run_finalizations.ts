@@ -50,6 +50,12 @@ export const nativeRunFinalizations = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    pendingEffectOwnerIdx: index("native_run_finalizations_pending_effect_owner_idx")
+      .on(table.companyId, table.issueId, table.decisionId)
+      .where(sql`${table.decisionId} is not null AND ${table.resultId} is not null AND ${table.phase} <> 'terminal_failure'`),
+    unsafeExportRecoveryIdx: index("native_run_finalizations_unsafe_export_recovery_idx")
+      .on(table.companyId, table.issueId, table.runId)
+      .where(sql`${table.phase} = 'terminal_failure' AND ${table.failureCode} = 'native_workspace_sync_out_unsafe_archive'`),
     controlDeadlineIdx: index("native_run_finalizations_control_deadline_idx")
       .on(table.controlDeadlineAt).where(sql`${table.controlDeadlineAt} is not null`),
     issueCompanyFk: foreignKey({

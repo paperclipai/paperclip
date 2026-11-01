@@ -54,6 +54,14 @@ npm install. Report only the combinations actually exercised.
 
 ## Deployment handoff
 
+For hosted testing accounts, read [QA accounts and credentials](references/hosted-qa-accounts.md).
+The testing environment has an AgentMail inbox on the allowed `paperclipbots.com`
+domain and a persistent QA workspace at `https://qa.test.paperclip.app`. Use the
+dedicated QA identity and normal email-code login. The expected 1Password service
+account needs read and item-creation/update access; verify those capabilities
+before promising that new credentials have been saved. Keep concrete secret
+bindings and account receipts in the private eval configuration.
+
 When a requested revision must first be built or deployed, use the skills in the
 private `paperclip-cloud` repo:
 

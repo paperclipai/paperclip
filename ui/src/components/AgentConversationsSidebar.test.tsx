@@ -90,6 +90,19 @@ it("preserves recent activity order when reopening an older conversation", async
   expect(links()).toEqual(["/chats/bob", "/chats/alice"]);
 });
 
+it("shows accessible unread indicators only for the current company and human", async () => {
+  client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [{ ...chat("alice"), isUnreadForMe: true }, chat("bob")]);
+  client.setQueryData(queryKeys.agentChats.list("company-a", "other-human"), [{ ...chat("bob"), isUnreadForMe: true }]);
+  await render();
+  expect(container.querySelector('[aria-label="Unread messages from alice"]')).not.toBeNull();
+  expect(container.querySelector('[aria-label="Unread messages from bob"]')).toBeNull();
+  state.companyId = "company-b";
+  client.setQueryData(queryKeys.agents.list("company-b"), []);
+  client.setQueryData(queryKeys.agentChats.list("company-b", "user-a"), []);
+  await render();
+  expect(container.querySelector('[aria-label^="Unread messages"]')).toBeNull();
+});
+
 it("retains terminated agents' history by id without offering them for new chats", async () => {
   const retired = { ...roster[0], id: "retired-id", name: "Retired", status: "terminated", urlKey: "alice" };
   client.setQueryData(queryKeys.agents.detail(retired.id), retired);

@@ -6,6 +6,8 @@ import {
   isPrivateWebhookHttpRequest,
   isSecretSensitiveHttpRequest,
   isPrivateAgentCommentaryHttpRequest,
+  isPrivateAgentObservabilityHttpRequest,
+  isPrivateMuseHttpRequest,
   shouldSilenceHttpSuccessLog,
 } from "./http-log-policy.js";
 import {
@@ -74,6 +76,8 @@ function requestLogUrl(req: {
   originalUrl?: unknown;
   url?: unknown;
 }) {
+  if(isPrivateMuseHttpRequest(requestClassificationUrl(req)))return "/api/muse/:protocol";
+  if (isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req))) return "/api/companies/:companyId/observability";
   return isPrivateWebhook(req)
     ? privateWebhookLogUrl(requestClassificationUrl(req))
     : stripSecretBearingUrlParts(typeof req.url === "string" ? req.url : "");
@@ -84,6 +88,10 @@ export function createHttpLogger(baseLogger: Logger) {
     logger: baseLogger,
     serializers: {
       req(req: Record<string, unknown> & { url?: unknown }) {
+        if (isPrivateAgentObservabilityHttpRequest(typeof req.url === "string" ? req.url : undefined)) {
+          return { id: req.id, method: req.method, url: "/api/companies/:companyId/observability" };
+        }
+        if(isPrivateMuseHttpRequest(typeof req.url === "string" ? req.url : undefined))return {id:req.id,method:req.method,url:"/api/muse/:protocol"};
         if (isPrivateAgentCommentaryHttpRequest(typeof req.url === "string" ? req.url : undefined)) {
           return { id: req.id, method: req.method, url: stripSecretBearingUrlParts(req.url as string) };
         }
@@ -123,7 +131,7 @@ export function createHttpLogger(baseLogger: Logger) {
       ) {
         // A provider error may also be reflected in response headers. Keep the
         // same content-free contract on both sides of a webhook request.
-        return res.raw?.req && (isPrivateWebhook(res.raw.req) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(res.raw.req)))
+        return res.raw?.req && (isPrivateWebhook(res.raw.req) || isPrivateMuseHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(res.raw.req)))
           ? { statusCode: res.statusCode }
           : res;
       },
@@ -154,6 +162,10 @@ export function createHttpLogger(baseLogger: Logger) {
       return `${req.method} ${stripSecretBearingUrlParts(req.url ?? "")} ${res.statusCode} — ${errMsg}`;
     },
     customErrorObject(req, _res, _err, value) {
+      if (isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req))) {
+        return { ...value, err: { type: "Error", message: "Agent observability request failed" } };
+      }
+      if (isPrivateMuseHttpRequest(requestClassificationUrl(req)))return {...value,err:{type:"Error",message:"External agent request failed"}};
       if (isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(req))) {
         return { ...value, err: { type: "Error", message: "Feedback request failed" } };
       }
@@ -172,7 +184,7 @@ export function createHttpLogger(baseLogger: Logger) {
         if (/^\/mcp\/(?:oauth|paperclip)(?:\/|$)/.test(requestClassificationUrl(req) ?? "")) {
           return { reqBody: "[REDACTED]", ...(ctx ? { errorContext: { name: "Error" } } : {}) };
         }
-        if (isPrivateWebhook(req) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(req))) {
+        if (isPrivateWebhook(req) || isPrivateMuseHttpRequest(requestClassificationUrl(req)) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(req)) || isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req))) {
           // Omit, rather than recursively redact, the entire provider payload.
           // This applies equally before/after parsing and with/without context.
           return {

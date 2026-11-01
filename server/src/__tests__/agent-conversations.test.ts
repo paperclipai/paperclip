@@ -29,9 +29,9 @@ import {
   issues,
 } from "@paperclipai/db";
 import {
-  getEmbeddedPostgresTestSupport,
-  startEmbeddedPostgresTestDatabase,
-} from "./helpers/embedded-postgres.js";
+  recoveryPostgresSupport as support,
+  startRecoveryPostgres,
+} from "./helpers/recovery-postgres.js";
 import { issueService } from "../services/issues.js";
 import { documentService } from "../services/documents.js";
 import { getTaskPlanContext } from "../services/task-plan-context.js";
@@ -58,16 +58,15 @@ import {
   heartbeatService,
 } from "../services/heartbeat.js";
 
-const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)(
   "persistent agent conversations",
   () => {
-    let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+    let database: Awaited<ReturnType<typeof startRecoveryPostgres>>;
     let db: ReturnType<typeof createDb>;
     let companyId: string;
     let agentId: string;
     beforeAll(async () => {
-      database = await startEmbeddedPostgresTestDatabase(
+      database = await startRecoveryPostgres(
         "paperclip-agent-conversations-",
       );
       db = createDb(database.connectionString);

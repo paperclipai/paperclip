@@ -42,8 +42,126 @@ import {
   type PrpEvent,
   type PrpStructuredRunResult,
 } from "./codex-app-server-driver.test-support.js";
+import { runnerdRuntimeRequestExpiryNotification } from "../../live/runnerd-codex-transport.js";
+
+it("preserves runnerd permission expiry before a failed provider terminal and refuses late approval", async () => {
+  const transport = new FakeCodexTransport();
+  const resolve = vi.fn(async () => {});
+  transport.runtimeRequestResolver = resolve;
+  const session = await makeDriver([transport]).openSession({
+    runId: "run-native-expiry", normalizedSessionId: "session-native-expiry", workingDirectory: WORKSPACE,
+  });
+  const events: PrpEvent[] = [];
+  const consume = (async () => { for await (const event of session.events()) events.push(event); })();
+  const { turnId } = await session.startTurn({ message: { role: "user", text: "Leave the native edit unanswered." } });
+  const pending = transport.invoke({ id: "native-edit-permission", method: "session/request_permission", params: {
+    threadId: "thread-1", turnId, itemId: "native-edit", reason: "Write file",
+    choices: [{ key: "accept", label: "Allow once" }, { key: "decline", label: "Deny" }],
+    origin: { adapter: "acpx-runtime-sidecar", provider: "acpx", method: "session/request_permission" },
+  } });
+  await vi.waitFor(() => expect(session.pendingRuntimeRequests?.()).toHaveLength(1));
+  // Rust's projector supplies durable identities; the facade binds its active provider turn.
+  const payload = { provider: "acpx", requestId: "native-edit-permission", requestKind: "permission_approval",
+    requestType: "permission", turnId: "durable-controller-turn", itemId: "durable-item",
+    reason: "provider_process_lost", replayAllowed: false, adapter: "acpx-runtime-sidecar" };
+  for (const kind of ["runtime_request.resolved", "runtime_request.cancelled", "runtime_request.created"])
+    expect(runnerdRuntimeRequestExpiryNotification(kind, payload, "thread-1", turnId)).toBeNull();
+  const expiry = runnerdRuntimeRequestExpiryNotification("runtime_request.expired", payload, "thread-1", turnId)!;
+  transport.push(expiry.method, expiry.params);
+  transport.push(expiry.method, expiry.params);
+  await pending;
+  expect(session.pendingRuntimeRequests?.()).toEqual([]);
+  await expect(session.resolveRuntimeRequest?.({ requestId: "native-edit-permission", turnId, resolution: { action: "accept" } }))
+    .rejects.toThrow();
+  expect(resolve).not.toHaveBeenCalled();
+  transport.push("turn/completed", { threadId: "thread-1", turn: { id: turnId, status: "failed", error: { code: "ACPX_PROVIDER_PROCESS_LOST", message: "Provider died" } } });
+  await vi.waitFor(() => expect(events.some(event => event.eventType === "turn.failed")).toBe(true));
+  await session.close(); await consume;
+  const settlements = events.filter(event => ["runtime_request.expired", "runtime_request.cancelled", "runtime_request.resolved"].includes(event.eventType));
+  expect(settlements).toHaveLength(1);
+  expect(settlements[0]).toMatchObject({ eventType: "runtime_request.expired", turnId, itemId: "native-edit", payload: { ...payload, turnId, itemId: "native-edit" } });
+  expect(events.indexOf(settlements[0]!)).toBeLessThan(events.findIndex(event => event.eventType === "turn.failed"));
+  expect(validatePrpEvent(settlements[0]!)).toMatchObject({ ok: true });
+});
+
+it("preserves canonical question expiry after provider loss and refuses late answers", async () => {
+  const transport = new FakeCodexTransport();
+  const session = await makeDriver([transport]).openSession({ runId: "question-expiry", normalizedSessionId: "question-expiry", workingDirectory: WORKSPACE });
+  const events: PrpEvent[] = [];
+  const consume = (async () => { for await (const event of session.events()) events.push(event); })();
+  const { turnId } = await session.startTurn({ message: { role: "user", text: "Ask before changing files." } });
+  const pending = transport.invoke({ id: "native-question", method: "item/tool/requestUserInput", params: {
+    threadId: "thread-1", turnId, itemId: "question-item", questions: [{ id: "environment", header: "Environment", question: "Where should we deploy?", options: [{ label: "Staging" }, { label: "Production" }] }],
+  } });
+  await vi.waitFor(() => expect(session.pendingRuntimeRequests?.()).toHaveLength(1));
+  const request = session.pendingRuntimeRequests!()[0]!;
+  expect(request.requestKind).toBe("user_input");
+  const payload = { requestId: "native-question", requestKind: "runtime", requestType: "input", replayAllowed: false, reason: "provider_process_lost" };
+  const expiry = runnerdRuntimeRequestExpiryNotification("runtime_request.expired", payload, "thread-1", turnId)!;
+  transport.push(expiry.method, expiry.params);
+  transport.push(expiry.method, expiry.params);
+  await pending;
+  expect(session.pendingRuntimeRequests?.()).toEqual([]);
+  await expect(session.resolveRuntimeRequest?.({ requestId: "native-question", turnId, resolution: { action: "accept" } })).rejects.toThrow();
+  transport.push("turn/completed", { threadId: "thread-1", turn: { id: turnId, status: "failed", error: { code: "ACPX_PROVIDER_PROCESS_LOST", message: "Provider died" } } });
+  await vi.waitFor(() => expect(events.some(event => event.eventType === "turn.failed" || event.eventType === "session.failed")).toBe(true));
+  await session.close(); await consume;
+  expect(events.filter(event => event.eventType === "runtime_request.expired")).toHaveLength(1);
+  expect(events.find(event => event.eventType === "runtime_request.expired")).toMatchObject({ turnId, itemId: "question-item", payload });
+  expect(events.some(event => event.eventType === "session.failed" && event.payload.code === "turn_binding_mismatch")).toBe(false);
+  expect(events.some(event => event.eventType === "runtime_request.cancelled" || event.eventType === "runtime_request.resolved")).toBe(false);
+});
+
+it.each(["turn", "kind", "type", "replay"])("refuses canonical permission expiry with a changed %s binding", async kind => {
+  const transport = new FakeCodexTransport();
+  const session = await makeDriver([transport]).openSession({ runId: "expiry-bound", normalizedSessionId: "expiry-bound", workingDirectory: WORKSPACE });
+  const events: PrpEvent[] = [];
+  const consume = (async () => { for await (const event of session.events()) events.push(event); })();
+  const { turnId } = await session.startTurn({ message: { role: "user", text: "Wait for permission" } });
+  const pending = transport.invoke({ id: "bound-permission", method: "session/request_permission", params: {
+    threadId: "thread-1", turnId, itemId: "edit", reason: "Edit", choices: [{ key: "accept", label: "Allow once" }, { key: "decline", label: "Deny" }],
+    origin: { adapter: "acpx-runtime-sidecar", provider: "acpx", method: "session/request_permission" },
+  } });
+  await vi.waitFor(() => expect(session.pendingRuntimeRequests?.()).toHaveLength(1));
+  const payload = { requestId: "bound-permission", requestKind: kind === "kind" ? "runtime" : "permission_approval",
+    requestType: kind === "type" ? "input" : "permission", replayAllowed: kind === "replay", reason: "provider_process_lost" };
+  const notification = runnerdRuntimeRequestExpiryNotification("runtime_request.expired", payload, "thread-1", kind === "turn" ? "foreign-turn" : turnId)!;
+  transport.push(notification.method, notification.params);
+  await pending; await consume; await session.close();
+  expect(events.some(e => e.eventType === "runtime_request.expired")).toBe(false);
+  expect(events.some(e => e.eventType === "session.failed" && e.payload.code === "turn_binding_mismatch")).toBe(true);
+});
 
 describe("Codex app-server Codex driver", () => {
+  it("keeps a prompted MCP tool answerable after rejecting a session-wide decision", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-mcp-retry",
+      normalizedSessionId: "normalized-mcp-retry",
+      workingDirectory: WORKSPACE,
+    });
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Inspect the desktop." } });
+    const response = transport.invoke({
+      id: "desktop-approval", method: "mcpServer/elicitation/request",
+      params: {
+        threadId: "thread-1", turnId, itemId: "desktop-item", serverName: "assigned",
+        mode: "form", message: "Allow the tool?", _meta: { codex_approval_kind: "mcp_tool_call" },
+        requestedSchema: { type: "object", properties: {} },
+      },
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await expect(session.resolveRuntimeRequest?.({
+      requestId: "desktop-approval", turnId, resolution: { action: "accept_for_session" },
+    })).rejects.toThrow(/one-time/);
+    expect(session.pendingRuntimeRequests?.()).toHaveLength(1);
+    await session.resolveRuntimeRequest?.({
+      requestId: "desktop-approval", turnId, resolution: { action: "accept" },
+    });
+    expect(await response).toEqual({ action: "accept", content: null, _meta: null });
+    expect(session.pendingRuntimeRequests?.()).toHaveLength(0);
+    await session.close();
+  });
+
   it("validates runtime request resolutions against the kind of request they answer", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({

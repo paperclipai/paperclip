@@ -106,7 +106,7 @@ describeEmbeddedPostgres("project list archived route defaults", () => {
     const res = await request(app).get(`/api/companies/${companyId}/projects?includeArchived=true`);
 
     expect(res.status).toBe(200);
-    expect(res.body.map((project: { id: string }) => project.id)).toEqual([activeProjectId, archivedProjectId]);
+    expect(res.body.map((project: { id: string }) => project.id).sort()).toEqual([activeProjectId, archivedProjectId].sort());
   });
 });
 

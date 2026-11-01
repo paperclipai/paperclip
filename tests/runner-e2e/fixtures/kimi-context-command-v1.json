@@ -1,0 +1,284 @@
+{
+  "schema": "paperclip.e2e.kimi-context-real-producer-calibration.v1",
+  "identity": {
+    "runnerInstanceId": "runner-test-1",
+    "environmentLeaseId": "environment-test-1",
+    "runId": "00000000-0000-4000-8000-000000000001",
+    "normalizedSessionId": "session-test-1",
+    "turnId": "turn-test-1",
+    "itemId": "item-test-1"
+  },
+  "committedEvents": [
+    {
+      "sourceSeq": 1,
+      "sourceEventId": "semantic-event-1",
+      "eventType": "harness.diagnostic",
+      "priority": 0,
+      "envelope": {
+        "protocol": "paperclip.runner",
+        "version": 1,
+        "kind": "event",
+        "runnerInstanceId": "runner-test-1",
+        "environmentLeaseId": "environment-test-1",
+        "runId": "00000000-0000-4000-8000-000000000001",
+        "normalizedSessionId": "session-test-1",
+        "turnId": "turn-test-1",
+        "itemId": "item-test-1",
+        "payload": {
+          "sourceSeq": 1,
+          "sourceEventId": "semantic-event-1",
+          "sourceInstanceId": "runner-test-1",
+          "sourceKind": "runner",
+          "runId": "00000000-0000-4000-8000-000000000001",
+          "normalizedSessionId": "session-test-1",
+          "turnId": "turn-test-1",
+          "itemId": "item-test-1",
+          "eventType": "harness.diagnostic",
+          "schema": "paperclip.prp.event.v1",
+          "schemaVersion": 1,
+          "priority": 0,
+          "emittedAt": "2026-08-25T18:00:00.000Z",
+          "payload": {
+            "code": "synthetic-prior-frame"
+          }
+        }
+      },
+      "deliveryCount": 1,
+      "logicalEffectCount": 1
+    },
+    {
+      "sourceSeq": 2,
+      "sourceEventId": "semantic-event-2",
+      "eventType": "harness.diagnostic",
+      "priority": 0,
+      "envelope": {
+        "protocol": "paperclip.runner",
+        "version": 1,
+        "kind": "event",
+        "runnerInstanceId": "runner-test-1",
+        "environmentLeaseId": "environment-test-1",
+        "runId": "00000000-0000-4000-8000-000000000001",
+        "normalizedSessionId": "session-test-1",
+        "turnId": "turn-test-1",
+        "itemId": "item-test-1",
+        "payload": {
+          "sourceSeq": 2,
+          "sourceEventId": "semantic-event-2",
+          "sourceInstanceId": "runner-test-1",
+          "sourceKind": "runner",
+          "runId": "00000000-0000-4000-8000-000000000001",
+          "normalizedSessionId": "session-test-1",
+          "turnId": "turn-test-1",
+          "itemId": "item-test-1",
+          "eventType": "harness.diagnostic",
+          "schema": "paperclip.prp.event.v1",
+          "schemaVersion": 1,
+          "priority": 0,
+          "emittedAt": "2026-08-25T18:00:00.000Z",
+          "payload": {
+            "code": "synthetic-prior-frame"
+          }
+        }
+      },
+      "deliveryCount": 1,
+      "logicalEffectCount": 1
+    },
+    {
+      "sourceSeq": 3,
+      "sourceEventId": "semantic-event-3",
+      "eventType": "harness.diagnostic",
+      "priority": 0,
+      "envelope": {
+        "protocol": "paperclip.runner",
+        "version": 1,
+        "kind": "event",
+        "runnerInstanceId": "runner-test-1",
+        "environmentLeaseId": "environment-test-1",
+        "runId": "00000000-0000-4000-8000-000000000001",
+        "normalizedSessionId": "session-test-1",
+        "turnId": "turn-test-1",
+        "itemId": "item-test-1",
+        "payload": {
+          "sourceSeq": 3,
+          "sourceEventId": "semantic-event-3",
+          "sourceInstanceId": "runner-test-1",
+          "sourceKind": "runner",
+          "runId": "00000000-0000-4000-8000-000000000001",
+          "normalizedSessionId": "session-test-1",
+          "turnId": "turn-test-1",
+          "itemId": "item-test-1",
+          "eventType": "harness.diagnostic",
+          "schema": "paperclip.prp.event.v1",
+          "schemaVersion": 1,
+          "priority": 0,
+          "emittedAt": "2026-08-25T18:00:00.000Z",
+          "payload": {
+            "code": "synthetic-prior-frame"
+          }
+        }
+      },
+      "deliveryCount": 1,
+      "logicalEffectCount": 1
+    },
+    {
+      "sourceSeq": 4,
+      "sourceEventId": "semantic-event-4",
+      "eventType": "semantic_tool.input",
+      "priority": 0,
+      "envelope": {
+        "protocol": "paperclip.runner",
+        "version": 1,
+        "kind": "event",
+        "runnerInstanceId": "runner-test-1",
+        "environmentLeaseId": "environment-test-1",
+        "runId": "00000000-0000-4000-8000-000000000001",
+        "normalizedSessionId": "session-test-1",
+        "turnId": "turn-test-1",
+        "itemId": "item-test-1",
+        "payload": {
+          "sourceSeq": 4,
+          "sourceEventId": "semantic-event-4",
+          "sourceInstanceId": "runner-test-1",
+          "sourceKind": "runner",
+          "runId": "00000000-0000-4000-8000-000000000001",
+          "normalizedSessionId": "session-test-1",
+          "turnId": "turn-test-1",
+          "itemId": "item-test-1",
+          "eventType": "semantic_tool.input",
+          "schema": "paperclip.prp.event.v1",
+          "schemaVersion": 1,
+          "priority": 0,
+          "emittedAt": "2026-08-25T18:00:00.000Z",
+          "payload": {
+            "semantic_tool": {
+              "schema": "paperclip.prp.semantic_tool.v1",
+              "schemaVersion": 1,
+              "phase": "input",
+              "callId": "native-mcp-context-1",
+              "operationId": "get_task_context",
+              "correlation": {
+                "runId": "00000000-0000-4000-8000-000000000001",
+                "normalizedSessionId": "session-test-1",
+                "turnId": "turn-test-1",
+                "itemId": "item-test-1"
+              },
+              "idempotencyKey": null,
+              "content": {
+                "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                "redactionDisposition": "digest_only",
+                "references": []
+              },
+              "input": {}
+            }
+          }
+        }
+      },
+      "deliveryCount": 1,
+      "logicalEffectCount": 1
+    }
+  ],
+  "commands": [
+    {
+      "schema": "paperclip.prp.command.v1",
+      "commandId": "command_tool_a840ed4f1dc2c14279f748c5dd1ea8b3",
+      "controllerSeq": 1,
+      "type": "semantic_tool.result",
+      "issuedAt": "2026-10-29T18:41:45.919Z",
+      "payload": {
+        "callId": "native-mcp-context-1",
+        "operationId": "get_task_context",
+        "sourceEventId": "semantic-event-4",
+        "sourceEventType": "semantic_tool.input",
+        "correlation": {
+          "runId": "00000000-0000-4000-8000-000000000001",
+          "normalizedSessionId": "session-test-1",
+          "turnId": "turn-test-1",
+          "itemId": "item-test-1"
+        },
+        "inputDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "result": {
+          "company": {
+            "id": "synthetic-company"
+          },
+          "actor": {
+            "id": "synthetic-agent"
+          },
+          "activeTask": {
+            "id": "synthetic-task",
+            "description": "synthetic operator continuation"
+          }
+        },
+        "isError": false
+      },
+      "status": "completed",
+      "result": {
+        "commandId": "command_tool_a840ed4f1dc2c14279f748c5dd1ea8b3",
+        "controllerSeq": 1,
+        "commandType": "semantic_tool.result",
+        "status": "completed",
+        "result": {
+          "status": "delivered",
+          "callId": "native-mcp-context-1"
+        }
+      }
+    }
+  ],
+  "projected": {
+    "schema": "paperclip.e2e.kimi-context-authority.v1",
+    "companyId": "synthetic-company",
+    "issueId": "synthetic-task",
+    "agentId": "synthetic-agent",
+    "environmentId": "synthetic-env",
+    "runId": "00000000-0000-4000-8000-000000000001",
+    "sessionId": "session-test-1",
+    "sourceInstanceId": "runner-test-1",
+    "turnId": "turn-test-1",
+    "observerLeaseId": "synthetic-lease",
+    "actionSha256": "sha256:4dfc4faade4ee2bae6ac1793a1856d660a97401da6ea4d642d79f759f508e0b7",
+    "callId": "native-mcp-context-1",
+    "inputSourceSeq": 4,
+    "inputSourceEventId": "semantic-event-4",
+    "inputSha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "inputEventSha256": "sha256:fd6478ab28148b294051aaa5471a8adf043812b049f60958bbb8849793c3d104",
+    "resultSha256": "sha256:7a08899045e679406d58c8ceb4cd1c2bfbf59d83264494c819685a435127284e",
+    "correlationSha256": "sha256:e7b944a6f5b4b8ebca18e2125b06a9e76dc040cc007fe9bda4706fe46eb6d30d",
+    "commandId": "command_tool_a840ed4f1dc2c14279f748c5dd1ea8b3",
+    "controllerSeq": 1,
+    "commandSha256": "sha256:b734d0d4f57a3945b6b00b50f51bf5c029f88282a4fbdef9c4160c45576f605e",
+    "deliverySha256": "sha256:656035050e8a0a5dbd5f0260d7b075c81c10cdbd810b26b60792013ce3ab1e5f",
+    "checkpointIdentitySha256": "sha256:449ca73c797d0a5c63ae11086d0cd64e83296ad8e6bfcce83ee21254c406b3ce",
+    "authenticatedConnectionCount": 1,
+    "highestRecordedSourceSeq": 4
+  },
+  "checkpoint": {
+    "runId": "00000000-0000-4000-8000-000000000001",
+    "recoveryEvidence": {
+      "runnerInstanceId": "runner-test-1",
+      "normalizedSessionId": "session-test-1",
+      "authenticatedConnectionCount": 1,
+      "highestRecordedSourceSeq": 4
+    },
+    "records": [
+      [
+        "command:1",
+        "{\"schema\":\"paperclip.prp.command.v1\",\"commandId\":\"command_tool_a840ed4f1dc2c14279f748c5dd1ea8b3\",\"controllerSeq\":1,\"type\":\"semantic_tool.result\",\"issuedAt\":\"2026-10-29T18:41:45.919Z\",\"payload\":{\"callId\":\"native-mcp-context-1\",\"operationId\":\"get_task_context\",\"sourceEventId\":\"semantic-event-4\",\"sourceEventType\":\"semantic_tool.input\",\"correlation\":{\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\"},\"inputDigest\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"result\":{\"company\":{\"id\":\"synthetic-company\"},\"actor\":{\"id\":\"synthetic-agent\"},\"activeTask\":{\"id\":\"synthetic-task\",\"description\":\"synthetic operator continuation\"}},\"isError\":false},\"status\":\"completed\",\"result\":{\"commandId\":\"command_tool_a840ed4f1dc2c14279f748c5dd1ea8b3\",\"controllerSeq\":1,\"commandType\":\"semantic_tool.result\",\"status\":\"completed\",\"result\":{\"status\":\"delivered\",\"callId\":\"native-mcp-context-1\"}}}"
+      ],
+      [
+        "event:1",
+        "{\"sourceSeq\":1,\"sourceEventId\":\"semantic-event-1\",\"eventType\":\"harness.diagnostic\",\"priority\":0,\"envelope\":{\"protocol\":\"paperclip.runner\",\"version\":1,\"kind\":\"event\",\"runnerInstanceId\":\"runner-test-1\",\"environmentLeaseId\":\"environment-test-1\",\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"payload\":{\"sourceSeq\":1,\"sourceEventId\":\"semantic-event-1\",\"sourceInstanceId\":\"runner-test-1\",\"sourceKind\":\"runner\",\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"eventType\":\"harness.diagnostic\",\"schema\":\"paperclip.prp.event.v1\",\"schemaVersion\":1,\"priority\":0,\"emittedAt\":\"2026-08-25T18:00:00.000Z\",\"payload\":{\"code\":\"synthetic-prior-frame\"}}},\"deliveryCount\":1,\"logicalEffectCount\":1}"
+      ],
+      [
+        "event:2",
+        "{\"sourceSeq\":2,\"sourceEventId\":\"semantic-event-2\",\"eventType\":\"harness.diagnostic\",\"priority\":0,\"envelope\":{\"protocol\":\"paperclip.runner\",\"version\":1,\"kind\":\"event\",\"runnerInstanceId\":\"runner-test-1\",\"environmentLeaseId\":\"environment-test-1\",\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"payload\":{\"sourceSeq\":2,\"sourceEventId\":\"semantic-event-2\",\"sourceInstanceId\":\"runner-test-1\",\"sourceKind\":\"runner\",\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"eventType\":\"harness.diagnostic\",\"schema\":\"paperclip.prp.event.v1\",\"schemaVersion\":1,\"priority\":0,\"emittedAt\":\"2026-08-25T18:00:00.000Z\",\"payload\":{\"code\":\"synthetic-prior-frame\"}}},\"deliveryCount\":1,\"logicalEffectCount\":1}"
+      ],
+      [
+        "event:3",
+        "{\"sourceSeq\":3,\"sourceEventId\":\"semantic-event-3\",\"eventType\":\"harness.diagnostic\",\"priority\":0,\"envelope\":{\"protocol\":\"paperclip.runner\",\"version\":1,\"kind\":\"event\",\"runnerInstanceId\":\"runner-test-1\",\"environmentLeaseId\":\"environment-test-1\",\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"payload\":{\"sourceSeq\":3,\"sourceEventId\":\"semantic-event-3\",\"sourceInstanceId\":\"runner-test-1\",\"sourceKind\":\"runner\",\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"eventType\":\"harness.diagnostic\",\"schema\":\"paperclip.prp.event.v1\",\"schemaVersion\":1,\"priority\":0,\"emittedAt\":\"2026-08-25T18:00:00.000Z\",\"payload\":{\"code\":\"synthetic-prior-frame\"}}},\"deliveryCount\":1,\"logicalEffectCount\":1}"
+      ],
+      [
+        "event:4",
+        "{\"sourceSeq\":4,\"sourceEventId\":\"semantic-event-4\",\"eventType\":\"semantic_tool.input\",\"priority\":0,\"envelope\":{\"protocol\":\"paperclip.runner\",\"version\":1,\"kind\":\"event\",\"runnerInstanceId\":\"runner-test-1\",\"environmentLeaseId\":\"environment-test-1\",\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"payload\":{\"sourceSeq\":4,\"sourceEventId\":\"semantic-event-4\",\"sourceInstanceId\":\"runner-test-1\",\"sourceKind\":\"runner\",\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\",\"eventType\":\"semantic_tool.input\",\"schema\":\"paperclip.prp.event.v1\",\"schemaVersion\":1,\"priority\":0,\"emittedAt\":\"2026-08-25T18:00:00.000Z\",\"payload\":{\"semantic_tool\":{\"schema\":\"paperclip.prp.semantic_tool.v1\",\"schemaVersion\":1,\"phase\":\"input\",\"callId\":\"native-mcp-context-1\",\"operationId\":\"get_task_context\",\"correlation\":{\"runId\":\"00000000-0000-4000-8000-000000000001\",\"normalizedSessionId\":\"session-test-1\",\"turnId\":\"turn-test-1\",\"itemId\":\"item-test-1\"},\"idempotencyKey\":null,\"content\":{\"digest\":\"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"redactionDisposition\":\"digest_only\",\"references\":[]},\"input\":{}}}}},\"deliveryCount\":1,\"logicalEffectCount\":1}"
+      ]
+    ]
+  }
+}

@@ -1,4 +1,5 @@
 import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { runTaskContextColumn } from "./run-task-binding.js";
 import {
   agentWakeupRequests,
   chatActions,
@@ -183,7 +184,15 @@ export async function readChatControlRecoveryStop(
     if (seen.has(runId)) return { kind: "unresolved" };
     seen.add(runId);
     const [run] = await db
-      .select()
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        nativeIssueId: heartbeatRuns.nativeIssueId,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        retryOfRunId: heartbeatRuns.retryOfRunId,
+        contextSnapshot: runTaskContextColumn,
+      })
       .from(heartbeatRuns)
       .where(
         and(

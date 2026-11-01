@@ -4,6 +4,7 @@ import { QueryClient, QueryClientContext, useQuery } from "@tanstack/react-query
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
 import { resolveStreamlinedUiEnabled } from "./useStreamlinedUiEnabled";
+import { useCoordinatorWorkspaceEnabled } from "./useCoordinatorWorkspaceEnabled";
 
 /** On only when opted in and the streamlined shell (which hosts it) is on. */
 export function resolveCombinedInboxTasksEnabled(
@@ -29,6 +30,7 @@ function getDetachedClient(): QueryClient {
  */
 export function useCombinedInboxTasksEnabled(): { enabled: boolean; loaded: boolean } {
   const contextClient = useContext(QueryClientContext);
+  const coordinator = useCoordinatorWorkspaceEnabled();
   const query = useQuery(
     {
       queryKey: queryKeys.instance.experimentalSettings,
@@ -41,7 +43,8 @@ export function useCombinedInboxTasksEnabled(): { enabled: boolean; loaded: bool
   if (!contextClient) return { enabled: false, loaded: true };
 
   return {
-    enabled: resolveCombinedInboxTasksEnabled(query.data),
-    loaded: query.isFetched,
+    // Coordinator keeps Inbox under More and owns its separate Tasks/Needs You IA.
+    enabled: !coordinator.enabled && resolveCombinedInboxTasksEnabled(query.data),
+    loaded: query.isFetched && coordinator.loaded,
   };
 }

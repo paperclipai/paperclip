@@ -28,3 +28,34 @@ describe("project discovery result bounds", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 });
+
+describe("project creation receipt recovery", () => {
+  const create = { ...input, name: "create_project", arguments: { name: "Recovered project", idempotencyKey: "project" }, receiptOnly: true };
+
+  it("asks the project owner for a saved result and accepts an absent receipt without parsing an empty response", async () => {
+    const fetch = vi.fn(async (_url: string, _options: RequestInit) => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetch);
+    expect(await callProjectTool(create)).toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith("http://paperclip.test/api/companies/company/projects", expect.objectContaining({
+      method: "POST", headers: expect.objectContaining({ "X-Paperclip-Receipt-Only": "true" }),
+      body: expect.any(String),
+    }));
+    expect(JSON.parse(fetch.mock.calls[0]![1].body as string)).toMatchObject(create.arguments);
+  });
+
+  it("returns the saved project and preserves owner validation failures", async () => {
+    const project = { id: "saved-project", name: create.arguments.name };
+    const fetch = vi.fn().mockResolvedValueOnce(Response.json(project))
+      .mockResolvedValueOnce(Response.json({ error: "Project idempotency key was used with different inputs" }, { status: 409 }));
+    vi.stubGlobal("fetch", fetch);
+    expect(await callProjectTool(create)).toEqual(project);
+    await expect(callProjectTool(create)).rejects.toThrow(/different inputs/);
+  });
+
+  it("rejects receipt-only requests for other operations before fetching", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    await expect(callProjectTool({ ...input, receiptOnly: true })).rejects.toThrow(/receipt/i);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});

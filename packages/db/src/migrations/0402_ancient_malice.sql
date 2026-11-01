@@ -1,0 +1,2 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "chat_actions_github_check_work_idx" ON "chat_actions" USING btree ("id") WHERE "chat_actions"."kind" = 'github_review_check'
+      and ("chat_actions"."status" = 'received' or ("chat_actions"."status" = 'failed' and "chat_actions"."result"->>'retryable' = 'true'));

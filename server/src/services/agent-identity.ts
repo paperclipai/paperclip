@@ -5,6 +5,7 @@ import type { AgentPublicIdentity } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { persistActivity } from "./activity-log.js";
+import { createAgentIdentityRedactor } from "./agent-identity-redaction.js";
 
 const publicColumns = {
   algorithm: agentIdentityKeys.algorithm,
@@ -17,12 +18,26 @@ export function agentIdentityService(db: Db) {
   const ownership = (companyId: string, agentId: string) => and(
     eq(agentIdentityKeys.companyId, companyId), eq(agentIdentityKeys.agentId, agentId),
   );
+  async function resolveIdentity(row: typeof agentIdentityKeys.$inferSelect) {
+    const privateKeyPem = await localEncryptedProvider.resolveVersion({ material: row.privateKeyMaterial, externalRef: null });
+    const privateKey = createPrivateKey(privateKeyPem);
+    const derived = createPublicKey(privateKey).export({ type: "spki", format: "der" });
+    const stored = createPublicKey(row.publicKeyPem).export({ type: "spki", format: "der" });
+    if (row.algorithm !== "Ed25519" || privateKey.asymmetricKeyType !== "ed25519" ||
+      !derived.equals(stored) || fingerprint(stored) !== row.keyId)
+      throw new Error("Agent identity public and private keys do not match");
+    return { keyId: row.keyId, publicKeyPem: row.publicKeyPem, privateKeyPem };
+  }
 
   return {
     // Reading an identity must never provision it or decrypt private material.
     async getPublicIdentity(companyId: string, agentId: string): Promise<AgentPublicIdentity | null> {
       const [row] = await db.select(publicColumns).from(agentIdentityKeys).where(ownership(companyId, agentId));
       return row ? { ...row, createdAt: row.createdAt.toISOString() } : null;
+    },
+    async createExistingLogRedactor(companyId: string, agentId: string) {
+      const [row] = await db.select().from(agentIdentityKeys).where(ownership(companyId, agentId));
+      return createAgentIdentityRedactor(row ? (await resolveIdentity(row)).privateKeyPem : undefined);
     },
 
     async ensureAgentIdentity(companyId: string, agentId: string) {
@@ -49,18 +64,8 @@ export function agentIdentityService(db: Db) {
             details: { algorithm: "Ed25519", keyId },
           });
         }
-        const privateKeyPem = await localEncryptedProvider.resolveVersion({
-          material: row.privateKeyMaterial, externalRef: null,
-        });
         // Fail closed on corruption or a wrong master key; never replace a key.
-        const privateKey = createPrivateKey(privateKeyPem);
-        const derived = createPublicKey(privateKey).export({ type: "spki", format: "der" });
-        const stored = createPublicKey(row.publicKeyPem).export({ type: "spki", format: "der" });
-        if (row.algorithm !== "Ed25519" || privateKey.asymmetricKeyType !== "ed25519" ||
-            !derived.equals(stored) || fingerprint(stored) !== row.keyId) {
-          throw new Error("Agent identity public and private keys do not match");
-        }
-        return { keyId: row.keyId, publicKeyPem: row.publicKeyPem, privateKeyPem };
+        return resolveIdentity(row);
       });
     },
   };

@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companyTransferRuns } from "@paperclipai/db";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 // Durable run ledger for chunked company transfers. A run tracks one export
 // publish or import apply of a transfer container. Progress is recorded per
@@ -128,8 +130,25 @@ async function getRun(db: Db, runId: string): Promise<CompanyTransferRunRow | nu
   return record ? rowFromRecord(record) : null;
 }
 
+
+
+
+async function writeTransferRun<T>(db: Db, runId: string, write: (tx: Db) => Promise<T>): Promise<T> {
+  return db.transaction(async tx => {
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.importSpoolCleanup, runId);
+    return write(tx as unknown as Db);
+  });
+}
+
 export const companyTransferRunService = {
   getRun,
+
+  async getCleanupState(db: Db, runId: string) {
+    const [run] = await db.select({ id: companyTransferRuns.id, companyId: companyTransferRuns.companyId,
+      status: companyTransferRuns.status, updatedAt: companyTransferRuns.updatedAt })
+      .from(companyTransferRuns).where(eq(companyTransferRuns.id, runId)).limit(1);
+    return run ?? null;
+  },
 
   async getRunForActor(db: Db, runId: string, actorKey: string): Promise<CompanyTransferRunRow | null> {
     const run = await getRun(db, runId);
@@ -171,9 +190,12 @@ export const companyTransferRunService = {
       if (existing) {
         return { run: existing, resumed: true, alreadyCompleted: existing.status === "completed" };
       }
+      const id = randomUUID();
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.importSpoolCleanup, id);
       const [created] = await txDb
         .insert(companyTransferRuns)
         .values({
+          id,
           direction: input.direction,
           actorKey: input.actorKey,
           idempotencyKey: input.idempotencyKey,
@@ -200,7 +222,7 @@ export const companyTransferRunService = {
     const index = asPartsIndex(manifest);
     const chunkCount = counts?.chunkCount ?? index?.chunks.length ?? 0;
     const blobCount = counts?.blobCount ?? index?.blobs.length ?? 0;
-    await db
+    await writeTransferRun(db, runId, async tx => tx
       .update(companyTransferRuns)
       .set({
         manifest,
@@ -209,7 +231,7 @@ export const companyTransferRunService = {
         blobCount,
         updatedAt: new Date(),
       })
-      .where(eq(companyTransferRuns.id, runId));
+      .where(eq(companyTransferRuns.id, runId)));
   },
 
   /**
@@ -222,30 +244,39 @@ export const companyTransferRunService = {
    * not run the apply.
    */
   async claimApply(db: Db, runId: string): Promise<boolean> {
-    const claimed = await db
+    const claimed = await writeTransferRun(db, runId, async tx => tx
       .update(companyTransferRuns)
       .set({ status: "applying", error: null, updatedAt: new Date() })
       .where(
         and(eq(companyTransferRuns.id, runId), inArray(companyTransferRuns.status, RESUMABLE_STATUSES)),
       )
-      .returning({ id: companyTransferRuns.id });
+      .returning({ id: companyTransferRuns.id }));
     return claimed.length > 0;
   },
 
   async start(db: Db, runId: string): Promise<void> {
-    await db
+    await writeTransferRun(db, runId, async tx => tx
       .update(companyTransferRuns)
       .set({ status: "running", error: null, startedAt: new Date(), finishedAt: null, updatedAt: new Date() })
       .where(
         and(eq(companyTransferRuns.id, runId), inArray(companyTransferRuns.status, RESUMABLE_STATUSES)),
-      );
+      ));
   },
 
   async attachCompany(db: Db, runId: string, companyId: string): Promise<void> {
-    await db
+    await writeTransferRun(db, runId, async tx => tx
       .update(companyTransferRuns)
       .set({ companyId, updatedAt: new Date() })
-      .where(eq(companyTransferRuns.id, runId));
+      .where(eq(companyTransferRuns.id, runId)));
+  },
+
+
+
+
+  async notePartUploadActivity(db: Db, runId: string): Promise<void> {
+    await writeTransferRun(db, runId, async tx => tx.update(companyTransferRuns)
+      .set({ updatedAt: new Date() })
+      .where(and(eq(companyTransferRuns.id, runId), inArray(companyTransferRuns.status, PART_UPLOAD_STATUSES))));
   },
 
   /**
@@ -258,7 +289,7 @@ export const companyTransferRunService = {
    */
   async completePart(db: Db, runId: string, partName: string): Promise<boolean> {
     const partJson = JSON.stringify([partName]);
-    const updated = await db
+    const updated = await writeTransferRun(db, runId, async tx => tx
       .update(companyTransferRuns)
       .set({
         completedParts: sql`case when ${companyTransferRuns.completedParts} @> ${partJson}::jsonb then ${companyTransferRuns.completedParts} else ${companyTransferRuns.completedParts} || ${partJson}::jsonb end`,
@@ -267,7 +298,7 @@ export const companyTransferRunService = {
       .where(
         and(eq(companyTransferRuns.id, runId), inArray(companyTransferRuns.status, PART_UPLOAD_STATUSES)),
       )
-      .returning({ id: companyTransferRuns.id });
+      .returning({ id: companyTransferRuns.id }));
     return updated.length > 0;
   },
 
@@ -285,10 +316,10 @@ export const companyTransferRunService = {
   },
 
   async complete(db: Db, runId: string): Promise<void> {
-    await db
+    await writeTransferRun(db, runId, async tx => tx
       .update(companyTransferRuns)
       .set({ status: "completed", error: null, finishedAt: new Date(), updatedAt: new Date() })
-      .where(eq(companyTransferRuns.id, runId));
+      .where(eq(companyTransferRuns.id, runId)));
   },
 
   /**
@@ -306,7 +337,7 @@ export const companyTransferRunService = {
    * same content afterwards starts a fresh run.
    */
   async cancelIfIdle(db: Db, runId: string, idleSince: Date, error: string): Promise<boolean> {
-    const claimed = await db
+    const claimed = await writeTransferRun(db, runId, async tx => tx
       .update(companyTransferRuns)
       .set({ status: "cancelled", error, finishedAt: new Date(), updatedAt: new Date() })
       .where(
@@ -316,7 +347,7 @@ export const companyTransferRunService = {
           lt(companyTransferRuns.updatedAt, idleSince),
         ),
       )
-      .returning({ id: companyTransferRuns.id });
+      .returning({ id: companyTransferRuns.id }));
     return claimed.length > 0;
   },
 
@@ -329,11 +360,11 @@ export const companyTransferRunService = {
    * run already settled this is a no-op and returns false.
    */
   async releaseApplyClaim(db: Db, runId: string, error: string): Promise<boolean> {
-    const released = await db
+    const released = await writeTransferRun(db, runId, async tx => tx
       .update(companyTransferRuns)
       .set({ status: "failed", error, finishedAt: new Date(), updatedAt: new Date() })
       .where(and(eq(companyTransferRuns.id, runId), eq(companyTransferRuns.status, "applying")))
-      .returning({ id: companyTransferRuns.id });
+      .returning({ id: companyTransferRuns.id }));
     return released.length > 0;
   },
 
@@ -346,7 +377,7 @@ export const companyTransferRunService = {
    * applies may be live (e.g. from a periodic sweep) would kill them.
    */
   async recoverStrandedApplyingRuns(db: Db): Promise<string[]> {
-    const recovered = await db
+    const recovered = await writeTransferRun(db, "*", async tx => tx
       .update(companyTransferRuns)
       .set({
         status: "failed",
@@ -355,21 +386,21 @@ export const companyTransferRunService = {
         updatedAt: new Date(),
       })
       .where(eq(companyTransferRuns.status, "applying"))
-      .returning({ id: companyTransferRuns.id });
+      .returning({ id: companyTransferRuns.id }));
     return recovered.map((row) => row.id);
   },
 
   async fail(db: Db, runId: string, error: string): Promise<void> {
-    await db
+    await writeTransferRun(db, runId, async tx => tx
       .update(companyTransferRuns)
       .set({ status: "failed", error, finishedAt: new Date(), updatedAt: new Date() })
-      .where(eq(companyTransferRuns.id, runId));
+      .where(eq(companyTransferRuns.id, runId)));
   },
 
   async cancel(db: Db, runId: string): Promise<void> {
-    await db
+    await writeTransferRun(db, runId, async tx => tx
       .update(companyTransferRuns)
       .set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(companyTransferRuns.id, runId), inArray(companyTransferRuns.status, RESUMABLE_STATUSES)));
+      .where(and(eq(companyTransferRuns.id, runId), inArray(companyTransferRuns.status, RESUMABLE_STATUSES))));
   },
 };

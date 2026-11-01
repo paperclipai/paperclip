@@ -76,6 +76,25 @@ export function deriveCommentId(
 }
 
 /**
+ * The external chat conversation a wake answers. Several conversations can
+ * share one issue (for example GitHub review finding threads), but a reviewed
+ * chat run can attest only one, so wakes for different conversations must
+ * never share a batch.
+ */
+export const CHAT_CONVERSATION_ID_KEY = "chatConversationId";
+
+export function readWakeChatConversationId(contextSnapshot: unknown): string | null {
+  return readNonEmptyString(parseObject(contextSnapshot)[CHAT_CONVERSATION_ID_KEY]);
+}
+
+/** True when both wakes answer a chat conversation and they are different ones. */
+export function wakeChatConversationsConflict(existing: unknown, incoming: unknown): boolean {
+  const existingId = readWakeChatConversationId(existing);
+  const incomingId = readWakeChatConversationId(incoming);
+  return existingId !== null && incomingId !== null && existingId !== incomingId;
+}
+
+/**
  * `allowedWakeReasons` is the issue-tree-control module's own set of wake
  * reasons that excuse an interaction wake. This file stays free of service
  * imports, so the caller passes the set in rather than this function reading

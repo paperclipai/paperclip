@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { deriveIssueUserContext } from "../services/issues.ts";
 
 function makeIssue(overrides?: Partial<{
+  createdByAgentId: string | null;
+  originKind: string | null;
   createdByUserId: string | null;
   assigneeUserId: string | null;
   createdAt: Date;
@@ -60,6 +62,18 @@ describe("deriveIssueUserContext", () => {
 
     expect(context.myLastTouchAt?.toISOString()).toBe("2026-03-06T09:00:00.000Z");
     expect(context.isUnreadForMe).toBe(true);
+  });
+
+  it("excludes automatic creator attribution from the personal touch time", () => {
+    for (const originKind of ["chat_channel", "routine_execution"]) {
+      const context = deriveIssueUserContext(
+        makeIssue({ originKind, createdByUserId: "user-1" }),
+        "user-1",
+        { myLastCommentAt: null, myLastReadAt: null, lastExternalCommentAt: null },
+      );
+      expect(context.myLastTouchAt).toBeNull();
+      expect(context.isUnreadForMe).toBe(false);
+    }
   });
 
   it("uses issue updated time as fallback touch point for assignee", () => {

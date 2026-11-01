@@ -1,5 +1,5 @@
 import { instanceExperimentalSettingsSchema } from "@paperclipai/shared";
-import type { CaseSummary, CaseDetail, CaseEvent } from "@/api/cases";
+import type { CaseSummary, CaseDetail, CaseEvent, CaseHandoffView } from "@/api/cases";
 import { prepareFixtureApi, type FixtureState } from "./api";
 export const caseItem: CaseSummary = {
   id: "case-gap",
@@ -16,6 +16,7 @@ export const caseItem: CaseSummary = {
     version: "0.3.1",
     ready: false,
     checks: { build: "passed", tests: "pending" },
+    environments: [{ name: "staging", checks: { build: "passed", tests: "pending" } }],
     task_identifiers: ["PAP-42"],
   },
   parentCaseId: null,
@@ -69,7 +70,23 @@ const event: CaseEvent = {
   actorAgentName: "Codex Coder",
   issue: caseDetail.issueLinks[0].issue,
 };
-export function installCaseFixtures(state: FixtureState = "ready") {
+export function installCaseFixtures(state: FixtureState = "ready", workflow?: "waiting" | "blocked") {
+  const handoff: CaseHandoffView = {
+    id: "handoff-gap", companyId: caseItem.companyId, caseId: caseItem.id, issueId: "task-gap", version: 2,
+    destinationKind: "agent", completedAt: null, workflowTransition: null,
+    fromAgentId: "agent-coder", fromAgentName: "Codex Coder", toAgentId: "agent-verifier", toAgentName: "Release Verifier",
+    phase: "verification", instructions: "Verify the saved release checklist and report any missing evidence on this task.",
+    commentId: null, actorType: "agent", actorId: "agent-coder", sourceRunId: "run-gap", responsibleUserId: "user-storybook",
+    expectedIssueStatusVersion: 1, appliedIssueStatusVersion: null, wakeupRequestId: "wake-gap", idempotencyKey: "storybook-handoff",
+    inputFingerprint: "fixture", state: "awaiting_release", attemptCount: 1, nextAttemptAt: caseItem.updatedAt,
+    leaseExpiresAt: null, lastErrorCode: workflow === "blocked" ? "workspace_settlement" : null,
+    lastError: workflow === "blocked" ? "Waiting for the outgoing workspace to finish saving." : null,
+    createdAt: caseItem.updatedAt, assignmentAppliedAt: null, deliveredAt: null, cancelledAt: null, updatedAt: caseItem.updatedAt,
+  };
+  let pending = !!workflow;
+  const detail = () => workflow ? { ...caseDetail, workIssueId: "task-gap", phase: "implementation", handoffVersion: 2,
+    workIssue: { ...caseDetail.issueLinks[0].issue, statusVersion: 1, assigneeAgentId: "agent-coder", assigneeAgentName: "Codex Coder" },
+    pendingHandoff: pending ? handoff : null } : caseDetail;
   return prepareFixtureApi(
     [
       {
@@ -89,7 +106,14 @@ export function installCaseFixtures(state: FixtureState = "ready") {
               ? [childCase]
               : [caseItem, childCase],
       },
-      { path: /^\/api\/cases\/(PAP-C42|case-gap)$/, read: () => caseDetail },
+      { path: /^\/api\/cases\/(PAP-C42|case-gap)$/, read: detail },
+      { path: "/api/cases/case-gap/handoffs", read: () => ({ items: workflow ? [handoff] : [], nextCursor: null, canControl: true }) },
+      { path: "/api/cases/case-gap/handoffs/handoff-gap/retry", method: "POST", read: () => {
+        handoff.lastError = null; handoff.lastErrorCode = null; return handoff;
+      } },
+      { path: "/api/cases/case-gap/handoffs/handoff-gap/cancel", method: "POST", read: () => {
+        pending = false; handoff.state = "cancelled"; return handoff;
+      } },
       {
         path: /^\/api\/cases\/(PAP-C42|case-gap)\/events$/,
         read: () => (state === "empty" ? [] : [event]),

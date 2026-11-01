@@ -1,10 +1,17 @@
 name: Runner Full-Stack E2E
+run-name: Runner Full-Stack E2E / ${{ github.event.schedule || inputs.cadence || 'manual' }}
 
 on:
   schedule:
-    - cron: "47 8 * * 0"
+    - cron: "47 8 * * *"
+    - cron: "47 9 * * 0"
   workflow_dispatch:
     inputs:
+      cadence:
+        description: "Bounded daily ($20) or weekly ($100) selection; manual keeps explicit selectors"
+        type: choice
+        options: [manual, daily, weekly]
+        default: manual
       target_branch:
         description: "Branch in paperclipai/paperclip to test; the trusted workflow still runs from master"
         type: string
@@ -55,7 +62,7 @@ concurrency:
 jobs:
   authorize:
     name: Authorize paid campaign
-    if: github.event_name != 'schedule' || vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true'
+    if: github.event_name != 'schedule' || (vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -67,6 +74,8 @@ jobs:
       playwright_channel: ${{ steps.runner.outputs.playwright_channel }}
       target_sha: ${{ steps.target.outputs.sha }}
       target_ref: ${{ steps.target.outputs.ref }}
+      evidence_retention: ${{ steps.evidence_route.outputs.evidence_retention }}
+      manual_private_ids: ${{ steps.evidence_route.outputs.manual_private_ids }}
     steps:
       - name: Require default branch and allowlisted numeric actor IDs
         env:
@@ -115,14 +124,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           TARGET_BRANCH: ${{ inputs.target_branch || github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVAL_CADENCE: ${{ inputs.cadence || 'manual' }}
         run: |
           set -euo pipefail
           if [ -z "$TARGET_BRANCH" ] || [[ "$TARGET_BRANCH" == refs/* ]]; then
             echo "target_branch must name a branch in this repository without a refs/ prefix." >&2
             exit 1
           fi
-          encoded_branch="$(jq -rn --arg branch "$TARGET_BRANCH" '$branch | @uri')"
-          target_sha="$(gh api -X GET "repos/$REPOSITORY/branches/$encoded_branch" --jq .commit.sha)"
+          if [ "$EVENT_NAME" = schedule ] || [ "$EVAL_CADENCE" != manual ]; then
+            if [ "$TARGET_BRANCH" != "$DEFAULT_BRANCH" ]; then
+              echo "Bounded campaigns require the workflow's default-branch commit." >&2
+              exit 1
+            fi
+            target_sha="$GITHUB_SHA"
+          else
+            encoded_branch="$(jq -rn --arg branch "$TARGET_BRANCH" '$branch | @uri')"
+            target_sha="$(gh api -X GET "repos/$REPOSITORY/branches/$encoded_branch" --jq .commit.sha)"
+          fi
           if ! [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "The requested repository branch did not resolve to a commit." >&2
             exit 1
@@ -135,12 +155,23 @@ jobs:
         id: runner
         env:
           AWS_PAID_RUNNER_ENABLED: ${{ vars.RUNNER_E2E_AWS_ENABLED }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVAL_CADENCE: ${{ inputs.cadence || 'manual' }}
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
         run: |
           set -euo pipefail
           github_runner='ubuntu-latest'
           aws_runner='runs-on/fleet=paperclip-public-pr-x64/env=public-ci'
+          bounded=false
+          if [ "$EVENT_NAME" = schedule ] || [ "$EVAL_CADENCE" != manual ]; then
+            if [ "$REPOSITORY_PRIVATE" != false ]; then
+              echo 'Bounded campaigns require a public repository and standard GitHub-hosted compute.' >&2
+              exit 1
+            fi
+            bounded=true
+          fi
 
-          if [ "$AWS_PAID_RUNNER_ENABLED" = true ]; then
+          if [ "$AWS_PAID_RUNNER_ENABLED" = true ] && [ "$bounded" = false ]; then
             {
               echo "runner=$aws_runner"
               echo "max_parallel_default=100"
@@ -155,8 +186,48 @@ jobs:
               echo "max_parallel_limit=57"
               echo "playwright_channel="
             } >> "$GITHUB_OUTPUT"
-            echo '::notice title=Paid runner routing::RUNNER_E2E_AWS_ENABLED is not true; using the proven GitHub-hosted runner'
+            echo '::notice title=Paid runner routing::Using a standard GitHub-hosted runner'
           fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Preflight reviewed report dependencies before paid admission
+        run: node tests/runner-e2e/prepare-report-lock.mjs
+
+      - name: Validate report dependency manifests offline
+        run: pnpm install --lockfile-only --frozen-lockfile --ignore-scripts --offline
+
+      - name: Classify manual evidence before any protected credential job
+        id: evidence_route
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVAL_CADENCE: ${{ inputs.cadence || 'manual' }}
+          SELECT_ID: ${{ inputs.id }}
+          SELECT_SUITE: ${{ inputs.suite }}
+          SELECT_GROUP: ${{ inputs.group }}
+          SELECT_PROFILE: ${{ inputs.profile }}
+          SELECT_ENVIRONMENT: ${{ inputs.environment }}
+          SELECT_CASE: ${{ inputs.case }}
+          TEST_RUNNER: ${{ steps.runner.outputs.runner }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+        run: node tests/runner-e2e/manual-private-policy.mjs
 
   target_lock:
     name: Resolve target pnpm lockfile
@@ -200,6 +271,10 @@ jobs:
           fi
           echo "sha256=$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
+      - name: Bound scheduled lockfile upload
+        if: github.event_name == 'schedule' || (inputs.cadence != '' && inputs.cadence != 'manual')
+        run: node tests/runner-e2e/artifact-budget.mjs check lock pnpm-lock.yaml
+
       - name: Upload resolved target lockfile
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -212,13 +287,15 @@ jobs:
   catalog:
     name: Validate catalog and select cells
     needs: [authorize, target_lock]
-    if: github.event_name != 'schedule' || vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true'
+    if: github.event_name != 'schedule' || (vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
     outputs:
       matrix: ${{ steps.catalog.outputs.matrix }}
+      operations_cadence: ${{ steps.catalog.outputs.operations_cadence }}
+      operating_overhead: ${{ steps.catalog.outputs.operating_overhead }}
       needs_daytona: ${{ steps.catalog.outputs.needs_daytona }}
       needs_runner_typescript: ${{ steps.catalog.outputs.needs_runner_typescript }}
       needs_native_binaries: ${{ steps.catalog.outputs.needs_native_binaries }}
@@ -281,6 +358,13 @@ jobs:
         id: catalog
         env:
           EVENT_NAME: ${{ github.event_name }}
+          EVAL_EVENT: ${{ github.event_name }}
+          EVAL_SCHEDULE: ${{ github.event.schedule }}
+          EVAL_CADENCE: ${{ inputs.cadence || 'manual' }}
+          EVAL_OPERATIONS_ENABLED: ${{ vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED }}
+          EVAL_OPERATING_OVERHEAD_JSON: ${{ vars.RUNNER_E2E_OPERATING_OVERHEAD_JSON }}
+          EVAL_TEST_RUNNER: ${{ needs.authorize.outputs.test_runner }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           SELECT_ALL: ${{ inputs.all }}
           SELECT_SUITE: ${{ inputs.suite }}
           SELECT_GROUP: ${{ inputs.group }}
@@ -293,6 +377,31 @@ jobs:
           REQUESTED_MAX_PARALLEL: ${{ inputs.max_parallel }}
         run: |
           set -euo pipefail
+          if [ "$EVAL_EVENT" = schedule ] || [ "$EVAL_CADENCE" != manual ]; then
+            test "$TARGET_SHA" = "$GITHUB_SHA"
+            test -z "${SELECT_SUITE:-}${SELECT_GROUP:-}${SELECT_PROFILE:-}${SELECT_ENVIRONMENT:-}${SELECT_CASE:-}${SELECT_ID:-}"
+            catalog_json="$(node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/scheduled-operations.ts matrix)"
+            cadence="$EVAL_CADENCE"
+            if [ "$EVAL_EVENT" = schedule ]; then
+              case "$EVAL_SCHEDULE" in
+                '47 8 * * *') cadence=daily ;;
+                '47 9 * * 0') cadence=weekly ;;
+                *) exit 1 ;;
+              esac
+            fi
+            {
+              echo "operations_cadence=$cadence"
+              echo "operating_overhead=$(jq -c '.overhead' <<< "$catalog_json")"
+              echo "matrix=$(jq -c '{include: .include}' <<< "$catalog_json")"
+              echo "execution_ids=$(jq -c '.executionIds' <<< "$catalog_json")"
+              echo "needs_daytona=false"
+              echo "needs_runner_typescript=true"
+              echo "needs_native_binaries=true"
+              echo "needs_remote_provider_pack=false"
+              echo "max_parallel=1"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           args=(--matrix-json)
           add_values() {
             local flag="$1"
@@ -509,7 +618,7 @@ jobs:
   build_runner_artifacts:
     name: Build reusable runner campaign artifacts
     needs: [authorize, target_lock, catalog]
-    if: github.event_name != 'schedule' || vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true'
+    if: github.event_name != 'schedule' || (vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true')
     # Compile native binaries on the same reviewed image used to execute them,
     # avoiding libc/architecture drift between GitHub-hosted and AWS lanes.
     runs-on: ${{ needs.authorize.outputs.test_runner }}
@@ -618,6 +727,10 @@ jobs:
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
         run: echo "name=runner-e2e-build-${TARGET_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
+      - name: Bound scheduled build upload
+        if: needs.catalog.outputs.operations_cadence != ''
+        run: node tests/runner-e2e/artifact-budget.mjs check build runner-e2e-build-bundle.tar.gz runner-e2e-build-bundle.tar.gz.sha256
+
       - name: Upload immutable shared campaign outputs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -633,7 +746,7 @@ jobs:
     name: Build reusable remote provider pack
     needs:
       [authorize, target_lock, catalog, daytona_image, build_runner_artifacts]
-    if: github.event_name != 'schedule' || vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true'
+    if: github.event_name != 'schedule' || (vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -769,6 +882,7 @@ jobs:
 
   test:
     name: ${{ matrix.executionId }}
+    if: needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions'
     needs:
       [
         authorize,
@@ -790,7 +904,7 @@ jobs:
       fail-fast: false
       max-parallel: ${{ fromJSON(needs.catalog.outputs.max_parallel) }}
       matrix: ${{ fromJSON(needs.catalog.outputs.matrix) }}
-    steps:
+    steps: &paid_test_steps
       - name: Reauthorize paid execution before provider access
         env:
           GH_TOKEN: ${{ github.token }}
@@ -818,6 +932,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.authorize.outputs.target_sha }}
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        if: needs.catalog.outputs.operations_cadence == ''
+        with:
+          ref: ${{ github.sha }}
+          path: .manual-private-trusted
           persist-credentials: false
 
       - name: Download resolved target lockfile
@@ -851,6 +972,79 @@ jobs:
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
           version: 9.15.4
+
+      - name: Validate actual manual cell against trusted evidence routing
+        id: manual_cell_route
+        if: needs.catalog.outputs.operations_cadence == ''
+        env:
+          EVIDENCE_RETENTION: ${{ needs.authorize.outputs.evidence_retention }}
+          SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
+          MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+        run: node "$GITHUB_WORKSPACE/.manual-private-trusted/tests/runner-e2e/manual-private-policy.mjs" cell
+
+      - name: Prepare workflow-pinned private transfer runtime before archive credentials
+        if: steps.manual_cell_route.outputs.route == 'private'
+        working-directory: .manual-private-trusted
+        env:
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          node tests/runner-e2e/prepare-report-lock.mjs
+          pnpm install --frozen-lockfile --ignore-scripts --store-dir "$RUNNER_TEMP/manual-private-publication-store"
+
+      - name: Bind protected original run and compatible target evidence protocol
+        id: manual_private
+        if: steps.manual_cell_route.outputs.route == 'private'
+        working-directory: .manual-private-trusted
+        env:
+          MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
+          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          TARGET_ROOT: ${{ github.workspace }}
+          SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+          AWS_EC2_METADATA_DISABLED: 'true'
+        run: node "$GITHUB_WORKSPACE/.manual-private-trusted/cli/node_modules/tsx/dist/cli.mjs" "$GITHUB_WORKSPACE/.manual-private-trusted/tests/runner-e2e/manual-private-transfer.ts" prepare
+
+      - name: Obtain exact-key manual archive session
+        id: manual_private_credentials
+        if: steps.manual_private.outcome == 'success'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          inline-session-policy: ${{ steps.manual_private.outputs.session_policy }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Verify restricted complete evidence storage before model or fixture secrets
+        id: manual_private_verified
+        if: steps.manual_private.outcome == 'success'
+        working-directory: .manual-private-trusted
+        env:
+          MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
+          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          TARGET_ROOT: ${{ github.workspace }}
+          SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+          AWS_EC2_METADATA_DISABLED: 'true'
+          PRIVATE_EVIDENCE_ROOT: ${{ steps.manual_private.outputs.root }}
+          AWS_ACCESS_KEY_ID: ${{ steps.manual_private_credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.manual_private_credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.manual_private_credentials.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+        run: node "$GITHUB_WORKSPACE/.manual-private-trusted/cli/node_modules/tsx/dist/cli.mjs" "$GITHUB_WORKSPACE/.manual-private-trusted/tests/runner-e2e/manual-private-transfer.ts" verify
 
       # This job receives provider credentials only in the final paid-test
       # step. Keep target-selected dependency lifecycle code from running in
@@ -962,8 +1156,8 @@ jobs:
           }
           NODE
 
-      - name: Install pinned legacy Claude CLI
-        if: matrix.profileId == 'legacy-claude'
+      - name: Install pinned Claude CLI for setup verification
+        if: matrix.profileId == 'legacy-claude' || matrix.profileId == 'runner-acpx-claude'
         run: |
           npm install --global --omit=dev --ignore-scripts @anthropic-ai/claude-code@2.1.277
           launcher="$(npm root --global)/@anthropic-ai/claude-code/cli-wrapper.cjs"
@@ -1012,7 +1206,7 @@ jobs:
       # This definition executes only from the authorized default-branch workflow.
       # Provision host policy before credentials reach target-controlled tests.
       - name: Provision Codex sandbox on the disposable trusted runner
-        if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-codex' || matrix.profileId == 'runner-codex-mini' || matrix.profileId == 'runner-acpx-codex')
+        if: matrix.environmentId == 'local' && (needs.catalog.outputs.operations_cadence == 'weekly' || matrix.profileId == 'runner-codex' || matrix.profileId == 'runner-codex-mini' || matrix.profileId == 'runner-acpx-codex' || matrix.profileId == 'runner-codex-subscription')
         run: |
           node --input-type=module <<'NODE'
           import { execFileSync } from "node:child_process";
@@ -1052,24 +1246,91 @@ jobs:
           timeout 120s docker pull "$oracle_image"
           timeout 30s docker image inspect "$oracle_image" --format '{{.Id}}'
 
-      - name: Run paid cell
+      - name: Obtain scoped private history credentials
+        id: private_history_credentials
+        if: needs.catalog.outputs.operations_cadence != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Verify private evidence retention before paid execution
+        if: needs.catalog.outputs.operations_cadence != ''
         env:
+          AWS_ACCESS_KEY_ID: ${{ steps.private_history_credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.private_history_credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.private_history_credentials.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/private-history.ts verify evidence "$GITHUB_RUN_ID" bounded-runner-e2e-evidence
+
+      - name: Prepare bounded campaign before credentials
+        if: needs.catalog.outputs.operations_cadence != ''
+        env:
+          EVAL_EVENT: ${{ github.event_name }}
+          EVAL_SCHEDULE: ${{ github.event.schedule }}
+          EVAL_CADENCE: ${{ needs.catalog.outputs.operations_cadence }}
+          EVAL_OPERATIONS_ENABLED: ${{ vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED }}
+          EVAL_OPERATING_OVERHEAD_JSON: ${{ needs.catalog.outputs.operating_overhead }}
+          EVAL_TEST_RUNNER: ${{ needs.authorize.outputs.test_runner }}
+          PAPERCLIP_E2E_BRAINTRUST_PROJECT_ID: ${{ vars.RUNNER_E2E_BRAINTRUST_PROJECT_ID }}
+        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/scheduled-operations.ts prepare
+
+      - name: Run bounded campaign and retain feedback review
+        if: needs.catalog.outputs.operations_cadence != ''
+        env:
+          BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
+          PAPERCLIP_E2E_BRAINTRUST_PROJECT_ID: ${{ vars.RUNNER_E2E_BRAINTRUST_PROJECT_ID }}
+          PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
+          PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
+          PAPERCLIP_PLAYWRIGHT_CHANNEL: ${{ needs.authorize.outputs.playwright_channel }}
+        run: |
+          set +e
+          args=(--max-parallel 1 --max-automatic-retries 0)
+          while IFS= read -r id; do args+=(--id "$id"); done < <(jq -r '.executionIds[]' "$PAPERCLIP_E2E_OPERATIONS_MANIFEST")
+          pnpm test:e2e:runner -- "${args[@]}"
+          run_status=$?
+          node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/scheduled-finalization.ts
+          finalization_status=$?
+          test "$run_status" = 0 && test "$finalization_status" = 0
+
+      - name: Run paid cell
+        if: needs.catalog.outputs.operations_cadence == '' && (steps.manual_cell_route.outputs.route == 'actions' || steps.manual_private_verified.outcome == 'success')
+        env:
+          PAPERCLIP_RUNNER_E2E_PRIVATE_PREFLIGHT: ${{ steps.manual_private_verified.outcome == 'success' && format('{0}/preflight.json', steps.manual_private.outputs.root) || '' }}
+          PRIVATE_EVIDENCE_ROOT: ${{ steps.manual_private.outputs.root }}
           OPENAI_API_KEY: ${{ matrix.credentialName == 'OPENAI_API_KEY' && secrets.OPENAI_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ matrix.credentialName == 'ANTHROPIC_API_KEY' && secrets.ANTHROPIC_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ matrix.credentialName == 'OPENROUTER_API_KEY' && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ matrix.credentialName == 'XAI_API_KEY' && secrets.XAI_API_KEY || '' }}
           GROK_AUTH_JSON: ${{ matrix.credentialName == 'GROK_AUTH_JSON' && secrets.GROK_AUTH_JSON || '' }}
+          COPILOT_GITHUB_TOKEN: ${{ matrix.credentialName == 'COPILOT_GITHUB_TOKEN' && secrets.COPILOT_GITHUB_TOKEN || '' }}
           DAYTONA_API_KEY: ${{ matrix.environmentId == 'daytona' && secrets.DAYTONA_API_KEY || '' }}
           PAPERCLIP_E2E_DAYTONA_IMAGE: ${{ needs.daytona_image.outputs.image }}
           PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: ${{ github.workspace }}/packages/paperclip-runner/provider-pack
           PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.executionId }}
+          PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
           PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
           PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
           PAPERCLIP_PLAYWRIGHT_CHANNEL: ${{ needs.authorize.outputs.playwright_channel }}
-        run: pnpm test:e2e:runner -- --id "${{ matrix.executionId }}"
+        run: |
+          if [ -n "$PAPERCLIP_RUNNER_E2E_PRIVATE_PREFLIGHT" ]; then
+            pnpm test:e2e:runner -- --id "${{ matrix.executionId }}" > "$PRIVATE_EVIDENCE_ROOT/launcher-output.log" 2>&1
+          else
+            pnpm test:e2e:runner -- --id "${{ matrix.executionId }}"
+          fi
 
-      - name: Upload access-controlled packaged cell evidence
-        if: always()
+      - name: Stage bounded campaign evidence
+        id: stage_evidence
+        if: always() && needs.catalog.outputs.operations_cadence != ''
+        run: node tests/runner-e2e/artifact-budget.mjs stage evidence tests/runner-e2e/results bounded-runner-e2e-evidence
+
+      - name: Upload nonprivate packaged cell evidence
+        if: always() && needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions' && steps.manual_cell_route.outputs.route == 'actions'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: runner-e2e-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.executionId }}
@@ -1077,10 +1338,78 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+      - name: Retain bounded campaign evidence in private AWS storage
+        if: always() && needs.catalog.outputs.operations_cadence != '' && steps.private_history_credentials.outcome == 'success'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.private_history_credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.private_history_credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.private_history_credentials.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/private-history.ts upload evidence "$GITHUB_RUN_ID" bounded-runner-e2e-evidence
+
+      - name: Enforce complete bounded evidence retention
+        if: always() && needs.catalog.outputs.operations_cadence != '' && steps.stage_evidence.outputs.complete != 'true'
+        run: exit 1
+
+      - name: Retain complete approved manual originals with no public fallback
+        if: always() && steps.manual_private_verified.outcome == 'success'
+        working-directory: .manual-private-trusted
+        env:
+          MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
+          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          TARGET_ROOT: ${{ github.workspace }}
+          SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+          AWS_EC2_METADATA_DISABLED: 'true'
+          PRIVATE_EVIDENCE_ROOT: ${{ steps.manual_private.outputs.root }}
+          AWS_ACCESS_KEY_ID: ${{ steps.manual_private_credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.manual_private_credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.manual_private_credentials.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+        run: node "$GITHUB_WORKSPACE/.manual-private-trusted/cli/node_modules/tsx/dist/cli.mjs" "$GITHUB_WORKSPACE/.manual-private-trusted/tests/runner-e2e/manual-private-transfer.ts" upload-cell
+
+  test_recurring:
+    name: ${{ matrix.executionId }}
+    if: needs.catalog.outputs.operations_cadence != '' && needs.authorize.outputs.target_sha == github.sha && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: [authorize, target_lock, catalog, daytona_image, build_runner_artifacts, build_remote_provider_pack]
+    runs-on: ${{ needs.authorize.outputs.test_runner }}
+    timeout-minutes: ${{ matrix.timeoutMinutes }}
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: runner-e2e-private-paid
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.catalog.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.catalog.outputs.matrix) }}
+    steps: *paid_test_steps
+
+  test_manual_private:
+    name: ${{ matrix.executionId }}
+    if: needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'private' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: [authorize, target_lock, catalog, daytona_image, build_runner_artifacts, build_remote_provider_pack]
+    runs-on: ${{ needs.authorize.outputs.test_runner }}
+    timeout-minutes: ${{ matrix.timeoutMinutes }}
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: runner-e2e-private-paid
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.catalog.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.catalog.outputs.matrix) }}
+    steps: *paid_test_steps
+
   report:
     name: Merge and enforce campaign result
-    if: always() && !cancelled() && needs.catalog.result == 'success'
-    needs: [authorize, catalog, daytona_image, test]
+    if: always() && !cancelled() && needs.catalog.result == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: [authorize, catalog, daytona_image, test, test_recurring, test_manual_private]
     outputs:
       history_source_ready: ${{ steps.history_source_ready.outputs.ready }}
     runs-on: ubuntu-latest
@@ -1088,6 +1417,9 @@ jobs:
     permissions:
       actions: read
       contents: read
+      id-token: write
+    environment:
+      name: runner-e2e-private-history
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -1107,15 +1439,297 @@ jobs:
         with:
           version: 9.15.4
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: 24
-          cache: pnpm
+      - name: Apply reviewed reporting lock corrections
+        run: node tests/runner-e2e/prepare-report-lock.mjs
 
-      # Resolve from this trusted checkout only. Never use the target branch's
-      # lockfile or install scripts in the publication job.
-      - run: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
-      - run: pnpm install --frozen-lockfile
+      - name: Install pinned reporting dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts --store-dir "${{ runner.temp }}/eval-report-store"
+
+      - name: Prepare exact manual report storage identity
+        id: manual_report
+        if: needs.authorize.outputs.evidence_retention == 'private'
+        env:
+          MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
+          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+          AWS_EC2_METADATA_DISABLED: 'true'
+        run: node "$GITHUB_WORKSPACE/cli/node_modules/tsx/dist/cli.mjs" "$GITHUB_WORKSPACE/tests/runner-e2e/manual-private-transfer.ts" report-session
+
+      - name: Obtain exact current manual report archive session
+        id: manual_report_credentials
+        if: steps.manual_report.outcome == 'success'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          inline-session-policy: ${{ steps.manual_report.outputs.session_policy }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Obtain exact private cell 0 read session
+        id: manual_read_credentials_0
+        if: steps.manual_report.outcome == 'success' && fromJSON(steps.manual_report.outputs.cell_count) > 0
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          inline-session-policy: ${{ steps.manual_report.outputs.read_policy_0 }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Download restricted manual cell 0
+        if: steps.manual_read_credentials_0.outcome == 'success'
+        env:
+          MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
+          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+          AWS_EC2_METADATA_DISABLED: 'true'
+          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
+          SELECTED_CELL_INDEX: '0'
+          AWS_ACCESS_KEY_ID: ${{ steps.manual_read_credentials_0.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.manual_read_credentials_0.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.manual_read_credentials_0.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+        run: node "$GITHUB_WORKSPACE/cli/node_modules/tsx/dist/cli.mjs" "$GITHUB_WORKSPACE/tests/runner-e2e/manual-private-transfer.ts" download-cell
+
+      - name: Obtain exact private cell 1 read session
+        id: manual_read_credentials_1
+        if: steps.manual_report.outcome == 'success' && fromJSON(steps.manual_report.outputs.cell_count) > 1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          inline-session-policy: ${{ steps.manual_report.outputs.read_policy_1 }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Download restricted manual cell 1
+        if: steps.manual_read_credentials_1.outcome == 'success'
+        env:
+          MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
+          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+          AWS_EC2_METADATA_DISABLED: 'true'
+          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
+          SELECTED_CELL_INDEX: '1'
+          AWS_ACCESS_KEY_ID: ${{ steps.manual_read_credentials_1.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.manual_read_credentials_1.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.manual_read_credentials_1.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+        run: node "$GITHUB_WORKSPACE/cli/node_modules/tsx/dist/cli.mjs" "$GITHUB_WORKSPACE/tests/runner-e2e/manual-private-transfer.ts" download-cell
+
+      - name: Obtain exact private cell 2 read session
+        id: manual_read_credentials_2
+        if: steps.manual_report.outcome == 'success' && fromJSON(steps.manual_report.outputs.cell_count) > 2
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          inline-session-policy: ${{ steps.manual_report.outputs.read_policy_2 }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Download restricted manual cell 2
+        if: steps.manual_read_credentials_2.outcome == 'success'
+        env:
+          MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
+          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+          AWS_EC2_METADATA_DISABLED: 'true'
+          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
+          SELECTED_CELL_INDEX: '2'
+          AWS_ACCESS_KEY_ID: ${{ steps.manual_read_credentials_2.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.manual_read_credentials_2.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.manual_read_credentials_2.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+        run: node "$GITHUB_WORKSPACE/cli/node_modules/tsx/dist/cli.mjs" "$GITHUB_WORKSPACE/tests/runner-e2e/manual-private-transfer.ts" download-cell
+
+      - name: Obtain exact private cell 3 read session
+        id: manual_read_credentials_3
+        if: steps.manual_report.outcome == 'success' && fromJSON(steps.manual_report.outputs.cell_count) > 3
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          inline-session-policy: ${{ steps.manual_report.outputs.read_policy_3 }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Download restricted manual cell 3
+        if: steps.manual_read_credentials_3.outcome == 'success'
+        env:
+          MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
+          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+          AWS_EC2_METADATA_DISABLED: 'true'
+          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
+          SELECTED_CELL_INDEX: '3'
+          AWS_ACCESS_KEY_ID: ${{ steps.manual_read_credentials_3.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.manual_read_credentials_3.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.manual_read_credentials_3.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+        run: node "$GITHUB_WORKSPACE/cli/node_modules/tsx/dist/cli.mjs" "$GITHUB_WORKSPACE/tests/runner-e2e/manual-private-transfer.ts" download-cell
+
+      - name: Obtain exact private cell 4 read session
+        id: manual_read_credentials_4
+        if: steps.manual_report.outcome == 'success' && fromJSON(steps.manual_report.outputs.cell_count) > 4
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          inline-session-policy: ${{ steps.manual_report.outputs.read_policy_4 }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Download restricted manual cell 4
+        if: steps.manual_read_credentials_4.outcome == 'success'
+        env:
+          MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
+          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+          AWS_EC2_METADATA_DISABLED: 'true'
+          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
+          SELECTED_CELL_INDEX: '4'
+          AWS_ACCESS_KEY_ID: ${{ steps.manual_read_credentials_4.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.manual_read_credentials_4.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.manual_read_credentials_4.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+        run: node "$GITHUB_WORKSPACE/cli/node_modules/tsx/dist/cli.mjs" "$GITHUB_WORKSPACE/tests/runner-e2e/manual-private-transfer.ts" download-cell
+
+      - name: Obtain exact private cell 5 read session
+        id: manual_read_credentials_5
+        if: steps.manual_report.outcome == 'success' && fromJSON(steps.manual_report.outputs.cell_count) > 5
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          inline-session-policy: ${{ steps.manual_report.outputs.read_policy_5 }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Download restricted manual cell 5
+        if: steps.manual_read_credentials_5.outcome == 'success'
+        env:
+          MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
+          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+          AWS_EC2_METADATA_DISABLED: 'true'
+          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
+          SELECTED_CELL_INDEX: '5'
+          AWS_ACCESS_KEY_ID: ${{ steps.manual_read_credentials_5.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.manual_read_credentials_5.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.manual_read_credentials_5.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+        run: node "$GITHUB_WORKSPACE/cli/node_modules/tsx/dist/cli.mjs" "$GITHUB_WORKSPACE/tests/runner-e2e/manual-private-transfer.ts" download-cell
+
+      - name: Obtain exact private cell 6 read session
+        id: manual_read_credentials_6
+        if: steps.manual_report.outcome == 'success' && fromJSON(steps.manual_report.outputs.cell_count) > 6
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          inline-session-policy: ${{ steps.manual_report.outputs.read_policy_6 }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Download restricted manual cell 6
+        if: steps.manual_read_credentials_6.outcome == 'success'
+        env:
+          MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
+          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+          AWS_EC2_METADATA_DISABLED: 'true'
+          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
+          SELECTED_CELL_INDEX: '6'
+          AWS_ACCESS_KEY_ID: ${{ steps.manual_read_credentials_6.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.manual_read_credentials_6.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.manual_read_credentials_6.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+        run: node "$GITHUB_WORKSPACE/cli/node_modules/tsx/dist/cli.mjs" "$GITHUB_WORKSPACE/tests/runner-e2e/manual-private-transfer.ts" download-cell
+
+      - name: Obtain exact private cell 7 read session
+        id: manual_read_credentials_7
+        if: steps.manual_report.outcome == 'success' && fromJSON(steps.manual_report.outputs.cell_count) > 7
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          inline-session-policy: ${{ steps.manual_report.outputs.read_policy_7 }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Download restricted manual cell 7
+        if: steps.manual_read_credentials_7.outcome == 'success'
+        env:
+          MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
+          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+          AWS_EC2_METADATA_DISABLED: 'true'
+          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
+          SELECTED_CELL_INDEX: '7'
+          AWS_ACCESS_KEY_ID: ${{ steps.manual_read_credentials_7.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.manual_read_credentials_7.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.manual_read_credentials_7.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+        run: node "$GITHUB_WORKSPACE/cli/node_modules/tsx/dist/cli.mjs" "$GITHUB_WORKSPACE/tests/runner-e2e/manual-private-transfer.ts" download-cell
+
+      - name: Verify all approved private cell transfers before merging
+        id: manual_cells_downloaded
+        if: steps.manual_report.outcome == 'success'
+        env:
+          MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
+          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+        run: node "$GITHUB_WORKSPACE/cli/node_modules/tsx/dist/cli.mjs" "$GITHUB_WORKSPACE/tests/runner-e2e/manual-private-transfer.ts" verify-downloads
 
       - name: Resolve workflow job attempts
         env:
@@ -1138,6 +1752,7 @@ jobs:
 
       - name: Download cell evidence
         id: download_evidence
+        if: needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions'
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -1146,15 +1761,37 @@ jobs:
           merge-multiple: false
 
       - name: Retry cell evidence download after transport failure
-        if: steps.download_evidence.outcome == 'failure'
+        if: needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions' && steps.download_evidence.outcome == 'failure'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: runner-e2e-${{ github.run_id }}-*-*
           path: downloaded-runner-e2e
           merge-multiple: false
 
+      - name: Obtain scoped private history credentials
+        id: private_history_credentials
+        if: needs.catalog.outputs.operations_cadence != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          output-env-credentials: false
+          output-credentials: true
+          disable-retry: true
+          action-timeout-s: 60
+
+      - name: Download private bounded campaign evidence
+        if: needs.catalog.outputs.operations_cadence != ''
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.private_history_credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.private_history_credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.private_history_credentials.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/private-history.ts download evidence "$GITHUB_RUN_ID" "downloaded-runner-e2e/runner-e2e-$GITHUB_RUN_ID-1-scheduled-campaign"
+
       - name: Select latest workflow attempt per cell
-        if: always()
+        if: always() && needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions'
         env:
           PAPERCLIP_RUNNER_E2E_ARTIFACT_ROOT: ${{ github.workspace }}/downloaded-runner-e2e
           PAPERCLIP_RUNNER_E2E_SELECTED_ROOT: ${{ github.workspace }}/selected-runner-e2e
@@ -1163,6 +1800,25 @@ jobs:
           PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
           PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
         run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/select-rerun-artifacts.ts
+
+      - name: Preserve bounded campaign evidence and journal
+        if: always() && needs.catalog.outputs.operations_cadence != ''
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          artifact="downloaded-runner-e2e/runner-e2e-$RUN_ID-1-scheduled-campaign"
+          directory="$GITHUB_WORKSPACE/selected-runner-e2e/runner-e2e-$RUN_ID-1-scheduled-campaign/scheduled"
+          echo "PAPERCLIP_E2E_OPERATIONS_LEDGER=$directory/ledger.jsonl" >> "$GITHUB_ENV"
+          test -d "$artifact"
+          mkdir -p selected-runner-e2e
+          cp -R "$artifact" selected-runner-e2e/
+          if [ -f "$directory/feedback-review.json" ]; then
+            echo "PAPERCLIP_E2E_FEEDBACK_REVIEW=$directory/feedback-review.json" >> "$GITHUB_ENV"
+          fi
+          if [ -f "$directory/experiment-receipt.json" ]; then
+            echo "PAPERCLIP_E2E_BRAINTRUST_EXPERIMENT=$directory/experiment-receipt.json" >> "$GITHUB_ENV"
+          fi
 
       - name: Collect blob reports
         run: |
@@ -1180,7 +1836,13 @@ jobs:
         if: always()
         env:
           PAPERCLIP_RUNNER_E2E_MERGED_REPORT_DIR: ${{ github.workspace }}/runner-e2e-merged-report
-        run: pnpm exec playwright merge-reports --config tests/runner-e2e/merge.config.ts merged-blob-reports
+        run: |
+          if [ "${{ needs.authorize.outputs.evidence_retention }}" = private ]; then
+            mkdir -p runner-e2e-merged-report
+            pnpm exec playwright merge-reports --config tests/runner-e2e/merge.config.ts merged-blob-reports > runner-e2e-merged-report/merge.log 2>&1
+          else
+            pnpm exec playwright merge-reports --config tests/runner-e2e/merge.config.ts merged-blob-reports
+          fi
 
       - name: Aggregate normalized campaign results
         if: always()
@@ -1188,21 +1850,35 @@ jobs:
           PAPERCLIP_RUNNER_E2E_REPORT_ROOT: ${{ github.workspace }}/selected-runner-e2e
           PAPERCLIP_RUNNER_E2E_REPORT_OUT: ${{ github.workspace }}/runner-e2e-merged-report/normalized
           PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: ${{ needs.catalog.outputs.execution_ids }}
-          PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
+          PAPERCLIP_E2E_CAMPAIGN_ID: ${{ needs.catalog.outputs.operations_cadence != '' && format('gha-{0}-1-scheduled-campaign', github.run_id) || format('gha-{0}-{1}', github.run_id, github.run_attempt) }}
           PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
           PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
-          PAPERCLIP_RUNNER_E2E_HISTORY_PUBLIC_BASE_URL: ${{ vars.RUNNER_E2E_HISTORY_PUBLIC_BASE_URL }}
+          PAPERCLIP_RUNNER_E2E_HISTORY_PUBLIC_BASE_URL: ${{ needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions' && vars.RUNNER_E2E_HISTORY_PUBLIC_BASE_URL || '' }}
           PAPERCLIP_RUNNER_E2E_HISTORY_PREFIX: ${{ vars.RUNNER_E2E_HISTORY_PREFIX || 'runner-e2e' }}
+          EVIDENCE_RETENTION: ${{ needs.authorize.outputs.evidence_retention }}
+          EVAL_OPERATIONS_CADENCE: ${{ needs.catalog.outputs.operations_cadence }}
         run: |
           set +e
-          pnpm test:e2e:runner:report
+          if [ -n "$EVAL_OPERATIONS_CADENCE" ] || [ "$EVIDENCE_RETENTION" = private ]; then
+            mkdir -p runner-e2e-merged-report
+            pnpm test:e2e:runner:report > runner-e2e-merged-report/report.log 2>&1
+          else
+            pnpm test:e2e:runner:report
+          fi
           report_status=$?
           set -e
-          cat runner-e2e-merged-report/normalized/summary.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$EVAL_OPERATIONS_CADENCE" ] && [ "$EVIDENCE_RETENTION" = actions ]; then
+            cat runner-e2e-merged-report/normalized/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
           exit "$report_status"
 
-      - name: Upload access-controlled merged report
-        if: always()
+      - name: Stage bounded merged report
+        id: stage_report
+        if: always() && needs.catalog.outputs.operations_cadence != ''
+        run: node tests/runner-e2e/artifact-budget.mjs stage report runner-e2e-merged-report bounded-runner-e2e-report
+
+      - name: Upload nonprivate merged report
+        if: always() && needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: runner-e2e-report-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1210,9 +1886,57 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+      - name: Retain bounded report in private AWS storage
+        id: private_report
+        if: always() && needs.catalog.outputs.operations_cadence != '' && steps.private_history_credentials.outcome == 'success'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.private_history_credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.private_history_credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.private_history_credentials.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+        run: |
+          node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/private-history.ts upload report "$GITHUB_RUN_ID" bounded-runner-e2e-report
+          echo '{"version":1,"privateReportRetained":true}' > private-report-status.json
+          echo 'The recurring campaign report is retained in private AWS storage. See the eval operations runbook for authenticated retrieval.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain report availability for the schedule monitor
+        if: always() && needs.catalog.outputs.operations_cadence != '' && steps.private_report.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-e2e-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: private-report-status.json
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Enforce complete bounded report retention
+        if: always() && needs.catalog.outputs.operations_cadence != '' && steps.stage_report.outputs.complete != 'true'
+        run: exit 1
+
+      - name: Retain complete manual merged evidence only in restricted storage
+        id: manual_private_report
+        if: always() && steps.manual_report_credentials.outcome == 'success' && steps.manual_cells_downloaded.outcome == 'success'
+        env:
+          MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
+          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+          AWS_EC2_METADATA_DISABLED: 'true'
+          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
+          PRIVATE_REPORT_SOURCE: ${{ github.workspace }}/runner-e2e-merged-report
+          AWS_ACCESS_KEY_ID: ${{ steps.manual_report_credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.manual_report_credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.manual_report_credentials.outputs.aws-session-token }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
+        run: |
+          node "$GITHUB_WORKSPACE/cli/node_modules/tsx/dist/cli.mjs" "$GITHUB_WORKSPACE/tests/runner-e2e/manual-private-transfer.ts" upload-report
+          echo 'The private report archive is retained. Transfer does not certify feature PASS or required evidence completeness; see its typed receipt. No raw Actions artifact or public page was uploaded.' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Verify normalized history source report
         id: history_source_ready
-        if: always()
+        if: always() && needs.authorize.outputs.evidence_retention == 'actions'
         run: |
           set -euo pipefail
           dashboard_root="runner-e2e-merged-report/normalized"
@@ -1225,7 +1949,7 @@ jobs:
   publish_history:
     name: Publish S3 history and Pages bundle with declared screenshots
     needs: [authorize, catalog, report]
-    if: always() && needs.catalog.result == 'success' && needs.report.outputs.history_source_ready == 'true'
+    if: always() && needs.catalog.result == 'success' && needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions' && needs.report.outputs.history_source_ready == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -1257,12 +1981,13 @@ jobs:
         with:
           version: 9.15.4
 
-      # Resolve the trusted publication checkout's lockfile without lifecycle
-      # scripts, then install the exact result. This matches the report job's
-      # frozen-install preparation while keeping target-controlled code out of
-      # the AWS credentialed publisher.
-      - run: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
-      - run: pnpm install --frozen-lockfile
+      # Use a job-local store and disable lifecycle scripts throughout install.
+      # OIDC is available to every step, even before the AWS credential exchange.
+      - name: Apply reviewed publication lock corrections
+        run: node tests/runner-e2e/prepare-report-lock.mjs
+
+      - name: Install pinned publication dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts --store-dir "${{ runner.temp }}/eval-publisher-store"
 
       - name: Install publisher-only Chromium
         run: pnpm exec playwright install --with-deps --only-shell chromium

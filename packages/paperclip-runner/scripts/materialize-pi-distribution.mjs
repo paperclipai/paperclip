@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { PI_DISTRIBUTION_CLOSURE_SHA256 } from "../src/drivers/acpx/pi-closure-pins.ts";
@@ -132,6 +133,54 @@ export async function resolvePiBundledNpm(nodeRoot) {
   return entry;
 }
 
+class RetryablePiNodeDownloadError extends Error {}
+
+async function readPiNodeArchive(url, fetchImpl, timeoutMs) {
+  let response;
+  try { response = await fetchImpl(url, { redirect: "error", signal: AbortSignal.timeout(timeoutMs) }); }
+  catch (error) { throw error?.name === "TimeoutError" || error instanceof TypeError ? new RetryablePiNodeDownloadError(error.message, { cause: error }) : error; }
+  if (!response.ok) {
+    // Release the rejected response's connection before any retry starts.
+    await response.body?.cancel().catch(() => {});
+    const message = `Pinned Pi Node download returned HTTP ${response.status}`;
+    throw response.status >= 500 || response.status === 429 ? new RetryablePiNodeDownloadError(message) : new Error(message);
+  }
+  if (!response.body) throw new Error("Pinned Pi Node download failed");
+  const chunks = []; let length = 0;
+  try {
+    for await (const chunk of response.body) {
+      length += chunk.length; if (length > 128 * 1024 * 1024) throw new Error("Pi Node archive exceeds its bound");
+      chunks.push(Buffer.from(chunk));
+    }
+  } catch (error) {
+    // The timeout also bounds the body; a stalled or reset stream is transport loss.
+    throw error?.name === "TimeoutError" || error instanceof TypeError ? new RetryablePiNodeDownloadError(error.message, { cause: error }) : error;
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * nodejs.org transfers occasionally stall. Retry only transport failures; the
+ * release hash still gates every byte, and a mismatch or 4xx fails closed at once.
+ */
+export async function downloadPinnedPiNodeArchive({ url, archiveSha256, fetchImpl = fetch, attempts = 3, timeoutMs = 60_000, retryDelayMs = 5_000, warn = (message) => console.warn(message), checkCancelled = () => {} }) {
+  for (let attempt = 1; ; attempt++) {
+    checkCancelled();
+    let bytes;
+    try { bytes = await readPiNodeArchive(url, fetchImpl, timeoutMs); }
+    catch (error) {
+      if (!(error instanceof RetryablePiNodeDownloadError)) throw error;
+      if (attempt >= attempts) throw new Error(`Pinned Pi Node download failed after ${attempt} attempts: ${error.message}`, { cause: error });
+      // Keep each transient failure in the build log even when a retry succeeds.
+      warn(`Pinned Pi Node download attempt ${attempt}/${attempts} failed: ${error.message}; retrying`);
+      await sleep(retryDelayMs * attempt);
+      continue;
+    }
+    if (hash(bytes) !== archiveSha256) throw new Error("Pi Node archive does not match its release pin");
+    return bytes;
+  }
+}
+
 /** Build on the target platform. No lifecycle scripts, model requests, or auth. */
 export async function materializePiDistribution({ outputRoot, nodeExecutable, npmExecutable = "npm", inputs, checkCancelled = () => {} }) {
   // Cancellation is observed between bounded subprocesses. A setup signal must
@@ -159,15 +208,7 @@ export async function materializePiDistribution({ outputRoot, nodeExecutable, np
     if (nodeExecutable) node = await realpath(nodeExecutable);
     else {
       const archiveName = `node-v${PI_NODE_VERSION}-${target}.tar.gz`;
-      const response = await fetch(`https://nodejs.org/dist/v${PI_NODE_VERSION}/${archiveName}`, { redirect: "error", signal: AbortSignal.timeout(60_000) });
-      if (!response.ok || !response.body) throw new Error("Pinned Pi Node download failed");
-      const chunks = []; let length = 0;
-      for await (const chunk of response.body) {
-        length += chunk.length; if (length > 128 * 1024 * 1024) throw new Error("Pi Node archive exceeds its bound");
-        chunks.push(Buffer.from(chunk));
-      }
-      const bytes = Buffer.concat(chunks);
-      if (hash(bytes) !== nodePin.archiveSha256) throw new Error("Pi Node archive does not match its release pin");
+      const bytes = await downloadPinnedPiNodeArchive({ url: `https://nodejs.org/dist/v${PI_NODE_VERSION}/${archiveName}`, archiveSha256: nodePin.archiveSha256, checkCancelled });
       const archivePath = join(staging, archiveName); await writeFile(archivePath, bytes);
       const nodeRoot = join(staging, "node-extract"); await mkdir(nodeRoot);
       await runOwned("tar", ["-xzf", archivePath, "-C", nodeRoot, "--strip-components=1", `node-v${PI_NODE_VERSION}-${target}/bin/node`, `node-v${PI_NODE_VERSION}-${target}/lib/node_modules/npm`], { timeout: 30_000 });

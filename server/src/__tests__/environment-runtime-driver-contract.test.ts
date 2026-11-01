@@ -27,6 +27,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { environmentService } from "../services/environments.js";
+import { hasPendingRunCleanup } from "../services/execution-blocker.js";
 import { secretService } from "../services/secrets.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -183,6 +185,22 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
       } as Environment,
     };
   }
+
+  it("settles native cleanup through the SSH bookkeeping release contract", async () => {
+    const { companyId, environment, runId } = await seedEnvironment({ driver: "ssh", config: {} });
+    const lease = await environmentService(db).acquireLease({ companyId, environmentId: environment.id,
+      heartbeatRunId: runId, provider: "ssh", providerLeaseId: "ssh://worker@example.invalid:22/workspace",
+      metadata: { driver: "ssh" },
+    });
+    await db.update(heartbeatRuns).set({ status: "succeeded", runtimeMode: "native", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
+    expect(await hasPendingRunCleanup(db, companyId, runId)).toBe(true);
+    const released = await environmentRuntimeService(db).releaseRunLeases(runId);
+    expect(released).toHaveLength(1);
+    expect(released[0]?.lease).toMatchObject({ id: lease.id, status: "released", cleanupStatus: null });
+    expect(released[0]?.lease.releasedAt).not.toBeNull();
+    expect(await hasPendingRunCleanup(db, companyId, runId)).toBe(false);
+  });
 
   async function runContract(testCase: RuntimeContractCase) {
     const cleanup = await testCase.setup?.();

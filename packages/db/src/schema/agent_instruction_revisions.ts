@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   uuid,
@@ -113,6 +114,17 @@ export const agentInstructionWorkingCopies = pgTable(
   },
   (t) => ({
     owner: foreignKey({ columns: [t.companyId, t.agentId], foreignColumns: [agents.companyId, agents.id] }).onDelete("cascade"),
+    collection: index("agent_instruction_copies_collection_idx").on(t.runId, t.companyId).where(sql`NOT (coalesce(${t.receipt}, '{}'::jsonb) ? 'retainedByRunId') AND (
+      (${t.attempts} < 3 AND (${t.state} IN ('prepared', 'pending_collection', 'unchanged_turn', 'warm_saved')
+        OR (${t.state} = 'preparing' AND ${t.receipt}->>'schema' = 'paperclip.agent-files.v1')))
+      OR (${t.state} = 'unavailable' AND ${t.processStoppedAt} IS NULL
+        AND ${t.location} LIKE 'remote:%' AND ${t.receipt}->>'schema' = 'paperclip.agent-files.v1'))`),
+    directoryCleanup: index("agent_instruction_copies_cleanup_idx").on(t.runId, t.companyId).where(sql`${t.state} IN ('saved', 'unchanged', 'resolved', 'unavailable')
+      AND ${t.processStoppedAt} IS NOT NULL
+      AND ${t.receipt}->>'schema' = 'paperclip.agent-files.v1'
+      AND coalesce(${t.receipt}->>'retainedByRunId', '') = ''
+      AND ${t.receipt}->>'cleanupPending' IS DISTINCT FROM 'false'
+      AND (${t.receipt} ? 'baseline' OR ${t.receipt}->>'cleanupPending' = 'true')`),
     pending: index("agent_instruction_copies_pending_idx").on(t.state, t.nextAttemptAt),
     history: index("agent_instruction_copies_agent_idx").on(t.companyId, t.agentId, t.createdAt),
   }),

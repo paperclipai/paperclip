@@ -42,6 +42,7 @@ const support = await getEmbeddedPostgresTestSupport();
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), boundaryId = randomUUID(), requestId = randomUUID();
+  const workflowDocumentId = randomUUID(), workflowRevisionId = randomUUID();
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-native-handoff-");
     db = createDb(database.connectionString);
@@ -85,6 +86,10 @@ const support = await getEmbeddedPostgresTestSupport();
       payload: { prpEvent: { payload: { kind: "agentMessage", channel: "final", text: "Repository research complete; next configure PR checks" } } } });
     await db.insert(documents).values({ id: documentId, companyId, latestBody: "Saved plan: review changed files by CODEOWNERS", updatedAt: new Date(10_000) });
     await db.insert(issueDocuments).values({ companyId, issueId, documentId, key: "plan", createdAt: new Date(10_000) });
+    await db.insert(documents).values({ id: workflowDocumentId, companyId, title: "Workflow",
+      latestBody: "WORKFLOW_BODY_CANARY: triage then implementation then verification.\n".repeat(100),
+      latestRevisionId: workflowRevisionId, updatedAt: new Date(11_000) });
+    await db.insert(issueDocuments).values({ companyId, issueId, documentId: workflowDocumentId, key: "workflow", createdAt: new Date(11_000) });
     await db.insert(heartbeatRuns).values([
       { companyId, agentId, status: "succeeded", runtimeMode: "legacy", contextSnapshot: { issueId, conversationSessionGeneration: 2 },
         resultJson: { summary: "Legacy answer: repository selection is complete" }, createdAt: new Date(12_000), finishedAt: new Date(13_000) },
@@ -123,7 +128,40 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).not.toContain("LATER CUTOFF DECISION");
     expect(result).not.toContain("LATER CUTOFF REPLY");
     expect(result).not.toContain("LATER CUTOFF RUN SUMMARY");
+    expect(result).not.toContain(workflowDocumentId);
     expect(await buildNativeSessionHandoff({ db, companyId, issueId, agentId, before: new Date(20_000), throughCommentId: randomUUID() })).toBeNull();
+  });
+
+  it("keeps workflow history reference-only for fresh bootstrap and resume fallback while preserving plan excerpts", async () => {
+    const load = createNativeSessionHandoffLoader({ db, companyId, issueId, agentId, before: new Date(20_000) });
+    const history = await load();
+    expect(history).not.toContain("WORKFLOW_BODY_CANARY");
+    expect(history).toContain("Saved plan: review changed files by CODEOWNERS");
+    const packet = JSON.parse(history!.split("\n").at(-1)!);
+    expect(packet.entries).toEqual(expect.arrayContaining([expect.objectContaining({
+      kind: "document", id: workflowDocumentId, key: "workflow", revisionId: workflowRevisionId,
+      body: 'Read this task\'s workflow instructions with read_document using key "workflow" before choosing the next phase.',
+      readPath: `/api/issues/${issueId}/documents/workflow`, truncated: false,
+    })]));
+    const input = buildNativeExecutionInput({
+      companyId, runId: randomUUID(), agentId, normalizedSessionId: "session", conversationMode: true,
+      issue: { id: issueId, identifier: "HAND-1", title: "Chat", description: null, workMode: "standard" },
+      taskPrompt: "Continue the current phase", freshSessionHandoff: history,
+      workspace: { id: "workspace", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      completionContract: { id: "contract", sha256: "a".repeat(64), schemaVersion: "paperclip.run-result.v1", contract: {
+        revision: "1", objective: "Follow the workflow", criteria: [{ id: "objective", requirement: "Follow the workflow" }],
+      } }, runtimeContext: nativeRuntimeContextFixture(),
+    });
+    const fresh = buildNativeModelEnvelope(input);
+    expect(fresh.task.prompt).toContain(workflowRevisionId);
+    expect(fresh.task.prompt).not.toContain("WORKFLOW_BODY_CANARY");
+    const resumed = buildNativeModelEnvelope(input, { resumedSession: true });
+    expect("task" in resumed && resumed.task.prompt).not.toContain(workflowRevisionId);
+    // A failed provider resume uses the same cached history and full envelope.
+    expect(await load()).toBe(history);
+    const fallback = buildNativeModelEnvelope(input);
+    expect(fallback.task.prompt).toContain(`/api/issues/${issueId}/documents/workflow`);
+    expect(fallback.task.prompt).not.toContain("WORKFLOW_BODY_CANARY");
   });
 
   it("loads and redacts history once only when a fresh attempt requests it", async () => {

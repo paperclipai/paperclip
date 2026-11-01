@@ -1,3 +1,11 @@
+import { externalConversationSettlementWork } from "../../services/external-conversation-settlement-work.js";
+import { nativeStatusReassessmentWork } from "../../services/native-runtime/native-status-reassessment-work.js";
+import { nativeReviewResponseWork } from "../../services/native-runtime/native-review-response-work.js";
+import { nativeResponsePresentationWork } from "../../services/native-runtime/native-response-presentation-work.js";
+import { DELIVERY_QUEUES } from "../../services/delivery-work-notifications.js";
+import { idleWorkSnapshot } from "../../services/task-admission.js";
+import { createDeliveryWorkCoordinator } from "../../services/delivery-work-coordinator.js";
+import { resolveExternalTestDatabaseUrl } from "../helpers/external-test-database.js";
 import { Readable } from "node:stream";
 import type { StorageService } from "../../storage/types.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -21,6 +29,8 @@ import {
 } from "@photon-ai/advanced-imessage";
 import { and, eq, sql } from "drizzle-orm";
 import {
+  applyPendingMigrations,
+  subscribeDatabaseWork,
   createDb,
   companies,
   agents,
@@ -45,6 +55,7 @@ import {
   chatEndpointResources,
   issueAttachments,
   assets,
+  toolConnections,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../helpers/embedded-postgres.js";
 import {
@@ -74,15 +85,18 @@ function idleStream<T>(): TypedEventStream<T> {
   );
 }
 describe("iMessage Photon channel control plane", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
   let secrets: string;
   const oldKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
   const services: ChatChannelService[] = [];
+  const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
   const companyIds: string[] = [];
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("paperclip-photon-");
-    db = createDb(database.connectionString);
+    const external = resolveExternalTestDatabaseUrl("PAPERCLIP_PHOTON_TEST_DATABASE_URL");
+    if (!external) database = await startEmbeddedPostgresTestDatabase("paperclip-photon-");
+    if (external) await applyPendingMigrations(external);
+    db = createDb(external ?? database!.connectionString);
     secrets = await mkdtemp(path.join(tmpdir(), "photon-secrets-"));
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = path.join(
       secrets,
@@ -90,6 +104,7 @@ describe("iMessage Photon channel control plane", () => {
     );
   }, 30_000);
   afterEach(async () => {
+    await Promise.all(coordinators.splice(0).map(coordinator => coordinator.stop()));
     await Promise.all(services.splice(0).map((service) => service.shutdown()));
     for (const id of companyIds.splice(0))
       await db
@@ -99,6 +114,7 @@ describe("iMessage Photon channel control plane", () => {
     vi.restoreAllMocks();
   });
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await database?.cleanup();
     if (secrets) await rm(secrets, { recursive: true, force: true });
     if (oldKey === undefined)
@@ -363,6 +379,104 @@ describe("iMessage Photon channel control plane", () => {
       },
     };
   }
+  it.each([DELIVERY_QUEUES.nativeResponsePresentation, DELIVERY_QUEUES.nativeReviewResponse, DELIVERY_QUEUES.nativeStatusReassessment, DELIVERY_QUEUES.externalConversationSettlement])(
+    "keeps repeated active Photon ownership assertions out of %s reconstruction and wakes once on recovery", async queue => {
+    const t = await setup();
+    await t.start();
+    await t.qualify();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    coordinators.push(coordinator);
+    const work = queue === DELIVERY_QUEUES.externalConversationSettlement ? externalConversationSettlementWork(db)
+      : queue === DELIVERY_QUEUES.nativeResponsePresentation ? nativeResponsePresentationWork(db)
+      : queue === DELIVERY_QUEUES.nativeReviewResponse ? nativeReviewResponseWork(db) : nativeStatusReassessmentWork(db);
+    const worker = work.register(coordinator, () => true);
+    const debug = db.$client.options.debug;
+    const hints: unknown[] = [];
+    const queries: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, queue, (event, values) => {
+      if (event === "settled") for (const value of values ?? []) {
+        const scope = JSON.parse(value);
+        if (scope.companyId === t.companyId) hints.push(scope);
+      }
+    });
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+        .toEqual({ active: 0, next: null });
+      db.$client.options.debug = (_connection, query) => {
+        if (query.startsWith("select") && (queue === DELIVERY_QUEUES.externalConversationSettlement
+          ? query.includes("exists (select 1 from chat_conversations c") : query.includes("native_run_finalizations"))) queries.push(query);
+      };
+      const assertOwned = t.callbacks().onPhotonAssertOwned!;
+      for (let i = 0; i < 5; i++) await assertOwned();
+      expect(hints).toEqual([]);
+      expect(queries).toEqual([]);
+      await db.update(chatEndpoints).set({ status: "attention", healthMessage: "Recovering transport" })
+        .where(eq(chatEndpoints.id, t.endpoint.id));
+      await Promise.all([assertOwned(), assertOwned(), assertOwned()]);
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+        .toEqual({ active: 0, next: null });
+      expect(hints).toEqual([{ companyId: t.companyId }]);
+      expect(queries).toHaveLength(1);
+      expect((await t.service.get(t.endpoint.id)).status).toBe("active");
+      hints.length = 0;
+      queries.length = 0;
+      for (let i = 0; i < 5; i++) await assertOwned();
+      expect(hints).toEqual([]);
+      expect(queries).toEqual([]);
+      expect(errors).toEqual([]);
+    } finally { unsubscribe(); db.$client.options.debug = debug; if ("stop" in worker) worker.stop(); }
+  });
+
+  it("recovers a Photon transport loss through the receiver worker and cancels fatal recovery", async () => {
+    const t = await setup();
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    coordinators.push(coordinator);
+    await t.service.registerReceiverWork(coordinator, () => true).ready;
+    const first = t.service.runtime.get(t.endpoint.id);
+    expect(first).not.toBeNull();
+    await t.callbacks().onPhotonFailure!(new Error("transport interrupted"));
+    await vi.waitFor(() => {
+      const current = t.service.runtime.get(t.endpoint.id);
+      expect(current).not.toBeNull(); expect(current).not.toBe(first);
+    }, { timeout: 5000 });
+    await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 5000 });
+    await t.callbacks().onPhotonFailure!(new PhotonError("credentials", "Rejected credentials"));
+    await vi.waitFor(() => expect(t.service.runtime.get(t.endpoint.id)).toBeNull(), { timeout: 5000 });
+    await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 5000 });
+    expect(await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId)))
+      .toEqual([expect.objectContaining({ enabled: false })]);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("keeps publication authentication failures stopped across receiver reconciliation and restart", async () => {
+    const t = await setup();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: () => {} });
+    coordinators.push(coordinator);
+    await t.service.registerReceiverWork(coordinator, () => true).ready;
+    const conversation = await t.start();
+    await t.qualify();
+    const callbacks = t.callbacks();
+    vi.spyOn(PhotonChatAdapter.prototype, "publish").mockRejectedValueOnce(new PhotonError("credentials", "Rejected credentials"));
+    const comment = await issueService(db).addComment(conversation.issueId!, "Response with rejected credentials", { userId: t.userId }, { authorType: "user" });
+    await t.service.publishComment(t.endpoint.id, conversation.id, comment.id);
+    expect(await db.select().from(chatPublications).where(eq(chatPublications.commentId, comment.id))).toEqual([
+      expect.objectContaining({ state: "failed", attempts: 1, nextAttemptAt: null }),
+    ]);
+    expect(await t.service.get(t.endpoint.id)).toMatchObject({ status: "attention" });
+    expect(await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId))).toEqual([
+      expect.objectContaining({ status: "active", enabled: true, healthStatus: "failed" }),
+    ]);
+    await expect(callbacks.onPhotonAssertOwned!()).rejects.toThrow();
+    await vi.waitFor(() => expect(t.service.runtime.get(t.endpoint.id)).toBeFalsy(), { timeout: 5000 });
+    await coordinator.stop();
+    const restarted = await t.restart();
+    expect(restarted.runtime.get(t.endpoint.id)).toBeFalsy();
+    expect(await restarted.get(t.endpoint.id)).toMatchObject({ status: "attention" });
+  });
+
   it("supports shared project DMs while rejecting groups, duplicate ownership and allocation changes", async () => {
     const t = await setup(true);
     const snapshot = await t.service.get(t.endpoint.id);

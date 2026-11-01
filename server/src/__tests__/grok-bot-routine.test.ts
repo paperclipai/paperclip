@@ -4,7 +4,7 @@ import { grokBotRoutes } from "../routes/grok-bot.js";
 import { publicMcpIngressRoutes } from "../routes/public-mcp.js";
 import { createPublicMcpExecutor } from "../services/public-mcp/capabilities.js";
 import { createDotRunnerMcpTools } from "../services/dot-runner-broker.js";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeAll, afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, createDb, dotAgentBindings, grokBotDispatches,
@@ -12,7 +12,8 @@ import { agents, authUsers, companies, companyMemberships, createDb, dotAgentBin
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { accessService } from "../services/access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { createPublicMcpOAuth } from "../services/public-mcp/oauth.js";
+import { grokRoutineFixture } from "./helpers/grok-routine-fixture.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { dotRunnerBroker } from "../services/dot-runner-broker.js";
 import { createGrokRoutineDispatcher } from "../services/grok-bot/dispatcher.js";
 import { grokRoutineService } from "../services/grok-bot/routine.js";
@@ -26,44 +27,22 @@ import { hasRequiredWorkspaceRecovery } from "../services/workspace-restore-reco
 import { heartbeatService } from "../services/heartbeat.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 
-let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
 let db: ReturnType<typeof createDb>;
 beforeAll(async () => {
-  temporary = await startEmbeddedPostgresTestDatabase("paperclip-grok-routine-");
-  db = createDb(temporary.connectionString);
+  const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_GROK_ROUTINE_TEST_DATABASE_URL");
+  if (!externalUrl) temporary = await startEmbeddedPostgresTestDatabase("paperclip-grok-routine-");
+  db = createDb(externalUrl ?? temporary!.connectionString);
   vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
   vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", randomBytes(32).toString("base64"));
   await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true, enableNativeRunner: true, enableGrokBot: true, enableOpenAiDot: true });
 }, 120000);
-afterAll(async () => { try { await temporary?.cleanup(); } finally { vi.unstubAllEnvs(); } });
+afterAll(async () => { try { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); } finally { vi.unstubAllEnvs(); } });
 
 afterEach(() => vi.restoreAllMocks());
 
-async function fixture() {
-  const userId = randomUUID();
-  await db.insert(authUsers).values({ id: userId, name: "Grok operator", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
-  const [company] = await db.insert(companies).values({ name: "Grok test", issuePrefix: "GK" + randomBytes(3).toString("hex") }).returning();
-  await db.insert(companyMemberships).values({ companyId: company!.id, principalType: "user", principalId: userId, membershipRole: "owner", status: "active" });
-  await accessService(db).setPrincipalPermission(company!.id, "user", userId, "agents:create", true, userId);
-  const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Grok test", adapterType: "paperclip_runner", status: "active", adapterConfig: { provider: "grok_bot", allowUnmeteredProvider: true, lifecycleMode: "per_turn" } }).returning();
-  const oauth = createPublicMcpOAuth(db, { origin: "https://paperclip.example", resource: "https://paperclip.example/mcp/runner" });
-  const client = await oauth.register({ client_name: "Synthetic Grok client", redirect_uris: ["https://client.example/callback"] }, randomUUID());
-  const verifier = randomBytes(32).toString("base64url");
-  const input = { client_id: client.client_id, redirect_uri: "https://client.example/callback", response_type: "code", resource: oauth.config.resource,
-    scope: "paperclip:agent offline_access", code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256" };
-  const requestId = (await oauth.authorize(input)).split("/").at(-1)!;
-  const pairing = await dotRunnerBroker(db).createPairing({ companyId: company!.id, agentId: agent!.id, operatorId: userId, provider: "grok_bot" });
-  const consent = await oauth.consentDotPairing(requestId, pairing.pairingCode);
-  const tokens = await oauth.token({ grant_type: "authorization_code", client_id: client.client_id, redirect_uri: input.redirect_uri,
-    resource: oauth.config.resource, code: new URL(consent.redirectUrl).searchParams.get("code"), code_verifier: verifier });
-  const principal = await oauth.authenticate(tokens.access_token);
-  const delivery = vi.fn().mockResolvedValue({ delivery: "accepted", httpStatus: 200 });
-  const service = grokRoutineService(db, delivery);
-  const config = { companyId: company!.id, agentId: agent!.id, bindingId: pairing.bindingId, operatorId: userId,
-    expectedRevision: 0, botName: "Synthetic Bot", webhookUrl: "https://bot.example.test/routines/synthetic", webhookKey: "synthetic-sender-key" };
-  await service.configure(config);
-  return { company: company!, agent: agent!, principal, pairing, service, delivery, config, oauth, tokens };
-}
+const fixture = () => grokRoutineFixture(db);
+
 async function verification(f: Awaited<ReturnType<typeof fixture>>, sourceEventId = randomUUID()) {
   return f.service.reserve({ companyId: f.company.id, agentId: f.agent.id, bindingId: f.pairing.bindingId, sourceEventId, kind: "verify" });
 }

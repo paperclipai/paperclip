@@ -8,7 +8,7 @@ import { skillSourcesApi } from '@/api/skillSources';
 import { ApiError } from '@/api/client';
 import { sourceFixture } from '../../storybook/fixtures/githubSkillSources';
 
-const context = vi.hoisted(() => ({ navigate: vi.fn(), breadcrumbs: vi.fn(), sourceId: 'new' }));
+const context = vi.hoisted(() => ({ navigate: vi.fn(), breadcrumbs: vi.fn(), sourceId: 'new', streamlinedEnabled: true }));
 vi.mock('@/context/CompanyContext', () => ({ useCompany: () => ({ selectedCompanyId: 'company-1', selectedCompany: { name: 'Acme' } }) }));
 vi.mock('@/context/BreadcrumbContext', () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: context.breadcrumbs }) }));
 vi.mock('@/lib/router', () => ({
@@ -17,6 +17,7 @@ vi.mock('@/lib/router', () => ({
   useParams: () => ({ sourceId: context.sourceId }),
 }));
 vi.mock('@/api/skillSources', () => ({ skillSourcesApi: { list: vi.fn(), projectRepositories: vi.fn(), adoptProject: vi.fn(), settings: vi.fn(), branches: vi.fn(), repositories: vi.fn(), discoverStream: vi.fn(), create: vi.fn(), select: vi.fn(), refresh: vi.fn(), disconnect: vi.fn() } }));
+vi.mock('@/hooks/useStreamlinedUiEnabled', () => ({ useStreamlinedUiEnabled: () => ({ enabled: context.streamlinedEnabled, loaded: true }) }));
 
 const repos = {
   connections: [{ id: 'personal', name: 'Personal' }, { id: 'shared', name: 'Engineering' }],
@@ -55,6 +56,7 @@ beforeEach(() => {
   vi.mocked(skillSourcesApi.branches).mockResolvedValue({ defaultBranch: 'master', branches: [{ name: 'master', isDefault: true }], truncated: false });
   vi.mocked(skillSourcesApi.discoverStream).mockResolvedValue(discovery);
   context.sourceId = 'new';
+  context.streamlinedEnabled = true;
   sessionStorage.clear();
 });
 afterEach(async () => {
@@ -63,6 +65,18 @@ afterEach(async () => {
 });
 
 describe('GitHub skill source import', () => {
+  it('keeps the Skills views available while managing Sources', async () => {
+    context.sourceId = '';
+    await mount();
+    const navigation = document.querySelector('nav[aria-label="Skills views"]');
+    expect([...navigation!.querySelectorAll('a')].map(link => [link.textContent, link.getAttribute('href')])).toEqual([
+      ['Installed', '/skills'],
+      ['Discover', '/skills?tab=discover'],
+      ['My Skills', '/skills/studio'],
+    ]);
+    expect(navigation!.querySelector('[aria-current="page"]')).toBeNull();
+  });
+
   it('groups the same repository and ref across projects and shows import progress until it is installed', async () => {
     context.sourceId = '';
     const repository = { projectId: 'one', projectName: 'Paperclip', projectVisibility: 'open' as const,
@@ -131,7 +145,7 @@ describe('GitHub skill source import', () => {
     expect(document.body.textContent).not.toContain('Other projects with this repo');
     expect(document.body.textContent).not.toContain('Sentry');
     expect(document.body.textContent).not.toContain('Paperclip');
-    expect(document.querySelector('a[href="/skills"]')).toBeNull();
+    expect(document.querySelector('section a[href="/skills"]')).toBeNull();
     expect(document.querySelector('[role="status"]')?.textContent).toContain('Importing skills');
   });
 

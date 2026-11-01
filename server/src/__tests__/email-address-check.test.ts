@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import type { Db } from "@paperclipai/db";
+import { companyMemberships, instanceUserRoles, principalPermissionGrants, toolConnections, toolConnectionInstalls, type Db } from "@paperclipai/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { forbidden } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -18,7 +18,16 @@ function app(actor = { type: "board", source: "local_implicit", userId: "board" 
   const instance = express();
   instance.use(express.json());
   instance.use((req, _res, next) => { req.actor = actor; next(); });
-  instance.use("/api", emailRoutes({} as Db, {} as EmailChannelService));
+  // Provider calls remain stubbed, while the shared guard resolves real-shaped
+  // resource and membership rows before those calls.
+  const db = { select: () => ({ from: (table: unknown) => {
+    const rows = table === toolConnections ? [{ id: connectionId, companyId, createdByUserId: "board", connectionPurpose: "tool", credentialPolicy: "shared", config: { provider: "agentmail" }, transportConfig: {} }]
+      : table === companyMemberships ? [{ companyId, principalType: "user", principalId: "member", status: "active", membershipRole: "member" }]
+      : [];
+    expect([toolConnections, toolConnectionInstalls, companyMemberships, instanceUserRoles, principalPermissionGrants]).toContain(table);
+    return { where: () => Object.assign(Promise.resolve(rows), { limit: async () => rows }) };
+  } }) } as unknown as Db;
+  instance.use("/api", emailRoutes(db, {} as EmailChannelService));
   instance.use(errorHandler);
   return instance;
 }
@@ -59,7 +68,7 @@ describe("AgentMail address checks", () => {
     expect(mocks.credential).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
-  it("does not allow agents to check addresses", async () => {
+  it("rejects agents without a responsible user", async () => {
     await request(app({ type: "agent", agentId: connectionId, companyId })).post(path).send(input).expect(403);
     expect(fetch).not.toHaveBeenCalled();
   });

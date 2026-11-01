@@ -20,6 +20,7 @@ async function writeFailingClaudeCommand(
   const payload = JSON.stringify(options.resultEvent);
   const exit = options.exitCode ?? 1;
   const script = `#!/usr/bin/env node
+if (process.argv.includes("--version")) { console.log("2.1.286 (Claude Code)"); process.exit(0); }
 console.log(${JSON.stringify(payload)});
 process.exit(${exit});
 `;
@@ -33,6 +34,7 @@ async function writeTextFailingClaudeCommand(
 ): Promise<void> {
   const exit = options.exitCode ?? 1;
   const script = `#!/usr/bin/env node
+if (process.argv.includes("--version")) { console.log("2.1.286 (Claude Code)"); process.exit(0); }
 if (${JSON.stringify(options.stdout ?? "")}) {
   process.stdout.write(${JSON.stringify(options.stdout ?? "")});
 }
@@ -47,6 +49,7 @@ process.exit(${exit});
 
 async function writeFakeClaudeCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
+if (process.argv.includes("--version")) { console.log("2.1.286 (Claude Code)"); process.exit(0); }
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -88,6 +91,7 @@ console.log(JSON.stringify({ type: "result", session_id: "11111111-1111-4111-811
 
 async function writeHelpWithoutEffortClaudeCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
+if (process.argv.includes("--version")) { console.log("2.1.286 (Claude Code)"); process.exit(0); }
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -126,6 +130,7 @@ console.log(JSON.stringify({ type: "result", session_id: "33333333-3333-4333-833
 
 async function writeHelpWithEffortClaudeCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
+if (process.argv.includes("--version")) { console.log("2.1.286 (Claude Code)"); process.exit(0); }
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -185,6 +190,7 @@ afterEach(() => {
 
 async function writePoisonedMessageIdClaudeCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
+if (process.argv.includes("--version")) { console.log("2.1.286 (Claude Code)"); process.exit(0); }
 const fs = require("node:fs");
 
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
@@ -221,6 +227,7 @@ console.log(JSON.stringify({ type: "result", session_id: "bbbbbbbb-bbbb-4bbb-8bb
 
 async function writeAlwaysPoisonedMessageIdClaudeCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
+if (process.argv.includes("--version")) { console.log("2.1.286 (Claude Code)"); process.exit(0); }
 const fs = require("node:fs");
 
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
@@ -251,6 +258,7 @@ process.exit(1);
 
 async function writeRetryThenSucceedClaudeCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
+if (process.argv.includes("--version")) { console.log("2.1.286 (Claude Code)"); process.exit(0); }
 const fs = require("node:fs");
 
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
@@ -410,9 +418,9 @@ describe("claude execute", () => {
   });
 
   it.each([
-    [undefined, "claude-opus-5"],
-    ["", "claude-opus-5"],
-    ["  ", "claude-opus-5"],
+    [undefined, "claude-opus-5-5"],
+    ["", "claude-opus-5-5"],
+    ["  ", "claude-opus-5-5"],
     ["claude-sonnet-4-5", "claude-sonnet-4-5"],
   ])("passes the resolved model to the CLI for %j", async (model, expected) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-default-"));
@@ -1035,6 +1043,59 @@ describe("claude execute", () => {
       expect(result.exitCode).toBe(0);
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.argv).not.toContain("--effort");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it.each(["compatible", "network-error"])("prepares the selected Claude command before probing effort and logs the %s outcome", async state => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-prepared-effort-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writeHelpWithoutEffortClaudeCommand,
+    });
+    const remoteWorkspace = path.join(root, "sandbox-workspace");
+    const preparedCommand = path.join(remoteWorkspace, ".paperclip-runtime/claude-cli/2.1.280/bin/claude");
+    const logs: string[] = [];
+    const commands: string[] = [];
+    const loggedCommands: string[] = [];
+    try {
+      await fs.writeFile(commandPath, (await fs.readFile(commandPath, "utf8")).replace("2.1.286", "2.1.263"));
+      await fs.mkdir(remoteWorkspace, { recursive: true });
+      if (state === "compatible") {
+        await fs.mkdir(path.dirname(preparedCommand), { recursive: true });
+        await writeHelpWithEffortClaudeCommand(preparedCommand);
+      }
+      const runner = createLocalSandboxRunner();
+      const result = await execute({
+        runId: `run-prepared-effort-${state}`,
+        agent: { id: "agent-1", companyId: "company-1", name: "Claude Coder", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { engine: "cli", command: "claude", cwd: workspace, model: "claude-opus-5-5", effort: "high",
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath }, promptTemplate: "Keep the selected reasoning effort." },
+        context: {},
+        executionTarget: { kind: "remote", transport: "sandbox", providerKey: "daytona", environmentId: "env-1", leaseId: "lease-1", remoteCwd: remoteWorkspace,
+          runner: { execute: async input => {
+            if (input.args?.some(arg => arg.includes("npm install"))) return { exitCode: 1, signal: null, timedOut: false,
+              stdout: "", stderr: "npm error code ENOTFOUND https://registry-secret@example.test/private", pid: null, startedAt: new Date().toISOString() };
+            return runner.execute(input);
+          } } },
+        authToken: "run-jwt-token", onLog: async (_stream, chunk) => { logs.push(chunk); },
+        onMeta: async meta => { commands.push(meta.command); loggedCommands.push(meta.env.PAPERCLIP_RESOLVED_COMMAND); },
+      });
+      if (state === "compatible") {
+        expect(result.exitCode).toBe(0);
+        const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+        expect(capture.argv).toEqual(expect.arrayContaining(["--effort", "high"]));
+        expect(commands).toContain(preparedCommand);
+        expect(loggedCommands).toEqual(commands);
+        expect(logs.join("")).not.toContain("omitting configured effort");
+      } else {
+        expect(result.errorCode).toBe("claude_cli_version_incompatible");
+        expect(logs.join("")).toContain("The package installation could not reach the registry.");
+        expect(logs.join("")).not.toContain("registry-secret");
+        await expect(fs.readFile(capturePath)).rejects.toMatchObject({ code: "ENOENT" });
+      }
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });

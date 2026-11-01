@@ -31,6 +31,18 @@ it("resolves descriptor sidecars only through the runner-bound canonical package
   expect(() => resolveRunnerProviderAssetsRoot("file:///proc/self/fd/18", "pi")).toThrow("normalized absolute");
 });
 
+it("uses the public server owner for its vendored Copilot probe and selected sidecar", async () => {
+  const path = await serverFixture();
+  await writeFile(join(path, "package.json"), JSON.stringify({ name: "@paperclipai/server" }));
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", undefined);
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", undefined);
+  const moduleUrl = pathToFileURL(join(path, "dist/vendor/paperclip-runner/drivers/acpx/copilot-installation.js")).href;
+  expect(resolveRunnerProviderAssetsRoot(moduleUrl, "copilot")).toBe(join(path, "provider-assets/copilot"));
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", path);
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", join(path, "package.json"));
+  expect(resolveRunnerProviderAssetsRoot("file:///proc/self/fd/18", "copilot")).toBe(join(path, "provider-assets/copilot"));
+});
+
 it("resolves the public server bundle without repository paths or candidate overrides", async () => {
   const path = await root();
   const vendored = join(await realpath(path), "dist/vendor/paperclip-runner");

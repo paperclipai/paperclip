@@ -1823,7 +1823,7 @@ describe("worktree helpers", () => {
       const seededUsers = await targetDb.select().from(authUsers);
       expect(seededUsers.some((row) => row.email === "existing@paperclip.ing")).toBe(true);
       const restoredEvents = await targetDb.$client`
-        SELECT id, action FROM resource_lifecycle_events WHERE resource_id = ${legacyAgentId} ORDER BY id
+        SELECT id, action FROM resource_lifecycle_events WHERE resource_id = ${legacyAgentId} AND resource_type = 'agent' ORDER BY id
       `;
       expect(restoredEvents.map(row => row.action)).toEqual(["pause", "create"]);
       expect(Number(restoredEvents[1].id)).toBeGreaterThan(Number(restoredEvents[0].id));

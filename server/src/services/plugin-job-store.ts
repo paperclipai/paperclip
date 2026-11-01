@@ -1,3 +1,4 @@
+import { writePluginJobChange, type PluginJobDatabase } from "./plugin-job-work-notifications.js";
 /**
  * Plugin Job Store — persistence layer for scheduled plugin jobs and their
  * execution history.
@@ -30,7 +31,7 @@
  * @see PLUGIN_SPEC.md §21.3 — `plugin_jobs` / `plugin_job_runs` tables
  */
 
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { plugins, pluginJobs, pluginJobRuns } from "@paperclipai/db";
 import type {
@@ -100,12 +101,12 @@ export interface CompleteJobRunInput {
  * });
  * ```
  */
-export function pluginJobStore(db: Db) {
+export function pluginJobStore(db: PluginJobDatabase) {
   // -----------------------------------------------------------------------
   // Internal helpers
   // -----------------------------------------------------------------------
 
-  async function assertPluginExists(pluginId: string): Promise<void> {
+  async function assertPluginExists(db: PluginJobDatabase, pluginId: string): Promise<void> {
     const rows = await db
       .select({ id: plugins.id })
       .from(plugins)
@@ -145,63 +146,66 @@ export function pluginJobStore(db: Db) {
       pluginId: string,
       declarations: PluginJobDeclaration[],
     ): Promise<void> {
-      await assertPluginExists(pluginId);
+      return writePluginJobChange(db, async db => {
+        await assertPluginExists(db, pluginId);
 
-      // Fetch existing jobs for this plugin
-      const existingJobs = await db
-        .select()
-        .from(pluginJobs)
-        .where(eq(pluginJobs.pluginId, pluginId));
+        // Fetch existing jobs for this plugin
+        const existingJobs = await db
+          .select()
+          .from(pluginJobs)
+          .where(eq(pluginJobs.pluginId, pluginId));
 
-      const existingByKey = new Map(
-        existingJobs.map((j) => [j.jobKey, j]),
-      );
+        const existingByKey = new Map(
+          existingJobs.map((j) => [j.jobKey, j]),
+        );
 
-      const declaredKeys = new Set<string>();
+        const declaredKeys = new Set<string>();
 
-      // Upsert each declared job
-      for (const decl of declarations) {
-        declaredKeys.add(decl.jobKey);
+        // Upsert each declared job
+        for (const decl of declarations) {
+          declaredKeys.add(decl.jobKey);
 
-        const existing = existingByKey.get(decl.jobKey);
-        const schedule = decl.schedule ?? "";
+          const existing = existingByKey.get(decl.jobKey);
+          const schedule = decl.schedule ?? "";
 
-        if (existing) {
-          // Update schedule if it changed; re-activate if it was paused
-          const updates: Record<string, unknown> = {
-            updatedAt: new Date(),
-          };
-          if (existing.schedule !== schedule) {
-            updates.schedule = schedule;
+          if (existing) {
+            // Update schedule if it changed; re-activate if it was paused
+            const updates: Record<string, unknown> = {
+              updatedAt: new Date(),
+            };
+            if (existing.schedule !== schedule) {
+              updates.schedule = schedule;
+              updates.nextRunAt = null;
+            }
+            if (existing.status === "paused") {
+              updates.status = "active";
+            }
+
+            await db
+              .update(pluginJobs)
+              .set(updates)
+              .where(eq(pluginJobs.id, existing.id));
+          } else {
+            // Insert new job
+            await db.insert(pluginJobs).values({
+              pluginId,
+              jobKey: decl.jobKey,
+              schedule,
+              status: "active",
+            });
           }
-          if (existing.status === "paused") {
-            updates.status = "active";
+        }
+
+        // Pause jobs that are no longer declared in the manifest
+        for (const existing of existingJobs) {
+          if (!declaredKeys.has(existing.jobKey) && existing.status !== "paused") {
+            await db
+              .update(pluginJobs)
+              .set({ status: "paused", updatedAt: new Date() })
+              .where(eq(pluginJobs.id, existing.id));
           }
-
-          await db
-            .update(pluginJobs)
-            .set(updates)
-            .where(eq(pluginJobs.id, existing.id));
-        } else {
-          // Insert new job
-          await db.insert(pluginJobs).values({
-            pluginId,
-            jobKey: decl.jobKey,
-            schedule,
-            status: "active",
-          });
         }
-      }
-
-      // Pause jobs that are no longer declared in the manifest
-      for (const existing of existingJobs) {
-        if (!declaredKeys.has(existing.jobKey) && existing.status !== "paused") {
-          await db
-            .update(pluginJobs)
-            .set({ status: "paused", updatedAt: new Date() })
-            .where(eq(pluginJobs.id, existing.id));
-        }
-      }
+      });
     },
 
     /**
@@ -290,10 +294,12 @@ export function pluginJobStore(db: Db) {
       jobId: string,
       status: JobDefinitionStatus,
     ): Promise<void> {
-      await db
-        .update(pluginJobs)
-        .set({ status, updatedAt: new Date() })
-        .where(eq(pluginJobs.id, jobId));
+      return writePluginJobChange(db, async db => {
+        await db
+          .update(pluginJobs)
+          .set({ status, updatedAt: new Date() })
+          .where(eq(pluginJobs.id, jobId));
+      });
     },
 
     /**
@@ -311,14 +317,16 @@ export function pluginJobStore(db: Db) {
       lastRunAt: Date,
       nextRunAt: Date | null,
     ): Promise<void> {
-      await db
-        .update(pluginJobs)
-        .set({
-          lastRunAt,
-          nextRunAt,
-          updatedAt: new Date(),
-        })
-        .where(eq(pluginJobs.id, jobId));
+      return writePluginJobChange(db, async db => {
+        await db
+          .update(pluginJobs)
+          .set({
+            lastRunAt,
+            nextRunAt,
+            updatedAt: new Date(),
+          })
+          .where(eq(pluginJobs.id, jobId));
+      });
     },
 
     /**
@@ -329,9 +337,11 @@ export function pluginJobStore(db: Db) {
      * @param pluginId - UUID of the owning plugin
      */
     async deleteAllJobs(pluginId: string): Promise<void> {
-      await db
-        .delete(pluginJobs)
-        .where(eq(pluginJobs.pluginId, pluginId));
+      return writePluginJobChange(db, async db => {
+        await db
+          .delete(pluginJobs)
+          .where(eq(pluginJobs.pluginId, pluginId));
+      });
     },
 
     // =====================================================================
@@ -351,17 +361,19 @@ export function pluginJobStore(db: Db) {
     async createRun(
       input: CreateJobRunInput,
     ): Promise<typeof pluginJobRuns.$inferSelect> {
-      const rows = await db
-        .insert(pluginJobRuns)
-        .values({
-          jobId: input.jobId,
-          pluginId: input.pluginId,
-          trigger: input.trigger,
-          status: "queued",
-        })
-        .returning();
+      return writePluginJobChange(db, async db => {
+        const rows = await db
+          .insert(pluginJobRuns)
+          .values({
+            jobId: input.jobId,
+            pluginId: input.pluginId,
+            trigger: input.trigger,
+            status: "queued",
+          })
+          .returning();
 
-      return rows[0]!;
+        return rows[0]!;
+      });
     },
 
     /**
@@ -370,13 +382,15 @@ export function pluginJobStore(db: Db) {
      * @param runId - UUID of the run row
      */
     async markRunning(runId: string): Promise<void> {
-      await db
-        .update(pluginJobRuns)
-        .set({
-          status: "running" as PluginJobRunStatus,
-          startedAt: new Date(),
-        })
-        .where(eq(pluginJobRuns.id, runId));
+      return writePluginJobChange(db, async db => {
+        await db
+          .update(pluginJobRuns)
+          .set({
+            status: "running" as PluginJobRunStatus,
+            startedAt: new Date(),
+          })
+          .where(eq(pluginJobRuns.id, runId));
+      });
     },
 
     /**
@@ -390,15 +404,17 @@ export function pluginJobStore(db: Db) {
       runId: string,
       input: CompleteJobRunInput,
     ): Promise<void> {
-      await db
-        .update(pluginJobRuns)
-        .set({
-          status: input.status,
-          error: input.error ?? null,
-          durationMs: input.durationMs ?? null,
-          finishedAt: new Date(),
-        })
-        .where(eq(pluginJobRuns.id, runId));
+      return writePluginJobChange(db, async db => {
+        await db
+          .update(pluginJobRuns)
+          .set({
+            status: input.status,
+            error: input.error ?? null,
+            durationMs: input.durationMs ?? null,
+            finishedAt: new Date(),
+          })
+          .where(eq(pluginJobRuns.id, runId));
+      });
     },
 
     /**
@@ -422,15 +438,26 @@ export function pluginJobStore(db: Db) {
      *
      * @param jobId - UUID of the job
      * @param limit - Maximum number of rows to return (default: 50)
+     * @param companyIds - Optional tenant scope. `null`/omitted keeps the
+     *   instance-wide view (used by instance administrators); an array limits
+     *   rows to those companies; an empty array returns no rows.
      */
     async listRunsByJob(
       jobId: string,
       limit = 50,
+      companyIds: string[] | null = null,
     ): Promise<(typeof pluginJobRuns.$inferSelect)[]> {
+      if (companyIds && companyIds.length === 0) {
+        return [];
+      }
+      const conditions = [eq(pluginJobRuns.jobId, jobId)];
+      if (companyIds) {
+        conditions.push(inArray(pluginJobRuns.companyId, companyIds));
+      }
       return db
         .select()
         .from(pluginJobRuns)
-        .where(eq(pluginJobRuns.jobId, jobId))
+        .where(and(...conditions))
         .orderBy(desc(pluginJobRuns.createdAt))
         .limit(limit);
     },
@@ -441,15 +468,25 @@ export function pluginJobStore(db: Db) {
      * @param pluginId - UUID of the owning plugin
      * @param status - Optional status filter
      * @param limit - Maximum number of rows to return (default: 50)
+     * @param companyIds - Optional tenant scope. `null`/omitted keeps the
+     *   instance-wide view (used by instance administrators); an array limits
+     *   rows to those companies; an empty array returns no rows.
      */
     async listRunsByPlugin(
       pluginId: string,
       status?: PluginJobRunStatus,
       limit = 50,
+      companyIds: string[] | null = null,
     ): Promise<(typeof pluginJobRuns.$inferSelect)[]> {
+      if (companyIds && companyIds.length === 0) {
+        return [];
+      }
       const conditions = [eq(pluginJobRuns.pluginId, pluginId)];
       if (status) {
         conditions.push(eq(pluginJobRuns.status, status));
+      }
+      if (companyIds) {
+        conditions.push(inArray(pluginJobRuns.companyId, companyIds));
       }
       return db
         .select()

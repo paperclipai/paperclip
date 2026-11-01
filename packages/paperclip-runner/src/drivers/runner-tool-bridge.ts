@@ -22,6 +22,7 @@ export interface RunnerToolDefinition {
   name: string;
   description?: string;
   inputSchema: Record<string, unknown>;
+  _meta?: { "anthropic/alwaysLoad": true };
 }
 
 export interface RunnerToolCall {
@@ -36,12 +37,17 @@ export interface RunnerToolCall {
 
 export interface RunnerToolBridgeOptions {
   tools?: readonly Readonly<Record<string, unknown>>[];
+  /** Claude-only: avoid tool search for task naming and terminal disposition. */
+  preloadClaudeTaskTools?: boolean;
+  preserveToolNames?: boolean;
   /** Runner-owned operations that are callable but never model-visible. */
   privateTools?: readonly Readonly<Record<string, unknown>>[];
   handler(call: RunnerToolCall): Promise<unknown>;
   /** Copilot-only opt-in; capture the active invocation scope before dispatch. */
   captureSemanticReceipt?: () => ((receipt: SemanticToolReceipt) => void) | undefined;
-  timeoutMs?: number;
+  /** Null delegates the wait to an owning durable runtime's lease and close.
+   * Ordinary callers retain the bounded request timeout. */
+  timeoutMs?: number | null;
   privateToolTimeoutMs?: number;
   maxBodyBytes?: number;
   /** Internal test seam; production bounds headers and body reads to 30 seconds. */
@@ -107,8 +113,8 @@ export async function startRunnerToolBridge(
   const secret = options.secret ?? randomBytes(32).toString("base64url");
   if (secret.length === 0)
     throw new Error("Runner tool bridge secret is empty");
-  const tools = normalizeTools(options.tools ?? [], "public");
-  const privateTools = normalizeTools(options.privateTools ?? [], "private");
+  const tools = normalizeTools(options.tools ?? [], "public", options.preserveToolNames);
+  const privateTools = normalizeTools(options.privateTools ?? [], "private", options.preserveToolNames);
   const publicNames = new Set(tools.map((tool) => tool.name));
   for (const tool of privateTools) {
     if (publicNames.has(tool.name)) {
@@ -118,12 +124,20 @@ export async function startRunnerToolBridge(
     }
   }
   const visibleTools = [...tools, ...structuredClone(RESERVED_TOOLS)];
+  if (options.preloadClaudeTaskTools) {
+    for (const tool of visibleTools) {
+      if (tool.name === "set_task_title" || tool.name === PRP_COMPLETION_TOOL_NAME || tool.name === PRP_BLOCK_TOOL_NAME) {
+        tool._meta = { "anthropic/alwaysLoad": true };
+      }
+    }
+  }
   const admittedTools = [...visibleTools, ...privateTools];
   const validators = compileValidators(admittedTools);
   const calls = new Map<string, AdmittedCall>();
   const controllers = new Map<string, AbortController>();
   const context = {
     secret,
+    preserveToolNames: options.preserveToolNames === true,
     visibleTools,
     admittedTools: new Map(admittedTools.map((tool) => [tool.name, tool])),
     validators,
@@ -131,7 +145,7 @@ export async function startRunnerToolBridge(
     controllers,
     handler: options.handler,
     captureSemanticReceipt: options.captureSemanticReceipt,
-    timeoutMs: positiveBoundedInteger(
+    timeoutMs: options.timeoutMs === null ? null : positiveBoundedInteger(
       options.timeoutMs,
       DEFAULT_TIMEOUT_MS,
       1,
@@ -194,6 +208,7 @@ async function handleRequest(
   response: ServerResponse,
   context: {
     secret: string;
+    preserveToolNames: boolean;
     visibleTools: RunnerToolDefinition[];
     admittedTools: Map<string, RunnerToolDefinition>;
     validators: Map<string, ValidateFunction>;
@@ -201,7 +216,7 @@ async function handleRequest(
     controllers: Map<string, AbortController>;
     handler: RunnerToolBridgeOptions["handler"];
     captureSemanticReceipt: RunnerToolBridgeOptions["captureSemanticReceipt"];
-    timeoutMs: number;
+    timeoutMs: number | null;
     privateToolTimeoutMs: number;
     privateToolNames: ReadonlySet<string>;
     maxBodyBytes: number;
@@ -279,7 +294,7 @@ async function handleRequest(
 
   const params = isRecord(message.params) ? message.params : {};
   const rawName = typeof params.name === "string" ? params.name : "";
-  const tool = canonicalRunnerToolName(rawName);
+  const tool = context.preserveToolNames ? rawName : canonicalRunnerToolName(rawName);
   if (!context.admittedTools.has(tool)) {
     writeToolError(response, id, "Unsupported tool.");
     return;
@@ -403,13 +418,14 @@ async function handleRequest(
 function normalizeTools(
   input: readonly Readonly<Record<string, unknown>>[],
   visibility: "public" | "private",
+  preserveNames = false,
 ): RunnerToolDefinition[] {
   const tools: RunnerToolDefinition[] = [];
   const seen = new Set<string>();
   const reservedNames = new Set(RESERVED_TOOLS.map((tool) => tool.name));
   for (const raw of input) {
     const name =
-      typeof raw.name === "string" ? canonicalRunnerToolName(raw.name) : "";
+      typeof raw.name === "string" ? (preserveNames ? raw.name : canonicalRunnerToolName(raw.name)) : "";
     if (!/^[A-Za-z0-9_.:-]{1,256}$/.test(name)) {
       throw new Error(`Runner ${visibility} tool has an invalid name`);
     }
@@ -585,24 +601,24 @@ function closeServer(server: Server): Promise<void> {
 function withCancellationAndTimeout<T>(
   promise: Promise<T>,
   controller: AbortController,
-  timeoutMs: number,
+  timeoutMs: number | null,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       controller.signal.removeEventListener("abort", onAbort);
       callback();
     };
     const onAbort = () =>
       finish(() => reject(new Error("Paperclip tool call cancelled")));
-    const timer = setTimeout(() => {
+    const timer = timeoutMs === null ? undefined : setTimeout(() => {
       finish(() => reject(new Error("Paperclip tool call timed out")));
       controller.abort();
     }, timeoutMs);
-    timer.unref();
+    timer?.unref();
     controller.signal.addEventListener("abort", onAbort, { once: true });
     promise.then(
       (value) => finish(() => resolve(value)),

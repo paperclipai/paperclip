@@ -1,5 +1,6 @@
 import { AGGREGATOR_NAMES, aggregatorManagementUrl, isAppAggregator, type AggregatorAppSnapshot, type AggregatorAppsResponse } from "@paperclipai/shared/aggregator-apps";
-import { CatalogSourceFilters, type CatalogSource } from "./CatalogSourceFilters";
+import type { CatalogSource } from "./CatalogSourceFilters";
+import { ConnectorsToolbar } from "./ConnectorsToolbar";
 import { ExecutorManagementSetup } from "./ExecutorManagementSetup";
 import { ArcadeDiscoverySetup } from "./ArcadeDiscoverySetup";
 import { AggregatorAppManager } from "./AggregatorAppManager";
@@ -25,13 +26,13 @@ import {
   Loader2,
   MoreHorizontal,
   PauseCircle,
-  Search,
   ServerCog,
   Trash2,
 } from "lucide-react";
 import type { ComposioAppSnapshot, ToolApplication, ToolConnection } from "@paperclipai/shared";
 import {
   getAppDefinitionForUrl,
+  getAppDefinitionForApplicationKey,
   isMemoryConnectorId,
   getAppStoreDefinition,
   isToolConnectionAttentionHealth,
@@ -43,6 +44,7 @@ import {
 import { useNavigate } from "@/lib/router";
 import { useChatConnectorsEnabled, chatProviderVisible } from "@/hooks/useChatConnectorsEnabled";
 import { useMemoryConnectorsEnabled } from "@/hooks/useMemoryConnectorsEnabled";
+import { useConnectorAvailability } from "@/hooks/useConnectorAvailability";
 import { appCopyFor } from "@/lib/app-gallery-copy";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -79,7 +81,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AGGREGATOR_APP_CATALOG, aggregatorAppIdentity, findComposioCatalogApp, type AggregatorAppCatalogEntry } from "@paperclipai/shared/aggregator-app-catalog";
 import { AggregatorConnectDialog, aggregatorAppConnectHref } from "./AggregatorConnectDialog";
@@ -142,11 +143,12 @@ type ConnectionRemovalTarget = {
   poolRevision?: number;
 } & ({ kind: "chat"; provider: ChatProvider } | { kind?: undefined });
 
-// Temporary, page-only hold until Google OAuth verification is approved.
-// Keep definitions, direct setup/management routes, and runtime access intact.
-// Remove this filter after approval; reviewer instances stay on their pinned build.
-const GOOGLE_CONNECTOR_SLUGS = new Set(
-  Object.values(GOOGLE_WORKSPACE_CONNECTOR_PROFILES).map((profile) => profile.appSlug),
+// Offer the unified connector for new Google accounts. Existing per-service
+// connections remain visible and keep their definitions and management routes.
+const LEGACY_GOOGLE_CONNECTOR_SLUGS = new Set(
+  Object.values(GOOGLE_WORKSPACE_CONNECTOR_PROFILES)
+    .map((profile) => profile.appSlug)
+    .filter((slug) => slug !== "google-workspace"),
 );
 
 function chatProviderForSlug(slug: string): ChatProvider | null {
@@ -318,7 +320,7 @@ function connectorAction(
   // Tool connectors retain their capability-specific setup verbs.
   if (row.entry) {
     return {
-      label: row.entry.methods?.some(method => method.purpose === "ai") ? "Connect" : connectionSetupVerbForApp(row.entry),
+      label: row.entry.methods?.every(method => method.purpose === "ai") ? "Connect" : connectionSetupVerbForApp(row.entry),
       href: connectHrefFor(row.entry),
     };
   }
@@ -366,6 +368,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const { userId: viewingUserId, settled: identitySettled } = useAccountIdentity();
   const { enabled: chatConnectorsEnabled, githubEnabled } = useChatConnectorsEnabled();
   const { enabled: memoryConnectorsEnabled } = useMemoryConnectorsEnabled();
+  const connectorAvailability = useConnectorAvailability();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
@@ -522,6 +525,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     (galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[]
   ).filter((entry) => {
     if (!memoryConnectorsEnabled && isMemoryConnectorId(appDefinitionSlug(entry))) return false;
+    if (!connectorAvailability.enabled(entry)) return false;
     const definition = getAppStoreDefinition(appDefinitionSlug(entry));
     return (
       chatProviderVisible(appDefinitionSlug(entry), chatConnectorsEnabled, githubEnabled) ||
@@ -641,15 +645,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       const savedAppConnections =
         connectionsByApplicationId.get(application.id) ?? [];
       if (applicationSlug === "gateway" && savedAppConnections.length === 0) continue;
-      let appConnections = savedAppConnections.filter(
-        (connection) => !GOOGLE_CONNECTOR_SLUGS.has(appConnectionSourceSlug(connection) ?? ""),
-      );
-      // Hide source-only Google rows, but keep independently identified connectors.
-      if (
-        (!applicationSlug || applicationSlug === "link") &&
-        savedAppConnections.length > 0 &&
-        appConnections.length === 0
-      ) continue;
+      let appConnections = savedAppConnections;
       // One legacy gateway application may contain several API formats. Group
       // each saved AI account by its actual routing, not the old application slug.
       const ungroupedCount = appConnections.length;
@@ -770,7 +766,9 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       }));
 
     return [...rowsBySlug.values(), ...customRows, ...aggregatorRows]
-      .filter((row) => !GOOGLE_CONNECTOR_SLUGS.has(row.slug) || row.upstreamApps?.some(snapshot => snapshot.accounts.length > 0))
+      .filter((row) => !LEGACY_GOOGLE_CONNECTOR_SLUGS.has(row.slug)
+        || row.connections.length > 0
+        || row.upstreamApps?.some(snapshot => snapshot.accounts.length > 0))
       .map((row) => ({
         ...row,
         connections: [...row.connections].sort(
@@ -903,20 +901,8 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
 
   return (
     <div ref={catalogTop} className="max-w-5xl space-y-5 pb-12">
-      <header className="flex flex-col items-start gap-3">
-        <div className="relative w-full max-w-md">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            type="search"
-            value={query}
-            onChange={(event) => changeQuery(event.target.value)}
-            placeholder="Search connectors…"
-            aria-label="Search connectors"
-            className="pl-9"
-          />
-        </div>
-        <CatalogSourceFilters source={source} onChange={value => { setSource(value); setExpandedSearch(false); setPage(1); }} />
-      </header>
+      <ConnectorsToolbar query={query} onQueryChange={changeQuery} source={source}
+        onSourceChange={value => { setSource(value); setExpandedSearch(false); setPage(1); }} />
 
       {loadFailed ? (
         <div
@@ -972,6 +958,8 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
               onRequestRemove={target => void requestConnectionRemoval(target)}
               preselectedAgentId={preselectedChatAgentId}
               chatConnectorsEnabled={chatConnectorsEnabled}
+              setupEnabled={connectorAvailability.enabled(row.entry ?? getConnectableAppDefinition(row.slug))
+                && row.applications.every(application => connectorAvailability.enabled(getAppDefinitionForApplicationKey(application.applicationKey)))}
               githubReviewBotsEnabled={githubEnabled}
               onConnectAggregator={connectAggregator}
               onManageAggregator={(app, connectionId) => setAggregatorToManage({ app, connectionId })}
@@ -1072,6 +1060,7 @@ export function ConnectorCard({
   onRequestRemove,
   preselectedAgentId,
   chatConnectorsEnabled,
+  setupEnabled = true,
   githubReviewBotsEnabled = false,
   onConnectAggregator,
   onManageAggregator,
@@ -1094,6 +1083,7 @@ export function ConnectorCard({
   onRequestRemove: (target: ConnectionRemovalTarget) => void;
   preselectedAgentId?: string | null;
   chatConnectorsEnabled: boolean;
+  setupEnabled?: boolean;
   githubReviewBotsEnabled?: boolean;
   onConnectAggregator?: (app: AggregatorAppCatalogEntry) => void;
   onManageAggregator?: (app: AggregatorAppCatalogEntry, connectionId?: string) => void;
@@ -1118,6 +1108,9 @@ export function ConnectorCard({
     chatProviderVisible(row.slug, chatConnectorsEnabled, githubReviewBotsEnabled),
     preselectedAgentId,
   );
+  const copilotMethod = row.slug === "github"
+    ? getAppStoreDefinition(row.slug)?.methods.find(method => method.purpose === "ai" && method.ai?.provider === "github")
+    : undefined;
   const upstreamAccounts = (row.upstreamApps ?? []).flatMap(snapshot => {
     const connection = connectionById?.get(snapshot.connectionId);
     return connection ? snapshot.accounts.map((account, index) => ({ connection, account, snapshot,
@@ -1171,7 +1164,15 @@ export function ConnectorCard({
             {row.aggregatorApp && row.upstreamApps?.some(app => app.accounts.length > 0) ? `Accounts managed in ${[...new Set(row.upstreamApps?.map(app => AGGREGATOR_NAMES[app.provider ?? "composio"]))].join(" and ")}.` : row.description}
           </p>
         </div>
-        <Button
+        {copilotMethod && <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() => onNavigate(`/apps/connect?source=github&method=${encodeURIComponent(copilotMethod.key)}`)}
+        >
+          Connect Copilot
+        </Button>}
+        {setupEnabled && <Button
           type="button"
           size="sm"
           variant="outline"
@@ -1186,7 +1187,7 @@ export function ConnectorCard({
           aria-label={`${action.label} ${row.name}`}
         >
           {action.label}
-        </Button>
+        </Button>}
       </div>
 
       <Collapsible open={expanded} onOpenChange={open => setExpandedOverride({ open, defaultExpanded })}>
@@ -1205,6 +1206,7 @@ export function ConnectorCard({
                   details={renderAccountDetails?.(connection)}
                   key={connection.id}
                   row={row}
+                  setupEnabled={setupEnabled}
                   connection={connection}
                   owner={connectionOwnerProfile(connection, userProfileById)}
                   onNavigate={onNavigate}
@@ -1354,6 +1356,7 @@ function ConnectionAccountRow({
   discovery,
   onConfigureArcade,
   onConfigureExecutor,
+  setupEnabled = true,
 }: {
   details?: ReactNode;
   row: ConnectorRowModel;
@@ -1366,6 +1369,7 @@ function ConnectionAccountRow({
   discovery?: AggregatorAppsResponse;
   onConfigureArcade?: () => void;
   onConfigureExecutor?: () => void;
+  setupEnabled?: boolean;
 }) {
   const state = connectionState(connection);
   const actionHref = accountActionHref(row, connection);
@@ -1378,7 +1382,7 @@ function ConnectionAccountRow({
   return (
     <ConnectionAccountRowLayout state={state} accountName={accountName} owner={owner} details={<>{details}{discovery?.discovery.message || discovery?.sync.status === "error" ? <p className="text-xs text-muted-foreground" role="status">{discovery.discovery.message ?? discovery.sync.error}</p> : null}</>}
       openLabel={`Open ${accountName} permissions`} onOpen={() => onNavigate(`/apps/${connection.id}/permissions`)}>
-        {state.kind === "attention" || state.kind === "draft" ? (
+        {setupEnabled && (state.kind === "attention" || state.kind === "draft") ? (
           <Button
             type="button"
             size="sm"

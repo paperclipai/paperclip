@@ -80,7 +80,23 @@ export const activityApi = {
     const qs = params.toString();
     return api.get<ActivityEvent[]>(`/companies/${companyId}/activity${qs ? `?${qs}` : ""}`, options);
   },
+  recentForIssue: (issueId: string) => api.get<ActivityEvent[]>(`/issues/${issueId}/activity?view=recent`),
+  inputFactsForIssue: async (issueId: string, commentIds: string[]) => {
+    const batches: Promise<ActivityEvent[]>[] = [];
+    for (let start = 0; start < commentIds.length; start += 100) {
+      const params = new URLSearchParams({ view: "comment-inputs", commentIds: commentIds.slice(start, start + 100).join(",") });
+      batches.push(api.get<ActivityEvent[]>(`/issues/${issueId}/activity?${params}`));
+    }
+    return (await Promise.all(batches)).flat();
+  },
   forIssue: (issueId: string) => api.get<ActivityEvent[]>(`/issues/${issueId}/activity`),
+  recentRunsForIssue: (issueId: string) => api.get<RunForIssue[]>(`/issues/${issueId}/runs?view=recent`),
   runsForIssue: (issueId: string) => api.get<RunForIssue[]>(`/issues/${issueId}/runs`),
+  runsByIdsForIssue: (issueId: string, runIds: string[]) => {
+    const ids = [...new Set(runIds)];
+    return Promise.all(Array.from({ length: Math.ceil(ids.length / 100) }, (_, index) =>
+      api.get<RunForIssue[]>(`/issues/${issueId}/runs?runIds=${ids.slice(index * 100, (index + 1) * 100).join(",")}`),
+    )).then(pages => pages.flat());
+  },
   issuesForRun: (runId: string) => api.get<IssueForRun[]>(`/heartbeat-runs/${runId}/issues`),
 };

@@ -16,6 +16,7 @@ import type {
 } from "@paperclipai/plugin-sdk";
 import { recordEnvironmentSyncError, withEnvironmentSyncTransferStep } from "@paperclipai/plugin-sdk";
 import { getPluginTracer } from "./plugin.js";
+import { streamSandboxArchive } from "./archive-stream.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -479,6 +480,18 @@ function isZstdCompressionSupported(): boolean {
   return typeof zlib.createZstdCompress === "function";
 }
 
+async function hasCompressedHeader(sourcePath: string): Promise<boolean> {
+  const file = await fs.open(sourcePath, "r");
+  try {
+    const header = Buffer.alloc(4);
+    const { bytesRead } = await file.read(header, 0, header.length, 0);
+    return (bytesRead === 4 && header.readUInt32LE(0) === 0xfd2fb528)
+      || (bytesRead >= 3 && header[0] === 0x1f && header[1] === 0x8b && header[2] === 8);
+  } finally {
+    await file.close();
+  }
+}
+
 /**
  * Stream-compress `sourcePath` to a new file with zstd at
  * {@link ZSTD_COMPRESSION_LEVEL}, never buffering the whole file in memory.
@@ -781,6 +794,7 @@ async function syncInFileMappings(input: {
         for (const plan of compressCandidates) {
           let hostTempDir: string | null = null;
           try {
+            if (await hasCompressedHeader(plan.mapping.sourcePath)) continue;
             const compressed = await compressFileToHostTemp(plan.mapping.sourcePath);
             hostTempDir = compressed.dir;
             compressBytesIn += plan.sourceSize;
@@ -1284,13 +1298,13 @@ async function syncOutDirectoryMapping(input: {
     // Tar the source in-sandbox (naming top-level entries so no "." self-entry is
     // embedded), reproducing the `followSymlinks` → `-h` mapping, then stream the
     // single archive back over the native bulk channel.
-    const tarScript = [
+    const tarScript = (archive: string | null) => [
       `cd ${shellQuote(mapping.sourcePath)}`,
       "set -- *",
       'if [ "$#" -eq 1 ] && [ "$1" = "*" ] && [ ! -e "$1" ] && [ ! -L "$1" ]; then set --; fi',
       'for entry in .[!.]* ..?*; do [ -e "$entry" ] || [ -L "$entry" ] || continue; set -- "$@" "$entry"; done',
-      `if [ "$#" -eq 0 ]; then dd if=/dev/zero of=${shellQuote(remoteTar)} bs=1024 count=1; ` +
-        `else tar -c --no-xattrs ${mapping.followSymlinks ? "-h " : ""}${excludeFlags} -f ${shellQuote(remoteTar)} -- "$@"; fi`,
+      `if [ "$#" -eq 0 ]; then dd if=/dev/zero ${archive ? `of=${shellQuote(archive)} ` : ""}bs=1024 count=1; ` +
+        `else tar -c --no-xattrs ${mapping.followSymlinks ? "-h " : ""}${excludeFlags} -f ${shellQuote(archive ?? "-")} -- "$@"; fi`,
     ].join(" && ");
     // Rebuild the archive with files, directories, and relative links whose
     // resolved targets remain inside this mapping. Nothing is deleted or
@@ -1309,35 +1323,55 @@ async function syncOutDirectoryMapping(input: {
       `  case "$_pc_real/" in "$_pc_root"/*) printf '%s\\0' "$_pc_link" ;; esac;`,
       'done',
     ].join("\n");
-    const confinedEntriesScript = [
+    const confinedEntriesScript = (archive: string | null) => [
       `cd ${shellQuote(mapping.sourcePath)}`,
-      `find . -mindepth 1 \\( ${prunePaths} \\) -prune -o -type l -exec sh -c ${shellQuote(filterLinks)} sh {} + -o \\( -type f -o -type d \\) -print0 > ${shellQuote(remoteList)}`,
-      `tar -c --no-xattrs --hard-dereference --no-recursion --null ${excludeFlags} -f ${shellQuote(remoteTar)} -T ${shellQuote(remoteList)}`,
+      `find . -mindepth 1 \\( ${prunePaths} \\) -prune -o -type l -exec sh -c ${shellQuote(filterLinks)} sh {} + -o \\( -type f -o -type d \\) -print0 ${archive ? `> ${shellQuote(remoteList)} && ` : "| "}` +
+      `tar -c --no-xattrs --hard-dereference --no-recursion --null ${excludeFlags} -f ${shellQuote(archive ?? "-")} -T ${shellQuote(archive ? remoteList : "-")}`,
     ].join(" && ");
 
     const localTar = path.join(tmp, "sync-out.tar");
     let bytesTransferred = 0;
+    let streaming = false;
     try {
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        await withEnvironmentSyncTransferStep("archive_create", () =>
-          assertSandboxCommandOk(sandbox, `sh -c ${shellQuote(attempt === 0 ? tarScript : confinedEntriesScript)}`, timeoutSeconds, "syncOut tar"));
+        const script = attempt === 0 ? tarScript : confinedEntriesScript;
+        if (!streaming) {
+          try {
+            await withEnvironmentSyncTransferStep("archive_create", () =>
+              assertSandboxCommandOk(sandbox, `sh -c ${shellQuote(script(remoteTar))}`, timeoutSeconds, "syncOut tar"));
+          } catch (error) {
+            // GNU tar can report either ENOSPC/EDQUOT or a short write when
+            // archive storage is exhausted. Preserve all source files and use
+            // a bounded, disk-free transfer instead of retrying that write.
+            if (!(error instanceof Error) || !/No space left on device|Disk quota exceeded|File\s?size limit exceeded|Wrote only \d+ of \d+ bytes/i.test(error.message)) throw error;
+            await sandbox.fs.deleteFile(remoteTar).catch(() => undefined);
+            streaming = true;
+          }
+        }
         guardRoundTrips += 1;
-        // `transfer` span: the real byte download — `sandbox.fs.downloadFiles`.
-        const responses = await withEnvironmentSyncTransferStep("archive_download", () => withProviderSpan({
-          name: "transfer",
-          wallMsAttr: SPAN_ATTR.transferWallMs,
-          attributes: {
-            [SPAN_ATTR.transferGuardCount]: guardRoundTrips,
-            [SPAN_ATTR.transferDirection]: "outbound",
-          },
-          run: () =>
-            sandbox.fs.downloadFiles([{ source: remoteTar, destination: localTar }], timeoutSeconds),
-        }));
-        const response = responses.find((entry) => entry.source === remoteTar) ?? responses[0];
-        if (!response || response.error) {
-          throw recordEnvironmentSyncError(new Error(
-            `Daytona syncOut directory download failed for ${mapping.sourcePath}: ${response?.error ?? "no response returned"}`,
-          ), { transferStep: "archive_download", transferFailureKind: response ? "download_failed" : "download_missing" });
+        if (streaming) {
+          await withEnvironmentSyncTransferStep("archive_download", () => streamSandboxArchive({
+            process: sandbox.process, cwd: remoteDir, archiveScript: script(null), destination: localTar, timeoutSeconds,
+            maxBytes: Math.floor(sandbox.disk * 1024 ** 3),
+          }));
+        } else {
+          // `transfer` span: the real byte download — `sandbox.fs.downloadFiles`.
+          const responses = await withEnvironmentSyncTransferStep("archive_download", () => withProviderSpan({
+            name: "transfer",
+            wallMsAttr: SPAN_ATTR.transferWallMs,
+            attributes: {
+              [SPAN_ATTR.transferGuardCount]: guardRoundTrips,
+              [SPAN_ATTR.transferDirection]: "outbound",
+            },
+            run: () =>
+              sandbox.fs.downloadFiles([{ source: remoteTar, destination: localTar }], timeoutSeconds),
+          }));
+          const response = responses.find((entry) => entry.source === remoteTar) ?? responses[0];
+          if (!response || response.error) {
+            throw recordEnvironmentSyncError(new Error(
+              `Daytona syncOut directory download failed for ${mapping.sourcePath}: ${response?.error ?? "no response returned"}`,
+            ), { transferStep: "archive_download", transferFailureKind: response ? "download_failed" : "download_missing" });
+          }
         }
         bytesTransferred += await withEnvironmentSyncTransferStep("archive_download", async () => (await fs.stat(localTar)).size);
         try {

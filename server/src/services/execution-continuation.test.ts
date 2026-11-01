@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  applyPendingMigrations,
   companies,
   createDb,
   heartbeatRuns,
@@ -15,6 +16,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { StaleExecutionContinuationError, buildExecutionContinuation, currentContinuationOrigins, projectHumanInteractionResponse } from "./execution-continuation.js";
 
 const expectStaleContinuation = async (
@@ -29,7 +31,8 @@ const expectMissingContinuationContext = async (run: () => Promise<unknown>) => 
   await expect(result).rejects.toThrow("continuation_source_context_missing");
   await expect(result).rejects.not.toBeInstanceOf(StaleExecutionContinuationError);
 };
-const support = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_EXECUTION_CONTINUATION_TEST_DATABASE_URL");
+const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)(
   "authorized continuation context",
   () => {
@@ -44,13 +47,16 @@ const support = await getEmbeddedPostgresTestSupport();
       laterId = randomUUID(),
       interactionId = randomUUID();
     beforeAll(async () => {
-      database = await startEmbeddedPostgresTestDatabase(
+      if (externalUrl) {
+        await applyPendingMigrations(externalUrl);
+        database = { connectionString: externalUrl, cleanup: async () => {} };
+      } else database = await startEmbeddedPostgresTestDatabase(
         "paperclip-continuation-context-",
       );
       db = createDb(database.connectionString);
       await db
         .insert(companies)
-        .values({ id: companyId, name: "Continuation", issuePrefix: "CTX" });
+        .values({ id: companyId, name: "Continuation", issuePrefix: `CTX${companyId.replaceAll("-", "")}` });
       await db
         .insert(agents)
         .values({
@@ -193,14 +199,41 @@ const support = await getEmbeddedPostgresTestSupport();
       }
     });
 
-    it("rejects handoff history from a different task", async () => {
+    it("degrades a stale interrupted-run hint from a different task instead of failing the wake", async () => {
+      // Cross-issue reassigns can leave interruptedRunId pointing at another
+      // task's run. The hint is best-effort: the wake must continue without a
+      // resume source instead of throwing continuation_source_context_missing.
       const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
       await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: randomUUID() } }).where(eq(heartbeatRuns.id, runId));
       try {
-        await expectMissingContinuationContext(
-          () => buildExecutionContinuation({ db, companyId, issueId, agentId,
-            context: { interruptedRunId: runId }, summary: null, exposeLowTrustRaw: false }),
-        );
+        const envelope = await buildExecutionContinuation({ db, companyId, issueId, agentId,
+          context: { interruptedRunId: runId, wakeReason: "issue_assigned" }, summary: null, exposeLowTrustRaw: false });
+        expect(envelope.trigger.sourceRunId).toBeNull();
+        expect(envelope).not.toHaveProperty("interruptedRunId");
+        expect(envelope.objective).toBe("Focus the Gmail summary on launch decisions.");
+      } finally {
+        await db.update(heartbeatRuns).set({ contextSnapshot: source.contextSnapshot }).where(eq(heartbeatRuns.id, runId));
+      }
+    });
+
+    it("degrades an interrupted-run hint whose run row no longer exists", async () => {
+      const missingRunId = randomUUID();
+      const envelope = await buildExecutionContinuation({ db, companyId, issueId, agentId,
+        context: { interruptedRunId: missingRunId, wakeReason: "issue_assigned" }, summary: null, exposeLowTrustRaw: false });
+      expect(envelope.trigger.sourceRunId).toBeNull();
+      expect(envelope).not.toHaveProperty("interruptedRunId");
+    });
+
+    it("still rejects an explicit user resume from a different task", async () => {
+      // Fail-closed stays in force for explicit user resume history; only the
+      // best-effort interruptedRunId hint degrades.
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: randomUUID() } }).where(eq(heartbeatRuns.id, runId));
+      try {
+        await expect(
+          buildExecutionContinuation({ db, companyId, issueId, agentId,
+            context: { explicitUserContinuation: { previousRunId: runId }, wakeReason: "user_resume" }, summary: null, exposeLowTrustRaw: false }),
+        ).rejects.toThrow("continuation_user_authorization_missing");
       } finally {
         await db.update(heartbeatRuns).set({ contextSnapshot: source.contextSnapshot }).where(eq(heartbeatRuns.id, runId));
       }

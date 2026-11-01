@@ -2,6 +2,8 @@
 
 Product map: [Goals and work alignment](../feature-map/goals.md).
 
+Feature ID: `goals`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -10,6 +12,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `hierarchy`
+
+Capability ID: `goals/hierarchy`.
 
 Review: `baseline`.
 
@@ -37,6 +41,8 @@ production native binding.
 
 ## `alignment`
 
+Capability ID: `goals/alignment`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -60,6 +66,8 @@ remaining operations before qualifying the whole capability.
 Gaps: Goal association is data access, separate from completing or reassigning the task.
 
 ## `navigation`
+
+Capability ID: `goals/navigation`.
 
 Review: `baseline`.
 

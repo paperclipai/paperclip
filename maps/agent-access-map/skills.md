@@ -2,6 +2,8 @@
 
 Product map: [Skill discovery, authoring, and policy](../feature-map/skills.md).
 
+Feature ID: `skills`.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -11,7 +13,34 @@ Each capability needs operation-level review before its entire scope can be
 qualified. No live agent execution is claimed. Follow the [map contract](../README.md)
 for format, permission checks, evidence and maintenance.
 
+Cold Git package recovery rechecks the original source's current setup identity,
+company membership, policy and repository grant. It never borrows another company's
+credentials or substitutes a moving branch for the saved commit. A missing/revoked
+source fails with a reconnect error and persisted retry backoff. Warm access still
+uses the ordinary skill/project permission check.
+
+External package storage changes persistence, not agent authority. Runtime selection
+still checks current company/project access before consulting immutable package caches;
+no storage key is exposed as an agent capability. Public selected rows are constrained
+to `access_source_id IS NULL` at their final read. Warm package and native asset caches
+hold file metadata, never authorization decisions. The
+[concurrency regression](../../server/src/__tests__/company-skills-runtime-concurrency.test.ts)
+covers separate actors and revoked project access; the
+[package regression](../../server/src/__tests__/skill-package-store.test.ts) covers
+company isolation and warm-cache behavior. This does not claim live agent qualification.
+
+Managed ownership remains in the existing `workspace` policy category. Immutable
+content references do not grant authority: publication rechecks policy and source
+access, and delivery/recovery rechecks the company's skill visibility. File reads
+and mutations return `versionId`; content requests may supply `expectedVersionId`
+and receive `409` on a stale base. Existing idempotent agent receipt shapes remain.
+Detached assignments do not release active/recovering execution pins. These are
+source-reviewed contracts; the independent-process board fixture is not agent
+credential or hosted Runner qualification.
+
 ## `discovery`
+
+Capability ID: `skills/discovery`.
 
 Review: `baseline`.
 
@@ -20,7 +49,10 @@ API: `present` — representative operation IDs:
 - `GET /api/companies/{companyId}/skills`.
 - `POST /api/companies/{companyId}/skills/import`.
 
-Agent access: `available` — REST / native call_api / CLI skills and sources.
+Agent access: `available` — REST / native call_api / CLI skills and sources. Queue
+and HTTP/2 sandbox callbacks also admit company skill detail and file reads;
+file paths travel in the existing `path` query parameter. Skill mutations stay
+subject to the existing bridge restrictions.
 
 Policy: Company skill policy by action/resource plus platform invariants; test execution
 additionally requires task-assignment authority.
@@ -38,6 +70,8 @@ Gaps: Installation/import is governed by company skill policy, not inferred from
 agent's role name.
 
 ## `authoring`
+
+Capability ID: `skills/authoring`.
 
 Review: `baseline`.
 
@@ -65,6 +99,14 @@ Gaps: Writable/fork policy and expected version apply. Native helpers intentiona
 support a narrower shape than full API.
 
 ## `versions`
+
+Version lists and current/test-run version summaries contain file names and kinds.
+Use `GET /api/companies/{companyId}/skills/{skillId}/versions/{versionId}` for the
+selected version's file contents. Authorization remains company/skill scoped; support
+inspection reads only stored bytes for the requested version and does not recover Git.
+
+
+Capability ID: `skills/versions`.
 
 Review: `baseline`.
 
@@ -102,7 +144,16 @@ exclusion and immutable version pinning. This changes no agent endpoint or grant
 the [configuration tests](../../server/src/__tests__/heartbeat-execution-configuration.test.ts)
 cover the held-lock boundary with real PostgreSQL.
 
+Concurrent preparations share only in-flight inventory reconciliation. After
+that work, each actor's visible skill rows are read again under the company cache
+lock. Snapshot delivery and durable run pins complete before the lock is released.
+No permission result is shared or kept between requests. The
+[concurrency tests](../../server/src/__tests__/company-skills-runtime-concurrency.test.ts)
+cover separate actors and project-access revocation; this adds no agent API.
+
 ## `policy`
+
+Capability ID: `skills/policy`.
 
 Review: `baseline`.
 
@@ -129,7 +180,19 @@ remaining operations before qualifying the whole capability.
 Gaps: Policy administration has an explicit agent grant branch; assigning agent skills
 also checks the target's config authority.
 
+The configuration-gated `GET /api/agents/{id}/skills` reads repository cache
+locations without materializing versions or validating their support files.
+Assignment mutations and run preparation retain their existing authorization.
+The [database-backed cache tests](../../server/src/__tests__/skill-version-cache.test.ts)
+cover latest/pinned reads and full validation during execution; they do not prove
+live agent access.
+Both skill-list and skill-sync responses preserve stored version pins rather than
+returning a resolved runtime version as a pin. Latest remains unpinned across an
+assignment round trip.
+
 ## `testing`
+
+Capability ID: `skills/testing`.
 
 Review: `baseline`.
 
@@ -155,6 +218,20 @@ remaining operations before qualifying the whole capability.
 Gaps: No dedicated native orchestration binding; generic REST calls retain
 skills.test policy, task-assignment authorization, responsible-user intersection and
 admitted skill-test JWT scope.
+
+Studio's `skill_test` work mode is admitted through native Runner selection and
+preserved in execution input. The admitted task-bound scope restricts REST and
+native authorization, including after task-mode edits and recovery. Native tools
+allow only the harness task and admitted skills. Task creation, company browsing,
+connectors and assigned MCP tools are unavailable; native mutation receipts recheck
+the scope before replay or effects.
+Preparation reads the pinned version from the durable test row, replaces ordinary
+assignments, and enforces current skill access. Required environment skills retain
+their owner policy; a shadowed test pin fails explicitly. Recovery preserves the
+admitted selection. Preconfigured Runner homes reject managed Studio delivery.
+The [execution configuration regression](../../server/src/__tests__/heartbeat-execution-configuration.test.ts)
+covers unassigned historical pins, Beta skills disabled, revoked access, recovery,
+unchanged agent assignments, and assembled heartbeat dispatch.
 
 Project-source API additions: GET `/api/companies/{companyId}/skill-sources/project-repositories`,
 POST `/api/companies/{companyId}/skill-sources/adopt-project` with `workspaceId`, and
@@ -202,3 +279,11 @@ responsible person's other grants for an agent-created source.
 Initial automatic imports reserve company work credits before provider reads.
 Failures retain the reservation; completed jobs cannot replenish the queue's
 work allowance. Jobs remain durable and resume as company credits refill.
+
+
+Plugin runtime synchronization uses the agent's current skill access and immutable
+version resolver. A change to an installed skill invalidates its referencing
+agents. Private-source access changes also request reconciliation. This is a
+host-to-plugin hook, not a new agent-facing endpoint. See
+[contract](../../doc/plugins/AGENT_RUNTIME_SYNC.md#skills) and
+[database coverage](../../server/src/__tests__/agent-runtime-skills.test.ts).

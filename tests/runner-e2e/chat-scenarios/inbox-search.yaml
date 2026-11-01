@@ -1,0 +1,108 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: inbox-search
+status: planned
+scenarios:
+  - id: inbox-search.show-my-work
+    capabilities:
+      - inbox-search/views
+    context: >-
+      The person's inbox contains participated tasks, unread work and blocked items; unrelated
+      automated tasks also exist. The CEO has only the documented responsible-user view.
+    query: >-
+      What in my inbox needs my attention today?
+    expected_outcome: >-
+      The agent uses the permitted personal-attention scope, prioritizes actionable items and
+      links to their sources. It does not substitute its own task queue or all company work for
+      the person's inbox. If the user-only aggregation is unavailable to this agent, it states
+      that limitation and links to Mine rather than inventing unread counts.
+  - id: inbox-search.archive-done
+    capabilities:
+      - inbox-search/triage
+    context: >-
+      Responsible-user inbox archiving is explicitly enabled for this CEO and person. The inbox
+      spans several pages and includes Done, Cancelled, active, review and unanswered items.
+    query: >-
+      Archive everything in my inbox that is marked done.
+    expected_outcome: >-
+      The agent enumerates the eligible personal inbox and archives only items whose current
+      task status is Done. It leaves other statuses and other people's inboxes unchanged and
+      does not alter task status. Chat gives an accurate count and useful links or an undo path;
+      a repeated request does not add effects.
+  - id: inbox-search.archive-without-grant
+    capabilities:
+      - inbox-search/triage
+    context: >-
+      The CEO can read company tasks but has no opt-in or effective grant to archive this
+      person's inbox.
+    query: >-
+      Archive everything in my inbox that is marked done.
+    expected_outcome: >-
+      The agent explains the missing personal-inbox authority and offers the supported human
+      workflow or access request. It makes no archive mutations and does not infer permission
+      from the CEO title, visible tasks or the person's conversational wording alone.
+  - id: inbox-search.archive-partial-failure
+    capabilities:
+      - inbox-search/triage
+    context: >-
+      Authorized archiving matches three completed tasks; one archive call fails after two
+      succeed.
+    query: >-
+      Archive everything in my inbox that is marked done.
+    expected_outcome: >-
+      Chat reports the two confirmed archives and the remaining failed item separately. A retry
+      reconciles current archive state before doing more work. The response does not claim the
+      inbox is clear, unarchive successful items or modify task completion to hide a failed
+      operation.
+  - id: inbox-search.restore-archive
+    capabilities:
+      - inbox-search/triage
+    context: >-
+      A previous chat turn archived three known task attention items for this person; the agent
+      retains the affected IDs and restore permission.
+    query: >-
+      Undo the inbox cleanup you just did.
+    expected_outcome: >-
+      The agent restores only the items archived by that operation for the same person. Task
+      status and other users' preferences remain unchanged. It reports any item that can no
+      longer be restored instead of unarchiving every historical item in the company.
+  - id: inbox-search.show-decisions
+    capabilities:
+      - inbox-search/decisions
+      - questions-and-approvals/governance
+    context: >-
+      Accessible decision queues contain a hiring approval, a question and an informational
+      completed request.
+    query: >-
+      What decisions are waiting on me?
+    expected_outcome: >-
+      The answer separates unresolved decisions from history, links each to the exact source and
+      identifies the appropriate resolver. It does not approve anything while listing it or
+      imply that every visible queue item can be resolved by the current person.
+  - id: inbox-search.find-design
+    capabilities:
+      - inbox-search/search
+    context: >-
+      Several tasks and documents mention launch, and one private project is inaccessible to the
+      caller.
+    query: >-
+      Find the latest approved design for the launch website.
+    expected_outcome: >-
+      The agent searches the appropriate authorized task and document surfaces and resolves
+      approval and recency from actual records. It links the relevant artifact or task, explains
+      ambiguity when needed and excludes the inaccessible project from results and snippets.
+  - id: inbox-search.notification-audience
+    capabilities:
+      - inbox-search/toasts
+      - tasks/discussion
+    context: >-
+      Two signed-in observers can read a task; only Alex participated. The agent will post a
+      normal update, with a separate variant explicitly mentioning the other observer.
+    query: >-
+      Post an update on the launch task when the draft is ready.
+    expected_outcome: >-
+      The saved update appears on the task and eligible participating humans receive the normal
+      notification. A nonparticipant does not receive a personal toast merely because the agent
+      worked on their behalf; an explicit authorized mention changes eligibility. The chat
+      response does not claim browser notification delivery without observing it.

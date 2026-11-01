@@ -1,10 +1,16 @@
-import type { Db } from "@paperclipai/db";
+import { join } from "node:path";
+import { probePluginRunnerEnvironment } from "./native-runtime/plugin-runner-probe.js";
+import { registerPluginTaskCredentialHandoff } from "./plugin-task-credential-writeback.js";
+import { randomUUID } from "node:crypto";
+import { agents, companies, type Db } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import type { AdapterEnvironmentCheck } from "@paperclipai/adapter-utils";
+import type { AdapterEnvironmentCheck, AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import { parseObject } from "@paperclipai/adapter-utils/server-utils";
 import { aiRoutingHarness, ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, type AiConnectionBinding } from "@paperclipai/shared";
 import { requireServerAdapter } from "../adapters/index.js";
 import { forbidden, HttpError, unprocessable } from "../errors.js";
+import { isCloudManagedInstance } from "./cloud-instance.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
@@ -12,9 +18,24 @@ import { resolveEnvironmentExecutionTarget } from "./environment-execution-targe
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "./ai-connection-runtime.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { validateAiApiKey } from "./ai-api-key-test.js";
+import { probeCopilotExecutionTarget } from "./copilot-connection-probe.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
+import { pluginEnvironmentRequiresAgent } from "./plugin-environment-driver.js";
 const asRecord = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+function finishManagedConnectionTest(adapterType: string, context: AdapterEnvironmentTestContext, result: AdapterEnvironmentTestResult): AdapterEnvironmentTestResult {
+  const target = context.executionTarget;
+  if (result.status === "fail" || adapterType !== "paperclip_runner" || context.config.provider !== "acpx"
+    || !isCloudManagedInstance() || target?.kind !== "remote" || target.transport !== "sandbox" || target.runnerTask
+    || !result.checks.some(check => /hello_probe_(passed|succeeded)$/.test(check.code) || check.code === "ai_connection_api_key_reverified")
+    || !result.checks.some(check => check.code === "acpx_remote_runtime_unverified" && check.level === "warn")) return result;
+  const checks = result.checks.map(check => check.code === "acpx_remote_runtime_unverified" && check.level === "warn"
+    ? { ...check, code: "acpx_remote_runtime_managed", level: "info" as const,
+        message: "The remote platform is supported. Paperclip manages Runner preparation and verifies its runtime before execution." }
+    : check);
+  return { ...result, checks, status: checks.some(check => check.level === "error") ? "fail" : checks.some(check => check.level === "warn") ? "warn" : "pass" };
+}
+
 export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: PluginWorkerManager) {
   const instanceSettings = instanceSettingsService(db);
   const environmentsSvc = environmentService(db);
@@ -22,7 +43,12 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
   // A null agent override inherits the instance default, just like dispatch.
   // Resolve this before secrets or probes so a default remote environment can
   // never accidentally validate the account on the control-plane host.
-  async function resolveAdapterTestEnvironmentId(companyId: string, environmentId: string | null | undefined) {
+  async function resolveAdapterTestEnvironmentId(companyId: string, environmentId: string | null | undefined, copilot = false) {
+    if (copilot && (await instanceSettings.getGeneral()).executionMode === "kubernetes") {
+      const kubernetes = await environmentsSvc.findKubernetesEnvironment(companyId);
+      if (!kubernetes) throw unprocessable("The Kubernetes execution environment is unavailable.", { code: "copilot_environment_unavailable" });
+      return kubernetes.id;
+    }
     if (environmentId) return environmentId;
     const settings = await instanceSettings.get();
     if (settings.defaultEnvironmentId) return settings.defaultEnvironmentId;
@@ -202,6 +228,25 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     // agent lease) and archive it on release instead of deleting it, so the
     // operator can inspect the exact sandbox from the provider dashboard while
     // provider-side expiry reaps it later.
+    if (environment.driver === "plugin" && await pluginEnvironmentRequiresAgent(db, environment)) {
+      const [agent] = input.agentId ? await db.select({ state: agents.lifecycleState, pauseReason: agents.pauseReason,
+        requiresApproval: companies.requireBoardApprovalForNewAgents }).from(agents)
+        .innerJoin(companies, eq(companies.id, agents.companyId))
+        .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId))) : [];
+      if (agent?.state === "paused" && agent.pauseReason === "setup" && agent.requiresApproval) return {
+        executionTarget: null, environmentName: environment.name, fallbackChecks: [{
+          code: "environment_agent_approval_required", level: "warn",
+          message: "The selected account will be verified on the agent computer after hire approval.",
+        }], release: noopRelease,
+      };
+      if (!agent || ["paused", "preparing"].includes(agent.state)) return {
+        executionTarget: null, environmentName: environment.name, fallbackChecks: [{
+          code: !input.agentId ? "environment_agent_required" : "environment_agent_preparing", level: "warn",
+          message: !input.agentId ? "This environment needs a saved agent before its connection can be tested."
+            : "The agent computer is being prepared. Test the connection when preparation finishes.",
+        }], release: noopRelease,
+      };
+    }
     const testEnvironment = environment.driver === "sandbox"
       ? {
           ...environment,
@@ -217,7 +262,11 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
       leaseRecord = await environmentRuntime.acquireRunLease({
         companyId: input.companyId,
         agentId: input.agentId,
+        adapterType: input.adapterType,
+        ...(environment.driver === "plugin" && input.adapterType === "paperclip_runner"
+          ? { requestedExpiresAt: new Date(Date.now() + 180_000) } : {}),
         environment: testEnvironment,
+        configuredEnvironment: environment,
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
@@ -272,18 +321,29 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
 
     let realizedCwd: string | null = null;
     try {
-      const realized = await environmentRuntime.realizeWorkspace({
-        environment: testEnvironment,
-        lease: leaseRecord.lease,
-        // No host workspace to copy for a Test invocation; sandbox/plugin
-        // realize implementations use the lease metadata's remoteCwd to
-        // create the working directory inside the box.
-        workspace: {},
-      });
-      realizedCwd =
-        typeof realized.cwd === "string" && realized.cwd.trim().length > 0
-          ? realized.cwd.trim()
-          : null;
+      if (environment.driver === "plugin" && input.adapterType === "paperclip_runner") {
+        if (!await environmentRuntime.supportsTasks({ lease: leaseRecord.lease })) throw new Error("Plugin environment does not provide native Runner task execution");
+        const updated = await environmentsSvc.updateLeaseMetadata(leaseRecord.lease.id, {
+          ...leaseRecord.lease.metadata, runnerTaskProbe: {
+            runId: randomUUID(), sessionId: randomUUID(), expiresAtMs: Date.now() + 120_000,
+          },
+        });
+        if (!updated) throw new Error("Plugin Runner setup lease disappeared");
+        leaseRecord.lease = updated;
+      } else {
+        const realized = await environmentRuntime.realizeWorkspace({
+          environment: testEnvironment,
+          lease: leaseRecord.lease,
+          // No host workspace to copy for a Test invocation; sandbox/plugin
+          // realize implementations use the lease metadata's remoteCwd to
+          // create the working directory inside the box.
+          workspace: {},
+        });
+        realizedCwd =
+          typeof realized.cwd === "string" && realized.cwd.trim().length > 0
+            ? realized.cwd.trim()
+            : null;
+      }
     } catch (err) {
       await releaseLease("failed");
       return {
@@ -446,32 +506,51 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
   async function assertAdapterTestEnvironmentForCompany(
     companyId: string,
     environmentId: string,
+    adapterType?: string,
   ): Promise<void> {
+    if (!await assertAdapterTestEnvironmentBinding(companyId, environmentId)) return;
+    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
+      allowedDrivers: adapterType === "paperclip_runner" ? [...ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS, "plugin"] : ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS,
+    });
+  }
+
+  // The company-binding half of the guard. A route that must resolve the
+  // runner before it knows the adapter type runs this first, then runs the
+  // full guard with the resolved adapter type. Returns the environment, or
+  // null for a missing one, which leaks no tenant state; the execution-context
+  // resolver surfaces the existing environment_not_found check.
+  async function assertAdapterTestEnvironmentBinding(companyId: string, environmentId: string) {
     const environment = await environmentsSvc.getById(environmentId);
-    if (!environment) {
-      // A missing environment leaks no tenant state. The execution-context
-      // resolver surfaces the existing environment_not_found check.
-      return;
-    }
+    if (!environment) return null;
     const boundCompanyIds = await environmentsSvc.listBoundCompanyIds(environmentId);
     if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(companyId)) {
       throw forbidden("The selected environment belongs to another company.", {
         code: "environment_company_mismatch",
       });
     }
-    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
-      allowedDrivers: ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS,
-    });
+    return environment;
   }
 
   async function testManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding, managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>>, agentId?: string) {
     const startedAt = new Date();
-    const result = await probeManagedEnvironment(adapterType, context, binding);
+    if (adapterType === "paperclip_runner" && binding.provider === "google" && context.config.provider === "acpx"
+      && context.config.acpxAgent === "antigravity" && managed.home) {
+      const selectedHome = join(managed.home, "provider");
+      if (context.managedAiCredentialHome && context.managedAiCredentialHome !== selectedHome) {
+        throw unprocessable("The Google runtime credential home does not match the selected managed account.");
+      }
+      context = { ...context, managedAiCredentialHome: selectedHome };
+    }
+    const target = context.executionTarget;
+    if (managed.credentialWriteback && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && target.leaseId) {
+      await registerPluginTaskCredentialHandoff(db, { companyId: context.companyId, leaseId: target.leaseId }, managed.sessionIdentity, managed.credentialWriteback);
+    }
+    const result = await probeManagedEnvironment(adapterType, context, binding, managed);
     // A provider rejection invalidates the tested credential generation. A
     // missing CLI, unavailable environment, or other runtime error does not.
     if (result.status === "fail" && result.checks.some(check =>
       check.code === ADAPTER_AUTH_MISSING_CHECK_CODE || /_hello_probe_auth_required$/.test(check.code)
-        || check.code === "ai_connection_api_key_rejected",
+        || check.code === "ai_connection_api_key_rejected" || check.code === "COPILOT_AUTH_REQUIRED",
     )) {
       await aiConnectionService(db).markAuthenticationFailed({
         companyId: context.companyId, agentId, runStartedAt: startedAt,
@@ -481,12 +560,37 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     return result;
   }
 
-  async function probeManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding) {
+  async function probeManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding, managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>>): Promise<AdapterEnvironmentTestResult> {
+    if (binding.provider === "github") {
+      try {
+        const token = parseObject(context.config.env).COPILOT_GITHUB_TOKEN;
+        if (typeof token !== "string" || !token) throw unprocessable("Select a saved Copilot token.", { code: "COPILOT_AUTH_REQUIRED" });
+        const model = typeof context.config.model === "string" ? context.config.model.trim() : null;
+        if (!model || ["auto", "default"].includes(model.toLowerCase())) throw unprocessable("Select an available Copilot model.", { code: "COPILOT_MODEL_UNAVAILABLE" });
+        await probeCopilotExecutionTarget(token, context.executionTarget, model);
+        return { adapterType, status: "pass" as const, testedAt: new Date().toISOString(), checks: [{ code: "copilot_metadata_verified", level: "info" as const, message: "The verified Copilot runtime authenticated this account and accepted the selected model. No model prompt was sent." }] };
+      } catch (error) {
+        return { adapterType, status: "fail" as const, testedAt: new Date().toISOString(), checks: [{ code: error instanceof HttpError ? String(asRecord(error.details)?.code ?? "COPILOT_REQUEST_FAILED") : "COPILOT_REQUEST_FAILED", level: "error" as const, message: error instanceof HttpError ? error.message : "Copilot metadata verification failed." }] };
+      }
+    }
     await assertManagedAiProjectAuth(context.config, binding.provider, context.executionTarget);
-    const result = await requireServerAdapter(adapterType).testEnvironment(context);
+    const target = context.executionTarget;
+    const result = adapterType === "paperclip_runner" && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask
+      ? await probePluginRunnerEnvironment(context, { identity: managed.identity, accountIdentity: managed.sessionIdentity,
+          home: managed.home ? join(managed.home, "provider") : undefined })
+      : await requireServerAdapter(adapterType).testEnvironment(context);
     if (result.status === "fail") return result;
+    // Antigravity's native admission checks the selected managed account and
+    // exact model without a billable turn. Do not invoke another Google CLI.
+    if (adapterType === "paperclip_runner" && context.config.provider === "acpx" && context.config.acpxAgent === "antigravity") {
+      if (result.status === "pass" && result.checks.some(check => check.code === "antigravity_metadata_verified" && check.level === "info")) return result;
+      return { ...result, status: "fail", checks: [...result.checks, { code: "ai_connection_validation_incomplete", level: "error",
+        message: "The selected Google account has not completed native account and model verification. Retry before adopting it." }] };
+    }
     // The resolved method, not binding.method — on a responsible_user binding
     // that field is wire-compat only and the default connection decides.
+    if (adapterType === "paperclip_runner" && context.executionTarget?.kind === "remote"
+      && context.executionTarget.transport === "sandbox" && context.executionTarget.runnerTask) return result;
     const resolvedMethod = (context.config as { managedAiConnection?: { method?: string } }).managedAiConnection?.method;
     // An api_key account does not take the CLI hello probe below: a key
     // travels as an env var any engine understands, and the engine's own test
@@ -501,7 +605,10 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     // requirement stays for subscriptions: a stored login is a file layout
     // only a provider CLI reads, so proving the runtime lane can consume it
     // takes a real hello turn.
-    if (resolvedMethod === "api_key" && !context.config.managedAiRouting) {
+    const nativePiOpenRouter = adapterType === "paperclip_runner" && context.config.provider === "acpx"
+      && context.config.acpxAgent === "pi" && binding.provider === "openrouter"
+      && asRecord(context.config.managedAiRouting)?.kind === "openrouter";
+    if (resolvedMethod === "api_key" && (!context.config.managedAiRouting || nativePiOpenRouter)) {
       const envKey = AI_CONNECTION_CAPABILITIES[binding.provider].methods.api_key?.envKey;
       const key = envKey ? parseObject(context.config.env)[envKey] : undefined;
       try {
@@ -513,11 +620,13 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
         const rejected = error instanceof HttpError && asRecord(error.details)?.code === "ai_connection_api_key_rejected";
         result.checks.push({ code: rejected ? "ai_connection_api_key_rejected" : "ai_connection_verification_failed", level: "error", message: error instanceof HttpError ? error.message : "Could not verify the account. Try again." });
       }
-      return result;
+      return finishManagedConnectionTest(adapterType, context, result);
     }
+    let providerTestPassed = false;
     if (!result.checks.some(check => check.code.includes("hello_probe"))) {
       const providerAdapter = context.config.managedAiRouting ? aiRoutingHarness(adapterType, context.config.provider, context.config.acpxAgent) : { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local", xai: "grok_local", google: "gemini_local" }[binding.provider];
       const probe = await requireServerAdapter(providerAdapter).testEnvironment({ ...context, adapterType: providerAdapter, config: { ...context.config, engine: "cli" } });
+      providerTestPassed = probe.status === "pass";
       result.checks.push(...probe.checks);
       result.status = probe.status === "fail" ? "fail" : result.status === "warn" || probe.status === "warn" ? "warn" : "pass";
     }
@@ -525,9 +634,9 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
       result.status = "fail";
       result.checks.push({ code: "ai_connection_validation_incomplete", level: "error", message: "The selected account has not completed a provider hello test. Retry before adopting it." });
     }
-    return result;
+    return providerTestPassed ? finishManagedConnectionTest(adapterType, context, result) : result;
   }
 
 
-  return { resolveAdapterTestEnvironmentId, resolveAdapterTestExecutionContext, assertAdapterTestEnvironmentForCompany, testManagedEnvironment };
+  return { resolveAdapterTestEnvironmentId, resolveAdapterTestExecutionContext, assertAdapterTestEnvironmentForCompany, assertAdapterTestEnvironmentBinding, testManagedEnvironment };
 }

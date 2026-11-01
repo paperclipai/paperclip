@@ -14,14 +14,6 @@ import {
 
 // The restart-safe cleanup backstop for the Claude setup-token login flow.
 //
-// The in-process five-minute timer in the login-session service stays the
-// primary control. This reaper is the backstop. It runs on server startup and on
-// a fixed interval, so a sandbox lease survives a server restart and a release
-// failure. The reaper reads the durable cleanup store and releases any lease
-// whose session is terminal, past its deadline, or already consumed. It uses the
-// same convention as the Codex device-login reaper, so both flows use one reaper
-// convention.
-//
 // The reaper never records secret data. The durable cleanup record holds only
 // ids, the deadline, the claim marker, and the state. It never holds a URL, a
 // code, a token, or a raw process chunk.

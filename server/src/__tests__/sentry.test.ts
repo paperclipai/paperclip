@@ -150,6 +150,31 @@ describe("captureException", () => {
     expect(sdk.captureException.mock.calls[1]).toEqual([unrelated]);
   });
 
+  it("adds the normalized storage failure to the original error's event only", async () => {
+    process.env[BACKEND_DSN_ENV] = "https://fixture@example.com/1";
+    const sdk = mockSentryPackage();
+    const { captureException, sentryReady } = await importFreshSentry();
+    const { recordS3Failure } = await import("../storage/s3-failure.js");
+    await sentryReady;
+    const error = Object.assign(new Error("The request signature we calculated does not match"), {
+      name: "SignatureDoesNotMatch",
+      $metadata: { httpStatusCode: 403, requestId: "req-4G-1", attempts: 1, extendedRequestId: "private host id" },
+      StringToSign: "private string to sign",
+    });
+    recordS3Failure(error, "get_object");
+    captureException(error);
+    const unrelated = new Error("unrelated");
+    captureException(unrelated);
+    expect(sdk.captureException.mock.calls[0]).toEqual([
+      error,
+      { tags: { storage_operation: "get_object", storage_error_code: "SignatureDoesNotMatch" }, fingerprint: ["{{ default }}"], contexts: {
+        storage_failure: { provider: "s3", operation: "get_object", errorCode: "SignatureDoesNotMatch", httpStatus: 403, requestId: "req-4G-1", attempts: 1 },
+      } },
+    ]);
+    expect(JSON.stringify(sdk.captureException.mock.calls[0]![1])).not.toContain("private");
+    expect(sdk.captureException.mock.calls[1]).toEqual([unrelated]);
+  });
+
   it("adds bounded Stop timeout context only to that event", async () => {
     process.env[BACKEND_DSN_ENV] = "https://fixture@example.com/1";
     const sdk = mockSentryPackage();

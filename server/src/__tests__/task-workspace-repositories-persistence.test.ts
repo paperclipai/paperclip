@@ -1,4 +1,4 @@
-import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { applyPendingMigrations, closeRegisteredClients, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
@@ -7,10 +7,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { constants as fsConstants } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { agents, companies, createDb, executionWorkspaces, executionWorkspaceRepositories, heartbeatRuns, issues } from "@paperclipai/db";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { executionWorkspaceRepositoryService } from "../services/execution-workspace-repositories.js";
+import * as remoteWorkspaces from "../services/remote-workspaces.js";
+import type { EnvironmentLease } from "@paperclipai/shared";
 import { listLocalProjectRepositories } from "@paperclipai/adapter-utils/ssh";
 import { readManagedWorkspaceRepositories, disposeGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { captureDirectorySnapshot, disposeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -18,7 +20,11 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 
 const catalog = vi.hoisted(() => ({ available: true }));
 vi.mock("../services/tool-access.js", () => ({ toolAccessService: () => ({ listProjectRepositories: async () => ({ repositories: catalog.available ? [{ id: "123", fullName: "team/source", url: "https://github.com/team/source", connections: [] }] : [] }) }) }));
-const support = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = process.env.PAPERCLIP_TASK_REPOSITORIES_TEST_DATABASE_URL;
+if (externalDatabaseUrl && new URL(externalDatabaseUrl).pathname !== "/remote_workspace_repositories_test") {
+  throw new Error("Remote repository tests require the disposable remote_workspace_repositories_test database");
+}
+const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("durable task repository receipts", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -26,8 +32,13 @@ const support = await getEmbeddedPostgresTestSupport();
   const actor = { type: "board" as const, source: "local_implicit" as const, userId: "local-board" };
   beforeAll(async () => {
     vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
-    temporary = await startEmbeddedPostgresTestDatabase("paperclip-task-repositories-");
+    if (externalDatabaseUrl) await applyPendingMigrations(externalDatabaseUrl);
+    temporary = externalDatabaseUrl ? { connectionString: externalDatabaseUrl,
+      cleanup: () => closeRegisteredClients(externalDatabaseUrl) }
+      : await startEmbeddedPostgresTestDatabase("paperclip-task-repositories-");
     db = createDb(temporary.connectionString);
+    await db.execute(sql`set client_min_messages = warning`);
+    if (externalDatabaseUrl) await db.execute(sql`truncate table companies restart identity cascade`);
     cwd = await mkdtemp(path.join(tmpdir(), "paperclip-task-repositories-files-"));
     [companyId] = (await db.insert(companies).values({ name: "Task repositories", issuePrefix: "TREPO" }).returning()).map(row => row.id);
     [agentId] = (await db.insert(agents).values({ companyId, name: "Repository worker", adapterType: "process", status: "idle" }).returning()).map(row => row.id);
@@ -41,6 +52,39 @@ const support = await getEmbeddedPostgresTestSupport();
     return executionWorkspaceRepositoryService(db).prepareForAdmission(input);
   };
   const request = (requestKey: string, ref?: string) => executionWorkspaceRepositoryService(db).request({ companyId, issueId, actor, request: { repository: { kind: "catalog", id: "123" }, requestKey, ...(ref ? { ref } : {}) } });
+  it("prepares a remote task repository through its current writer without opening a controller path", async () => {
+    const runId = randomUUID(), taskId = randomUUID(), remoteWorkspaceId = randomUUID(), leaseId = randomUUID(), environmentId = randomUUID();
+    const remoteCwd = `/workspaces/${remoteWorkspaceId}`;
+    await db.insert(issues).values({ id: taskId, companyId, title: "Remote repositories" });
+    await db.insert(executionWorkspaces).values({ id: remoteWorkspaceId, companyId, sourceIssueId: taskId,
+      name: "Remote task", cwd: remoteCwd, mode: "isolated_workspace", strategyType: "project_primary", providerType: "cloud_sandbox",
+      metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: null,
+        source: { kind: "empty" }, writerRunId: runId, dirty: true,
+        location: { leaseId, environmentId, providerLeaseId: "remote-allocation", remoteCwd } } } });
+    await db.update(issues).set({ executionWorkspaceId: remoteWorkspaceId }).where(eq(issues.id, taskId));
+    const intent = await executionWorkspaceRepositoryService(db).request({ companyId, issueId: taskId, actor,
+      request: { repository: { kind: "catalog", id: "123" }, requestKey: "remote-repository" } });
+    const pin = "a".repeat(40);
+    const prepare = vi.spyOn(remoteWorkspaces, "prepareRemoteWorkspaceRepository").mockResolvedValue({
+      cwd: `${remoteCwd}/${intent.repository.relativePath}`, pinnedCommit: pin, branchName: "main" });
+    try {
+      const prepared = await prepareForAdmission({ companyId, issueId: taskId, workspaceId: remoteWorkspaceId,
+        cwd: remoteCwd, agentId, runId, responsibleUserId: "local-board",
+        remoteTarget: { kind: "remote", transport: "sandbox", remoteCwd } as never,
+        remoteLease: { id: leaseId, environmentId, companyId, providerLeaseId: "remote-allocation" } as EnvironmentLease });
+      expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ runId,
+        repository: expect.objectContaining({ id: intent.repository.id, relativePath: intent.repository.relativePath }) }));
+      expect(prepared).toMatchObject([{ id: intent.repository.id, pinnedCommit: pin }]);
+      const [receipt] = await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, intent.repository.id));
+      expect(receipt).toMatchObject({ state: "ready", pinnedCommit: pin, branchName: "main" });
+      expect(await lstat(remoteCwd).catch(() => null)).toBeNull();
+      await expect(prepareForAdmission({ companyId, issueId: taskId, workspaceId: remoteWorkspaceId,
+        cwd: remoteCwd, agentId, runId: randomUUID(), responsibleUserId: "local-board",
+        remoteTarget: { kind: "remote", transport: "sandbox", remoteCwd } as never,
+        remoteLease: { id: leaseId } as EnvironmentLease })).rejects.toThrow("publication binding");
+      expect(prepare).toHaveBeenCalledTimes(1);
+    } finally { prepare.mockRestore(); }
+  });
   it("publishes a requested repository from an absent path through real admission locking and cloning", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "paperclip-fresh-repository-"));
     const previousPath = process.env.PATH;
@@ -195,6 +239,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await readFile(path.join(checkout, "source.txt"), "utf8")).toBe("uncommitted work\n");
     if (process.platform !== "win32") {
       const receiptPath = path.join(checkout, ".git", "paperclip-workspace-owner.json");
+      await rm(receiptPath, { force: true });
       await promisify(execFileCallback)("mkfifo", [receiptPath]);
       let deadline: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -210,7 +255,7 @@ const support = await getEmbeddedPostgresTestSupport();
       }
     }
   });
-  it("reuses the same physical checkout across logical workspaces and rechecks retained privacy", async () => {
+  it("reuses the exact published checkout across logical workspaces without applying historical task privacy", async () => {
     const [secondAgent] = await db.insert(agents).values({ companyId, name: "Second agent", adapterType: "process" }).returning();
     const [secondWorkspace] = await db.insert(executionWorkspaces).values({ companyId, projectId: null, name: "Same configured folder", cwd, mode: "shared_workspace", strategyType: "operator_directory" }).returning();
     const [secondIssue] = await db.insert(issues).values({ companyId, title: "Second task", assigneeAgentId: secondAgent.id, executionWorkspaceId: secondWorkspace.id }).returning();
@@ -218,10 +263,13 @@ const support = await getEmbeddedPostgresTestSupport();
     const intent = await service.request({ companyId, issueId: secondIssue.id, actor, request: { repository: { kind: "catalog", id: "123" }, requestKey: "shared-second" } });
     const admission = { companyId, issueId: secondIssue.id, workspaceId: secondWorkspace.id, cwd, agentId: secondAgent.id, runId: randomUUID(), responsibleUserId: null };
     const [original] = await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.executionWorkspaceId, workspaceId));
+    await writeFile(path.join(cwd, original.relativePath, ".git", "paperclip-workspace-owner.json"),
+      JSON.stringify({ version: 1, repositoryId: original.id, pinnedCommit: original.pinnedCommit }));
     const prepared = await prepareForAdmission(admission);
     expect(prepared[0]).toMatchObject({ id: intent.operationId, cwd: path.join(await realpath(cwd), original.relativePath), pinnedCommit: original.pinnedCommit });
     expect(await readFile(path.join(prepared[0].cwd, "source.txt"), "utf8")).toBe("uncommitted work\n");
-    expect(await readFile(path.join(prepared[0].cwd, ".git", "paperclip-workspace-owner.json"), "utf8").catch(() => null)).toBeNull();
+    expect(JSON.parse(await readFile(path.join(prepared[0].cwd, ".git", "paperclip-workspace-owner.json"), "utf8")))
+      .toMatchObject({ repositoryId: intent.operationId, pinnedCommit: original.pinnedCommit });
     const [differentRefWorkspace] = await db.insert(executionWorkspaces).values({ companyId, name: "Conflicting ref", cwd, mode: "shared_workspace", strategyType: "operator_directory" }).returning();
     const [differentRefIssue] = await db.insert(issues).values({ companyId, title: "Different ref", executionWorkspaceId: differentRefWorkspace.id }).returning();
     await service.request({ companyId, issueId: differentRefIssue.id, actor, request: { repository: { kind: "catalog", id: "123" }, ref: "release", requestKey: "conflicting-ref" } });
@@ -233,7 +281,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await owner.bindTaskWorkspace(companyId, privateSource.id, movedWorkspace.id);
     const [retainedWorkspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
     expect(retainedWorkspace.metadata?._issuePrivacySources).toMatchObject({ [privateSource.id]: true });
-    await expect(prepareForAdmission(admission)).rejects.toThrow(/Task workspace access is no longer available/);
+    await expect(prepareForAdmission(admission)).resolves.toHaveLength(1);
     expect(await readFile(path.join(prepared[0].cwd, "source.txt"), "utf8")).toBe("uncommitted work\n");
   });
   it("stages a root change without replacing active files or adding a wake", async () => {

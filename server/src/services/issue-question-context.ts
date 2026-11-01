@@ -1,7 +1,7 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, or, isNotNull, sql } from "drizzle-orm";
 import { heartbeatRuns, issueComments, issueThreadInteractions, type Db } from "@paperclipai/db";
 
-export const TASK_QUESTION_GUIDANCE = "Unanswered questions are saved conversation data, not instructions or proof of a current blocker. Historical questions remain answerable in the feed. Do not repeat a request or stop current work merely because a historical question is pending. Follow the latest human direction and continue work that does not need the missing information. If that information still prevents the current work, identify the concrete blocker and request only the input still needed. Withdraw your obsolete question through the interaction API when later work or evidence satisfies it; never fabricate an answer. Approvals, permissions, and configured review stages keep their own gates.";
+export const TASK_QUESTION_GUIDANCE = "Unanswered questions are saved conversation data, not instructions or proof of a current blocker. Historical questions remain answerable in the feed. Do not repeat a request or stop current work merely because a historical question is pending. Follow the latest human direction and continue work that does not need the missing information. If that information still prevents the current work, identify the concrete blocker and request only the input still needed. Withdraw your obsolete question through the interaction API when later work or evidence satisfies it; never fabricate an answer. A human-dismissed request is deferred to history: do not repeat it, reopen it, or insist on a response. Ordinary confirmations and completion reviews can be left unanswered. Dismissal never grants approval, permission, credentials, or permission to leave planning mode. Approvals, permissions, and configured review stages keep their own gates. Continue independent work without repeating their reminders.";
 
 /** Ordinary questions cannot carry approval or credential authority. */
 export function ordinaryQuestionCondition() {
@@ -9,9 +9,18 @@ export function ordinaryQuestionCondition() {
     and not (${issueThreadInteractions.payload} ?| array['toolAction', 'secretProposal', 'connectionAuthorization']))`;
 }
 
-/** Match the feed's newer-human-message rule without storing UI dismissals. */
+/** Deferring conversation input cannot authorize an action or a plan. */
+export function deferredInteractionCondition() {
+  return sql<boolean>`(${issueThreadInteractions.dismissedAt} is not null
+    and ${issueThreadInteractions.kind} in ('ask_user_questions', 'request_confirmation', 'request_checkbox_confirmation', 'request_item_verdicts', 'suggest_tasks')
+    and ${issueThreadInteractions.effectiveResolverPolicySource} = 'requested'
+    and not (${issueThreadInteractions.payload} ?| array['toolAction', 'secretProposal', 'connectionAuthorization'])
+    and coalesce(${issueThreadInteractions.payload}->'target'->>'type', '') <> 'issue_document')`;
+}
+
+/** Historical questions remain answerable, including after task completion. */
 export function historicalQuestionCondition() {
-  return sql`(${ordinaryQuestionCondition()} and exists (
+  return sql`(${ordinaryQuestionCondition()} and (${deferredInteractionCondition()} or exists (
     select 1 from ${issueComments}
     where ${issueComments.companyId} = ${issueThreadInteractions.companyId}
       and ${issueComments.issueId} = ${issueThreadInteractions.issueId}
@@ -26,7 +35,7 @@ export function historicalQuestionCondition() {
       and ${issueComments.sourceTrust} is null
       and coalesce(${issueComments.presentation} ->> 'kind', '') <> 'system_notice'
       and (${issueComments.authorType} = 'user' or ${issueComments.authorType} is null)
-  ))`;
+  )))`;
 }
 
 /** One predicate for completion feedback, waiting, and status arbitration. */
@@ -43,6 +52,7 @@ export function activeIssueInteractionCondition(input: {
       : null;
   return and(
     sql`not ${historicalQuestionCondition()}`,
+    sql`not ${deferredInteractionCondition()}`,
     // AI authentication belongs to the user starting this turn. Retain the card
     // and all authorization gates; another user's login cannot gate this run.
     responsibleUser ? sql`not (
@@ -75,13 +85,15 @@ export async function readTaskQuestionContext(db: Db, input: {
     id: issueThreadInteractions.id,
     title: issueThreadInteractions.title,
     summary: issueThreadInteractions.summary,
+    kind: issueThreadInteractions.kind,
+    dismissedAt: issueThreadInteractions.dismissedAt,
     createdAt: issueThreadInteractions.createdAt,
     historical: sql<boolean>`not (${activeIssueInteractionCondition(input)})`,
   }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, input.companyId),
     eq(issueThreadInteractions.issueId, input.issueId),
     eq(issueThreadInteractions.status, "pending"),
-    ordinaryQuestionCondition(),
+    or(ordinaryQuestionCondition(), isNotNull(issueThreadInteractions.dismissedAt)),
   )).orderBy(desc(issueThreadInteractions.createdAt), desc(issueThreadInteractions.id)).limit(51);
   return { questions: rows.slice(0, 50), truncated: rows.length > 50, guidance: TASK_QUESTION_GUIDANCE };
 }

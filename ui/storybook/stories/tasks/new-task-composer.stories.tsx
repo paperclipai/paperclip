@@ -123,7 +123,7 @@ function NewTaskStory({
     }
     if (opened.current) return;
     opened.current = true;
-    localStorage.removeItem("paperclip:issue-draft");
+    localStorage.removeItem(`paperclip:issue-draft:${storybookAuthSession.user!.id}`);
     localStorage.removeItem("paperclip:recent-assignees");
     localStorage.removeItem(`paperclip:recent-assignees:${COMPANY_ID}`);
     localStorage.removeItem("paperclip:recent-projects");

@@ -128,9 +128,10 @@ describe("Codex app-server Codex driver", () => {
       message: { role: "user", text: "first turn" },
     });
     await expect(
-      session.attachRun?.({ runId: "run-warm-second" }),
+      session.attachRun?.({ runId: "run-warm-second", currentRunGrant: { runtimeContext: null, instructions: "Current registered instructions." } }),
     ).resolves.toBeUndefined();
     expect(transport.attachments).toHaveLength(1);
+    expect(transport.attachments[0]).toMatchObject({ currentRunGrant: { runtimeContext: null, instructions: "Current registered instructions." } });
     expect((await session.snapshot()).activeTurnId).toBeNull();
 
     await expect(

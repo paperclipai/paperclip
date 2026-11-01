@@ -22,7 +22,25 @@ vi.mock("../components/MarkdownBody", () => ({
 }));
 
 describe("AgentOverview", () => {
-  it("prioritizes identity, capability, runtime, skills, tasks, and scoped Audit entry points", () => {
+  it("identifies Muse and shows its provider-managed model even when old model fields remain", () => {
+    const agent = {
+      id: "muse-agent", companyId: "company-1", name: "Muse Researcher", role: "researcher", status: "active",
+      adapterType: "paperclip_runner", adapterConfig: { provider: "muse", model: "old-model" },
+      runtimeConfig: { model: "old-runtime-model" },
+    } as unknown as AgentDetail;
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentOverview agent={agent} runs={[]} assignedIssues={[]} directReportCount={0} skillNames={[]} agentRouteId="muse-agent" />
+      </QueryClientProvider>,
+    );
+    expect(markup).toContain("Muse — Personal agent");
+    expect(markup).toContain("Managed by Muse");
+    expect(markup).not.toContain("Adapter default");
+    expect(markup).not.toContain("old-model");
+    expect(markup).not.toContain("old-runtime-model");
+  });
+
+  it("prioritizes identity, capability, runtime, skills, and tasks without duplicating sidebar Audit links", () => {
     const agent = {
       id: "agent-1",
       companyId: "company-1",
@@ -72,7 +90,8 @@ describe("AgentOverview", () => {
     expect(markup).toContain("Design Guide");
     expect(markup).toContain("Simplify agent information architecture");
     expect(markup).toContain("PAP-42");
-    expect(markup).toContain('href="/activity/costs?agentId=agent-1"');
+    expect(markup).not.toContain("agent-audit-links-heading");
+    expect(markup).not.toContain("agentId=agent-1");
     expect(markup).not.toContain("Run Activity");
     expect(markup).not.toContain("Tasks by Status");
     expect(markup).not.toContain("Created by");

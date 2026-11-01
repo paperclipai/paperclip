@@ -1,5 +1,5 @@
-import { and, eq } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, eq, inArray } from "drizzle-orm";
+import { caseHandoffs, heartbeatRuns, type Db } from "@paperclipai/db";
 import { forbidden } from "./errors.js";
 
 /** Stop revokes write authority before waiting for the executor to settle. */
@@ -30,5 +30,10 @@ export async function assertAgentRunWriteAllowed(tx: Db, companyId: string, acto
   if (agentRunWritesRevoked(run) && !stoppedForThisMutation) {
     throw forbidden("This run was cancelled", { code: "agent_run_cancelled" });
   }
+  const [handoff] = await tx.select({ id: caseHandoffs.id }).from(caseHandoffs).where(and(
+    eq(caseHandoffs.companyId, companyId), eq(caseHandoffs.sourceRunId, actor.runId),
+    inArray(caseHandoffs.state, ["awaiting_release", "pending_dispatch", "delivered"]),
+  )).limit(1);
+  if (handoff) throw forbidden("This run handed off its task. End the turn.", { code: "case_handoff_run_yielded", handoffId: handoff.id });
   return run;
 }

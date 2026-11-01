@@ -14,15 +14,15 @@ import {
 } from "@/components/ui/select";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { Button } from "@/components/ui/button";
-import { aiConnectionProblem, personalAiDefault } from "./model";
+import { aiConnectionDisplayLabel, aiConnectionProblem, personalAiDefault } from "./model";
 import type { AiConnectionPickerProps } from "./AiConnectionPicker";
 import type { AiConnectionSummary } from "./model";
 
-function ConnectionLabel({ connection, label }: { connection: AiConnectionSummary; label?: string }) {
+function ConnectionLabel({ connection, label, wrap = false }: { connection: AiConnectionSummary; label?: string; wrap?: boolean }) {
   return (
     <span className="flex min-w-0 items-center gap-2">
       <AppLogo name={connection.name} brandKey={aiConnectionCatalogSlug(connection.provider, connection.routing)} size={20} compact />
-      <span className="truncate">{label ?? connection.name}</span>
+      <span className={wrap ? "min-w-0 break-words whitespace-normal" : "truncate"}>{label ?? aiConnectionDisplayLabel(connection)}</span>
     </span>
   );
 }
@@ -41,7 +41,8 @@ export function AiConnectionSelect({
   onReconnect,
   onChange,
   adapterType,
-}: AiConnectionPickerProps & { adapterType: string }) {
+  model,
+}: AiConnectionPickerProps & { adapterType: string; model?: string }) {
   const selectId = useId();
   const personal = personalAiDefault(connections, requirement, currentUserId);
   const selected =
@@ -50,6 +51,8 @@ export function AiConnectionSelect({
       : connections.find(
           (c) => c.id === value?.connectionId && c.grantId === value?.grantId,
         );
+  const compatibilityModel = (provider: string) => adapterType === "pi_local"
+    ? model || `${provider}/` : provider === "openrouter" ? "openrouter/" : undefined;
   const compatible = connections
     .filter(
       (c) =>
@@ -57,7 +60,7 @@ export function AiConnectionSelect({
         isAiConnectionCompatible(
           c,
           adapterType,
-          c.provider === "openrouter" ? "openrouter/" : undefined,
+          compatibilityModel(c.provider),
         ),
     )
     .sort(
@@ -80,7 +83,7 @@ export function AiConnectionSelect({
       mode: "responsible_user",
     },
     adapterType,
-    requirement.provider === "openrouter" ? "openrouter/" : undefined,
+    compatibilityModel(requirement.provider),
   );
   const incompatible =
     selected && !compatible.some((c) => c.id === selected.id);
@@ -116,7 +119,7 @@ export function AiConnectionSelect({
         onValueChange={change}
         disabled={readOnly || loading || Boolean(error)}
       >
-        <SelectTrigger id={selectId} aria-label="Connection" className="w-full">
+        <SelectTrigger id={selectId} aria-label="Connection" title={selected ? aiConnectionDisplayLabel(selected) : undefined} className="w-full">
           <SelectValue
             placeholder={
               loading ? "Loading connections…" : "Choose a connection"
@@ -132,7 +135,7 @@ export function AiConnectionSelect({
         <SelectContent>
           {incompatible && selected && (
             <SelectItem value={selected.id} disabled>
-              <ConnectionLabel connection={selected} label={`${selected.name} · Incompatible`} />
+              <ConnectionLabel connection={selected} label={`${aiConnectionDisplayLabel(selected)} · Incompatible`} wrap />
             </SelectItem>
           )}
           {compatible.map((c) => (
@@ -141,7 +144,7 @@ export function AiConnectionSelect({
               value={c.id}
               disabled={Boolean(aiConnectionProblem(c))}
             >
-              <ConnectionLabel connection={c} label={`${c.name}${c.status !== "connected" ? " · Reconnect" : ""}`} />
+              <ConnectionLabel connection={c} label={`${aiConnectionDisplayLabel(c)}${c.status !== "connected" ? " · Reconnect" : ""}`} wrap />
             </SelectItem>
           ))}
           {(canUseDefault || value?.mode === "responsible_user") && (

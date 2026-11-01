@@ -1,0 +1,5 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "agent_instruction_copies_collection_idx" ON "agent_instruction_working_copies" USING btree ("run_id","company_id") WHERE NOT (coalesce("agent_instruction_working_copies"."receipt", '{}'::jsonb) ? 'retainedByRunId') AND (
+      ("agent_instruction_working_copies"."attempts" < 3 AND ("agent_instruction_working_copies"."state" IN ('prepared', 'pending_collection', 'unchanged_turn', 'warm_saved')
+        OR ("agent_instruction_working_copies"."state" = 'preparing' AND "agent_instruction_working_copies"."receipt"->>'schema' = 'paperclip.agent-files.v1')))
+      OR ("agent_instruction_working_copies"."state" = 'unavailable' AND "agent_instruction_working_copies"."process_stopped_at" IS NULL
+        AND "agent_instruction_working_copies"."location" LIKE 'remote:%' AND "agent_instruction_working_copies"."receipt"->>'schema' = 'paperclip.agent-files.v1'));

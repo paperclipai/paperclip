@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 import { buildExecutionPolicy } from "../../../ui/src/lib/issue-execution-policy.ts";
 
@@ -8,6 +8,28 @@ const qaAgentId = "22222222-2222-4222-8222-222222222222";
 const ctoAgentId = "33333333-3333-4333-8333-333333333333";
 const ctoUserId = "cto-user";
 const boardUserId = "board-user";
+
+describe("stripMonitorFromExecutionPolicy", () => {
+  it.each([
+    { stages: [] },
+    { stages: [{ type: "review", participants: [{ type: "user", userId: boardUserId }] }] },
+  ])("retains review limits and protected authorization after monitor cleanup with $stages.length stages", ({ stages }) => {
+    const policy = normalizeIssueExecutionPolicy({
+      maxReviewRounds: 4,
+      authorizationPolicy: { protectedAgent: { blockAssignment: true, blockReason: "Protected executor" } },
+      stages,
+      monitor: { nextCheckAt: "2099-01-01T00:00:00.000Z" },
+    })!;
+    const { monitor: _monitor, ...retainedPolicy } = policy;
+    expect(stripMonitorFromExecutionPolicy(policy)).toEqual(retainedPolicy);
+  });
+
+  it("removes an otherwise empty monitor-only policy", () => {
+    const policy = normalizeIssueExecutionPolicy({ monitor: { nextCheckAt: "2099-01-01T00:00:00.000Z" } });
+    expect(stripMonitorFromExecutionPolicy(policy)).toBeNull();
+    expect(stripMonitorFromExecutionPolicy(null)).toBeNull();
+  });
+});
 
 function makePolicy(
   stages: Array<{ type: "review" | "approval"; participants: Array<{ type: "agent" | "user"; agentId?: string; userId?: string }> }>,

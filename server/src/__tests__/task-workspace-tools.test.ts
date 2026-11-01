@@ -21,7 +21,9 @@ describe("task workspace semantic transport", () => {
     const fetcher = vi.fn(async () => Response.json({ kind: "requires_next_admission" }));
     vi.stubGlobal("fetch", fetcher);
     const args = { repository: { kind: "catalog", id: "repo" }, requestKey: "acquire-1" };
-    await callTaskWorkspaceTool({ ...base, name: "prepare_repository", arguments: args });
+    const result = await callTaskWorkspaceTool({ ...base, name: "prepare_repository", arguments: args });
+    expect(result.instruction).toContain('paperclip_finish with reportedWorkDisposition="yielded"');
+    expect(result.instruction).toContain("do not call paperclip_block");
     expect(fetcher.mock.calls[0]).toEqual(["https://paperclip.example/api/issues/task/workspace/repositories", expect.objectContaining({ method: "POST", body: JSON.stringify(args) })]);
     await expect(callTaskWorkspaceTool({ ...base, name: "prepare_repository", arguments: { ...args, cwd: "/home" } })).rejects.toThrow();
     expect(fetcher).toHaveBeenCalledTimes(1);

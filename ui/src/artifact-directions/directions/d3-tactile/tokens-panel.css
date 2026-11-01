@@ -1,0 +1,152 @@
+/*
+  3 · Tactile — the panel's custom properties (the materials are in tokens.css).
+
+  The panel is the desk: no cards. Paper stands in a slot — open on three
+  sides, its foot sliding under the rail that ends the row — with a plain
+  caption beside it. A picture lies across the whole desk with its caption
+  under it. A run of work is introduced by a divider: folder board with a tab.
+*/
+
+[data-direction="d3-tactile"] {
+  /* ---- the desk: the pane's body, in the ground tone every surface shares ---- */
+  --tac-desk: var(--tac-ground);
+  --tac-desk-rim: inset 0 2px 3px -1px oklch(0.3 0.02 80 / 0.14), inset 0 1px 0 oklch(0.3 0.02 80 / 0.09);
+
+  /* ---- the slot paper stands in ----------------------------------------- */
+  --tac-stage-w: 9.75rem; /* every `pn` object is at most this wide */
+  --tac-stage-min: 8.5rem;
+  --tac-slot-gap: 1rem; /* stage to caption */
+  --tac-clip-slot: inset(-1.5rem -1.5rem 0 -1.5rem); /* open above and to the sides, cut at the rail */
+  --tac-wide-max: 27rem; /* a picture lying across the desk stops growing here, in a maximised pane */
+
+  /* ---- a flag standing on a top edge (objects, dividers) ----------------- */
+  --tac-flag-tuck: 0.4375rem; /* how much of the flag is stuck to the face */
+  --tac-flag-nip: 0.1875rem; /* …where the face has something printed right at its top edge */
+
+  /* ---- the switch above the desk: the pressed key ------------------------ */
+  --tac-key: oklch(1 0 0);
+  --tac-key-edge: 0 1px 2px oklch(0.3 0.02 80 / 0.16), 0 0 0 1px oklch(0.3 0.02 80 / 0.09);
+
+  /* ---- the divider that introduces a run --------------------------------- */
+  --tac-divider-h: 1.625rem;
+  --tac-divider-bar: 0.1875rem;
+  --tac-divider-shadow: drop-shadow(0 1px 1px oklch(0.3 0.03 75 / 0.22));
+  --tac-divider-max: 17rem; /* the tab leaves room for the flag at the far end of its bar */
+}
+
+.dark [data-direction="d3-tactile"] {
+  --tac-desk: oklch(0.185 0.003 85);
+  --tac-key: oklch(0.285 0.004 85);
+  --tac-key-edge: 0 1px 2px oklch(0 0 0 / 0.4), inset 0 1px 0 oklch(1 0 0 / 0.06);
+  --tac-desk-rim: inset 0 2px 4px -1px oklch(0 0 0 / 0.45), inset 0 1px 0 oklch(0 0 0 / 0.35);
+  --tac-divider-shadow: drop-shadow(0 1px 1px oklch(0 0 0 / 0.5));
+}
+/* The dark desk is a step under the pane, where the tray is a step over the canvas: its rail is cut from the darker stuff. */
+.dark [data-direction="d3-tactile"] [data-tac-desk] {
+  --tac-ledge: oklch(0.262 0.004 85);
+}
+
+/*
+  `pn` — the panel's size for what stands in a slot. Unlike the thread sizes
+  it gives each shape its own scale, so a sheet, a slide, a ledger, a box and
+  a card all come to about the stage's width. A sheet is set to be read
+  here: its headline is about 13px on screen and its first lines about 10px,
+  and the text stops fading out just above the rail.
+*/
+[data-direction="d3-tactile"] [data-tac-size="pn"] {
+  --tac-k: 0.61; /* page: 9.15rem × 11.8rem, of which the slot shows the top two thirds */
+  --tac-ear: 1.9375rem;
+  --tac-page-pad: 1.25rem;
+  --tac-page-r: 0.3125rem;
+  --tac-type-title: 1.3125rem;
+  --tac-type-body: 1.03125rem;
+  --tac-type-tab: 0.9375rem;
+  --tac-lead-body: 1.42;
+  --tac-print-w: 9.25rem;
+  --tac-print-h: 8.25rem;
+  --tac-print-edge: 0.375rem;
+  --tac-play: 2rem;
+  --tac-shadow-near: 0 1px 2px;
+  --tac-shadow-far: 2px 7px 12px;
+  /* A second sheet shows less of itself here: the caption starts a rem to the right. */
+  --tac-back-dx: 2.5%;
+  --tac-tilt-back: 2deg;
+}
+/*
+  Also set on the slot of a sheet, not only on the sheet: a sheet's foot is
+  always under the rail (in a row taller than the sheet it slides down to stay
+  there), and its extension tab or stamp moves up into view.
+*/
+[data-direction="d3-tactile"] [data-tac-size="pn"][data-tac-box="page"] {
+  --tac-tab-rise: 7.75rem;
+  --tac-tab-out: 1.2em; /* …and hangs further off the edge, clear of the lines it would cover here */
+  --tac-slot-top: max(0rem, calc(100% - var(--tac-page-h) + 1.25rem));
+  --tac-fade-bottom: linear-gradient(to bottom, black 0%, black 50%, transparent 70%);
+  --tac-stamp-rise: 4rem; /* on the blank foot of the sheet, above the rail */
+}
+[data-direction="d3-tactile"] [data-tac-size="pn"][data-tac-box="slide"] {
+  --tac-k: 0.46;
+  --tac-page-pad: 1.375rem;
+  --tac-page-r: 0.375rem;
+  --tac-type-title: 1.6875rem;
+  --tac-type-body: 0.875rem;
+  --tac-type-tab: 1.21875rem;
+}
+[data-direction="d3-tactile"] [data-tac-size="pn"][data-tac-box="ledger"] {
+  --tac-k: 0.53;
+  --tac-page-r: 0.3125rem;
+  --tac-type-body: 0.875rem;
+  --tac-type-tab: 1.0625rem;
+}
+/* A box is smaller than the paper beside it: it holds things, it is not the thing to read. */
+[data-direction="d3-tactile"] [data-tac-size="pn"][data-tac-box="box"] {
+  --tac-k: 0.44;
+  --tac-page-r: 0.4375rem;
+  --tac-type-tab: 1.28125rem;
+}
+[data-direction="d3-tactile"] [data-tac-size="pn"][data-tac-box="card"] {
+  --tac-k: 0.46;
+  --tac-page-pad: 1.125rem;
+  --tac-page-r: 0.375rem;
+  --tac-type-body: 1rem;
+}
+
+/*
+  `pw` — a picture lying across the desk: a print (image, playable video) or a
+  link's address card with its preview. As wide as its holder; nothing is
+  scaled, so the address is set in real UI sizes.
+*/
+[data-direction="d3-tactile"] [data-tac-size="pw"] {
+  --tac-print-w: 100%;
+  --tac-print-h: min(17rem, 100cqw); /* a square or upright picture is held to this height, so it does not take the pane over */
+  --tac-print-edge: 0.5rem;
+  --tac-page-r: 0.25rem;
+  --tac-play: 2.75rem;
+  --tac-shadow-near: 0 1px 2px;
+  --tac-shadow-far: 2px 9px 16px;
+}
+
+/*
+  A pane dragged narrow. The slot stays beside the caption down to a 16rem
+  body (a 290px pane), with a smaller stage from 22rem down; under 16rem the
+  caption goes below and the slot takes the whole width (PanelItem). `desk`
+  is each section.
+*/
+@container desk (width < 22rem) {
+  [data-direction="d3-tactile"] [data-tac-item] {
+    --tac-stage-w: 7rem;
+    --tac-stage-min: 6.25rem;
+    --tac-slot-gap: 0.75rem;
+  }
+  [data-direction="d3-tactile"] [data-tac-size="pn"] {
+    --tac-fit: 0.72;
+  }
+}
+@container desk (width < 16rem) {
+  [data-direction="d3-tactile"] [data-tac-item] {
+    --tac-stage-min: 7.5rem;
+  }
+  [data-direction="d3-tactile"] [data-tac-size="pn"] {
+    --tac-fit: 0.86;
+  }
+}

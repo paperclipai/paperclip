@@ -56,7 +56,9 @@ for (const mobile of [false, true]) {
     else await expect(artifacts).toHaveAttribute("aria-selected", "false");
     await artifacts.click();
     await expectTaskPanelTab(panel, mobile, "Artifacts");
-    await expect(panel.getByRole("heading", { name: "Arriving report", level: 2, exact: true })).toBeVisible();
+    const document = panel.locator("#document-report");
+    await expect(document.getByRole("heading", { name: "Arriving report", level: 1, exact: true })).toBeVisible();
+    await expect(document.locator("p").filter({ hasText: /^Durable output\.$/ })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("artifact-opened-by-user.png"), fullPage: true });
   });
 }

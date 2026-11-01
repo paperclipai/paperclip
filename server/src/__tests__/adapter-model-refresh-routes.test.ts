@@ -183,6 +183,33 @@ describe("adapter model refresh route", () => {
     await unregisterTestAdapter(refreshableAdapterType);
   });
 
+  it.each([
+    { qualification: "pending", qualified: false, status: 422 },
+    { qualification: "released", qualified: true, status: 200 },
+  ])("keeps $qualification Kimi model selection separate from other provider catalogs", async ({ qualified, status }) => {
+    const { PAPERCLIP_RUNNER_ACPX_PROFILES } = await import("@paperclipai/adapter-utils");
+    const kimi = PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === "kimi")! as { qualified: boolean };
+    const previousQualified = kimi.qualified;
+    const previousAdmission = process.env.PAPERCLIP_ACPX_CANDIDATE_ADMISSION;
+    try {
+      kimi.qualified = qualified;
+      delete process.env.PAPERCLIP_ACPX_CANDIDATE_ADMISSION;
+      const app = await createApp();
+      const res = await requestApp(app, baseUrl =>
+        request(baseUrl).get("/api/companies/company-1/adapters/paperclip_runner/models?provider=acpx&acpxAgent=kimi&refresh=1"),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(status);
+      if (qualified) expect(res.body).toEqual([]);
+      else expect(res.body).toMatchObject({ code: "paperclip_runner_acpx_agent_unavailable" });
+      expect(mockListOpenCodeModels).not.toHaveBeenCalled();
+    } finally {
+      kimi.qualified = previousQualified;
+      if (previousAdmission === undefined) delete process.env.PAPERCLIP_ACPX_CANDIDATE_ADMISSION;
+      else process.env.PAPERCLIP_ACPX_CANDIDATE_ADMISSION = previousAdmission;
+    }
+  });
+
   it("uses refreshModels when refresh=1 is requested", async () => {
     const listModels = vi.fn(async () => [{ id: "stale-model", label: "stale-model" }]);
     const refreshModels = vi.fn(async () => [{ id: "fresh-model", label: "fresh-model" }]);

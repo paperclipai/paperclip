@@ -10,6 +10,10 @@ import { legacyExecutionNeedsReconciliation } from "../legacy-execution-recovery
 import { isConfigurationIncompleteFailedRun } from "../../modules/wake-queue/domain/values.js";
 
 describe("classifyAdapterFailureForRecovery", () => {
+  it("does not automatically replay a project access denial", () => {
+    expect(classifyContinuationFailure({ errorCode: "project_access_denied", resultJson: null } as never))
+      .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
   it("waits for model configuration changes instead of retrying a typed native model rejection", () => {
     const run = { errorCode: "native_provider_model_rejected", error: "Fixed model configuration message", resultJson: null };
     expect(classifyAdapterFailureForRecovery(run)).toEqual({ kind: "configuration_incomplete" });

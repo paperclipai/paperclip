@@ -19,7 +19,8 @@
         "aws_agentcore",
         "acpx",
         "openai_dot",
-        "grok_bot"
+        "grok_bot",
+        "muse"
       ]
     },
     "driver": {
@@ -30,7 +31,8 @@
         "aws_agentcore_harness_api",
         "acpx_runtime",
         "openai_dot_mcp",
-        "grok_bot_mcp"
+        "grok_bot_mcp",
+        "muse_external"
       ]
     },
     "model": {
@@ -56,7 +58,8 @@
         "anthropic_managed_agents",
         "aws_bedrock_agentcore_harness",
         "openai_dot",
-        "grok_bot"
+        "grok_bot",
+        "muse"
       ]
     },
     "providerSessionId": {
@@ -156,6 +159,27 @@
         "high",
         "max"
       ]
+    },
+    "claudeEffort": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "grokEffort": {
+      "enum": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    },
+    "grokDisableWebSearch": {
+      "type": "boolean"
     }
   },
   "allOf": [
@@ -172,6 +196,26 @@
           },
           "agent": {
             "const": "pi"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "claudeEffort"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          },
+          "agent": {
+            "const": "claude"
           }
         },
         "required": [
@@ -266,6 +310,19 @@
             },
             "driver": {
               "const": "grok_bot_mcp"
+            },
+            "executionKind": {
+              "const": "remote_service"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "muse"
+            },
+            "driver": {
+              "const": "muse_external"
             },
             "executionKind": {
               "const": "remote_service"
@@ -440,6 +497,78 @@
             "const": null
           }
         }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provider": {
+            "const": "muse"
+          }
+        },
+        "required": [
+          "provider"
+        ]
+      },
+      "then": {
+        "required": [
+          "service",
+          "providerSessionId"
+        ],
+        "properties": {
+          "service": {
+            "const": "muse"
+          },
+          "model": {
+            "const": null
+          },
+          "providerSessionId": {
+            "const": null
+          },
+          "agentProcessId": {
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "grokEffort"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          },
+          "agent": {
+            "const": "grok"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "grokDisableWebSearch"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          },
+          "agent": {
+            "const": "grok"
+          }
+        },
+        "required": [
+          "agent"
+        ]
       }
     }
   ],

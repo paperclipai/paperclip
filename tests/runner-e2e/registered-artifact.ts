@@ -3,6 +3,13 @@ import type { IssueAttachment } from "../../packages/shared/src/types/issue.js";
 import type { IssueWorkProduct } from "../../packages/shared/src/types/work-product.js";
 import type { RunnerApi } from "./api.js";
 
+export class RegisteredArtifactNotFoundError extends Error {
+  constructor(artifactName: string) {
+    super(`Expected one registered artifact ${artifactName} from the tested run; observed 0`);
+    this.name = "RegisteredArtifactNotFoundError";
+  }
+}
+
 const REGISTERED_ARTIFACT_STATUSES = new Set(["active", "ready_for_review", "approved"]);
 
 /** Registration, attribution and downloaded bytes must agree independently. */
@@ -16,6 +23,7 @@ export async function readRegisteredArtifacts(api: RunnerApi, issueId: string, r
     const registered = products.filter(product => product.issueId === issueId &&
       product.createdByRunId === runId && product.type === "artifact" &&
       REGISTERED_ARTIFACT_STATUSES.has(product.status) && product.title === name);
+    if (registered.length === 0) throw new RegisteredArtifactNotFoundError(name);
     if (registered.length !== 1) throw new Error(`Expected one registered artifact ${name} from the tested run; observed ${registered.length}`);
     const product = registered[0]!;
     const attachmentId = product.metadata?.attachmentId;

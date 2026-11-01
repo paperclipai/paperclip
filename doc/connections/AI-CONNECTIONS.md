@@ -25,8 +25,8 @@ The shared `AI_CONNECTION_CAPABILITIES` contract defines these combinations:
 | --- | --- | --- |
 | Claude / Anthropic | Claude subscription token or Anthropic API key | Claude |
 | OpenAI | ChatGPT/Codex subscription or OpenAI API key | Codex |
-| OpenRouter (legacy, no routing metadata) | API key | OpenCode, with an `openrouter/` model |
-| Google | API key | Gemini CLI |
+| OpenRouter (legacy, no routing metadata) | API key | OpenCode or Pi, with an `openrouter/` model |
+| Google | Gemini API key; separate local Antigravity sign-in | Gemini CLI / Pi (API key); Antigravity candidate (pending execution acceptance) |
 | Grok / xAI | Grok subscription or xAI API key | Grok |
 
 Native runner supports the corresponding existing Codex, OpenCode, and Claude
@@ -58,6 +58,12 @@ A connection choice never changes the harness or model. For a routed connection,
 the selected connection owns its provider routing.
 Changing those separately may make a binding incompatible; saving then requires
 a compatible choice. Agent configuration cannot grant access to another account.
+
+Agent account choices and legacy-adoption confirmations show the sign-in method,
+personal or company-shared scope, and available account or owner identity beside
+the connection name. Accounts with the same provider name can be distinguished
+before selection. These labels use existing authorized account metadata, never
+credentials or authentication paths.
 
 Personal defaults are unique per company, user, and provider. A Claude bot can use one user’s subscription and another user’s API key without changing its harness or model. Explicit shared selections remain pinned to the selected account and method.
 The first successful personal connection sets a default only when none exists.
@@ -115,6 +121,11 @@ remote environment blocks validation rather than probing the server host. The
 runtime test accepts the form’s prospective adapter selection before it is saved.
 For a saved-agent test, omitting `environmentId` uses the agent’s saved override.
 Sending `environmentId: null` tests a change back to the instance default.
+
+Saved-agent lifecycle verification checks managed account access before it
+allocates a test execution environment. Missing defaults, revoked accounts, and
+incompatible selections fail without creating a sandbox. The managed probe
+checks account access again after allocation so changes during setup still apply.
 
 ## On-demand usage limits
 
@@ -414,6 +425,22 @@ allow managed runs to invalidate credentials still used by legacy agents or the
 operator's terminal. The user completes browser sign-in, then clicks Connect.
 Grok retains its terminal sign-in flow until it has a local browser login runner.
 
+Google Antigravity sign-in uses the pinned native ACP runtime installed with
+`paperclipai runtime setup antigravity`. Its browser redirect returns to a
+loopback listener; no code is pasted into Paperclip. Setup sends only initialize
+and authenticate, verifies the Google account email, then saves the credential
+through the existing encrypted connection grant. It never imports an existing
+Google CLI, browser, Workspace, or Drive credential. Connection readiness waits
+for native onboarding and physical login-process retirement. Cancellation and
+expiry await retirement before removing the private home. After a server restart,
+start a new Google sign-in attempt.
+
+Antigravity task execution remains pending acceptance. Its managed subscription
+path is local and turn-by-turn: native execution retires before refreshed tokens
+are verified and saved with generation checks. Remote and warm OAuth execution
+are rejected. Browser sign-in success does not qualify a model turn or the native
+Runner task lifecycle.
+
 Attempts reuse `adapter_auth_sessions`, binding company, owner, provider, access
 intent, reconnect target, and a 30-minute expiry. Validation and completion are
 serialized; duplicate completion returns the saved connection. Restart retains
@@ -553,22 +580,33 @@ transaction or an intentional freshness/authorization discard. These retained
 homes are recovery evidence, not a background replay queue; persistent database
 or lock failures still require operator intervention.
 
-Quota OAuth replacement tokens are encrypted with the instance secrets master
-key and fsynced under `<instance-root>/quota-credential-recovery/<company-id>/`
-before vault, grant, or activity writes. Storage and encryption are checked before
-exchanging a single-use refresh token. Failed saves retry without another OAuth
-exchange; persistent failures keep the encrypted record for the next quota poll,
-including after a restart. New OpenAI subscription runtimes serialize credential
-reads with quota exchanges and recover a matching pending replacement before
-materializing an auth home. Authentication-failure handling also recovers a
-matching replacement before marking the grant invalid. A failed recovery save
-defers these actions and leaves both the active grant and journal intact.
-The journal is removed only after database commit (or
-when an authorized newer credential makes it obsolete). Replay checks the grant,
-connection, secret, and original credential fingerprint and cannot reactivate a
-revoked grant or overwrite a reconnect. Back up this directory and the instance
-secrets key with the instance data. Loss of durable storage while receiving a
-provider token can still require reconnecting the account.
+Server-owned quota refresh validates and locks the current grant and secret in
+Postgres before exchanging a token. A failed database prerequisite prevents the
+exchange. A returned replacement is saved directly into the existing secret
+store. The same logical operation keeps it in memory for at most three save
+attempts. A lost commit response is reconciled against the current saved value;
+reconnect, revocation, secret-version and session-epoch changes win over a delayed
+save. Save retries never repeat the OAuth exchange and no new recovery file is
+written for this path, in cloud or local deployments.
+
+If all save attempts fail, the request fails. If the server process then exits,
+the unsaved replacement is lost. V1 accepts signing in again after the next failed
+use; it does not report successful refresh or keep a second credential vault.
+
+Remote Codex Runner tasks retain their private credential until secret writeback
+and the lease's credential handoff commit. Provider completion follows that
+handoff. Failed exports or database saves leave it pending for the existing
+cleanup path, including a replacement web receiver. Its authority still checks
+the company, grant, secret, version selector and session epoch.
+
+Existing encrypted records in
+`<instance-root>/quota-credential-recovery/<company-id>/` remain readable for
+cutover settlement. Do not delete unresolved files or remove the old volume
+before inventory and settlement. Legacy replay cannot reactivate a revoked grant
+or overwrite a reconnect. Local Google Antigravity retirement still uses its
+existing encrypted recovery record and private-home ownership; remote and warm
+Google subscription sessions remain unsupported. This local path is not a cloud
+fallback. Cloud cutover must settle any observed legacy credential files first.
 
 ## Advanced provider routing (2026-10-02)
 
@@ -596,6 +634,7 @@ credentials belong to the connection; the model belongs to the agent.
 | Codex legacy and Codex New Runner (app-server) | OpenRouter; custom/local OpenAI Responses endpoints |
 | Claude legacy and Claude New Runner (ACPX) | OpenRouter; custom/local Anthropic Messages; Bedrock API key |
 | OpenCode legacy and New Runner | OpenRouter; custom/local Chat Completions |
+| Pi legacy and New Runner | OpenRouter; native OpenAI, Anthropic, and Google API keys with a matching `provider/model` |
 | Hermes local | OpenRouter; custom/local Chat Completions |
 | Gemini CLI, Grok | Their native API connections; custom routes are not advertised |
 
@@ -605,7 +644,7 @@ environment probes and task execution. The settings file contains no credential.
 
 OpenClaw Gateway, Hermes Gateway, Claude Managed, AWS AgentCore, Process, HTTP,
 and legacy `acpx_local` are excluded: external agents retain their own model
-configuration, and `acpx_local` is retired. Cursor/Pi/Copilot custom routing,
+configuration, and `acpx_local` is retired. Cursor/Copilot custom routing, Pi custom gateways and Bedrock,
 Vertex, ambient AWS identity, arbitrary authentication headers, and automatic
 catalog discovery for custom gateways are not part of this implementation.
 
@@ -834,3 +873,17 @@ updates, account changes, duplicate identity resolution, ownership, monetary
 receipt replay, unknown prices, and failed provider observations. Provider payloads
 are fixtures; live provider access still depends on the deployment's credentials
 and scopes.
+
+### Login completion ownership
+
+The internal connection save service takes an internal auth-session row ID for
+every login flow. The setup-token owner resolves its public session ID within
+the company, user, and adapter scope before calling save. Local and device
+logins already use internal IDs. Provider names do not select the ID column.
+
+A login flow can supply a completion callback that runs inside the connection
+save transaction, after the session binding is written. Setup-token completion
+uses its existing conditional transition to `stored`; a rejected transition
+rolls back the credentials and connection binding. Already-bound sessions return
+the existing connection without repeating the callback. Local and device login
+services continue to own their final states.

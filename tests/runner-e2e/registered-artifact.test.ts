@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { expect, it, vi } from "vitest";
-import type { RunnerApi } from "./api.js";
-import { readRegisteredArtifacts } from "./registered-artifact.js";
+import { pollUntil, type RunnerApi } from "./api.js";
+import { readRegisteredArtifacts, RegisteredArtifactNotFoundError } from "./registered-artifact.js";
 import { evaluateMatcher } from "./matchers.js";
 
 function fixture() {
@@ -53,4 +53,40 @@ it("does not accept a filename or unchecked content as downloaded evidence", asy
   const matcher = { kind: "artifact_exact" as const, name: "proof.txt", expected: "verified\n" };
   expect((await evaluateMatcher(matcher, { artifacts: [{ name: "proof.txt", content: "verified\n" }] })).passed).toBe(false);
   expect((await evaluateMatcher(matcher, { artifacts: [{ name: "proof.txt", contentVerified: true, content: "wrong" }] })).passed).toBe(false);
+});
+
+it("distinguishes a checkpoint not yet registered from corrupt or unauthorized evidence", async () => {
+  const { api, product, attachment, get, download } = fixture();
+  get.mockImplementation(async (path: string) => path.endsWith("work-products") ? [] : [attachment]);
+  await expect(readRegisteredArtifacts(api, "issue", "run", ["proof.txt"])).rejects.toBeInstanceOf(RegisteredArtifactNotFoundError);
+  expect(download).not.toHaveBeenCalled();
+  get.mockImplementation(async (path: string) => path.endsWith("work-products") ? [product] : [attachment]);
+  expect((await readRegisteredArtifacts(api, "issue", "run", ["proof.txt"]))[0]?.contentVerified).toBe(true);
+  get.mockImplementation(async (path: string) => path.endsWith("work-products") ? [product, { ...product, id: "duplicate" }] : [attachment]);
+  await expect(readRegisteredArtifacts(api, "issue", "run", ["proof.txt"])).rejects.not.toBeInstanceOf(RegisteredArtifactNotFoundError);
+  get.mockImplementation(async (path: string) => path.endsWith("work-products") ? [product] : [attachment]);
+  download.mockResolvedValue({ ok: () => false, status: () => 403 });
+  await expect(readRegisteredArtifacts(api, "issue", "run", ["proof.txt"])).rejects.not.toBeInstanceOf(RegisteredArtifactNotFoundError);
+  get.mockRejectedValue(new Error("read access revoked"));
+  await expect(readRegisteredArtifacts(api, "issue", "run", ["proof.txt"])).rejects.toThrow("read access revoked");
+});
+
+
+it.each(["duplicate", "corrupt", "revoked"])("strict checkpoint polling retains a first %s observation instead of accepting a later replacement", async reason => {
+  const { api, product, attachment, get, download } = fixture();
+  let reads = 0;
+  get.mockImplementation(async (path: string) => {
+    if (!path.endsWith("work-products")) return [attachment];
+    reads++;
+    if (reads === 1 && reason === "revoked") throw new Error("read access revoked");
+    return reads === 1 && reason === "duplicate" ? [product, { ...product, id: "duplicate" }] : [product];
+  });
+  if (reason === "corrupt") download.mockResolvedValueOnce({ ok: () => true, body: async () => Buffer.from("bad bytes") });
+  await expect(pollUntil({ label: "strict checkpoint", deadlineAt: Date.now() + 1000, intervalMs: 1,
+    retryOnError: () => false,
+    load: () => readRegisteredArtifacts(api, "issue", "run", ["proof.txt"]).catch(error => {
+      if (error instanceof RegisteredArtifactNotFoundError) return [];
+      throw error;
+    }), accept: rows => rows.length === 1 })).rejects.toThrow();
+  expect(reads).toBe(1);
 });

@@ -1,5 +1,8 @@
+import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
+import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
+import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, companies, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, caseHandoffs, cases, companies, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -8,11 +11,13 @@ import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
 import { LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { requestedRunCancellation } from "../run-cancellation.js";
+import { ProjectAccessDeniedError } from "../project-access-denial.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { createHeartbeatRunCompletion, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
+import { createHeartbeatAgentStatus } from "./agent-status.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -75,15 +80,19 @@ it("constructs completion handlers without querying or starting work", () => {
 });
 
 const support = await getEmbeddedPostgresTestSupport();
-describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)("heartbeat run completion boundary", () => {
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: Db;
   beforeAll(async () => {
     // Keep the accounting transaction real without reading provider receipt files.
     vi.spyOn(usageReceipts, "indexPendingUsageReceipts").mockResolvedValue(new Map());
     vi.spyOn(usageReceipts, "recoverPendingRunUsageReceipts").mockResolvedValue([]);
-    database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-completion");
-    db = createDb(database.connectionString);
+    const external = process.env.PAPERCLIP_TEST_DATABASE_URL;
+    if (external) db = createDb(external);
+    else {
+      database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-completion");
+      db = createDb(database.connectionString);
+    }
     await db.execute(sql`set client_min_messages = warning`);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); vi.restoreAllMocks(); });
@@ -113,6 +122,31 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
   }
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
 
+  it.each(["completeRun", "failRun"] as const)("settles the outgoing agent after a case handoff in %s", async operation => {
+    const f = await fixture();
+    await db.update(agents).set({ status: "running", lifecycleState: "ready" }).where(eq(agents.id, f.agent.id));
+    const [recipient] = await db.insert(agents).values({ companyId: f.agent.companyId, name: "Next phase", adapterType: "process" }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: f.agent.companyId, title: "Case task", status: "in_progress", assigneeAgentId: f.agent.id }).returning();
+    const [record] = await db.insert(cases).values({ companyId: f.agent.companyId, caseNumber: 1, identifier: "CASE-1", caseType: "work", title: issue.title, workIssueId: issue.id, handoffVersion: 1 }).returning();
+    await db.insert(caseHandoffs).values({ companyId: f.agent.companyId, caseId: record.id, issueId: issue.id, version: 1,
+      fromAgentId: f.agent.id, toAgentId: recipient.id, phase: "verification", instructions: "Verify the saved work",
+      actorType: "agent", actorId: f.agent.id, sourceRunId: f.run.id, wakeupRequestId: randomUUID(), idempotencyKey: "next-phase", inputFingerprint: "next-phase", state: "awaiting_release" });
+    f.input.issueId = issue.id;
+    f.input.issueRef = issue;
+    f.deps.finalizeAgentStatus.mockImplementation(createHeartbeatAgentStatus(db).finalizeAgentStatus);
+
+    if (operation === "completeRun") await f.completion.completeRun(f.input);
+    else await f.completion.failRun(f.failure(new Error("Provider exited after the accepted handoff")));
+
+    const [settledAgent] = await db.select().from(agents).where(eq(agents.id, f.agent.id));
+    expect(settledAgent).toMatchObject({ status: operation === "completeRun" ? "idle" : "error", lastHeartbeatAt: expect.any(Date) });
+    expect(f.deps.finalizeAgentStatus).toHaveBeenCalledOnce();
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), { suppressImmediateRecovery: true });
+    expect(f.deps.handleSuccessfulRunHandoff).not.toHaveBeenCalled();
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0]?.status).toBe("in_progress");
+  });
+
   it("persists usage, accounting, final logs, presentation and the next task session", async () => {
     const f = await fixture();
     await f.completion.completeRun(f.input);
@@ -124,6 +158,57 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
     expect(f.deps.setWakeupStatus).toHaveBeenCalledWith(f.wake.id, "completed", expect.any(Object));
     expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledOnce();
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, "succeeded", null, expect.any(Object));
+  });
+
+  it("settles the accepted native exact rate-card price without replacing it with zero", async () => {
+    const f = await fixture({ runtimeMode: "native" });
+    const runnerInstanceId = randomUUID();
+    const delivery = await createNativeUsageDelivery(db, { companyId: f.run.companyId, runId: f.run.id, runnerInstanceId,
+      provider: { kind: "codex", model: "gpt-6.1-sol" }, billing: { provider: "openai", biller: "openai", billingType: "metered_api" } });
+    const event = (sourceSeq: number, eventType: string, payload: Record<string, unknown>): PrpEvent => ({
+      sourceKind: "runner", sourceInstanceId: runnerInstanceId, runId: f.run.id, sourceSeq, sourceEventId: `rate-card-${sourceSeq}`,
+      turnId: "price-turn", eventType, emittedAt: new Date().toISOString(), payload,
+    } as PrpEvent);
+    await delivery.capture(event(1, "usage.reported", { runDeltaBasis: "run", runDeltaAvailable: true,
+      runDelta: { inputTokens: 1000, outputTokens: 100000, providerCostUsd: 0 } }));
+    await delivery.capture(event(2, "turn.completed", {}));
+    const accepted = await usageReceipts.readAcceptedRunUsageCheckpoint(db, { companyId: f.run.companyId, runId: f.run.id });
+    expect(accepted?.costStatus).toBe("estimated");
+    const exact = accepted!.costUsdExact;
+    f.input.adapterResult = { exitCode: 0, signal: null, timedOut: false, ...accepted, usageComplete: accepted!.complete };
+    await f.completion.completeRun(f.input);
+    const saved = await read(f.run.id);
+    expect(saved).toMatchObject({ status: "succeeded", costAccountingPending: false, costAccountedAt: expect.any(Date),
+      usageJson: { costUsdExact: exact, costStatus: "estimated" } });
+    const ledger = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.run.id));
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0].costCents).toBe(100.2);
+  });
+
+  it("retains newer accepted native usage when completion consumed an older receipt", async () => {
+    const f = await fixture({ runtimeMode: "native", usageJson: { sessionRotated: true, configFreshness: { version: 0 } } });
+    const runnerInstanceId = randomUUID();
+    const delivery = await createNativeUsageDelivery(db, { companyId: f.run.companyId, runId: f.run.id, runnerInstanceId,
+      provider: { kind: "codex", model: "test-model" }, billing: { provider: "openai", biller: "openai", billingType: "metered_api" } });
+    const event = (sourceSeq: number, eventType: string, inputTokens = 100): PrpEvent => ({
+      sourceInstanceId: runnerInstanceId, runId: f.run.id, sourceSeq, sourceEventId: `racing-${sourceSeq}`, turnId: "turn-1",
+      emittedAt: new Date().toISOString(), eventType, payload: eventType === "usage.reported"
+        ? { runDeltaBasis: "run", runDeltaAvailable: true, runDelta: { inputTokens, outputTokens: 10, providerCostUsd: inputTokens / 1000 } } : {},
+    } as PrpEvent);
+    await delivery.capture(event(1, "usage.reported"));
+    await delivery.capture(event(2, "turn.completed"));
+    const acceptedA = await usageReceipts.readAcceptedRunUsageCheckpoint(db, { companyId: f.run.companyId, runId: f.run.id });
+    await delivery.capture(event(3, "usage.reported", 120));
+    f.input.adapterResult = { exitCode: 0, signal: null, timedOut: false, ...acceptedA, usageComplete: acceptedA!.complete };
+    await f.completion.completeRun(f.input);
+    expect(await read(f.run.id)).toMatchObject({ status: "succeeded", costAccountingPending: true, costAccountedAt: null,
+      usageJson: { inputTokens: 120, costUsd: 0.12, accountingReceiptSequence: 3, accountingReceiptReady: false, sessionRotated: false, configFreshness: { version: 1 } } });
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.run.id))).toHaveLength(0);
+    await delivery.capture(event(4, "turn.completed", 120));
+    expect(await (await import("../run-cost-accounting.js")).accountRunCost(db, f.run.id)).toBe(true);
+    const ledger = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.run.id));
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0].costCents).toBe(12);
   });
 
   it.each([
@@ -224,9 +309,16 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
   it("retains native completion metadata when reconciliation already committed the same terminal status", async () => {
     const finishedAt = new Date("2026-10-09T12:00:00Z");
     const f = await fixture({ runtimeMode: "native", status: "succeeded", finishedAt, resultJson: { durable: "accepted" }, usageJson: { durableReceipt: "native" } });
-    f.input.adapterResult.nativeFinalization = { schema: "paperclip.native-finalization.v1", runtimeMode: "native", runId: f.run.id, companyId: f.run.companyId, issueId: "unused", result: {}, terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed", runTerminalState: "succeeded", reportedWorkDisposition: "done" }, turnId: null, sourceInstanceId: "test", normalizedSessionId: "native-session", providerSessionId: null, driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, workspaceFinalizeStatus: "succeeded" };
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, f.agent.id));
+    f.agent.adapterType = "paperclip_runner";
+    f.input.sessionCodec = getAdapterSessionCodec(f.agent.adapterType);
+    const nativeSessionId = randomUUID(), providerSessionId = randomUUID();
+    f.input.adapterResult.sessionId = nativeSessionId;
+    delete f.input.adapterResult.sessionParams;
+    f.input.adapterResult.sessionDisplayId = providerSessionId;
+    f.input.adapterResult.nativeFinalization = { schema: "paperclip.native-finalization.v1", runtimeMode: "native", runId: f.run.id, companyId: f.run.companyId, issueId: "unused", result: {}, terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed", runTerminalState: "succeeded", reportedWorkDisposition: "done" }, turnId: null, sourceInstanceId: "test", normalizedSessionId: nativeSessionId, providerSessionId, driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, workspaceFinalizeStatus: "succeeded" };
     await f.completion.completeRun(f.input);
-    expect(await read(f.run.id)).toMatchObject({ status: "succeeded", finishedAt, sessionIdAfter: "provider-session", resultJson: { durable: "accepted" }, usageJson: { durableReceipt: "native", inputTokens: 20 } });
+    expect(await read(f.run.id)).toMatchObject({ status: "succeeded", finishedAt, sessionIdAfter: providerSessionId, resultJson: { durable: "accepted" }, usageJson: { durableReceipt: "native", inputTokens: 20 } });
     expect(f.deps.updateRuntimeState).toHaveBeenCalledOnce();
   });
 
@@ -305,6 +397,18 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
     await f.completion.failRun(f.failure(new Error("transport ended")));
     expect((await read(f.run.id)).errorCode).toBe("native_result_missing");
     expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), { suppressImmediateRecovery: true });
+  });
+
+  it("persists a project denial without provider work or an automatic retry", async () => {
+    const f = await fixture();
+    const projectId = randomUUID();
+    await f.completion.failRunSetup(f.setup(new ProjectAccessDeniedError(projectId)));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "project_access_denied",
+      resultJson: { projectAccessDenied: { projectId }, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+    expect(f.deps.finalizeIssueCommentPolicy).not.toHaveBeenCalled();
   });
 
   it("records a setup configuration gap without inventing provider work or applying comment policy", async () => {

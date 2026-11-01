@@ -284,7 +284,7 @@ const meta = {
       ],
       "implementation": "production",
       "boundary": "fixtures",
-      "notes": "Creation visibility now defaults to hiding automated independent tasks, with a show agent-created tasks control and inbox participation exceptions. Source alignment reviewed; these fixture stories do not establish live server pagination or authorization. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+      "notes": "Creation visibility now defaults to hiding automated independent tasks, with a Show agent-created tasks control and inbox participation exceptions. Source alignment reviewed; these fixture stories do not establish live server pagination or authorization. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
     },
   },
 } satisfies Meta<typeof BlockedTabSurface>;

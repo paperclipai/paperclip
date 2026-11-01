@@ -1,3 +1,4 @@
+import type { AcpxCandidateStartupAdmission } from "./candidate-admission.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import type { NativeRuntimeContextSnapshot } from "../../contracts/runtime-context.js";
 import type { NativeAcpxPermissionMode } from "../../contracts/native-execution.js";
@@ -39,6 +40,7 @@ export interface AcpxSidecarEvent {
 }
 
 export interface AcpxSidecarOpenParams {
+  candidateAdmission?: AcpxCandidateStartupAdmission;
   runtimeDirectory: string;
   normalizedSessionId: string;
   workingDirectory: string;
@@ -47,6 +49,9 @@ export interface AcpxSidecarOpenParams {
   permissionMode: NativeAcpxPermissionMode;
   mode?: string;
   piThinkingLevel?: "off" | "low" | "high" | "max";
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   permissionModePinned: boolean;
   providerPolicy?: { readOnly: boolean };
   systemInstructions: string;
@@ -69,6 +74,9 @@ export interface AcpxExpectedSessionIdentity {
   permissionMode?: NativeAcpxPermissionMode;
   mode?: string;
   piThinkingLevel?: "off" | "low" | "high" | "max";
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 

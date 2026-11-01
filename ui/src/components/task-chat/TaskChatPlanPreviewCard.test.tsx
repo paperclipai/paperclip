@@ -2,7 +2,7 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IssueDocument } from "@paperclipai/shared";
 import { ThemeProvider } from "@/context/ThemeContext";
 import {
@@ -10,6 +10,9 @@ import {
   TaskChatPlanPreviewCard,
 } from "./TaskChatPlanPreviewCard";
 import type { TaskChatProviderActivityItem } from "./task-chat-model";
+import { CoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
+
+vi.mock("@/lib/router", () => ({ Link: ({ to, children, disableIssueQuicklook: _quicklook, ...props }: any) => <a href={to} {...props}>{children}</a> }));
 
 function planDocument(overrides: Partial<IssueDocument> = {}): IssueDocument {
   return {
@@ -105,6 +108,26 @@ describe("TaskChatPlanPreviewCard", () => {
     expect(container.textContent).toContain("Plan· rev 5");
     expect(container.textContent).toContain("Revised streaming UX");
     expect(container.textContent).not.toContain("Streaming task UX");
+  });
+
+  it("keeps Coordinator plans compact and links the saved revision in its owning task", () => {
+    act(() => root.render(<ThemeProvider><CoordinatorPresentation.Provider value>
+      <TaskChatPlanPreviewCard source={{ kind: "saved", document: planDocument() }} />
+    </CoordinatorPresentation.Provider></ThemeProvider>));
+    const card = container.querySelector("a")!;
+    expect(card.getAttribute("href")).toBe("/issues/issue-1#document-plan&revision=plan-revision-4");
+    expect(card.textContent).toContain("Open Streaming task UX");
+    expect(container.querySelector("ul")).toBeNull();
+    expect(container.textContent).not.toContain("Extract the shared card.");
+  });
+
+  it("does not invent a task link for an unsaved live plan", () => {
+    act(() => root.render(<ThemeProvider><CoordinatorPresentation.Provider value>
+      <TaskChatPlanPreviewCard source={{ kind: "live", activity: livePlan([{ id: "a", label: "Internal step", status: "in_progress" }]) }} />
+    </CoordinatorPresentation.Provider></ThemeProvider>));
+    expect(container.textContent).toContain("Writing Plan");
+    expect(container.textContent).not.toContain("Internal step");
+    expect(container.querySelector("a")).toBeNull();
   });
 
   it("updates a live provider preview in place as steps stream", () => {

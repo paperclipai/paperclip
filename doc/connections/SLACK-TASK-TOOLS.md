@@ -44,6 +44,13 @@ signed approvals. Removing a tool profile binding does not get undone by resolvi
 a retained session. Disconnecting an identity or disabling a connection revokes
 access for retained runs too.
 
+Assignment and tool discovery prepare at most two endpoints at a time. Each
+endpoint still resolves live authority. Preparation waits for the active pair
+before it returns or fails, keeps candidate order, and stops before the next
+pair if either check fails. Tool authority resolves only the current bot token;
+webhook signing and app tokens stay on their existing transport paths. No
+credential or authorization cache is introduced.
+
 ## Tools and scope upgrades
 
 The reviewed, strict method/scope/argument matrix is

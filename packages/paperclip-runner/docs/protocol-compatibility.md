@@ -154,7 +154,16 @@ policy in the closed provider configuration: `approvalPolicy` for Codex and
 provider-session identity, so an incompatible idle or recovered session is
 replaced on the next execution. An active turn is never mutated in place.
 
-`paperclip.native-execution-input.v5` is the current input format. It retains
+`paperclip.native-execution-input.v5` remains the ordinary input format.
+Claude inputs with explicitly configured effort use v9 with the optional
+`provider.claudeEffort` field. V9 retains the compact v3 model envelope; effort
+is host configuration, never model-visible task text. V6 remains the separate
+OpenAI Dot format. Readers retain persisted v1-v8 contracts, including v7 home modes and v8 Muse. Claude effort is
+acknowledged on each ACP connection before prompting, bound into the session
+identity and recovery checkpoint, and cross-checked against the public provider
+descriptor. Missing effort retains the provider default; values are never clamped.
+
+The v5 input format retains
 the v4 permission pinning and adds optional completion-source references;
 `paperclip.native-model-envelope.v3` is the corresponding explicit model
 projection. Readers continue to accept persisted v1-v4 inputs, and v5 readers
@@ -295,3 +304,30 @@ not part of the contract. Native attempt output is
 fields but rejects unknown required versions and inconsistent terminal,
 semantic-denial, usage, or transcript facts. Full fields and the deterministic
 gate are exercised by the package-local deterministic conformance suite.
+
+
+## Claude effort after the Codex default merge
+
+Native input v9 adds configured Claude effort while retaining v1–v8 readers.
+It carries the explicit home mode from v7; v8 Muse remains separate. The shared
+executor retains master's provider and cleanup behavior. Copilot's shared source
+attestation advances from pending profile 21 to 22 without replacing historical
+fixtures. Pi advances from master's profile 24 to 27 to bind the combined source,
+including master's OpenRouter attribution. The prior branch profile 24 is
+preserved separately from master's published profile 24.
+Provider executable bytes remain unchanged. These new source identities require
+fresh compatibility checks; earlier provider runs retain their original identities.
+
+## Claude essential task tools
+
+Claude's runner-owned MCP bridge marks `set_task_title`, `paperclip_finish` and
+`paperclip_block` with `_meta["anthropic/alwaysLoad"]: true`. The pinned SDK can
+include these definitions in its first request without a ToolSearch round trip.
+Other public tools keep their existing deferral policy. Private operations stay
+undiscoverable, and incoming tool definitions cannot set this metadata themselves.
+The host enables this only for Claude; Codex and Copilot catalogs are unchanged.
+No server-wide tool preloading, model change or permission change is introduced.
+
+The shared bridge's source binding advances pending Copilot profile 22 to 23.
+Profile 22 remains decodable and its fixture is immutable. Copilot remains pending;
+the revision does not qualify a new provider or change its executable closure.

@@ -30,7 +30,7 @@ export function withoutProvenBootstrapReads<T extends BootstrapReadNotice>(
   if (!proof) return [...notices];
   const expectedReadDigest = `sha256:${createHash("sha256").update(proof.actionFile).digest("hex")}`;
   const invalid = () => new Error("Native bootstrap read lacks exact complete action-file proof");
-  if (notices.length > 2048 || proof.events.length > 20_000 || !/^\.paperclip-eval-action-[a-f0-9]{36}\.txt$/u.test(proof.actionFile) || !Number.isSafeInteger(origin.seq)) throw invalid();
+  if (notices.length > 2048 || proof.events.length > 20_000 || !/^\.paperclip-eval-action-(?:[a-f0-9]{12}|[a-f0-9]{36})\.txt$/u.test(proof.actionFile) || !Number.isSafeInteger(origin.seq)) throw invalid();
   const candidates = notices.filter(n => n.operation === "read" && n.seq < origin.seq);
   const groups = new Map<string, T[]>();
   const nativeIds = new Map<string, string>();

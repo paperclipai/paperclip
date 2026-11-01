@@ -1,8 +1,10 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { onChunkLoadReloadAbandoned, reloadForChunkLoadError } from "@/lib/chunk-load-recovery";
 import { captureBrowserException } from "@/lib/sentry";
 
 type AppErrorBoundaryState = {
   error: Error | null;
+  reloading: boolean;
 };
 
 /**
@@ -17,20 +19,48 @@ type AppErrorBoundaryState = {
  * crash being handled may have originated inside any of those providers.
  */
 export class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBoundaryState> {
-  override state: AppErrorBoundaryState = { error: null };
+  override state: AppErrorBoundaryState = { error: null, reloading: false };
+  private stopWaitingForReload: (() => void) | null = null;
 
-  static getDerivedStateFromError(error: unknown): AppErrorBoundaryState {
+  static getDerivedStateFromError(error: unknown): Partial<AppErrorBoundaryState> {
     return { error: error instanceof Error ? error : new Error(String(error)) };
   }
 
   override componentDidCatch(error: unknown, info: ErrorInfo): void {
+    this.stopWaitingForReload?.();
+    this.stopWaitingForReload = null;
+    if (reloadForChunkLoadError(error)) {
+      this.setState({ reloading: true });
+      this.stopWaitingForReload = onChunkLoadReloadAbandoned(() => {
+        this.stopWaitingForReload = null;
+        this.setState({ reloading: false });
+        this.report(error, info);
+      });
+      return;
+    }
+    this.report(error, info);
+  }
+
+  override componentWillUnmount(): void {
+    this.stopWaitingForReload?.();
+    this.stopWaitingForReload = null;
+  }
+
+  private report(error: unknown, info: ErrorInfo): void {
     console.error("App shell crashed", { error, componentStack: info.componentStack });
     captureBrowserException(error, { boundary: "app", componentStack: info.componentStack });
   }
 
   override render() {
-    const { error } = this.state;
+    const { error, reloading } = this.state;
     if (!error) return this.props.children;
+    if (reloading) {
+      return (
+        <div role="status" className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">
+          Reloading Paperclip…
+        </div>
+      );
+    }
 
     return (
       <div className="mx-auto flex min-h-screen max-w-2xl flex-col justify-center space-y-4 px-4 py-10">

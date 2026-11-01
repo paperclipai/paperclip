@@ -22,7 +22,7 @@ export function mustPreserveRecoveryState(input: {
   resourceAdmissionStarted?: boolean;
   results: readonly { cleanup: string; synthetic?: boolean }[];
 }) {
-  return input.processCleanupFailed || input.results.some(result => result.cleanup === "failed")
+  return input.processCleanupFailed || input.results.some(result => result.cleanup === "failed" || result.synthetic)
     || (input.resourceAdmissionStarted === true && (input.results.length === 0 || input.results.some(result => result.synthetic)));
 }
 

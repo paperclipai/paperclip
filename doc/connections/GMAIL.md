@@ -386,6 +386,7 @@ seven-day testing-token expiry.
 | The managed method is unavailable | Confirm the exact profile is in `CLOUD_HARNESS_CONNECTOR_GOOGLE_ENABLED_PROFILES` and its client id and secret reference are configured. |
 | Login starts asking for Gmail | Stop the rollout. The login and Gmail clients or route namespaces have been mixed. |
 | Connector is unavailable | Keep the grant in `needs_reauthorization` or an actionable unavailable state. Never use a login token or another environment's client. |
+| Refresh reports `reason=PROVIDER_REAUTHORIZATION_REQUIRED` | The provider revoked, expired, or already rotated the grant, or the grant no longer matches the profile. Paperclip marks it `needs_reauthorization`; the user reconnects. `reason=PROVIDER_OPERATION_FAILED` is a provider or Cloud outage; retry later. |
 
 ## References
 

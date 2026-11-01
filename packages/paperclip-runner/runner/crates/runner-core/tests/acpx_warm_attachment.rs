@@ -62,6 +62,7 @@ fn checkpoints_the_sidecar_and_rebinds_consecutive_warm_runs_before_accepting_wo
         runner_version: "0.0.0".to_owned(),
         runner_digest: format!("sha256:{}", "a".repeat(64)),
         acpx_launch_profile: Some(AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: sidecar.clone(),
             args: args.clone(),

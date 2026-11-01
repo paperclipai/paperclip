@@ -6,6 +6,7 @@ import { useSecondTick } from "@/hooks/useSecondTick";
 import { formatDurationWords } from "@/lib/issue-chat-messages";
 import { isCommandTool } from "@/lib/transcriptPresentation";
 import { isTerminalRunStatus } from "@/components/task-chat/transcript-adapter";
+import { useTaskChatShimmer } from "./TaskChatShimmer";
 
 /**
  * "ran N commands, called M tools" for the live tail's status pill, counted off
@@ -58,6 +59,7 @@ export function TaskChatLiveRunPill({
   toolSummary: string | null;
 }) {
   const active = !isTerminalRunStatus(status);
+  const shimmer = useTaskChatShimmer("working");
   // One shared page-wide ticker drives the live elapsed readout, matching the
   // default view's `useLiveElapsed`.
   useSecondTick(active && startedAtMs != null);
@@ -76,7 +78,7 @@ export function TaskChatLiveRunPill({
       className="flex min-w-0 items-center gap-2 py-2"
       data-testid="task-chat-live-run-pill"
     >
-      <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
+      <span className={cn("inline-flex items-center gap-2 text-sm font-medium text-foreground/80", active && !shimmer && "text-muted-foreground")}>
         {active ? (
           <span className="flex size-5 shrink-0 items-center justify-center">
             <Loader2 className="size-4 animate-spin text-muted-foreground" />
@@ -86,7 +88,7 @@ export function TaskChatLiveRunPill({
             <span className={cn("h-1.5 w-1.5 rounded-full", (failed || active) ? "bg-muted-foreground/40" : "bg-emerald-500/70")} />
           </span>
         )}
-        {active ? <span className={cn("shimmer-text")}>{verb}</span> : verb}
+        {active ? <span className={cn(shimmer && "shimmer-text")}>{verb}</span> : verb}
       </span>
       {suffix ? <span className="text-xs text-muted-foreground/60">{suffix}</span> : null}
       {toolSummary ? <span className="text-xs text-muted-foreground/40">· {toolSummary}</span> : null}

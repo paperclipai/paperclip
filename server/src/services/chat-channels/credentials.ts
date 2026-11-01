@@ -1,3 +1,4 @@
+import { notifyChatEndpointConfiguration } from "./configuration-work-notifications.js";
 import { prepareSlackInventory } from "./slack/inventory.js";
 import { prepareGitHubInventory } from "./github/inventory.js";
 import { prepareDiscordInventory } from "./discord/inventory.js";
@@ -16,7 +17,8 @@ import { type CredentialMutationLeaseGuard } from "../chat-credential-mutation-l
 
 import { photonSharedScope } from "../photon/cloud.js";
 
-import { photonChannelConfigurationSchema } from "@paperclipai/shared";
+import { isUuidLike, photonChannelConfigurationSchema } from "@paperclipai/shared";
+import { notifyChatEndpointWork } from "../chat-work-notifications.js";
 
 import {
   randomBytes,
@@ -27,6 +29,7 @@ import {
   eq,
   inArray,
   ne,
+  sql,
 } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
@@ -44,6 +47,7 @@ import type {
 import { isUniqueViolation } from "../../db-errors.js";
 
 import {
+  HttpError,
   conflict,
   notFound,
   unprocessable,
@@ -57,6 +61,18 @@ import {
 } from "../chat-teams-credentials.js";
 
 import { secretService } from "../secrets.js";
+import { isSecretProviderClientError } from "../../secrets/types.js";
+
+export const CHAT_HUMAN_CREDENTIAL_FIELDS = ["signingSecret", "webhookSecret", "privateKey", "clientSecret", "projectSecret"] as const;
+
+/** Opaque generations identify actual protected-value changes, never secret bytes. */
+export function chatCredentialEntryGenerations(setup: object): Record<string, string | null> {
+  const generations: unknown = Reflect.get(setup, "credentialEntryGenerations");
+  return Object.fromEntries(CHAT_HUMAN_CREDENTIAL_FIELDS.map(field => {
+    const value: unknown = generations && typeof generations === "object" ? Reflect.get(generations, field) : null;
+    return [field, typeof value === "string" && isUuidLike(value) ? value : null];
+  }));
+}
 
 type ChatCredentialsOptions = {
   secrets: ReturnType<typeof secretService>;
@@ -67,6 +83,7 @@ type ChatCredentialsOptions = {
   redactError: (error: unknown) => string;
   credentialFingerprint: (refs: ToolCredentialSecretRef[]) => string;
   verifyPhotonCredentials: ReturnType<typeof createPhotonCredentialChecks>["verifyPhotonCredentials"];
+  preservesWebhookVerification?: (endpoint: EndpointRow, setup: EndpointRow["setup"], credentials: Record<string, string>) => boolean;
 };
 export function createChatCredentials(db: Db, options: ChatCredentialsOptions) {
   const { secrets, PROVIDER_LABELS, REQUIRED_CREDENTIALS, PROVIDER_CREDENTIAL_CHECK_TIMEOUT_MS, fetchImpl, redactError, credentialFingerprint, verifyPhotonCredentials } = options;
@@ -253,6 +270,7 @@ export function createChatCredentials(db: Db, options: ChatCredentialsOptions) {
     credentials: Record<string, string>,
     credentialLease: CredentialMutationLeaseGuard,
     actorUserId?: string | null,
+    onCommitted?: (tx: Db) => Promise<void>,
   ) {
     await credentialLease.assertOwned();
     const previousRefs = await db
@@ -265,6 +283,25 @@ export function createChatCredentials(db: Db, options: ChatCredentialsOptions) {
         ),
       )
       .then((rows) => rows[0]?.refs ?? []);
+    const protectedFields = CHAT_HUMAN_CREDENTIAL_FIELDS.filter(field => credentials[field] !== undefined);
+    const previousValues: Record<string, string> = {};
+    for (const ref of previousRefs.filter(ref => protectedFields.some(field => ref.configPath === `credentials.${field}`))) {
+      try {
+        Object.assign(previousValues, await resolveCredentialRefs(endpoint, [ref]));
+      } catch (error) {
+        // A valid replacement can repair unavailable old material. Unexpected
+        // database failures and company/scope violations must still abort.
+        const code = error instanceof HttpError && error.details && typeof error.details === "object"
+          ? Reflect.get(error.details, "code") : null;
+        const unavailable = isSecretProviderClientError(error) || (error instanceof HttpError && (
+          ["secret_deleted", "secret_inactive", "version_missing", "version_inactive"].includes(code) ||
+          (error.status === 404 && error.message === "Secret not found" && !error.details)
+        ));
+        if (!unavailable) throw error;
+      }
+    }
+    const changedFields = protectedFields.filter(field => credentials[field] !== previousValues[field]);
+    const generations = Object.fromEntries(changedFields.map(field => [field, randomUUID()]));
     const refs: ToolCredentialSecretRef[] = [];
     try {
       for (const [key, value] of Object.entries(credentials)) {
@@ -315,6 +352,7 @@ export function createChatCredentials(db: Db, options: ChatCredentialsOptions) {
             code: "chat_endpoint_credentials_changed",
           });
         }
+        await notifyChatEndpointConfiguration(tx, endpoint);
         await tx
           .delete(companySecretBindings)
           .where(
@@ -344,6 +382,21 @@ export function createChatCredentials(db: Db, options: ChatCredentialsOptions) {
           .update(toolConnections)
           .set({ credentialSecretRefs: refs, updatedAt: new Date() })
           .where(eq(toolConnections.id, endpoint.connectionId));
+        if (changedFields.length) {
+          await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
+          const [currentEndpoint] = await tx.select({ setup: chatEndpoints.setup }).from(chatEndpoints)
+            .where(and(eq(chatEndpoints.id, endpoint.id), eq(chatEndpoints.companyId, endpoint.companyId))).for("update");
+          if (!currentEndpoint) throw notFound("Chat endpoint not found");
+          const verification = changedFields.some(field => field === "signingSecret" || field === "webhookSecret")
+            && !options.preservesWebhookVerification?.(endpoint, currentEndpoint.setup, credentials)
+            ? { webhookVerifiedAt: null } : {};
+          await tx.update(chatEndpoints).set({
+            // Fence old healthy state in the same transaction as the new refs.
+            status: sql`case when ${chatEndpoints.status} = 'active' then 'verifying' else ${chatEndpoints.status} end`,
+            setup: sql`jsonb_set(${chatEndpoints.setup}, '{credentialEntryGenerations}', coalesce(${chatEndpoints.setup}->'credentialEntryGenerations', '{}'::jsonb) || ${JSON.stringify(generations)}::jsonb) || ${JSON.stringify(verification)}::jsonb`,
+          }).where(and(eq(chatEndpoints.id, endpoint.id), eq(chatEndpoints.companyId, endpoint.companyId)));
+        }
+        await onCommitted?.(tx as unknown as Db);
         await credentialLease.assertOwned(tx);
       });
     } catch (error) {
@@ -411,6 +464,7 @@ export function createChatCredentials(db: Db, options: ChatCredentialsOptions) {
         .then((rows) => rows[0] ?? null);
       if (!current) throw notFound("Chat connection not found");
       refs = current.refs;
+      await notifyChatEndpointConfiguration(tx, endpoint);
       await tx
         .delete(companySecretBindings)
         .where(

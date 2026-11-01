@@ -1,4 +1,5 @@
 import { badRequest } from "../errors.js";
+import { googleWorkspaceToolTarget } from "@paperclipai/shared";
 
 type Connection = { config: Record<string, unknown> };
 
@@ -9,6 +10,10 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 function isChatSearch(connection: Connection, toolName: string): boolean {
+  if (connection.config.sourceTemplateKey === "google-workspace") {
+    const target = googleWorkspaceToolTarget(toolName);
+    return target?.service === "chat" && target.leaf === "search_messages";
+  }
   const leaf = (toolName.split(/[.:/]/).pop() ?? toolName)
     .replace(/([a-z0-9])([A-Z])/g, "$1-$2").replace(/_/g, "-").toLowerCase();
   if (leaf !== "search-messages") return false;

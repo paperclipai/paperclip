@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { GitShallowMetadataError } from "@paperclipai/adapter-utils/git-workspace-sync";
 import type { Db } from "@paperclipai/db";
 const log = vi.hoisted(() => vi.fn());
 vi.mock("../heartbeat-run-events.js", () => ({ appendHeartbeatRunEvent: log }));
@@ -31,6 +32,15 @@ describe("best effort native workspace export", () => {
       companyId: "company", agentId: "agent", runId: "run", level: "info", eventType: "workspace_export_omitted",
     }));
     expect(JSON.stringify(log.mock.calls[0][1])).not.toContain("private");
+  });
+
+  it("keeps rejected Git metadata behind the workspace persistence barrier", async () => {
+    const { db, select } = fixture();
+    const error = new GitShallowMetadataError("Invalid Git shallow boundaries for host object format sha1");
+    await expect(restoreNativeWorkspaceBestEffort({ db, runId: "run", restore: async () => { throw error; } }))
+      .rejects.toBe(error);
+    expect(select).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalled();
   });
 
   it("does not hide transport failures or ownership loss", async () => {

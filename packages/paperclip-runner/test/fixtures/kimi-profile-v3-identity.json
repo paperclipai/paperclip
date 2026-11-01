@@ -1,0 +1,35 @@
+{
+  "declaration": {
+    "schema": "paperclip.kimi-profile-identity.v1",
+    "agent": "kimi",
+    "agentProfileVersion": 3,
+    "agentServerPackage": "@moonshot-ai/kimi-code",
+    "agentServerVersion": "2.3.3",
+    "agentRuntimePackage": null,
+    "agentRuntimeVersion": null,
+    "requiresProviderPolicy": true,
+    "qualificationStatus": "pending",
+    "acpxVersion": "0.13.1",
+    "sources": {
+      "scripts/patch-kimi-runtime.mjs": "sha256:dd3686d4eb7da9bf22f75c28ee307830f106dd0426d70d5961e8f20b8309c6c8",
+      "scripts/kimi-instructions-runtime.mjs": "sha256:50ae002d19276b7fd5b85fd8cf1eace033f986486645d07b8eabfcb759c378ef",
+      "scripts/materialize-kimi-distribution.mjs": "sha256:7d61f91d2b32a8d22e5949619faed009c2fded8e034e84a2615a76548e2aa4d0",
+      "scripts/provision-kimi.mjs": "sha256:d11a6320b47c1549572f192e6a3d532b4c48a7f2499afd91539626c04e917bca",
+      "scripts/kimi-distribution/package.json": "sha256:13511f26a31248e42063c49eeaf6235b7448df12049c1bf45c2170cc20767175",
+      "scripts/kimi-distribution/package-lock.json": "sha256:ff2cf7356dc031cac15d9f3339cf82bd1811399af59396e2d7629648c21298cf",
+      "src/drivers/acpx/kimi-closure-pins.ts": "sha256:37a526622ccecceba448254cd1bf503b4afa2a3db3ed1fd60351a5936509608f",
+      "src/drivers/acpx/kimi-config.ts": "sha256:b927c3f2437094d4492a1499559247220e154fcae719ecfe75bb63defc7df05e",
+      "src/drivers/acpx/kimi-installation.ts": "sha256:753a1f8505bcfaff83ac76c425e45e4ff780861a6b6b0fbcb71e96c0c482669d",
+      "src/drivers/acpx/kimi-instructions.ts": "sha256:a04e2d17aac37da2463c8a2c057f9e922ecdb68d9e922e9288e0445c870f9a36",
+      "src/drivers/acpx/instruction-admission.ts": "sha256:371c17f328abed44f90ac37f3b686e1c0a0d6b647518e62935262ecc31450b16",
+      "src/drivers/acpx/kimi-runtime-files.ts": "sha256:bab2a716764e4ea752a4bdcc71c7bdf4378633c7fb16a1a9cb158ee3724bd5c9",
+      "src/configured-environment.ts": "sha256:b48a72c1af77c88af76b7df527fdb831c714738042c93906f4da7ae0728ef957",
+      "src/drivers/acpx/environment.ts": "sha256:4dae5e87eca617a7f84c1fafa6c78dea4b94b4ebe8814162674d54b3b929eef1",
+      "src/drivers/acpx/codex-runtime-adapter.ts": "sha256:601cbfe4e2811f771a3a59bf23fdbb05e33a04901af987f2ff96a8acf56374a3",
+      "src/drivers/acpx/runtime-host.ts": "sha256:7dfbf8d6e613900dcae06f0b5462dd916bd3d25cade2740c78ac0e27f7ac1157",
+      "src/drivers/acpx/runtime-sandbox.ts": "sha256:827f6beb5d36bde8bec3881b41cdaffe8571ce360af22617cfee509cd03a7984",
+      "src/cli/acpx-runtime-sidecar.ts": "sha256:488b2615829a389866954cb4a240ddd88f7067d7940fdeaa9f443104eb4bb95f"
+    }
+  },
+  "commandDigest": "sha256:a5e1790881f10503aff7423a27237427c517dc13b395a7fdc3bc0c52556a7640"
+}

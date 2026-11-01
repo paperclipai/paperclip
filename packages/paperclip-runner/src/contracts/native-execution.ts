@@ -1,5 +1,8 @@
-import type { DotBindingSnapshot, ExternalBotProviderKind } from "./external-provider.js";
-import { QUALIFIED_ACPX_VERSION } from "../drivers/acpx/generated-profiles.js";
+import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
+import { resolveGrokEffort } from "../drivers/acpx/grok-effort.js";
+import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
+import type { DotBindingSnapshot, MuseBindingSnapshot, ExternalBotProviderKind } from "./external-provider.js";
+import { QUALIFIED_ACPX_VERSION, QUALIFIED_ACPX_PROFILE_DATA } from "../drivers/acpx/generated-profiles.js";
 import { isSupportedAcpxProfileVersion, type AcpxProfileVersion } from "../drivers/acpx/profile-compatibility.js";
 import { isProviderMode } from "./provider-mode.js";
 import { createHash } from "node:crypto";
@@ -9,6 +12,9 @@ import { explicitTaskSkillNames, parseNativeRuntimeContext, type NativeRuntimeCo
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V1 = "paperclip.native-execution-input.v1" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V2 = "paperclip.native-execution-input.v2" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V3 = "paperclip.native-execution-input.v3" as const;
+export const NATIVE_EXECUTION_INPUT_SCHEMA_V10 = "paperclip.native-execution-input.v10" as const;
+export const NATIVE_EXECUTION_INPUT_SCHEMA_V9 = "paperclip.native-execution-input.v9" as const;
+export const NATIVE_EXECUTION_INPUT_SCHEMA_V8 = "paperclip.native-execution-input.v8" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V6 = "paperclip.native-execution-input.v6" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V4 = "paperclip.native-execution-input.v4" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA = "paperclip.native-execution-input.v5" as const;
@@ -87,11 +93,18 @@ export interface NativeAwsAgentCoreProfileSnapshot {
   eventExpiryDays: 90;
 }
 
-export type NativeAcpxAgent = "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot";
+export type NativeAcpxAgent = keyof typeof QUALIFIED_ACPX_PROFILE_DATA;
+
+function isNativeAcpxAgent(value: unknown): value is NativeAcpxAgent {
+  return typeof value === "string" && Object.hasOwn(QUALIFIED_ACPX_PROFILE_DATA, value);
+}
 export type NativeCodexApprovalPolicy = "never" | "on-request" | "untrusted";
 export type NativeOpenCodePermissionMode = "allow" | "ask" | "deny";
 export type NativeAcpxPermissionMode = "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
 export type NativeCursorMode = "agent" | "plan" | "ask";
+
+/** Decodable history; current immutable admission comes from the shared manifest. */
+export type NativeAcpxProfileVersion = AcpxProfileVersion;
 
 export interface NativeAcpxProfileSnapshot {
   driverKind: "acpx_runtime";
@@ -154,7 +167,7 @@ export type NativeProviderConfigV4 =
 
 export type NativeProviderConfigV5 =
   | Exclude<NativeProviderConfigV4, { kind: "codex" }>
-  | (Extract<NativeProviderConfigV4, { kind: "codex" }> & { reasoningEffort?: string });
+  | (Extract<NativeProviderConfigV4, { kind: "codex" }> & { reasoningEffort?: string; webSearch?: "disabled" });
 
 export interface NativeExecutionInputV1 {
   schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V1;
@@ -201,7 +214,7 @@ export interface NativeExecutionInputV2 extends Omit<NativeExecutionInputV1, "sc
   schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V2;
   executionMode: NativeExecutionMode;
   task: Omit<NativeExecutionInputV1["task"], "workMode"> & {
-    workMode: "standard" | "planning" | "ask";
+    workMode: "standard" | "planning" | "ask" | "skill_test";
   };
   planningContext: NativePlanningContext | null;
 }
@@ -252,7 +265,27 @@ export interface NativeExecutionInputV7 extends Omit<NativeExecutionInputV5, "sc
   homeMode: NativeHomeMode;
 }
 
-export type NativeExecutionInput = NativeExecutionInputV1 | NativeExecutionInputV2 | NativeExecutionInputV3 | NativeExecutionInputV4 | NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7;
+export type NativeProviderConfigV9 = Exclude<NativeProviderConfigV5, { kind: "acpx" }>
+  | (Extract<NativeProviderConfigV5, { kind: "acpx" }> & { claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max" });
+export interface NativeExecutionInputV9 extends Omit<NativeExecutionInputV7, "schema" | "provider"> {
+  schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V9;
+  provider: NativeProviderConfigV9;
+}
+
+export type NativeProviderConfigV10 = Exclude<NativeProviderConfigV9, { kind: "acpx" }>
+  | (Extract<NativeProviderConfigV9, { kind: "acpx" }> & { grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh"; grokDisableWebSearch?: boolean });
+export interface NativeExecutionInputV10 extends Omit<NativeExecutionInputV9, "schema" | "provider"> {
+  schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V10;
+  provider: NativeProviderConfigV10;
+}
+
+export interface NativeExecutionInputV8 extends Omit<NativeExecutionInputV6, "schema" | "provider" | "session"> {
+  schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V8;
+  provider: { kind: "muse"; model: null; binding: MuseBindingSnapshot; bridgeRevision: "muse-v1" };
+  session: Omit<NativeExecutionInputV6["session"], "driverKind"> & { driverKind: "muse_external" };
+}
+
+export type NativeExecutionInput = NativeExecutionInputV1 | NativeExecutionInputV2 | NativeExecutionInputV3 | NativeExecutionInputV4 | NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10;
 
 /** The only task data that may enter provider-visible model input. */
 export interface NativeModelEnvelopeV1 {
@@ -377,10 +410,28 @@ function parseExternalNativeExecutionInput(input: Record<string, unknown>): Nati
     session: { ...common.session, driverKind } };
 }
 
+function parseMuseNativeExecutionInput(input: Record<string, unknown>): NativeExecutionInputV8 {
+  const provider = record(input.provider, "input.provider");
+  exactKeys(provider, ["kind", "model", "binding", "bridgeRevision"], "input.provider");
+  const session = record(input.session, "input.session");
+  if (provider.kind !== "muse" || provider.bridgeRevision !== "muse-v1" || session.driverKind !== "muse_external") {
+    throw new NativeExecutionInputError("Muse v8 requires the muse-v1 bridge and muse_external driver");
+  }
+  const common = parseExternalNativeExecutionInput({ ...input, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V6,
+    provider: { kind: "openai_dot", model: provider.model, binding: provider.binding },
+    session: { ...session, driverKind: "openai_dot_mcp" } });
+  return { ...common, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V8,
+    provider: { kind: "muse", model: null, binding: common.provider.binding, bridgeRevision: "muse-v1" },
+    session: { ...common.session, driverKind: "muse_external" } };
+}
+
 export function parseNativeExecutionInput(value: unknown): NativeExecutionInput {
   const input = record(value, "input");
+  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V8) return parseMuseNativeExecutionInput(input);
   if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6) return parseExternalNativeExecutionInput(input);
-  const isV7 = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7;
+  const isV10 = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10;
+  const isV9 = isV10 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9;
+  const isV7 = isV9 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7;
   const isV5 = isV7 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA;
   const isV4 = isV5 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V4;
   const isV3 = isV4 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V3;
@@ -439,8 +490,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   const contract = record(completionContract.contract, "input.completionContract.contract");
   exactKeys(contract, ["revision", "objective", "criteria"], "input.completionContract.contract");
 
-  if (task.workMode !== "standard" && (!isV2 || task.workMode !== "planning" && task.workMode !== "ask")) {
-    throw new NativeExecutionInputError("input.task.workMode must be standard, planning, or ask");
+  if (task.workMode !== "standard" && (!isV2 || task.workMode !== "planning" && task.workMode !== "ask" && task.workMode !== "skill_test")) {
+    throw new NativeExecutionInputError("input.task.workMode must be standard, planning, ask, or skill_test");
   }
   const executionMode: NativeExecutionMode = isV2 && input.executionMode === "plan" ? "plan" : "default";
   if (isV2 && input.executionMode !== "default" && input.executionMode !== "plan") {
@@ -533,9 +584,9 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       : provider.kind === "aws_agentcore"
         ? ["kind", "model", "agentCoreProfile", "maxEstimatedSessionCostUsd", "invocationLimits"]
       : provider.kind === "acpx"
-        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", "piThinkingLevel", ...(isV4 ? ["mode"] : [])]
+        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", "piThinkingLevel", ...(isV4 ? ["mode"] : []), ...(isV9 ? ["claudeEffort"] : []), ...(isV10 ? ["grokEffort", "grokDisableWebSearch"] : [])]
       : provider.kind === "codex" && isV4
-        ? ["kind", "model", "approvalPolicy", ...(isV5 ? ["reasoningEffort"] : [])]
+        ? ["kind", "model", "approvalPolicy", ...(isV5 ? ["reasoningEffort", "webSearch"] : [])]
         : provider.kind === "opencode" && isV4
           ? ["kind", "model", "permissionMode"]
           : ["kind", "model"],
@@ -556,7 +607,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   if (provider.kind === "opencode" && (providerModel === null || !providerModel.includes("/"))) {
     throw new NativeExecutionInputError("input.provider.model is required for opencode in provider/model form");
   }
-  let parsedProvider: NativeProviderConfig | NativeProviderConfigV5;
+  let parsedProvider: NativeProviderConfigV9 | NativeProviderConfig | NativeProviderConfigV5;
   if (provider.kind === "claude_managed") {
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for claude_managed");
@@ -662,8 +713,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for acpx");
     }
-    if (provider.agent !== "pi" && provider.agent !== "claude" && provider.agent !== "codex" && provider.agent !== "grok" && provider.agent !== "cursor" && provider.agent !== "copilot") {
-      throw new NativeExecutionInputError("input.provider.agent must be pi, claude, codex, grok, cursor, or copilot");
+    if (!isNativeAcpxAgent(provider.agent)) {
+      throw new NativeExecutionInputError("input.provider.agent must name a registered ACPX profile");
     }
     if (isV4) {
       if (provider.permissionMode !== "approve-all" && provider.permissionMode !== "approve-paperclip" && provider.permissionMode !== "approve-reads" && provider.permissionMode !== "deny-all") {
@@ -672,6 +723,9 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     } else if (provider.permissionPolicy !== "interactive") {
       throw new NativeExecutionInputError("input.provider.permissionPolicy must be interactive");
     }
+    const claudeEffort = resolveClaudeEffort(provider.agent, provider.claudeEffort);
+    const grokEffort = resolveGrokEffort(provider.agent, provider.grokEffort);
+    const grokDisableWebSearch = resolveGrokDisableWebSearch(provider.agent, provider.grokDisableWebSearch);
     const profile = record(provider.profile, "input.provider.profile");
     exactKeys(profile, [
       "driverKind",
@@ -710,6 +764,9 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
         ? { permissionMode: provider.permissionMode as NativeAcpxPermissionMode }
         : { permissionPolicy: "interactive" as const }),
       ...(provider.mode === undefined ? {} : { mode: provider.mode as string }),
+      ...(claudeEffort === undefined ? {} : { claudeEffort }),
+      ...(grokEffort === undefined ? {} : { grokEffort }),
+      ...(grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch }),
       ...(provider.piThinkingLevel === undefined ? {} : { piThinkingLevel: provider.piThinkingLevel as "off" | "low" | "high" | "max" }),
       profile: {
         driverKind: "acpx_runtime",
@@ -742,6 +799,9 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (isV5 && provider.reasoningEffort !== undefined && !["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(String(provider.reasoningEffort))) {
       throw new NativeExecutionInputError("input.provider.reasoningEffort is unsupported");
     }
+    if (isV5 && provider.webSearch !== undefined && provider.webSearch !== "disabled") {
+      throw new NativeExecutionInputError("input.provider.webSearch must be disabled when specified");
+    }
     parsedProvider = {
       kind: "codex",
       model: providerModel,
@@ -751,6 +811,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       ...(isV5 && provider.reasoningEffort !== undefined
         ? { reasoningEffort: text(provider.reasoningEffort, "input.provider.reasoningEffort") }
         : {}),
+      ...(isV5 && provider.webSearch === "disabled" ? { webSearch: "disabled" as const } : {}),
     };
   }
   if (!Array.isArray(contract.criteria) || contract.criteria.length === 0) {
@@ -814,7 +875,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       // Recovery must retain those runs, so derive the same bounded model
       // prompt from their task fields instead of making them unrecoverable.
       prompt: text(task.prompt ?? task.description ?? task.title, "input.task.prompt"),
-      workMode: task.workMode as "standard" | "planning" | "ask",
+      workMode: task.workMode as "standard" | "planning" | "ask" | "skill_test",
     },
     workspace: {
       cwd: text(workspace.cwd, "input.workspace.cwd"),
@@ -864,6 +925,16 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     provider: parsedProvider as NativeProviderConfigV4,
   };
   if (!isV5) return { ...withPermissions, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V4 };
+  if (isV10) return {
+    ...withPermissions, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V10, homeMode: input.homeMode as NativeHomeMode,
+    provider: parsedProvider as NativeProviderConfigV10,
+    ...(input.completionSources !== undefined ? { completionSources: parseCompletionSources(input.completionSources) } : {}),
+  };
+  if (isV9) return {
+    ...withPermissions, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V9, homeMode: input.homeMode as NativeHomeMode,
+    provider: parsedProvider as NativeProviderConfigV9,
+    ...(input.completionSources !== undefined ? { completionSources: parseCompletionSources(input.completionSources) } : {}),
+  };
   return {
     ...withPermissions,
     ...(isV7 ? { schema: NATIVE_EXECUTION_INPUT_SCHEMA_V7, homeMode: input.homeMode as NativeHomeMode } : { schema: NATIVE_EXECUTION_INPUT_SCHEMA }),
@@ -930,7 +1001,7 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
       interactionResponses: structuredClone(input.interactionResponses),
     };
   }
-  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7) {
+  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V8 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10) {
     const sourceBinding = input.completionSources;
     const references = sourceBinding?.contractRevision === input.completionContract.contract.revision
       && sourceBinding.promptSha256 === createHash("sha256").update(input.task.prompt).digest("hex")
@@ -949,7 +1020,7 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
       },
       executionMode: input.executionMode,
       planningContext: structuredClone(input.planningContext),
-      workspace: input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore" ? null : { cwd: input.workspace.cwd },
+      workspace: input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V8 || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore" ? null : { cwd: input.workspace.cwd },
       completionContract: {
         ...structuredClone(input.completionContract.contract),
         criteria: input.completionContract.contract.criteria.map((criterion) => {

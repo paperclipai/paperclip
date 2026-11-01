@@ -363,11 +363,10 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
       ...Sentry,
       init: (options: Record<string, unknown>) => Sentry.init({
         ...options,
-        transport: () => ({ send: async () => ({}), flush: async () => true }),
-        beforeSend: (event: Record<string, unknown>) => {
-          events.push(event);
-          return event;
-        },
+        transport: () => ({ send: async (envelope: [unknown, Array<[{ type: string }, Record<string, unknown>]>]) => {
+          for (const [header, payload] of envelope[1]) if (header.type === "event") events.push(payload);
+          return {};
+        }, flush: async () => true }),
       }),
     }));
     vi.resetModules();
@@ -386,6 +385,13 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
       exitCode: 1,
       signal: null,
     };
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example.com");
+    const { setSentryRunLinkResolver } = await import("../sentry-links.js");
+    setSentryRunLinkResolver(async ({ runId }) => ({
+      companyId: first.companyId, companyPrefix: "TEAM", agentId: first.agentId,
+      taskId: runId === first.runId ? first.taskId : "33333333-3333-4333-8333-333333333333",
+      taskIdentifier: runId === first.runId ? "TEAM-42" : "TEAM-43",
+    }));
     const second = {
       ...first,
       taskId: "33333333-3333-4333-8333-333333333333",
@@ -422,9 +428,14 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
       signal: "private-signal-payload",
     });
     captureException(new Error("unrelated filesystem error"));
+    captureException(new Error("run-related request error"), {
+      runId: first.runId, companyId: first.companyId, agentId: first.agentId,
+    });
+    const { AdapterStopTimeoutError } = await import("../services/adapter-stop-timeout.js");
+    captureException(new AdapterStopTimeoutError(60_000, { runId: first.runId }));
     await Sentry.flush(2000);
 
-    expect(events).toHaveLength(5);
+    expect(events).toHaveLength(7);
     const captured = (message: string) => events.find((event) =>
       (event.exception as { values: Array<{ value: string }> }).values.some((value) => value.value === message),
     );
@@ -445,6 +456,14 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
     expect(JSON.stringify(events)).not.toContain("private-signal-payload");
     const firstCapture = captured(first.errorMessage)!;
     expect(firstCapture).toHaveProperty("contexts.paperclip.runPath", `/api/heartbeat-runs/${first.runId}`);
+    expect(firstCapture).toMatchObject({ tags: {
+      task_url: "https://paperclip.example.com/TEAM/issues/TEAM-42",
+      run_url: `https://paperclip.example.com/TEAM/agents/${first.agentId}/runs/${first.runId}`,
+    }, contexts: { paperclip: { taskUrl: "https://paperclip.example.com/TEAM/issues/TEAM-42" } } });
+    expect(captured(second.errorMessage)).toHaveProperty("tags.task_url", "https://paperclip.example.com/TEAM/issues/TEAM-43");
+    expect(captured("run-related request error")).toHaveProperty("tags.task_url", "https://paperclip.example.com/TEAM/issues/TEAM-42");
+    expect(events.find(event => (event.tags as Record<string, unknown>)?.error_code === "adapter_stop_unconfirmed"))
+      .toHaveProperty("tags.task_url", "https://paperclip.example.com/TEAM/issues/TEAM-42");
     const exceptions = (firstCapture.exception as { values: Array<Record<string, unknown>> }).values;
     expect(exceptions).toHaveLength(2);
     expect(JSON.stringify(exceptions)).toContain("originalAdapter");
@@ -467,7 +486,7 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
         expect(event).not.toHaveProperty(`contexts.${context}`);
       }
       expect(event).not.toHaveProperty("fingerprint");
-      for (const tag of ["run_id", "task_id", "error_code", "agent_adapter", "run_status"]) {
+      for (const tag of ["run_id", "task_id", "error_code", "agent_adapter", "run_status", "task_url", "run_url", "task_identifier"]) {
         expect(event).not.toHaveProperty(`tags.${tag}`);
       }
     }

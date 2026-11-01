@@ -21,6 +21,14 @@ function customPropertyValue(name: string): string {
 }
 
 describe("task-chat composer styles", () => {
+  it("covers transcript text and blocks clicks across the Coordinator footer", () => {
+    const block = cssBlock('.coordinator-workspace [data-testid="task-chat-composer-dock"]');
+
+    expect(block).toContain("background: var(--background)");
+    expect(block).toContain("pointer-events: auto");
+    expect(block).not.toContain("border-radius");
+  });
+
   it("wraps long placeholders within the composer instead of clipping them", () => {
     const block = cssBlock(
       '.paperclip-task-chat-composer .paperclip-mdxeditor [class*="_placeholder_"]',

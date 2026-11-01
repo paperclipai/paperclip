@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
+import { isCloudManagedInstance } from "./cloud-instance.js";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { assertDistributionManifestCapabilities, readDistributionPluginCatalog, type DistributionPlugin } from "./distribution-plugin-catalog.js";
 
@@ -64,6 +65,11 @@ export interface BundledPluginCatalogEntry {
  */
 export const BUNDLED_PLUGIN_CATALOG: readonly BundledPluginCatalogEntry[] = [
   {
+    key: "boxd",
+    pluginKey: "paperclip.boxd-sandbox-provider",
+    relativePath: "sandbox-providers/boxd",
+  },
+  {
     key: "createos",
     pluginKey: "paperclip.createos-sandbox-provider",
     relativePath: "sandbox-providers/createos",
@@ -112,6 +118,13 @@ export const BUNDLED_PLUGIN_CATALOG: readonly BundledPluginCatalogEntry[] = [
  * auto-installed when its bundle is present, nothing else.
  */
 export const SELF_HOSTED_AUTO_INSTALL_KEYS: readonly string[] = ["kubernetes"];
+
+export function resolveManagedBundledPluginKeys(
+  keys: readonly string[] | null | undefined,
+  env: Record<string, string | undefined> = process.env,
+): readonly string[] | null {
+  return keys ?? (isCloudManagedInstance(env) ? [] : null);
+}
 
 export function resolveBundledCatalogRoot(
   env: Record<string, string | undefined>,
@@ -198,7 +211,7 @@ export function resolveBundledPluginInstalls(
         `bundled plugin "${key}" resolves to "${localPath}", outside the bundled catalog root "${opts.catalogRoot}"; refusing to start`,
       );
     }
-    resolved.push({ key: entry.key, pluginKey: entry.pluginKey, localPath });
+    resolved.push({ key: entry.key, pluginKey: entry.pluginKey, localPath: opts.enforceCatalogRoot ? canonicalize(localPath) : localPath });
   }
   return resolved;
 }
@@ -264,6 +277,7 @@ async function reconcileBundledPluginManifest(
   deps: BundledPluginProvisionerDeps,
   bundleManifestExists: (localPath: string) => boolean,
   verifiedManifest?: PaperclipPluginManifestV1,
+  preservePackagePath = false,
 ): Promise<"upgrade_pending" | undefined> {
   try {
     // Managed reinstalls take the install path instead; this branch means the
@@ -278,7 +292,7 @@ async function reconcileBundledPluginManifest(
       const approved = new Set(existing.manifestJson.capabilities ?? []);
       requiresApproval = bundleManifest.capabilities.some((capability) => !approved.has(capability));
     }
-    const rebindPackage = install.distribution && existing.packagePath !== install.localPath && existing.status !== "uninstalled";
+    const rebindPackage = !preservePackagePath && install.distribution && existing.packagePath !== install.localPath && existing.status !== "uninstalled";
     const refreshDistribution = install.distribution && !isDeepStrictEqual(bundleManifest, existing.manifestJson);
     if (bundleManifest.version === existing.version && !rebindPackage && !requiresApproval && !refreshDistribution) return;
     await deps.registry.update(existing.id, {
@@ -384,7 +398,7 @@ async function reenableErroredBundledPlugin(
 export async function ensureBundledPlugins(
   installs: readonly ResolvedBundledPlugin[],
   deps: BundledPluginProvisionerDeps,
-  opts: { reinstallUninstalled: boolean },
+  opts: { reinstallUninstalled: boolean; preservePackagePath?: boolean },
 ): Promise<void> {
   const bundleManifestExists = deps.bundleManifestExists ?? defaultBundleManifestExists;
   for (const install of installs) {
@@ -406,7 +420,7 @@ export async function ensureBundledPlugins(
         // existing install, because the auto-install below skips a present
         // plugin. Distribution entries also replace a legacy/npm package path
         // before loadAll resolves the worker. Configuration and status stay put.
-        const reconciledStatus = await reconcileBundledPluginManifest(existing, install, deps, bundleManifestExists, verifiedManifest);
+        const reconciledStatus = await reconcileBundledPluginManifest(existing, install, deps, bundleManifestExists, verifiedManifest, opts.preservePackagePath);
         if (reconciledStatus === "upgrade_pending") continue;
         if (existing.status === "error") {
           await reenableErroredBundledPlugin(existing, install, deps);

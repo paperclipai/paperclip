@@ -77,3 +77,17 @@ test("permanent registry errors fail immediately and transient errors exhaust a 
     assert.equal(calls, expectedCalls);
   }
 });
+
+test("optional lookup falls back only for a missing manifest", async () => {
+  for (const status of [401, 403, 404, 503]) {
+    let calls = 0;
+    const lookup = resolveStandardImageDigest("a".repeat(40), async url => {
+      if (url.includes("/token?")) return Response.json({ token: "public-fixture" });
+      calls++;
+      return new Response(null, { status });
+    }, { missing: "return-null", sleep: async () => {} });
+    if (status === 404) assert.equal(await lookup, null);
+    else await assert.rejects(lookup, /Registry lookup failed/);
+    assert.equal(calls, status === 503 ? 5 : 1);
+  }
+});

@@ -26,8 +26,16 @@ function permissionEvent(): PrpEvent {
 }
 
 describe("native permission projection", () => {
-  it("admits the existing privileged runtime card without a human-only question mutation", async () => {
+  it.each(["acpx", "codex"])("admits %s permissions without a human-only question mutation", async (provider) => {
     const event = permissionEvent();
+    if (provider === "codex") {
+      Object.assign(event.payload.request as object, {
+        details: { threadId: "provider-thread", turnId: "provider-turn", itemId: "provider-item",
+          serverName: "assigned", mode: "form", message: "Allow tool?",
+          _meta: { codex_approval_kind: "mcp_tool_call" }, requestedSchema: { type: "object", properties: {} } },
+        origin: { adapter: "codex-app-server", provider: "codex", method: "mcpServer/elicitation/request" },
+      });
+    }
     const original = structuredClone(event);
     const select = vi.fn();
     await expect(projectNativeRuntimeRequest({ db: { select } as unknown as Db, binding, event })).resolves.toBeNull();

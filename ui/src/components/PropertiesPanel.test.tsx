@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
+import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { PropertiesPanel } from "./PropertiesPanel";
+
+const mockSandbox = vi.hoisted(() => ({ enabled: false }));
+vi.mock("@/context/DesignSandboxContext", () => ({ useDesignSandbox: () => mockSandbox.enabled }));
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
@@ -51,15 +55,16 @@ describe("PropertiesPanel", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
   let originalInnerWidth: number;
+  let queryClient: QueryClient;
 
   async function renderPanel({
     panelVisible = true,
     taskDetailLayout = false,
-  }: { panelVisible?: boolean; taskDetailLayout?: boolean } = {}) {
-    mockPanelState.panelContent = <div data-testid="panel-content">content</div>;
+    content = <div data-testid="panel-content">content</div>,
+  }: { panelVisible?: boolean; taskDetailLayout?: boolean; content?: ReactNode } = {}) {
+    mockPanelState.panelContent = content;
     mockPanelState.panelVisible = panelVisible;
-    root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root ??= createRoot(container);
     flushSync(() => {
       root!.render(
         <QueryClientProvider client={queryClient}>
@@ -81,6 +86,48 @@ describe("PropertiesPanel", () => {
     mockSetPanelVisible.mockClear();
     mockClearPanelMaximizeRequest.mockClear();
     mockPanelState.panelMaximizeRequested = false;
+    mockSandbox.enabled = false;
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  });
+
+  describe.each([false, true])("late content with classic interface %s", (classic) => {
+    beforeEach(() => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableStreamlinedUi: true,
+        enableClassicTaskInterface: classic,
+      });
+    });
+
+    it("keeps the same zero-width host when content arrives and leaves", async () => {
+      await renderPanel({ content: null });
+      const aside = container.querySelector("aside")!;
+      expect(aside).not.toBeNull();
+      expect(aside.style.width).toBe("0px");
+      expect(aside.hasAttribute("inert")).toBe(true);
+      expect(aside.getAttribute("aria-hidden")).toBe("true");
+      expect(aside.classList.contains("properties-panel-docked")).toBe(false);
+
+      await renderPanel();
+      expect(container.querySelector("aside")).toBe(aside);
+      expect(aside.style.width).toBe(classic ? "320px" : "322px");
+      expect(aside.hasAttribute("inert")).toBe(false);
+      expect(aside.classList.contains("properties-panel-docked")).toBe(true);
+
+      await renderPanel({ content: null });
+      expect(container.querySelector("aside")).toBe(aside);
+      expect(aside.style.width).toBe("0px");
+      expect(aside.classList.contains("properties-panel-docked")).toBe(false);
+      expect(mockSetPanelVisible).not.toHaveBeenCalled();
+    });
+
+    it("honors a hidden-panel preference when late content arrives", async () => {
+      await renderPanel({ panelVisible: false, content: null });
+      await renderPanel({ panelVisible: false });
+      const aside = container.querySelector("aside")!;
+      expect(aside.style.width).toBe("0px");
+      expect(aside.hasAttribute("inert")).toBe(true);
+      expect(mockSetPanelVisible).not.toHaveBeenCalled();
+    });
   });
 
   afterEach(() => {
@@ -91,6 +138,7 @@ describe("PropertiesPanel", () => {
     container.remove();
     Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
     vi.clearAllMocks();
+    document.documentElement.style.removeProperty("--design-page-aside-width");
   });
 
   describe("classic task interface on (legacy panel)", () => {
@@ -128,6 +176,22 @@ describe("PropertiesPanel", () => {
       });
     });
 
+    it.each([false, true])("clamps late content to a narrowed viewport (task detail: %s)", async (taskDetailLayout) => {
+      const storageKey = taskDetailLayout
+        ? "taskChatRedesign.taskDetailPropertiesPaneWidth"
+        : "taskChatRedesign.propertiesPaneWidth";
+      window.localStorage.setItem(storageKey, "700");
+      await renderPanel({ taskDetailLayout, content: null });
+      const aside = container.querySelector("aside")!;
+
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1000 });
+      await renderPanel({ taskDetailLayout });
+
+      expect(container.querySelector("aside")).toBe(aside);
+      expect(aside.style.width).toBe("344px");
+      expect(window.localStorage.getItem(storageKey)).toBe("700");
+    });
+
     it("renders the Paper task-detail rail width with a drag grip and a maximize button", async () => {
       await renderPanel({ taskDetailLayout: true });
       const aside = container.querySelector("aside");
@@ -135,12 +199,34 @@ describe("PropertiesPanel", () => {
       expect(aside!.style.width).toBe("434px");
       expect(aside!.querySelector('[role="separator"][aria-label="Resize panel"]')).not.toBeNull();
       expect(container.querySelector('[aria-label="Maximize side panel"]')).not.toBeNull();
-      const inner = aside!.querySelector<HTMLDivElement>(":scope > div:not([role])");
+      const inner = aside!.querySelector<HTMLDivElement>(":scope > div:not([role]) > div");
       expect(inner!.style.width).toBe("434px");
       expect(inner!.style.minWidth).toBe("434px");
       expect(aside!.querySelector("header")?.className).toContain(
         "h-(--side-panel-header-height)",
       );
+    });
+
+    it("uses the proposal width token and resets only the sandbox's saved width", async () => {
+      mockSandbox.enabled = true;
+      document.documentElement.style.setProperty("--design-page-aside-width", "320px");
+      window.localStorage.setItem("taskChatRedesign.taskDetailPropertiesPaneWidth", "434");
+      window.localStorage.setItem("paperclip.design-proposal.properties-pane-width.task-detail", "480");
+      await renderPanel({ taskDetailLayout: true });
+      const aside = container.querySelector("aside")!;
+      expect(aside.style.width).toBe("480px");
+      const grip = aside.querySelector('[aria-label="Resize panel"]')!;
+      grip.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      await flushReact();
+      expect(aside.style.width).toBe("320px");
+      expect(window.localStorage.getItem("paperclip.design-proposal.properties-pane-width.task-detail")).toBeNull();
+      expect(window.localStorage.getItem("taskChatRedesign.taskDetailPropertiesPaneWidth")).toBe("434");
+
+      // Reset reads the current token, including subsequent foundation tuning.
+      document.documentElement.style.setProperty("--design-page-aside-width", "360px");
+      grip.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      await flushReact();
+      expect(aside.style.width).toBe("360px");
     });
 
     it("removes the left divider only while the sidebar is maximized", async () => {
@@ -150,11 +236,11 @@ describe("PropertiesPanel", () => {
         '[aria-label="Maximize side panel"]',
       )!;
 
-      expect(aside.className).toContain("border-l");
+      expect(aside.querySelector(":scope > div:not([role]) > div")!.className).toContain("border-l");
       maximize.click();
       await flushReact();
 
-      expect(aside.className).not.toContain("border-l");
+      expect(aside.querySelector(":scope > div:not([role]) > div")!.className).not.toContain("border-l");
       expect(container.querySelector("section")?.getAttribute("data-maximized")).toBe("true");
     });
 

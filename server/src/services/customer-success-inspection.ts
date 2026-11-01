@@ -19,7 +19,16 @@ import {
 } from "./workspace-file-resources.js";
 import { deriveBundleState } from "./agent-instructions.js";
 import { readInstructionBytes } from "./agent-instruction-files.js";
-import { getRunLogStore } from "./run-log-store.js";
+import { skillPackageStore } from "./skill-package-store.js";
+import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
+import { createRemoteWorkspaceFiles } from "./remote-workspace-files.js";
+import { createSavedWorkspaceLoader } from "./remote-workspaces.js";
+import { environmentRuntimeService } from "./environment-runtime.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+
+export interface CustomerSuccessInspectionOptions {
+  pluginWorkerManager?: PluginWorkerManager;
+}
 
 // This is a reviewed catalog of readers, not a proxy for existing GET routes.
 // Select credentials out of queries; never load encrypted identity records.
@@ -135,6 +144,7 @@ export async function readCustomerSuccessResource(
   db: Db,
   storage: StorageService,
   q: InspectionQuery,
+  options: CustomerSuccessInspectionOptions = {},
 ): Promise<unknown> {
   return db.transaction(
     async (rawTx) => {
@@ -281,7 +291,8 @@ export async function readCustomerSuccessResource(
         assertWorkspaceFilePathAllowed(relative);
         const versionId = q.versionId ?? skill.currentVersionId;
         // Installed version snapshots are authoritative. Reading must not invoke
-        // inventory reconciliation, checkout, fetching, adoption or materialization.
+        // inventory reconciliation or Git recovery. Stored packages are verified in
+        // an isolated scratch directory, outside the agent preparation lock.
         if (versionId) {
           const version = await ownRow(
             tx,
@@ -290,18 +301,15 @@ export async function readCustomerSuccessResource(
             String(versionId),
           );
           if (version.companySkillId !== skill.id) throw notFound("Skill version not found");
-          const files = version.fileInventory as Array<{
-            path: string;
-            content?: string;
-            encoding?: string;
-          }>;
-          const file = files.find((f) => f.path === relative);
+          const file = await skillPackageStore(tx, storage, db).readVersionFile(
+            version as typeof schema.companySkillVersions.$inferSelect, relative, false);
           if (file?.content !== undefined) {
             const bytes = Buffer.from(file.content, file.encoding === "base64" ? "base64" : "utf8");
             if (bytes.length > MAX_INSPECTION_BYTES)
               throw unprocessable("Skill snapshot exceeds inspection limit");
             return binary(bytes, bytes.length);
           }
+          return unavailable("skill_file_not_snapshotted");
         }
         if (relative === "SKILL.md")
           return binary(
@@ -312,9 +320,9 @@ export async function readCustomerSuccessResource(
       }
       if (q.operation === "runs.log") {
         const run = await ownRow(tx, schema.heartbeatRuns, q.companyId!, q.resourceId!);
-        if (!run.logRef || run.logStore !== "local_file") return unavailable("run_log_unavailable");
+        if (!run.logRef || !isRunLogStoreType(run.logStore)) return unavailable("run_log_unavailable");
         const result = await getRunLogStore().read(
-          { store: "local_file", logRef: String(run.logRef) },
+          { store: run.logStore, logRef: String(run.logRef) },
           {
             offset: q.range?.start ?? q.offset ?? 0,
             limitBytes: q.range ? q.range.end - q.range.start + 1 : 256000,
@@ -329,7 +337,11 @@ export async function readCustomerSuccessResource(
       if (q.operation.startsWith("files.")) {
         try {
           const issue = await ownRow(tx, schema.issues, q.companyId!, q.resourceId!);
-          const files = workspaceFileResourceService(tx);
+          const remoteFiles = createRemoteWorkspaceFiles(tx, {
+            environmentRuntime: environmentRuntimeService(tx, { pluginWorkerManager: options.pluginWorkerManager, readOnlyInspection: true }),
+            loadSavedWorkspace: createSavedWorkspaceLoader(tx, storage),
+          });
+          const files = workspaceFileResourceService(tx, undefined, { remoteFiles });
           const input = { path: q.path ?? "", ...q.context, limit: q.limit, offset: q.offset };
           const opts = {
             issue: issue as unknown as NonNullable<Parameters<typeof files.list>[2]>["issue"],
@@ -338,6 +350,31 @@ export async function readCustomerSuccessResource(
           if (q.operation === "files.read")
             return await files.readContent(q.resourceId!, input, opts);
           const resolved = await files.prepareDownload(q.resourceId!, input, opts);
+          if ("stream" in resolved) {
+            try {
+              const size = resolved.resource.byteSize;
+              if (size == null) return unavailable("file_size_unavailable");
+              if (size === 0 && !q.range) return binary(Buffer.alloc(0), 0);
+              const start = q.range?.start ?? 0;
+              const end = q.range?.end ?? size - 1;
+              if (start >= size || end >= size || end - start + 1 > MAX_INSPECTION_BYTES) {
+                throw unprocessable("Request a bounded byte range");
+              }
+              const chunks: Buffer[] = [];
+              let position = 0;
+              let received = 0;
+              for await (const chunk of resolved.stream) {
+                const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                const from = Math.max(0, start - position);
+                const to = Math.min(bytes.length, end + 1 - position);
+                if (to > from) { chunks.push(bytes.subarray(from, to)); received += to - from; }
+                position += bytes.length;
+                if (position > end) break;
+              }
+              if (received !== end - start + 1) return unavailable("file_changed_during_read");
+              return binary(Buffer.concat(chunks), size, start);
+            } finally { resolved.stream.destroy(); await resolved.cleanup(); }
+          }
           const file = await fs.open(resolved.realPath, constants.O_RDONLY | constants.O_NOFOLLOW);
           try {
             const stat = await file.stat();

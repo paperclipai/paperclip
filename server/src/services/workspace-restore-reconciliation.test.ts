@@ -80,6 +80,20 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await expect(validateExecutionReconciliation({ db, ...f })).resolves.toMatchObject({ id: f.sourceRunId });
   });
 
+  it("shows machine recovery progress without asking the task user to certify repair", async () => {
+    const f = await seed();
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
+    await db.update(issueRecoveryActions).set({ evidence: { ...action.evidence, workspaceRecovery: {
+      schema: "paperclip.workspace-recovery.v1", runId: f.sourceRunId, status: "recovering",
+      stage: "restoring_files", attempt: 1, requestIds: [],
+    } } }).where(eq(issueRecoveryActions.id, f.actionId));
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({
+      workspaceRepairRequired: true,
+      workspaceRecovery: { status: "recovering", stage: "restoring_files", canRetry: false },
+      nextAction: "Recovering saved work…",
+    });
+  });
+
   it("repairs retained files from a succeeded run without reopening or replaying its completed work", async () => {
     const f = await seed();
     await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null }).where(eq(heartbeatRuns.id, f.sourceRunId));

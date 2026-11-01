@@ -1,4 +1,5 @@
 import type { MatrixExecution } from "./types.js";
+import { supportsKimiLocalProviderFault } from "./kimi-local-provider-fault.js";
 
 /** Explicit-only profiles blocked until complete identity/auth/session/billing qualification. */
 export const PENDING_PROFILE_PREREQUISITES = {
@@ -17,7 +18,7 @@ export function assertRemoteNativeEvidencePrerequisites(
   environment: NodeJS.ProcessEnv,
 ): void {
   if (!executions.some(execution => execution.environment.id === "daytona"
-    && ["cursor_native", "pi_native", "pi_controls", "copilot_protection", "native_active_stop", "native_provider_loss"].includes(execution.task.flow))) return;
+    && ["cursor_native", "pi_native", "pi_controls", "copilot_protection", "native_active_stop", "native_provider_loss", "kimi_native_lifecycle"].includes(execution.task.flow))) return;
   const names = ["PAPERCLIP_E2E_DAYTONA_NODE_SHA256", "PAPERCLIP_E2E_DAYTONA_RUNNERD_SHA256"];
   const invalid = names.filter(name => !/^sha256:[a-f0-9]{64}$/u.test(environment[name] ?? ""));
   if (invalid.length) throw new Error(`Native Daytona evidence requires exact image executable digests: ${invalid.join(", ")}`);
@@ -25,7 +26,16 @@ export function assertRemoteNativeEvidencePrerequisites(
 
 export function assertRunnerE2EPrerequisites(
   executions: readonly MatrixExecution[],
+  host: Pick<NodeJS.Process, "platform" | "arch"> = process,
 ): void {
+  if (!supportsKimiLocalProviderFault(host) && executions.some(execution =>
+    execution.environment.id === "local" && execution.profile.qualificationCandidate === "kimi"
+    && execution.task.id === "native-write-provider-loss")) {
+    throw new Error(
+      `Local native Kimi provider-loss qualification requires darwin-arm64; selected host is ${host.platform}-${host.arch}. `
+      + "Use its qualified local host or the Linux Daytona cell. No provider credentials were loaded or sent, and no execution resources were acquired.",
+    );
+  }
   const blocked = [...new Set(
     executions
       .map((execution) => execution.profile.id)

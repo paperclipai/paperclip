@@ -44,6 +44,44 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
+  it("cannot complete an explicitly required quality review from claims or file evidence", () => {
+    expect(arbitrate({ completionClaimPolicyAccepted: true, requiredQualityReviewSatisfied: false }))
+      .toMatchObject({ toStatus: "in_progress", reasonCode: "required_quality_review_incomplete" });
+    expect(arbitrate({ completionClaimPolicyAccepted: false, requiredQualityReviewSatisfied: false }))
+      .toMatchObject({ toStatus: "in_progress", reasonCode: "required_quality_review_incomplete" });
+    expect(arbitrate({ requiredQualityReviewSatisfied: true })).toMatchObject({ toStatus: "done" });
+    expect(arbitrate()).toMatchObject({ toStatus: "done" });
+    expect(arbitrate({ requiredQualityReviewSatisfied: false, governanceGate: { kind: "interaction", id: "quality" } }))
+      .toMatchObject({ toStatus: "in_review", reasonCode: "governed_gate_pending" });
+  });
+  it("waits on a published external review without creating human attention", () => {
+    const wait = assessment({ reportedDisposition: "yielded",
+      continuation: { kind: "response_wake", summary: "Wait for the PR update", idempotencyKey: "pr-wait" } });
+    expect(arbitrate({ assessment: wait, publishedExternalReview: true, externalChatResponseWaitAuthorization: "authorized" }))
+      .toMatchObject({ toStatus: "in_review", reasonCode: "external_chat_response_waiting", effects: [] });
+    expect(arbitrate({ assessment: wait, publishedExternalReview: true, externalChatResponseWaitAuthorization: "revoked" }))
+      .toMatchObject({ statusAction: "preserve", effects: [] });
+    expect(arbitrate({ assessment: wait, publishedExternalReview: true,
+      externalChatResponseWaitAuthorization: "authorized", governanceGate: { kind: "approval", id: "access" } }))
+      .toMatchObject({ reasonCode: "governed_response_waiting", effects: [{ kind: "create_interaction" }] });
+    const monitor = { ...wait, continuation: { ...wait.continuation!, kind: "monitor" as const } };
+    expect(arbitrate({ assessment: monitor, publishedExternalReview: true, monitorWaitAuthorized: true }))
+      .toMatchObject({ toStatus: "in_review", reasonCode: "scheduled_monitor_waiting", effects: [{ kind: "release_checkout" }] });
+    expect(arbitrate({ assessment: monitor, publishedExternalReview: true }))
+      .toMatchObject({ statusAction: "preserve", reasonCode: "monitor_wait_authority_lost" });
+  });
+  it("preserves an open task after an accepted case handoff even if the departing model claims done", () => {
+    expect(arbitrate({ caseHandoffAuthorized: true })).toMatchObject({
+      statusAction: "preserve", toStatus: "in_progress", reasonCode: "case_handoff_waiting_for_release",
+      effects: [{ kind: "release_checkout" }],
+    });
+  });
+
+  it("keeps workspace repair ahead of an accepted case handoff", () => {
+    expect(arbitrate({ caseHandoffAuthorized: true, workspaceFinalizeStatus: "failed" })).toMatchObject({
+      statusAction: "preserve", reasonCode: "finalization_failed_claim_preserved",
+    });
+  });
   it("keeps a verified accepted Cursor plan passive without completing or replaying work", () => {
     const passive = assessment({ reportedDisposition: "yielded", objectiveSatisfied: false,
       allCriteriaSatisfied: false, hasBlockingRemainingWork: true,
@@ -532,7 +570,7 @@ describe("native status authority", () => {
       expect.objectContaining({
         statusAction: "blocked",
         toStatus: "blocked",
-        policyVersion: "phase6-v11",
+        policyVersion: "phase6-v13",
         reasonCode: "current_track_blocker_waiting",
         unblockDescriptor: {
           owner: "board",

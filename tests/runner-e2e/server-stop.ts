@@ -105,7 +105,25 @@ export function createRunnerE2EServerStopper(options: {
     return state.promise;
   };
   return Object.assign(stop, {
+    assertGracefulExit: (child: ChildProcess): void => {
+      const state = states.get(child);
+      if (!state?.finalComplete || state.escalationLogged || child.exitCode !== 0 || child.signalCode !== null) {
+        throw new Error("Controller did not exit gracefully; forced cleanup cannot qualify a rolling deployment");
+      }
+    },
     watch: (child: ChildProcess) => watch(child).owner.observe(),
+    crashForRestart: (child: ChildProcess): Promise<void> => {
+      if (process.platform === "win32") return Promise.reject(new Error("Owned crash restart requires process-group inspection"));
+      options.markExpectedStop(child);
+      const state = watch(child);
+      if (state.finalRequested || state.restartPromise) return Promise.reject(new Error("Restart already requested or final cleanup active"));
+      state.restartPromise = (async () => {
+        state.gracefulDeadline = Date.now() + options.forcedTimeoutMs;
+        await state.owner.signal("SIGKILL");
+        await stopOnce(child, state, "SIGKILL");
+      })();
+      return state.restartPromise;
+    },
     forRestart: (child: ChildProcess, identity: RestartRunnerIdentity): Promise<void> => {
       options.markExpectedStop(child);
       const state = watch(child);

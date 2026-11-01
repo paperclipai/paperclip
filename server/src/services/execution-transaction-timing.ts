@@ -3,7 +3,7 @@ import { beginRunPhase, measureRunPhase } from "./execution-preparation-timing.j
 
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
-export function measureRunTransaction<T>(db: Db, scope: "workspace" | "runtime_selection" | "response" | "connectors.slack.authority" | "connectors.slack.catalog", work: (tx: Transaction) => Promise<T>): Promise<T> {
+export function measureRunTransaction<T>(db: Db, scope: "workspace" | "runtime_selection" | "response" | "connectors.slack.authority" | "connectors.slack.catalog" | "connectors.github.refresh", work: (tx: Transaction) => Promise<T>): Promise<T> {
   return measureRunPhase(`${scope}.transaction`, async () => {
     const entry = beginRunPhase(`${scope}.transaction.entry`);
     let settle: ((failed?: boolean) => void) | undefined;

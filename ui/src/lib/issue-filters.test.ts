@@ -80,6 +80,18 @@ describe("issue filters", () => {
     expect(countActiveIssueFilters({ ...defaultIssueFilterState, showAgentCreatedTasks: true }, true)).toBe(1);
   });
 
+  it("selects only routine executions even when automatic tasks are hidden", () => {
+    const routine = makeIssue({ id: "routine", originKind: "routine_execution", createdByUserId: "person" });
+    const issues = [makeIssue({ id: "manual", createdByUserId: "person" }), routine,
+      makeIssue({ id: "agent", createdByAgentId: "agent" }), makeIssue({ id: "channel", originKind: "chat_channel" })];
+    const filters = { ...defaultIssueFilterState, routineTasksOnly: true };
+    expect(applyIssueFilters(issues, filters, null, true)).toEqual([routine]);
+    expect(applyIssueFilters(issues, { ...filters, statuses: ["done"] })).toEqual([]);
+    expect(countActiveIssueFilters(filters, true)).toBe(1);
+    expect(normalizeIssueFilterState({ routineTasksOnly: true }).routineTasksOnly).toBe(true);
+    expect(normalizeIssueFilterState({ routineTasksOnly: "true" }).routineTasksOnly).toBe(false);
+  });
+
   it("defaults legacy and invalid preferences to hidden without losing other filters", () => {
     expect(normalizeIssueFilterState({ hideRoutineExecutions: false, statuses: ["todo"] })).toMatchObject({ showAgentCreatedTasks: false, statuses: ["todo"] });
     expect(normalizeIssueFilterState({ showAgentCreatedTasks: "true" }).showAgentCreatedTasks).toBe(false);

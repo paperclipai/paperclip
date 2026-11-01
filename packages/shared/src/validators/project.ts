@@ -29,6 +29,7 @@ export const projectExecutionWorkspacePolicySchema = z
     allowIssueOverride: z.boolean().optional(),
     defaultProjectWorkspaceId: z.string().guid().optional().nullable(),
     environmentId: z.string().guid().optional().nullable(),
+    storageProviderPluginId: z.string().uuid().optional().nullable(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
     workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
     branchPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
