@@ -12,6 +12,98 @@ import { testAdapterEnvironmentSchema } from "@paperclipai/shared";
 import { createHttpLogger } from "../middleware/logger.js";
 
 describe("HTTP logger redaction", () => {
+  it.each([200, 400, 500])("keeps connector and observability credentials out of %i logs", async status => {
+    const canaries = ["configuration-canary", "signing-canary", "client-canary", "bot-canary", "oauth-code-canary", "provider-echo-canary"];
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(express.json());
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    app.use((req, res, next) => {
+      if (req.path.includes("observability")) res.setHeader("x-provider-echo", canaries[0]);
+      if (status === 500) { next(new Error(canaries.join(" "))); return; }
+      res.status(status).json({ ok: status === 200 });
+    });
+    app.use(errorHandler);
+    const responses = [];
+    for (const suffix of ["registration", "install", "resume"]) {
+      responses.push(await request(app).post(`/api/chat-endpoints/endpoint/slack/${suffix}`).send({
+        credentials: { configurationToken: canaries[0], signingSecret: canaries[1], clientSecret: canaries[2], botToken: canaries[3] },
+      }));
+    }
+    responses.push(await request(app).get("/api/chat-slack/oauth/callback").query({ code: canaries[4], error_description: canaries[5] }));
+    responses.push(await request(app).put("/api/companies/company/observability").query({ unexpected: canaries[2] }).set("x-diagnostic", canaries[3]).send({
+      credentials: { mode: "replace", apiKey: canaries[0] },
+      unexpected: canaries[1],
+    }));
+    responses.push(await request(app).put("/api/companies/company/observability").send({
+      credentials: { mode: "replace", headers: [{ name: "x-custom", value: canaries[1] }] },
+      unexpected: canaries[0],
+    }));
+    for (const response of responses) expect(response.status).toBe(status);
+    const output = JSON.stringify({ logs: chunks, responses: responses.map(response => response.body) });
+    for (const canary of canaries) expect(output).not.toContain(canary);
+  });
+  it.each([200,400,500])("keeps Muse OAuth and task payloads out of %i diagnostics",async status=>{
+    const chunks:string[]=[];
+    const stream=new Writable({write(chunk,_encoding,callback){chunks.push(chunk.toString());callback();}});
+    const app=express();app.use(createHttpLogger(pino({redact:[...HTTP_LOG_REDACT_PATHS]},stream)));app.use(express.json());
+    const canary="private-muse-payload-canary";
+    app.use((_req,res)=>{res.setHeader("Location","https://client.example/callback?code="+canary);res.setHeader("x-provider-prose",canary);if(status>=400)(res as any).err=new Error(canary);res.status(status).json({error:status>=400?"invalid_request":undefined});});
+    await request(app).get("/api/muse/v1/oauth/authorize").query({pairing_ticket:canary,state:canary}).set("Referer","https://client.example/?code="+canary);
+    for(const path of ["/api/muse/v1/oauth/token","/api/muse/v1/commands","/api/muse/unknown/"+canary])await request(app).post(path).set("Authorization","Bearer "+canary).send({code:canary,code_verifier:canary,refresh_token:canary,arguments:{description:canary}});
+    const output=chunks.join("");expect(output).not.toContain(canary);
+    const logs=chunks.flatMap(chunk=>chunk.trim().split("\n").filter(Boolean).map(line=>JSON.parse(line)));
+    expect(logs.length).toBe(4);for(const log of logs){expect(log.req.url).toBe("/api/muse/:protocol");if(status>=400)expect(log.reqBody).toBe("[REDACTED]");}
+  });
+
+  it("redacts inbound MCP OAuth codes, PKCE verifiers, refresh tokens and redirect credentials", async () => {
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(express.json());
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    app.post("/mcp/paperclip", (_req, res) => res.status(400).json({ error: "invalid_request" }));
+    app.post("/mcp/oauth/token", (_req, res) => res.status(400).json({ error: "invalid_grant" }));
+    app.get("/mcp/oauth/authorize", (_req, res) => res.redirect("https://client.example/callback?code=redirect-canary"));
+    await request(app).post("/mcp/oauth/token").send({ code: "code-canary", code_verifier: "pkce-canary", refresh_token: "refresh-canary" });
+    await request(app).get("/mcp/oauth/authorize?state=state-canary");
+    await request(app).post("/mcp/paperclip").send({ params: { delivery: { url: "https://receiver.example/callback-path-canary", secret: "whsec_callback-secret-canary" }, _meta: { "ai.paperclip/cloudAuthority": { token: "cloud-authority-canary" } } } });
+    expect(chunks.join("")).not.toMatch(/callback-path-canary|callback-secret-canary|cloud-authority-canary/);
+    expect(chunks.join("")).not.toMatch(/code-canary|pkce-canary|refresh-canary|redirect-canary|state-canary/);
+  });
+
+  it.each([[400, "/api/companies/company/agent-commentary"], [503, "/API/COMPANIES/company/AGENT-COMMENTARY"], [503, "http://localhost/api/companies/company/agent-commentary"]] as const)("keeps rejected commentary content out of %i diagnostics for %s", async (status, url) => {
+    const canary = "private-agent-commentary-canary";
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    app.use(express.json());
+    app.post("/api/companies/:companyId/agent-commentary", (_req, res) => {
+      if (status === 503) (res as any).err = new Error(`Driver echoed ${canary}`);
+      res.status(status).end();
+    });
+    const server = createServer(app);
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing test listener");
+      await new Promise<void>((resolve, reject) => {
+        const client = httpRequest({ hostname: "127.0.0.1", port: address.port, method: "POST", path: url, headers: { "content-type": "application/json" } }, res => {
+          expect(res.statusCode).toBe(status);
+          res.resume(); res.on("end", resolve);
+        });
+        client.on("error", reject);
+        client.end(JSON.stringify({ body: canary, unexpected: canary }));
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+    const output = chunks.join("");
+    expect(output).not.toContain(canary);
+    expect(JSON.parse(output.trim()).reqBody).toBe("[REDACTED]");
+  });
   it.each([
     { method: "POST", path: "/api/routine-triggers/public/private-url-canary/fire" },
     { method: "PUT", path: "/api/routine-triggers/public/private-url-canary/fire" },

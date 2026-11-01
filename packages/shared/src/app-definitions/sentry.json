@@ -26,7 +26,7 @@
       "whenToUse": "Use the provider-hosted connection for the quickest setup.",
       "defaults": {
         "serverUrl": "https://mcp.sentry.dev/mcp",
-        "discoveryUrl": "https://sentry.io/.well-known/oauth-authorization-server",
+        "discoveryUrl": "https://mcp.sentry.dev/.well-known/oauth-protected-resource/mcp",
         "scopesHint": [
           "org:read",
           "project:write",

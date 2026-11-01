@@ -4,8 +4,10 @@ import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 
 import {
   PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
+  PRP_BLOCK_TOOL_DESCRIPTION,
   PRP_BLOCK_TOOL_NAME,
   PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA,
+  PRP_COMPLETION_TOOL_DESCRIPTION,
   PRP_COMPLETION_TOOL_NAME,
 } from "../../contracts/completion-result.js";
 
@@ -42,6 +44,9 @@ export interface OpenCodeMcpBridge {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BODY_BYTES = 1_048_576;
+// Native app results/pages are capped at 500 KB before reaching this bridge.
+// Leave room for their delivery envelope, but never cut a completed JSON value.
+const MAX_RESULT_BYTES = 1_048_576;
 
 export function canonicalOpenCodeMcpToolName(name: string): string {
   const trimmed = name.trim();
@@ -106,7 +111,7 @@ function normalizeTools(
   const tools: OpenCodeMcpToolDefinition[] = [];
   const seen = new Set<string>();
   for (const raw of input) {
-    const name = typeof raw.name === "string" ? canonicalOpenCodeMcpToolName(raw.name) : "";
+    const name = typeof raw.name === "string" ? raw.name.trim() : "";
     if (!name || seen.has(name)) continue;
     const inputSchema = isRecord(raw.inputSchema) ? structuredClone(raw.inputSchema) : { type: "object" };
     tools.push({
@@ -117,8 +122,8 @@ function normalizeTools(
     seen.add(name);
   }
   if (includeTerminalTools) for (const terminal of [
-    { name: PRP_COMPLETION_TOOL_NAME, description: "Return the semantic completion result.", inputSchema: PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA },
-    { name: PRP_BLOCK_TOOL_NAME, description: "Return the semantic blocked result.", inputSchema: PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA },
+    { name: PRP_COMPLETION_TOOL_NAME, description: PRP_COMPLETION_TOOL_DESCRIPTION, inputSchema: PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA },
+    { name: PRP_BLOCK_TOOL_NAME, description: PRP_BLOCK_TOOL_DESCRIPTION, inputSchema: PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA },
   ]) {
     if (!seen.has(terminal.name)) tools.push(terminal);
   }
@@ -216,7 +221,12 @@ async function handleRequest(
   }
   const params = isRecord(message.params) ? message.params : {};
   const rawName = typeof params.name === "string" ? params.name : "";
-  const tool = canonicalOpenCodeMcpToolName(rawName);
+  // A declared operation may itself start with paperclip_. Preserve that
+  // authority identity before accepting an OpenCode transport prefix alias.
+  const exactName = rawName.trim();
+  const tool = context.admittedTools.some(entry => entry.name === exactName)
+    ? exactName
+    : canonicalOpenCodeMcpToolName(exactName);
   if (!context.admittedTools.some((entry) => entry.name === tool)) {
     writeRpc(response, id, { isError: true, content: [{ type: "text", text: "Unsupported tool." }] });
     return;
@@ -341,8 +351,39 @@ function safeError(error: unknown): string {
 }
 
 function safeJson(value: unknown): string {
-  const serialized = JSON.stringify(value);
-  return (serialized ?? "null").slice(0, 64 * 1024);
+  const tooLarge = () => new Error(
+    "Tool result delivery exceeded the 1 MiB MCP limit. The action may already have completed; do not repeat it. Reconcile its saved result or receipt instead.",
+  );
+  // Separator accounting is conservative (it includes the first entry too).
+  // Twice the output limit admits every result within the exact byte cap.
+  let budget = 2 * MAX_RESULT_BYTES;
+  let root = true;
+  const charge = (text: string) => {
+    // Check length before measuring UTF-8 so even a huge scalar is rejected
+    // without copying it. JSON escaping can expand the final value further.
+    if (text.length > budget) throw tooLarge();
+    budget -= Buffer.byteLength(text);
+    if (budget < 0) throw tooLarge();
+  };
+  const serialized = JSON.stringify(value, function (key, entry: unknown) {
+    const first = root;
+    root = false;
+    const scalar = entry === null || typeof entry !== "object";
+    const omitted = entry === undefined || typeof entry === "function" || typeof entry === "symbol";
+    if (omitted && !Array.isArray(this)) return entry;
+    if (!first) {
+      charge(",");
+      if (!Array.isArray(this)) { charge(key); charge('"":'); }
+    }
+    if (typeof entry === "string" || entry instanceof String) { charge(String(entry)); charge('""'); }
+    else if (!scalar) charge("{}");
+    else charge(omitted ? "null" : JSON.stringify(entry) ?? "null");
+    return entry;
+  }) ?? "null";
+  // The traversal budget bounds allocation even for many small fields. This
+  // exact check also accounts for quotes, control characters and UTF-8 bytes.
+  if (Buffer.byteLength(serialized) > MAX_RESULT_BYTES) throw tooLarge();
+  return serialized;
 }
 
 function canonicalJson(value: unknown): string {

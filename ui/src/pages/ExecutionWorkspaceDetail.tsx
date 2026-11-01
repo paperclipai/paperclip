@@ -4,6 +4,7 @@ import { Link, Navigate, useLocation, useNavigate, useParams } from "@/lib/route
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, RoutineListItem, WorkspaceOperation } from "@paperclipai/shared";
 import { Copy, ExternalLink, Loader2, Play, Repeat } from "lucide-react";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardAction } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -48,6 +49,7 @@ import {
   routineHasWorkspaceSpecificVariables,
   sortWorkspaceRoutinesByName,
 } from "../lib/workspace-routines";
+import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 
 type WorkspaceFormState = {
   name: string;
@@ -550,15 +552,13 @@ function ExecutionWorkspaceIssuesList({
 
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
-  const updateIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByExecutionWorkspace(companyId, workspace.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-      if (project?.id) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, project.id) });
-      }
-    },
+  const updateIssue = useUpdateIssueMutation({
+    companyId,
+    invalidateKeys: [
+      queryKeys.issues.listByExecutionWorkspace(companyId, workspace.id),
+      queryKeys.issues.list(companyId),
+      ...(project?.id ? [queryKeys.issues.listByProject(companyId, project.id)] : []),
+    ],
   });
 
   const projectOptions = useMemo(
@@ -800,11 +800,12 @@ export function ExecutionWorkspaceDetail() {
     queryFn: () => executionWorkspacesApi.get(workspaceId!),
     enabled: Boolean(workspaceId),
   });
+  const workspaceView = useQueryView(workspaceQuery);
   const workspace = workspaceQuery.data ?? null;
 
   const projectQuery = useQuery({
-    queryKey: workspace ? [...queryKeys.projects.detail(workspace.projectId), workspace.companyId] : ["projects", "detail", "__pending__"],
-    queryFn: () => projectsApi.get(workspace!.projectId, workspace!.companyId),
+    queryKey: workspace?.projectId ? [...queryKeys.projects.detail(workspace.projectId), workspace.companyId] : ["projects", "detail", "__pending__"],
+    queryFn: () => projectsApi.get(workspace!.projectId!, workspace!.companyId),
     enabled: Boolean(workspace?.projectId),
   });
   const project = projectQuery.data ?? null;
@@ -958,7 +959,7 @@ export function ExecutionWorkspaceDetail() {
       queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(result.workspace.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
+      if (result.workspace.projectId) queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
       setRuntimeActionErrorMessage(null);
       setRuntimeActionMessage(
         request.action === "run"
@@ -979,12 +980,18 @@ export function ExecutionWorkspaceDetail() {
     },
   });
 
-  if (workspaceQuery.isLoading) return <p className="text-sm text-muted-foreground">Loading workspace…</p>;
-  if (workspaceQuery.error) {
+  if (workspaceQuery.isLoading || workspaceView.kind === "reconnecting") {
+    return <p className="text-sm text-muted-foreground">Loading workspace…</p>;
+  }
+  if (workspaceView.kind === "error") {
     return (
-      <p className="text-sm text-destructive">
-        {workspaceQuery.error instanceof Error ? workspaceQuery.error.message : "Failed to load workspace"}
-      </p>
+      <QueryErrorState
+        size="page"
+        error={workspaceQuery.error}
+        action="load this workspace"
+        onRetry={workspaceView.retry}
+        retrying={workspaceView.isFetching}
+      />
     );
   }
   if (!workspace || !form || !initialState) return null;
@@ -1426,7 +1433,7 @@ export function ExecutionWorkspaceDetail() {
               </CardHeader>
               <CardContent>
               <DetailRow label="Project">
-                {project ? <Link to={`/projects/${projectRef}`} className="hover:underline">{project.name}</Link> : <MonoValue value={workspace.projectId} />}
+                {project ? <Link to={`/projects/${projectRef}`} className="hover:underline">{project.name}</Link> : <MonoValue value={workspace.projectId ?? "No project"} />}
               </DetailRow>
               <DetailRow label="Project workspace">
                 {project && linkedProjectWorkspace ? (

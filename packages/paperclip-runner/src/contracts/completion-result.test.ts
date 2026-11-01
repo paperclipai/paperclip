@@ -1,10 +1,14 @@
+import { normalizeLegacyPrpStructuredRunResult } from "../protocol/result-normalization.js";
 import Ajv2020 from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 import {
   PRP_BLOCK_RESULT_OUTPUT_SCHEMA,
   PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
+  PRP_BLOCK_TOOL_DESCRIPTION,
+  PRP_COMPLETION_RESULT_BRIDGE_INPUT_SCHEMA,
   PRP_COMPLETION_RESULT_OUTPUT_SCHEMA,
   PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA,
+  PRP_COMPLETION_TOOL_DESCRIPTION,
 } from "./completion-result.js";
 import { codexSemanticToolSpecs } from "../drivers/codex/codex-driver-values.js";
 
@@ -27,6 +31,49 @@ const baseResult = {
 describe("provider-neutral completion result schema", () => {
   const validate = new Ajv2020({ allErrors: true, strict: false })
     .compile(PRP_COMPLETION_RESULT_OUTPUT_SCHEMA);
+
+  it("accepts an explicit monitor wait across provider and normalized schemas", () => {
+    const report = { ...baseResult, reportedWorkDisposition: "yielded",
+      completionClaim: { ...baseResult.completionClaim, objectiveSatisfied: false,
+        remainingWork: [{ description: "Check the next run", blocksCompletion: true }] },
+      continuation: { kind: "monitor", summary: "Wait for persisted timer", idempotencyKey: "monitor-wait" } };
+    expect(validate(report)).toBe(true);
+    const providerValidate = new Ajv2020({ allErrors: true, strict: false }).compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
+    expect(providerValidate(report)).toBe(true);
+    expect(validate({ ...report, continuation: { ...report.continuation, kind: "invented" } })).toBe(false);
+  });
+  it("requires a persisted handoff identifier for a case handoff continuation", () => {
+    const report = { ...baseResult, reportedWorkDisposition: "yielded", continuation: {
+      kind: "case_handoff", handoffId: "accepted-handoff-id", summary: "Next phase", idempotencyKey: "handoff-1" } };
+    expect(validate(report)).toBe(true);
+    const providerValidate = new Ajv2020({ allErrors: true, strict: false }).compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
+    expect(providerValidate(report)).toBe(true);
+    const { handoffId: _omitted, ...withoutId } = report.continuation;
+    expect(validate({ ...report, continuation: withoutId })).toBe(false);
+    expect(providerValidate({ ...report, continuation: withoutId })).toBe(false);
+  });
+
+  it("lets the controller resolve an omitted provider continuation without weakening canonical results", () => {
+    const report = { ...baseResult, reportedWorkDisposition: "yielded" };
+    const providerValidate = new Ajv2020({ strict: false }).compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
+    expect(providerValidate(report)).toBe(true);
+    expect(validate(report)).toBe(false);
+  });
+
+  it("carries a normalized workspace continuation only on the internal bridge", () => {
+    const bridge = new Ajv2020({ strict: false }).compile(PRP_COMPLETION_RESULT_BRIDGE_INPUT_SCHEMA);
+    const provider = new Ajv2020({ strict: false }).compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
+    const report = { ...baseResult, reportedWorkDisposition: "yielded", continuation: {
+      kind: "same_agent", summary: "Use the staged task checkout.", idempotencyKey: "repository:task:receipt:run" } };
+    expect(bridge(report)).toBe(true);
+    expect(provider(report)).toBe(false);
+    for (const invalid of [
+      { ...report, reportedWorkDisposition: "done" },
+      { ...report, continuation: { ...report.continuation, kind: "retry" } },
+      { ...report, continuation: { ...report.continuation, idempotencyKey: "" } },
+    ]) expect(bridge(invalid)).toBe(false);
+    expect(bridge(baseResult)).toBe(true);
+  });
 
   it("allows done with no verification and no actionable attention", () => {
     expect(validate(structuredClone(baseResult))).toBe(true);
@@ -83,6 +130,11 @@ describe("provider-neutral completion result schema", () => {
     );
     expect(finish.inputSchema).toEqual(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
     expect(block.inputSchema).toEqual(PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA);
+    expect(finish.description).toBe(PRP_COMPLETION_TOOL_DESCRIPTION);
+    expect(finish.description).toContain("saved repository-preparation continuation");
+    expect(finish.inputSchema.properties.continuation.description).toContain("repository-preparation continuation");
+    expect(block.description).toContain("Routine repository preparation is not a blocker");
+    expect(block.description).toBe(PRP_BLOCK_TOOL_DESCRIPTION);
   });
 
   it("allows only a response-wake continuation when completion explicitly yields", () => {
@@ -131,6 +183,19 @@ describe("provider-neutral completion result schema", () => {
     expect(validate(response)).toBe(false);
   });
 
+  it.each(["done", "needs_review", "completed"])("accepts explicit no-continuation at the provider boundary for %s", (disposition) => {
+    const providerValidate = new Ajv2020({ allErrors: true, strict: false })
+      .compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
+    const response = {
+      ...structuredClone(baseResult),
+      reportedWorkDisposition: disposition,
+      continuation: null,
+    };
+    expect(providerValidate(response)).toBe(true);
+    // The canonical output remains strict; normalization removes only null.
+    expect(validate(response)).toBe(false);
+  });
+
   it("exposes concrete completion fields while retaining response-wake validation", () => {
     // The live Codex code-mode renderer reduced a conditional-only root allOf
     // to `args: unknown`. Keep this tool object-shaped for provider discovery.
@@ -153,7 +218,8 @@ describe("provider-neutral completion result schema", () => {
       },
     };
     expect(providerValidate(yielded)).toBe(true);
-    expect(providerValidate({ ...yielded, continuation: undefined })).toBe(false);
+    expect(providerValidate({ ...yielded, continuation: undefined })).toBe(true);
+    expect(providerValidate({ ...yielded, continuation: null })).toBe(true);
     expect(providerValidate({ ...yielded, continuation: { kind: "response_wake" } })).toBe(false);
     expect(providerValidate({
       ...yielded, continuation: { ...yielded.continuation, kind: "same_agent" },
@@ -170,6 +236,18 @@ describe("provider-neutral completion result schema", () => {
     providerResult.completionClaim.criteria[0]!.status = "passed";
     providerResult.verification = [{ commandOrCheck: "model check", status: "pass" } as never];
     expect(providerValidate(providerResult)).toBe(true);
+  });
+
+  it.each([undefined, null, "", "   ", "artifact:verified-result"])("normalizes optional verification artifact metadata (%s)", (artifactRef) => {
+    const providerValidate = new Ajv2020({ strict: false }).compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
+    const input = { ...structuredClone(baseResult), verification: [{ commandOrCheck: "Check answer", status: "passed", artifactRef }] };
+    expect(providerValidate(input)).toBe(true);
+    const normalized = normalizeLegacyPrpStructuredRunResult(input);
+    expect(validate(normalized)).toBe(true);
+    expect(normalized).toMatchObject({ verification: [{ commandOrCheck: "Check answer", status: "passed" }] });
+    if (artifactRef?.trim()) expect(normalized).toHaveProperty("verification.0.artifactRef", artifactRef);
+    else expect(normalized).not.toHaveProperty("verification.0.artifactRef");
+    expect(providerValidate({ ...input, verification: [{ ...input.verification[0], artifactRef: 42 }] })).toBe(false);
   });
 
   it("requires a reason code for verification that was not run", () => {

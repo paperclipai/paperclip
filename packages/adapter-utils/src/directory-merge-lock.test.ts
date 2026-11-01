@@ -44,7 +44,9 @@ describe("directory merge lock process lifetime", () => {
   }
 
   async function holder(target: string, env: NodeJS.ProcessEnv) {
-    const child = spawn(process.execPath, ["--import", loader, "--eval", `
+    // Import the loader into the holder itself. The tsx CLI starts another
+    // process, so killing that launcher need not retire the SQLite lock holder.
+    const child = spawn(process.execPath, ["--import", loader, "--input-type=module", "--eval", `
       import { withDirectoryMergeLock } from ${JSON.stringify(module)};
       withDirectoryMergeLock(${JSON.stringify(target)}, async () => {
         process.send?.("locked");
@@ -117,7 +119,7 @@ describe("directory merge lock process lifetime", () => {
       await expect(withDirectoryMergeLock(target, async () => undefined, env, undefined, TIMEOUT_ASSERTION_WAIT_MS)).rejects.toMatchObject({ code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE });
       // A same-process test alone cannot prove that the OS lock survived: on
       // POSIX, closing an unmanaged descriptor can drop process-wide locks.
-      const result = await promisify(execFile)(process.execPath, ["--import", loader, "--eval", `
+      const result = await promisify(execFile)(process.execPath, ["--import", loader, "--input-type=module", "--eval", `
         import { withDirectoryMergeLock, WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from ${JSON.stringify(module)};
         withDirectoryMergeLock(${JSON.stringify(target)}, async () => "entered", undefined, undefined, ${TIMEOUT_ASSERTION_WAIT_MS})
           .then(() => { console.error("Entered a live holder's lock"); process.exit(1); })

@@ -1,4 +1,14 @@
+import { getWorkspaceAction } from "../protocol-actions/get-workspace.js";
+import { handoffCaseAction } from "../protocol-actions/handoff-case.js";
+import { createCaseAction, readCaseAction, updateCaseAction } from "../protocol-actions/case-data.js";
+import { createWorkflowAction, listWorkflowsAction, readWorkflowAction, updateWorkflowAction } from "../protocol-actions/workflows.js";
+import { listWorkspacesAction } from "../protocol-actions/list-workspaces.js";
+import { selectWorkspaceAction } from "../protocol-actions/select-workspace.js";
+import { prepareRepositoryAction } from "../protocol-actions/prepare-repository.js";
+import { setTaskMonitorInputSchema } from "../protocol-actions/set-task-monitor.js";
+import { listProjectsDescription, listProjectsInputSchema } from "../protocol-actions/list-projects.js";
 import { setTaskTitleAction } from "../protocol-actions/set-task-title.js";
+import { sendChatMessageAction } from "../protocol-actions/send-chat-message.js";
 import { reassignTaskAction } from "../protocol-actions/reassign-task.js";
 import type {
   PaperclipJsonSchema,
@@ -183,6 +193,12 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     outputSchema: operationReceipt,
   }),
   descriptor({
+    operationId: "send_chat_message", title: "Send message to your chat",
+    description: sendChatMessageAction.documentation.description, effect: "write",
+    allowedModes: ["standard"], inputSchema: sendChatMessageAction.live.descriptor.inputSchema,
+    outputSchema: openObject,
+  }),
+  descriptor({
     operationId: "answer_status_question",
     title: "Answer status question",
     description:
@@ -238,6 +254,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
         title: text("Interaction card title.", 300),
         prompt: text("Question or decision prompt.", 10_000),
         payload: openObject,
+        resolverPolicy: { const: "human_only", description: "Optionally require an authenticated human response." },
         targetRevisionId: nullableText(
           "Optional bound document revision.",
           240,
@@ -469,13 +486,23 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     ),
     outputSchema: operationReceipt,
   }),
+  descriptor({ ...handoffCaseAction.live.descriptor, placement: "optional", effect: "write" }),
+  ...[createCaseAction, readCaseAction, updateCaseAction, createWorkflowAction, listWorkflowsAction, readWorkflowAction, updateWorkflowAction].map(action => descriptor({
+    ...action.live.descriptor,
+    placement: "optional",
+    effect: action.canonical.sideEffectClass === "read" ? "read" : "write",
+  })),
+  descriptor({ ...getWorkspaceAction.live.descriptor, placement: "optional" }),
+  descriptor({ ...listWorkspacesAction.live.descriptor, placement: "optional" }),
+  descriptor({ ...selectWorkspaceAction.live.descriptor, placement: "optional" }),
+  descriptor({ ...prepareRepositoryAction.live.descriptor, placement: "optional" }),
   descriptor({
     operationId: "list_projects",
     title: "List projects",
     requiredClaims: ["discovery:projects:read"],
-    description: "Inspect available company projects before selecting a project for new work.",
+    description: listProjectsDescription,
     placement: "optional",
-    inputSchema: object({}),
+    inputSchema: listProjectsInputSchema,
   }),
   descriptor({
     operationId: "list_project_repositories",
@@ -518,7 +545,12 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
         projectId: nullableText("Project identifier for the new task."),
         initialPlan: nullableText("Remaining execution steps to persist as the task plan. Exclude completed planning, approval, and handoff steps; cite the source plan revision and approval. A copied plan is not a new approval gate."),
         description: nullableText("Child task description."),
-        assigneeActorId: nullableText("Optional actor assignee.", 200),
+        requiredQualityReview: object({
+          version: { const: 1 },
+          deliverables: { type: "array", minItems: 1, maxItems: 10, items: object({ key: text("Stable output key, e.g. copy or visual.", 80), label: text("Human-readable output name.", 120) }, ["key", "label"]) },
+        }, ["version", "deliverables"]),
+        assigneeActorId: nullableText("Optional actor assignee. Mutually exclusive with assigneeUserId.", 200),
+        assigneeUserId: nullableText("Company person ID from list_people. Mutually exclusive with assigneeActorId.", 200),
         status: { enum: ["backlog", "todo"], description: "Initial status. Use backlog to save work without execution. Defaults to todo (blocked when dependencies are unresolved)." },
         priority: { enum: ["critical", "high", "medium", "low"] },
         blockedByTaskIds: stringArray("Initial blocker task identifiers."),
@@ -581,6 +613,12 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
       ["idempotencyKey", "approvalId", "body"],
     ),
     outputSchema: operationReceipt,
+  }),
+  descriptor({
+    operationId: "set_task_monitor", title: "Set task monitor",
+    description: "Schedule, replace or clear a persisted one-shot monitor on an owned task.",
+    placement: "optional", effect: "write", requiredClaims: [], allowedModes: ["standard"],
+    inputSchema: setTaskMonitorInputSchema, outputSchema: openObject,
   }),
   descriptor({
     operationId: "schedule_wake",

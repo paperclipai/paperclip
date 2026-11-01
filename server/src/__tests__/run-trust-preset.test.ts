@@ -53,25 +53,25 @@ it("dispatch retains raw trust before workspace and broker setup", () => {
     "utf8",
   );
   const start = heartbeat.indexOf(
-    "const retainedTrust = await resolveAndRetainRunTrustPreset",
+    "resolveAndRetainRunTrustPreset(db, {",
   );
   const end = heartbeat.indexOf(
-    "const config = parseObject(agent.adapterConfig);",
-    start,
+    "resolveExecutionWorkspaceMode({",
   );
-  const dispatch = heartbeat.slice(start, end);
   expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const dispatch = heartbeat.slice(start, end);
   expect(dispatch).toContain(
-    "executionWorkspacePolicy: projectContext.executionWorkspacePolicy",
+    "executionWorkspacePolicy: taskProjectContext.executionWorkspacePolicy",
+  );
+  expect(dispatch).toContain(
+    "executionWorkspacePolicy: workspaceProjectContext.executionWorkspacePolicy",
   );
   expect(dispatch).toContain(
     "context.executionPolicy = retainedTrust.executionPolicy",
   );
   expect(start).toBeLessThan(
-    heartbeat.indexOf("const resolvedExecutionWorkspaceMode =", start),
-  );
-  expect(start).toBeLessThan(
-    heartbeat.indexOf('scope: "github_credentials"', start),
+    heartbeat.indexOf('scope: "github_credentials"'),
   );
 });
 

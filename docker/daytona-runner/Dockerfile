@@ -9,11 +9,17 @@ WORKDIR /workspace/packages/paperclip-runner/runner
 COPY packages/paperclip-runner/runner/Cargo.toml packages/paperclip-runner/runner/Cargo.lock ./
 COPY packages/paperclip-runner/runner/crates ./crates
 COPY packages/paperclip-runner/protocol ../protocol
+COPY packages/paperclip-runner/acpx-profiles.json packages/paperclip-runner/antigravity-distributions.json ../
 RUN cargo build --locked --release -j 2 -p paperclip-runner-core --bin paperclip-runnerd \
     && strip /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd
 
 FROM node:24.21.0-bookworm@sha256:5a750d3be5e5c80275f8c9a5367c3aed99c2875656590c8d0701c7ee687f5f0a AS provider-pack-build
 RUN corepack enable && corepack prepare pnpm@11.27.0 --activate
+# Bound build-time memory on hosts that expose many CPUs but little RAM.
+# These settings belong only to this build stage, never the runtime image.
+ENV NODE_OPTIONS=--max-old-space-size=1024 \
+    npm_config_child_concurrency=1 \
+    npm_config_network_concurrency=4
 WORKDIR /workspace
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
 COPY patches ./patches
@@ -28,15 +34,19 @@ COPY cli/package.json ./cli/package.json
 # The complete resolved lock (including transitive integrity hashes) is reviewed.
 # Reject registry-time drift BEFORE installing packages or running lifecycle code.
 # Refresh this digest together with source/provider dependency changes.
-ARG PAPERCLIP_RUNNER_LOCK_SHA256=2c46a68811ba1d504a41b6f4d3f642bc93f4a1c615097754c9c6486881dba8e6
-RUN printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
+ARG PAPERCLIP_RUNNER_LOCK_SHA256=342a01e487a68d0ad9cb8d8852a0ffed4dd7b0fa58e2e047d1064e9340fe6f57
+# pnpm 9 subtracts PNPM_WORKERS from available CPUs; it is not a worker count.
+# Subtract all available CPUs to select its minimum (one tarball worker).
+RUN export PNPM_WORKERS="$(node -p 'require("node:os").availableParallelism()')" \
+    && printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
     && sha256sum -c /tmp/provider-lock.sha256 \
     && pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION
 # Optional qualification assets; this never promotes candidate profiles.
 ARG PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS=
 RUN test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
-RUN pnpm --filter @paperclipai/paperclip-runner build:typescript \
+RUN export PNPM_WORKERS="$(node -p 'require("node:os").availableParallelism()')" \
+    && pnpm --filter @paperclipai/paperclip-runner build:typescript \
     && PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_RUNNER_SOURCE_REVISION}" \
       node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
         "--candidate-providers=${PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS}" \
@@ -56,9 +66,9 @@ ENV PATH=${PAPERCLIP_RUNNER_PROVIDER_PACK_ROOT}/node_modules/.bin:/usr/local/sha
 # Never add a second CLI version to work around a runner compatibility pin.
 RUN npm uninstall -g @anthropic-ai/claude-code @openai/codex opencode-ai \
     && npm install -g \
-      @xai-official/grok@1.0.41 \
-      @google/gemini-cli@0.60.0 \
-      @moonshot-ai/kimi-code@2.0.2 \
+      @xai-official/grok@1.0.70 \
+      @google/gemini-cli@0.65.0 \
+      @moonshot-ai/kimi-code@2.3.3 \
     && npm cache clean --force
 
 # Hermes requires Python >=3.11,<3.14; the image's default Python is newer.
@@ -69,8 +79,8 @@ RUN /usr/bin/python3 -m venv /opt/hermes \
     && /opt/hermes/bin/pip install --no-cache-dir hermes-agent==0.19.0 \
     && ln -sf /opt/hermes/bin/hermes /usr/local/bin/hermes
 
-ARG CURSOR_VERSION=2026.09.18-9a7762b
-ARG CURSOR_SHA256_AMD64=b1308f5a2fc05458b9d8966752986bb23a971bbcc67c842c1df94c4b8132bad9
+ARG CURSOR_VERSION=2026.10.22-27dcf5f
+ARG CURSOR_SHA256_AMD64=85296944e4600a83c4b764f578d1502bf9c416db200d33a593e8f3ecabfdc294
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
     [ "$arch" = "amd64" ] || { echo "FATAL: cursor pin only covers amd64, not $arch" >&2; exit 1; }; \
@@ -84,8 +94,8 @@ RUN set -eu; \
     ln -sf /usr/local/bin/cursor-agent /usr/local/bin/agent; \
     chmod -R a+rX /opt/cursor
 
-ARG GH_VERSION=2.101.0
-ARG GH_SHA256_AMD64=9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8
+ARG GH_VERSION=2.103.3
+ARG GH_SHA256_AMD64=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
     [ "$arch" = "amd64" ] || { echo "FATAL: gh pin only covers amd64, not $arch" >&2; exit 1; }; \
@@ -101,7 +111,7 @@ COPY packages/paperclip-runner/src/providers/grok/platforms.json /tmp/grok-provi
 RUN node /tmp/grok-provision/scripts/provision-grok.mjs /opt/paperclip/providers/grok/1.0.13/grok && rm -rf /tmp/grok-provision
 
 COPY --from=runnerd-build /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd /usr/local/bin/paperclip-runnerd
-COPY --from=provider-pack-build /provider-pack /opt/paperclip-runner/provider-pack
+COPY --chown=0:0 --from=provider-pack-build /provider-pack /opt/paperclip-runner/provider-pack
 RUN set -eu; for cli in codex claude opencode; do \
       printf '#!/bin/sh\nexec /opt/paperclip-runner/provider-pack/node_modules/.bin/%s "$@"\n' "$cli" > "/usr/local/bin/$cli"; \
       chmod 755 "/usr/local/bin/$cli"; \
@@ -139,9 +149,9 @@ RUN /bin/sh -lc 'set -eu; \
     for command_name in acpx claude-agent-acp codex-acp; do \
       command -v "$command_name" >/dev/null || { echo "FATAL: $command_name not on PATH for daytona user" >&2; exit 1; }; \
     done; \
-    test "$(codex --version)" = "codex-cli 0.156.0"; \
-    test "$(claude --version)" = "2.1.280 (Claude Code)"; \
-    test "$(opencode --version)" = "1.18.32"; \
+    test "$(codex --version)" = "codex-cli 0.160.0"; \
+    test "$(claude --version)" = "2.1.286 (Claude Code)"; \
+    test "$(opencode --version)" = "1.18.34"; \
     test "$(acpx --version)" = "0.13.1"; \
     test "$(claude-agent-acp --version)" = "0.73.0"; \
     test "$(codex-acp --version)" = "@agentclientprotocol/codex-acp 1.6.2"'

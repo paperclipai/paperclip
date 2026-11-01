@@ -1,15 +1,44 @@
+import { isOpenRouterUrl, openRouterClaudeHeaders } from "../openrouter-attribution.js";
+import { sanitizeAntigravityEnvironment } from "./antigravity-environment.js";
+import { providerObservabilityEnvironment } from "../agent-observability.js";
+import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, configuredEnvironmentKeys } from "../../configured-environment.js";
+import { PI_CREDENTIAL_NAMES, PI_GENERAL_IAM_CREDENTIAL_NAMES, piCredentialNames } from "./pi-provider-config.js";
+import { PRECONFIGURED_HOME_KEYS, usesPreconfiguredHome } from "../preconfigured-home.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 
 export const ACPX_CREDENTIAL_BINDING_ENV = "PAPERCLIP_ACPX_CREDENTIAL_BINDING";
 export const ACPX_CREDENTIAL_NAMES: Readonly<Record<QualifiedAcpxAgent, readonly string[]>> = {
+  antigravity: ["GEMINI_API_KEY", "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET"],
   grok: ["XAI_API_KEY"],
-  pi: ["OPENROUTER_API_KEY"],
+  kimi: ["KIMI_API_KEY"],
+  pi: PI_CREDENTIAL_NAMES,
   cursor: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
   copilot: ["COPILOT_GITHUB_TOKEN"],
-  claude: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
-  codex: ["OPENAI_API_KEY", "CODEX_API_KEY"],
+  claude: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "AWS_BEARER_TOKEN_BEDROCK"],
+  codex: ["OPENAI_API_KEY", "CODEX_API_KEY", "PAPERCLIP_AI_PROVIDER_KEY"],
 };
-const isCandidate = (agent: QualifiedAcpxAgent) => agent === "pi" || agent === "cursor" || agent === "copilot";
+export const CLAUDE_ROUTING_ENV_KEYS = ["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_USE_BEDROCK", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_EC2_METADATA_DISABLED", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"] as const;
+
+/** Keep the task projection consistent when excluding general IAM from Pi. */
+function removePiIamCredentials(environment: NodeJS.ProcessEnv): void {
+  const names = configuredEnvironmentKeys(environment);
+  for (const name of PI_GENERAL_IAM_CREDENTIAL_NAMES) delete environment[name];
+  if (environment[CONFIGURED_ENVIRONMENT_KEYS] !== undefined) {
+    environment[CONFIGURED_ENVIRONMENT_KEYS] = JSON.stringify(names.filter(name => !PI_GENERAL_IAM_CREDENTIAL_NAMES.includes(name)));
+  }
+}
+
+function removeKimiRuntimeOverrides(environment: NodeJS.ProcessEnv): void {
+  const isOverride = (name: string) => /^KIMI_MODEL_/.test(name.toUpperCase())
+    || ["KIMI_SECONDARY_MODEL", "KIMI_CODE_HOME"].includes(name.toUpperCase());
+  const names = configuredEnvironmentKeys(environment);
+  for (const name of Object.keys(environment)) if (isOverride(name)) delete environment[name];
+  if (environment[CONFIGURED_ENVIRONMENT_KEYS] !== undefined) {
+    environment[CONFIGURED_ENVIRONMENT_KEYS] = JSON.stringify(names.filter(name => !isOverride(name)));
+  }
+}
+
+const isCandidate = (agent: QualifiedAcpxAgent) => agent === "pi" || agent === "cursor" || agent === "copilot" || agent === "kimi" || agent === "antigravity";
 
 /** Mint only at the controller's explicit task-environment boundary, never by copying a marker. */
 export function createAcpxCredentialBinding(
@@ -20,7 +49,7 @@ export function createAcpxCredentialBinding(
   if (!isCandidate(agent)) return undefined;
   return JSON.stringify({
     schema: "paperclip.acpx_credential_binding.v1", agent, sessionId,
-    names: ACPX_CREDENTIAL_NAMES[agent].filter(name => environment !== undefined
+    names: (agent === "pi" ? piCredentialNames(environment) : ACPX_CREDENTIAL_NAMES[agent]).filter(name => environment !== undefined
       && Object.hasOwn(environment, name) && Boolean(environment[name]?.trim())),
   });
 }
@@ -34,6 +63,7 @@ export function createAcpxSidecarHostEnvironment(
   if (!isCandidate(agent)) return environment;
   const invalid = () => new Error("Candidate ACPX credentials require an explicit matching session binding");
   const raw = environment[ACPX_CREDENTIAL_BINDING_ENV];
+  const credentialNames = agent === "pi" ? piCredentialNames(environment) : ACPX_CREDENTIAL_NAMES[agent];
   let names: string[] = [];
   if (raw !== undefined) {
     if (Buffer.byteLength(raw) > 4_096) throw invalid();
@@ -44,14 +74,14 @@ export function createAcpxSidecarHostEnvironment(
     if (Object.keys(value).sort().join(",") !== "agent,names,schema,sessionId"
       || value.schema !== "paperclip.acpx_credential_binding.v1" || value.agent !== agent
       || value.sessionId !== sessionId || !Array.isArray(value.names)
-      || value.names.length > ACPX_CREDENTIAL_NAMES[agent].length
-      || value.names.some(name => typeof name !== "string" || !ACPX_CREDENTIAL_NAMES[agent].includes(name))
+      || value.names.length > credentialNames.length
+      || value.names.some(name => typeof name !== "string" || !credentialNames.includes(name))
       || new Set(value.names).size !== value.names.length) throw invalid();
     names = value.names as string[];
   }
   const result = { ...environment };
   delete result[ACPX_CREDENTIAL_BINDING_ENV];
-  for (const name of ACPX_CREDENTIAL_NAMES[agent]) {
+  for (const name of credentialNames) {
     if (names.includes(name)) {
       if (!Object.hasOwn(environment, name) || !environment[name]?.trim()) throw invalid();
     } else {
@@ -59,6 +89,9 @@ export function createAcpxSidecarHostEnvironment(
       delete result[name];
     }
   }
+  if (agent === "pi") removePiIamCredentials(result);
+  if (agent === "kimi") removeKimiRuntimeOverrides(result);
+  if (agent === "antigravity") sanitizeAntigravityEnvironment(result);
   return result;
 }
 
@@ -84,10 +117,12 @@ export function createSanitizedAcpxSpawnInput(
   environment: NodeJS.ProcessEnv | undefined,
   agent: QualifiedAcpxAgent,
 ): SanitizedAcpxSpawnInput {
-  const source = environment ?? process.env;
+  const source = agent === "claude" && environment?.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME !== undefined
+    ? { ...environment, CLAUDE_CONFIG_DIR: environment.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME }
+    : environment ?? process.env;
   const candidate = isCandidate(agent);
-  const result: NodeJS.ProcessEnv = {};
-  const credentialNames = ACPX_CREDENTIAL_NAMES[agent];
+  const result: NodeJS.ProcessEnv = { ...configuredEnvironment(environment), ...providerObservabilityEnvironment(environment, agent) };
+  const credentialNames = agent === "pi" ? piCredentialNames(environment) : ACPX_CREDENTIAL_NAMES[agent];
   const allowed = new Set([
     "PATH",
     "LANG",
@@ -109,8 +144,19 @@ export function createSanitizedAcpxSpawnInput(
     "all_proxy",
     "RUST_BACKTRACE",
     "PAPERCLIP_NATIVE_MCP_NAME",
+    "PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT",
+    "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER",
     "PAPERCLIP_NATIVE_MCP_URL",
+    ...(environment === undefined ? [] : ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"]),
     ...credentialNames,
+    ...(agent === "claude" ? CLAUDE_ROUTING_ENV_KEYS : []),
+    // The environment owner supplies helper paths, not a replacement provider executable.
+    ...(agent === "claude" && environment !== undefined ? ["MCP_TOOL_TIMEOUT"] : []),
+    ...(agent === "claude" && environment?.PAPERCLIP_GITHUB_LAUNCHER_DIR?.trim()
+      ? ["BASH_ENV", "ZDOTDIR", "GH_CONFIG_DIR", "PAPERCLIP_GITHUB_LAUNCHER_DIR"] : []),
+    ...(usesPreconfiguredHome(source) ? [...PRECONFIGURED_HOME_KEYS, "PAPERCLIP_RUNNER_HOME_MODE", "ACPX_CLAUDE_INCLUDE_USER_SETTINGS"] : []),
+    ...(agent === "claude" && environment?.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME
+      ? [...PRECONFIGURED_HOME_KEYS, "PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME"] : []),
   ]);
   let retainedBytes = 0;
   for (const [key, value] of Object.entries(source)) {
@@ -128,6 +174,15 @@ export function createSanitizedAcpxSpawnInput(
     }
     retainedBytes += entryBytes;
     result[key] = value;
+  }
+  if (agent === "pi") removePiIamCredentials(result);
+  if (agent === "kimi") removeKimiRuntimeOverrides(result);
+  if (agent === "antigravity") sanitizeAntigravityEnvironment(result);
+  // The controller-to-sidecar document is staged under a lifetime fence. The
+  // native child receives the private token file, never its launch document.
+  if (agent === "antigravity") delete result.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET;
+  if (agent === "claude" && isOpenRouterUrl(result.ANTHROPIC_BASE_URL)) {
+    result.ANTHROPIC_CUSTOM_HEADERS = openRouterClaudeHeaders(result.ANTHROPIC_CUSTOM_HEADERS);
   }
   return Object.freeze({
     env: Object.freeze(result),

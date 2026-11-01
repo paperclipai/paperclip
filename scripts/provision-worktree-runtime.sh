@@ -9,6 +9,7 @@ paperclip_instance_id="${PAPERCLIP_INSTANCE_ID:-default}"
 paperclip_dir="$worktree_cwd/.paperclip"
 worktree_config_path="$paperclip_dir/config.json"
 seed_manifest_path="$paperclip_dir/seed-manifest.json"
+seed_empty_path="$paperclip_dir/seed-empty"
 
 if [[ ! -d "$base_cwd" ]]; then
   echo "Base workspace does not exist: $base_cwd" >&2
@@ -18,6 +19,11 @@ fi
 if [[ ! -d "$worktree_cwd" ]]; then
   echo "Derived worktree does not exist: $worktree_cwd" >&2
   exit 1
+fi
+
+if [[ -e "$seed_empty_path" ]]; then
+  echo "Worktree instance is explicitly empty; automatic database copying is disabled." >&2
+  exit 0
 fi
 
 if [[ -e "$seed_manifest_path" ]]; then

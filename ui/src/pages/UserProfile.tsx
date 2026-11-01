@@ -238,7 +238,7 @@ export function UserProfile() {
     () =>
       (data?.topAgents ?? []).map((row) => ({
         key: row.agentId ?? "unknown",
-        label: row.agentName ?? (row.agentId ? row.agentId.slice(0, 8) : "unknown"),
+        label: row.agentName ?? (row.agentId ? row.agentId.slice(0, 8) : "Paperclip services"),
         sublabel: "Task-linked usage",
         costCents: row.costCents,
         inputTokens: row.inputTokens,

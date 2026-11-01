@@ -1,3 +1,5 @@
+import { subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -800,6 +802,8 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
       sessionId,
     });
 
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.feedback, notified);
     await flushingSvc.saveIssueVote({
       issueId,
       targetType: "issue_comment",
@@ -808,7 +812,12 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
       authorUserId: "user-1",
       allowSharing: true,
     });
-    await flushingSvc.flushPendingFeedbackTraces();
+    unsubscribe();
+    expect(notified).toHaveBeenCalledTimes(1);
+    expect(await flushingSvc.hasPendingFeedbackTraces()).toBe(true);
+    // The route and worker may request a flush together after the commit.
+    await Promise.all([flushingSvc.flushPendingFeedbackTraces(), flushingSvc.flushPendingFeedbackTraces()]);
+    expect(await flushingSvc.hasPendingFeedbackTraces()).toBe(false);
 
     expect(uploadTraceBundle).toHaveBeenCalledTimes(1);
     const bundle = uploadTraceBundle.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
@@ -1150,6 +1159,30 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     expect(traces[0]?.failureReason).toContain("telemetry unavailable");
     expect(traces[0]?.exportedAt).toBeNull();
     expect(uploadTraceBundle).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves aborted and unstarted exports available for recovery after shutdown", async () => {
+    const first = await seedIssueWithAgentComment();
+    const second = await seedIssueWithAgentComment();
+    const shutdown = new AbortController();
+    const uploadTraceBundle = vi.fn().mockResolvedValue({ objectKey: "saved" })
+      .mockImplementationOnce(async (_bundle, signal: AbortSignal) => {
+        shutdown.abort(new Error("shutdown"));
+        signal.throwIfAborted();
+      });
+    const flushingSvc = feedbackService(db, { shareClient: { uploadTraceBundle } });
+    for (const item of [first, second]) {
+      await flushingSvc.saveIssueVote({ issueId: item.issueId, targetType: "issue_comment",
+        targetId: item.commentId, vote: "up", authorUserId: "user-1", allowSharing: true });
+    }
+    expect(await flushingSvc.flushPendingFeedbackTraces({ signal: shutdown.signal }))
+      .toMatchObject({ attempted: 1, sent: 0, failed: 1 });
+    const rows = await db.select().from(feedbackExports);
+    expect(rows.filter(row => row.status === "failed")).toHaveLength(1);
+    expect(rows.filter(row => row.status === "pending")).toHaveLength(1);
+    expect(await flushingSvc.hasPendingFeedbackTraces()).toBe(true);
+    expect(await flushingSvc.flushPendingFeedbackTraces()).toMatchObject({ attempted: 2, sent: 2, failed: 0 });
+    expect(await flushingSvc.hasPendingFeedbackTraces()).toBe(false);
   });
 
   it("marks pending shared traces as failed when no feedback export backend is configured", async () => {

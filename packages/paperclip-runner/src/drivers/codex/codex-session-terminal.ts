@@ -1,4 +1,5 @@
 import { HarnessReconciliationError } from "../../contracts/harness-driver.js";
+import { isNativeRestartInterruption } from "../../contracts/native-session-backend.js";
 import type { PrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import { boundedCodexPayload as boundedPayload, isRetainableCodexPayload } from "./codex-boundaries.js";
 import type { CodexSessionState } from "./codex-session-state.js";
@@ -54,7 +55,10 @@ export function admitResult(
   ): SemanticResultAdmission {
     const fingerprint = canonicalJson(result);
     if (state.resultFingerprint !== null) {
-      return state.resultFingerprint === fingerprint ? "identical" : "conflict";
+      const same = state.normalizeReplayPayload
+        ? replayFingerprint(state, JSON.parse(state.resultFingerprint)) === replayFingerprint(state, result)
+        : state.resultFingerprint === fingerprint;
+      return same ? "identical" : "conflict";
     }
     state.result = structuredClone(result);
     state.resultFingerprint = fingerprint;
@@ -168,7 +172,19 @@ export function mapTerminalTurn(
       { turnId },
     );
     finalize(state, status);
+    if (status === "failed" && isNativeRestartInterruption(turn.error) && state.result === null &&
+        !state.dispositionOnlyRecoveryConsumed) {
+      // Orchestration may use the paid restart attempt for one same-thread
+      // continuation. Its accepted turn id uses the existing durable marker.
+      state.terminal = false;
+      state.dispositionOnlyRecoveryAvailable = true;
+    }
   }
+
+function replayFingerprint(state: CodexSessionState, value: unknown): string {
+  const payload = { value };
+  return canonicalJson(state.normalizeReplayPayload?.(payload) ?? payload);
+}
 
 function terminalFingerprint(
   state: CodexSessionState,
@@ -193,7 +209,9 @@ export function terminalReplayConflict(
       candidate !== null &&
       state.resultFingerprint !== null &&
       state.resultTurnId === turnId &&
-      canonicalJson(candidate) !== state.resultFingerprint
+      (state.normalizeReplayPayload
+        ? replayFingerprint(state, candidate) !== replayFingerprint(state, JSON.parse(state.resultFingerprint))
+        : canonicalJson(candidate) !== state.resultFingerprint)
     ) {
       return {
         code: "conflicting_semantic_result",
@@ -203,9 +221,10 @@ export function terminalReplayConflict(
     const semanticResult = state.resultTurnId === turnId
       ? state.result
       : candidate;
-    if (
-      terminalFingerprint(state, turn, semanticResult) !== expectedFingerprint
-    ) {
+    const actualFingerprint = terminalFingerprint(state, turn, semanticResult);
+    if (state.normalizeReplayPayload
+      ? replayFingerprint(state, JSON.parse(actualFingerprint)) !== replayFingerprint(state, JSON.parse(expectedFingerprint))
+      : actualFingerprint !== expectedFingerprint) {
       return {
         code: "conflicting_turn_terminal",
         message: "changed from its committed terminal fingerprint",

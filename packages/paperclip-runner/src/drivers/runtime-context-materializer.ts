@@ -1,3 +1,4 @@
+import { isOpenRouterUrl, openRouterCodexHeaders } from "./openrouter-attribution.js";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
@@ -12,6 +13,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { parse as parseToml } from "smol-toml";
+import { codexObservabilityToml } from "./agent-observability.js";
 
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
 import type { NativeMcpLaunchBinding } from "./native-mcp.js";
@@ -306,7 +309,31 @@ async function readSourceCodexAuth(sourceAuth: string): Promise<Buffer | null> {
   }
 }
 
+/** Copy only Paperclip's value-free provider projection, never host tools or hooks. */
+async function managedCodexProviderConfig(sourceHome?: string | null): Promise<string> {
+  if (!sourceHome?.trim()) return "";
+  const source = await readSourceCodexAuth(join(sourceHome, "config.toml"));
+  if (!source) return "";
+  let parsed;
+  try { parsed = parseToml(source.toString("utf8")); } catch { return ""; }
+  if (parsed.model_provider !== "paperclip") return "";
+  const providers = parsed.model_providers as Record<string, unknown> | undefined;
+  const provider = providers?.paperclip as Record<string, unknown> | undefined;
+  if (!provider || typeof provider.base_url !== "string" || provider.wire_api !== "responses"
+    || provider.requires_openai_auth !== false
+    || (provider.env_key !== undefined && provider.env_key !== "PAPERCLIP_AI_PROVIDER_KEY")) {
+    throw new Error("Invalid managed Codex provider configuration");
+  }
+  const url = new URL(provider.base_url);
+  if (url.username || url.password || url.search || url.hash
+    || (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))) {
+    throw new Error("Invalid managed Codex provider URL");
+  }
+  return `model_provider = "paperclip"\n[model_providers.paperclip]\nname = "Paperclip connection"\nbase_url = ${JSON.stringify(provider.base_url)}\nwire_api = "responses"\nrequires_openai_auth = false\n${provider.env_key ? 'env_key = "PAPERCLIP_AI_PROVIDER_KEY"\n' : ""}${isOpenRouterUrl(provider.base_url) ? openRouterCodexHeaders() : ""}`;
+}
+
 export async function prepareIsolatedCodexHome(input: {
+  observability?: import("./agent-observability.js").ProviderObservabilityLaunch;
   context: NativeRuntimeContextSnapshot | null;
   codexHome: string;
   sourceCodexHome?: string | null;
@@ -318,31 +345,41 @@ export async function prepareIsolatedCodexHome(input: {
     join(input.codexHome, "skills"),
   );
 
+  const providerConfig = await managedCodexProviderConfig(input.sourceCodexHome);
   const configPath = join(input.codexHome, "config.toml");
-  await rm(configPath, { force: true });
-  await writeFile(configPath, [
-    // Codex shell snapshots serialize the provider process environment. The
-    // native runner injects short-lived provider and MCP bindings, so a
-    // snapshot would turn ephemeral credentials into durable session state.
-    "[features]",
-    "shell_snapshot = false",
-    "",
-    ...(input.nativeMcp
-      ? [
-          `[mcp_servers.${JSON.stringify(input.nativeMcp.name)}]`,
-          `url = ${JSON.stringify(input.nativeMcp.url)}`,
-          // This endpoint is Paperclip's authenticated policy gateway, not an
-          // upstream server. It enforces connection grants and human approvals
-          // for every operation; the provider must deliver calls to that gate.
-          'default_tools_approval_mode = "approve"',
-          `http_headers = { Authorization = ${JSON.stringify(`Bearer ${input.nativeMcp.token}`)} }`,
-          "",
-        ]
-      : []),
-  ].join("\n"), { mode: 0o600 });
+  await mkdir(input.codexHome, { recursive: true, mode: 0o700 });
+  await chmod(input.codexHome, 0o700);
+  const temporaryConfig = join(input.codexHome, `.config-${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporaryConfig, [
+      providerConfig,
+      codexObservabilityToml(input.observability?.otelConfig),
+      // Codex shell snapshots serialize the provider process environment. The
+      // native runner injects short-lived provider and MCP bindings, so a
+      // snapshot would turn ephemeral credentials into durable session state.
+      "[features]",
+      "shell_snapshot = false",
+      "",
+      ...(input.nativeMcp
+        ? [
+            `[mcp_servers.${JSON.stringify(input.nativeMcp.name)}]`,
+            `url = ${JSON.stringify(input.nativeMcp.url)}`,
+            // This endpoint is Paperclip's authenticated policy gateway, not an
+            // upstream server. It enforces connection grants and human approvals
+            // for every operation; the provider must deliver calls to that gate.
+            'default_tools_approval_mode = "approve"',
+            `http_headers = { Authorization = ${JSON.stringify(`Bearer ${input.nativeMcp.token}`)} }`,
+            "",
+          ]
+        : []),
+    ].join("\n"), { mode: 0o600, flag: "wx" });
+    await rename(temporaryConfig, configPath);
+    await chmod(configPath, 0o600);
+  } finally { await rm(temporaryConfig, { force: true }); }
 
   const targetAuth = join(input.codexHome, "auth.json");
   await rm(targetAuth, { force: true });
+  if (providerConfig) return;
   const apiKey = input.apiKey?.trim();
   if (apiKey) {
     // The pinned Codex app-server authenticates API-key automation through its

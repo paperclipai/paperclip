@@ -219,6 +219,27 @@ Current file:
 
 If `@cryppadotta` is not the right reviewer identity in the public repo, change it before enabling enforcement.
 
+## 8.1. Let the Lockfile Bot Merge Lockfile Refreshes
+
+`.github/workflows/refresh-lockfile.yml` regenerates `pnpm-lock.yaml` from the manifests on `master` and merges the result without CI or review. Contributors never commit the lockfile, so the bot is the only path for lockfile changes.
+
+Resolution keeps locked versions, but it picks the newest matching version for an added or widened dependency. A release-age gate (`.github/scripts/check-lockfile-release-age.mjs`) therefore checks every package version that the refresh adds. The bot merges only when each one has been on npm for at least 3 days. If any version is newer, or the gate cannot verify it, the bot leaves a comment on the PR and does not merge. A maintainer can review and merge it, or the daily scheduled refresh merges it after the versions are old enough. A held run saves its lockfile, and the hash of the `master` lockfile it started from, as an artifact. The next run resolves from that lockfile only while `master` still has the same lockfile. Held versions therefore stay put while their manifests are unchanged, even when newer releases appear, and a lockfile change on `master` replaces them. The gate also holds any added entry whose resolution is not a plain npm registry tarball. Change the age with `--min-age-days` in the workflow.
+
+The merge uses a dedicated GitHub App. Do not reuse `commitperclip` or bypass the built-in `github-actions` app. Those identities are available to other workflows, including release jobs that run dependency install scripts, so a bypass for them would let any of those workflows land code on `master`.
+
+1. Create an organization-owned GitHub App, for example `paperclip-lockfile-bot`:
+   - Disable the webhook.
+   - Repository permissions: `Contents: Read and write`, `Pull requests: Read and write`. Leave everything else at `No access`.
+   - Allow installation only on this account.
+2. Install the app on `paperclipai/paperclip` only.
+3. Create a GitHub environment named `lockfile-refresh`. Under deployment branches and tags, allow only `master`. Add no required reviewers.
+4. In that environment, add:
+   - variable `LOCKFILE_BOT_CLIENT_ID`: the app's client ID
+   - secret `LOCKFILE_BOT_PRIVATE_KEY`: a private key generated for the app
+5. In the `master` ruleset, add the app as a bypass actor with bypass mode `For pull requests only`. The app can then merge PRs past required checks and code owner review, but it cannot push to `master` directly.
+
+The workflow mints the app token after dependency resolution finishes and merges only the commit it pushed (`--match-head-commit`). A commit anyone else pushes to `chore/refresh-lockfile` makes the merge fail.
+
 ## 9. Protect Release Infrastructure Specifically
 
 These files should always trigger code owner review:
@@ -363,13 +384,64 @@ paths and the PR lanes can restore master's entry. The guard tests under
 `.github/scripts/tests/` require this step, with identical text, before every
 Rust cache step in both workflows.
 
-Workspace crates and installed Cargo binaries are excluded. Every run rebuilds
-workspace code and runs all assigned checks, including on a cache hit. Only an
+Workspace crates and installed Cargo binaries are excluded from this entry.
+Every run runs all assigned checks, including on a cache hit. Only an
 own-repository master-push run verifying that push's exact SHA can restore the
 cache, and only a successful Rust lane saves it. PR, tag, and manual candidate
 verification compile without this cache. A miss or eviction costs compilation
 time but does not change the checks. To discard old dependency caches, increment
 the shared-key version and let the next successful master verification warm it.
+
+### Runner release crate cache
+
+The dependency entry leaves the Runner's own crate out, and a fresh checkout
+invalidates cargo's mtime fingerprints for workspace crates anyway, so every
+pull request build compiled `paperclip-runner-core` in release mode from
+scratch (28-49s per job on 2026-10-11) although most master commits leave its
+inputs untouched. A second, content-addressed entry holds only that crate's
+release artifacts: its fingerprints, the lib's rlib and rmeta, the
+`paperclip-runnerd` binary and their dep-info, about 70 MB. The path list and
+the key inputs live in `scripts/runner-release-crate-cache.mjs`, which both
+workflows call, and `scripts/__tests__/runner-release-crate-cache.test.mjs`
+holds the readers and the writer to them.
+
+The key is `runner-release-crate-v1-<scope>-<hashFiles>`. The scope names the
+platform, the pinned compiler (`rustc --version --verbose`: release, commit and
+host) and a hash of the checkout root, because cargo's dep-info records the
+protocol files the crate includes by relative path as absolute paths. The
+`hashFiles` part covers every input the build reads: the toolchain pin, the
+manifests and lockfile, the crate sources, the protocol schemas and fixtures,
+and the three fixture trees the test modules include (two under the Runner
+package and `tests/runner-e2e/fixtures` at the repository root). Any change
+to any of them selects a new key. A guard test resolves every `include_str!`
+and `include_bytes!` in the crate, whether its argument is a literal or a
+`concat!` of literals, `env!("CARGO_MANIFEST_DIR")` and macro metavariables,
+and fails on an include that lands outside these patterns or uses a form it
+cannot resolve. Readers pass no `restore-keys`: a prefix match would hand
+cargo another revision's output.
+
+The writer is the Rust lane of the same master-push verification, after its
+checks and the debug warm-up. It looks the key up first and, on a miss, runs
+`cargo clean --release -p paperclip-runner-core` and then the package's
+`build:binary` (the exact command the readers run) before saving, so the entry
+carries no test-profile variants. In the trusted PR workflow, the Typecheck,
+Build and Canary Dry Run jobs and the two Verify Paperclip Runner lanes that
+build the crate (`rust` and the final vitest shard) restore the entry
+read-only right after the dependency restore. On a hit, `mark-current` sets
+the mtime of every restored artifact to now, so cargo's freshness check sees
+every source as older than the build and keeps the artifacts. A restore that
+lacks any file cargo reads or checks for either unit (the fingerprint hash
+and dep-info of each unit, the lib's rlib and rmeta, the binary under
+`deps`; measured with cargo 1.97.1, which recompiles without any one of
+them and recreates the uplifted binary without any of the rest) is removed
+instead, the job log names the missing file, and cargo compiles as on a
+miss. `pnpm build`
+then prints `Finished release profile` in well under a second for that crate.
+On a miss nothing changes: cargo compiles the crate as before.
+
+The trust boundary is unchanged: only master writes, a pull request can only
+restore master's entry, and it restores only artifacts built from inputs
+byte-identical to its own merge tree.
 
 The trust boundary is the protected master branch, not the cache-key text.
 GitHub does not let master restore caches created by a child branch, sibling

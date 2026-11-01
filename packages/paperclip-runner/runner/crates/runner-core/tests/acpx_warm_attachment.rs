@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 const PROFILE_DIGEST: &str =
-    "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3";
+    "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc";
 
 struct Fixture(PathBuf);
 impl Drop for Fixture {
@@ -62,6 +62,7 @@ fn checkpoints_the_sidecar_and_rebinds_consecutive_warm_runs_before_accepting_wo
         runner_version: "0.0.0".to_owned(),
         runner_digest: format!("sha256:{}", "a".repeat(64)),
         acpx_launch_profile: Some(AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: sidecar.clone(),
             args: args.clone(),
@@ -83,7 +84,7 @@ fn checkpoints_the_sidecar_and_rebinds_consecutive_warm_runs_before_accepting_wo
         "providerVersion": "0.13.1", "agent": "codex", "model": "gpt-5.6-sol",
         "acpxVersion": "0.13.1", "agentServerPackage": "@agentclientprotocol/codex-acp",
         "agentServerVersion": "1.6.2", "agentRuntimePackage": "@openai/codex",
-        "agentRuntimeVersion": "0.156.0", "commandDigest": PROFILE_DIGEST,
+        "agentRuntimeVersion": "0.160.0", "commandDigest": PROFILE_DIGEST,
         "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,
         "normalizedSessionId": "session-1", "runId": "run-1", "cwd": fixture.0,
         "instructions": "Complete the supplied work.",

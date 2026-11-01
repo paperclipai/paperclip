@@ -1,6 +1,7 @@
+import { describeRunnerdMuseDriver } from "../drivers/muse/runnerd-muse-driver.js";
 import { createCodexTaskEnvelope } from "../contracts/codex.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
-import { NATIVE_EXECUTION_INPUT_SCHEMA } from "../contracts/native-execution.js";
+import { NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9, NATIVE_EXECUTION_INPUT_SCHEMA_V10 } from "../contracts/native-execution.js";
 import type { NativeExecutionInput } from "../contracts/native-execution.js";
 import type { PersistedHarnessSession } from "../contracts/harness-driver.js";
 import type {
@@ -11,6 +12,7 @@ import type {
 import type { CodexAppServerTransport } from "../drivers/codex/app-server-transport.js";
 import { CodexAppServerDriver } from "../drivers/codex/codex-app-server-driver.js";
 import type { CodexWorkingDirectoryAuthority } from "../drivers/codex/codex-boundaries.js";
+import { describeRunnerdExternalBotDriver } from "../drivers/dot/runnerd-dot-driver.js";
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
 import {
   nativeSystemInstructions,
@@ -21,6 +23,7 @@ import {
 export interface CodexNativeSessionBackendOptions {
   /** Effective provider environment, including the assigned workspace boundary. */
   environment?: NodeJS.ProcessEnv;
+  observability?: import("../drivers/agent-observability.js").ProviderObservabilityLaunch;
   /** Filesystem that authoritatively admits the workspace path. */
   workingDirectoryAuthority?: CodexWorkingDirectoryAuthority;
   runnerInstanceId?: string;
@@ -30,6 +33,7 @@ export interface CodexNativeSessionBackendOptions {
     startedAt: string;
   }) => Promise<void>;
   transportFactory?: (context?: {
+    baseInstructions?: string;
     providerRecoveryPolicy?: PersistedNativeSession["providerRecoveryPolicy"];
     persistedSession?: Pick<
       PersistedHarnessSession,
@@ -72,7 +76,7 @@ function transportDriverIdentity(input: NativeExecutionInput): {
       return {
         kind: "opencode_server",
         displayName: "OpenCode server",
-        version: "1.18.32",
+        version: "1.18.34",
       };
     case "claude_managed":
       return {
@@ -104,7 +108,8 @@ function createTransportBackedNativeSessionBackend(
   options: CodexNativeSessionBackendOptions,
 ): NativeSessionBackend {
   if (
-    options.workingDirectoryAuthority === "remote_runner" &&
+    (options.workingDirectoryAuthority === "remote_runner" ||
+      options.workingDirectoryAuthority === "runner_prepared_launch") &&
     !options.transportFactory
   ) {
     throw new Error(
@@ -113,7 +118,9 @@ function createTransportBackedNativeSessionBackend(
   }
   const driverIdentity = transportDriverIdentity(input);
   const isCodex = input.provider.kind === "codex";
-  const preparedContext = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA;
+  const preparedContext = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA
+    || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7
+    || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10;
   const supportsCollaborativePlanning =
     isCodex ||
     input.provider.kind === "opencode" ||
@@ -140,12 +147,15 @@ function createTransportBackedNativeSessionBackend(
         ]
       : []),
     ...nativeTaskConstraints(input),
-    "Return one semantic completion result.",
   ];
 
+  const baseInstructions = nativeSystemInstructions(input);
+  const transportFactory = options.transportFactory;
   return new HarnessDriverBackend(
     new CodexAppServerDriver({
       ...(input.provider.model ? { model: input.provider.model } : {}),
+      ...(input.provider.kind === "codex" && "webSearch" in input.provider && input.provider.webSearch === "disabled"
+        ? { disableWebSearch: true } : {}),
       ...(input.provider.kind === "codex" && "reasoningEffort" in input.provider && input.provider.reasoningEffort
         ? { reasoningEffort: input.provider.reasoningEffort }
         : {}),
@@ -155,7 +165,7 @@ function createTransportBackedNativeSessionBackend(
         input.provider.kind === "codex"
           ? (input.provider.approvalPolicy ?? "never")
           : "never",
-      baseInstructions: nativeSystemInstructions(input),
+      baseInstructions,
       instructionWorkingCopyRoot: "runtimeContext" in input ? input.runtimeContext.instructions.workingCopy?.rootPath : undefined,
       includeSkillInstructions: isCodex && "runtimeContext" in input,
       skillInputs: isCodex
@@ -178,11 +188,14 @@ function createTransportBackedNativeSessionBackend(
       runnerInstanceId:
         options.runnerInstanceId ?? `paperclip-native-${input.binding.runId}`,
       onSpawn: options.onSpawn,
-      transportFactory: options.transportFactory,
+      transportFactory: transportFactory
+        ? (context) => transportFactory({ ...context, baseInstructions })
+        : undefined,
       dynamicTools: options.dynamicTools,
       dynamicToolHandler: options.dynamicToolHandler,
       completionFeedback: options.completionFeedback,
       environment: options.environment,
+      observability: options.observability,
       workingDirectoryAuthority: options.workingDirectoryAuthority,
       driverIdentity,
       capabilities: isCodex
@@ -203,6 +216,18 @@ function createTransportBackedNativeSessionBackend(
 export function describeRunnerdNativeSessionBackend(
   input: NativeExecutionInput,
 ): Promise<NativeSessionBackendDescriptor> {
+  if (input.schema === "paperclip.native-execution-input.v6" || input.schema === "paperclip.native-execution-input.v8") {
+    // External bots use the shared Rust bridge and retain their provider identity.
+    const descriptor = input.schema === "paperclip.native-execution-input.v8"
+      ? describeRunnerdMuseDriver() : describeRunnerdExternalBotDriver(input.provider.kind);
+    return Promise.resolve({
+      kind: "runner",
+      name: descriptor.kind,
+      version: descriptor.version,
+      capabilities: descriptor.capabilities,
+      runtimeContextCapabilities: descriptor.runtimeContextCapabilities,
+    });
+  }
   return createTransportBackedNativeSessionBackend(input, {}).descriptor();
 }
 

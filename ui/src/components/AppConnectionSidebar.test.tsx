@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppDetailSidebar } from "./AppConnectionSidebar";
+import { aiConnectionRouterAppDefinition } from "@paperclipai/shared";
 
 const sidebarNavItemMock = vi.hoisted(() => vi.fn());
 const currentPath = vi.hoisted(() => ({ value: "/apps/conn-1/permissions" }));
@@ -205,6 +206,18 @@ describe("AppConnectionSidebar", () => {
 
     expect(container.querySelector('[data-to="/apps/conn-1/permissions"]')?.getAttribute("data-active")).toBe("true");
     expect(container.querySelector('[data-to="/apps/conn-1/setup"]')).toBeNull();
+  });
+
+  it("shows only pool settings and keeps connector branding after a pool is renamed", async () => {
+    const entry = aiConnectionRouterAppDefinition("example.pool", { name: "AI connection pool", description: "Use saved connections" });
+    mockToolsApi.getConnection.mockResolvedValue(connection({ name: "Research accounts", config: { aiRouter: { pluginKey: "example.pool" } } }));
+    mockToolsApi.listApplications.mockResolvedValue({ applications: [] });
+    mockToolsApi.listGallery.mockResolvedValue({ apps: [entry] });
+    await renderSidebar();
+    expect(container.querySelectorAll("[data-to]")).toHaveLength(1);
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/permissions", label: "Settings", end: true }));
+    expect(container.querySelector("[data-app-logo]")?.getAttribute("data-logo-url")).toBe(entry.branding.logoUrl);
+    expect(container.textContent).not.toContain("Review");
   });
 
   it("uses the application key for a customized connection display name", async () => {

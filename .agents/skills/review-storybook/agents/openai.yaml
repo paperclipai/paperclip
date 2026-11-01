@@ -1,0 +1,3 @@
+interface:
+  display_name: "Review Storybook"
+  short_description: "Review story rendering, interactions, and drift"

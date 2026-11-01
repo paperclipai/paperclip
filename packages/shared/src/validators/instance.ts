@@ -41,6 +41,7 @@ export const patchInstanceGeneralSettingsSchema = z
 export const instanceExperimentalSettingsSchema = z.object({
   enableEnvironments: z.boolean().default(false),
   enableNativeRunner: z.boolean().default(true),
+  enableAiConnectionRouters: z.boolean().default(false),
   enableManagedSandboxOnly: z.boolean().default(false),
   enableIsolatedWorkspaces: z.boolean().default(false),
   enableIsolatedWorkspacesByDefault: z.boolean().default(false),
@@ -50,13 +51,20 @@ export const instanceExperimentalSettingsSchema = z.object({
   // always enabled; this remains accepted so older stored rows and managed
   // configs continue to load during upgrades.
   enableApps: z.boolean().default(true),
+  enablePublicMcp: z.boolean().default(false),
+  enableOpenAiDot: z.boolean().default(false),
+  enableGrokBot: z.boolean().default(false),
+  enableMuse: z.boolean().default(false),
   enableChatConnectors: z.boolean().default(false),
+  enableGitHubReviewBots: z.boolean().default(false),
   // Compatibility only: old stored and managed values must still parse.
   enableMcpAggregators: z.boolean().default(true),
   enableMemoryConnectors: z.boolean().default(false),
-  enablePipelines: z.boolean().default(false),
+  enablePaperclipNotebook: z.boolean().default(false),
   enableCases: z.boolean().default(false),
   enableAgentChat: z.boolean().default(false),
+  enableCombinedInboxTasks: z.boolean().default(false),
+  enableArtifactsV1: z.boolean().default(false),
   enableConferenceRoomChat: z.boolean().default(false),
   enableClassicTaskInterface: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),
@@ -68,6 +76,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableSummaries: z.boolean().default(false),
   enableStatusCards: z.boolean().default(false),
   enableDecisions: z.boolean().default(false),
+  enableFastResponses: z.boolean().default(false),
   enableGoalsSidebarLink: z.boolean().default(false),
   enableServerInfoDebugView: z.boolean().default(false),
   enablePaperclipDeveloperMode: z.boolean().default(false),
@@ -125,8 +134,11 @@ export const patchInstanceSettingsSchema = z.object({
 export const MAX_TASK_DRAIN_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const startTaskDrainRequestSchema = z.object({
+  purpose: z.literal("idle").optional(),
   ttlMs: z.number().int().positive().max(MAX_TASK_DRAIN_TTL_MS).nullable().optional(),
-}).strict();
+}).strict().refine(value => value.purpose !== "idle" ||
+  (typeof value.ttlMs === "number" && value.ttlMs >= 5_000 && value.ttlMs <= 300_000),
+  { message: "Idle holds require ttlMs between 5000 and 300000", path: ["ttlMs"] });
 
 export type InstanceGeneralSettings = z.infer<typeof instanceGeneralSettingsSchema>;
 // The patch schema removes each default so an absent key stays absent. Declare

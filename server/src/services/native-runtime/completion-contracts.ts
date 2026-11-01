@@ -10,6 +10,18 @@ import { nativeSha256 } from "./canonical.js";
 export const NATIVE_COMPLETION_CONTRACT_SCHEMA = "paperclip.completion-contract.v1";
 export const NATIVE_COMPLETION_POLICY_VERSION = "phase6-v4";
 
+/** Canonical persisted receipt includes the policy that governs the contract. */
+export function nativeCompletionContractSha256(row: Pick<typeof completionContracts.$inferSelect,
+  "schemaVersion" | "policyVersion" | "risk" | "completionAuthority" | "contractJson">): string {
+  return nativeSha256({
+    schemaVersion: row.schemaVersion,
+    policyVersion: row.policyVersion,
+    risk: row.risk,
+    completionAuthority: row.completionAuthority,
+    contract: row.contractJson,
+  });
+}
+
 type CompletionComment = {
   id?: string;
   body: string;
@@ -121,6 +133,22 @@ export function buildNativeCompletionContract(
   };
 }
 
+function nativeCompletionContractLockKey(companyId: string, issueId: string): string {
+  return `paperclip:native-completion-contract:${companyId}:${issueId}`;
+}
+
+export async function lockCurrentNativeCompletionContract(tx: Db, input: {
+  companyId: string; issueId: string; contractId: string;
+}): Promise<boolean> {
+  const [lock] = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(
+    ${nativeCompletionContractLockKey(input.companyId, input.issueId)}, 0)) as acquired`) as unknown as Array<{ acquired: boolean }>;
+  if (!lock.acquired) return false;
+  const [latest] = await tx.select({ id: completionContracts.id }).from(completionContracts)
+    .where(and(eq(completionContracts.companyId, input.companyId), eq(completionContracts.issueId, input.issueId)))
+    .orderBy(desc(completionContracts.revision)).limit(1);
+  return latest?.id === input.contractId;
+}
+
 export async function ensureNativeCompletionContract(input: {
   db: Db;
   companyId: string;
@@ -139,11 +167,8 @@ export async function ensureNativeCompletionContract(input: {
   humanResponseId?: string | null;
 }) {
   return input.db.transaction(async (tx) => {
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${[
-      "paperclip:native-completion-contract",
-      input.companyId,
-      input.issue.id,
-    ].join(":")}, 0))`);
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(
+      ${nativeCompletionContractLockKey(input.companyId, input.issue.id)}, 0))`);
     const policy = resolveNativeCompletionPolicy(input.issue);
     const latest = await tx
       .select()
@@ -162,11 +187,11 @@ export async function ensureNativeCompletionContract(input: {
       immediateRequests: input.immediateRequests,
       humanResponseId: input.humanResponseId,
     });
-    const latestCandidateSha256 = nativeSha256({
+    const latestCandidateSha256 = nativeCompletionContractSha256({
       schemaVersion: NATIVE_COMPLETION_CONTRACT_SCHEMA,
       policyVersion: NATIVE_COMPLETION_POLICY_VERSION,
       ...policy,
-      contract: latestCandidate,
+      contractJson: latestCandidate as unknown as Record<string, unknown>,
     });
     if (latest?.canonicalSha256 === latestCandidateSha256) {
       return { row: latest, contract: latestCandidate, sources: buildNativeCompletionContractSources(input) };
@@ -179,11 +204,11 @@ export async function ensureNativeCompletionContract(input: {
       immediateRequests: input.immediateRequests,
       humanResponseId: input.humanResponseId,
     });
-    const canonicalSha256 = nativeSha256({
+    const canonicalSha256 = nativeCompletionContractSha256({
       schemaVersion: NATIVE_COMPLETION_CONTRACT_SCHEMA,
       policyVersion: NATIVE_COMPLETION_POLICY_VERSION,
       ...policy,
-      contract,
+      contractJson: contract as unknown as Record<string, unknown>,
     });
     const [row] = await tx.insert(completionContracts).values({
       companyId: input.companyId,

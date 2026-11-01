@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import os from "node:os";
@@ -13,6 +14,7 @@ import {
   companySecretVersions,
   companySecrets,
   createDb,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -46,6 +48,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(principalPermissionGrants);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
@@ -84,7 +87,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       value: "sk-ant-123",
     });
 
-    const created = await agentService(db).create(companyId, {
+    const created = await createAgentLifecycle(db).requestHire(companyId, {
       name: "Claude Novita",
       role: "engineer",
       status: "pending_approval",
@@ -135,7 +138,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       value: "slack-test-token",
     });
 
-    const created = await agentService(db).create(companyId, {
+    const created = await createAgentLifecycle(db).requestHire(companyId, {
       name: "Slack Briefing",
       role: "briefing",
       adapterType: "codex_local",
@@ -183,7 +186,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     });
 
     await expect(
-      agentService(db).create(companyId, {
+      createAgentLifecycle(db).requestHire(companyId, {
         name: "Unlisted Static Lease",
         role: "engineer",
         adapterType: "codex_local",
@@ -218,7 +221,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     const companyId = await seedCompany();
     const literalApiKey = `hermes-key-${randomUUID()}`;
 
-    const created = await agentService(db).create(companyId, {
+    const created = await createAgentLifecycle(db).requestHire(companyId, {
       name: "Hermes Gateway",
       role: "engineer",
       status: "idle",
@@ -287,7 +290,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       value: "next-value",
     });
 
-    const created = await agentService(db).create(companyId, {
+    const created = await createAgentLifecycle(db).requestHire(companyId, {
       name: "Binding Swapper",
       role: "engineer",
       adapterType: "codex_local",
@@ -357,13 +360,14 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       .where(eq(companySecretBindings.targetId, agentId));
     expect(beforeBindings).toHaveLength(0);
 
-    const approved = await agentService(db).activatePendingApproval(agentId);
+    const approved = await createAgentLifecycle(db).approveHire(agentId);
 
     expect(approved).toMatchObject({
       activated: true,
       agent: {
         id: agentId,
-        status: "idle",
+        status: "paused",
+        lifecycleState: "preparing",
       },
     });
 
@@ -388,7 +392,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     const missingSecretId = randomUUID();
 
     await expect(
-      agentService(db).create(companyId, {
+      createAgentLifecycle(db).requestHire(companyId, {
         name: "Broken Create",
         role: "engineer",
         adapterType: "claude_local",
@@ -418,7 +422,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       provider: "local_encrypted",
       value: "valid-value",
     });
-    const created = await agentService(db).create(companyId, {
+    const created = await createAgentLifecycle(db).requestHire(companyId, {
       name: "Transactional Update",
       role: "engineer",
       adapterType: "codex_local",
@@ -481,7 +485,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       permissions: {},
     });
 
-    await expect(agentService(db).activatePendingApproval(agentId)).rejects.toBeTruthy();
+    await expect(createAgentLifecycle(db).approveHire(agentId)).rejects.toBeTruthy();
 
     const reloaded = await agentService(db).getById(agentId);
     expect(reloaded?.status).toBe("pending_approval");

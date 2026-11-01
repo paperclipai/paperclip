@@ -175,10 +175,6 @@ if (!completion.ok) throw new Error(await completion.text());
 `;
 }
 
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 test("AgentMail request shows a durable inline key card in agent chat", async ({ page, request }, testInfo) => {
   test.setTimeout(120_000);
   const settings = await json(await request.get("/api/instance/settings/experimental"));
@@ -393,24 +389,21 @@ test("store setup and task connection intent share one fake provider through con
     const taskUrl = `/${seed.prefix}/issues/${issue.identifier}`;
     await page.goto(taskUrl);
     await expect(
-      page.getByText("Connection requester needs Notion"),
+      page.getByText(`Grant Connection requester access to “${connection.name}”?`),
     ).toBeVisible({ timeout: 30_000 });
-    await page.getByRole("button", { name: "Connect / Use existing" }).click();
-    await expect(
-      page.getByRole("heading", { name: "Use an existing connection" }),
-    ).toBeVisible();
-    await page
-      .getByRole("button", { name: new RegExp(escapeRegExp(connection.name)) })
-      .click();
+    const permissions = page.getByRole("list", { name: "Tool permissions" });
+    await expect(permissions.getByText("notion:list_pages", { exact: true })).toBeVisible();
+    await expect(permissions.getByText("Allowed", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Grant access", exact: true }).click();
 
-    await expect(page.getByText("Notion connected")).toBeVisible({
+    await expect(page.getByText("Notion access granted")).toBeVisible({
       timeout: 30_000,
     });
     await expect(page).toHaveURL(new RegExp(`${taskUrl}$`));
     await expect(
       page
         .getByTestId("connection-intent-focus-target")
-        .filter({ hasText: "Notion connected" }),
+        .filter({ hasText: "Notion access granted" }),
     ).toBeFocused();
     expect(await page.locator("body").innerText()).not.toMatch(
       /\/authorize\?|authorizationUrl/,

@@ -1,0 +1,815 @@
+{
+  "schema": "paperclip.hiring-executable-accounting-replay.v2",
+  "assessmentType": "Provider-free replay through both new executable guards; original model measurements and verdicts unchanged",
+  "evaluatedCodeRevision": "e4077ade1818d98b9862ae79ee1d49a007dcf9c1",
+  "evaluatedCodeHashes": {
+    "tests/runner-e2e/hiring-template-cases.ts": "a440ebf5a932525d388f507f8b47490a535d377c9f9c9beba6144f1fc2214b7c",
+    "tests/runner-e2e/hiring-template-scoring.ts": "5f600b8329c981f1fc94ecc1b70a94b78d4a32a5b8859600208cbe1f91be2dac",
+    "tests/runner-e2e/hiring-template-flow.ts": "10b2415ad6ee293286db0a8cc8cb7a6a363d993a70560ab0a82f668018b5e3f5",
+    "tests/runner-e2e/hiring-template-turn-accounting.ts": "13792c69669b99748087d6a78af8ab35c6293d1ad3e3396efcbe39620169ad35",
+    "tests/runner-e2e/chat-flow.ts": "85d8c3da832871f38cc4ed940046d28ed7b3edf17486ce43b0f3313c06d17d7a"
+  },
+  "graderVersion": "paperclip.hiring-templates.v3",
+  "definitionDigest": "cddbcb6b2f3050e065599011ace2faee048047fae6ea9bc9183db8c5744e2f38",
+  "providerCalls": 0,
+  "newProviderRuns": 0,
+  "automaticRetries": 0,
+  "summary": {
+    "originalPairs": "Codex Fail→Fail; Claude Fail→Fail",
+    "correctedWorkflowOutcomePairs": "Codex Pass→Pass; Claude action attribution unresolved/uncomparable in both variants (not a measured task failure)",
+    "fullAttemptComparison": "Uncomparable in both profiles and variants; source-read coverage unchanged",
+    "originalMachineFailuresPreserved": 4,
+    "correctedScorerGuardsPassed": 2,
+    "correctedFinalChatGuardsPassed": 2,
+    "strictActionVerifiedAssessments": 2,
+    "strictActionUncomparableAssessments": 2,
+    "unchangedOriginalCoverageAssessments": 4,
+    "unchangedOtherOutcomeAssessments": 4,
+    "actualMeasuredRuns": 28,
+    "actualModelChargesKnown": false,
+    "broadEquivalenceEstablished": false,
+    "priorSidecarLimitation": "Sidecar v1 and initial executable v2 checked notification-created tasks, not unrelated document writes. Their original passes remain preserved."
+  },
+  "assessments": [
+    {
+      "variant": "candidate",
+      "profile": "runner-codex",
+      "original": {
+        "sourceRevision": "9f5404ad3aacbe76777952759414d34fd381e674",
+        "graderVersion": "paperclip.hiring-templates.v1",
+        "definitionDigest": "4d7f18420889325af89aa48eaaf021e8178aa6d26d504b92041635a15741f004",
+        "machineStatus": "failed",
+        "outcomePassed": false,
+        "countCheckPassed": false,
+        "comparisonStatus": "uncomparable"
+      },
+      "corrected": {
+        "graderVersion": "paperclip.hiring-templates.v3",
+        "definitionDigest": "cddbcb6b2f3050e065599011ace2faee048047fae6ea9bc9183db8c5744e2f38",
+        "outcomePassed": true,
+        "comparisonStatus": "uncomparable",
+        "scorerGuardPassed": true,
+        "finalChatGuardPassed": true,
+        "assessmentStatus": "verified",
+        "turnAccounting": {
+          "version": "paperclip.hiring-template-turn-accounting.v2",
+          "counts": {
+            "requiredWorkTurns": 5,
+            "maximumCompletionTurns": 2,
+            "maximumTotalTurns": 7,
+            "requestedLeadTurns": 3,
+            "coderTurns": 2,
+            "completionTurns": 2,
+            "unclassifiedTurns": 0,
+            "snapshotRunCount": 7,
+            "actualRunCount": 7,
+            "costAccountingRunCount": 7
+          },
+          "predicates": [
+            {
+              "id": "known-fixture-context",
+              "passed": true
+            },
+            {
+              "id": "complete-public-run-ledger",
+              "passed": true
+            },
+            {
+              "id": "exact-five-required-work-turns",
+              "passed": true
+            },
+            {
+              "id": "successful-native-without-retries",
+              "passed": true
+            },
+            {
+              "id": "resolved-company-account-and-identity",
+              "passed": true
+            },
+            {
+              "id": "three-distinct-requested-chat-turns",
+              "passed": true
+            },
+            {
+              "id": "one-coder-execution-per-known-task",
+              "passed": true
+            },
+            {
+              "id": "task-origins-are-first-two-requested-turns",
+              "passed": true
+            },
+            {
+              "id": "bounded-server-completion-receipts",
+              "passed": true
+            },
+            {
+              "id": "completion-runs-have-attributed-chat-replies",
+              "passed": true
+            },
+            {
+              "id": "no-notification-created-extra-tasks",
+              "passed": true
+            },
+            {
+              "id": "completion-turns-only-report-actions",
+              "passed": true
+            }
+          ],
+          "actionEvidence": {
+            "status": "verified",
+            "notificationRuns": 2,
+            "canonicalExecutions": 10,
+            "matchedNativeApiCalls": 5,
+            "unknownExecutions": 0
+          },
+          "passed": true
+        },
+        "checks": [
+          {
+            "id": "one-coder-hire",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Exactly one permanent coding teammate reports to the lead."
+          },
+          {
+            "id": "execution-account",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Hire keeps the lead model and managed account binding."
+          },
+          {
+            "id": "two-worker-tasks",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Both independent tasks are completed by the same coder in the chosen project."
+          },
+          {
+            "id": "bounded-work-and-completion-turns",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Exactly three requested lead turns and two coder executions, plus at most two strictly attributed completion notifications; every actual run remains counted."
+          },
+          {
+            "id": "initial-json-artifact",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Independent computation checks each original input/value and worker authorship."
+          },
+          {
+            "id": "reused-json-artifact",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "The reused coder applies the changed separator to every input."
+          },
+          {
+            "id": "original-preserved",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Reuse preserves the original document, revision and task identity."
+          },
+          {
+            "id": "source-fingerprints",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "Served instruction and hiring source bytes match the evaluated revision."
+          },
+          {
+            "id": "production-ceo-bundle",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "The API-created lead receives this revision's default CEO bundle, without a fixture override."
+          },
+          {
+            "id": "assigned-hiring-skill",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "Production CEO defaults assign the hiring skill."
+          },
+          {
+            "id": "production-source-reads",
+            "dimension": "coverage",
+            "passed": false,
+            "detail": "Completed lead read receipts before the hire prove the explicitly requested skill, guide, checklist and coder example paths. Unrecognized or missing reads leave coverage uncomparable."
+          },
+          {
+            "id": "supplied-coder-instructions",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "Saved hired instructions use the source revision's coder example with its company/name placeholders filled."
+          },
+          {
+            "id": "hired-instructions-durable",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "The same saved instruction bundle survives the reused worker execution."
+          },
+          {
+            "id": "hired-skills-durable",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "The saved skill selections survive the reused worker execution."
+          },
+          {
+            "id": "completion-action-attribution",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "Notification actions require exact canonical/native identities; missing cross-namespace mapping is uncomparable, not proof of extra work."
+          }
+        ]
+      },
+      "coverageUnchanged": true,
+      "otherOutcomesUnchanged": true,
+      "originalBytesUnchanged": true,
+      "inputSha256": {
+        "result": "44cbf64cfabd0257f31fb4d6909018d346f5667b0a7b3d7e855a2ece7e29c292",
+        "hiringTemplate": "9609ddcb81c6bee3c5db97312138b4ea3e294da13ea540e41f363c826a514067",
+        "apiState": "ef02af29bcf61ff3eace0549ca164a28c7950d1a3e14fc58c89bf9cb0f944b4d"
+      }
+    },
+    {
+      "variant": "candidate",
+      "profile": "runner-acpx-claude",
+      "original": {
+        "sourceRevision": "9f5404ad3aacbe76777952759414d34fd381e674",
+        "graderVersion": "paperclip.hiring-templates.v1",
+        "definitionDigest": "4d7f18420889325af89aa48eaaf021e8178aa6d26d504b92041635a15741f004",
+        "machineStatus": "failed",
+        "outcomePassed": false,
+        "countCheckPassed": false,
+        "comparisonStatus": "uncomparable"
+      },
+      "corrected": {
+        "graderVersion": "paperclip.hiring-templates.v3",
+        "definitionDigest": "cddbcb6b2f3050e065599011ace2faee048047fae6ea9bc9183db8c5744e2f38",
+        "outcomePassed": false,
+        "comparisonStatus": "uncomparable",
+        "scorerGuardPassed": false,
+        "finalChatGuardPassed": false,
+        "assessmentStatus": "uncomparable",
+        "turnAccounting": {
+          "version": "paperclip.hiring-template-turn-accounting.v2",
+          "counts": {
+            "requiredWorkTurns": 5,
+            "maximumCompletionTurns": 2,
+            "maximumTotalTurns": 7,
+            "requestedLeadTurns": 3,
+            "coderTurns": 2,
+            "completionTurns": 2,
+            "unclassifiedTurns": 0,
+            "snapshotRunCount": 7,
+            "actualRunCount": 7,
+            "costAccountingRunCount": 7
+          },
+          "predicates": [
+            {
+              "id": "known-fixture-context",
+              "passed": true
+            },
+            {
+              "id": "complete-public-run-ledger",
+              "passed": true
+            },
+            {
+              "id": "exact-five-required-work-turns",
+              "passed": true
+            },
+            {
+              "id": "successful-native-without-retries",
+              "passed": true
+            },
+            {
+              "id": "resolved-company-account-and-identity",
+              "passed": true
+            },
+            {
+              "id": "three-distinct-requested-chat-turns",
+              "passed": true
+            },
+            {
+              "id": "one-coder-execution-per-known-task",
+              "passed": true
+            },
+            {
+              "id": "task-origins-are-first-two-requested-turns",
+              "passed": true
+            },
+            {
+              "id": "bounded-server-completion-receipts",
+              "passed": true
+            },
+            {
+              "id": "completion-runs-have-attributed-chat-replies",
+              "passed": true
+            },
+            {
+              "id": "no-notification-created-extra-tasks",
+              "passed": true
+            },
+            {
+              "id": "completion-turns-only-report-actions",
+              "passed": false
+            }
+          ],
+          "actionEvidence": {
+            "status": "uncomparable",
+            "notificationRuns": 2,
+            "canonicalExecutions": 3,
+            "matchedNativeApiCalls": 0,
+            "unknownExecutions": 5
+          },
+          "passed": false
+        },
+        "checks": [
+          {
+            "id": "one-coder-hire",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Exactly one permanent coding teammate reports to the lead."
+          },
+          {
+            "id": "execution-account",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Hire keeps the lead model and managed account binding."
+          },
+          {
+            "id": "two-worker-tasks",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Both independent tasks are completed by the same coder in the chosen project."
+          },
+          {
+            "id": "bounded-work-and-completion-turns",
+            "dimension": "outcome",
+            "passed": false,
+            "detail": "Exactly three requested lead turns and two coder executions, plus at most two strictly attributed completion notifications; every actual run remains counted."
+          },
+          {
+            "id": "initial-json-artifact",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Independent computation checks each original input/value and worker authorship."
+          },
+          {
+            "id": "reused-json-artifact",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "The reused coder applies the changed separator to every input."
+          },
+          {
+            "id": "original-preserved",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Reuse preserves the original document, revision and task identity."
+          },
+          {
+            "id": "source-fingerprints",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "Served instruction and hiring source bytes match the evaluated revision."
+          },
+          {
+            "id": "production-ceo-bundle",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "The API-created lead receives this revision's default CEO bundle, without a fixture override."
+          },
+          {
+            "id": "assigned-hiring-skill",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "Production CEO defaults assign the hiring skill."
+          },
+          {
+            "id": "production-source-reads",
+            "dimension": "coverage",
+            "passed": false,
+            "detail": "Completed lead read receipts before the hire prove the explicitly requested skill, guide, checklist and coder example paths. Unrecognized or missing reads leave coverage uncomparable."
+          },
+          {
+            "id": "supplied-coder-instructions",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "Saved hired instructions use the source revision's coder example with its company/name placeholders filled."
+          },
+          {
+            "id": "hired-instructions-durable",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "The same saved instruction bundle survives the reused worker execution."
+          },
+          {
+            "id": "hired-skills-durable",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "The saved skill selections survive the reused worker execution."
+          },
+          {
+            "id": "completion-action-attribution",
+            "dimension": "coverage",
+            "passed": false,
+            "detail": "Notification actions require exact canonical/native identities; missing cross-namespace mapping is uncomparable, not proof of extra work."
+          }
+        ]
+      },
+      "coverageUnchanged": true,
+      "otherOutcomesUnchanged": true,
+      "originalBytesUnchanged": true,
+      "inputSha256": {
+        "result": "a83aecc26ef0af2e231cb364299cf0cb2f2ccd83b6998913dcd33be72d4c0824",
+        "hiringTemplate": "4f83f523b955120c5baac18572dce752b278dbc9ff765b940c0e17c37ab28ae0",
+        "apiState": "a208a3e3568fe9aacbec8d683a502a0d304a47571a1b97c229d2936e5d1bb087"
+      }
+    },
+    {
+      "variant": "baseline",
+      "profile": "runner-codex",
+      "original": {
+        "sourceRevision": "296a4df85e8bcc97a160fc78c291b17adb828196",
+        "graderVersion": "paperclip.hiring-templates.v1",
+        "definitionDigest": "4d7f18420889325af89aa48eaaf021e8178aa6d26d504b92041635a15741f004",
+        "machineStatus": "failed",
+        "outcomePassed": false,
+        "countCheckPassed": false,
+        "comparisonStatus": "uncomparable"
+      },
+      "corrected": {
+        "graderVersion": "paperclip.hiring-templates.v3",
+        "definitionDigest": "cddbcb6b2f3050e065599011ace2faee048047fae6ea9bc9183db8c5744e2f38",
+        "outcomePassed": true,
+        "comparisonStatus": "uncomparable",
+        "scorerGuardPassed": true,
+        "finalChatGuardPassed": true,
+        "assessmentStatus": "verified",
+        "turnAccounting": {
+          "version": "paperclip.hiring-template-turn-accounting.v2",
+          "counts": {
+            "requiredWorkTurns": 5,
+            "maximumCompletionTurns": 2,
+            "maximumTotalTurns": 7,
+            "requestedLeadTurns": 3,
+            "coderTurns": 2,
+            "completionTurns": 2,
+            "unclassifiedTurns": 0,
+            "snapshotRunCount": 7,
+            "actualRunCount": 7,
+            "costAccountingRunCount": 7
+          },
+          "predicates": [
+            {
+              "id": "known-fixture-context",
+              "passed": true
+            },
+            {
+              "id": "complete-public-run-ledger",
+              "passed": true
+            },
+            {
+              "id": "exact-five-required-work-turns",
+              "passed": true
+            },
+            {
+              "id": "successful-native-without-retries",
+              "passed": true
+            },
+            {
+              "id": "resolved-company-account-and-identity",
+              "passed": true
+            },
+            {
+              "id": "three-distinct-requested-chat-turns",
+              "passed": true
+            },
+            {
+              "id": "one-coder-execution-per-known-task",
+              "passed": true
+            },
+            {
+              "id": "task-origins-are-first-two-requested-turns",
+              "passed": true
+            },
+            {
+              "id": "bounded-server-completion-receipts",
+              "passed": true
+            },
+            {
+              "id": "completion-runs-have-attributed-chat-replies",
+              "passed": true
+            },
+            {
+              "id": "no-notification-created-extra-tasks",
+              "passed": true
+            },
+            {
+              "id": "completion-turns-only-report-actions",
+              "passed": true
+            }
+          ],
+          "actionEvidence": {
+            "status": "verified",
+            "notificationRuns": 2,
+            "canonicalExecutions": 11,
+            "matchedNativeApiCalls": 7,
+            "unknownExecutions": 0
+          },
+          "passed": true
+        },
+        "checks": [
+          {
+            "id": "one-coder-hire",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Exactly one permanent coding teammate reports to the lead."
+          },
+          {
+            "id": "execution-account",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Hire keeps the lead model and managed account binding."
+          },
+          {
+            "id": "two-worker-tasks",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Both independent tasks are completed by the same coder in the chosen project."
+          },
+          {
+            "id": "bounded-work-and-completion-turns",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Exactly three requested lead turns and two coder executions, plus at most two strictly attributed completion notifications; every actual run remains counted."
+          },
+          {
+            "id": "initial-json-artifact",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Independent computation checks each original input/value and worker authorship."
+          },
+          {
+            "id": "reused-json-artifact",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "The reused coder applies the changed separator to every input."
+          },
+          {
+            "id": "original-preserved",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Reuse preserves the original document, revision and task identity."
+          },
+          {
+            "id": "source-fingerprints",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "Served instruction and hiring source bytes match the evaluated revision."
+          },
+          {
+            "id": "production-ceo-bundle",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "The API-created lead receives this revision's default CEO bundle, without a fixture override."
+          },
+          {
+            "id": "assigned-hiring-skill",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "Production CEO defaults assign the hiring skill."
+          },
+          {
+            "id": "production-source-reads",
+            "dimension": "coverage",
+            "passed": false,
+            "detail": "Completed lead read receipts before the hire prove the explicitly requested skill, guide, checklist and coder example paths. Unrecognized or missing reads leave coverage uncomparable."
+          },
+          {
+            "id": "supplied-coder-instructions",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "Saved hired instructions use the source revision's coder example with its company/name placeholders filled."
+          },
+          {
+            "id": "hired-instructions-durable",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "The same saved instruction bundle survives the reused worker execution."
+          },
+          {
+            "id": "hired-skills-durable",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "The saved skill selections survive the reused worker execution."
+          },
+          {
+            "id": "completion-action-attribution",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "Notification actions require exact canonical/native identities; missing cross-namespace mapping is uncomparable, not proof of extra work."
+          }
+        ]
+      },
+      "coverageUnchanged": true,
+      "otherOutcomesUnchanged": true,
+      "originalBytesUnchanged": true,
+      "inputSha256": {
+        "result": "d912d8400bfff4f7f922aa6b264f9ce5fff1ba2d893abf03790c4cfea352261f",
+        "hiringTemplate": "88b23e4d2cc8831a5d88b8479cc69c0d1c2e17a6a5243707b4bd19716a244aca",
+        "apiState": "dff6bb13bb54d45024966d9cfbeb6dbe6f2241e674b0b1350c1384863202a97f"
+      }
+    },
+    {
+      "variant": "baseline",
+      "profile": "runner-acpx-claude",
+      "original": {
+        "sourceRevision": "296a4df85e8bcc97a160fc78c291b17adb828196",
+        "graderVersion": "paperclip.hiring-templates.v1",
+        "definitionDigest": "4d7f18420889325af89aa48eaaf021e8178aa6d26d504b92041635a15741f004",
+        "machineStatus": "failed",
+        "outcomePassed": false,
+        "countCheckPassed": false,
+        "comparisonStatus": "uncomparable"
+      },
+      "corrected": {
+        "graderVersion": "paperclip.hiring-templates.v3",
+        "definitionDigest": "cddbcb6b2f3050e065599011ace2faee048047fae6ea9bc9183db8c5744e2f38",
+        "outcomePassed": false,
+        "comparisonStatus": "uncomparable",
+        "scorerGuardPassed": false,
+        "finalChatGuardPassed": false,
+        "assessmentStatus": "uncomparable",
+        "turnAccounting": {
+          "version": "paperclip.hiring-template-turn-accounting.v2",
+          "counts": {
+            "requiredWorkTurns": 5,
+            "maximumCompletionTurns": 2,
+            "maximumTotalTurns": 7,
+            "requestedLeadTurns": 3,
+            "coderTurns": 2,
+            "completionTurns": 2,
+            "unclassifiedTurns": 0,
+            "snapshotRunCount": 7,
+            "actualRunCount": 7,
+            "costAccountingRunCount": 7
+          },
+          "predicates": [
+            {
+              "id": "known-fixture-context",
+              "passed": true
+            },
+            {
+              "id": "complete-public-run-ledger",
+              "passed": true
+            },
+            {
+              "id": "exact-five-required-work-turns",
+              "passed": true
+            },
+            {
+              "id": "successful-native-without-retries",
+              "passed": true
+            },
+            {
+              "id": "resolved-company-account-and-identity",
+              "passed": true
+            },
+            {
+              "id": "three-distinct-requested-chat-turns",
+              "passed": true
+            },
+            {
+              "id": "one-coder-execution-per-known-task",
+              "passed": true
+            },
+            {
+              "id": "task-origins-are-first-two-requested-turns",
+              "passed": true
+            },
+            {
+              "id": "bounded-server-completion-receipts",
+              "passed": true
+            },
+            {
+              "id": "completion-runs-have-attributed-chat-replies",
+              "passed": true
+            },
+            {
+              "id": "no-notification-created-extra-tasks",
+              "passed": true
+            },
+            {
+              "id": "completion-turns-only-report-actions",
+              "passed": false
+            }
+          ],
+          "actionEvidence": {
+            "status": "uncomparable",
+            "notificationRuns": 2,
+            "canonicalExecutions": 3,
+            "matchedNativeApiCalls": 0,
+            "unknownExecutions": 4
+          },
+          "passed": false
+        },
+        "checks": [
+          {
+            "id": "one-coder-hire",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Exactly one permanent coding teammate reports to the lead."
+          },
+          {
+            "id": "execution-account",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Hire keeps the lead model and managed account binding."
+          },
+          {
+            "id": "two-worker-tasks",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Both independent tasks are completed by the same coder in the chosen project."
+          },
+          {
+            "id": "bounded-work-and-completion-turns",
+            "dimension": "outcome",
+            "passed": false,
+            "detail": "Exactly three requested lead turns and two coder executions, plus at most two strictly attributed completion notifications; every actual run remains counted."
+          },
+          {
+            "id": "initial-json-artifact",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Independent computation checks each original input/value and worker authorship."
+          },
+          {
+            "id": "reused-json-artifact",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "The reused coder applies the changed separator to every input."
+          },
+          {
+            "id": "original-preserved",
+            "dimension": "outcome",
+            "passed": true,
+            "detail": "Reuse preserves the original document, revision and task identity."
+          },
+          {
+            "id": "source-fingerprints",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "Served instruction and hiring source bytes match the evaluated revision."
+          },
+          {
+            "id": "production-ceo-bundle",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "The API-created lead receives this revision's default CEO bundle, without a fixture override."
+          },
+          {
+            "id": "assigned-hiring-skill",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "Production CEO defaults assign the hiring skill."
+          },
+          {
+            "id": "production-source-reads",
+            "dimension": "coverage",
+            "passed": false,
+            "detail": "Completed lead read receipts before the hire prove the explicitly requested skill, guide, checklist and coder example paths. Unrecognized or missing reads leave coverage uncomparable."
+          },
+          {
+            "id": "supplied-coder-instructions",
+            "dimension": "coverage",
+            "passed": false,
+            "detail": "Saved hired instructions use the source revision's coder example with its company/name placeholders filled."
+          },
+          {
+            "id": "hired-instructions-durable",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "The same saved instruction bundle survives the reused worker execution."
+          },
+          {
+            "id": "hired-skills-durable",
+            "dimension": "coverage",
+            "passed": true,
+            "detail": "The saved skill selections survive the reused worker execution."
+          },
+          {
+            "id": "completion-action-attribution",
+            "dimension": "coverage",
+            "passed": false,
+            "detail": "Notification actions require exact canonical/native identities; missing cross-namespace mapping is uncomparable, not proof of extra work."
+          }
+        ]
+      },
+      "coverageUnchanged": true,
+      "otherOutcomesUnchanged": true,
+      "originalBytesUnchanged": true,
+      "inputSha256": {
+        "result": "844763ddc83461b2bea620f153f4bfe0bfee20a27bf33a60017a45c774ce2f6a",
+        "hiringTemplate": "27b153798472e206970c46358febdda363cb75f892734757e76994117f0d2c9b",
+        "apiState": "441cf7272ea28c5e1182adf48dba09a401e88c6cad3a99e72c8cf3f46b1c5b41"
+      }
+    }
+  ]
+}

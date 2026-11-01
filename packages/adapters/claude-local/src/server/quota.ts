@@ -265,14 +265,15 @@ export async function fetchWithTimeout(url: string, init: RequestInit, ms = 8000
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await fetch(url, { ...init, signal: init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal });
   } finally {
     clearTimeout(timer);
   }
 }
 
-export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
+export async function fetchClaudeQuota(token: string, signal?: AbortSignal): Promise<QuotaWindow[]> {
   const resp = await fetchWithTimeout("https://api.anthropic.com/api/oauth/usage", {
+    signal,
     headers: {
       Authorization: `Bearer ${token}`,
       "anthropic-beta": "oauth-2025-04-20",

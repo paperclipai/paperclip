@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   agents,
   agentRuntimeState,
   agentWakeupRequests,
@@ -59,6 +60,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
   afterEach(async () => {
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     await db.delete(heartbeatRunEvents);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issues);

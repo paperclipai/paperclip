@@ -101,7 +101,7 @@ export const statusCardSchema = z.object({
   summaryBody: z.string().nullable().optional(),
   watchedIssueCount: z.number().int().nonnegative().optional(),
   todayTokens: z.number().int().nonnegative().optional(),
-  todayCostCents: z.number().int().nonnegative().optional(),
+  todayCostCents: z.number().nonnegative().optional(),
 });
 
 export const statusCardUpdateChangeSchema = z.object({
@@ -122,7 +122,7 @@ export const statusCardUpdateSchema = z.object({
   changes: z.array(statusCardUpdateChangeSchema),
   inputTokens: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative(),
-  costCents: z.number().int().nonnegative(),
+  costCents: z.number().nonnegative(),
   model: z.string().nullable(),
   queryVersion: z.number().int().nonnegative().nullable(),
   changeSummary: z.string().nullable(),

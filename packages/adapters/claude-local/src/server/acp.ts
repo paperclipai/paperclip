@@ -473,7 +473,16 @@ async function commandIsResolvable(
         trimmed,
         target,
         resolveAdapterExecutionTargetCwd(target, asString(input?.config.cwd, ""), process.cwd()),
-        process.env,
+        {},
+        {
+          // Fresh sandboxes need the same ACP server that ships with this
+          // adapter. Only bootstrap our default command; an operator's custom
+          // command must remain an actionable setup failure.
+          ...(target.transport === "sandbox" && trimmed === "claude-agent-acp" &&
+            !firstNonEmptyString(input?.config.agentCommand, input?.config.acpAgentCommand)
+            ? { installCommand: "npm install -g @agentclientprotocol/claude-agent-acp@0.73.0", timeoutSec: 120 }
+            : {}),
+        },
       );
       return true;
     } catch {
@@ -721,7 +730,10 @@ export async function probeClaudeAcpSandboxLogin(input: {
     });
     return [buildAcpLoginProbeUnavailableCheck("The Claude login probe did not complete.", targetIsSandbox)];
   }
-  return [];
+  if (!/\bhello\b/i.test(parsedStream.summary)) {
+    return [buildAcpLoginProbeUnavailableCheck("The Claude login probe did not return hello.", targetIsSandbox)];
+  }
+  return [{ code: "claude_hello_probe_passed", level: "info", message: "Claude login probe succeeded." }];
 }
 
 export async function testClaudeAcpEnvironment(

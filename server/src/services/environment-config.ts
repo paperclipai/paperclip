@@ -17,7 +17,7 @@ import { unprocessable } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
 import {
-  resolvePluginSandboxProviderDriverByKey,
+  resolvePluginSandboxProviderConfigSchema,
   validatePluginEnvironmentDriverConfig,
   validatePluginSandboxProviderConfig,
 } from "./plugin-environment-driver.js";
@@ -111,6 +111,8 @@ const pluginSandboxEnvironmentConfigSchema = z.object({
 }).catchall(z.unknown());
 
 const pluginEnvironmentConfigSchema = z.object({
+  runnerLifecycleMode: z.enum(["inherit", "per_turn", "warm"]).optional(),
+  runnerIdleTimeoutMs: z.number().int().positive().max(86_400_000).optional(),
   pluginKey: z.string().min(1),
   driverKey: z.string().min(1).regex(
     /^[a-z0-9][a-z0-9._-]*$/,
@@ -177,14 +179,10 @@ async function getSandboxProviderConfigSchema(
   db: Db,
   provider: string,
 ): Promise<Record<string, unknown> | null> {
-  const resolved = await resolvePluginSandboxProviderDriverByKey({
+  return resolvePluginSandboxProviderConfigSchema({
     db,
     driverKey: provider,
   });
-  const schema = resolved?.driver.configSchema;
-  return schema && typeof schema === "object" && !Array.isArray(schema)
-    ? schema as Record<string, unknown>
-    : null;
 }
 
 export async function resolveSandboxProviderSecretRefPaths(
@@ -337,7 +335,7 @@ async function resolveConfigSecretRefsForProbe(input: {
   accessContext?: {
     actorType: "agent" | "user";
     actorId: string;
-    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant";
     heartbeatRunId?: string | null;
   };
 }): Promise<Record<string, unknown>> {
@@ -482,7 +480,7 @@ export function normalizeEnvironmentConfigForProbe(input: {
   accessContext?: {
     actorType: "agent" | "user";
     actorId: string;
-    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant";
     heartbeatRunId?: string | null;
   };
   pluginWorkerManager?: PluginWorkerManager;
@@ -660,6 +658,8 @@ export async function resolveEnvironmentDriverConfigForRuntime(
     // but must still resolve the active custom image as prepared runtime
     // configuration and tooling so the test reflects what real agent runs use.
     applyCustomImageTemplate?: boolean;
+    readOnlyCustomImageTemplate?: boolean;
+    onResolvedCustomImageTemplate?: (identity: { id: string; capturedAt: string | null; templateKind: string; bindingField: string }) => void;
   },
 ): Promise<ParsedEnvironmentConfig> {
   const parsed = parseEnvironmentDriverConfig(environment);
@@ -729,6 +729,8 @@ export async function resolveEnvironmentDriverConfigForRuntime(
             // are excluded when the template's source fingerprint is computed,
             // so they must be excluded when re-checking it here.
             secretRefExcludePaths: collectSecretRefPaths(schema),
+            readOnly: context?.readOnlyCustomImageTemplate,
+            onResolvedTemplate: context?.onResolvedCustomImageTemplate,
           })
         : runtimeConfig,
     };

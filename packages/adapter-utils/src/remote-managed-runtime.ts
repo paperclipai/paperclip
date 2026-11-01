@@ -1,5 +1,5 @@
 import path from "node:path";
-import { GIT_ARCHIVE_EXCLUDES } from "./git-workspace-sync.js";
+import { GIT_ARCHIVE_EXCLUDES, PROJECT_REPOSITORIES_DIR } from "./git-workspace-sync.js";
 import {
   type SshRemoteExecutionSpec,
   prepareWorkspaceForSshExecution,
@@ -13,7 +13,7 @@ import {
   type SandboxAdditionalSource,
   type SandboxManagedRuntimeAssetRestoreContext,
 } from "./sandbox-managed-runtime.js";
-import { captureDirectorySnapshot } from "./workspace-restore-merge.js";
+import { captureDirectorySnapshot, type DirectorySnapshot } from "./workspace-restore-merge.js";
 import type { RuntimeProgressSink } from "./runtime-progress.js";
 
 // The fixed heavy-directory excludes every referenced project drops,
@@ -145,13 +145,27 @@ export async function prepareRemoteManagedRuntime(input: {
         workspaceExclude: input.workspaceExclude,
       })
     : null;
+  const projectRepositories = preparedWorkspace?.repositories ?? [];
   const baselineSnapshot = preparedWorkspace
     ? await captureDirectorySnapshot(input.workspaceLocalDir, {
         exclude: preparedWorkspace.gitBacked
-          ? [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"]
+          ? [
+              ...GIT_ARCHIVE_EXCLUDES,
+              ".paperclip-runtime",
+              ...(projectRepositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : []),
+            ]
           : [".paperclip-runtime", ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
       })
     : null;
+  const repositoryBaselines: Array<{ path: string; baselineSnapshot: DirectorySnapshot }> = [];
+  for (const repository of projectRepositories) {
+    repositoryBaselines.push({
+      path: repository,
+      baselineSnapshot: await captureDirectorySnapshot(path.join(input.workspaceLocalDir, repository), {
+        exclude: [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"],
+      }),
+    });
+  }
 
   const assetDirs: Record<string, string> = {};
   try {
@@ -177,6 +191,7 @@ export async function prepareRemoteManagedRuntime(input: {
         baselineSnapshot,
         restoreGitHistory: preparedWorkspace.gitBacked,
         onProgress: input.onProgress,
+        repositories: repositoryBaselines,
       });
     }
     throw error;
@@ -244,6 +259,7 @@ export async function prepareRemoteManagedRuntime(input: {
           baselineSnapshot,
           restoreGitHistory: preparedWorkspace.gitBacked,
           onProgress,
+          repositories: repositoryBaselines,
         });
       }
       for (const asset of input.assets ?? []) {

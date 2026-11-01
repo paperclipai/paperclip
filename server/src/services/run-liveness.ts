@@ -1,4 +1,4 @@
-import { isAiAuthenticationFailure } from "./ai-auth-failure.js";
+import { isAiAuthenticationRepairable } from "./ai-auth-failure.js";
 import type { HeartbeatRunStatus, IssueStatus, RunLivenessState } from "@paperclipai/shared";
 
 export type RunLivenessActionability =
@@ -323,7 +323,7 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
     return output("needs_followup", input.errorCode ? `Run interrupted (${input.errorCode})` : "Run interrupted");
   }
 
-  if (input.runStatus === "failed" && input.authenticationRepairRequested && isAiAuthenticationFailure(input.errorCode)) {
+  if (input.runStatus === "failed" && input.authenticationRepairRequested && isAiAuthenticationRepairable(input)) {
     return output("blocked", "Waiting for provider authentication repair", "Complete the connection request to continue this task");
   }
 

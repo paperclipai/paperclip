@@ -1,7 +1,11 @@
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { chatConversations, issues, type Db } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 
-/** Read-only projection; Slack threads do not acquire Agent Chat identities. */
+/** Read-only projection; External chat threads do not acquire Agent Chat identities. */
 export function externalConversationStateSql() {
   return sql<"active" | "waiting" | null>`(
     select case when c.state = 'waiting' and "issues"."status" = 'in_review'
@@ -31,7 +35,7 @@ export function externalConversationStateSql() {
       then 'waiting' else 'active' end
     from chat_conversations c join chat_endpoints e on e.id = c.endpoint_id and e.company_id = c.company_id
     where c.company_id = "issues"."company_id" and c.issue_id = "issues"."id"
-      and e.provider = 'slack' and e.assigned_agent_id = "issues"."assignee_agent_id"
+      and (e.provider = 'slack' or (e.provider = 'speko' and e.id::text = "issues"."origin_id")) and e.assigned_agent_id = "issues"."assignee_agent_id"
       and e.status in ('active', 'verifying') and c.state in ('active', 'waiting')
     order by c.created_at desc, c.id desc limit 1
   )`;
@@ -42,14 +46,21 @@ export function nonIdleSlackIssueCondition() {
 }
 
 /** Called inside message admission while its transaction owns the issue lock. */
-export async function resumeSlackConversation(tx: Db, companyId: string, issueId: string) {
+export async function resumeExternalConversation(tx: Db, companyId: string, issueId: string) {
+  await notifyAttentionRetentionWork(tx, { companyId });
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+  await notifyExternalConversationSettlement(tx, { companyId, issueId });
   // Only the verified idle convention may leave In Review automatically.
   // A real decision or delivery problem keeps the existing review semantics.
+  await notifyStatusCardIssueChange(tx, companyId);
   await tx.update(issues).set({ status: "todo", updatedAt: new Date() })
     .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId),
       sql`${externalConversationStateSql()} = 'waiting'`));
   await tx.update(chatConversations).set({ state: "active", updatedAt: new Date() })
     .where(and(eq(chatConversations.companyId, companyId), eq(chatConversations.issueId, issueId),
       eq(chatConversations.state, "waiting"), sql`exists (select 1 from chat_endpoints e
-        where e.id = ${chatConversations.endpointId} and e.company_id = ${chatConversations.companyId} and e.provider = 'slack')`));
+        where e.id = ${chatConversations.endpointId} and e.company_id = ${chatConversations.companyId} and e.provider in ('slack', 'speko'))`));
 }
+
+/** Compatibility name for existing Slack callers. */
+export const resumeSlackConversation = resumeExternalConversation;

@@ -219,6 +219,7 @@ fn acpx_projection_matches_shared_plan_question_final_and_terminal_identity() {
         project_acpx_state_event(
             &context,
             &AcpxProviderStateEvent::InputRequest {
+                tool_call_id: None,
                 request_id: expected_question["requestId"]
                     .as_str()
                     .expect("request id")

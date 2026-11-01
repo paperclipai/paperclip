@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, applyPendingMigrations, authUsers, closeRegisteredClients, companies, companySecrets, createDb, dotAgentBindings,
+  dotRunnerAssignments, grokBotDispatches, grokBotRoutines, heartbeatRuns, issues, mcpOauthClients, mcpOauthGrants, nativeRunFinalizations,
+  type Db } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -27,10 +29,12 @@ vi.mock("../../log-redaction.js", async (importOriginal) => {
   return { ...actual, redactCurrentUserText: mockRedactCurrentUserText };
 });
 
-import { reportRunFailure, waitForPendingRunFailureReports } from "../run-failure-report.js";
+import { isNewTerminalRunFailure, reportRunFailure, waitForPendingRunFailureReports } from "../run-failure-report.js";
+import { controllerLeaseLossCancellation } from "../run-cancellation.js";
 import { REDACTED_EVENT_VALUE } from "../../redaction.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const testDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
+const embeddedPostgresSupport = testDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("reportRunFailure", () => {
@@ -41,8 +45,13 @@ describeEmbeddedPostgres("reportRunFailure", () => {
   let inheritedEnv: NodeJS.ProcessEnv;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-failure-report-");
-    db = createDb(tempDb.connectionString);
+    if (testDatabaseUrl) {
+      await applyPendingMigrations(testDatabaseUrl);
+      db = createDb(testDatabaseUrl);
+    } else {
+      tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-failure-report-");
+      db = createDb(tempDb.connectionString);
+    }
   }, 20_000);
 
   beforeEach(() => {
@@ -54,18 +63,26 @@ describeEmbeddedPostgres("reportRunFailure", () => {
       ["PATH", "HOME", "USER", "USERNAME", "LOGNAME", "USERPROFILE", "TMPDIR", "TEMP", "TMP"]
         .flatMap((key) => inheritedEnv[key] === undefined ? [] : [[key, inheritedEnv[key]]]),
     );
+    process.env.PAPERCLIP_SENTRY_RUN_FAILURES = "unexpected";
   });
 
   afterEach(async () => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
     process.env = inheritedEnv;
+    await db.delete(grokBotRoutines);
+    await db.delete(companySecrets);
+    await db.delete(nativeRunFinalizations);
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
+    await db.delete(mcpOauthClients);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
+    if (testDatabaseUrl) await closeRegisteredClients(testDatabaseUrl);
     await tempDb?.cleanup();
   });
 
@@ -110,6 +127,717 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     } as unknown as typeof heartbeatRuns.$inferSelect;
   }
 
+  it.each([undefined, "", "off", "true", "invalid"])("does no reporting work without an explicit valid mode: %s", async mode => {
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", mode);
+    if (mode === undefined) delete process.env.PAPERCLIP_SENTRY_RUN_FAILURES;
+    const select = vi.fn();
+    await reportRunFailure({ select } as unknown as Db, buildRun());
+    expect(select).not.toHaveBeenCalled();
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each(["quota", "git", "secret", "selection", "workspace", "hermes"])("reports known %s failures in all mode", async kind => {
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    await seedCompanyAndAgent(kind === "hermes" ? { adapterType: "hermes_gateway" } : {});
+    const fixtures = {
+      quota: providerQuotaRun,
+      git: gitConnectionRun,
+      secret: missingSecretRun,
+      selection: aiSelectionRun,
+      workspace: localPathConfigurationRun,
+      hermes: hermesConnectionRun,
+    };
+    const fixture = fixtures[kind as keyof typeof fixtures]();
+    const phase = ["git", "secret", "selection", "workspace"].includes(kind) ? "setup" : "execute";
+    const before = structuredClone(fixture);
+    await reportRunFailure(db, fixture, { phase });
+    expect(mockCaptureRunFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      companyId, agentId, runId: fixture.id, runStatus: "failed", errorCode: fixture.errorCode,
+    }));
+    expect(fixture).toEqual(before);
+  });
+
+  it("reports company-scoped runs that have no task", async () => {
+    await seedCompanyAndAgent();
+    const fixture = buildRun({ nativeIssueId: null, contextSnapshot: null });
+    await reportRunFailure(db, fixture);
+    expect(mockCaptureRunFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      companyId, agentId, taskId: null, runId: fixture.id,
+    }));
+  });
+
+  it.each(["succeeded", "queued", "running", "interrupted", "cancelled"])("all mode excludes %s runs and expected operator stops", async status => {
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    const select = vi.fn();
+    await reportRunFailure({ select } as unknown as Db, buildRun({ status, startedAt: new Date(), resultJson: {
+      cancellation: { source: "operator", expected: true, initiator: { type: "user" }, reason: "Stopped", recordedAt: new Date().toISOString() },
+    } }));
+    expect(select).not.toHaveBeenCalled();
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each(["fresh", "resume", "provider_started"] as const)("keeps workspace base-ref observations reportable: %s", async mode => {
+    await seedCompanyAndAgent();
+    const run = buildRun({ errorCode: "configuration_incomplete", executionStage: "preparing", exitCode: null, signal: null,
+      runtimeMode: mode === "resume" ? "native" : "legacy", runnerProfileJson: mode === "resume" ? { nativeExecutionInput: {} } : null,
+      resultJson: { configurationIncomplete: { reason: "workspace_base_ref_unresolved", baseRefDiagnostic: {
+        schemaVersion: 1, remoteLookup: "resolved", authLookup: "resolved", fetch: "failed", fetchExitCode: 128,
+        fetchFailureKind: "remote_ref_not_found", refResolution: "failed", refExitCode: 128,
+      } }, executionRecovery: { kind: "bootstrap", providerWorkStarted: mode === "provider_started" } },
+    });
+    const before = structuredClone(run);
+    await reportRunFailure(db, run, { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    expect(mockCaptureRunFailure).toHaveBeenCalledWith(expect.objectContaining({ diagnostics: expect.objectContaining({
+      execution: expect.objectContaining({ workspaceBaseRefFetch: "failed", workspaceBaseRefFetchFailureKind: "remote_ref_not_found" }),
+    }) }));
+    expect(run).toEqual(before);
+  });
+
+  const gitConnection = { schemaVersion: 1, provider: "git", operation: "clone", reason: "authentication_failed" };
+  const hermesConnection = { schemaVersion: 1, provider: "hermes_gateway", operation: "create_run", reason: "connection_refused" };
+
+  function gitConnectionRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "setup_failed", executionStage: "preparing", exitCode: null, signal: null,
+      resultJson: { connectionFailure: gitConnection,
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      ...overrides,
+    });
+  }
+
+  function hermesConnectionRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "hermes_gateway_connect_failed", executionStage: "executing", exitCode: 1, signal: null,
+      resultJson: { connectionFailure: hermesConnection }, ...overrides,
+    });
+  }
+
+  it("keeps a proven Git clone failure and its persisted task error unchanged", async () => {
+    await seedCompanyAndAgent();
+    const input = gitConnectionRun();
+    const [run] = await db.insert(heartbeatRuns).values(input).returning();
+    const before = structuredClone(run);
+    await reportRunFailure(db, run!, { phase: "setup" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(before);
+    expect(await db.select().from(heartbeatRuns)).toEqual([before]);
+  });
+
+  it("keeps an all-external Git materialization aggregate local even across different external causes", async () => {
+    await seedCompanyAndAgent();
+    const run = gitConnectionRun({ errorCode: "workspace_validation_failed" });
+    run.resultJson!.workspaceValidation = { reason: "git_worktree_base_materialization_failed", materializationFailures: [
+      { connectionFailure: gitConnection },
+      { connectionFailure: { ...gitConnection, reason: "repository_unavailable" } },
+    ] };
+    const before = structuredClone(run);
+    await reportRunFailure(db, run, { phase: "setup" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(before);
+  });
+
+  it.each([
+    { status: "timed_out" }, { executionStage: "executing" }, { executionStage: null },
+    { errorCode: "adapter_failed" }, { exitCode: 1 }, { exitCode: 0 }, { signal: "SIGTERM" },
+    { resultJson: {} },
+    { resultJson: { connectionFailure: { ...gitConnection, schemaVersion: 2 }, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } },
+    { resultJson: { connectionFailure: hermesConnection, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } },
+  ])("reports a Git marker without its matching setup outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, gitConnectionRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, "execute"] as const)("reports Git failures outside setup: %s", async (phase) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, gitConnectionRun(), { phase });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, { kind: "bootstrap" }, { kind: "bootstrap", providerWorkStarted: true },
+    { kind: "runtime", providerWorkStarted: false }])("reports Git failures without unstarted bootstrap proof: %j", async (recovery) => {
+    await seedCompanyAndAgent();
+    const run = gitConnectionRun();
+    run.resultJson!.executionRecovery = recovery;
+    await reportRunFailure(db, run, { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [], [null], [{ connectionFailure: gitConnection }, {}],
+    [{ connectionFailure: gitConnection }, { connectionFailure: hermesConnection }],
+    [{ connectionFailure: gitConnection }, { connectionFailure: { ...gitConnection, reason: "unknown" } }],
+    [{ connectionFailure: { ...gitConnection, reason: "repository_unavailable" } }],
+  ].map((failures) => ({ failures })))("reports mixed, malformed, or inconsistent Git materialization evidence: %j", async ({ failures }) => {
+    await seedCompanyAndAgent();
+    const run = gitConnectionRun({ errorCode: "workspace_validation_failed" });
+    run.resultJson!.workspaceValidation = { reason: "git_worktree_base_materialization_failed", materializationFailures: failures };
+    await reportRunFailure(db, run, { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { reason: "git_worktree_base_materialization_failed", materializationFailures: [{ connectionFailure: gitConnection }] },
+    { reason: "git_worktree_not_reusable" },
+  ])("does not use setup_failed to bypass separate workspace validation evidence: %j", async (validation) => {
+    await seedCompanyAndAgent();
+    const run = gitConnectionRun();
+    run.resultJson!.workspaceValidation = validation;
+    await reportRunFailure(db, run, { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["configuration", "endpoint_missing", "hermes_gateway_api_base_url_missing"],
+    ["configuration", "endpoint_invalid", "hermes_gateway_api_base_url_invalid"],
+    ["configuration", "insecure_transport", "hermes_gateway_plain_http_remote_denied"],
+    ["configuration", "credentials_missing", "hermes_gateway_api_key_missing"],
+    ["create_run", "authentication_failed", "hermes_gateway_auth_failed"],
+    ["create_run", "endpoint_not_found", "hermes_gateway_runs_unsupported"],
+    ["create_run", "rate_limited", "hermes_gateway_rate_limited"],
+    ["create_run", "remote_unavailable", "hermes_gateway_upstream_error"],
+    ...["connection_refused", "dns_failure", "network_unreachable", "connection_reset", "connection_timeout", "tls_failure"]
+      .flatMap((reason) => ["hermes_gateway_connect_failed", "hermes_gateway_protocol_error"].map((code) => ["create_run", reason, code])),
+  ])("keeps the matching Hermes %s/%s task error local", async (operation, reason, errorCode) => {
+    await seedCompanyAndAgent({ adapterType: "hermes_gateway" });
+    const run = hermesConnectionRun({ errorCode, resultJson: { connectionFailure: { ...hermesConnection, operation, reason } } });
+    const before = structuredClone(run);
+    await reportRunFailure(db, run, { phase: "execute" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(before);
+  });
+
+  it.each([undefined, { kind: "bootstrap", providerWorkStarted: true }, { kind: "runtime", providerWorkStarted: true }])(
+    "does not infer remote nonacceptance from a classified Hermes connection failure: %j", async (recovery) => {
+      await seedCompanyAndAgent({ adapterType: "hermes_gateway" });
+      const input = hermesConnectionRun();
+      input.resultJson!.executionRecovery = recovery;
+      const [run] = await db.insert(heartbeatRuns).values(input).returning();
+      const before = structuredClone(run);
+      await reportRunFailure(db, run!);
+      expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+      expect(await db.select().from(heartbeatRuns)).toEqual([before]);
+    },
+  );
+
+  it.each([
+    { status: "timed_out" }, { status: "cancelled", startedAt: new Date(0) },
+    { exitCode: 0 }, { exitCode: null }, { signal: "SIGTERM" },
+    { errorCode: "hermes_gateway_timeout" }, { errorCode: "hermes_gateway_run_failed" },
+    { errorCode: "hermes_gateway_auth_failed" },
+    { resultJson: {} },
+    { resultJson: { connectionFailure: { ...hermesConnection, reason: "unknown" } } },
+    { resultJson: { connectionFailure: { ...hermesConnection, privateUrl: "https://private.example.test" } } },
+    { resultJson: { connectionFailure: gitConnection } },
+    { resultJson: { connectionFailure: { ...hermesConnection, operation: "configuration", reason: "credentials_missing" } } },
+  ])("reports an unproven or mismatched Hermes outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent({ adapterType: "hermes_gateway" });
+    const run = hermesConnectionRun(overrides);
+    const before = structuredClone(run);
+    await reportRunFailure(db, run, { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    expect(run).toEqual(before);
+  });
+
+  it("keeps setup errors reportable even when they carry a matching Hermes marker", async () => {
+    await seedCompanyAndAgent({ adapterType: "hermes_gateway" });
+    await reportRunFailure(db, hermesConnectionRun(), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it.each(["codex_local", "hermes_local"])("requires the actual database adapter, not a Hermes marker on %s", async (adapterType) => {
+    await seedCompanyAndAgent({ adapterType });
+    const run = hermesConnectionRun({ contextSnapshot: { adapterType: "hermes_gateway" } });
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledWith(expect.objectContaining({ agentAdapter: adapterType }));
+  });
+
+  it.each(["missing", "other_company"])("does not suppress Hermes when its database agent is %s", async (kind) => {
+    await seedCompanyAndAgent({ adapterType: "hermes_gateway" });
+    const run = hermesConnectionRun(kind === "missing" ? { agentId: randomUUID() } : { companyId: randomUUID() });
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledWith(expect.objectContaining({ agentAdapter: "unknown" }));
+  });
+
+  function providerQuotaRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      error: "ACP agent reported a terminal limit failure.\nYou've hit your session limit · resets 2am (UTC)",
+      errorCode: "provider_quota", executionStage: "dispatching", exitCode: 1, signal: null,
+      resultJson: { errorFamily: "provider_quota", stopReason: "adapter_failed" }, ...overrides,
+    });
+  }
+
+  it.each(["claude_local", "codex_local"])("keeps a classified %s provider quota wait local", async (adapterType) => {
+    await seedCompanyAndAgent({ adapterType });
+    const [run] = await db.insert(heartbeatRuns).values(providerQuotaRun()).returning();
+    const before = structuredClone(run);
+    for (const phase of [undefined, "execute"] as const) await reportRunFailure(db, run!, { phase });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(await db.select().from(heartbeatRuns)).toEqual([before]);
+  });
+
+  it.each([
+    { status: "timed_out" }, { status: "cancelled", startedAt: new Date(0) }, { signal: "SIGTERM" },
+    { errorCode: "adapter_failed" }, { errorCode: "claude_transient_upstream" },
+    { resultJson: {} }, { resultJson: null }, { resultJson: { errorFamily: "transient_upstream" } },
+  ])("reports a provider quota outcome without matching adapter evidence: %j", async (overrides) => {
+    await seedCompanyAndAgent({ adapterType: "claude_local" });
+    await reportRunFailure(db, providerQuotaRun(overrides), { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a provider quota code reportable during setup", async () => {
+    await seedCompanyAndAgent({ adapterType: "claude_local" });
+    await reportRunFailure(db, providerQuotaRun(), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  function codexModelCapacityRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      error: "ACP agent reported a terminal service failure.\nSelected model is at capacity. Please try a different model.",
+      errorCode: "codex_transient_upstream", executionStage: "dispatching", exitCode: 1, signal: null,
+      resultJson: {
+        errorFamily: "transient_upstream", stopReason: "adapter_failed",
+        terminalSessionFailure: { category: "service", title: "Selected model is at capacity. Please try a different model." },
+      },
+      ...overrides,
+    });
+  }
+
+  it("keeps a classified Codex ACP model capacity retry local", async () => {
+    await seedCompanyAndAgent({ adapterType: "codex_local" });
+    for (const phase of [undefined, "execute"] as const) await reportRunFailure(db, codexModelCapacityRun(), { phase });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: "timed_out" }, { signal: "SIGTERM" }, { errorCode: "acpx_turn_failed" },
+    { resultJson: { errorFamily: "transient_upstream" } },
+    { resultJson: { errorFamily: "provider_quota", terminalSessionFailure: { category: "service" } } },
+    { resultJson: { errorFamily: "transient_upstream", terminalSessionFailure: { category: "connection" } } },
+  ])("reports a Codex transient outcome without typed capacity evidence: %j", async (overrides) => {
+    await seedCompanyAndAgent({ adapterType: "codex_local" });
+    await reportRunFailure(db, codexModelCapacityRun(overrides), { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("reports a Codex ACP model capacity failure during setup or in all mode", async () => {
+    await seedCompanyAndAgent({ adapterType: "codex_local" });
+    await reportRunFailure(db, codexModelCapacityRun(), { phase: "setup" });
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    await reportRunFailure(db, codexModelCapacityRun(), { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(2);
+  });
+
+  /** The persisted shape after the native finalizer commits a capacity decision. */
+  async function nativeCapacityFailure(input: {
+    run?: Partial<typeof heartbeatRuns.$inferSelect>;
+    resultJson?: Record<string, unknown>;
+    retry?: Partial<typeof heartbeatRuns.$inferInsert> | null;
+  } = {}) {
+    await seedCompanyAndAgent({ adapterType: "paperclip_runner" });
+    const run = buildRun({
+      error: "Selected model is at capacity. Please try a different model.",
+      errorCode: "native_provider_overloaded", runtimeMode: "native", nativePhase: "committed",
+      executionStage: "preparing", exitCode: null, signal: null,
+      resultJson: {
+        nativeProviderFailure: { provider: "codex", category: "server_overloaded" },
+        finalizationPhase: "committed", finalizationReasonCode: "native_provider_overloaded",
+        ...input.resultJson,
+      },
+      ...input.run,
+    });
+    const [stored] = await db.insert(heartbeatRuns).values(run).returning();
+    if (input.retry !== null) {
+      await db.insert(heartbeatRuns).values({
+        companyId, agentId, invocationSource: "automation", triggerDetail: "system", status: "scheduled_retry",
+        retryOfRunId: run.id, scheduledRetryReason: "native_provider_overloaded", scheduledRetryAttempt: 1,
+        scheduledRetryAt: new Date(Date.now() + 60_000), errorCode: "native_provider_overloaded",
+        contextSnapshot: { issueId: run.nativeIssueId, retryOfRunId: run.id }, ...input.retry,
+      });
+    }
+    return stored!;
+  }
+
+  it("keeps a native model capacity failure local once its automatic retry is scheduled", async () => {
+    const run = await nativeCapacityFailure();
+    await reportRunFailure(db, run);
+    await reportRunFailure(db, run, { phase: "execute" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the retries are exhausted", { resultJson: { finalizationReasonCode: "native_provider_overloaded_exhausted" }, retry: null }],
+    ["the task holds the retry", { resultJson: { finalizationReasonCode: "native_provider_overloaded_held" }, retry: null }],
+    ["no retry run exists", { retry: null }],
+    ["the successor belongs to another retry lane", { retry: { scheduledRetryReason: "native_safe_replacement" } }],
+    ["the successor belongs to another task", { retry: { contextSnapshot: { issueId: randomUUID() } } }],
+    ["the run has no native task", { run: { nativeIssueId: null } }],
+    ["finalization is not committed", { resultJson: { finalizationPhase: "retryable_failure" } }],
+    ["the diagnostic is not typed capacity evidence", { resultJson: { nativeProviderFailure: { provider: "codex", category: "turn_failed" } } }],
+    ["the diagnostic is missing", { resultJson: { nativeProviderFailure: undefined } }],
+    ["the run is legacy", { run: { runtimeMode: "legacy" } }],
+    ["the run has a signal", { run: { signal: "SIGTERM" } }],
+    ["the run timed out", { run: { status: "timed_out" } }],
+  ] as const)("reports a native capacity failure when %s", async (_label, input) => {
+    const run = await nativeCapacityFailure(input as Parameters<typeof nativeCapacityFailure>[0]);
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("reports a native capacity retry during setup, in all mode, or when its retry cannot be read", async () => {
+    const run = await nativeCapacityFailure();
+    await reportRunFailure(db, run, { phase: "setup" });
+    const select = db.select.bind(db);
+    // The agent lookup succeeds; the retry read fails.
+    const spy = vi.spyOn(db, "select").mockImplementationOnce(select as typeof db.select)
+      .mockImplementation(() => { throw new Error("fixture retry read failed"); });
+    try {
+      await reportRunFailure(db, run);
+    } finally {
+      spy.mockRestore();
+    }
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(3);
+  });
+
+  function providerAccessRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      error: "ACP agent reported a terminal access failure.\nInvalid API key · Fix external API key",
+      errorCode: "claude_auth_required", executionStage: "dispatching", exitCode: 1, signal: null,
+      resultJson: {
+        stopReason: "adapter_failed",
+        terminalSessionFailure: { category: "access", title: "Invalid API key · Fix external API key" },
+      },
+      ...overrides,
+    });
+  }
+
+  it.each(["claude_auth_required", "acpx_auth_required"])("keeps a typed ACP provider access failure (%s) local", async (errorCode) => {
+    await seedCompanyAndAgent({ adapterType: "claude_local" });
+    for (const phase of [undefined, "execute"] as const) await reportRunFailure(db, providerAccessRun({ errorCode }), { phase });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: "timed_out" }, { signal: "SIGTERM" }, { errorCode: "acpx_turn_failed" }, { errorCode: "adapter_failed" },
+    { resultJson: {} }, { resultJson: null }, { resultJson: { terminalSessionFailure: { category: "service" } } },
+    { resultJson: { terminalSessionFailure: "access" } },
+  ])("reports a provider auth outcome without typed ACP access evidence: %j", async (overrides) => {
+    await seedCompanyAndAgent({ adapterType: "claude_local" });
+    await reportRunFailure(db, providerAccessRun(overrides), { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("reports a typed ACP provider access failure during setup or in all mode", async () => {
+    await seedCompanyAndAgent({ adapterType: "claude_local" });
+    await reportRunFailure(db, providerAccessRun(), { phase: "setup" });
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    await reportRunFailure(db, providerAccessRun(), { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(2);
+  });
+
+  function restartInterruptedSetupRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      error: "Process lost -- server may have restarted; retrying once",
+      runtimeMode: "legacy", executionStage: "preparing", processPid: null, processGroupId: null,
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        processLossDiagnostic: {
+          pidRecorded: false, groupRecorded: false, localCheck: "no_identifiers",
+          retryEligible: true, runPredatesObserver: true,
+        },
+      },
+      ...overrides,
+    });
+  }
+
+  it("keeps a retried restart interruption of legacy setup local", async () => {
+    await seedCompanyAndAgent({ adapterType: "paperclip_runner" });
+    await reportRunFailure(db, restartInterruptedSetupRun());
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it("reports a retried restart interruption of legacy setup in all mode", async () => {
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    await seedCompanyAndAgent({ adapterType: "paperclip_runner" });
+    await reportRunFailure(db, restartInterruptedSetupRun());
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { executionStage: "dispatching" }, { runtimeMode: "native" }, { processPid: 4242 },
+    { errorCode: "adapter_failed" },
+    { resultJson: { processLossDiagnostic: { localCheck: "no_identifiers", retryEligible: true, runPredatesObserver: true } } },
+    { resultJson: {
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      processLossDiagnostic: { localCheck: "no_identifiers", retryEligible: false, runPredatesObserver: true },
+    } },
+    { resultJson: {
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      processLossDiagnostic: { localCheck: "no_identifiers", retryEligible: true, runPredatesObserver: false },
+    } },
+  ])("reports process loss without restart-before-dispatch evidence: %j", async (overrides) => {
+    await seedCompanyAndAgent({ adapterType: "paperclip_runner" });
+    await reportRunFailure(db, restartInterruptedSetupRun(overrides));
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  async function expiredGrokOffer(input: {
+    wakes: Array<{ status: "rejected" | "accepted" | "acknowledged" | "unknown"; httpStatus: number | null }>;
+    acceptedAt?: Date | null;
+    originalFailureCode?: string;
+    finalization?: boolean;
+    offers?: number;
+  }) {
+    await seedCompanyAndAgent({ adapterType: "paperclip_runner", adapterConfig: { provider: "grok_bot" } });
+    const userId = randomUUID();
+    await db.insert(authUsers).values({ id: userId, name: "Operator", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(mcpOauthClients).values({ id: userId, name: "Grok", redirectUris: ["https://client.example/callback"] });
+    const [grant] = await db.insert(mcpOauthGrants).values({ companyId, userId, clientId: userId, resource: "https://paperclip.example/mcp/runner",
+      purpose: "agent", agentId, scopes: ["paperclip:agent"] }).returning();
+    const [binding] = await db.insert(dotAgentBindings).values({ companyId, agentId, operatorId: userId, grantId: grant!.id,
+      providerKind: "grok_bot", status: "ready" }).returning();
+    const [secret] = await db.insert(companySecrets).values({ companyId, key: `grok-${binding!.id}`, name: "Grok routine" }).returning();
+    const [routine] = await db.insert(grokBotRoutines).values({ companyId, agentId, bindingId: binding!.id, bindingGeneration: 1,
+      botName: "Grok", secretId: secret!.id, secretVersion: 1 }).returning();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Grok task", assigneeAgentId: agentId, status: "in_progress" }).returning();
+    const run = buildRun({ errorCode: "native_provider_terminal_failed", error: "Dot assignment acceptance or execution authority expired.",
+      nativeIssueId: issue!.id, runtimeMode: "native", executionStage: "preparing", nativePhase: "terminal_failure", exitCode: null, signal: null });
+    await db.insert(heartbeatRuns).values(run);
+    if (input.finalization !== false) {
+      await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId, issueId: run.nativeIssueId!, phase: "terminal_failure",
+        failureCode: "native_provider_terminal_failed", failureDetail: { originalFailureCode: input.originalFailureCode ?? "dot_assignment_expired" } });
+    }
+    const offers = await db.insert(dotRunnerAssignments).values(Array.from({ length: input.offers ?? 1 }, () => ({ companyId, agentId,
+      bindingId: binding!.id, bindingGeneration: 1, runId: run.id, normalizedSessionId: randomUUID(), turnId: randomUUID(), controllerGeneration: 1,
+      catalogDigest: "fixture", projection: {}, status: "fenced" as const, acceptBy: new Date(Date.now() - 1000),
+      expiresAt: new Date(Date.now() + 3_600_000), acceptedAt: input.acceptedAt ?? null }))).returning();
+    const assignment = offers[0];
+    for (const wake of input.wakes) {
+      await db.insert(grokBotDispatches).values({ companyId, routineId: routine!.id, bindingId: binding!.id, bindingGeneration: 1,
+        grantId: grant!.id, routineRevision: 1, assignmentId: assignment!.id, sourceEventId: randomUUID(), kind: "mailbox_updated",
+        payload: {}, status: wake.status, httpStatus: wake.httpStatus, expiresAt: new Date(Date.now() + 600_000) });
+    }
+    return run;
+  }
+
+  it("keeps a Grok offer local when the endpoint rejected every work wake with HTTP 4xx", async () => {
+    const run = await expiredGrokOffer({ wakes: [{ status: "rejected", httpStatus: 400 }, { status: "rejected", httpStatus: 400 }] });
+    await reportRunFailure(db, run, { phase: "execute" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it("reports a rejected Grok wake in all mode", async () => {
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    const run = await expiredGrokOffer({ wakes: [{ status: "rejected", httpStatus: 400 }] });
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      companyId, agentId, runId: run.id, errorCode: "native_provider_terminal_failed",
+    }));
+  });
+
+  it.each([
+    ["no wake was sent", { wakes: [] }],
+    ["a wake was rejected locally without HTTP evidence", { wakes: [{ status: "rejected", httpStatus: 400 }, { status: "rejected", httpStatus: null }] }],
+    ["the endpoint accepted a wake", { wakes: [{ status: "rejected", httpStatus: 400 }, { status: "acknowledged", httpStatus: 200 }] }],
+    ["delivery is uncertain", { wakes: [{ status: "unknown", httpStatus: 503 }] }],
+    ["the bot accepted the work", { wakes: [{ status: "rejected", httpStatus: 400 }], acceptedAt: new Date() }],
+    ["the run failed for another provider reason", { wakes: [{ status: "rejected", httpStatus: 400 }], originalFailureCode: "provider_failed" }],
+    ["the run has no finalization", { wakes: [{ status: "rejected", httpStatus: 400 }], finalization: false }],
+    ["the run has more than one offer", { wakes: [{ status: "rejected", httpStatus: 400 }], offers: 2 }],
+  ] as const)("keeps an expired Grok offer reportable when %s", async (_label, input) => {
+    const run = await expiredGrokOffer({ ...input, wakes: [...input.wakes] });
+    await reportRunFailure(db, run, { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an expired Grok offer reportable when its receipts cannot be read", async () => {
+    const run = await expiredGrokOffer({ wakes: [{ status: "rejected", httpStatus: 400 }] });
+    const select = db.select.bind(db);
+    // The agent lookup succeeds; the receipt reads fail.
+    const spy = vi.spyOn(db, "select").mockImplementationOnce(select as typeof db.select)
+      .mockImplementation(() => { throw new Error("fixture receipt read failed"); });
+    try {
+      await reportRunFailure(db, run, { phase: "execute" });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  function aiSelectionRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "configuration_incomplete",
+      executionStage: "preparing",
+      resultJson: {
+        configurationIncomplete: {
+          reason: "ai_connection_unavailable",
+          selectionFailure: "ai_connection_default_missing",
+        },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it.each([
+    "ai_connection_responsible_user_missing", "ai_connection_default_missing",
+    "ai_connection_missing", "ai_connection_incompatible", "ai_connection_unavailable",
+    "ai_connection_credential_not_shared",
+  ])("keeps the proven AI selection blocker local: %s", async (selectionFailure) => {
+    await seedCompanyAndAgent();
+    const run = aiSelectionRun();
+    (run.resultJson!.configurationIncomplete as Record<string, unknown>).selectionFailure = selectionFailure;
+    const saved = structuredClone(run);
+    await reportRunFailure(db, run, { phase: "setup" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(saved);
+  });
+
+  it.each([undefined, null, {}, [], "", "database_error", "ai_connection_busy"])(
+    "reports AI connection wrappers without a known selection cause: %j", async (selectionFailure) => {
+      await seedCompanyAndAgent();
+      const run = aiSelectionRun();
+      (run.resultJson!.configurationIncomplete as Record<string, unknown>).selectionFailure = selectionFailure;
+      await reportRunFailure(db, run, { phase: "setup" });
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["resume", "provider_started", "outside_setup", "unmarked"] as const)(
+    "reports credential sharing denials without fresh pre-provider proof: %s", async (cause) => {
+      await seedCompanyAndAgent();
+      const run = aiSelectionRun();
+      (run.resultJson!.configurationIncomplete as Record<string, unknown>).selectionFailure = "ai_connection_credential_not_shared";
+      run.error = "This credential is not shared with the responsible user";
+      if (cause === "resume") {
+        run.runtimeMode = "native";
+        run.runnerProfileJson = { nativeExecutionInput: {} };
+      }
+      if (cause === "provider_started") run.resultJson!.executionRecovery = { kind: "bootstrap", providerWorkStarted: true };
+      if (cause === "unmarked") delete (run.resultJson!.configurationIncomplete as Record<string, unknown>).selectionFailure;
+      await reportRunFailure(db, run, { phase: cause === "outside_setup" ? "execute" : "setup" });
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    { runtimeMode: "native", runnerProfileJson: { nativeExecutionInput: {} } },
+    { status: "timed_out" }, { errorCode: "setup_failed" }, { executionStage: "executing" },
+    { executionStage: null }, { exitCode: 1 }, { exitCode: 0 }, { signal: "SIGTERM" },
+    { resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable", selectionFailure: "ai_connection_default_missing" } } },
+    { resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable", selectionFailure: "ai_connection_default_missing" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } },
+    { resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable", selectionFailure: "ai_connection_default_missing" }, executionRecovery: { kind: "resume", providerWorkStarted: false } } },
+    { resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable", selectionFailure: "ai_connection_default_missing" }, executionRecovery: { kind: "bootstrap" } } },
+    { resultJson: { configurationIncomplete: { reason: "controller_environment_unsupported", selectionFailure: "ai_connection_default_missing" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } },
+  ])("reports AI configuration without pre-provider selection proof: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, aiSelectionRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, "execute"] as const)("reports AI selection failures outside setup: %s", async (phase) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, aiSelectionRun(), { phase });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  function missingSecretRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "configuration_incomplete",
+      executionStage: "preparing",
+      resultJson: {
+        configurationIncomplete: {
+          reason: "secret_binding_missing",
+          missingBindings: [{ bindingType: "user_secret_ref", errorCode: "user_secret_missing" }],
+        },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it.each([
+    { bindingType: "secret_ref" },
+    { bindingType: "secret_ref", errorCode: "binding_missing" },
+    ...["binding_missing", "responsible_user_missing", "user_secret_missing", "secret_inactive", "user_secret_definition_inactive"]
+      .map((errorCode) => ({ bindingType: "user_secret_ref", errorCode })),
+  ])("keeps the known pre-dispatch secret blocker local: %j", async (binding) => {
+    await seedCompanyAndAgent();
+    const run = missingSecretRun();
+    (run.resultJson!.configurationIncomplete as Record<string, unknown>).missingBindings = [binding];
+    const saved = structuredClone(run);
+
+    await reportRunFailure(db, run, { phase: "setup" });
+
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(saved);
+  });
+
+  it.each([
+    {},
+    { reason: "secret_binding_missing", missingBindings: [] },
+    { reason: "secret_binding_missing", missingBindings: [null] },
+    { reason: "secret_binding_missing", missingBindings: [{ errorCode: "user_secret_missing" }] },
+    { reason: "secret_binding_missing", missingBindings: [{ bindingType: "user_secret_ref", errorCode: "provider_error" }] },
+    { reason: "secret_binding_missing", missingBindings: [{ bindingType: "user_secret_ref", errorCode: "user_secret_definition_missing" }] },
+    { reason: "secret_binding_missing", missingBindings: [{ bindingType: "user_secret_ref", errorCode: "new_unknown_reason" }] },
+    { reason: "secret_binding_missing", missingBindings: [
+      { bindingType: "user_secret_ref", errorCode: "user_secret_missing" },
+      { bindingType: "secret_ref", errorCode: "provider_error" },
+    ] },
+    { reason: "ai_connection_unavailable" },
+  ])("reports ambiguous, unknown, and provider failures: %j", async (configurationIncomplete) => {
+    await seedCompanyAndAgent();
+    const run = missingSecretRun();
+    run.resultJson!.configurationIncomplete = configurationIncomplete;
+
+    await reportRunFailure(db, run, { phase: "setup" });
+
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { status: "timed_out" },
+    { errorCode: "setup_failed" },
+    { errorCode: "workspace_validation_failed" },
+    { errorCode: "adapter_failed" },
+    { executionStage: "executing" },
+    { executionStage: null },
+    { exitCode: 1 },
+    { exitCode: 0 },
+    { signal: "SIGTERM" },
+  ])("reports missing-secret text without a proven pre-dispatch outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+
+    await reportRunFailure(db, missingSecretRun(overrides), { phase: "setup" });
+
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, { kind: "bootstrap" }, { kind: "bootstrap", providerWorkStarted: true }])(
+    "reports missing-secret failures without explicit bootstrap proof: %j", async (executionRecovery) => {
+      await seedCompanyAndAgent();
+      const run = missingSecretRun();
+      run.resultJson!.executionRecovery = executionRecovery;
+
+      await reportRunFailure(db, run, { phase: "setup" });
+
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([undefined, "execute"] as const)("reports configuration failures outside setup: %s", async (phase) => {
+    await seedCompanyAndAgent();
+
+    await reportRunFailure(db, missingSecretRun(), { phase });
+
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
   it("captures once for the status failed", async () => {
     await seedCompanyAndAgent();
     const run = buildRun({ status: "failed" });
@@ -118,6 +846,113 @@ describeEmbeddedPostgres("reportRunFailure", () => {
 
     expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
   });
+
+  function restrictedWorkspaceSourceRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "configuration_incomplete",
+      executionStage: "preparing",
+      resultJson: {
+        configurationIncomplete: { reason: "workspace_source_restricted", issueId: randomUUID() },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it("keeps a restricted shared workspace source actionable on the task", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, restrictedWorkspaceSourceRun(), { phase: "setup" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: "timed_out" }, { errorCode: "setup_failed" }, { executionStage: "executing" }, { exitCode: 1 }, { signal: "SIGTERM" },
+    { resultJson: { configurationIncomplete: { reason: "workspace_source_restricted" } } },
+    { resultJson: { configurationIncomplete: { reason: "workspace_source_restricted" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } },
+  ])("reports restricted-source markers without an exact pre-dispatch outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, restrictedWorkspaceSourceRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, "execute"] as const)("reports restricted-source markers outside the setup report: %s", async (phase) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, restrictedWorkspaceSourceRun(), { phase });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  function localPathConfigurationRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "workspace_validation_failed",
+      executionStage: "preparing",
+      resultJson: {
+        workspaceValidation: {
+          reason: "git_worktree_base_not_git_checkout",
+          configurationReason: "local_path_requires_git_checkout",
+          resolvedWorkspaceSource: "project_primary",
+          workspaceStrategyType: "git_worktree",
+          requestedExecutionWorkspaceMode: "isolated_workspace",
+        },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it.each(["isolated_workspace", "operator_branch"])("keeps proven local-path policy conflicts actionable locally: %s", async (mode) => {
+    await seedCompanyAndAgent();
+    const run = localPathConfigurationRun();
+    (run.resultJson!.workspaceValidation as Record<string, unknown>).requestedExecutionWorkspaceMode = mode;
+    const before = structuredClone(run);
+
+    await reportRunFailure(db, run, { phase: "setup" });
+
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(before);
+  });
+
+  it.each([
+    { configurationReason: undefined },
+    { configurationReason: "unknown_reason" },
+    { reason: "git_worktree_base_materialization_failed" },
+    { reason: "git_worktree_not_reusable" },
+    { reason: "inherited_workspace_reuse_unavailable" },
+    { resolvedWorkspaceSource: "agent_home" },
+    { workspaceStrategyType: "project_primary" },
+    { requestedExecutionWorkspaceMode: "agent_default" },
+  ])("reports unproven and other workspace failures: %j", async (validation) => {
+    await seedCompanyAndAgent();
+    const run = localPathConfigurationRun();
+    Object.assign(run.resultJson!.workspaceValidation as object, validation);
+    await reportRunFailure(db, run, { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { status: "timed_out" }, { errorCode: "setup_failed" }, { executionStage: "executing" },
+    { exitCode: 1 }, { signal: "SIGTERM" }, { resultJson: {} },
+    { resultJson: { workspaceValidation: { reason: "git_worktree_base_not_git_checkout", configurationReason: "local_path_requires_git_checkout" } } },
+  ])("reports workspace failures without an exact pre-dispatch outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, localPathConfigurationRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, "execute"] as const)("reports local-path markers outside the setup report: %s", async (phase) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, localPathConfigurationRun(), { phase });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, { kind: "bootstrap" }, { kind: "bootstrap", providerWorkStarted: true }])(
+    "reports local-path markers without affirmative unstarted-provider evidence: %j", async (executionRecovery) => {
+      await seedCompanyAndAgent();
+      const run = localPathConfigurationRun();
+      run.resultJson!.executionRecovery = executionRecovery;
+      await reportRunFailure(db, run, { phase: "setup" });
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("captures once for the status timed_out", async () => {
     await seedCompanyAndAgent();
@@ -188,7 +1023,10 @@ describeEmbeddedPostgres("reportRunFailure", () => {
       exceptions: [{ message: "adapter threw" }, { message: "provider unreachable", code: "ECONNRESET", status: 503, requestId: "request-123" }],
     });
     expect(captured.diagnostics.exceptions[0].stack).toContain("run-failure-report.test.ts");
-    expect(JSON.stringify(captured)).not.toContain("private-");
+    // Match the sensitive fixture values, not a legitimate checkout name in the stack.
+    for (const value of ["private-response", "private-stderr", "private-stdout", "private-prompt", "private-provider-raw", "private-summary", "private-env", "private-adapter-response"]) {
+      expect(JSON.stringify(captured)).not.toContain(value);
+    }
     expect(error.cause).toBe(cause);
   });
 
@@ -252,6 +1090,26 @@ describeEmbeddedPostgres("reportRunFailure", () => {
       .toBe(`the provider process exited with code ${REDACTED_EVENT_VALUE}`);
   });
 
+  it("waits for the terminal write when a native run is failed pending a same-run retry", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun({ runtimeMode: "native", nativePhase: "retryable_failure" }));
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+
+    await reportRunFailure(db, buildRun({ runtimeMode: "native", nativePhase: "terminal_failure" }));
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("treats leaving a pending native retry as a new terminal failure", () => {
+    const pending = { status: "failed", runtimeMode: "native", nativePhase: "retryable_failure" } as const;
+    expect(isNewTerminalRunFailure({ ...pending, status: "running", nativePhase: "observed" }, pending)).toBe(true);
+    expect(isNewTerminalRunFailure(pending, { ...pending, nativePhase: "terminal_failure" })).toBe(true);
+    expect(isNewTerminalRunFailure(pending, { ...pending, nativePhase: "committed" })).toBe(true);
+    expect(isNewTerminalRunFailure(pending, pending)).toBe(false);
+    expect(isNewTerminalRunFailure({ ...pending, nativePhase: null }, { ...pending, nativePhase: "terminal_failure" })).toBe(false);
+    expect(isNewTerminalRunFailure({ ...pending, runtimeMode: "legacy" }, { ...pending, runtimeMode: "legacy", nativePhase: null }))
+      .toBe(false);
+  });
+
   it("captures nothing for succeeded, cancelled, and interrupted", async () => {
     await seedCompanyAndAgent();
     for (const status of ["succeeded", "cancelled", "interrupted"] as const) {
@@ -271,6 +1129,36 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(mockCaptureRunFailure.mock.calls[0][0]).toMatchObject({ runStatus: "cancelled",
       diagnostics: { execution: { cancellationSource: source, cancellationExpected: false } } });
     expect(JSON.stringify(mockCaptureRunFailure.mock.calls)).not.toMatch(/private-actor|private-reason/);
+  });
+  it("labels a host controller lease loss with its closed cause", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun({ status: "cancelled", startedAt: new Date(0), finishedAt: new Date(1000),
+      resultJson: { cancellation: controllerLeaseLossCancellation("renewal_deadline") } }));
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    expect(mockCaptureRunFailure.mock.calls[0][0]).toMatchObject({ diagnostics: { execution: {
+      cancellationSource: "controller_lease", cancellationExpected: false, controllerLeaseLossCause: "renewal_deadline" } } });
+    expect(JSON.stringify(mockCaptureRunFailure.mock.calls)).not.toMatch(/Legacy controller lease lost/);
+  });
+  it("reports bounded lease-loss timings for a setup failure", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun({ status: "failed", errorCode: "setup_failed", startedAt: new Date(0),
+      finishedAt: new Date(1000), resultJson: { controllerLeaseLoss: { cause: "renewal_deadline",
+        sinceRenewalMs: 61_000.4, renewalPendingMs: 59_000, deadlineLateMs: 1e12, renewalCount: -1, note: "private-note" } } }));
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    const execution = mockCaptureRunFailure.mock.calls[0][0].diagnostics.execution;
+    expect(execution).toMatchObject({ controllerLeaseLossCause: "renewal_deadline", controllerLeaseSinceRenewalMs: 61_000,
+      controllerLeaseRenewalPendingMs: 59_000, controllerLeaseDeadlineLateMs: 86_400_000 });
+    expect(execution).not.toHaveProperty("controllerLeaseRenewalCount");
+    expect(JSON.stringify(mockCaptureRunFailure.mock.calls)).not.toMatch(/private-note/);
+  });
+  it("drops lease-loss timings without a closed cause", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun({ status: "failed", errorCode: "setup_failed", startedAt: new Date(0),
+      finishedAt: new Date(1000), resultJson: { controllerLeaseLoss: { cause: "forged", sinceRenewalMs: 1 } } }));
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    const execution = mockCaptureRunFailure.mock.calls[0][0].diagnostics.execution;
+    expect(execution).not.toHaveProperty("controllerLeaseLossCause");
+    expect(execution).not.toHaveProperty("controllerLeaseSinceRenewalMs");
   });
   it("does not report an operator's Stop as a failure", async () => {
     await seedCompanyAndAgent();
