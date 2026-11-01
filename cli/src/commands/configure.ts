@@ -6,9 +6,15 @@ import {
   writeConfig,
   configExists,
   resolveConfigPath,
+  validateConfigFile,
 } from "../config/store.js";
 import {
   findPaperclipConfigKeyWarnings,
+  CONFIG_SECTIONS,
+  CONFIG_SECTION_NAMES,
+  getConfigSection,
+  formatSectionOptions,
+  formatAllConfigOptions,
   type PaperclipConfig,
 } from "../config/schema.js";
 import { ensureLocalSecretsKeyFile } from "../config/secrets-key.js";
@@ -84,7 +90,71 @@ function defaultConfig(): PaperclipConfig {
 export async function configure(opts: {
   config?: string;
   section?: string;
+  listOptions?: boolean;
+  validate?: boolean;
+  json?: boolean;
 }): Promise<void> {
+  if (opts.listOptions) {
+    if (opts.section) {
+      const sectionDef = getConfigSection(opts.section);
+      if (!sectionDef) {
+        const allowed = CONFIG_SECTION_NAMES.join(", ");
+        if (opts.json) {
+          console.error(JSON.stringify({ error: `Unknown section: ${opts.section}. Choose from: ${allowed}` }));
+        } else {
+          p.log.error(`Unknown section: ${opts.section}. Choose from: ${allowed}`);
+        }
+        process.exitCode = 1;
+        return;
+      }
+
+      if (opts.json) {
+        console.log(JSON.stringify(sectionDef.options, null, 2));
+      } else {
+        console.log(formatSectionOptions(sectionDef));
+      }
+      return;
+    }
+
+    if (opts.json) {
+      console.log(JSON.stringify(CONFIG_SECTIONS, null, 2));
+    } else {
+      console.log(formatAllConfigOptions());
+    }
+    return;
+  }
+
+  if (opts.validate) {
+    const result = validateConfigFile(opts.config);
+    if (opts.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      if (!result.exists) {
+        p.log.error(`No config file found at ${result.filePath}.`);
+        process.exitCode = 1;
+        return;
+      }
+      if (result.valid) {
+        p.log.success(`Configuration at ${result.filePath} is valid.`);
+        if (result.warnings.length > 0) {
+          for (const warning of result.warnings) {
+            p.log.warn(`Unknown config key ${warning.path}; did you mean ${warning.suggestion}?`);
+          }
+        }
+      } else {
+        p.log.error(`Configuration at ${result.filePath} is invalid:`);
+        for (const error of result.errors) {
+          p.log.error(`  - ${error}`);
+        }
+        for (const warning of result.warnings) {
+          p.log.warn(`  - Unknown config key ${warning.path}; did you mean ${warning.suggestion}?`);
+        }
+      }
+    }
+    process.exitCode = result.valid ? 0 : 1;
+    return;
+  }
+
   printPaperclipCliBanner();
   p.intro(pc.bgCyan(pc.black(" paperclip configure ")));
   const configPath = resolveConfigPath(opts.config);
