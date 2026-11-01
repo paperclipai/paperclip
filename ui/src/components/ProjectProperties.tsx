@@ -230,13 +230,13 @@ function DeleteDangerZone({
   const [deleteFiles, setDeleteFiles] = useState(false);
 
   return (
-    <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
+    <div className="flex flex-col gap-(--sz-12px) rounded-md border border-destructive/40 bg-destructive/5 p-(--sz-16px)">
       <p className="text-sm text-muted-foreground">
         Permanently delete this project and its database records. This cannot be undone.
       </p>
       {confirming ? (
-        <div className="space-y-3">
-          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+        <div className="flex flex-col gap-(--sz-12px)">
+          <label className="flex items-center gap-(--sz-8px) text-sm text-muted-foreground">
             <Checkbox
               checked={deleteFiles}
               onCheckedChange={(checked) => setDeleteFiles(checked === true)}
@@ -244,7 +244,7 @@ function DeleteDangerZone({
             />
             Also delete Paperclip-managed project workspace files
           </label>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-(--sz-8px)">
             <span className="text-sm text-destructive font-medium">
               Delete &ldquo;{project.name}&rdquo; permanently?
             </span>
@@ -255,7 +255,7 @@ function DeleteDangerZone({
               disabled={deletePending}
             >
               {deletePending ? (
-                <><Loader2 className="h-3 w-3 animate-spin mr-1" />Deleting...</>
+                <><Loader2 className="size-(--sz-12px) animate-spin mr-(--sz-4px)" />Deleting...</>
               ) : "Confirm delete"}
             </Button>
             <Button
@@ -273,7 +273,7 @@ function DeleteDangerZone({
         </div>
       ) : (
         <Button size="sm" variant="destructive" onClick={() => setConfirming(true)}>
-          <Trash2 className="h-3 w-3 mr-1" />Delete project
+          <Trash2 className="size-(--sz-12px) mr-(--sz-4px)" />Delete project
         </Button>
       )}
     </div>

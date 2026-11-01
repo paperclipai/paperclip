@@ -2901,6 +2901,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
      for the full site list).
 */
 :root {
+  --sz-12px: 12px;
+  --sz-16px: 16px;
   --sz-execution-blocker-inline: calc(var(--spacing) * 4);
   --sz-execution-blocker-block: calc(var(--spacing) * 2);
   /* Ten single-line repository rows, including the gaps between them. */
