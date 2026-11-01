@@ -1898,6 +1898,7 @@ export interface WorkerToHostMethods {
       companyId: string;
       projectId?: string;
       assigneeAgentId?: string;
+      assigneeUserId?: string;
       originKind?: string;
       originKindPrefix?: string;
       originId?: string;

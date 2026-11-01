@@ -851,6 +851,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             companyId: input.companyId,
             projectId: input.projectId,
             assigneeAgentId: input.assigneeAgentId,
+            assigneeUserId: input.assigneeUserId,
             originKind: input.originKind,
             originKindPrefix: input.originKindPrefix,
             originId: input.originId,
