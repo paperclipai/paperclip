@@ -1,6 +1,7 @@
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { connectionHealthSchedule } from "./tool-access/catalog/health-schedule.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { connectionActorUserId } from "./tool-access/actor.js";
@@ -2414,7 +2415,7 @@ export function toolAccessService(
         `Connected app at ${remoteUrlCredential?.publicUrl ?? input.link}`;
       if (existingApplication) {
         if (existingApplication.status !== "active") {
-          [applicationRow] = await db
+          [applicationRow] = await db.transaction(async (tx) => { await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection); return tx
             .update(toolApplications)
             .set({
               status: "draft",
@@ -2425,7 +2426,7 @@ export function toolAccessService(
               updatedAt: new Date(),
             })
             .where(eq(toolApplications.id, existingApplication.id))
-            .returning();
+            .returning(); });
         } else {
           applicationRow = existingApplication;
         }
@@ -2437,7 +2438,7 @@ export function toolAccessService(
         // the user never asked to resolve.
         for (let attempt = 0; attempt < 10 && !applicationRow; attempt += 1) {
           try {
-            [applicationRow] = await db
+            [applicationRow] = await db.transaction(async (tx) => { await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection); return tx
               .insert(toolApplications)
               .values({
                 companyId,
@@ -2453,7 +2454,7 @@ export function toolAccessService(
                     }
                   : { source: "link" },
               })
-              .returning();
+              .returning(); });
           } catch (error) {
             if (!isUniqueViolation(error, "tool_applications_company_name_uq"))
               throw error;
@@ -2493,7 +2494,7 @@ export function toolAccessService(
         personalIdentityUserId || dedicatedAgentId ? [] : credentialSecretRefs;
       if (revivedConnectionPrevious) {
         forgetMcpHttpSessions(revivedConnectionPrevious.id);
-        [connectionRow] = await writeToolConnectionHealthChange(db, revivedConnectionPrevious, tx => tx
+        [connectionRow] = await writeToolConnectionHealthChange(db, revivedConnectionPrevious, async tx => { await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection); return tx
           .update(toolConnections)
           .set({
             name,
@@ -2515,18 +2516,18 @@ export function toolAccessService(
             updatedAt: new Date(),
           })
           .where(eq(toolConnections.id, revivedConnectionPrevious.id))
-          .returning());
+          .returning(); });
       } else {
         const connectionId = randomUUID();
-        [connectionRow] = await db
+        [connectionRow] = await db.transaction(async (tx) => { await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection); return tx
           .insert(toolConnections)
           .values({
             id: connectionId,
             companyId,
-            applicationId: applicationRow.id,
+            applicationId: applicationRow!.id,
             name,
             uid: connectionUid(
-              applicationRow.applicationKey ?? applicationRow.name,
+              applicationRow!.applicationKey ?? applicationRow!.name,
               name,
               connectionId,
             ),
@@ -2552,7 +2553,7 @@ export function toolAccessService(
             createdByUserId:
               connectionActorUserId(actor),
           })
-          .returning();
+          .returning(); });
       }
       if (revivedConnectionPrevious) {
         emitConnectionUpdated(
@@ -2602,7 +2603,7 @@ export function toolAccessService(
                 "The personal credential changed during setup. Please try again.",
               );
             previousGrant = currentGrant;
-            [changedGrant] = await db
+            [changedGrant] = await db.transaction(async (tx) => { await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection); return tx
               .update(connectionGrants)
               .set({
                 credentialSecretRefs,
@@ -2618,17 +2619,17 @@ export function toolAccessService(
                   sql`${connectionGrants.updatedAt} = ${grantSnapshot!.updatedAtVersion}::timestamptz`,
                 ),
               )
-              .returning();
+              .returning(); });
             if (!changedGrant)
               throw conflict(
                 "The personal credential changed during setup. Please try again.",
               );
           } else {
-            [changedGrant] = await db
+            [changedGrant] = await db.transaction(async (tx) => { await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection); return tx
               .insert(connectionGrants)
               .values({
                 companyId,
-                connectionId: connectionRow.id,
+                connectionId: connectionRow!.id,
                 kind: "user",
                 subjectUserId: personalIdentityUserId,
                 credentialSecretRefs,
@@ -2636,7 +2637,7 @@ export function toolAccessService(
                 isDefault: false,
                 createdByUserId: personalIdentityUserId,
               })
-              .returning();
+              .returning(); });
             if (!changedGrant)
               throw new Error("Failed to create personal connection grant");
           }
@@ -2700,6 +2701,7 @@ export function toolAccessService(
                 "The organization credential changed during setup. Please try again.",
               );
             }
+            await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
             const [updated] = await tx
               .update(connectionGrants)
               .set({
@@ -2829,6 +2831,7 @@ export function toolAccessService(
       if (unauthenticatedPersonalProbe) {
         const personalConnectionId = connectionRow.id;
         const grant = await db.transaction(async (tx) => {
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
           const [createdGrant] = await tx
             .insert(connectionGrants)
             .values({
@@ -2939,6 +2942,7 @@ export function toolAccessService(
             );
             if (connectionMutationIsStillCurrent) {
               await notifyToolConnectionHealth(tx, revivedConnectionPrevious);
+              await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
               await tx
                 .update(toolConnections)
                 .set({
