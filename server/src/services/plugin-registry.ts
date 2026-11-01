@@ -1,3 +1,4 @@
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { isDeepStrictEqual } from "node:util";
 import { writePluginJobChange } from "./plugin-job-work-notifications.js";
 import { asc, eq, isNull, ne, sql, and } from "drizzle-orm";
@@ -89,9 +90,9 @@ export function pluginRegistryService(db: Db) {
   }
 
   async function writeWorkspaceProviderChange<T>(reconsiderWorkspaces: boolean, write: (database: Db) => Promise<T>): Promise<T> {
-    if (!reconsiderWorkspaces) return write(db);
     return db.transaction(async tx => {
-      await notifyDeliveryWork(tx, DELIVERY_QUEUES.terminalWorkspaces);
+      await notifyExternalObjectRefresh(tx);
+      if (reconsiderWorkspaces) await notifyDeliveryWork(tx, DELIVERY_QUEUES.terminalWorkspaces);
       return write(tx as unknown as Db);
     });
   }
@@ -292,6 +293,7 @@ export function pluginRegistryService(db: Db) {
       if (!plugin) throw notFound("Plugin not found");
 
       return writePluginJobChange(db, async db => {
+        await notifyExternalObjectRefresh(db);
         if (removeData) {
           // Hard delete – plugin_config cascades via FK onDelete
           return db
@@ -355,6 +357,7 @@ export function pluginRegistryService(db: Db) {
       return db.transaction(async tx => {
         const db = tx as unknown as Db;
         await notifyDeliveryWork(db, DELIVERY_QUEUES.pluginLifecycle);
+        await notifyExternalObjectRefresh(db, companyId);
         const plugin = await getById(pluginId, db);
         if (!plugin) throw notFound("Plugin not found");
 
@@ -397,6 +400,7 @@ export function pluginRegistryService(db: Db) {
       return db.transaction(async tx => {
         const db = tx as unknown as Db;
         await notifyDeliveryWork(db, DELIVERY_QUEUES.pluginLifecycle);
+        await notifyExternalObjectRefresh(db, companyId);
         const plugin = await getById(pluginId, db);
         if (!plugin) throw notFound("Plugin not found");
 
@@ -479,6 +483,7 @@ export function pluginRegistryService(db: Db) {
       return db.transaction(async tx => {
         const db = tx as unknown as Db;
         await notifyDeliveryWork(db, DELIVERY_QUEUES.pluginLifecycle);
+        await notifyExternalObjectRefresh(db, companyId);
         const plugin = await getById(pluginId, db);
         if (!plugin) throw notFound("Plugin not found");
 

@@ -26,6 +26,8 @@ import { hasPersistedSource, isSavedSourceCheckpoint } from "./everyday-interrup
 import { collectRunEvents } from "./run-observations.js";
 import { gradeRemoteRestart, observeRemoteRestartBoundary, projectRemoteRestartEvents, projectRemoteRestartRun, waitForRemoteRestartBoundary, type RemoteRestartEvidence } from "./everyday-remote-restart.js";
 import { controllerOutageForExecution, type ControllerOutageReceipt } from "./controller-outage.js";
+import { gradeRemoteWorkspaceStorage, isRemoteWorkspaceStorageExecution, readRemoteWorkspaceStorageCheckpoint,
+  REMOTE_WORKSPACE_PROOF_FILE, type RemoteWorkspaceStorageEvidence } from "./remote-workspace-storage.js";
 import { gradeRetainedControllerContinuation, retainedControllerRun, retainedControllerFollowupTransport, submitRetainedControllerComment, onePersistedRetainedControllerComment } from "./retained-controller-continuation.js";
 import { setupAggregatorFixture } from "./aggregator-fixture.js";
 import { gradeProviderChoice, gradeProviderOutcome, requireProviderAccessCard } from "./connection-routing-evidence.js";
@@ -88,6 +90,7 @@ export interface EverydayEvidence {
   downloads: Row[];
   allowedInterruptedRuns: string[];
   remoteRestart?: RemoteRestartEvidence;
+  remoteWorkspaceStorage?: RemoteWorkspaceStorageEvidence;
 }
 interface Input {
   page: Page;
@@ -178,7 +181,10 @@ export async function runEverydayFlow(input: Input) {
   let review: Awaited<ReturnType<typeof setupConnectionReview>> | undefined;
   let project = fixtures.project;
   const caseId = execution.task.id;
-  const requireRemoteRestart = controllerOutageForExecution(execution, process.env) !== undefined;
+  const controllerOutage = controllerOutageForExecution(execution, process.env);
+  const requireRemoteRestart = controllerOutage !== undefined;
+  const remoteWorkspaceStorage = isRemoteWorkspaceStorageExecution(execution);
+  if (remoteWorkspaceStorage) ev.remoteWorkspaceStorage = { browserReadPhases: [] };
   const providerChoice = caseId === "provider-decline" || caseId === "provider-second";
   const nativeProviderCase = caseId === "provider-native";
   let aggregatorFixture: Awaited<ReturnType<typeof setupAggregatorFixture>> | undefined;
@@ -550,6 +556,25 @@ export async function runEverydayFlow(input: Input) {
     return observeRemoteRestartBoundary(run, rows, leases, { companyId: fixtures.company.id,
       agentId: fixtures.agent.id, issueId: parent!.id, environmentId: fixtures.environment.id }, recovered);
   }
+  async function remoteWorkspaceStorageCheckpoint(phase: "initial" | "final") {
+    const point = await pollUntil({
+      label: `remote workspace ${phase} saved version`, deadlineAt: input.deadlineAt,
+      load: () => readRemoteWorkspaceStorageCheckpoint({ api, companyId: fixtures.company.id,
+        agentId: fixtures.agent.id, issueId: parent!.id, environmentId: fixtures.environment.id }),
+      accept: observed => Boolean(observed.point),
+    });
+    ev.remoteWorkspaceStorage![phase] = point.point!;
+    await input.evidence(`remote-workspace-${phase}.json`, point.point);
+    const browserPhase = phase === "initial" ? "before-restart" : "after-restart";
+    await page.goto(`${taskUrl(parent!)}?browse=1&q=${REMOTE_WORKSPACE_PROOF_FILE}`);
+    await expect(page.getByRole("combobox", { name: "Search workspace files" })).toBeVisible();
+    await expect(page.getByLabel("Workspace file source", { exact: true })).toHaveText("Live workspace");
+    await page.getByRole("treeitem").filter({ hasText: REMOTE_WORKSPACE_PROOF_FILE }).last().click();
+    await expect(page.getByText(point.content!.trim(), { exact: true })).toBeVisible();
+    await input.capture(`remote-workspace-${browserPhase}`, `Remote workspace file ${browserPhase}`, `remote-workspace-${browserPhase}.png`);
+    ev.remoteWorkspaceStorage!.browserReadPhases.push(browserPhase);
+    await openParent();
+  }
   async function prepareStopBoundary() {
     // Providers can finish a short first turn before the browser can click
     // Stop. If that happens, submit one ordinary user follow-up through the
@@ -600,6 +625,7 @@ export async function runEverydayFlow(input: Input) {
       "live-fixtures.ts",
       "connection-reviews.ts",
       "catalog.ts",
+      "remote-workspace-storage.ts",
     ];
     if (execution.suite.id === CONNECTION_GUIDANCE_SUITE) {
       harnessFiles.push("connection-guidance-cases.ts", "connection-guidance-evidence.ts");
@@ -639,7 +665,18 @@ export async function runEverydayFlow(input: Input) {
         throw new Error(`Artifact sandbox qualification failed before task creation: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
       }
     }
-    if (!project && !caseId.startsWith("service-") && !decliningConnection && !providerChoice) {
+    if (remoteWorkspaceStorage) {
+      if (project) throw new Error("Remote workspace storage qualification requires a projectless task");
+      const settings = await api.get<Row>("/api/instance/settings/experimental");
+      check("remote-workspace-feature-enabled", settings.remoteWorkspaceStorageEnabled === true,
+        "The ordinary instance settings API resolves remote workspace storage as enabled by default before task creation.");
+      if (settings.remoteWorkspaceStorageEnabled !== true) throw new Error("Remote workspace storage was not enabled by default");
+      const viewer = await api.patch<Row>("/api/instance/settings/experimental", { enableExperimentalFileViewer: true });
+      const viewerReady = viewer.enableExperimentalFileViewer === true && viewer.remoteWorkspaceStorageEnabled === true;
+      check("remote-workspace-file-viewer-enabled", viewerReady, "The ordinary instance API enables the existing Files viewer while remote storage uses its default setting.");
+      if (!viewerReady) throw new Error("Remote workspace Files viewer prerequisite did not retain the storage default");
+    }
+    if (!remoteWorkspaceStorage && !project && !caseId.startsWith("service-") && !decliningConnection && !providerChoice) {
       project = await api.post(
         `/api/companies/${fixtures.company.id}/projects`,
         {
@@ -889,6 +926,7 @@ export async function runEverydayFlow(input: Input) {
         // A completed, downloaded first version is an observable remote persistence checkpoint.
         await settled();
         await download(parent!.id, "base", "before-restart");
+        if (remoteWorkspaceStorage) await remoteWorkspaceStorageCheckpoint("initial");
         if (!ev.downloads.length || ev.checks.some((c) => !c.passed))
           throw new Error(
             "Remote fault boundary unexercised: no verified saved project",
@@ -942,7 +980,15 @@ export async function runEverydayFlow(input: Input) {
             ev.remoteRestart ??= { before, expectedReplacements: input.restartCount ?? 1, replacements: [] };
             await input.evidence(`remote-restart-${restartIndex + 1}-before.json`, before);
           } else ev.allowedInterruptedRuns.push(active.id);
-          const outage = await input.restart(requireRemoteRestart ? { companyId: fixtures.company.id, issueId: parent!.id, runId: active.id } : undefined, requireRemoteRestart ? 125_000 : undefined);
+          if (remoteWorkspaceStorage && restartIndex === 0) {
+            const probe = await api.get<{ upgradeReadiness: NonNullable<RemoteWorkspaceStorageEvidence["upgradeReadiness"]> }>("/api/instance/task-drain?upgradeReadiness=1");
+            const { version, activeRuns, recoverableRuns, truncated } = probe.upgradeReadiness;
+            ev.remoteWorkspaceStorage!.upgradeReadiness = { version, activeRuns, recoverableRuns, truncated };
+            await input.evidence("remote-workspace-upgrade-readiness.json", ev.remoteWorkspaceStorage!.upgradeReadiness);
+            const upgrade = gradeRemoteWorkspaceStorage(ev.remoteWorkspaceStorage!).find(item => item.id === "remote-workspace-upgrade-recoverable")!;
+            if (!upgrade.passed) throw new Error(upgrade.detail);
+          }
+          const outage = await input.restart(requireRemoteRestart ? { companyId: fixtures.company.id, issueId: parent!.id, runId: active.id } : undefined, controllerOutage?.holdMs);
           if (requireRemoteRestart) ev.remoteRestart!.outage = outage || undefined;
           note("controller-restarted");
           await openParent();
@@ -1469,7 +1515,10 @@ export async function runEverydayFlow(input: Input) {
           browserNavigationVerified: !postControllerApiFollowup });
         const requestedAt = new Date().toISOString(), marker = `CONTINUED_${nonce}`;
         const expectedReply = retainedControllerReplyMatcher(marker);
-        await reply(`Run the existing delivered slugify.py on "  Queue--Ready!!  " with --separator _ and --max-length 7. Report its output after the marker ${marker}. Use the saved project; do not rebuild it.`, parent!, followupTransport);
+        const reportInstruction = remoteWorkspaceStorage
+          ? `Reply with exactly one plain-text line: ${marker} followed by one space and the command's actual output. Add no Markdown, code fences, punctuation, labels, or explanatory prose.`
+          : `Report its output after the marker ${marker}.`;
+        await reply(`Run the existing delivered slugify.py on "  Queue--Ready!!  " with --separator _ and --max-length 7. ${reportInstruction} Use the saved project; do not rebuild it.`, parent!, followupTransport);
         await settled(expectedReply, postControllerApiFollowup ? "api" : "browser");
         const after = ev.runs.filter(run => !priorIds.has(run.id) && run.status === "succeeded" && run.agentId === fixtures.agent.id)
           .sort((a, b) => Date.parse(b.finishedAt ?? "") - Date.parse(a.finishedAt ?? ""))[0];
@@ -1592,6 +1641,11 @@ export async function runEverydayFlow(input: Input) {
           : final.run.status === "succeeded" && final.run.nativePhase === "committed"
             && !gradeRemoteRestart({ ...ev.remoteRestart, final })[1]!.passed ? "Original remote turn completed with failed tools or conflicting/repeated execution receipts" : undefined });
       await input.evidence("remote-restart-final.json", final);
+    }
+    if (remoteWorkspaceStorage) {
+      await remoteWorkspaceStorageCheckpoint("final");
+      ev.checks.push(...gradeRemoteWorkspaceStorage(ev.remoteWorkspaceStorage!));
+      await input.evidence("remote-workspace-storage.json", ev.remoteWorkspaceStorage);
     }
     ev.checks.push(
       ...storyLifecycleChecks({

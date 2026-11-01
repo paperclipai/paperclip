@@ -1,3 +1,4 @@
+import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import { connectionActorUserId } from "../actor.js";
 import type { ActorInfo } from "../types.js";
@@ -116,6 +117,7 @@ async function finalizeOAuthAccess(
         throw conflict("This connection already uses a company identity");
       }
       connection = await writeToolConnectionHealthChange(db, connection, async tx => {
+        await notifyGitHubCredentialChange(tx, connection);
         const [updated] = await tx
           .update(toolConnections)
           .set({

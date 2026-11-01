@@ -1342,6 +1342,33 @@ apply. Stream closure without a turn terminal is not proof of success. Event
 replay uses the existing source receipts and never repeats provider work merely
 to recover recorded output.
 
+A delegated-task completion callback can finish native execution before its
+accepted final reply is saved. The completion outbox must retain that callback's
+queued target and attempt while the existing presentation selector finds pending
+work for the same company, conversation, run and agent. The hold lasts at most
+five existing one-minute delivery leases, measured from that run's original
+`finishedAt`. Repeated sweeps cannot restart or extend this five-minute window.
+It wakes the presentation owner and waits until the later of its current delivery
+lease or the recorded native retry deadline, capped by that fixed window.
+The selector only defers a new execution attempt; the presentation owner still
+enforces all reply, session, actor and digest checks. A saved reply acknowledges
+the outbox once and permits normal conversation settlement. If publication keeps
+declining or cannot finish within the window, the existing retry, exhaustion and
+daily-limit checks resume. Retry takes the same child-task-first lock held by
+reply insertion and acknowledgment. Reply authority reloads the delivery after
+acquiring that lock. Retry checks that the locked task is still Done. It then
+matches the delivery's recorded completion-event version, pending state, target,
+attempt and exact lease. Deferral uses that same exact claim fence, so a stalled
+old hold cannot shorten or replace a newer claim's lease.
+Reassigning a Done task can change its current task version without invalidating
+that completion event; a real status change keeps its existing supersession. A delivered reply,
+newer target or newer claim prevents that retry. Wake admission runs only after
+the winning retry transaction commits and releases its locks. The original
+accepted result and child work remain unchanged. Failed or cancelled execution,
+missing accepted output and superseded
+handoffs retain their existing retry or supersession paths. Daily limits do not
+need to admit another model run to save an already accepted answer.
+
 Native execution success can precede its durable presentation decision. GitHub
 response maintenance without a confirmed current-run reply holds that request
 until the native phase is committed and a valid presentation decision exists.
@@ -2549,6 +2576,15 @@ replaces conflicting scope; clarification alone does not approve execution. A
 wake from a server-verified human card response references that entry in
 `humanResponses`, whose answer is already present in the current request context.
 Agent/tool outcomes and generated summaries are not promoted to human direction.
+
+Standing agent chats, identified by both conversation agent and user IDs through
+the shared conversation predicate, complete the current response stage. Each pending request
+keeps its criterion identity and source, with instructions to address it within
+that stage. Authorized chat actions require verified results. Delegation requires
+a verified handoff and a reply; the worker's task remains separate. An unavailable
+action requires a truthful limitation and supported handoff. Ordinary task
+contracts still require the requested work itself, and an admitted run retains
+its saved contract during recovery.
 
 These are model instructions, not additional execution or permission gates.
 Contracts reference the existing brief and answers instead of copying them again.

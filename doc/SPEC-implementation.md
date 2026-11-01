@@ -2599,6 +2599,90 @@ Agents inspect/select workspaces and request contained repository preparation th
 
 See [the layer architecture](plans/2026-10-09-task-workspaces.md) for resolution rules, module ownership, persistence versions, rollout, and verification.
 
+### Experimental native remote workspace authority (2026-10-30)
+
+The managed feature `remoteWorkspaceStorageEnabled` defaults on for Cloud and
+self-hosted instances. New native Paperclip Runner sandbox workspaces use remote
+authority automatically when durable storage is configured and their fresh
+source is supported. Existing host workspaces and configured local folders keep
+their legacy path until explicitly imported. An explicit stored `false` disables
+new enrollment; managed configuration can override the stored choice. External
+PostgreSQL records workspace identity, location, writer epoch, and the committed
+saved version; S3 holds encrypted portable snapshots. A stable deployment
+encryption key is required. The webserver uses disposable transfer/restore
+scratch instead of a durable task checkout. New workspaces without these
+prerequisites retain the legacy path. The local, SSH, and plugin environment
+drivers, legacy adapters, and Dot retain their existing behavior.
+
+One writer owns a logical workspace. Preparation establishes a saved baseline;
+finalization saves supported changes before settling persistence. A webserver
+replacement reconnects to the existing allocation. A committed saved version can
+restore elsewhere without the old sandbox or Git remote, including supported
+dirty Git state and unpushed commits. Changes after the last save still depend
+on the live allocation; this release provides no periodic backup of those edits.
+Failed saving retains the source and recovery obligation before destructive
+cleanup. File browsing distinguishes live bytes from a saved copy and its time.
+After a final save, older failed copies can expire when all their save attempts
+have stopped. Cleanup retains copies whose upload completion is unknown. This
+includes operations from older builds without save-attempt records. A final
+save alone does not prove that an older upload has stopped.
+
+V1 supports plain task folders, Git sources, and managed mutable repositories
+from the same project. It rejects read-only cross-project referenced folders,
+explicit concurrent shared writers, and custom cleanup/teardown commands on
+remote close. Manual workspace runtime commands, jobs, and services are also
+unsupported in V1 and must fail before local filesystem work. Agent tasks remain
+the supported command path. Disabling new enrollment preserves existing authority
+and recovery. An enrolled workspace whose persistence prerequisites are lost
+must fail admission rather than fall back to a controller checkout.
+
+A reference to an authorized project with no configured workspace source does
+not attach a folder. It adds a resolution warning and preserves the task's
+workspace. A configured cross-project source remains subject to the read-only
+folder restriction. `PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE` gates configured
+sources; a source-less project reference needs no folder and stays metadata-only
+when that switch is off.
+
+An imported saved Git workspace can resume from its saved files after its old
+local repository is removed. Local repository paths remain invalid for new
+remote acquisition. Saves reject unfinished Git operations, including rebase,
+cherry-pick, revert, merge, and bisect. The source files remain protected. Finish
+or abort the Git operation before saving. V1 does not claim a complete saved
+copy while these continuation records cannot be restored safely.
+
+Saved-copy browsing restores and verifies the complete archive for each request.
+Availability batches share one verified access per execution workspace within
+the request and allow at most eight remote workspace accesses. Each path still
+checks current authority. V1 has no extraction cache across requests. Large saved workspaces can therefore need
+substantial transfer time and temporary disk space for each browse request.
+Saved Files access admits at most two open extractions per process. It limits an
+encrypted archive to 512 MiB, its manifest to 4 MiB, and extraction to 10,000
+entries. It reserves at most 2 GiB of temporary space across those accesses and
+checks free disk space with a 256 MiB margin. Capacity failures stop before an
+object download. Cleanup releases capacity after it removes the owned files.
+These limits apply to saved-copy file access. Agent workspace saves and restores
+retain their existing archive limits.
+Each managed repository preparation also saves a complete workspace archive.
+These saves preserve each preparation boundary; V1 does not combine them or use
+incremental uploads.
+
+Snapshot retention removes all stored object versions and delete markers before
+it records deletion. S3 credentials need `s3:ListBucketVersions` and
+`s3:DeleteObjectVersion`, in addition to normal object access. S3-compatible
+endpoints must support object-version listing. Permission errors
+and object locks retain the cleanup obligation for retry. Other storage deletes
+keep their existing behavior unless they explicitly request all versions.
+
+Ordinary sandbox Runner tasks retain the existing API upload restriction:
+`call_api` cannot read a workspace file through `files[].path`. Use
+`register_deliverable` to register the file, then pass its `artifactId` to
+`call_api`. Plugin task providers keep their existing file-read capability.
+
+This feature does not remove the instance volume or qualify HTTP traffic drain,
+active provider handoff, or other instance data paths. See
+[setup/import](DEVELOPING.md#experimental-native-remote-workspace-storage) and the
+[snapshot storage contract](DATABASE.md#experimental-remote-workspace-snapshots).
+
 ## Company fast-response service
 
 Companies may configure an optional shared API connection and model for short acknowledgements of accepted human turns. Fast responses use direct SDK inference alongside normal agent work, with a three-second admission deadline, bounded prompts/output, current authorization and independent `fast_response` accounting. They are server-marked platform receipts attributed to the agent, never completion, interaction or recovery evidence. Company-sponsored unlinked external senders are explicit; linked-user permission denials are never bypassed. See [fast-responses.md](fast-responses.md) for provider, delivery, history and endpoint contracts.

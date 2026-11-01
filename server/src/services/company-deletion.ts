@@ -1,4 +1,5 @@
 import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
@@ -73,6 +74,7 @@ export async function deleteCompany(db: Db, id: string) {
         const [existing] = await tx.select({ id: companies.id }).from(companies)
           .where(eq(companies.id, id)).for("no key update");
         if (!existing) return null;
+        await notifyExternalObjectRefresh(tx, id);
         await notifyIssueRecovery(tx, { companyId: id });
         await notifyChatCompanyConfiguration(tx, id);
         await chatCompanyDeletion.deleteCompanyData(tx, id);

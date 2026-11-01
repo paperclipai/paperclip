@@ -50,6 +50,59 @@ its DB checkpoint alone cannot replace those bytes. Per-turn application
 qualification under this disk loss awaits the provider-backup owner's durable
 storage contract; native controller recovery does not waive that dependency.
 
+The ordinary Everyday matrix retains its 125-second active outage default. The
+two explicit continuity suites require 300 seconds and reject a shorter override.
+
+The explicit-only `remote-workspace-storage` suite reuses that controller-restart
+journey for one native Codex Daytona cell. It verifies the default-enabled remote
+workspace setting through the ordinary instance API and creates a projectless task.
+It enables the existing experimental Files viewer through that API. The agent
+creates only synthetic source, an unpushed Git commit, and an untracked random
+reference in its task workspace. Independent public API reads require committed
+snapshot references and matching saved run receipts before and after replacement.
+Before SIGKILL, the ordinary instance upgrade probe must recognize the active
+remote execution as recoverable, even when a follow-up is queued.
+The browser opens the original reference through Files on both sides. A later
+native admission must keep the same workspace and reference while publishing a
+new saved version. The active revision survives a five-minute controller outage;
+after completion, a second replacement must admit a useful fourth native turn
+through the ordinary task-comment API with the same native and provider session.
+That request specifies one plain-text line containing its marker, one space, and
+the command's actual output; the expected output stays private to the evaluator.
+The browser then reads the saved reference through Files again. This is same-task
+continuation, not a separate-task sharing test. The ordinary original-process/lease,
+receipt-prefix, queued-message, artifact, and strict retained-session oracles still apply.
+
+The fixture reuses the Everyday graph without its host-path project or cwd and
+leaves the existing 52-cell Everyday matrix unchanged. The evaluator seeds
+configuration and agent context through public APIs; it never writes workspace
+outcomes or snapshot rows. The agent creates the file and Git state. The
+controller replacement wrapper and independent execution-identity oracle retain
+their existing responsibilities.
+
+This cell needs an explicitly provisioned disposable S3-compatible bucket, stable
+instance encryption material, an immutable Daytona image, and the usual provider
+credentials. Version 2 retains the merged continuity suite's five-minute active
+outage, fifteen-minute sandbox idle-stop policy, and post-completion controller
+replacement. A shorter active outage is rejected. It permits one attempt and
+1,000-cent company and lead budgets, with four expected provider admissions and
+a 30-minute attempt limit. The synthetic initial Git repository has no external remote. Runtime
+credentials remain outside the task snapshot root. Catalog discovery and local
+grader calibration do not establish a live pass.
+
+```sh
+PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_BUCKET=<owned-disposable-bucket> \
+PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_REGION=us-east-1 \
+pnpm test:e2e:runner -- --id remote-workspace-storage.runner-codex.daytona.recover-controller --max-automatic-retries 0
+```
+
+Optional `PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_ENDPOINT` and
+`PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_FORCE_PATH_STYLE=true` select a test S3
+endpoint. Each attempt has a distinct `runner-e2e/<instance-id>/` prefix. The
+server rejects mixed selections and never adopts ambient production storage
+configuration. Provider environment variables and immutable image selection use
+the standard launcher contract below.
+
 The explicit-only [GitHub review bot journey](GITHUB-REVIEW-JOURNEY.md) tests
 attended bot setup and an automatic PR review against an attached deployment.
 Private account bindings and setup receipts live in the private eval repository.
