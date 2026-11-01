@@ -795,7 +795,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
    * payload, context and actor. Every admission check still applies, including
    * the gate itself, so nothing here grants a run that admission would refuse.
    */
-  async function readmitUnblockedExecutionWaits() {
+  async function readmitUnblockedExecutionWaits(scope: DeferredReceiptRecoveryOptions = {}) {
     if ((await getSchedulingSuppression()).suppressed) return;
     const parked = await db.select({ wake: agentWakeupRequests })
       .from(agentWakeupRequests)
@@ -804,6 +804,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         eq(issues.assigneeAgentId, agentWakeupRequests.agentId)))
       .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
       .where(and(
+        scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
+        scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
         eq(agentWakeupRequests.status, "deferred_issue_execution"),
         sql`${agentWakeupRequests.payload}->'executionWait' is not null`,
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
@@ -877,6 +879,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         });
       } catch (err) {
         // The receipt is still held, so a later pass reconsiders this wake.
+        scope.onError?.(err);
         logger.warn({ err, wakeId: wake.id }, "failed to re-admit an unblocked execution wait");
         continue;
       }
