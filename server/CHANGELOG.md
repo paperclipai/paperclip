@@ -4,6 +4,8 @@
 
 ### Patch Changes
 
+- Reject a `hermes_local` agent config whose model id namespace disagrees with the configured provider or base URL, so the mismatch is reported when the config is saved instead of failing as a provider error at run time.
+
 - Bound full-tree workspace Git scans with process-wide concurrency, queue, timeout, cancellation, coalescing, and short-lived changed-file caching. Saturated or timed-out changed-file requests now return a retryable degraded response, and hidden file-browser panels no longer initiate scans.
 
 ## 0.3.1

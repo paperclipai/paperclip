@@ -5,6 +5,11 @@
 export { execute } from "./execute.js";
 export { testEnvironment } from "./test.js";
 export { detectModel, parseModelFromConfig, resolveProvider, inferProviderFromModel } from "./detect-model.js";
+export {
+  validateHermesModelProviderAlignment,
+  findModelNamespaceHint,
+  modelNamespaceOf,
+} from "./model-namespace.js";
 export { getConfigSchema } from "./config-schema.js";
 export {
   listHermesSkills as listSkills,

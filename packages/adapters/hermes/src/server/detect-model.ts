@@ -12,6 +12,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { MODEL_PREFIX_PROVIDER_HINTS, VALID_PROVIDERS } from "../shared/constants.js";
+import { findModelNamespaceHint } from "./model-namespace.js";
 
 export interface DetectedModel {
   /** Model name from config (e.g. "gpt-5.4", "anthropic/claude-sonnet-4") */
@@ -106,9 +107,22 @@ export function parseModelFromConfig(content: string): DetectedModel | null {
  * Returns undefined if no hint matches (caller should fall back to "auto").
  */
 export function inferProviderFromModel(model: string): string | undefined {
-  const lower = model.toLowerCase();
+  const lower = model.trim().toLowerCase();
 
-  // Strip provider/ prefix if present (e.g. "anthropic/claude-sonnet-4")
+  // 1. Match the full model id first. A namespace ("openrouter/gpt-4.1-mini",
+  //    "huggingface/meta-llama/llama-3.1-8b") states the provider explicitly
+  //    and must win over a bare-name guess: "openrouter/gpt-4.1-mini" is
+  //    OpenRouter, not OpenAI Codex, and "openrouter/claude-3.5-sonnet" is
+  //    OpenRouter, not Anthropic.
+  for (const [prefix, hint] of MODEL_PREFIX_PROVIDER_HINTS) {
+    if (lower.startsWith(prefix)) {
+      return hint;
+    }
+  }
+
+  // 2. Fall back to the bare model name ("gpt-5.4" -> "copilot"). The
+  //    namespace is dropped only here, after the explicit namespace above had
+  //    its chance to match.
   const bareName = lower.includes("/") ? lower.split("/").pop()! : lower;
 
   for (const [prefix, hint] of MODEL_PREFIX_PROVIDER_HINTS) {
@@ -179,7 +193,17 @@ export function resolveProvider(options: {
     !!detectedProvider &&
     supportedProviders.includes(detectedProvider)
   ) {
-    return { provider: detectedProvider, resolvedFrom: "hermesConfig" };
+    // A model id namespace ("openrouter/...") states the vendor explicitly.
+    // It outranks a Hermes config provider that names a different vendor,
+    // because sending the request to that vendor's base URL fails with an
+    // opaque provider error instead of a routing error.
+    const namespaceHint = findModelNamespaceHint(model ?? "");
+    if (
+      !namespaceHint
+      || namespaceHint.providers.includes(detectedProvider.toLowerCase())
+    ) {
+      return { provider: detectedProvider, resolvedFrom: "hermesConfig" };
+    }
   }
 
   const hasRuntimeSignals = !!detectedBaseUrl || !!detectedHasApiKey || !!detectedApiMode;
