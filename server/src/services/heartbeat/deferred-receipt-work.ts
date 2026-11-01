@@ -13,6 +13,13 @@ type NativeIntentOptions = DeferredExecutionScope & {
   onError(error: unknown): void;
 };
 
+// Gate-only waits are claimed by readmitUnblockedExecutionWaits after 60s.
+function readmissionDeadline(receipt: { status: string; payload: Record<string, unknown> | null; updatedAt: Date }) {
+  const wait = receipt.payload?.executionWait as { recoveryActionId?: unknown } | undefined;
+  return receipt.status === "deferred_issue_execution" && wait && !wait.recoveryActionId
+    && !receipt.payload?.queuedCommentInterrupt ? receipt.updatedAt.getTime() + 60_000 : null;
+}
+
 export function registerDeferredReceiptWork(
   db: Db,
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -52,6 +59,7 @@ export function registerDeferredReceiptWork(
         const rows = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
           status: agentWakeupRequests.status, updatedAt: agentWakeupRequests.updatedAt,
           claimedAt: agentWakeupRequests.claimedAt, error: agentWakeupRequests.error,
+          payload: agentWakeupRequests.payload,
           delayed: sql<boolean>`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null
             or ${agentWakeupRequests.payload}->'executionWait' is not null`,
           interruptedLegacy: sql<boolean>`exists (select 1 from heartbeat_runs r
@@ -85,7 +93,8 @@ export function registerDeferredReceiptWork(
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
         const now = Date.now();
         return { rows: rows.map(row => {
-          const deadline = kind === "native" && row.status === "claimed" && row.claimedAt ? row.claimedAt.getTime() + 60_000
+          const deadline = kind === "deferred" && readmissionDeadline(row) !== null ? readmissionDeadline(row)!
+            : kind === "native" && row.status === "claimed" && row.claimedAt ? row.claimedAt.getTime() + 60_000
             : kind === "native" && row.error ? row.updatedAt.getTime() + 30_000
             : kind === "deferred" && row.delayed && !row.interruptedLegacy ? row.updatedAt.getTime() + 30_000
             : null;
@@ -105,7 +114,8 @@ export function registerDeferredReceiptWork(
           }).from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, entry.companyId),
             eq(agentWakeupRequests.id, entry.id)));
           if (!current) return null;
-          const due = kind === "native" && current.status === "claimed" && current.claimedAt
+          const due = kind === "deferred" && readmissionDeadline(current) !== null ? readmissionDeadline(current)
+            : kind === "native" && current.status === "claimed" && current.claimedAt
             ? current.claimedAt.getTime() + 60_000
             : kind === "native" && current.status === "queued" && current.error ? current.updatedAt.getTime() + 30_000
               : kind === "deferred" && current.status === "deferred_issue_execution" && !current.interruptedLegacy
@@ -125,6 +135,14 @@ export function registerDeferredReceiptWork(
           const failed = (error: unknown) => { if (!(error instanceof PersistedExecutionWaitRefusal)) errors.push(error); };
           try { await owner.resume({ ...scope, onError: failed }); }
           catch (error) { failed(error); }
+          // A live gate or a concurrent claim can leave this receipt held.
+          // Retain its deadline without requiring another notification/restart.
+          const [remaining] = await db.select({ status: agentWakeupRequests.status,
+            payload: agentWakeupRequests.payload, updatedAt: agentWakeupRequests.updatedAt })
+            .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, entry.companyId),
+              eq(agentWakeupRequests.id, entry.id)));
+          const deadline = remaining ? readmissionDeadline(remaining) : null;
+          if (deadline !== null) next = Math.max(deadline, Date.now() + 60_000);
         }
         if (errors.length) throw new AggregateError(errors, `Deferred receipt ${entry.id} could not settle`);
         return next === null ? null : { ...entry, dueAt: next, immediate: false };
