@@ -268,17 +268,24 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     if (target.kind !== "remote" || !lease || target.leaseId !== lease.id || lease.status !== "active"
       || lease.releasedAt || hasRemoteTerminationReceipt(lease) || cleanup?.remoteCwd !== target.remoteCwd
       || row.location !== `remote:${target.environmentId}`) throw conflict("Agent directory recovery lease changed");
-    // Fetch a full validated projection. The original save baseline remains in
-    // Postgres; neither current canonical files nor an empty cache are uploaded.
-    const captured = await captureAgentFileCheckpoint({ runId: row.runId, localRoot: row.localRoot,
-      executionRoot: row.executionRoot, previous: { version: 1, entries: [] }, target });
+    // Reconstruct a private mirror without applying save quotas to admission.
+    // An empty merge baseline downloads all remote bytes without uploading any;
+    // the original save baseline remains unchanged in Postgres.
+    await fs.mkdir(row.localRoot, { recursive: true, mode: 0o700 });
+    let projection: PreparedAdapterExecutionTargetRuntime | undefined;
     try {
-      await fs.cp(path.join(captured.directory, "files"), row.localRoot, { recursive: true });
+      projection = await prepareAdapterExecutionTargetRuntime({ target, runId: row.runId, adapterKey: "agent-files-recovery",
+        workspaceLocalDir: row.localRoot, workspaceRemoteDir: row.executionRoot,
+        runtimeRootDir: sandboxTransferRoot(row, target.remoteCwd), syncWorkspace: true,
+        workspaceInboundMode: "adopt_remote", workspaceBaseline: { exclude: [".paperclip-runtime"], entries: new Map() },
+        workspaceGitSnapshot: null, workspaceRepositories: [], workspaceFileMode: "all", workspaceExclude: [".paperclip-runtime", ".paperclip-runtime/**"] });
+      await projection.restoreWorkspace();
+      await inspectAgentDirectory(row.localRoot, false);
       if (row.receipt?.warm === true) await fs.writeFile(ownerFile(row), JSON.stringify({ runId: row.runId }));
     } catch (error) {
       await fs.rm(row.localRoot, { recursive: true, force: true });
       throw error;
-    } finally { await captured.cleanup(); }
+    } finally { await projection?.cleanupWorkspaceSnapshot?.(); }
   }
   async function retrieve(row: Copy, target?: AdapterExecutionTarget | null) {
     if (row.location !== "local") {

@@ -20,7 +20,7 @@ import {
 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { bindAcpxAgentFiles } from "../drivers/acpx/agent-files-binding.js";
 import { resolveRunnerProviderAssetsRoot } from "../drivers/acpx/provider-assets-root.js";
 import { createServer } from "node:http";
@@ -7646,9 +7646,14 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
   }
 }, 30_000);
 
-it("recovers an active second warm business run with its opaque attachment identity", async () => {
+it("recovers an active second warm business run after deleting its controller context assets", async () => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-warm-second-active-"));
   const firstRoot = join(root, "first-controller"), nextRoot = join(root, "next-controller");
+  const assetRoot = join(root, "retired-controller-assets");
+  const skillRoot = join(assetRoot, "skill"), instructionRoot = join(assetRoot, "instructions");
+  await mkdir(skillRoot, { recursive: true }); await mkdir(instructionRoot, { recursive: true });
+  await writeFile(join(skillRoot, "SKILL.md"), "# Pinned skill\n");
+  await writeFile(join(instructionRoot, "AGENTS.md"), "Pinned instructions\n");
   const server = createServer();
   let authority: DurablePrpControlPlane | null = null, generation = 0;
   let checkpoint: durableControlPlane.DurablePrpCheckpoint | undefined;
@@ -7670,6 +7675,7 @@ it("recovers an active second warm business run with its opaque attachment ident
     runId: "run-warm-first-healthy", normalizedSessionId: "session-warm-second-active", turnId: "turn-first", itemId: "item-first" };
   const options = { runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
     codexArgs: fakeCodexArgs(root, "--emit-tool-call", "--durable-tool-ids"), stateDirectory: firstRoot,
+    runtimeContext: assignedRuntimeContext(skillRoot, instructionRoot),
     prpIdentity: initialIdentity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 }, controlPlaneRegistration: registration };
   const first = createCapabilityRunnerdCodexTransport(options);
   const within = async <T>(label: string, promise: Promise<T>) => {
@@ -7707,6 +7713,8 @@ it("recovers an active second warm business run with its opaque attachment ident
     await activeCore.flushCheckpoint();
     await within("controller detach", first.detachControllerForRestart());
     expect(() => process.kill(runnerPid!, 0)).not.toThrow();
+    await rm(assetRoot, { recursive: true, force: true });
+    expect(existsSync(assetRoot)).toBe(false);
     checkpoint!.restoreSessionDirectory(nextRoot);
     const noSpawn = vi.fn(() => { throw new Error("Duplicate Runner launch"); });
     const openedThread = opened.thread as Record<string, unknown>;
@@ -7758,6 +7766,7 @@ it("recovers an active second warm business run with its opaque attachment ident
     if (runnerPid) { try { process.kill(-runnerPid, "SIGKILL"); } catch {} }
     server.closeAllConnections();
     if (server.listening) await new Promise<void>(done => server.close(() => done()));
+    for (const controller of [firstRoot, nextRoot]) await releaseMaterializedNativeRuntimeSkills(join(controller, "codex-home", "skills"));
     await rm(root, { recursive: true, force: true });
   }
 }, 30_000);

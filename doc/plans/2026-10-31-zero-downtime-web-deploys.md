@@ -1,30 +1,45 @@
 # Zero-downtime web deployments
 
-Date: 2026-10-31. Status (2026-11-01 13:04 UTC): existing-volume staging enrollment
-is complete and its read/save/file-integrity checks pass. Active-agent recovery
-and the ten-deploy staging campaign remain unqualified. No production canary yet.
+Date: 2026-10-31. Status (2026-11-01 13:28 UTC): existing-volume staging enrollment
+is complete and its read/save/file-integrity checks pass. Active-agent recovery,
+idle behavior and the ten-deploy staging campaign remain unqualified. No production
+canary yet.
 
 Latest critical path: Core #18543 includes the runtime admission correction and
 owned immutable-cache retirement. Review exposed a resolved host-source fallback;
-its fix at `11d6eeefbb` passes all 122 workspace-preparation tests. The live test at
-`a18f6b85a3` gracefully stopped A and deleted its entire home in 50.4 seconds, then
-failed because B treated A's saved agent-directory cache path as execution
-identity. The remote execution did not meet the 420-second reattachment deadline.
-That failure remains failed evidence; all three owned Daytona sandboxes were
-subsequently confirmed absent and the temporary credential revoked. Recovery now
-needs a local projection rebuilt from the exact remote lease with its original
-save baseline preserved. Focused different-home/same-path/foreign-lease cases pass;
-full affected regressions and another live attempt are next.
+its fix passes all 122 workspace-preparation tests. The live test at `e14ca5f3e9`
+now reconstructs the agent-file projection, deletes A's entire home after graceful
+shutdown (22.8 seconds), and transfers ownership of the same remote execution.
+It then fails because adoption tries to rematerialize launch skills from A's
+deleted controller directory. That failure remains failed evidence; all three
+owned Daytona sandboxes were subsequently confirmed absent and the temporary
+credential revoked. Adoption now skips preparation of launch assets for the
+already-running provider. The regression fails before the fix and passes after
+it; all 71 related adoption/recovery transport cases pass with real local Runner
+processes and simulated providers. No paid-model success is inferred.
+
+Review also identified save quotas incorrectly applied during cache recovery.
+Recovery now uses the existing inbound remote projection and preserves path/link
+validation without enforcing save quotas on admission. The over-quota case still
+rejects an ordinary save. A broad directory run passed 110 cases but hit three
+cleanup timing failures; all 20 cleanup/cache-loss cases passed in isolation with
+the same timeouts. Server and Runner TypeScript checks pass. A rebuilt live retry
+and exact-head PR review are next.
 
 Cloud #1102 merged as `461c4aea28` and is serving on the staging controller.
-The original enrollment attempt completed using its original qualified image,
-a retained detached volume, and the migrated decision key. Its normal app boot
-became healthy; the post-enrollment probe passed 20 reads and three saves with no
-HTTP/WebSocket failures and verified all 34 files. The original browser tab
-reconnected and saved a new task title; lazy Agents navigation also succeeded.
-This is migrated-data/app continuity evidence, not a qualifying overlap or active
-agent result. Private receipts remain under the task's staging enrollment and
-hosted probe directories; no credential or live target identity belongs here.
+The original enrollment completed using its original qualified image, a retained
+detached volume, and the migrated decision key. The post-enrollment probe passed
+20 reads and three saves with no HTTP/WebSocket failures and verified all 34 files.
+The original browser tab reconnected and persisted a task title. Server logs later
+showed old Agents chunks returned 404 and navigation recovered via a page reload:
+this is migration continuity evidence, not uninterrupted old-tab asset loading.
+
+The first eight-minute natural database-idle observation failed. A bounded SQL
+attribution window is underway and is explicitly not an idle observation. Normal
+automatic sleep was correctly refused because this development fixture is not
+eligible for the free/demo idle-sleep policy; manual sleep/wake is still pending.
+Private receipts remain under the task's live-test, staging enrollment and hosted
+probe directories; no credential or live target identity belongs here.
 
 ## Outcome and endpoint
 
@@ -88,8 +103,8 @@ Measure one-time setup separately from repeated attempts. Keep failed evidence.
 | --- | --- | --- |
 | Prior prerequisites | #18403 and all five storage workstreams merged | Retain the ephemeral filesystem contract |
 | Core implementation | #18518, #18526, #18529, #18530, #18531 and #18533 merged; local packaged migration, browser overlap, cold restoration and durable command proofs recorded below | Complete live remote execution, accounting and later continuation qualification |
-| Cloud implementation | #1096, #1098, #1099, #1100, #1101 and #1102 merged | Await automatic staging recovery revision, then verify repeated Railway overlap behavior |
-| Staging | Original attempt has migrated data and preserved the signing key; volume detached and retained; failed final boot held in maintenance | Resume the same boot attempt after #1102, then qualify ten app-only replacements and lifecycle |
+| Cloud implementation | #1096, #1098, #1099, #1100, #1101 and #1102 merged; #1102 serving on staging | Verify repeated Railway overlap behavior after Core recovery qualification |
+| Staging | Original enrollment complete; migrated data and signing key preserved; volume detached and retained | Diagnose idle behavior, verify sleep/wake and repair, then qualify ten app-only replacements |
 | Production | No canary mutation performed | Proceed only after the staging and active-agent acceptance gates pass |
 
 Keep PRs, tested revisions, artifact identities, evidence paths, deployment targets
