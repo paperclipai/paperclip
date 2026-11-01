@@ -115,6 +115,7 @@ export async function testEnvironment(
   if (binaryFound) {
     let hasAuth = false;
     let authContent: string | null = null;
+    let selectedAuthSrc: string | null = null;
 
     if (targetIsRemote) {
       // For remote targets, only accept credentials explicitly configured for the adapter/run
@@ -136,6 +137,7 @@ export async function testEnvironment(
       for (const src of [targetAuth, ...sourceCandidates]) {
         if (src && (await fs.access(src).then(() => true).catch(() => false))) {
           hasAuth = true;
+          selectedAuthSrc = src;
           authContent = await fs.readFile(src, "utf8").catch(() => null);
           break;
         }
@@ -154,6 +156,9 @@ export async function testEnvironment(
 
       let effectiveProbeCwd = cwd;
       let probeEnv: Record<string, string> = targetIsRemote ? { ...env } : { ...normalizedEnv };
+      if (!targetIsRemote && selectedAuthSrc && !probeEnv.MUSE_AUTH_PATH) {
+        probeEnv.MUSE_AUTH_PATH = selectedAuthSrc;
+      }
       let cleanupProbe: (() => Promise<void>) | null = null;
       const probeRunId = `muse-probe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
