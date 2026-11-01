@@ -2,6 +2,7 @@ import { isOpenRouterUrl, openRouterAttributionHeaders } from "@paperclipai/adap
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
 import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
 import { installSandboxToolMemoryPreference } from "./sandbox-tool-memory.js";
 
@@ -10,6 +11,8 @@ type PreparedOpenCodeRuntimeConfig = {
   notes: string[];
   cleanup: () => Promise<void>;
 };
+
+const RUNTIME_MCP_TIMEOUT_MS = 30_000;
 
 function resolveXdgConfigHome(env: Record<string, string>): string {
   return (
@@ -104,13 +107,58 @@ async function readJsonObject(filepath: string): Promise<Record<string, unknown>
   }
 }
 
+async function replaceRuntimeConfigSymlink(filepath: string): Promise<void> {
+  let stat: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    stat = await fs.lstat(filepath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT") return;
+    throw err;
+  }
+  if (!stat.isSymbolicLink()) return;
+
+  const contents = await fs.readFile(filepath);
+  await fs.unlink(filepath);
+  await fs.writeFile(filepath, contents, { mode: 0o600 });
+}
+
+function buildRuntimeMcpConfig(
+  existingMcp: Record<string, unknown>,
+  servers: AdapterRuntimeMcpServer[],
+): Record<string, unknown> {
+  const runtimeServers: Record<string, unknown> = Object.create(null);
+  const usedNames = new Set<string>();
+  for (const server of servers) {
+    let name = server.name;
+    if (usedNames.has(name)) name = `${name}-${server.connectionId.slice(0, 8)}`;
+    let suffix = 2;
+    while (usedNames.has(name)) {
+      name = `${server.name}-${server.connectionId.slice(0, 8)}-${suffix}`;
+      suffix += 1;
+    }
+    usedNames.add(name);
+    runtimeServers[name] = {
+      type: "remote",
+      url: server.url,
+      headers: { Authorization: `Bearer ${server.token}` },
+      oauth: false,
+      timeout: RUNTIME_MCP_TIMEOUT_MS,
+    };
+  }
+  // Paperclip-managed entries deliberately override any matching user entry:
+  // their names identify the current run's authorization scope and credentials.
+  return { ...existingMcp, ...runtimeServers };
+}
+
 export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
+  runtimeMcpServers?: AdapterRuntimeMcpServer[];
   targetIsRemote?: boolean;
   sandboxToolOomPreference?: boolean;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
+  const runtimeMcpServers = input.runtimeMcpServers ?? [];
 
   // For remote execution targets the host XDG_CONFIG_HOME path is meaningless
   // (and actively harmful — it leaks a macOS-only path into the remote Linux
@@ -144,10 +192,16 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     }
   }
 
+  await replaceRuntimeConfigSymlink(runtimeConfigPath);
   const existingConfig = await readJsonObject(runtimeConfigPath);
   const notes = [
-    skipPermissions ? "Injected runtime OpenCode config with permission=allow for all tools and connections." : "Prepared isolated OpenCode provider configuration.",
+    skipPermissions
+      ? "Injected runtime OpenCode config with permission=allow for all tools and connections."
+      : "Prepared isolated OpenCode provider configuration.",
   ];
+  if (runtimeMcpServers.length > 0) {
+    notes.push(`Injected ${runtimeMcpServers.length} Paperclip-managed OpenCode MCP server(s).`);
+  }
 
   // Merge gateway/custom provider definitions supplied via PAPERCLIP_OPENCODE_PROVIDERS
   // (a JSON object in OpenCode's `provider` shape). OpenCode resolves a `--model
@@ -162,7 +216,9 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     resolveEnv,
     notes,
   );
-  const existingProvider = isPlainObject(existingConfig.provider) ? existingConfig.provider : {};
+  const existingProvider = isPlainObject(existingConfig.provider)
+    ? existingConfig.provider
+    : {};
   let nextProvider = gatewayProviders
     ? { ...existingProvider, ...gatewayProviders }
     : existingProvider;
@@ -217,6 +273,12 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   if (Object.keys(nextProvider).length > 0) {
     nextConfig.provider = nextProvider;
   }
+  if (runtimeMcpServers.length > 0) {
+    nextConfig.mcp = buildRuntimeMcpConfig(
+      isPlainObject(existingConfig.mcp) ? existingConfig.mcp : {},
+      runtimeMcpServers,
+    );
+  }
 
   // Pin OpenCode's auxiliary "small" model (used for session-title generation and
   // other helper tasks) via PAPERCLIP_OPENCODE_SMALL_MODEL. OpenCode otherwise
@@ -229,7 +291,8 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     nextConfig.small_model = smallModel;
     notes.push(`Pinned OpenCode small_model to ${smallModel}.`);
   }
-  await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
+  await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, { mode: 0o600 });
+  await fs.chmod(runtimeConfigPath, 0o600);
   if (input.sandboxToolOomPreference) {
     try {
       await installSandboxToolMemoryPreference(runtimeConfigDir);
