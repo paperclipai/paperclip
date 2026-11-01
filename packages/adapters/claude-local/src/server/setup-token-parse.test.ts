@@ -12,6 +12,7 @@ import {
   SETUP_TOKEN_URL_QUERY_KEYS,
   parseSetupTokenCredential,
   parseSetupTokenPrompt,
+  renderTerminalScreen,
 } from "./setup-token-parse.js";
 
 const fixturesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "__fixtures__");
@@ -684,5 +685,72 @@ describe("parseSetupTokenCredential", () => {
     expect(fixture).toContain(SETUP_TOKEN_BEFORE_ANCHOR);
     expect(fixture).toContain(SETUP_TOKEN_AFTER_ANCHOR);
     expect(fixture).toContain(SETUP_TOKEN_PREFIX);
+  });
+});
+
+function inkDiffRedraw(prev: string[], next: string[]): string {
+  let out = `\x1b[${prev.length}A`;
+  for (let row = 0; row < next.length; row += 1) {
+    const before = prev[row] ?? "";
+    const after = next[row];
+    out += "\r";
+    let skipped = false;
+    for (let col = 0; col < after.length; col += 1) {
+      if (before[col] === after[col]) { skipped = true; continue; }
+      if (skipped) { out += `\x1b[${col + 1}G`; skipped = false; }
+      out += after[col];
+    }
+    if (before.length > after.length) out += "\x1b[K";
+    out += "\x1b[1B";
+  }
+  return out;
+}
+
+describe("renderTerminalScreen", () => {
+  const PROMPT_FRAME = [
+    " Browser didn't open? Use the url below to sign in (c to copy)",
+    "",
+    ` ${VALID_URL}`,
+    "",
+    " Hold Shift while selecting to use your terminal's native copy",
+    "",
+    " Paste code here if prompted >",
+  ];
+  const SUCCESS_FRAME = [
+    " Long-lived authentication token created successfully!",
+    ` ${SETUP_TOKEN_BEFORE_ANCHOR}`,
+    "",
+    ` ${FULL_TOKEN}`,
+    ` ${SETUP_TOKEN_AFTER_ANCHOR}`,
+    "",
+    "",
+  ];
+
+  it("recovers the success record from a 2.1.3xx diff redraw", () => {
+    const stream = `${PROMPT_FRAME.join("\r\n")}\r\n${inkDiffRedraw(PROMPT_FRAME, SUCCESS_FRAME)}`;
+    expect(stream).toContain("token\x1b[21Gcurely");
+    expect(parseSetupTokenCredential(stream)).toBeNull();
+    expect(parseSetupTokenCredential(renderTerminalScreen(stream))).toBe(FULL_TOKEN);
+  });
+
+  it("applies cursor moves, erase in line, and cursor save and restore", () => {
+    expect(renderTerminalScreen("abc\r\nxyz\x1b[1A\x1b[2Gq")).toBe("aqc\nxyz");
+    expect(renderTerminalScreen("hello world\r\x1b[6C\x1b[K")).toBe("hello");
+    expect(renderTerminalScreen("ab\x1b7\r\ncd\x1b8Z")).toBe("abZ\ncd");
+  });
+
+  it("drops an OSC 8 target longer than any lookahead window", () => {
+    const url = `${VALID_URL}&pad=${"x".repeat(300)}`;
+    expect(renderTerminalScreen(`\x1b]8;id=1;${url}\x07shown\x1b]8;;\x07`)).toBe("shown");
+  });
+
+  it("treats a bare line feed from a raw PTY as a new line", () => {
+    expect(renderTerminalScreen("abc\n\x1b[2Gx")).toBe("abc\n x");
+    expect(renderTerminalScreen("abc\ndef")).toBe("abc\ndef");
+  });
+
+  it("keeps OSC 8 display text and drops private-mode and charset sequences", () => {
+    const text = "\x1b[?2004h\x1b(B\x1b]8;;https://example.com\x07link\x1b]8;;\x07 ok\x0f";
+    expect(renderTerminalScreen(text)).toBe("link ok");
   });
 });
