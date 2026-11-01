@@ -122,6 +122,116 @@ describe("remote managed runtime", () => {
     expect(restoredAuth).toBe('{"token":"remote"}\n');
   });
 
+  it("removes the remote run directory after the restore hooks finish", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-cleanup-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const homeDir = path.join(rootDir, "home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(homeDir, { recursive: true });
+    await writeFile(path.join(homeDir, "auth.json"), '{"token":"remote"}\n', "utf8");
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/app",
+        remoteCwd: "/app",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        strictHostKeyChecking: true,
+      },
+      runId: "cleanup-run",
+      adapterKey: "codex",
+      workspaceLocalDir: workspaceDir,
+      assets: [
+        {
+          key: "home",
+          localDir: homeDir,
+          restore: async ({ assetDir, readFile }) => {
+            await readFile(path.posix.join(assetDir, "auth.json"));
+          },
+        },
+      ],
+    });
+
+    await prepared.restoreWorkspace();
+
+    const commands = vi.mocked(runSshCommand).mock.calls.map(
+      (call) => (call as unknown[])[1] as string,
+    );
+    const cleanupCommand = commands.find((command) => command.startsWith("rm -rf"));
+    expect(cleanupCommand).toBe("rm -rf -- '/app/.paperclip-runtime/runs/cleanup-run'");
+    expect(commands.indexOf(cleanupCommand!)).toBeGreaterThan(
+      commands.findIndex((command) => command.startsWith("base64")),
+    );
+  });
+
+  it("removes the remote run directory when an asset sync fails", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-cleanup-fail-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const homeDir = path.join(rootDir, "home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(homeDir, { recursive: true });
+    syncDirectoryToSsh.mockRejectedValueOnce(new Error("ssh transfer failed"));
+
+    await expect(prepareRemoteManagedRuntime({
+      spec: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/app",
+        remoteCwd: "/app",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        strictHostKeyChecking: true,
+      },
+      runId: "cleanup-failed-run",
+      adapterKey: "codex",
+      workspaceLocalDir: workspaceDir,
+      assets: [{ key: "home", localDir: homeDir }],
+    })).rejects.toThrow("ssh transfer failed");
+
+    const commands = vi.mocked(runSshCommand).mock.calls.map(
+      (call) => (call as unknown[])[1] as string,
+    );
+    expect(commands).toContain("rm -rf -- '/app/.paperclip-runtime/runs/cleanup-failed-run'");
+  });
+
+  it("keeps an in-place remote workspace when the restore hooks finish", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-in-place-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/app",
+        remoteCwd: "/app",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        strictHostKeyChecking: true,
+      },
+      runId: "in-place-run",
+      adapterKey: "codex",
+      workspaceLocalDir: workspaceDir,
+      workspaceRemoteDir: "/app",
+      syncWorkspace: false,
+    });
+
+    await prepared.restoreWorkspace();
+
+    const commands = vi.mocked(runSshCommand).mock.calls.map(
+      (call) => (call as unknown[])[1] as string,
+    );
+    expect(commands.filter((command) => command.startsWith("rm -rf"))).toEqual([]);
+  });
+
   it("stages each additional project into its own isolated SSH dir, isolating one failure", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-additional-"));
     cleanupDirs.push(rootDir);
