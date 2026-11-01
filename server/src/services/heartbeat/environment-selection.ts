@@ -2,7 +2,10 @@ import { heartbeatExternalProvider, nativeExecutionUsesTaskWorkspace } from "./e
 import { heartbeatRuns, issues, type Db, type agents } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { readGitCacheExpiration } from "../git-workspace-restoration.js";
-import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings, ProjectExecutionWorkspacePolicy } from "@paperclipai/shared";
+import type { AiConnectionMetadata, ExecutionWorkspace, IssueExecutionWorkspaceSettings, ProjectExecutionWorkspacePolicy } from "@paperclipai/shared";
+import { unprocessable } from "../../errors.js";
+import { pluginEnvironmentRunnerTaskDriver } from "../agent-runner-selection.js";
+import { supportsPluginRunnerManagedCredentials } from "../native-runtime/plugin-runner-credentials.js";
 import { parseObject } from "../../adapters/utils.js";
 import { logger } from "../../middleware/logger.js";
 import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
@@ -26,9 +29,9 @@ import {
   nativeChatWorkspaceMatches,
 } from "../native-runtime/native-chat-workspace.js";
 import { NativeRunnerOwnershipUnverifiedError } from "../native-runtime/native-runner-ownership.js";
-import type { environmentService } from "../environments.js";
+import { environmentService } from "../environments.js";
 import type { executionWorkspaceService } from "../execution-workspaces.js";
-import type { instanceSettingsService } from "../instance-settings.js";
+import { instanceSettingsService } from "../instance-settings.js";
 import type { TrustPresetResolution } from "../trust-preset-resolver.js";
 import { WORKSPACE_BUSY_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { WorkspaceBusyDeferral, type createHeartbeatRetries } from "./retries.js";
@@ -178,120 +181,11 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   }
   const requestedReusableExecutionWorkspaceConfig =
     reusableExistingExecutionWorkspace?.config ?? null;
-  const localEnvironment = await environmentsSvc.ensureLocalEnvironment(
-    agent.companyId,
-  );
-  const resolvedInstanceSettings = await instanceSettings.get();
-  // Managed-sandbox-only policy: a run that would land on the local
-  // environment is redirected onto the platform-managed sandbox row, and
-  // with no active managed row the resolution fails closed
-  // (ManagedSandboxUnavailableError) — never local. Mirrors the forced
-  // kubernetes execution mode below, which takes precedence when both
-  // regimes are active.
-  const managedSandboxOnly =
-    (await instanceSettings.getExperimental()).enableManagedSandboxOnly ===
-    true;
-  const managedSandboxEnvironment = managedSandboxOnly
-    ? await environmentsSvc.findManagedSandboxEnvironment(agent.companyId)
-    : null;
-  const environmentResolution = resolveExecutionWorkspaceEnvironmentId({
-    lowTrustIssueEnvironmentId: trustPreset.kind === "low_trust_review"
-      ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, {includeEnvironmentId: true})?.environmentId : null,
-    agentDefaultEnvironmentId: agent.defaultEnvironmentId,
-    instanceDefaultEnvironmentId:
-      resolvedInstanceSettings.defaultEnvironmentId ?? null,
-    localDefaultEnvironmentId: localEnvironment.id,
-    managedSandboxOnly,
-    managedSandboxEnvironmentId: managedSandboxEnvironment?.id ?? null,
-  });
+  const { localEnvironment, resolvedInstanceSettings, environmentResolution, executionPolicy, executionForcedToKubernetes, selectedEnvironmentId, selectedEnvironmentForConfig } =
+    await resolveHeartbeatEnvironmentChoice({ run, agent, issueId, issueContext, trustPreset, environmentsSvc, instanceSettings });
   const effectiveExecutionWorkspaceMode: ReturnType<
     typeof resolveExecutionWorkspaceMode
   > = requestedExecutionWorkspaceMode;
-  const executionPolicy = {
-    executionMode: resolvedInstanceSettings.general.executionMode,
-    // Backstop behind the resolver's local→managed redirect: the run-time
-    // allowlist below fails any run that still resolved to a `local`
-    // environment under managed-sandbox-only, so no selection path or
-    // tenant-set env var can land untrusted execution on the tenant
-    // container.
-    managedSandboxOnly,
-  };
-  const executionForcedToKubernetes =
-    isExecutionForcedToKubernetes(executionPolicy);
-  let selectedEnvironmentId = environmentResolution.environmentId;
-  if (executionForcedToKubernetes) {
-    let kubernetesEnvironment =
-      await environmentsSvc.findKubernetesEnvironment(agent.companyId);
-    if (!kubernetesEnvironment) {
-      // Lazy recovery for companies created after the startup bootstrap ran
-      // (the boot hook only provisions environments for companies that exist
-      // at boot). Re-derive the managed-env config from the bootstrap env.
-      // If the process env no longer forces Kubernetes (rollback / config
-      // drift relative to the persisted executionMode setting), skip the
-      // provisioning gracefully: the guard below still refuses local
-      // fallback with the explicit error, instead of crashing here on
-      // undefined config.
-      let bootstrap: ReturnType<typeof parseExecutionPolicyBootstrapEnv> =
-        null;
-      let bootstrapSkipReason: string | null = null;
-      try {
-        bootstrap = parseExecutionPolicyBootstrapEnv(process.env);
-        if (!bootstrap) {
-          bootstrapSkipReason =
-            'PAPERCLIP_EXECUTION_MODE bootstrap env is not kubernetes-forced (absent or "any")';
-        }
-      } catch (err) {
-        bootstrapSkipReason = `PAPERCLIP_EXECUTION_MODE bootstrap env failed to parse: ${
-          err instanceof Error ? err.message : String(err)
-        }`;
-      }
-      if (bootstrap) {
-        await environmentsSvc.ensureKubernetesEnvironment(
-          agent.companyId,
-          bootstrap.kubernetesConfig,
-        );
-        kubernetesEnvironment =
-          await environmentsSvc.findKubernetesEnvironment(agent.companyId);
-      } else {
-        logger.warn(
-          {
-            runId: run.id,
-            agentId: agent.id,
-            companyId: agent.companyId,
-            reason: bootstrapSkipReason,
-          },
-          "executionMode=kubernetes is persisted but the bootstrap env cannot provision a managed Kubernetes environment; skipping lazy provisioning for this company (the run will fail with the explicit no-managed-environment error)",
-        );
-      }
-    }
-    if (!kubernetesEnvironment) {
-      throw new Error(
-        "Instance execution policy requires the Kubernetes sandbox provider " +
-          "(executionMode=kubernetes) but no managed Kubernetes environment is " +
-          "configured for this company. Configure one (PAPERCLIP_K8S_* env on the " +
-          "cloud instance) before running agents; refusing to fall back to local execution.",
-      );
-    }
-    if (kubernetesEnvironment.id !== selectedEnvironmentId) {
-      logger.info(
-        {
-          runId: run.id,
-          issueId,
-          agentId: agent.id,
-          resolvedEnvironmentId: selectedEnvironmentId,
-          forcedKubernetesEnvironmentId: kubernetesEnvironment.id,
-        },
-        "Forcing run onto the managed Kubernetes environment (executionMode=kubernetes)",
-      );
-    }
-    selectedEnvironmentId = kubernetesEnvironment.id;
-  }
-  const selectedEnvironmentForConfig =
-    selectedEnvironmentId === localEnvironment.id
-      ? localEnvironment
-      : selectedEnvironmentId
-        ? await environmentsSvc.getById(selectedEnvironmentId)
-        : null;
   const nativeChatWorkspaceScope = isDotRun ? null : await findNativeChatWorkspaceScope(db, {
     adapterType: agent.adapterType,
     environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
@@ -539,4 +433,129 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     explicitTaskDirectory,
     useIsolatedTaskDirectory,
   };
+}
+
+export async function createHeartbeatPoolRuntimeValidator(db: Db, input: Parameters<typeof resolveHeartbeatEnvironmentChoice>[0] & { adapterType: string; persisted?: boolean }) {
+  const resolvePluginRunnerTasks = async (client: Db) => {
+    const choice = await resolveHeartbeatEnvironmentChoice(client === db ? input : {
+      ...input, environmentsSvc: environmentService(client), instanceSettings: instanceSettingsService(client),
+    });
+    const environment = choice.selectedEnvironmentForConfig;
+    if (!environment) throw unprocessable("The selected environment is unavailable");
+    return environment.driver === "plugin" && Boolean(await pluginEnvironmentRunnerTaskDriver(client, environment));
+  };
+  const candidatePluginRunnerTasks = input.adapterType === "paperclip_runner" && !input.persisted
+    ? await resolvePluginRunnerTasks(db) : false;
+  return async (runtimeConfig: Record<string, unknown>, metadata: AiConnectionMetadata, phase: "candidate" | "commit" | "persisted", client: Db = db) => {
+    if (input.adapterType !== "paperclip_runner" || phase === "persisted") return;
+    const runnerTasks = phase === "candidate" ? candidatePluginRunnerTasks : await resolvePluginRunnerTasks(client);
+    if (!runnerTasks) return;
+    const provider = runtimeConfig.provider === "acpx" ? runtimeConfig.acpxAgent : runtimeConfig.provider;
+    if (!supportsPluginRunnerManagedCredentials(provider, metadata.routing)) throw unprocessable("Plugin Runner does not support this managed credential provider or routing");
+  };
+}
+
+export async function resolveHeartbeatEnvironmentChoice(input: {
+  run: Pick<HeartbeatEnvironmentSelectionInput["run"], "id">;
+  agent: Pick<HeartbeatEnvironmentSelectionInput["agent"], "id" | "companyId" | "defaultEnvironmentId">;
+  issueId: string | null;
+  issueContext: HeartbeatEnvironmentSelectionInput["task"]["issueContext"];
+  trustPreset: HeartbeatEnvironmentSelectionInput["policy"]["trustPreset"];
+  environmentsSvc: HeartbeatEnvironmentSelectionInput["services"]["environmentsSvc"];
+  instanceSettings: HeartbeatEnvironmentSelectionInput["services"]["instanceSettings"];
+}) {
+  const { run, agent, issueId, issueContext, trustPreset, environmentsSvc, instanceSettings } = input;
+  const localEnvironment = await environmentsSvc.ensureLocalEnvironment(
+    agent.companyId,
+  );
+  const resolvedInstanceSettings = await instanceSettings.get();
+  const managedSandboxOnly =
+    (await instanceSettings.getExperimental()).enableManagedSandboxOnly ===
+    true;
+  const managedSandboxEnvironment = managedSandboxOnly
+    ? await environmentsSvc.findManagedSandboxEnvironment(agent.companyId)
+    : null;
+  const environmentResolution = resolveExecutionWorkspaceEnvironmentId({
+    lowTrustIssueEnvironmentId: trustPreset.kind === "low_trust_review"
+      ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, {includeEnvironmentId: true})?.environmentId : null,
+    agentDefaultEnvironmentId: agent.defaultEnvironmentId,
+    instanceDefaultEnvironmentId:
+      resolvedInstanceSettings.defaultEnvironmentId ?? null,
+    localDefaultEnvironmentId: localEnvironment.id,
+    managedSandboxOnly,
+    managedSandboxEnvironmentId: managedSandboxEnvironment?.id ?? null,
+  });
+  const executionPolicy = {
+    executionMode: resolvedInstanceSettings.general.executionMode,
+    managedSandboxOnly,
+  };
+  const executionForcedToKubernetes =
+    isExecutionForcedToKubernetes(executionPolicy);
+  let selectedEnvironmentId = environmentResolution.environmentId;
+  if (executionForcedToKubernetes) {
+    let kubernetesEnvironment =
+      await environmentsSvc.findKubernetesEnvironment(agent.companyId);
+    if (!kubernetesEnvironment) {
+      let bootstrap: ReturnType<typeof parseExecutionPolicyBootstrapEnv> =
+        null;
+      let bootstrapSkipReason: string | null = null;
+      try {
+        bootstrap = parseExecutionPolicyBootstrapEnv(process.env);
+        if (!bootstrap) {
+          bootstrapSkipReason =
+            'PAPERCLIP_EXECUTION_MODE bootstrap env is not kubernetes-forced (absent or "any")';
+        }
+      } catch (err) {
+        bootstrapSkipReason = `PAPERCLIP_EXECUTION_MODE bootstrap env failed to parse: ${
+          err instanceof Error ? err.message : String(err)
+        }`;
+      }
+      if (bootstrap) {
+        await environmentsSvc.ensureKubernetesEnvironment(
+          agent.companyId,
+          bootstrap.kubernetesConfig,
+        );
+        kubernetesEnvironment =
+          await environmentsSvc.findKubernetesEnvironment(agent.companyId);
+      } else {
+        logger.warn(
+          {
+            runId: run.id,
+            agentId: agent.id,
+            companyId: agent.companyId,
+            reason: bootstrapSkipReason,
+          },
+          "executionMode=kubernetes is persisted but the bootstrap env cannot provision a managed Kubernetes environment; skipping lazy provisioning for this company (the run will fail with the explicit no-managed-environment error)",
+        );
+      }
+    }
+    if (!kubernetesEnvironment) {
+      throw new Error(
+        "Instance execution policy requires the Kubernetes sandbox provider " +
+          "(executionMode=kubernetes) but no managed Kubernetes environment is " +
+          "configured for this company. Configure one (PAPERCLIP_K8S_* env on the " +
+          "cloud instance) before running agents; refusing to fall back to local execution.",
+      );
+    }
+    if (kubernetesEnvironment.id !== selectedEnvironmentId) {
+      logger.info(
+        {
+          runId: run.id,
+          issueId,
+          agentId: agent.id,
+          resolvedEnvironmentId: selectedEnvironmentId,
+          forcedKubernetesEnvironmentId: kubernetesEnvironment.id,
+        },
+        "Forcing run onto the managed Kubernetes environment (executionMode=kubernetes)",
+      );
+    }
+    selectedEnvironmentId = kubernetesEnvironment.id;
+  }
+  const selectedEnvironmentForConfig =
+    selectedEnvironmentId === localEnvironment.id
+      ? localEnvironment
+      : selectedEnvironmentId
+        ? await environmentsSvc.getById(selectedEnvironmentId)
+        : null;
+  return { localEnvironment, resolvedInstanceSettings, environmentResolution, executionPolicy, executionForcedToKubernetes, selectedEnvironmentId, selectedEnvironmentForConfig };
 }

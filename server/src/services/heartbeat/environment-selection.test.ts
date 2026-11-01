@@ -12,7 +12,8 @@ import { executionWorkspaceService } from "../execution-workspaces.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { buildNativeExecutionInput } from "../native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.test-fixture.js";
-import { selectHeartbeatEnvironment, type HeartbeatEnvironmentSelectionInput } from "./environment-selection.js";
+import { createHeartbeatPoolRuntimeValidator, resolveHeartbeatEnvironmentChoice, selectHeartbeatEnvironment, type HeartbeatEnvironmentSelectionInput } from "./environment-selection.js";
+import * as agentRunnerSelection from "../agent-runner-selection.js";
 
 const restoration = vi.hoisted(() => ({ removed: false }));
 vi.mock("../git-workspace-restoration.js", async importOriginal => {
@@ -67,12 +68,12 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
       if (!created) throw new Error("Workspace fixture was not created");
       return created;
     };
-    const recover = (workspaceId: string) => {
+    const recover = (workspaceId: string, provider: "codex" | "opencode" = "codex") => {
       input.run.runtimeMode = "native";
       input.run.runnerProfileJson = { nativeExecutionInput: buildNativeExecutionInput({
         companyId: company.id, runId: run.id, agentId: agent.id,
         issue: { id: issue.id, identifier: "ENV-1", title: issue.title, description: null, workMode: "standard" },
-        taskPrompt: "Continue the same task", normalizedSessionId: randomUUID(), provider: "codex",
+        taskPrompt: "Continue the same task", normalizedSessionId: randomUUID(), provider, model: provider === "opencode" ? "paperclip/qwen" : undefined,
         workspace: { id: workspaceId, cwd: home, repoUrl: null, repoRef: null, branchName: null },
         completionContract: { id: randomUUID(), sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1", contract: { revision: "1", objective: "Select the environment", criteria: [{ id: "objective", requirement: "Preserve the workspace" }] } },
         runtimeContext: nativeRuntimeContextFixture(),
@@ -222,9 +223,62 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     input.policy.trustPreset = { kind: "low_trust_review", preset: "low_trust_review", sourcePresets: {}, boundary: { mode: "low_trust_review", companyId: input.agent.companyId, rootIssueId: issue.id } };
     input.policy.requestedExecutionWorkspaceMode = "isolated_workspace";
     input.policy.isolatedWorkspacesEnabled = false;
+    const choice = await resolveHeartbeatEnvironmentChoice({ run: input.run, agent: input.agent, issueId: input.task.issueId,
+      issueContext: input.task.issueContext, trustPreset: input.policy.trustPreset, ...input.services });
     const result = await selectHeartbeatEnvironment(db, input);
-    expect(result.selectedEnvironmentForConfig?.id).toBe(sandbox.id);
+    expect(choice.selectedEnvironmentForConfig?.id).toBe(sandbox.id);
+    expect(result.selectedEnvironmentForConfig?.id).toBe(choice.selectedEnvironmentForConfig?.id);
     expect(result.useIsolatedTaskDirectory).toBe(true);
+  });
+
+  it("re-evaluates the task environment override instead of retaining the agent default", async () => {
+    const { input, issue } = await fixture();
+    const [defaultEnvironment, taskEnvironment] = await db.insert(environments).values([
+      { name: "Agent sandbox", driver: "sandbox", status: "active", config: { provider: "fake" } },
+      { name: "Task plugin", driver: "plugin", status: "active", config: { pluginKey: "fixture", driverKey: "task" } },
+    ]).returning();
+    input.agent.defaultEnvironmentId = defaultEnvironment.id;
+    input.policy.trustPreset = { kind: "low_trust_review", preset: "low_trust_review", sourcePresets: {}, boundary: { mode: "low_trust_review", companyId: input.agent.companyId, rootIssueId: issue.id } };
+    const resolve = () => resolveHeartbeatEnvironmentChoice({ run: input.run, agent: input.agent, issueId: input.task.issueId,
+      issueContext: input.task.issueContext, trustPreset: input.policy.trustPreset, ...input.services });
+    expect((await resolve()).selectedEnvironmentForConfig?.id).toBe(defaultEnvironment.id);
+    input.task.issueContext!.executionWorkspaceSettings = { mode: "isolated_workspace", environmentId: taskEnvironment.id };
+    expect((await resolve()).selectedEnvironmentForConfig).toMatchObject({ id: taskEnvironment.id, driver: "plugin" });
+    expect((await selectHeartbeatEnvironment(db, input)).selectedEnvironmentForConfig?.id).toBe(taskEnvironment.id);
+  });
+
+  it("preserves persisted native pool recovery when the current default changes to a plugin target", async () => {
+    const { input, workspace, recover } = await fixture();
+    const original = await workspace();
+    recover(original.id, "opencode");
+    input.agent.adapterType = "paperclip_runner";
+    const local = await input.services.environmentsSvc.ensureLocalEnvironment(input.agent.companyId);
+    const [plugin] = await db.insert(environments).values({ name: "New plugin default", driver: "plugin", status: "active", config: { pluginKey: "fixture", driverKey: "runner" } }).returning();
+    input.agent.defaultEnvironmentId = plugin.id;
+    const ensure = vi.spyOn(input.services.environmentsSvc, "ensureLocalEnvironment");
+    const settings = vi.spyOn(input.services.instanceSettings, "get");
+    const driver = vi.spyOn(agentRunnerSelection, "pluginEnvironmentRunnerTaskDriver").mockResolvedValue({ driverKey: "runner", supportsTasks: true } as NonNullable<Awaited<ReturnType<typeof agentRunnerSelection.pluginEnvironmentRunnerTaskDriver>>>);
+    const validatorInput = { run: input.run, agent: input.agent, adapterType: input.agent.adapterType,
+      issueId: input.task.issueId, issueContext: input.task.issueContext, trustPreset: input.policy.trustPreset, ...input.services };
+    const validatePersisted = await createHeartbeatPoolRuntimeValidator(db, { ...validatorInput, persisted: true });
+    const config = { provider: "opencode", model: "paperclip/qwen" };
+    const metadata = { provider: "openai" as const, method: "api_key" as const, routing: { kind: "gateway" as const, protocol: "chat" as const, auth: "bearer" as const, baseUrl: "https://gateway.example/v1", models: [] } };
+    try {
+      await expect(validatePersisted(config, metadata, "persisted")).resolves.toBeUndefined();
+      expect(ensure).not.toHaveBeenCalled();
+      expect(settings).not.toHaveBeenCalled();
+      expect(driver).not.toHaveBeenCalled();
+      const validate = await createHeartbeatPoolRuntimeValidator(db, validatorInput);
+      await expect(validate(config, metadata, "candidate")).rejects.toThrow("Plugin Runner does not support");
+      await expect(validate(config, metadata, "candidate")).rejects.toThrow("Plugin Runner does not support");
+      expect(ensure).toHaveBeenCalledTimes(1);
+      await expect(validate(config, metadata, "commit")).rejects.toThrow("Plugin Runner does not support");
+      expect(ensure).toHaveBeenCalledTimes(2);
+      input.agent.defaultEnvironmentId = local.id;
+      await expect(validate(config, metadata, "commit")).resolves.toBeUndefined();
+      expect(ensure).toHaveBeenCalledTimes(3);
+      expect(input.run.runnerProfileJson).toMatchObject({ nativeExecutionInput: { provider: { kind: "opencode" }, binding: { executionWorkspaceId: original.id } } });
+    } finally { ensure.mockRestore(); settings.mockRestore(); driver.mockRestore(); }
   });
 
   it("returns the task-owned local chat root before workspace realization", async () => {

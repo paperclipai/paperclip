@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+export const AI_PROVIDER_MODEL_ID_MAX_LENGTH = 256;
+export const AI_ROUTING_MODEL_ID_MAX_LENGTH = AI_PROVIDER_MODEL_ID_MAX_LENGTH + "openrouter/".length;
+
 /** Value-free routing stored on the connection, never supplied by an agent binding. */
 export const aiProviderRoutingSchema = z
   .object({
@@ -17,7 +20,7 @@ export const aiProviderRoutingSchema = z
       .array(
         z
           .object({
-            id: z.string().trim().min(1).max(256),
+            id: z.string().trim().min(1).max(AI_PROVIDER_MODEL_ID_MAX_LENGTH),
             label: z.string().trim().max(160).optional(),
           })
           .strict(),
@@ -133,6 +136,12 @@ export function aiRoutingModel(
   if (!model || (harness !== "opencode_local" && !(harness === "pi_local" && route.kind === "openrouter"))) return model;
   const prefix = route.kind === "openrouter" ? "openrouter" : "paperclip";
   return model.startsWith(`${prefix}/`) ? model : `${prefix}/${model}`;
+}
+
+export function aiRoutingModelFromRaw(route: AiProviderRouting, harness: string, model: string): string {
+  return model && harness === "opencode_local" && (route.kind === "gateway" || route.kind === "local")
+    ? `paperclip/${model}`
+    : aiRoutingModel(route, harness, model);
 }
 
 /** Catalog identity is derived from routing, including accounts saved before these rows existed. */

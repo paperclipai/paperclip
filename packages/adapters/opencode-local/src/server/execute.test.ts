@@ -10,6 +10,8 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) =>
 
 import { ensureRemoteOpenCodeModelConfiguredAndAvailable, execute } from "./execute.js";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
+import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
+import { resetOpenCodeModelsCacheForTests } from "./models.js";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 
 const runProcessMock = vi.mocked(runAdapterExecutionTargetProcess);
@@ -80,6 +82,66 @@ describe("OpenCode local skill injection", () => {
     expect(prompt).toContain(custom ? "Custom agent instruction." : "You are agent agent-1");
     expect(prompt).not.toContain("Execution contract:");
     expect(prompt).not.toContain("Create child issues");
+  });
+
+  it.each([
+    ["paperclip/custom model", true],
+    ["paperclip/custom", false],
+  ])("checks the discovered local catalog before running %s (available=%s)", async (model, available) => {
+    vi.stubEnv("OPENCODE_ALLOW_ALL_MODELS", "");
+    resetOpenCodeModelsCacheForTests();
+    const commandPath = path.join(configHome, "fake-opencode-models");
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const discovery = vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue(probeResult({
+      stdout: "paperclip/custom model\nopenai/gpt-5\n",
+    }));
+    runProcessMock.mockReset().mockResolvedValue(probeResult({
+      stdout: JSON.stringify({ type: "text", sessionID: "session", part: { text: "done" } }),
+    }));
+    try {
+      const execution = execute({
+        runId: "catalog-run",
+        agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: commandPath, cwd: configHome, model },
+        context: {},
+        onLog: async () => {},
+      });
+      if (available) {
+        expect((await execution).exitCode).toBe(0);
+        expect(discovery).toHaveBeenCalledTimes(1);
+        expect(discovery.mock.calls[0]?.[2]).toEqual(["models"]);
+        expect(runProcessMock).toHaveBeenCalledTimes(1);
+        const args = runProcessMock.mock.calls[0]![3];
+        expect(args[args.indexOf("--model") + 1]).toBe(model);
+      } else {
+        await expect(execution).rejects.toThrow("Configured OpenCode model is unavailable: paperclip/custom.");
+        expect(discovery.mock.calls.map((call) => call[2])).toEqual([["models"], ["models", "--refresh"], ["models"]]);
+        expect(runProcessMock).not.toHaveBeenCalled();
+      }
+    } finally {
+      discovery.mockRestore();
+      resetOpenCodeModelsCacheForTests();
+    }
+  });
+
+  it.each(["high", "medium"])("passes a routed OpenCode variant %s to the CLI", async (variant) => {
+    const commandPath = path.join(configHome, "fake-opencode-variant");
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    runProcessMock.mockReset();
+    runProcessMock.mockResolvedValue(probeResult({ stdout: JSON.stringify({ type: "text", sessionID: "session", part: { text: "done" } }) }));
+    const result = await execute({
+      runId: "variant-run",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: commandPath, cwd: configHome, model: "paperclip/example-model", variant, env: { OPENCODE_ALLOW_ALL_MODELS: "1" } },
+      context: {},
+      onLog: async () => {},
+    });
+    expect(result.exitCode).toBe(0);
+    const args = runProcessMock.mock.calls[0]![3];
+    expect(args).toContain("--variant");
+    expect(args[args.indexOf("--variant") + 1]).toBe(variant);
   });
 
   it("delivers assignment context on an ordinary task turn and rebuilds it after resume fallback", async () => {
