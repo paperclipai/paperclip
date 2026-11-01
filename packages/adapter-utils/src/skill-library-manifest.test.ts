@@ -104,8 +104,6 @@ describe("buildSkillLibraryManifestMarkdown", () => {
 
     expect(manifest).toContain("- acme/tools/wireframe (invoke as `wireframe--9f3c2a1b`) — enabled");
     expect(manifest).toContain("- paperclipai/paperclip/paperclip (invoke as `paperclip`) — enabled");
-    // Deterministic for identical inputs: the claude-local prompt-bundle
-    // cache key hashes this text.
     const again = buildSkillLibraryManifestMarkdown({
       entries: [
         entry({ key: "paperclipai/paperclip/paperclip", runtimeName: "paperclip" }),
@@ -124,8 +122,6 @@ describe("buildSkillLibraryManifestMarkdown", () => {
       desiredSkillKeys: new Set(["acme/tools/wide"]),
     });
 
-    // The mounted skill keeps its full name: a truncated hint would hand the
-    // model a name that does not exist.
     expect(manifest).toContain(`- acme/tools/wide (invoke as \`${longName}\`) — enabled`);
   });
 

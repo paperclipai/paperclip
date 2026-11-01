@@ -27,13 +27,6 @@ function sanitizeManifestText(value: string, maxLength: number): string {
   return value.replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
-/**
- * Runtime names are mounted directory names (`slug--hash`), so a name longer
- * than NAME_MAX (255) cannot be a mounted skill. A name with whitespace or a
- * backtick cannot survive the single-line backtick span verbatim either:
- * flattening or quoting would change the name the model must invoke, so the
- * hint is omitted instead of shown truncated or altered.
- */
 const INVOCABLE_SKILL_NAME_MAX_LENGTH = 255;
 
 function isInvocableSkillName(value: string): boolean {
@@ -55,12 +48,6 @@ export function buildSkillLibraryManifestMarkdown(input: {
         return `- ${key} — enabled but unavailable${detail ? `: ${detail}` : ""}`;
       }
       if (enabled) {
-        // The Skill tool takes the runtime name (often a hashed
-        // `slug--hash` directory), not the library key. Without the mapping
-        // the model invokes the key verbatim and records "Unknown skill".
-        // A truncated name is worse than no hint: the model would invoke a
-        // name that is not mounted. Keep valid names verbatim; omit hints
-        // that cannot name the mounted skill exactly.
         const invokeHint = isInvocableSkillName(entry.runtimeName)
           ? ` (invoke as \`${entry.runtimeName}\`)`
           : "";

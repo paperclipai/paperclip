@@ -118,11 +118,6 @@ async function handleMcpGatewayProtocol(
         callerHeaders: headers,
         signal,
       }));
-      // Only advertise a context wrapper the gateway token can actually
-      // perform. Heartbeat and narrowly scoped tokens carry only
-      // tools/list + tools/call, so unconditionally listing the context
-      // tools produces calls that the token check then denies with
-      // gateway_token_action_denied.
       const allowedActionSet = new Set(allowedActions);
       const contextTools = [
         {

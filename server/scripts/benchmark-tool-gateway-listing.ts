@@ -73,7 +73,8 @@ try {
         try {
           const listings = await Promise.all(Array.from({ length: parallel }, () =>
             factory(recorder.db).listToolsForNamedGateway(input)));
-          visible = listings[0]!.tools.length;
+          const firstListing = listings[0]!;
+          visible = Array.isArray(firstListing) ? firstListing.length : firstListing.tools.length;
           sample();
         } finally {
           clearInterval(timer);
