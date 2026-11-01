@@ -1180,6 +1180,8 @@ The reusable watchdog issue is a child of the watched source issue for audit and
 
 Liveness recovery excludes `task_watchdog` origin children when inferring business dependencies or a healthy child path. An active watchdog review alone does not establish that the original work has recovered. Independent follow-up repair issues remain eligible. Explicit watchdog-review dependencies remain valid; recovery does not infer them from `parentId` alone.
 
+Blocker-attention projections apply the same boundary when walking implicit child paths, including nested paths. Removing an incorrect explicit review dependency must not leave the same review counted as active business work solely through parentage. Reads preserve existing explicit relations; they do not decide whether a stored review dependency was intentional.
+
 ### Stopped-subtree evaluation
 
 Task watchdog evaluation is conservative. If any included issue has a live run, queued wake, or scheduled retry that should fire without intervention, the subtree is live and the task watchdog does not run.

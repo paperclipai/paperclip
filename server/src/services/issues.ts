@@ -224,6 +224,7 @@ import {
   summarizeIssueWatchdog,
   upsertIssueWatchdogForIssue,
 } from "./task-watchdogs.js";
+import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
@@ -3931,6 +3932,9 @@ async function readIssueBlockerAttentionBatch(
           and(
             eq(issues.companyId, companyId),
             inArray(issues.parentId, chunk),
+            // Parentage alone does not make watchdog verification business work.
+            // Explicit review dependencies remain in the separate relation query.
+            ne(issues.originKind, TASK_WATCHDOG_ORIGIN_KIND),
             notInArray(
               issues.status,
               BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES,
