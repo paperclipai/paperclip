@@ -4151,6 +4151,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   wakeupRequestId: activeExecutionRun.wakeupRequestId,
                 },
                 allowRunCoalescing: isConversation(issue) ? false : opts.allowRunCoalescing,
+                retainDeferredWake: Boolean(resumedHandoff),
                 durableReceipt: receiptRequest
                   ? {
                       id: receiptRequest.id,

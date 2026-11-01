@@ -106,6 +106,40 @@ describe.skipIf(!support.supported)("handoff execution waits", () => {
     expect(f.deps.executeRun).not.toHaveBeenCalled();
   });
 
+  it("keeps one saved handoff while an active conversation run defers it", async () => {
+    const f = await fixture();
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+    await db.update(issues).set({ conversationAgentId: f.reviewerId, conversationUserId: "board",
+      conversationState: "active" }).where(eq(issues.id, f.issueId));
+    await f.wake();
+    const [saved] = await f.requests();
+    expect(saved).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    await f.release();
+    const [existing] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.reviewerId,
+      status: "queued", contextSnapshot: { issueId: f.issueId } }).returning();
+    f.deps.wakeQueue.createAdmissionTransactionScope.mockImplementation(createAdmissionTransactionScope);
+    f.deps.wakeQueue.admitWakeBehindIssueExecution.mockImplementation(createAdmitWakeBehindIssueExecution({
+      reader: createWakeAdmissionReader(), writer: createWakeAdmissionWriter(),
+      helpers: { filterZombieCoalesceTarget, mergeCoalescedContextSnapshot,
+        shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake },
+    }));
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await Promise.all([f.recover(), f.recover()]);
+      expect(await f.requests()).toEqual([expect.objectContaining({ id: saved.id,
+        status: "deferred_issue_execution", runId: null, finishedAt: null })]);
+      expect(await f.successors()).toEqual([expect.objectContaining({ id: existing.id })]);
+    }
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, existing.id));
+    await Promise.all([f.recover(), f.recover(), f.wake()]);
+    await f.recover();
+    const successors = (await f.successors()).filter(run => run.id !== existing.id);
+    expect(successors).toEqual([expect.objectContaining({ status: "queued", startedAt: null })]);
+    expect(await f.requests()).toEqual([expect.objectContaining({ id: saved.id,
+      status: "queued", runId: successors[0].id, reason: "execution_review_requested" })]);
+    expect(await f.work().load(f.companyId)).toHaveLength(0);
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+
   it("keeps one recoverable handoff receipt through dependency retries and admits it once the dependency resolves", async () => {
     const f = await fixture();
     await f.wake();
