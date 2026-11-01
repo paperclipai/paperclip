@@ -6,8 +6,8 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { eq } from "drizzle-orm";
-import { agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
-import { afterAll, beforeAll, describe, it } from "vitest";
+import { agents, companies, closeRegisteredClients, createDb, heartbeatRuns, issues, nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { afterAll, afterEach, beforeAll, describe, it } from "vitest";
 import { defaultCapabilityRunnerdBinary } from "../../vendor/paperclip-runner/index.js";
 import { startEmbeddedPostgresTestDatabase } from "./embedded-postgres.js";
 import { registerRunnerPrpAuthority, runnerPrpWebSocketInternals, setupRunnerPrpWebSocketServer } from "../../realtime/runner-prp-ws.js";
@@ -15,6 +15,7 @@ import { readProcessStartedAt } from "../../services/hot-restart.js";
 import { prepareNativeHeartbeatRun } from "../../services/native-runtime/prepare-native-run.js";
 import { createIsolatedTestHome } from "./isolated-test-home.js";
 import { type NativeControllerIdentity } from "../../services/native-runtime/native-restart-recovery.js";
+import { waitForPendingRunFailureReports } from "../../services/run-failure-report.js";
 
 // An explicitly supplied disposable database also permits qualification on hosts
 // where native Postgres cannot allocate semaphores. Never fall back silently.
@@ -134,6 +135,13 @@ export function nativeRestartFixture() {
       permissions: {},
     });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  afterEach(async () => {
+    // Each case creates its own clients. With the long waits in other files,
+    // idle reaping no longer keeps their total below Postgres's connection cap.
+    await waitForPendingRunFailureReports();
+    if (temporary) await closeRegisteredClients(temporary.connectionString, { scope: "database" });
+  });
 
   afterAll(async () => {
     runnerPrpWebSocketInternals.resetForTests();
