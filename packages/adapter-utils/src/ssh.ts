@@ -5,6 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import {
   createUnrelatedHistoryGraftCommit,
@@ -733,30 +734,50 @@ async function streamSshToLocalFile(input: {
       reject(error);
     };
 
-    if (input.progress) {
-      input.progress.counter.on("error", fail);
-      ssh.stdout?.pipe(input.progress.counter).pipe(sink);
-    } else {
-      ssh.stdout?.pipe(sink);
-    }
     ssh.stderr?.on("data", (chunk) => {
       sshStderr += String(chunk);
     });
     ssh.on("error", fail);
     sink.on("error", fail);
-    ssh.on("close", (code) => {
-      sink.end(() => {
-        if (settled) return;
-        settled = true;
-        if ((code ?? 0) !== 0) {
-          reject(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
-          return;
-        }
-        resolve();
-      });
+
+    const counter = input.progress?.counter;
+    if (counter) counter.on("error", fail);
+    const drained = ssh.stdout
+      ? (counter ? pipeline(ssh.stdout, counter, sink) : pipeline(ssh.stdout, sink))
+      : Promise.resolve();
+
+    const exitCodePromise = new Promise<number>((resolveExit) => {
+      ssh.on("error", () => resolveExit(-1));
+      ssh.on("close", (code) => resolveExit(code ?? 0));
     });
+
+    const settle = async () => {
+      let drainError: Error | null = null;
+      try {
+        await drained;
+      } catch (error) {
+        drainError = error instanceof Error ? error : new Error(String(error));
+      }
+      const exitCode = await exitCodePromise;
+      if (settled) return;
+      settled = true;
+      if (drainError) {
+        ssh.kill("SIGTERM");
+        sink.destroy();
+        reject(drainError);
+        return;
+      }
+      if (exitCode !== 0) {
+        reject(new Error(sshStderr.trim() || `ssh exited with code ${exitCode}`));
+        return;
+      }
+      resolve();
+    };
+    void settle();
   }).finally(auth.cleanup);
 }
+
+export const streamSshToLocalFileForTest = streamSshToLocalFile;
 
 async function importGitWorkspaceToSsh(input: {
   spec: SshRemoteExecutionSpec;
@@ -842,6 +863,11 @@ async function importGitWorkspaceToSsh(input: {
   }
 }
 
+function isTruncatedBundleFetchError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /early EOF|index-pack (died|failed)|did not end with a hash|not a bundle|unexpected end/i.test(message);
+}
+
 async function exportGitWorkspaceFromSsh(input: {
   spec: SshRemoteExecutionSpec;
   remoteDir: string;
@@ -868,33 +894,49 @@ async function exportGitWorkspaceFromSsh(input: {
 
     // The remote bundle size isn't known before streaming, so report bytes
     // received (MB mode) with a terminal completion line.
-    const progress = input.onProgress
-      ? createTransferProgress({
-        onProgress: input.onProgress,
-        phase: "Exporting git history",
-        direction: "from",
-        totalBytes: null,
-        estimated: false,
-      })
-      : null;
+    let progress: TransferProgress | null | undefined;
+    const createProgress = () => {
+      progress = input.onProgress
+        ? createTransferProgress({
+          onProgress: input.onProgress,
+          phase: "Exporting git history",
+          direction: "from",
+          totalBytes: null,
+          estimated: false,
+        })
+        : null;
+      return progress ?? undefined;
+    };
 
     try {
-      await streamSshToLocalFile({
-        spec: input.spec,
-        remoteScript: exportScript,
-        localFile: bundlePath,
-        progress: progress ?? undefined,
-      });
+      let retriedTruncatedFetch = false;
+      for (;;) {
+        await streamSshToLocalFile({
+          spec: input.spec,
+          remoteScript: exportScript,
+          localFile: bundlePath,
+          progress: createProgress(),
+        });
+        try {
+          await runLocalGit(input.localDir, ["fetch", "--force", bundlePath, `refs/paperclip/ssh-sync/export:${importedRef}`], {
+            timeout: 60_000,
+            maxBuffer: 1024 * 1024,
+          });
+          break;
+        } catch (error) {
+          if (!retriedTruncatedFetch && isTruncatedBundleFetchError(error)) {
+            retriedTruncatedFetch = true;
+            await progress?.fail();
+            continue;
+          }
+          throw error;
+        }
+      }
       await progress?.finish();
     } catch (error) {
       await progress?.fail();
       throw error;
     }
-
-    await runLocalGit(input.localDir, ["fetch", "--force", bundlePath, `refs/paperclip/ssh-sync/export:${importedRef}`], {
-      timeout: 60_000,
-      maxBuffer: 1024 * 1024,
-    });
     if (input.resetLocalWorkspace !== false) {
       await runLocalGit(input.localDir, ["reset", "--hard", importedRef], {
         timeout: 60_000,
