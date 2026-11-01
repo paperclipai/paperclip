@@ -75,6 +75,14 @@ export interface IssueWriteDenialContext {
   count?: number | null;
   /** ISO timestamp at which log-only rollout becomes enforcement. */
   enforceAt?: string | null;
+  /**
+   * True when the request carried a valid run id but the wake had no
+   * attributable source issue, so the denial should not point the caller back
+   * at a header it already sent.
+   */
+  runIdPresent?: boolean | null;
+  /** The run id that was received, echoed back so the 403 can name it. */
+  runId?: string | null;
 }
 
 export function isIssueWriteDenialCode(
@@ -252,14 +260,20 @@ export function describeIssueWriteDenial(
         boundary: "Heartbeat run context",
         title: "Cross-issue writes need a run to attribute them to",
         description:
-          `Every agent comment and task update is attributed to a heartbeat run so the ` +
-          `cross-issue cap can be counted and the audit trail can name who acted for whom. ` +
-          `This request arrived without a valid run, so it could not be contained.`,
-        whoCanAct: `${actor}, once the request carries its own run id.`,
-        sanctionedPath:
-          `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
-          `and retry.`,
-
+          (context.runIdPresent
+            ? `Your run id (${context.runId ?? "X-Paperclip-Run-Id"}) was received, but this ` +
+              `heartbeat wake carries no source issue, so the write to ${issue} could not be ` +
+              `attributed to a task.`
+            : `This request arrived without a valid run, so it could not be contained.`),
+        whoCanAct: context.runIdPresent
+          ? `${actor}, on a wake whose context names a source issue (a task assignment, comment wake, ` +
+            `or monitor), or ${assignee} directly on ${issue}.`
+          : `${actor}, once the request carries its own run id.`,
+        sanctionedPath: context.runIdPresent
+          ? `Sending the run id again will not help — it is already present. Work on the task this ` +
+            `wake is for, or defer this write to a wake that names its source issue.`
+          : `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
+            `and retry.`,
       };
 
     case "issue_write_attribution_spoof_rejected":
