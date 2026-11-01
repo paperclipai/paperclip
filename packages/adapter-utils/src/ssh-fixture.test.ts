@@ -860,6 +860,211 @@ describe("ssh env-lab fixture", () => {
     await expect(readFile(path.join(localRepo, "run-b.txt"), "utf8")).resolves.toBe("from run b\n");
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
+  it("keeps heavy and caller-excluded dirs off the SSH workspace without deleting them locally on restore", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+    const localDir = path.join(rootDir, "local-workspace");
+    await mkdir(path.join(localDir, "src"), { recursive: true });
+    await mkdir(path.join(localDir, "node_modules", "dep"), { recursive: true });
+    await mkdir(path.join(localDir, "pkg", "node_modules"), { recursive: true });
+    await mkdir(path.join(localDir, ".venv", "bin"), { recursive: true });
+    await writeFile(path.join(localDir, "src", "app.txt"), "local\n", "utf8");
+    await writeFile(path.join(localDir, "node_modules", "dep", "index.js"), "module.exports = 1;\n", "utf8");
+    await writeFile(path.join(localDir, "pkg", "node_modules", "nested.bin"), Buffer.from([0, 1, 2]));
+    await writeFile(path.join(localDir, ".venv", "bin", "python"), "#!/bin/sh\n", "utf8");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH heavy-dir exclude test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "heavy-dirs",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localDir,
+      workspaceExclude: [".venv", ".venv/*"],
+    });
+    const remoteDir = prepared.workspaceRemoteDir;
+    const listing = await runSshCommand(
+      config,
+      `cd ${JSON.stringify(remoteDir)} && find . -path ./.paperclip-runtime -prune -o -print | sort`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+    expect(listing.stdout).toContain("./src/app.txt");
+    expect(listing.stdout).not.toContain("node_modules");
+    expect(listing.stdout).not.toContain(".venv");
+
+    await runSshCommand(
+      config,
+      `printf "remote\\n" > ${JSON.stringify(path.posix.join(remoteDir, "src", "app.txt"))} && ` +
+        `printf "new\\n" > ${JSON.stringify(path.posix.join(remoteDir, "src", "new.txt"))}`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+    await prepared.restoreWorkspace();
+
+    await expect(readFile(path.join(localDir, "src", "app.txt"), "utf8")).resolves.toBe("remote\n");
+    await expect(readFile(path.join(localDir, "src", "new.txt"), "utf8")).resolves.toBe("new\n");
+    await expect(readFile(path.join(localDir, "node_modules", "dep", "index.js"), "utf8")).resolves.toBe("module.exports = 1;\n");
+    await expect(readFile(path.join(localDir, "pkg", "node_modules", "nested.bin"))).resolves.toEqual(Buffer.from([0, 1, 2]));
+    await expect(readFile(path.join(localDir, ".venv", "bin", "python"), "utf8")).resolves.toBe("#!/bin/sh\n");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("keeps ignored heavy dirs out of a Git-backed SSH workspace and preserves them locally on restore", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+    const localRepo = path.join(rootDir, "local-workspace");
+    await mkdir(path.join(localRepo, "node_modules", "dep"), { recursive: true });
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["checkout", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, ".gitignore"), "node_modules/\n", "utf8");
+    await writeFile(path.join(localRepo, "tracked.txt"), "base\n", "utf8");
+    await git(localRepo, ["add", ".gitignore", "tracked.txt"]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+    await writeFile(path.join(localRepo, "node_modules", "dep", "index.js"), "module.exports = 1;\n", "utf8");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "Git-backed SSH heavy-dir exclude test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "git-heavy-dirs",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+    const remoteDir = prepared.workspaceRemoteDir;
+    const listing = await runSshCommand(
+      config,
+      `cd ${JSON.stringify(remoteDir)} && find . -path ./.paperclip-runtime -prune -o -path ./.git -prune -o -print | sort`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+    expect(listing.stdout).toContain("./tracked.txt");
+    expect(listing.stdout).not.toContain("node_modules");
+
+    await runSshCommand(
+      config,
+      `printf "changed\\n" > ${JSON.stringify(path.posix.join(remoteDir, "tracked.txt"))}`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+    await prepared.restoreWorkspace();
+
+    await expect(readFile(path.join(localRepo, "tracked.txt"), "utf8")).resolves.toBe("changed\n");
+    await expect(readFile(path.join(localRepo, "node_modules", "dep", "index.js"), "utf8")).resolves.toBe("module.exports = 1;\n");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("matches wildcard and nested caller excludes the way tar does so restore keeps them locally", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+    const localDir = path.join(rootDir, "local-workspace");
+    await mkdir(path.join(localDir, "src"), { recursive: true });
+    await mkdir(path.join(localDir, "logs", "deep"), { recursive: true });
+    await mkdir(path.join(localDir, "sub"), { recursive: true });
+    await writeFile(path.join(localDir, "src", "app.txt"), "local\n", "utf8");
+    await writeFile(path.join(localDir, "app.log"), "top log\n", "utf8");
+    await writeFile(path.join(localDir, "logs", "deep", "trace.log"), "deep log\n", "utf8");
+    await writeFile(path.join(localDir, "sub", "secret.env"), "TOKEN=local\n", "utf8");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH wildcard caller exclude test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "wildcard-excludes",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localDir,
+      workspaceExclude: ["*.log", "secret.env"],
+    });
+    const remoteDir = prepared.workspaceRemoteDir;
+    const listing = await runSshCommand(
+      config,
+      `cd ${JSON.stringify(remoteDir)} && find . -path ./.paperclip-runtime -prune -o -print | sort`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+    expect(listing.stdout).toContain("./src/app.txt");
+    expect(listing.stdout).not.toContain(".log");
+    expect(listing.stdout).not.toContain("secret.env");
+
+    await runSshCommand(
+      config,
+      `printf "remote\\n" > ${JSON.stringify(path.posix.join(remoteDir, "src", "app.txt"))}`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+    await prepared.restoreWorkspace();
+
+    await expect(readFile(path.join(localDir, "src", "app.txt"), "utf8")).resolves.toBe("remote\n");
+    await expect(readFile(path.join(localDir, "app.log"), "utf8")).resolves.toBe("top log\n");
+    await expect(readFile(path.join(localDir, "logs", "deep", "trace.log"), "utf8")).resolves.toBe("deep log\n");
+    await expect(readFile(path.join(localDir, "sub", "secret.env"), "utf8")).resolves.toBe("TOKEN=local\n");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("applies caller excludes inside nested project repositories", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+    const localRepo = path.join(rootDir, "local-workspace");
+    const nestedRelative = ".paperclip-repositories/backend-0123456789ab";
+    const nestedRepo = path.join(localRepo, nestedRelative);
+
+    await mkdir(localRepo, { recursive: true });
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["checkout", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, "root.txt"), "root\n", "utf8");
+    await git(localRepo, ["add", "root.txt"]);
+    await git(localRepo, ["commit", "-m", "root initial"]);
+    await writeFile(path.join(localRepo, ".git", "info", "exclude"), "\n/.paperclip-repositories/\n", { flag: "a" });
+
+    await mkdir(nestedRepo, { recursive: true });
+    await git(nestedRepo, ["init"]);
+    await git(nestedRepo, ["checkout", "-b", "main"]);
+    await git(nestedRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(nestedRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(nestedRepo, "tracked.txt"), "base\n", "utf8");
+    await git(nestedRepo, ["add", "tracked.txt"]);
+    await git(nestedRepo, ["commit", "-m", "nested initial"]);
+    await writeFile(path.join(nestedRepo, "host-config.txt"), "local only\n", "utf8");
+    await writeFile(path.join(nestedRepo, "debug.log"), "local log\n", "utf8");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH nested caller exclude test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "nested-excludes",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+      workspaceExclude: [`${nestedRelative}/host-config.txt`, "*.log"],
+    });
+    const remoteNested = path.posix.join(prepared.workspaceRemoteDir, nestedRelative);
+    const listing = await runSshCommand(
+      config,
+      `cd ${JSON.stringify(remoteNested)} && find . -path ./.git -prune -o -print | sort`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+    expect(listing.stdout).toContain("./tracked.txt");
+    expect(listing.stdout).not.toContain("host-config.txt");
+    expect(listing.stdout).not.toContain("debug.log");
+
+    await runSshCommand(
+      config,
+      `printf "changed\\n" > ${JSON.stringify(path.posix.join(remoteNested, "tracked.txt"))}`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+    await prepared.restoreWorkspace();
+
+    await expect(readFile(path.join(nestedRepo, "tracked.txt"), "utf8")).resolves.toBe("changed\n");
+    await expect(readFile(path.join(nestedRepo, "host-config.txt"), "utf8")).resolves.toBe("local only\n");
+    await expect(readFile(path.join(nestedRepo, "debug.log"), "utf8")).resolves.toBe("local log\n");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
   it("round-trips project repositories nested in .paperclip-repositories across consecutive SSH runs", async () => {
     const rootDir = await createFixtureRootDir();
     const statePath = path.join(rootDir, "state.json");

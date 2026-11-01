@@ -12,6 +12,7 @@ import {
   PROJECT_REPOSITORIES_DIR,
   readSanitizedOriginRemoteUrl,
 } from "./git-workspace-sync.js";
+import { resolveSshWorkspaceSyncExcludes, tarExcludePattern } from "./exclude-patterns.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
 import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
@@ -408,7 +409,7 @@ async function createSshAuthArgs(
 }
 
 function tarExcludeArgs(exclude: string[] | undefined): string[] {
-  const combined = ["._*", ...(exclude ?? [])];
+  const combined = ["._*", ...(exclude ?? []).map(tarExcludePattern)];
   return combined.flatMap((entry) => ["--exclude", entry]);
 }
 
@@ -439,7 +440,7 @@ async function estimateLocalDirSize(input: {
   exclude?: string[];
   followSymlinks?: boolean;
 }): Promise<number> {
-  const regexes = ["._*", ...(input.exclude ?? [])].map(tarPatternToRegExp);
+  const regexes = ["._*", ...(input.exclude ?? []).map(tarExcludePattern)].map(tarPatternToRegExp);
   const isExcluded = (relPath: string, base: string) =>
     regexes.some((regex) => regex.test(relPath) || regex.test(base));
 
@@ -1646,6 +1647,7 @@ export async function prepareWorkspaceForSshExecution(input: {
   workspaceExclude?: string[];
 }): Promise<{ gitBacked: boolean; repositories?: string[] }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
+  const syncExcludes = resolveSshWorkspaceSyncExcludes(input);
   const gitSnapshot = input.workspaceFileMode === "all" ? null : await readLocalGitWorkspaceSnapshot(input.localDir);
 
   if (gitSnapshot) {
@@ -1655,7 +1657,7 @@ export async function prepareWorkspaceForSshExecution(input: {
       localDir: input.localDir,
       remoteDir,
       snapshot: gitSnapshot,
-      exclude: repositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : [],
+      exclude: [...(repositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : []), ...syncExcludes.workspace],
       onProgress: input.onProgress,
       progressLabel: "workspace",
     });
@@ -1671,6 +1673,7 @@ export async function prepareWorkspaceForSshExecution(input: {
         localDir,
         remoteDir: path.posix.join(remoteDir, relative),
         snapshot,
+        exclude: syncExcludes.repository(relative),
         onProgress: input.onProgress,
         progressLabel: relative,
       });
@@ -1687,7 +1690,7 @@ export async function prepareWorkspaceForSshExecution(input: {
     spec: input.spec,
     localDir: input.localDir,
     remoteDir,
-    exclude: [".paperclip-runtime", ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
+    exclude: [".paperclip-runtime", ...syncExcludes.workspace],
     onProgress: input.onProgress,
     progressLabel: "workspace",
   });
