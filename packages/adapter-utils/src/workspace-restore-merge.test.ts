@@ -262,6 +262,48 @@ describe("workspace restore merge", () => {
         await expect(captureDirectorySnapshot(rootDir, { exclude: [] })).rejects.toMatchObject({ code: "EACCES" });
       } finally { lstatSpy.mockRestore(); }
     });
+
+    it("keeps restoring other entries when a scanned directory vanishes", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+      cleanupDirs.push(rootDir);
+      const target = path.join(rootDir, "target"), source = path.join(rootDir, "source");
+      await mkdir(path.join(target, "repo", ".git"), { recursive: true });
+      await writeFile(path.join(target, "repo", ".git", "config"), "[core]\n");
+      const baseline = await captureDirectorySnapshot(target, { exclude: [...GIT_ARCHIVE_EXCLUDES], diskBacked: true });
+      try {
+        await mkdir(source);
+        await writeFile(path.join(source, "repo"), "replacement");
+        await writeFile(path.join(source, "independent"), "applied");
+        const readdirSpy = vi.spyOn(fsPromises, "readdir").mockRejectedValueOnce(
+          Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" }),
+        );
+        try {
+          await expect(mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: target })).resolves.toBeUndefined();
+        } finally { readdirSpy.mockRestore(); }
+        expect(await readFile(path.join(target, "independent"), "utf8")).toBe("applied");
+        expect(await readFile(path.join(target, "repo"), "utf8")).toBe("replacement");
+      } finally { await disposeDirectorySnapshot(baseline); await rm(rootDir, { recursive: true, force: true }); }
+    });
+
+    it("fails the restore when the excluded-entry scan hits a permission error", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+      cleanupDirs.push(rootDir);
+      const target = path.join(rootDir, "target"), source = path.join(rootDir, "source");
+      await mkdir(path.join(target, "repo", ".git"), { recursive: true });
+      await writeFile(path.join(target, "repo", ".git", "config"), "[core]\n");
+      const baseline = await captureDirectorySnapshot(target, { exclude: [...GIT_ARCHIVE_EXCLUDES], diskBacked: true });
+      try {
+        await mkdir(source);
+        await writeFile(path.join(source, "repo"), "replacement");
+        const readdirSpy = vi.spyOn(fsPromises, "readdir").mockRejectedValueOnce(
+          Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }),
+        );
+        try {
+          await expect(mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: target }))
+            .rejects.toMatchObject({ code: "EACCES" });
+        } finally { readdirSpy.mockRestore(); }
+      } finally { await disposeDirectorySnapshot(baseline); await rm(rootDir, { recursive: true, force: true }); }
+    });
   });
 
   describe("classifyWorkspaceRestoreFailure", () => {

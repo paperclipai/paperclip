@@ -600,7 +600,12 @@ async function withCanonicalDirectoryMergeLock<T>(
 
 async function directoryContainsExcludedEntry(directory: string, relative: string, exclude: readonly string[]): Promise<boolean> {
   if (exclude.length === 0) return false;
-  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+  const entries = await fs.readdir(directory, { withFileTypes: true }).catch((error: unknown) => {
+    if (isVanishedEntry(error)) return null;
+    throw error;
+  });
+  if (!entries) return false;
+  for (const entry of entries) {
     const child = path.posix.join(relative, entry.name);
     if (shouldExcludePath(child, exclude)) return true;
     if (entry.isDirectory() && await directoryContainsExcludedEntry(path.join(directory, entry.name), child, exclude)) return true;
