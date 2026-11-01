@@ -22,6 +22,27 @@ async function fixture(lifecycle = "spot") {
     receipt: async () => JSON.parse(await readFile(path.join(root, "chat-remote-host.json"), "utf8")) };
 }
 describe("remote-only chat host qualification without native/provider calls", () => {
+  it.each(["projects.project-work", "projects.project-defaults", "instance-operations.restart-service"])("admits only the bound TestOps pilot cell %s on the actual AWS host", async scenario => {
+    const f = await fixture();
+    f.env.GITHUB_WORKFLOW_REF = "paperclipai/paperclip/.github/workflows/chat-completion-testops.yml@refs/heads/master";
+    Object.assign(f.env, { PAPERCLIP_CHAT_COMPLETION_TESTOPS: "v1", ALLURE_JOB_RUN_ID: "77", GITHUB_RUN_ATTEMPT: "1" });
+    f.executions[0]!.id = `chat-features.runner-opencode.local.${scenario}`;
+    expect(await prepareChatRemoteHost(f)).toMatchObject({ databaseLane: "embedded-postgres", maxAutomaticRetries: 0 });
+    expect(await f.receipt()).toMatchObject({ workflowRef: f.env.GITHUB_WORKFLOW_REF, evaluationAdmitted: false });
+  });
+  it.each(["foreign-cell", "missing-admission", "missing-jobrun", "replay", "candidate-workflow"])("rejects TestOps %s before AWS metadata or inference", async kind => {
+    const f = await fixture();
+    f.env.GITHUB_WORKFLOW_REF = "paperclipai/paperclip/.github/workflows/chat-completion-testops.yml@refs/heads/master";
+    const extra = { PAPERCLIP_CHAT_COMPLETION_TESTOPS: "v1", ALLURE_JOB_RUN_ID: "77" };
+    Object.assign(f.env, extra); f.executions[0]!.id = "chat-features.runner-opencode.local.projects.project-work";
+    if (kind === "foreign-cell") f.executions[0]!.id = "chat-features.runner-opencode.local.tasks.delete";
+    if (kind === "missing-admission") Object.assign(f.env, { PAPERCLIP_CHAT_COMPLETION_TESTOPS: undefined });
+    if (kind === "missing-jobrun") Object.assign(f.env, { ALLURE_JOB_RUN_ID: undefined });
+    if (kind === "replay") f.env.GITHUB_RUN_ATTEMPT = "2";
+    if (kind === "candidate-workflow") f.env.GITHUB_WORKFLOW_REF = f.env.GITHUB_WORKFLOW_REF.replace("refs/heads/master", "refs/heads/candidate");
+    await expect(prepareChatRemoteHost(f)).rejects.toThrow("trusted-github-linux-source-required");
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
   it("requires real Spot metadata and retains only closed source-bound host proof", async () => {
     const f = await fixture(); const policy = await prepareChatRemoteHost(f); const receipt = await f.receipt();
     expect(policy).toMatchObject({ databaseLane: "embedded-postgres", maxAutomaticRetries: 0, maxParallel: 2 });
