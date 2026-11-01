@@ -77,6 +77,16 @@ export function recoveryObservation(before: RecoverySnapshot, after: RecoverySna
     authenticatedConnectionCount: after.authenticatedConnectionCount, attachmentEvidence: "runner_checkpoint_authenticated_connection" };
 }
 
+/** B can claim before A exits. Preserve A's original owner/authentication
+ * identity while excluding every event committed through A's final exit. */
+export function advanceRecoveryCursor(before: RecoverySnapshot, stopped: RecoverySnapshot): RecoverySnapshot {
+  if (before.runId !== stopped.runId || before.runnerInstanceId !== stopped.runnerInstanceId
+    || before.nativeSessionId !== stopped.nativeSessionId || before.attempt !== stopped.attempt) {
+    throw new Error("Controller replacement changed the admitted execution");
+  }
+  return { ...before, sourceSeq: Math.max(before.sourceSeq, stopped.sourceSeq, stopped.checkpointSourceSeq) };
+}
+
 export function validControllerRecoveryReceipt(fault: ControllerReplacementReceipt | undefined): boolean {
   const r = fault?.recovery;
   return Boolean(r && r.bootId !== r.previousBootId && r.generation > r.previousGeneration
@@ -133,6 +143,11 @@ export async function createControllerRecoveryObserver(configPath: string, bindi
     // Called only after the old server is confirmed dead. This also excludes
     // receipts committed while it was stopping from replacement evidence.
     stopped: capture,
+    stoppedAfterHandoff: async (fault: ControllerReplacementReceipt) => {
+      if (!before) throw new Error("Missing pre-handoff controller observation");
+      before = advanceRecoveryCursor(before, await read());
+      fault.recoveryProgress = { ...fault.recoveryProgress, runnerSourceSeqBefore: before.sourceSeq };
+    },
     recovered: async (fault: ControllerReplacementReceipt, record: () => Promise<void>, cancelled: () => boolean) => {
       if (!before) throw new Error("Missing controller boundary observation");
       const deadline = Date.parse(fault.startedAt) + 420_000;

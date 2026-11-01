@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, afterEach, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, afterEach, expect, it, vi } from "vitest";
 import { agents, companies, issues, heartbeatRuns, nativeRunFinalizations, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -46,6 +46,7 @@ beforeAll(async () => {
   });
   worker = registerNativeCancellationDelivery(a, coordinatorA); await worker.ready;
 }, 90_000);
+beforeEach(() => { provider.stop.mockClear(); });
 afterEach(() => vi.unstubAllEnvs());
 afterAll(async () => {
   setNativeExecutionActive(runId, false); await worker?.stop();

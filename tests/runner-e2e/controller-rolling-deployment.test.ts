@@ -12,6 +12,7 @@ function fixture() {
     beforeHandoff: async () => { order.push("observe-A"); },
     switchTraffic: () => { order.push("route-B"); },
     stopPrevious: async () => { order.push("stop-A"); },
+    afterPreviousStopped: async () => { order.push("observe-A-stopped"); },
     deletePreviousHome: async () => { order.push("delete-home-A"); },
     afterHandoff: async () => { order.push("observe-recovery"); },
     cancelled: () => false, record: async () => {},
@@ -22,7 +23,7 @@ describe("rolling controller qualification", () => {
   it("moves traffic only after readiness, then removes all predecessor state", async () => {
     const f = fixture();
     const receipt = await rollController(f.input);
-    expect(f.order).toEqual(["start-B", "B-ready", "observe-A", "route-B", "stop-A", "delete-home-A", "observe-recovery"]);
+    expect(f.order).toEqual(["start-B", "B-ready", "observe-A", "route-B", "stop-A", "observe-A-stopped", "delete-home-A", "observe-recovery"]);
     expect(validControllerRollingDeploymentReceipt(receipt)).toBe(false); // A process receipt alone is not availability proof.
     receipt.probes = { reads: 10, writes: 3, verifiedWrites: 3, failures: [] };
     expect(validControllerReplacementReceipt(receipt)).toBe(true);

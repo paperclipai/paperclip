@@ -6603,6 +6603,30 @@ function cancellationDb(options?: {
 }
 
 describe("native startup cancellation fence", () => {
+  it.each(["current", "stale"] as const)("reattaches a %s remote recovery claim only to deliver an existing Stop", async mode => {
+    const { currentNativeControllerIdentity } = await import("./native-restart-recovery.js");
+    const controller = await currentNativeControllerIdentity();
+    const resultJson = { nativeCancellation: { schema: "paperclip.native-cancellation.v1", scope: "run",
+      companyId: execution.binding.companyId, runId: execution.binding.runId, issueId: execution.binding.issueId,
+      dispatchState: "pending", intentId: "native-cancellation:recovered-stop", effects: ["release_run_resources"] } };
+    const cancel = vi.fn(() => ({ cleanup: Promise.resolve() })), submit = vi.fn();
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      try { await options.onSession({ cancel }); submit(); }
+      finally { await options.onSession(null); }
+      throw new Error("a stopped recovery must not submit a turn");
+    });
+    const db = leaseDb(execution, { leaseOwner: "stop-recovery", controllerBootId: controller.bootId,
+      controllerPid: controller.pid, controllerGeneration: 2, attempt: 1 }, resultJson);
+    await expect(executePaperclipNativeSession({ db, execution, runnerInstanceId: "recovered-stop",
+      leaseOwner: "stop-recovery", restartRecovery: { kind: "reattach_remote_runner", runId: execution.binding.runId,
+        leaseOwner: "stop-recovery", controllerGeneration: mode === "current" ? 2 : 1, providerAttempt: 1,
+        restartKind: "graceful", recoveryRequestId: null, remote: { providerLeaseId: "fixture", remoteCwd: "/workspace" } },
+    })).rejects.toThrow(mode === "current" ? "native_cancellation_pending_recovery" : "native_restart_recovery_claim_changed");
+    expect(submit).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(mode === "current" ? 1 : 0);
+    expect(state.execute).toHaveBeenCalledTimes(mode === "current" ? 1 : 0);
+  });
+
   it.each(["startupCancellation", "nativeCancellation"])("does not submit a turn when %s arrives during session opening", async (marker) => {
     const resultJson: Record<string, unknown> = {};
     const cancel = vi.fn(() => ({ cleanup: Promise.resolve() }));

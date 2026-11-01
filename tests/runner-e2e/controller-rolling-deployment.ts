@@ -39,6 +39,7 @@ export async function rollController<T extends { pid?: number }>(input: {
   waitForReady: (replacement: T) => Promise<void>; switchTraffic: (replacement: T) => void;
   stopPrevious: () => Promise<void>; deletePreviousHome: () => Promise<void>;
   beforeHandoff?: (receipt: ControllerRollingDeploymentReceipt) => Promise<void>;
+  afterPreviousStopped?: (receipt: ControllerRollingDeploymentReceipt) => Promise<void>;
   afterHandoff?: (receipt: ControllerRollingDeploymentReceipt, record: () => Promise<void>) => Promise<void>;
   cancelled: () => boolean; record: (receipt: ControllerRollingDeploymentReceipt) => Promise<void>;
 }): Promise<ControllerRollingDeploymentReceipt> {
@@ -57,6 +58,7 @@ export async function rollController<T extends { pid?: number }>(input: {
   await input.beforeHandoff?.(receipt); check();
   input.switchTraffic(replacement); receipt.trafficSwitchedAfterMs = elapsed(); await record();
   await input.stopPrevious(); receipt.gracefulShutdown = true; receipt.stoppedAfterMs = elapsed(); await record();
+  await input.afterPreviousStopped?.(receipt); check(); await record();
   await input.deletePreviousHome(); receipt.homeDeletedAfterMs = elapsed();
   receipt.previousHomeRemoved = true; receipt.cacheDiscarded = true; await record();
   await input.afterHandoff?.(receipt, record);

@@ -105,6 +105,7 @@ export async function superviseRollingDeployment(input: {
           stopPrevious: () => previous.stop({ requireGraceful: true }),
           deletePreviousHome: () => rm(previous.home, { recursive: true }),
           beforeHandoff: observer?.beforeHandoff,
+          afterPreviousStopped: observer?.stoppedAfterHandoff,
           afterHandoff: observer ? (receipt, record) => observer.recovered(receipt, record, input.cancelled) : undefined,
           cancelled: input.cancelled, record: value => json(receiptPath, value),
         });
