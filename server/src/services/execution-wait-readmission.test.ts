@@ -73,6 +73,54 @@ const support = await getEmbeddedPostgresTestSupport();
   const queuedRuns = (companyId: string) => db.select().from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")));
 
+  it("keeps saved chat receipts scheduled through their own resume path", async () => {
+    const f = await seed();
+    const parked = await park(f);
+    await db.update(agentWakeupRequests).set({ idempotencyKey: `chat-inbound:${randomUUID()}` })
+      .where(eq(agentWakeupRequests.id, parked.id));
+    await makeDue(parked.id);
+    type Coordinator = ReturnType<typeof createDeliveryWorkCoordinator>;
+    type Task = Parameters<Coordinator["register"]>[1];
+    const tasks = new Map<string, Task>();
+    const coordinator = { register(queue: string, task: Task) {
+      tasks.set(queue, task);
+      return { ready: Promise.resolve(), wake() {}, async stop() {} };
+    } } as unknown as Coordinator;
+    let chatResumed = false;
+    const resume = vi.fn(async (scope: Parameters<ReturnType<typeof heartbeatService>["readmitUnblockedExecutionWaits"]>[0]) => {
+      // Generic admission must leave this receipt for the chat resume path.
+      await heartbeatService(db).readmitUnblockedExecutionWaits(scope);
+      expect(await queuedRuns(f.companyId)).toHaveLength(0);
+      if (chatResumed) await db.update(agentWakeupRequests).set({ status: "skipped" })
+        .where(eq(agentWakeupRequests.id, parked.id));
+    });
+    const workers = registerDeferredReceiptWork(db, coordinator, {
+      resume, settleTaskChat: async () => {}, createNativeBatch: () => async () => {},
+      schedulingSuppressed: async () => false,
+    }, () => true);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await workers.ready;
+      const task = tasks.get(DELIVERY_QUEUES.deferredExecutionReceipts)!;
+      const pass = () => task.run(new AbortController().signal);
+      const start = Date.now();
+      await pass();
+      expect(resume).toHaveBeenCalledOnce();
+      expect(task.nextRunAt?.()).toBe(start + 60_000);
+      await clearGate(f.sourceRunId);
+      chatResumed = true;
+      vi.setSystemTime(start + 60_000);
+      await pass();
+      expect(resume).toHaveBeenCalledTimes(2);
+      expect(resume).toHaveBeenLastCalledWith(expect.objectContaining({ companyId: f.companyId, requestId: parked.id }));
+      expect(task.nextRunAt?.()).toBeNull();
+    } finally {
+      await workers.stop();
+      vi.useRealTimers();
+      await db.update(agentWakeupRequests).set({ status: "skipped" }).where(eq(agentWakeupRequests.id, parked.id));
+    }
+  });
+
   it.each(["done", "cancelled", "reassigned", "inactive"])(
     "stops registered retries when a system receipt becomes %s", async kind => {
       const f = await seed();
