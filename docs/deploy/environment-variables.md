@@ -211,3 +211,5 @@ These are set automatically by the server when invoking agents:
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (for Claude Code adapter) |
 | `OPENAI_API_KEY` | OpenAI API key (for Codex adapter) |
+
+To route adapter model calls through a custom OpenAI- or Anthropic-compatible endpoint, see [Custom Model Gateway](/adapters/custom-model-gateway).
