@@ -782,6 +782,8 @@ export async function resolveRunScopedMentionedSkillKeys(input: {
 
 
 export interface WakeupOptions {
+  /** Scheduler clock for the timer active-hours check. Never accepted from public wake payloads. */
+  timerEvaluatedAt?: Date;
   /** Internal durable case assignment receipt. Never accepted from public wake payloads. */
   durableCaseHandoffRequest?: { handoffId: string; wakeupRequestId: string; issueId: string; expectedIssueStatusVersion: number };
   /** Set only by authenticated board wake routes; never copied from caller payloads. */

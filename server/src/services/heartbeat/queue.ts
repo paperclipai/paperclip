@@ -35,8 +35,12 @@ import {
   isCompletedOnboardingHandoffWake,
 } from "../chat-completion-delivery.js";
 import {
+  activeHoursWindowSchema,
   compareCents,
   hasWorkspaceRestoreFailure,
+  isWithinActiveHours,
+  nextActiveHoursStart,
+  type ActiveHoursWindow,
 } from "@paperclipai/shared";
 import { nonIdleSlackIssueCondition } from "../slack-conversation-state.js";
 import { readQueuedInteractionResponse } from "../queued-interaction-response.js";
@@ -415,6 +419,16 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     filterZombieCoalesceTarget,
   } = dependencies;
 
+  // null means no window is configured. "invalid" means a window is stored but
+  // malformed; the timer treats that as closed instead of silently unrestricted.
+  function parseHeartbeatActiveHours(
+    heartbeat: Record<string, unknown>,
+  ): ActiveHoursWindow | "invalid" | null {
+    if (heartbeat.activeHours === undefined || heartbeat.activeHours === null) return null;
+    const parsed = activeHoursWindowSchema.safeParse(heartbeat.activeHours);
+    return parsed.success ? parsed.data : "invalid";
+  }
+
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
@@ -422,6 +436,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
+      activeHours: parseHeartbeatActiveHours(heartbeat),
       wakeOnDemand: isHeartbeatWakeOnDemandEnabled(agent),
       // A Dot binding has one external turn. Competing assignments must retain
       // their queue position instead of claiming a second run that cannot bind.
@@ -620,13 +635,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   async function nextTimerHeartbeatAt(agent: typeof agents.$inferSelect, now = new Date()): Promise<number | null> {
     const policy = parseHeartbeatPolicy(agent);
     if (!policy.enabled || policy.intervalSec <= 0) return null;
+    if (policy.activeHours === "invalid") return null;
 
     if (policy.maxDailyRuns === 0 || policy.maxDailyCostCents === 0) return null;
     if (policy.skipTimerWhenNoActionableWork && !(await hasActionableTimerWork(agent))) return null;
     const dueAt = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime() + policy.intervalSec * 1000;
     const cap = await getHeartbeatDailyCapBlock(agent, policy, { now });
-    if (!cap) return dueAt;
-    return Math.max(dueAt, currentUtcDayWindow(now).end.getTime());
+    const deadline = cap ? Math.max(dueAt, currentUtcDayWindow(now).end.getTime()) : dueAt;
+    // Outside the active-hours window, wait for the window to open instead of
+    // reporting a past deadline that the timer would keep skipping.
+    const activeWindow = policy.activeHours;
+    if (!activeWindow) return deadline;
+    const earliest = new Date(Math.max(deadline, now.getTime()));
+    if (isWithinActiveHours(activeWindow, earliest)) return deadline;
+    return nextActiveHoursStart(activeWindow, earliest)?.getTime() ?? null;
   }
 
   async function markTimerHeartbeatChecked(
@@ -2839,6 +2861,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
     if (source === "timer" && !policy.enabled) {
       await writeSkippedRequest("heartbeat.disabled", {}, { enabled: false });
+      return null;
+    }
+    // The scheduler checks the window before it claims a tick, but the wakeup
+    // route also accepts source "timer" and has to honor the same window.
+    if (source === "timer" && policy.activeHours === "invalid") {
+      await writeSkippedRequest("heartbeat.activeHours.invalid");
+      return null;
+    }
+    if (
+      source === "timer" &&
+      policy.activeHours !== "invalid" &&
+      !isWithinActiveHours(policy.activeHours, opts.timerEvaluatedAt ?? new Date())
+    ) {
+      await writeSkippedRequest("heartbeat.activeHours.outside");
       return null;
     }
     if (source !== "timer" && !policy.wakeOnDemand) {
