@@ -3,6 +3,15 @@
 Least-privilege host broker that manages **only** Paperclip-owned, tailnet-only,
 same-number HTTPS-to-loopback listeners for managed branch runtimes.
 
+Tailscale-based runtime exposure is a **first-class, still experimental**
+Paperclip feature, not an add-on plugin. It is gated by the instance
+experimental flag `enableTailscaleRuntimeExposure` (Settings → Experimental,
+on by default). Turning it off stops Paperclip from publishing any runtime to a
+tailnet. The
+flag gates the *transport* rather than the Tailscale broker specifically, so a
+hosted relay transport can replace the broker later without introducing a
+second settings surface.
+
 It exists so the Paperclip app/agent account never gains Tailscale operator
 authority (see [PAP-16989](../../)) while still getting automatic trusted HTTPS
 previews per branch runtime. Design: [PAP-17049](../../) plan; security contract:
