@@ -2550,6 +2550,23 @@
       "liveProof": "2026-10-08: Paperclip browser Test dialog web_search returned 10 public results in 0.8s; connection persisted after reload and action refresh passed. Public read only; no writes or agent-adapter run."
     },
     {
+      "app": "keenable",
+      "method": "public-search",
+      "auth": "none",
+      "policy": "endpoint",
+      "requestedScopes": [],
+      "capability": "read",
+      "supportedActions": "Public web search and webpage retrieval. Keyless MCP initialize and tools/list observed only search_web_pages and fetch_page_content; both tool annotations mark them read-only, non-destructive and idempotent. No account, credential or provider write is involved.",
+      "evidence": [
+        "https://docs.keenable.ai/mcp-server",
+        "https://docs.keenable.ai/api-reference",
+        "https://api.keenable.ai/mcp"
+      ],
+      "reviewedAt": "2026-10-23",
+      "liveProof": "2026-10-23: local Paperclip (local_trusted) connected the Keenable gallery app with public-search and no credentials; health check passed, catalog refresh discovered search_web_pages and fetch_page_content as read-only, and a search_web_pages test call through the tool gateway was allowed and returned 10 public results in 1.3s. Public read only; no writes or agent-adapter run.",
+      "evidenceLimit": "The connect, finish, health-check, catalog refresh and test-call steps used the same local API routes as the Apps UI. The browser Test dialog itself was not clicked."
+    },
+    {
       "app": "windsor-ai",
       "method": "mcp-oauth",
       "auth": "oauth",
