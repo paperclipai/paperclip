@@ -104,6 +104,37 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await queuedRuns(f.companyId)).toHaveLength(1);
   });
 
+  it("limits targeted recovery to the requested company and receipt", async () => {
+    const fixtures = await Promise.all([seed(), seed(), seed()]);
+    const parked = [];
+    for (const f of fixtures) {
+      const wake = await park(f);
+      await clearGate(f.sourceRunId);
+      await makeDue(wake.id);
+      parked.push(wake);
+    }
+    const service = heartbeatService(db);
+    // Both filters must match. A receipt from another company stays held.
+    await service.readmitUnblockedExecutionWaits({
+      companyId: fixtures[0].companyId, requestId: parked[1].id,
+    });
+    for (const f of fixtures) expect(await queuedRuns(f.companyId)).toHaveLength(0);
+
+    // A request-only notification must leave every other due receipt untouched.
+    await service.readmitUnblockedExecutionWaits({ requestId: parked[0].id });
+    expect(await queuedRuns(fixtures[0].companyId)).toHaveLength(1);
+    expect(await queuedRuns(fixtures[1].companyId)).toHaveLength(0);
+    expect(await queuedRuns(fixtures[2].companyId)).toHaveLength(0);
+
+    await service.readmitUnblockedExecutionWaits({ companyId: fixtures[1].companyId });
+    expect(await queuedRuns(fixtures[1].companyId)).toHaveLength(1);
+    expect(await queuedRuns(fixtures[2].companyId)).toHaveLength(0);
+    const [untouched] = await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, parked[2].id));
+    expect(untouched.status).toBe("deferred_issue_execution");
+    expect(untouched.updatedAt.getTime()).toBe(0);
+  });
+
   it("does not let a full window of still-gated waits starve a wake whose gate has cleared", async () => {
     // Another task whose gate is still up holds the oldest 50 waits.
     const gated = await seed();
