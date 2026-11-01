@@ -152,6 +152,7 @@ import {
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
   isAgentCreatedIssue,
+  isAgentStatusInvokable,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
@@ -3376,12 +3377,6 @@ function lowTrustBoundaryIssueCondition(
 const BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES = ["done", "cancelled"];
 export const BLOCKER_ATTENTION_MAX_DEPTH = 8;
 export const BLOCKER_ATTENTION_MAX_NODES = 2000;
-const BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES = new Set([
-  "active",
-  "idle",
-  "running",
-  "error",
-]);
 
 type IssueBlockerAttentionNode = {
   id: string;
@@ -4394,7 +4389,7 @@ async function readIssueBlockerAttentionBatch(
       if (
         !assignee ||
         assignee.companyId !== companyId ||
-        !BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES.has(assignee.status)
+        !isAgentStatusInvokable(assignee.status)
       ) {
         return {
           covered: false,
