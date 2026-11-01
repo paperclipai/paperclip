@@ -78,6 +78,7 @@ import { ComposerAddMenu, ComposerModeChip, ComposerPrivacyChip } from "./Compos
 import { supportsComposerModel, type ComposerRunSettings } from "./composer-run-settings";
 import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import type { Agent, IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
+import { displayText } from "@/i18n/display-text";
 
 /** Structurally identical to IssueChatThread's module-private CommentReassignment. */
 export interface CommentReassignment {
@@ -312,18 +313,19 @@ function AssigneeIdentityAvatar({
 
 /** v7 per-mode placeholder copy; `{agent}` is the pending assignee's name. */
 function modePlaceholder(mode: IssueWorkMode, agentName: string, mobile: boolean): string {
+  const values = { v0: agentName };
   if (mobile) {
-    if (mode === "planning") return `Plan with ${agentName}…`;
-    if (mode === "ask") return `Ask ${agentName}…`;
-    return `Message ${agentName}…`;
+    if (mode === "planning") return displayText("Plan with {{v0}}…", values);
+    if (mode === "ask") return displayText("Ask {{v0}}…", values);
+    return displayText("Message {{v0}}…", values);
   }
   switch (mode) {
     case "planning":
-      return `Plan with ${agentName} — shapes the plan doc, no code changes…`;
+      return displayText("Plan with {{v0}} — shapes the plan doc, no code changes…", values);
     case "ask":
-      return `Ask ${agentName} a question — read-only, nothing runs…`;
+      return displayText("Ask {{v0}} a question — read-only, nothing runs…", values);
     default:
-      return `Message ${agentName} — describe what you want done…`;
+      return displayText("Message {{v0}} — describe what you want done…", values);
   }
 }
 
@@ -671,7 +673,7 @@ export function TaskChatComposer({
   const assigneeLabel =
     reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? "Unassigned";
   const assigneeName =
-    assigneeLabel === "Unassigned" ? "the agent" : assigneeLabel;
+    assigneeLabel === "Unassigned" ? displayText("the agent") : assigneeLabel;
   const effectivePlaceholder = queuedEdit
     ? "Edit queued message…"
     : (placeholder ?? modePlaceholder(pendingMode, assigneeName, mobile));
