@@ -3,6 +3,7 @@ import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
 import { registerRunDispatchWork } from "./heartbeat/dispatch-work.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "./native-runtime/native-controller-recovery.js";
+import { handoffWakeWork } from "./heartbeat/handoff-wake.js";
 import { externalConversationSettlementWork } from "./external-conversation-settlement-work.js";
 import { nativeRecoveryNoticeWork } from "./native-runtime/native-recovery-notice-work.js";
 import { nativeRunProjectionWork } from "./native-runtime/native-run-projection-work.js";
@@ -4139,6 +4140,10 @@ export function heartbeatService(
         const state = await getSchedulingSuppression(true);
         return !state.suppressed || state.reason === "task_drain";
       }),
+    registerExecutionHandoffWork: (
+      coordinator: Parameters<ReturnType<typeof handoffWakeWork>["register"]>[0], canRun: () => boolean,
+    ) => handoffWakeWork(db, enqueueWakeup).register(coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null),
     registerNativeEnvironmentSettlementWork: (
       coordinator: Parameters<typeof registerNativeEnvironmentSettlementWork>[0], canRun: () => boolean,
     ) => registerNativeEnvironmentSettlementWork(coordinator,

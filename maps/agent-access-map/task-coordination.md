@@ -87,6 +87,16 @@ API: `present` — representative operation IDs:
 Agent access: `partial` — Native paperclip_finish/paperclip_block and assigned
 resolve_review; legacy agent REST disposition.
 
+Review/approval handoffs delayed by an old execution's process or lease retain
+their wake and retry through normal admission after cleanup. Both agent- and
+user-origin handoffs retain their original actor; recovery rechecks the current
+task version and stage participant. Lease and reconciliation guards still apply.
+System/absent actors keep their exact nullable identity. Ordinary release retains
+valid receipts for full admission; daily-limit, pause and budget refusals remain
+retryable. Obsolete intent retires under the task lock before those gates.
+The [database regression](../../server/src/__tests__/heartbeat-handoff-execution-wait.test.ts)
+targets that lifecycle; it does not establish live agent API access.
+
 Policy: Task visibility/mutation, task-assignment and ownership policy; review audience
 independent; tree controls board-only.
 
