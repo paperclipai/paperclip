@@ -214,6 +214,32 @@ describeEmbeddedPostgres("issue access grant and locked edge routes", { concurre
     };
   }
 
+  it("uses actor privacy for stalled-chain owners in blocked list, count and ordinary list routes", async () => {
+    const f = await seedFixture();
+    const [source] = await db.insert(issues).values({ companyId: f.companyId, title: "Stalled source", status: "blocked", createdByUserId: f.memberId }).returning();
+    const [leaf] = await db.insert(issues).values({
+      companyId: f.companyId, title: "Restricted review leaf", status: "in_review", visibility: "open",
+      projectId: f.privateProject.id, assigneeAgentId: f.assignedAgent.id,
+      executionState: { status: "pending", currentParticipant: { type: "agent", agentId: f.assignedAgent.id } },
+    }).returning();
+    await db.insert(issueRelations).values({ companyId: f.companyId, issueId: leaf!.id, relatedIssueId: source!.id, type: "blocks" });
+    for (const actor of [boardActor(f.companyId, f.memberId), agentActor(f.companyId, f.sharedAgent.id)]) {
+      const app = await createApp(db, actor);
+      const base = `/api/companies/${f.companyId}/issues`;
+      for (const query of ["attention=blocked", "includeBlockedInboxAttention=true&status=blocked"]) {
+        const response = await request(app).get(`${base}?${query}`);
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+        expect(response.body.find((row: { id: string }) => row.id === source!.id)?.blockedInboxAttention).toMatchObject({
+          reason: "blocked_chain_stalled", severity: "high",
+          owner: { type: "unknown", agentId: null, userId: null, label: null },
+        });
+      }
+      const count = await request(app).get(`${base}/count?attention=blocked`);
+      expect(count.status, JSON.stringify(count.body)).toBe(200);
+      expect(count.body).toEqual({ count: 1 });
+    }
+  });
+
   it("requires explicit owner/admin break-glass and records both audit evidence and an owner-visible notice", async () => {
     const fixture = await seedFixture();
     const adminApp = await createApp(db, boardActor(fixture.companyId, fixture.adminId));

@@ -104,7 +104,7 @@ API: `present` — GET /api/companies/{companyId}/issues/count?attention=blocked
 
 Agent access: `available` — agent REST/admitted call_api; no dedicated CLI/native count.
 
-Policy: Company/actor/read filters and low-trust boundaries apply. Task-bridge denied; attention=blocked required, limit/offset rejected; supported collection filters shape visible count.
+Policy: Company/actor/read filters and low-trust boundaries apply. Task-bridge denied; attention=blocked required, limit/offset rejected; supported collection filters shape visible count. Terminal owner readability uses the same actor predicate without removing hidden graph nodes.
 
 Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`; [issues.ts](../../server/src/routes/issues.ts), [issue-blocker-attention.test.ts](../../server/src/__tests__/issue-blocker-attention.test.ts). No live execution claimed.
 
