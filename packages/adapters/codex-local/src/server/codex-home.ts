@@ -356,6 +356,7 @@ function buildManagedMcpBlock(input: {
       "",
       `[mcp_servers.${tomlString(managedName)}]`,
       `url = ${tomlString(url)}`,
+      'default_tools_approval_mode = "approve"',
       `http_headers = { Authorization = ${tomlString(`Bearer ${gateway.bearerToken}`)} }`,
     );
   });
