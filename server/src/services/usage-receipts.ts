@@ -209,8 +209,6 @@ export async function recoverPendingRunUsageReceipts(db: Db, input: { companyId:
         // The background replayer can move/remove a file while we scan. Invalid
         // JSON remains on disk for its normal recovery/error reporting path.
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          // A normal publication is removed only after its journal transaction
-          // commits. Retry names can represent an unpersisted renamed receipt.
           const id = name.slice(0, -5);
           if (receiptIdSchema.safeParse(id).success) vanishedIds.add(id.toLowerCase());
           else moved = true;
@@ -229,8 +227,6 @@ export async function recoverPendingRunUsageReceipts(db: Db, input: { companyId:
       recovered.add(file);
       if (!options.retainFiles) await fs.rm(file, { force: true });
     }
-    // Resolve vanished publications together instead of holding the accounting
-    // lock across a sequential journal query for every concurrent removal.
     const ids = [...vanishedIds];
     for (let offset = 0; offset < ids.length; offset += 1000) {
       const batch = ids.slice(offset, offset + 1000);
