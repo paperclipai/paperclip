@@ -11,15 +11,17 @@ import { prepareHeartbeatGitHubLaunchers } from "./heartbeat-github-launchers.js
 const target = { kind: "remote" as const, transport: "sandbox" as const, providerKey: "daytona", remoteCwd: "/workspace" };
 
 describe("heartbeat GitHub launcher lifetime", () => {
-  it("leaves a task provider's runtime untouched", async () => {
-    const prepare = vi.fn(), mint = vi.fn();
+  it.each([true, false])("delegates task staging with configured GitHub: %s", async (githubConfigured) => {
+    const prepare = vi.fn(), mint = vi.fn(() => "run-capability");
     const env = { OPENAI_API_KEY: "selected-credential" };
-    const result = await prepareHeartbeatGitHubLaunchers({ native: true, githubConfigured: true, agentId: "agent",
+    const result = await prepareHeartbeatGitHubLaunchers({ native: true, githubConfigured, agentId: "agent",
       runId: "run", target: { ...target, runnerTask: async () => ({}) }, cwd: "/core/workspace",
       env, brokerUrl: "https://paperclip.test", createBrokerToken: mint }, prepare);
-    expect(result).toEqual({ env, cleanupLocation: null });
+    expect(result.cleanupLocation).toBeNull();
+    expect(result.env).toMatchObject({ ...env, GH_TOKEN: "", PAPERCLIP_GITHUB_BROKER_URL: githubConfigured ? "https://paperclip.test" : "",
+      PAPERCLIP_GITHUB_BROKER_TOKEN: githubConfigured ? "run-capability" : "" });
     expect(prepare).not.toHaveBeenCalled();
-    expect(mint).not.toHaveBeenCalled();
+    expect(mint).toHaveBeenCalledTimes(githubConfigured ? 1 : 0);
   });
   it.each([target, null])("defers native managed authorization/staging to the session owner (%j)", async (target) => {
     const prepare = vi.fn();
@@ -98,7 +100,7 @@ it("keeps anonymous wrappers usable after run cleanup and excludes sandbox image
     await writeFile(path.join(bin, "gh"), `#!${process.execPath}
 const fs = require('node:fs');
 process.stdout.write(JSON.stringify({token:process.env.GH_TOKEN || '', githubToken:process.env.GITHUB_TOKEN || '', ssh:process.env.SSH_AUTH_SOCK, global:process.env.GIT_CONFIG_GLOBAL, globalConfig:fs.readFileSync(process.env.GIT_CONFIG_GLOBAL, 'utf8'), imageConfig:fs.existsSync(process.env.GH_CONFIG_DIR + '/hosts.yml')}));`, { mode: 0o700 });
-    const imageEnv = { HOME: root, PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`, GH_TOKEN: "ambient-token", GITHUB_TOKEN: "ambient-other-token", SSH_AUTH_SOCK: "/ambient/socket" };
+    const imageEnv = { HOME: root, PATH: `${bin}:${path.dirname(process.execPath)}:${process.env.PATH}`, GH_TOKEN: "ambient-token", GITHUB_TOKEN: "ambient-other-token", SSH_AUTH_SOCK: "/ambient/socket" };
     const execute: CommandManagedRuntimeRunner["execute"] = async (input) => {
       const startedAt = new Date().toISOString();
       const child = promisify(execFile)(input.command, input.args ?? [], { cwd: input.cwd ?? root, env: { ...imageEnv, ...input.env }, timeout: 15_000 });

@@ -20,6 +20,18 @@ export interface HeartbeatRunRuntimeStatus {
 }
 
 const runtimeStatusesByRunId = new Map<string, HeartbeatRunRuntimeStatus>();
+let nextWriteCleanupAt: number | null = null;
+
+function cleanupExpiredStatusesOnWrite() {
+  const now = Date.now();
+  if (nextWriteCleanupAt === null) {
+    nextWriteCleanupAt = now + HEARTBEAT_RUN_RUNTIME_STATUS_TTL_MS;
+    return;
+  }
+  if (now <= nextWriteCleanupAt) return;
+  sweepExpiredHeartbeatRunRuntimeStatuses(new Date(now));
+  nextWriteCleanupAt = now + HEARTBEAT_RUN_RUNTIME_STATUS_TTL_MS;
+}
 
 function cloneStatus(status: HeartbeatRunRuntimeStatus): HeartbeatRunRuntimeStatus {
   return {
@@ -64,6 +76,7 @@ export function setHeartbeatRunRuntimeStatus(
     lastEventAt?: Date | null;
   },
 ): HeartbeatRunRuntimeStatus | null {
+  cleanupExpiredStatusesOnWrite();
   const message = sanitizeHeartbeatRunRuntimeStatusMessage(input.message);
   if (!message) {
     clearHeartbeatRunRuntimeStatus(input.runId);
@@ -106,6 +119,7 @@ export function touchHeartbeatRunRuntimeStatus(input: {
   fallbackPhase?: HeartbeatRunStatusPhase;
   fallbackMessage?: string;
 }): HeartbeatRunRuntimeStatus | null {
+  cleanupExpiredStatusesOnWrite();
   const at = input.at ?? new Date();
   const existing = runtimeStatusesByRunId.get(input.runId);
   if (
@@ -167,6 +181,7 @@ export function clearHeartbeatRunRuntimeStatus(runId: string): boolean {
 
 export function clearAllHeartbeatRunRuntimeStatuses(): void {
   runtimeStatusesByRunId.clear();
+  nextWriteCleanupAt = null;
 }
 
 export function sweepExpiredHeartbeatRunRuntimeStatuses(

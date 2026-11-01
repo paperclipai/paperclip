@@ -14,7 +14,7 @@ Delegated work and interactions persist their originating context. Retries retai
 
 Executions with managed GitHub configured receive token-free `git` and `gh` launchers. Each launcher invocation resolves one eligible credential from the current run's accepted identity at operation start. A `gh` command's child Git processes inherit that command's captured identity; later steering does not change already-started operations.
 
-A `git` command that never uses the network does not ask the broker. The launcher reads past the global options, such as `-C` and `-c`, and checks the subcommand against a short list (for example `status`, `diff`, `log`, `rev-parse`, `add`, `config`, `branch`, `checkout`). An unknown subcommand or option still asks. `commit` and `var` still ask, because the managed author comes from the broker answer. The launcher keeps no broker answer between invocations and never writes a credential to a file.
+A `git` command that never uses the network does not ask the broker. The launcher reads past the global options, such as `-C` and `-c`, and checks the subcommand against a short list (for example `status`, `diff`, `diff-files`, `write-tree`, `log`, `rev-parse`, `add`, `config`, `branch`, `checkout`). This includes the index comparison and tree writing used by workspace snapshots. An unknown subcommand or option still asks. `commit` and `var` still ask, because the managed author comes from the broker answer. The launcher keeps no broker answer between invocations and never writes a credential to a file.
 
 GitHub credential capture reads the current task, project, and retained trust
 policy bindings without transferring saved prompts, runner profiles, results,
@@ -221,3 +221,15 @@ must send them only to trusted execution infrastructure over HTTPS. Revocation
 prevents subsequent credential acquisition; it cannot recall a token already
 sent to an in-flight operation. Existing tasks and Git credential fallback rules
 outside this plugin API are unchanged.
+
+### Plugin-owned task command environments
+
+Task-only environment plugins negotiate `githubCredentialBrokerVersion: 1` and
+receive the current run's broker capability through structured preparation.
+Core does not prescribe executable names, files, scripts, or a staging layout.
+The plugin owns its command implementation and isolates ambient host identity.
+See [the plugin broker contract](plugins/PLUGIN_RUNNER_EXECUTION.md#operation-time-github-credentials).
+These task providers use the signed, run-scoped public broker endpoint; they do
+not require the controller's remote shell or session callback bridge. Warm task
+preparation replaces the capability before the next run's commands. Credentials
+are still captured separately for each operation through the same live resolver.

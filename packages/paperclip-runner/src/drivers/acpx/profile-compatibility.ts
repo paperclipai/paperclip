@@ -1,20 +1,17 @@
 import { QUALIFIED_ACPX_PROFILE_DATA } from "./generated-profiles.js";
 
-/** Decodable historical profile revisions, not permission to launch them.
- * Exact current profile/package/digest admission is checked separately. */
-type HistoricalAcpxProfileVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53 | 54 | 55 | 56 | 57 | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 76 | 77 | 78 | 79;
-type CurrentAcpxProfileVersion = typeof QUALIFIED_ACPX_PROFILE_DATA[keyof typeof QUALIFIED_ACPX_PROFILE_DATA]["agentProfileVersion"];
-export type AcpxProfileVersion = HistoricalAcpxProfileVersion | CurrentAcpxProfileVersion;
+/** Decodable profile revisions, not permission to launch them.
+ * Exact current profile/package/digest admission is checked separately.
+ * Every revision from 1 through the current one decodes, so saved runs reach
+ * recovery and are refused there. Claude and Codex already retained revisions
+ * 1 through 5 above their current revision 1. */
+const RETAINED_THROUGH: Readonly<Record<string, number>> = { claude: 5, codex: 5 };
 
-const historicalVersions: Readonly<Record<string, readonly HistoricalAcpxProfileVersion[]>> = {
-  pi: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32], claude: [1, 2, 3, 4, 5], codex: [1, 2, 3, 4, 5],
-  grok: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], copilot: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79],
-  cursor: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-};
+export type AcpxProfileVersion = number;
 
 export function isSupportedAcpxProfileVersion(agent: string, value: unknown): value is AcpxProfileVersion {
-  if (!Object.hasOwn(QUALIFIED_ACPX_PROFILE_DATA, agent)) return false;
-  const current = QUALIFIED_ACPX_PROFILE_DATA[agent as keyof typeof QUALIFIED_ACPX_PROFILE_DATA];
-  return value === current.agentProfileVersion
-    || historicalVersions[agent]?.includes(value as HistoricalAcpxProfileVersion) === true;
+  if (!Object.hasOwn(QUALIFIED_ACPX_PROFILE_DATA, agent) || !Number.isSafeInteger(value)) return false;
+  const current = QUALIFIED_ACPX_PROFILE_DATA[agent as keyof typeof QUALIFIED_ACPX_PROFILE_DATA].agentProfileVersion;
+  const latest = Math.max(current, Object.hasOwn(RETAINED_THROUGH, agent) ? RETAINED_THROUGH[agent]! : 0);
+  return (value as number) >= 1 && (value as number) <= latest;
 }

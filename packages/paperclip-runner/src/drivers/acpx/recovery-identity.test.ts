@@ -5,7 +5,7 @@ import { join, parse } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
+import { QUALIFIED_ACPX_PROFILES, resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import {
   ACPX_IDENTITY_RECORD_SCHEMA,
   acpxRuntimeSessionDirectoryName,
@@ -26,35 +26,30 @@ afterEach(async () => {
 });
 
 describe("ACPX recovery identity", () => {
+  // The last source-bound identities, the current versions with a changed
+  // upstream release digest, and retained Cursor declarations.
+  const changedDigest = `sha256:${"1".repeat(64)}`;
   it.each([
-    ["copilot", "../../../test/fixtures/copilot-profile-v74-identity.json"],
-    ["copilot", "../../../test/fixtures/copilot-profile-v75-identity.json"],
-    ["copilot", "../../../test/fixtures/copilot-profile-v76-identity.json"],
-    ["copilot", "../../../test/fixtures/copilot-profile-v77-identity.json"],
+    ["copilot", { agentProfileVersion: 91, commandDigest: "sha256:e4383c48ad21898dfe38609fdc8c0fa9a76dfcb8582a64b5415f107846904aa9" }],
+    ["grok", { agentProfileVersion: 19, commandDigest: "sha256:5205c2197b94cfbd3e62fbeea027f2e80d092f736ca52656dda2f7044ba9a5ca" }],
+    ["pi", { agentProfileVersion: 36, commandDigest: "sha256:faafb66c09c1efc7eb4eda6baaa5813c975e8a992f9cd333687695aa5522d7dc" }],
+    ["copilot", { agentProfileVersion: QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion, commandDigest: changedDigest }],
+    ["grok", { agentProfileVersion: QUALIFIED_ACPX_PROFILES.grok.agentProfileVersion, commandDigest: changedDigest }],
+    ["pi", { agentProfileVersion: QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion, commandDigest: changedDigest }],
     ["cursor", "../../../test/fixtures/cursor-acp/profile-v10-identity.json"],
-    ["copilot", "../../../test/fixtures/copilot-profile-v14-identity.json"],
-    ["pi", "../../../test-fixtures/pi-acp/profile-v13-identity.json"],
-    ["pi", "../../../test-fixtures/pi-acp/profile-v14-identity.json"],
-    ["pi", "../../../test-fixtures/pi-acp/profile-v22-identity.json"],
-    ["pi", "../../../test-fixtures/pi-acp/profile-v23-identity.json"],
     ["cursor", "../../../test/fixtures/cursor-acp/profile-v7-identity.json"],
     ["cursor", "../../../test/fixtures/cursor-acp/profile-v8-identity.json"],
     ["cursor", "../../../test/fixtures/cursor-acp/profile-v9-identity.json"],
-    ["copilot", "../../../test/fixtures/copilot-profile-v7-identity.json"],
-    ["copilot", "../../../test/fixtures/copilot-profile-v8-identity.json"],
-    ["copilot", "../../../test/fixtures/copilot-profile-v9-identity.json"],
-    ["copilot", "../../../test/fixtures/copilot-profile-v10-identity.json"],
-    ["copilot", "../../../test/fixtures/copilot-profile-v11-identity.json"],
-    ["copilot", "../../../test/fixtures/copilot-profile-v12-identity.json"],
-    ["pi", "../../../test-fixtures/pi-acp/profile-v9-identity.json"],
-  ] as const)("rejects retained %s sessions after the execution identity changes", async (agent, path) => {
+  ] as const)("rejects retained %s sessions after the execution identity changes", async (agent, source) => {
     const fixture = await recoveryFixture();
-    const historical = JSON.parse(await readFile(new URL(path, import.meta.url), "utf8"));
+    const historical = typeof source === "string"
+      ? (({ declaration, commandDigest }) => ({ agentProfileVersion: declaration.agentProfileVersion, commandDigest }))(JSON.parse(await readFile(new URL(source, import.meta.url), "utf8")))
+      : source;
     const current = resolveQualifiedAcpxProfile(agent, agent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : fixture.input.requestedModel);
     const input = { ...fixture.input, requestedModel: current.qualificationModel, profile: current, ...(agent === "pi" ? { piThinkingLevel: "low" as const } : {}), ...(agent === "cursor" ? { mode: "agent" } : {}) };
     const next = await createAcpxRecoveryBinding(input);
     const prior = await createAcpxRecoveryBinding({ ...input, profile: { ...current,
-      agentProfileVersion: historical.declaration.agentProfileVersion, commandDigest: historical.commandDigest } });
+      agentProfileVersion: historical.agentProfileVersion, commandDigest: historical.commandDigest } });
     const priorExpected = { ...fixture.expected, profileDigest: prior.commandDigest,
       requestedModel: prior.requestedModel, effectiveModel: prior.effectiveModel,
       ...(agent === "cursor" ? { mode: "agent" as const } : {}), ...(agent === "pi" ? { piThinkingLevel: "low" as const } : {}) };

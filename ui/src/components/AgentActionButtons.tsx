@@ -34,6 +34,7 @@ import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { agentRouteRef } from "../lib/utils";
+import { pendingAgentSetupChoice } from "../lib/agent-setup-choice";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { useDialogActions } from "../context/DialogContext";
 import { useToastActions } from "../context/ToastContext";
@@ -391,6 +392,7 @@ export function AgentActionButtons({
             name: agent.name, adapterType: agent.adapterType, setupAgentId: agent.id,
             runnerProvider: String(agent.adapterConfig.provider === "acpx" ? agent.adapterConfig.acpxAgent : agent.adapterConfig.provider ?? "codex"),
             ...(agent.adapterType === "paperclip_runner" ? { runner: "paperclip" } : ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(agent.adapterType) ? { runner: "legacy" } : {}),
+            ...pendingAgentSetupChoice(agent),
           })}`);
         }}>Finish setup</Button>
       ) : showRun && <RunButton

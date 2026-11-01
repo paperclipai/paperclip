@@ -1,3 +1,4 @@
+import { notifyEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { and, eq, gt, inArray, ne, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
@@ -33,6 +34,7 @@ export function maintainLegacyShutdownWorkspaceSettlement(db: Db, run: Run) {
     pending = db.transaction(async tx => {
       await tx.execute(sql`SET LOCAL lock_timeout = '1s'`);
       await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
+      await notifyEnvironmentCleanup(tx, { companyId: run.companyId, runId: run.id });
       await tx.update(environmentLeases).set({ metadata: sql`jsonb_set(${environmentLeases.metadata},
         '{legacyShutdownWorkspaceSettlement,deadlineAt}', ${JSON.stringify(new Date(Date.now() + SETTLEMENT_LEASE_MS).toISOString())}::jsonb)` })
         .where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
@@ -73,39 +75,47 @@ export async function legacyShutdownWorkspaceResourceProtected(db: Db,
 }
 
 /** Released stop receipts still need reconciliation if export never settled. */
-export async function sweepLegacyShutdownWorkspaceSettlements(db: Db, now = new Date()) {
+export async function sweepLegacyShutdownWorkspaceSettlements(db: Db, now = new Date(), scope: { companyId?: string; leaseId?: string; onDeferredDeadline?: (at: number) => void } = {}) {
   const rows = await db.select().from(environmentLeases).where(and(
+    scope.companyId ? eq(environmentLeases.companyId, scope.companyId) : undefined,
+    scope.leaseId ? eq(environmentLeases.id, scope.leaseId) : undefined,
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'schema' = ${SCHEMA}`,
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'state' = 'pending'`,
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'deadlineAt' <= ${now.toISOString()}`,
   )).orderBy(sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'deadlineAt'`).limit(50);
-  for (const lease of rows) await allowLegacyShutdownWorkspaceCleanup(db, lease, now);
+  for (const lease of rows) await allowLegacyShutdownWorkspaceCleanup(db, lease, now, { onDeferredDeadline: scope.onDeferredDeadline });
 }
 
 /** Commit the fence while the run is still live, before exposing interruption. */
 export async function beginLegacyShutdownWorkspaceSettlement(db: Db, run: Run, deadlineAt: Date) {
-  await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) ||
+  await db.transaction(async tx => {
+    await notifyEnvironmentCleanup(tx, { companyId: run.companyId, runId: run.id });
+    await tx.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) ||
     ${JSON.stringify({ legacyShutdownWorkspaceSettlement: { schema: SCHEMA, state: "pending", runId: run.id,
       controllerBootId: legacyControllerBootId, deadlineAt: deadlineAt.toISOString() } })}::jsonb`,
   }).where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
     eq(environmentLeases.status, "active"), ne(environmentLeases.provider, "local"),
     or(sql`${environmentLeases.metadata}->>'driver' = 'sandbox'`, sql`${environmentLeases.metadata}->>'sandboxProviderPlugin' = 'true'`)));
+  });
 }
 
 /** The owner joins settlement, or records exact retention before timeout cleanup. */
 export async function finishLegacyShutdownWorkspaceSettlement(db: Db, run: Run, state: "settled" | "expired" = "settled") {
-  await db.update(environmentLeases).set({ metadata: sql`jsonb_set(${environmentLeases.metadata},
+  await db.transaction(async tx => {
+    await notifyEnvironmentCleanup(tx, { companyId: run.companyId, runId: run.id });
+    await tx.update(environmentLeases).set({ metadata: sql`jsonb_set(${environmentLeases.metadata},
     '{legacyShutdownWorkspaceSettlement,state}', ${JSON.stringify(state)}::jsonb)` }).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'schema' = ${SCHEMA}`,
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'controllerBootId' = ${legacyControllerBootId}`,
     sql`${environmentLeases.metadata}->'legacyShutdownWorkspaceSettlement'->>'state' = 'pending'`,
   ));
+  });
 }
 
 /** A restart or another cleanup worker must never infer saved files from timeout. */
 export async function allowLegacyShutdownWorkspaceCleanup(db: Db, lease: Lease, now = new Date(),
-  options: { ownerStopOnly?: boolean } = {}) {
+  options: { ownerStopOnly?: boolean; onDeferredDeadline?: (at: number) => void } = {}) {
   if (!pendingLegacyShutdownWorkspaceSettlement(lease)) return true;
   return db.transaction(async tx => {
     const [hint] = await tx.select().from(environmentLeases).where(and(
@@ -154,12 +164,17 @@ export async function allowLegacyShutdownWorkspaceCleanup(db: Db, lease: Lease, 
       if (current.status === "pending_cleanup" && !readStopOnlyCleanup(current)) {
         const expiresAt = current.metadata?.pendingCleanupLeaseExpiresAtMs;
         if (current.metadata?.pendingCleanupInFlight === true
-          && (typeof expiresAt !== "number" || !Number.isFinite(expiresAt) || expiresAt > now.getTime())) return false;
+          && (typeof expiresAt !== "number" || !Number.isFinite(expiresAt) || expiresAt > now.getTime())) {
+          if (typeof expiresAt === "number" && Number.isFinite(expiresAt)) options.onDeferredDeadline?.(expiresAt);
+          return false;
+        }
         // A failed ordinary release can race the shutdown marker. Re-enter the
         // recorder's active-source path within this claim transaction so it
         // replaces destructive retry with an exact stop-only recovery intent.
+        await notifyEnvironmentCleanup(tx, { companyId: run.companyId, runId: run.id });
         await tx.update(environmentLeases).set({ status: "active" }).where(eq(environmentLeases.id, current.id));
       } else {
+        await notifyEnvironmentCleanup(tx, { companyId: run.companyId, runId: run.id });
         await tx.update(environmentLeases).set({ leasePolicy: "retain_on_failure",
           metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ workspaceRestoreRecovery: {
             schema: LEGACY_WORKSPACE_RECOVERY_SCHEMA, runId: run.id,
@@ -167,6 +182,7 @@ export async function allowLegacyShutdownWorkspaceCleanup(db: Db, lease: Lease, 
         }).where(eq(environmentLeases.id, current.id));
       }
     }
+    if (current.status === "active") await notifyEnvironmentCleanup(tx, { companyId: run.companyId, runId: run.id });
     const { terminalizeLegacyExecution } = await import("./legacy-execution-recovery.js");
     const preserved = await terminalizeLegacyExecution({ db: tx as unknown as Db, run, status: run.status,
       recordRestoreFailureOnly: true, patch: { resultJson: { workspaceRestoreFailure: "restore_failed" } } });

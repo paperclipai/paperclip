@@ -9,6 +9,7 @@ export function registerDeadlineWork(
     next: () => Promise<number | null>;
     canRun: () => boolean;
     retryMs: number;
+    onSettled?: (hints?: ReadonlySet<string>) => void;
     continuationMs?: number;
     // Optional batching latency for notifications; already-known deadlines still preempt it.
     notificationCoalesceMs?: number;
@@ -23,9 +24,9 @@ export function registerDeadlineWork(
   const worker = coordinator.register(queue, {
     retryMs: task.retryMs,
     pausePassiveMaintenance: true,
-    onSettled: () => { requested++; },
+    onSettled: hints => { requested++; task.onSettled?.(hints); },
     run: async signal => {
-      if (!task.canRun()) { requested++; next = null; return; }
+      if (!task.canRun()) { requested++; return; }
       if (Date.now() < earliest) { next = earliest; return; }
       if (Date.now() < coalesceUntil && (next === null || next > Date.now())) {
         next = next === null ? coalesceUntil : Math.min(next, coalesceUntil);
@@ -38,8 +39,6 @@ export function registerDeadlineWork(
       if (signal.aborted || !task.canRun()) { next = null; return; }
       const deadline = await task.next();
 
-
-
       if (!task.canRun()) { next = null; return; }
       earliest = deadline === null || deadline > Date.now()
         ? (task.minimumSpacingMs ? Date.now() + task.minimumSpacingMs : 0)
@@ -48,8 +47,13 @@ export function registerDeadlineWork(
       coalesceUntil = Date.now() + (task.notificationCoalesceMs ?? 0);
       reconciled = generation;
     },
-    hasPending: async () => requested !== reconciled,
-    nextRunAt: () => next,
+    // A settled producer must release its admission hold during drain. Keep
+    // the unreconciled generation and an in-memory resume wake, without asking
+    // the domain to probe its database while dispatch is closed.
+    hasPending: async () => task.canRun() && requested !== reconciled,
+    nextRunAt: () => !task.canRun() && requested !== reconciled
+      ? Date.now() + task.retryMs
+      : next,
   });
   return { ...worker, wake: () => { requested++; worker.wake(); } };
 }

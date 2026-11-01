@@ -1,6 +1,7 @@
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
+import { ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
 import { agentCaseHandoffSchema, caseWorkflowDocumentTextSchema, doneCaseHandoffSchema, createWorkflowSchema, updateWorkflowSchema, listWorkflowsSchema, readWorkflowQuerySchema } from "@paperclipai/shared";
 import {
   experimentalApiPaths,
@@ -37,6 +38,8 @@ import {
   slackSearchConfigSchema,
   // Agent
   submitAgentCommentarySchema,
+  sendChatMessageSchema,
+  markIssueReadSchema,
   agentCommentaryQuerySchema,
   AGENT_PALETTE_IDS,
   AGENT_AVATAR_SIZES,
@@ -1294,6 +1297,7 @@ function registerCurrentRoute(input: {
   path: string;
   tags: string[];
   summary: string;
+  description?: string;
   query?: z.ZodTypeAny;
   body?: z.ZodTypeAny;
   responses?: Record<string, OpenApiResponse>;
@@ -1313,6 +1317,7 @@ function registerCurrentRoute(input: {
     ...(input["x-paperclip-transport"] ? { "x-paperclip-transport": input["x-paperclip-transport"], "x-paperclip-connection-management": input["x-paperclip-connection-management"] } : {}),
     tags: input.tags,
     summary: input.summary,
+    ...(input.description ? { description: input.description } : {}),
     ...(request ? { request } : {}),
     responses: input.responses ?? {
       200: r.ok(),
@@ -1369,6 +1374,8 @@ const PUBLIC_OPERATIONS = new Set([
   "GET /api/health",
   "GET /api/liveness",
   "HEAD /api/liveness",
+  "GET /api/ready",
+  "HEAD /api/ready",
   "GET /api/openapi.json",
   "GET /api/board-claim/{token}",
   "POST /api/cli-auth/challenges",
@@ -1417,6 +1424,8 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/issues/{id}/decision-receipts",
   "GET /api/issues/{id}/chat-handoffs",
   "GET /api/companies/{companyId}/attention/history",
+  "GET /api/companies/{companyId}/attention/summary",
+  "GET /api/companies/{companyId}/attention/tasks",
   "POST /api/issues/{id}/interactions/{interactionId}/dismiss",
   "POST /api/issues/{id}/retry",
   "GET /api/companies/{companyId}/prompt-injection-prevention",
@@ -1667,6 +1676,7 @@ function resolveOperationAuthLevel(
       || /^\/api\/companies\/\{companyId\}\/agents\/\{agentId\}\/grok-binding(?:\/(?:routine|verify|retry|stop|recover))?$/.test(path)) return "board";
   if (PUBLIC_OPERATIONS.has(key)) return "public";
   if (key === "POST /api/companies/{companyId}/agent-commentary") return "agent_heartbeat";
+  if (key === "POST /api/agents/me/chat/messages") return "agent_heartbeat";
   if (method.toUpperCase() === "GET" && path.startsWith("/api/companies/{companyId}/agent-commentary")) return "board";
   if (key === "POST /api/mcp/project-tools" || key === "POST /api/companies/{companyId}/slack/tasks/{issueId}/tools") return "agent_run";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
@@ -1813,6 +1823,25 @@ registry.registerPath({
   tags: ["health"],
   summary: "Process startup status without a response body",
   responses: { 200: { description: "Process startup recovery is complete" }, 503: { description: "Startup recovery is not complete" } },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/ready",
+  tags: ["health"],
+  summary: "Deployment readiness without database access",
+  description: "Public in-memory admission status after startup dependencies and recovery have been verified. Returns 503 immediately during shutdown. Responses are not cached; an unavailable server supplies Retry-After: 1.",
+  responses: {
+    200: r.ok(z.object({ status: z.literal("ready") }).strict()),
+    503: { description: "Starting, recovering, or draining", content: {
+      "application/json": { schema: z.object({ status: z.enum(["starting", "recovering", "draining"]) }).strict() },
+    } },
+  },
+});
+registry.registerPath({
+  method: "head", path: "/api/ready", tags: ["health"],
+  summary: "Deployment readiness without a response body",
+  responses: { 200: { description: "Ready to receive traffic" }, 503: { description: "Starting, recovering, or draining" } },
 });
 
 // Shared by the healthy and database-unreachable responses: full details
@@ -4261,7 +4290,7 @@ registry.registerPath({
   path: "/api/issues/{id}",
   tags: ["issues"],
   summary: "Get an issue",
-  request: { params: z.object({ id: z.string() }), query: z.object({ view: z.literal("core").optional().describe("Core task fields without related enrichment.") }) },
+  request: { params: z.object({ id: z.string() }), query: z.object({ view: z.literal("core").optional().describe("Task fields with saved document and work-product cards, without recovery or related-task enrichment and without provider refresh.") }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
@@ -4596,7 +4625,7 @@ registry.registerPath({
   path: "/api/issues/{id}/recent-comments",
   tags: ["issues"],
   summary: "Read a bounded recent task exchange",
-  description: "Returns four recent comments, the latest human comment, and the first human instruction when the task has no description. Includes latestCommentId and hasMore. Uses the same authorization and redaction as full comment reads.",
+  description: "Returns four recent comments, the latest human comment, and the first human instruction when the task has no description. Agent chats instead return the latest 20 contiguous comments and oldestCommentId for backward cursor paging. Includes latestCommentId and hasMore. Uses the same authorization and redaction as full comment reads.",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
@@ -4733,7 +4762,7 @@ registry.registerPath({
   path: "/api/issues/{id}/read",
   tags: ["issues"],
   summary: "Mark an issue as read",
-  request: { params: z.object({ id: z.string() }) },
+  request: { params: z.object({ id: z.string() }), body: { ...jsonBody(markIssueReadSchema), required: false } },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -5050,7 +5079,8 @@ registry.registerPath({
   method: "patch",
   path: "/api/projects/{id}",
   tags: ["projects"],
-  summary: "Update a project",
+  summary: "Update project properties and defaults",
+  description: "Save project properties and defaults. The description holds shared project context and guidance, including checklists; goalIds links the project to its goals. Read the project back to verify the saved fields. Updating description or goalIds does not rewrite existing tasks or the inputs already admitted to active native runs; changing existing work is a separate operation. Environment and executionWorkspacePolicy fields configure separate project settings and are not required to save description or goalIds.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(updateProjectSchema),
@@ -5757,6 +5787,15 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
+registry.registerPath({
+  method: "post", path: "/api/agents/me/chat/messages", tags: ["agents"],
+  summary: "Send a task message to the agent's own chat",
+  description: "Requires the assigned agent's active standard task run, standard credentials and an active responsible human. Resolves or creates that agent's conversation automatically. Company visibility, task permissions, Stop and the shared cross-issue run cap apply. Equivalent retries do not spend another slot. Does not wake the chat agent or change task status.",
+  request: { body: jsonBody(sendChatMessageSchema) },
+  responses: { 200: r.ok(), 201: { ...r.ok(), description: "Message saved" }, 400: r.badRequest,
+    401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 429: r.tooManyRequests },
+});
+
 const agentCommentaryAcknowledgementSchema = z.object({
   id: z.string().uuid(),
   kind: z.enum(["complaint", "suggestion"]),
@@ -6088,8 +6127,8 @@ registry.registerPath({
   path: "/api/issues/{id}/runs",
   tags: ["activity"],
   summary: "List runs for an issue",
-  request: { params: z.object({ id: z.string() }), query: z.object({ view: z.literal("recent").optional().describe("At most two recent run summaries.") }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: { params: z.object({ id: z.string() }), query: z.object({ view: z.literal("recent").optional().describe("At most two recent run summaries."), runIds: z.string().optional().describe("Comma-separated list of 1 to 100 run UUIDs. Returns only those runs linked to this accessible issue.") }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -6159,6 +6198,29 @@ registry.registerPath({
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
+
+const attentionSummaryResponseSchema = z.object({
+  companyId: z.string().uuid(),
+  generatedAt: z.string().datetime(),
+  totalCount: z.number().int().nonnegative(),
+  deskBadgeCount: z.number().int().nonnegative(),
+  countsBySourceKind: z.record(z.enum(ATTENTION_SOURCE_KINDS), z.number().int().nonnegative()),
+}).strict();
+
+for (const [projection, responseSchema] of [
+  ["summary", attentionSummaryResponseSchema],
+  ["tasks", attentionSummaryResponseSchema.extend({ taskIds: z.array(z.string().uuid()) })],
+] as const) {
+  registry.registerPath({
+    method: "get",
+    path: `/api/companies/{companyId}/attention/${projection}`,
+    tags: ["inbox"],
+    summary: projection === "summary" ? "Get canonical attention counts" : "Get complete attention task membership",
+    description: "Requires a board user with company access. Reads the complete canonical attention set with current task privacy, addressee, dismissal, snooze, and archive rules. Returns counts without decision cards, images, plan bodies, or pagination. The tasks projection also returns distinct accessible task IDs. This read grants no resolution authority.",
+    request: { params: z.object({ companyId: z.string() }) },
+    responses: { 200: r.ok(responseSchema), 401: r.unauthorized, 403: r.forbidden },
+  });
+}
 
 // ─── Decisions ──────────────────────────────────────────────────────────────
 
@@ -10322,7 +10384,8 @@ registerCurrentRoute({
   method: "post",
   path: "/api/health/dev-server/restart",
   tags: ["health"],
-  summary: "Request a managed dev-server restart",
+  summary: "Request a managed dev-server instance restart",
+  description: "Request a restart of this Paperclip instance through its managed development-server supervisor. In authenticated deployments this requires a board identity; an agent credential does not inherit board access from its responsible user or from a chat request. Hand that operation to an authorized board/operator when the route denies the current agent. Returns 404 when no managed supervisor is available and 409 when no restart is required. Acceptance is not proof that the restart completed. This operation does not delete stored conversations or task comments.",
   responses: {
     202: r.ok(),
     403: r.forbidden,

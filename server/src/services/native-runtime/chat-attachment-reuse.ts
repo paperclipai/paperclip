@@ -1,3 +1,4 @@
+import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
 import { createHash } from "node:crypto";
 
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
@@ -1582,7 +1583,9 @@ export async function prepareReusedChatAttachment(input: {
     if (!workProduct) {
       throw new Error("paperclip_runner_chat_attachment_origin_not_persisted");
     }
-    await input.db
+    await input.db.transaction(async tx => {
+      await notifyIssueRecovery(tx, { companyId: input.binding.companyId });
+      await tx
       .update(issueWorkProducts)
       .set({
         title: input.title,
@@ -1602,6 +1605,7 @@ export async function prepareReusedChatAttachment(input: {
           eq(issueWorkProducts.createdByRunId, input.binding.runId),
         ),
       );
+    });
     const comment = await issueService(input.db).addComment(
       input.binding.issueId,
       `Prepared ${input.title} for this response.`,

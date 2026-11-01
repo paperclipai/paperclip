@@ -218,6 +218,16 @@ test.describe("Board send delivery refresh", () => {
         page,
         request,
       }) => {
+        await page.addLocatorHandler(
+          page.getByRole("complementary", { name: "Paperclip announcements", exact: true })
+            .getByRole("button", { name: "Dismiss announcement", exact: true }),
+          async (dismiss) => {
+            const menuOpen = await page.getByRole("menu", { name: "Add to composer", exact: true }).isVisible();
+            if (menuOpen) await page.keyboard.press("Escape");
+            await dismiss.click();
+            if (menuOpen) await page.getByRole("button", { name: "Add to composer", exact: true }).click();
+          },
+        );
         const selected = await seedCompanyAndAgent(request);
         const target = await seedCompanyAndAgent(request);
         const issue = await json<{ id: string; identifier: string }>(

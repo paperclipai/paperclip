@@ -1,3 +1,5 @@
+import { kimiManagedConfiguration } from "./kimi-config.js";
+import { kimiInstructionBinding } from "./kimi-instructions.js";
 import { AGENT_OBSERVABILITY_ENV_KEYS, codexObservabilityToml } from "../agent-observability.js";
 import { piProviderConfiguration } from "./pi-provider-config.js";
 import { configuredEnvironmentKeys } from "../../configured-environment.js";
@@ -421,6 +423,9 @@ export async function prepareAcpxRuntimeSandbox(input: {
     workspaceRecordPath,
     `${input.binding.workspacePath}\n`,
   );
+  if (input.agent === "kimi") {
+    await writePrivateFile(join(agentHomeDirectory, "config.toml"), kimiManagedConfiguration(input.binding.requestedModel));
+  }
   if (input.agent === "pi") {
     const configuration = piProviderConfiguration(input.environment);
     if (configuration) await writePrivateFile(join(agentHomeDirectory, "models.json"), configuration.json);
@@ -440,6 +445,10 @@ export async function prepareAcpxRuntimeSandbox(input: {
           : {}),
       })}\n`,
     );
+  } : input.agent === "antigravity" ? async () => {
+    const profile = await ensurePrivateDirectory(join(agentHomeDirectory, "antigravity-acp"), agentHomeDirectory);
+    const method = input.environment?.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET ? "oauth-personal" : "gemini-api-key";
+    await writePrivateFile(join(profile, "settings.json"), `${JSON.stringify({ auth: { type: method } })}\n`);
   } : undefined;
   if (input.agent === "grok") {
     // Native project rules merge with global rules. Ask rules win over project
@@ -529,6 +538,8 @@ export async function prepareAcpxRuntimeSandbox(input: {
     XDG_CACHE_HOME: cacheDirectory,
     PAPERCLIP_ACPX_PROFILE: input.agent,
     PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+    ...(input.agent === "kimi" ? { KIMI_CODE_HOME: agentHomeDirectory, PAPERCLIP_KIMI_INSTRUCTIONS: kimiInstructionBinding(policy.systemInstructions).payload } : {}),
+    ...(input.agent === "antigravity" ? { GEMINI_HOME: agentHomeDirectory, AGY_ACP_FORCE_FILE_STORAGE: "1" } : {}),
     ...(input.agent === "grok" ? { GROK_HOME: agentHomeDirectory, NO_BROWSER: "1", GROK_DISABLE_AUTOUPDATER: "1" } : {}),
     ...(input.agent === "pi"
       ? {
@@ -764,6 +775,7 @@ function isPersistableEnvironmentName(name: string): boolean {
     /^(?:PI_CODING_AGENT_DIR|PI_SKIP_VERSION_CHECK|PI_TELEMETRY)$/.test(name) ||
     /^(?:CURSOR_CONFIG_DIR|CURSOR_DATA_DIR|AGENT_CLI_CREDENTIAL_STORE|NO_OPEN_BROWSER|NODE_DISABLE_COMPILE_CACHE)$/.test(name) ||
     /^(?:COPILOT_HOME|COPILOT_CACHE_HOME|COPILOT_AUTO_UPDATE|COPILOT_ALLOW_ALL|COPILOT_DISABLE_TERMINAL_TITLE|NO_COLOR)$/.test(name) ||
+    /^(?:GEMINI_HOME|AGY_ACP_FORCE_FILE_STORAGE)$/.test(name) ||
     /^(?:CLAUDE_CONFIG_DIR|CODEX_HOME|NO_BROWSER|DEFAULT_AUTH_REQUEST|PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME)$/.test(
       name,
     )

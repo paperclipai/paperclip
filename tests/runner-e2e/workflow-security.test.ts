@@ -606,6 +606,8 @@ describe("public repository paid workflow security", () => {
       "runner-full-stack-e2e.yml",
       "runner-live-evals.yml",
       "runner-protocol-live-evals.yml",
+      "chat-feature-testops.yml",
+      "chat-completion-testops.yml",
     ]);
     const names = (await readdir(workflowDirectory)).filter((name) =>
       /\.ya?ml$/.test(name),
@@ -891,6 +893,24 @@ describe("public repository paid workflow security", () => {
     for (const filename of await readdir(workflows)) {
       if (!/\.ya?ml$/u.test(filename) || ["runner-full-stack-e2e.yml", "runner-protocol-live-evals.yml"].includes(filename)) continue;
       const other = await readFile(path.join(workflows, filename), "utf8");
+      if (["chat-feature-testops.yml", "chat-completion-testops.yml"].includes(filename)) {
+        const guard = filename === "chat-feature-testops.yml" ? "testops-chat-dispatch.ts" : "chat-completion-testops-cli.mjs guard";
+        expect(other).toContain(`run: node tests/runner-e2e/${guard}`);
+        expect(other).toContain("ref: ${{ github.sha }}");
+        expect(other).toContain("TESTOPS_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}");
+        const chat = other.split("\n  chat:")[1]!.split("\n  report:")[0]!;
+        expect(chat).toContain("environment: runner-e2e-private-paid");
+        expect(chat).toContain("needs: [authorize, select, build]");
+        expect(chat).toContain("      - *guard");
+        expect(chat).toContain("verify-selection");
+        expect(chat).not.toContain("ALLURE_TOKEN");
+        expect(chat.indexOf("verify-selection")).toBeLessThan(chat.indexOf("secrets.OPENROUTER_API_KEY"));
+        const report = other.split("\n  report:")[1]!.split("\n  upload:")[0]!;
+        expect(report).toContain("environment: runner-e2e-private-history");
+        expect(report).toContain("manual-private-transfer.ts report-session");
+        expect(report).not.toContain("ALLURE_TOKEN");
+        continue;
+      }
       for (const environment of environments) expect(other, filename).not.toContain(environment);
     }
     const protocol = await readFile(path.join(workflows, "runner-protocol-live-evals.yml"), "utf8");

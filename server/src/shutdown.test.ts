@@ -297,6 +297,20 @@ describe("closeHttpListenerForShutdown", () => {
     }
   });
 
+  it("waits for HTTP work without waiting for upgraded sockets to close", async () => {
+    const server = fakeServer({ listening: true, closeDelayMs: null });
+    const requests = deferred();
+    let finished = false;
+    const drain = closeHttpListenerForShutdown({ server, signal: "SIGTERM", log: stubLogger(),
+      drainRequests: () => requests.promise }).then(result => { finished = true; return result; });
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    requests.resolve();
+    await expect(drain).resolves.toBe("closed");
+    expect(server.close).toHaveBeenCalledOnce();
+    expect(server.closeAllConnections).not.toHaveBeenCalled();
+  });
+
   it("does nothing when the listener was never bound", async () => {
     const server = fakeServer({ listening: false });
     await expect(

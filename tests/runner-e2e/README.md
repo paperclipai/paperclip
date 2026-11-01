@@ -10,13 +10,130 @@ qualification.
 
 The explicit-only `daytona-restart-continuity` suite runs the existing
 `recover-controller` journey with the recorded Codex and Claude staging models
-on fresh Daytona fixtures. After a completed task tool in an active revision
-turn, it keeps the owned development controller offline for 125 seconds, beyond
-the controller's two-minute reconnect budget. The existing independent oracle
+on fresh reusable warm Daytona fixtures. The sandbox, Runner and provider history
+must survive both controller replacements. After a completed task tool in an active revision
+turn, it keeps the owned development controller offline for 300 seconds. This
+exceeds the 60-second ownership lease and remains within the Runner's 420-second
+reconnect grace. The existing independent oracle
 requires the original process, native session, sandbox lease and receipt prefix,
 one completion and successful workspace finalization, plus verified downloaded
-work. It permits one attempt per cell and retains failed evidence. This is
+work. After completion, it replaces the controller again with its native cache
+unavailable and asks a new turn to execute the saved project. The continuation
+oracle requires the same retained provider session and a new useful result.
+It permits one attempt per cell and retains failed evidence. This is
 development API-key acceptance, distinct from staging subscription recovery.
+The five-minute outage is a resilience test, not an HTTP downtime allowance.
+This suite gives its Daytona sandbox a 15-minute provider auto-stop interval,
+leaving headroom for the outage and replacement startup. Native agent idle timing,
+ownership/reconnect limits, archive/delete backstops and owned cleanup remain unchanged.
+The retained continuation accepts whitespace between its exact marker and the
+exact `queue_r` output token; readiness and final grading use the same matcher.
+
+Definition version 7 uses the existing warm reusable environment with a dedicated
+configuration key. Only the post-completion replacement follow-up uses the normal
+board-authenticated task-comment API, with one persisted user comment and the
+unchanged follow-up request. Initial creation, active outage and queued continuation
+retain their browser journey. Post-C settlement, task status and useful reply are
+read through production APIs, without post-C browser navigation or rendered-status
+assertions. The required final screenshot captures the actual retained Chromium
+page, which may be stale or show an error; it is labeled as unqualified browser
+evidence and does not establish fresh product state. The same strict native/provider
+identity, new tool,
+saved-project output and finalization checks remain required. Definition 6's
+observed post-C browser navigation timeout remains failed; its cause is unknown.
+This definition does not claim that browser reconnection was fixed.
+The prior version 5 per-turn/no-reuse measurement **failed**
+retained native/provider identity and remains failed; it does not qualify this
+warm fixture. Cache retirement moves the entire controller Runner directory,
+including provider failover-backup bytes. Once a per-turn sandbox is disposed,
+its DB checkpoint alone cannot replace those bytes. Per-turn application
+qualification under this disk loss awaits the provider-backup owner's durable
+storage contract; native controller recovery does not waive that dependency.
+
+The ordinary Everyday matrix retains its 125-second active outage default. The
+two explicit continuity suites require 300 seconds and reject a shorter override.
+
+The explicit-only `remote-workspace-storage` suite reuses that controller-restart
+journey for one native Codex Daytona cell. It verifies the default-enabled remote
+workspace setting through the ordinary instance API and creates a projectless task.
+It enables the existing experimental Files viewer through that API. The agent
+creates only synthetic source, an unpushed Git commit, and an untracked random
+reference in its task workspace. Independent public API reads require committed
+snapshot references and matching saved run receipts before and after replacement.
+Before SIGKILL, the ordinary instance upgrade probe must recognize the active
+remote execution as recoverable, even when a follow-up is queued.
+The browser opens the original reference through Files on both sides. A later
+native admission must keep the same workspace and reference while publishing a
+new saved version. The active revision survives a five-minute controller outage;
+after completion, a second replacement must admit a useful fourth native turn
+through the ordinary task-comment API with the same native and provider session.
+That request specifies one plain-text line containing its marker, one space, and
+the command's actual output; the expected output stays private to the evaluator.
+The browser then reads the saved reference through Files again. This is same-task
+continuation, not a separate-task sharing test. The ordinary original-process/lease,
+receipt-prefix, queued-message, artifact, and strict retained-session oracles still apply.
+
+The fixture reuses the Everyday graph without its host-path project or cwd and
+leaves the existing 52-cell Everyday matrix unchanged. The evaluator seeds
+configuration and agent context through public APIs; it never writes workspace
+outcomes or snapshot rows. The agent creates the file and Git state. The
+controller replacement wrapper and independent execution-identity oracle retain
+their existing responsibilities.
+
+This cell needs an explicitly provisioned disposable S3-compatible bucket, stable
+instance encryption material, an immutable Daytona image, and the usual provider
+credentials. Version 2 retains the merged continuity suite's five-minute active
+outage, fifteen-minute sandbox idle-stop policy, and post-completion controller
+replacement. A shorter active outage is rejected. It permits one attempt and
+1,000-cent company and lead budgets, with four expected provider admissions and
+a 30-minute attempt limit. The synthetic initial Git repository has no external remote. Runtime
+credentials remain outside the task snapshot root. Catalog discovery and local
+grader calibration do not establish a live pass.
+
+```sh
+PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_BUCKET=<owned-disposable-bucket> \
+PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_REGION=us-east-1 \
+pnpm test:e2e:runner -- --id remote-workspace-storage.runner-codex.daytona.recover-controller --max-automatic-retries 0
+```
+
+The separate explicit-only `rolling-web-deployment` suite uses the same synthetic
+projectless workflow, four-admission budget, thirty-minute limit, and independent
+run/file oracles. Its supervisor starts an independent empty-home server, waits
+for `/api/ready`, moves ingress, sends SIGTERM to the predecessor, and deletes
+that predecessor's whole home and build. Cleanup makes read-only cache directories
+removable only after shutdown, without following dependency symlinks. Continuous ordinary task reads and
+comment saves must have zero failures, and every accepted save must be read back
+exactly once. Probe tasks live in a separate disposable company, so they cannot
+block the business workflow's all-tasks-done oracle or consume its agent budget.
+Forced process cleanup fails graceful qualification even if the
+successor recovers the execution. The read-only observer shares the controllers'
+disposable encryption key. It repeats replacement after completion before the retained-session
+follow-up. The five-minute outage suites are unchanged.
+
+```sh
+pnpm test:e2e:runner -- --id rolling-web-deployment.runner-codex.daytona.recover-controller --max-automatic-retries 0
+```
+
+This source lane requires a complete server/UI build and disposable S3 and
+Postgres. Each controller has an independent compiled build and cache; shared
+workspace dependencies mean it is not released-container or Railway evidence.
+The read-only recovery observer captures the live predecessor's identity just
+before handoff, then requires a new controller generation, authenticated Runner
+attachment, and new canonical events for the original execution. No fixture
+modifies leases, checkpoints, provider identity, or completed work.
+
+Before paid execution, set `PAPERCLIP_ROLLING_TEST_STORAGE_CONFIG` and the
+loopback `PAPERCLIP_TEST_DATABASE_URL`, then run
+`tests/runner-e2e/controller-replacement-smoke.ts` through the existing tsx loader.
+It exercises the actual supervisor and two replacements without an agent and
+explicitly records `activeAgentContinuityQualified: false`.
+
+Optional `PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_ENDPOINT` and
+`PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_FORCE_PATH_STYLE=true` select a test S3
+endpoint. Each attempt has a distinct `runner-e2e/<instance-id>/` prefix. The
+server rejects mixed selections and never adopts ambient production storage
+configuration. Provider environment variables and immutable image selection use
+the standard launcher contract below.
 
 The explicit-only [GitHub review bot journey](GITHUB-REVIEW-JOURNEY.md) tests
 attended bot setup and an automatic PR review against an attached deployment.
@@ -192,8 +309,8 @@ The explicit-only `necessary-question` suite has four development cells: the
 recorded Codex and Claude models, on local and Daytona environments. It requests
 one essential booking reference that only the test user knows. The browser must
 show the actual free-text prompt and its explanation, then submit the real answer.
-The oracle checks the unchanged question, its server-owned provider or semantic
-receipt, the exact stored user answer, and one bound continuation. The saved
+The oracle checks the unchanged question, its server-owned provider, semantic or
+native API receipt, the exact stored user answer, and one bound continuation. The saved
 confirmation must contain that answer exactly. The final reply's link must open
 that same task document and display its confirmation.
 A title, success claim, replacement card, duplicate wake, or uncommitted result
@@ -253,7 +370,7 @@ accordingly. Report regeneration recomputes interval verdicts, retains changed
 
 The explicit [deployment-targeted Product journeys](PRODUCT-JOURNEYS.md) reuse
 browser actions across managed self-hosted and Cloud targets. They include a
-model-free task-properties story, fresh Cloud onboarding, credential-free
+model-free task-properties and document-persistence stories, fresh Cloud onboarding, credential-free
 previews, private evidence, and prerequisite reuse; `--all` is unchanged.
 Cloud onboarding may retain a versioned `onboardingConnect` receipt for the
 Connect action: its last checkpoint, validation/hire response state and HTTP
@@ -276,6 +393,14 @@ receipt. The original error, failed grade, and dependent blocked outcomes remain
 See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
 `provider-connections` suite, local/staging target ownership, dedicated browser
 profiles, credential handoffs, private evidence, and cleanup contract.
+
+The explicit-only [Antigravity additional-agent journey](ANTIGRAVITY-AGENT-JOURNEY.md)
+protects ordinary picker discovery, reuse of a saved personal Google subscription,
+native Test and genuine setup readiness, an Instructions-only file proof and a
+same-task follow-up. Its one local macOS ARM64 cell attaches to an already running
+self-hosted test target and preserves the supplied account. It has separate
+non-paying preflight, owned-resource recovery and normal report commands. Saved
+reuse is separate from the fresh-connection suite and global release qualification.
 
 The [public MCP suite](PUBLIC-MCP.md) adds explicit paid assistant/plugin journeys
 with authenticated browser consent, real MCP tool use and independently graded
@@ -587,6 +712,15 @@ Never put credentials in `catalog.ts`, screenshots, fixture metadata, workflow
 inputs, or a tracked env file.
 
 ## Local commands
+
+When the host cannot start embedded Postgres, set
+`PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL` to an explicitly supplied loopback
+test Postgres administrator. The launcher creates a new `runner_e2e_<random>`
+database per attempt; the serving app applies its migrations. This does not
+reuse the administrator URL's database. The administrator variable is not
+forwarded to the server or browser. The launcher checks the private ownership
+receipt and deletes only its database after confirmed process/resource cleanup.
+Unknown remote cleanup preserves that database and the private fixture for recovery.
 
 Install dependencies and Chromium once. Native local cells also need the local
 runner binaries:
@@ -1048,6 +1182,18 @@ access-controlled GitHub Actions artifact. Declared PNG screenshots are also
 published with permanent campaign dashboards; fixture authors must therefore
 keep credentials and other private data out of every captured UI state. SVG is
 active content and is rejected from the packaged evidence entirely.
+
+For native matrix campaigns, set `PAPERCLIP_RUNNER_E2E_RESULTS_ROOT` to a
+dedicated normalized absolute directory outside the checkout, for example
+`/private/tmp/paperclip-product-evidence`. Final attempt packages, campaign JSON,
+and dashboards are written there directly, so removing a checkout does not
+remove their evidence. The default remains `tests/runner-e2e/results`.
+Empty/relative paths, traversal, filesystem/home/checkout roots, and symbolic-link
+paths are rejected before credentials load. The output root is owner-only.
+Use a distinct `PAPERCLIP_E2E_CAMPAIGN_ID` for each invocation to preserve earlier
+attempts. This changes storage only; required evidence, redaction, grades, and
+temporary-instance cleanup retain their existing checks. Provider-connection,
+GitHub-review, and product-journey launchers retain their separate output contracts.
 
 The standard task and chat evidence collectors read durable run events through the paginated
 public API, including completion events beyond the first 1,000 rows. It rejects
@@ -1697,15 +1843,26 @@ placement; it is not a statistical comparison with the former prompt arrangement
 
 The separate explicit-only `question-resume` suite uses the same neutral two-question
 request on native Codex and ACPX Claude. It qualifies the user journey through
-either the provider's built-in question or Paperclip's semantic question tool.
+the provider's built-in question, Paperclip's semantic question tool, or its native API fallback.
 It does not replace or regrade `question-tool-documentation`.
 
 The oracle classifies each wait from its exact task/agent/run identity. Provider
 questions require the server-generated request key and retain the paused run.
-Semantic questions require an applied `request_human_input` receipt and one new
-response wake bound to that interaction and source run. Only a verified provider
+Durable questions require an applied `request_human_input` receipt or a completed
+server-owned native `POST /api/issues/{id}/interactions` receipt. An API creation
+receipt must report HTTP 201 and preserve the original pending card's exact task,
+company, agent, source run, idempotency key and complete normalized form. It must
+remain unchanged after the answer. Both durable paths require one new response
+wake bound to that interaction and source run. Missing, pending, foreign or
+mismatched receipts fail; form shape and run counts cannot replace them. Only a verified provider
 choice may carry the adapter's optional Other field. A second substantive question
-is still rejected; the subsequent reference question must be text-only. Both real
+is still rejected. The subsequent reference must use a text field or one native
+provider single-select question with an explicit canonical `customAnswer.enabled=true`.
+The browser selects its written-answer control and submits the exact typed reference
+with no predefined option. Missing or disabled custom answers, inferred legacy
+capabilities, extra questions and substituted choices fail. This behavioral form
+equivalence does not change the text-only necessary-question or named-tool
+documentation qualifications. Both real
 board answers must remain bound to unchanged forms, and one saved document must
 include both answers. Existing lifecycle, ownership, premature-output, terminal
 state and no-extra-task checks apply. Three checkpoints are required even when
@@ -1718,6 +1875,12 @@ attempt, one to three actual runs, a ten-minute cell deadline and verified
 Other field stopped the driver before any answer remains a FAIL. A new behavior
 pass does not establish semantic-tool selection, documentation placement, default
 hiring behavior or general reliability.
+
+The original scheduled attempt that stopped at a closed reference card remains a
+FAIL, including its separate cleanup failure. Supporting a server-bound written
+answer does not regrade that card, infer a missing provider flag, or establish a
+fresh Cloud pass. The general OpenCode omitted-default normalization fix requires
+its own reviewed runtime artifact; browser/grader calibration cannot prove it served.
 
 Continuation screenshots wait for the correct task heading and fully revealed
 conversation before capture. A loading screen or wrong task fails capture.
@@ -1912,6 +2075,49 @@ Missing subscription coverage remains a qualification blocker;
 an API-key pass must not be reported as subscription evidence. See
 [`doc/grok-native-runner.md`](../../doc/grok-native-runner.md) for installation,
 credential boundaries and repetition requirements.
+
+### Kimi Code qualification
+
+`kimi-qualification` is a separate explicit-only candidate suite for maintained
+Kimi Code `@moonshot-ai/kimi-code@2.3.3`. It registers ten journeys on both local
+and Daytona: a completed reply, Paperclip semantic plan revision/approval, Ask
+mode, semantic question continuation, question continuation after a controller
+restart, verified file/artifact delivery, active Stop/reset/resume, and chat
+continuity after restart, native pending-permission Stop, and native worker loss.
+Its twenty cells do not change `extended-harnesses`
+or the default `--all` selection. Each cell has one attempt with no automatic
+retry. The exact `kimi-for-coding` model has authenticated request evidence;
+Product journey qualification remains pending. Registration and deterministic
+checks are not Product qualification evidence. The version-7 definition binds
+the current pending native identity and trusted company-scoped startup authority on Mac ARM64 and
+Linux x64. After company creation, the owned supervisor validates the selected
+manual Kimi execution and restarts the same disposable server with its exact
+model, profile, closure, target and expiry. Ambient grants, saved agent config
+and public requests cannot stage this authority. Metadata Test uses a separately
+bound operation/session identity and sends no model prompt. An ordinary qualified
+native profile needs no candidate grant. Earlier version-4/5/6 results remain
+historical evidence and do not qualify this merged runtime.
+
+Supply only the selected `KIMI_API_KEY`; the fixture writes its encrypted company
+secret reference into the Kimi provider configuration. It does not fall back to
+legacy `KIMI_MODEL_API_KEY` or import ambient login directories. Native Kimi
+questions, native plan approval, child activity, per-turn usage/cost, and
+same-turn steering are not claimed by these semantic journeys. Daytona cells
+also require the configured immutable runtime image and the existing remote
+prerequisites. Provider/process-loss and unanswered native-permission Stop
+remain separate acceptance gates, not claims of the chat Stop cell.
+The Kimi Stop/reset/resume cell retains all heartbeat rows. It still requires
+exactly three native provider runs and one server-authored `/new` reset. A
+separate pre-dispatch admission wait may be excluded from provider counts only
+with the complete server receipt, no provider authority or events, the same
+saved human `/new`, and exact recovered stopped-source evidence. The final
+reset and fresh native continuation remain required; a cancelled legacy row
+alone cannot qualify. Other chat suites keep their existing accounting.
+
+```sh
+pnpm test:e2e:runner -- --list --suite kimi-qualification
+pnpm test:e2e:runner -- --id kimi-qualification.runner-acpx-kimi.local.message-marker --max-automatic-retries 0
+```
 
 ### Grok branch qualification on EC2
 
@@ -2439,7 +2645,13 @@ The same four installed-package pins also admit three existing local native
 Codex cells: `first-task.runner-codex.local.task-card-accept`,
 `everyday-workflows.runner-codex.local.build-revise`, and
 `agent-chat.runner-codex.local.continuity-restart`. Select exact IDs; other
-Codex cells, legacy profiles and remote environments remain outside this lane.
+Codex cells and legacy profiles remain outside this lane. The two explicit
+Daytona controller-recovery cells are also admitted:
+`everyday-workflows.runner-codex.daytona.recover-controller` and
+`daytona-restart-continuity.runner-codex.daytona.recover-controller`.
+The latter uses the 300-second outage and retained-session follow-up. Daytona
+cells require the pinned installed plugin described below. Admission support
+does not establish that either cell has passed against installed artifacts.
 These reuse the onboarding, independently checked file/revision, and restart
 graders. They require separately authorized provider access and are not executed
 by the provider-free release smoke.
@@ -3061,3 +3273,61 @@ they are not reported as charges or converted into reviewed lifecycle bounds.
 This mode therefore does not certify a full-lifecycle operating-cost ceiling.
 Omitting the policy preserves the stricter full-accounting gate. Historical
 journals and their holds are not rewritten by changing future campaign policy.
+
+## Private catalog metadata preview
+
+The existing dashboard renderer can show a display-only overview without creating
+result rows or discovering historical evidence:
+
+```sh
+pnpm test:e2e:runner:dashboard -- --catalog-overview <display-metadata.json> --output <new-private-directory>
+```
+
+The input must match `CatalogOverview` in `catalog-overview.ts`, contain exactly
+the frozen 244 YAML scenario IDs, and use only the declared outcome, allowance
+and source-readiness enums. Extra fields are rejected. Build this projection
+from authenticated accounting metadata, preserving unknown allowances and the
+original qualification scope. Source review never supplies a result grade. The execution-record column distinguishes
+candidate measurements from never-run cases without changing main qualification.
+Allowance certainty is independent of a recorded measurement: a main pass or fail
+can retain `allowance: "unknown"`. Known exhausted rows bound the accounting total;
+unknown allowances can account for its remaining uncertainty. The optional
+`latestCandidateOutcome` enum (`passed`, `failed`, or `not-projected`) can record a
+later candidate measurement alongside a main outcome. It never changes
+`mainOutcome`, main counters, or the qualification scope. Omit it when no such
+additional outcome is projected; existing projections render unchanged.
+Expandable human requests and expected outcomes come only from the static YAML catalog,
+not from retained conversations or private artifacts.
+The renderer requires a new output directory and makes it private; it does not
+publish the preview or modify existing campaign files. Normal campaign rendering
+and retained result cards continue to use the existing bundle command.
+
+The shared report navigation links the dated, immutable catalog snapshot.
+Deploying this generator does not rewrite existing published history HTML.
+Activating the link on an existing page requires a separately reviewed,
+conditional navigation-only update. The metadata command publishes nothing.
+### Control-plane rolling deployment smoke
+
+`rolling-deployment-smoke.ts` runs actual source servers A/B/C behind a local
+HTTP/WebSocket proxy with no request retries. It requires disposable loopback
+PostgreSQL and S3-compatible storage, and creates/deletes an owned database and
+bucket per attempt. Each server has a separate home and temporary directory.
+Private JSON configuration files must be mode 600 and must not be committed:
+
+- Database configuration: `{ "url": "<local PostgreSQL admin URL>" }`.
+- Storage configuration: `{ "endpoint": "<local S3 endpoint>", "accessKeyId": "<key>", "secretAccessKey": "<secret>" }`.
+
+```sh
+PAPERCLIP_ROLLING_TEST_DATABASE_CONFIG=/private/tmp/rolling-database.json \
+PAPERCLIP_ROLLING_TEST_STORAGE_CONFIG=/private/tmp/rolling-storage.json \
+node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/rolling-deployment-smoke.ts
+```
+
+The receipt records source/patch/lockfile identity, individual assertions, timing
+and cleanup. It exercises continuous task reads/writes, concurrent file edits,
+stale-write conflict, an admitted file save during SIGTERM, S3 failure with both
+transfer connections held, and complete deletion of both earlier server homes.
+It uses `local_trusted` authentication and no model provider. Its result does not
+qualify browser reconnects, active-agent continuity, distinct packaged releases
+or Railway. Keep failed receipts alongside successful attempts; the private
+server logs and config files may contain credentials and are not shareable evidence.

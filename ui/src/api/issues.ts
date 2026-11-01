@@ -377,8 +377,8 @@ export const issuesApi = {
     api.put<IssueWatchdog>(`/issues/${id}/watchdog`, data),
   deleteWatchdog: (id: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/watchdog`),
-  markRead: (id: string) =>
-    api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
+  markRead: (id: string, throughCommentId?: string) =>
+    api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, throughCommentId ? { throughCommentId } : {}),
   markUnread: (id: string) =>
     api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
   archiveFromInbox: (id: string) =>
@@ -651,8 +651,8 @@ export const issuesApi = {
       `/issues/${id}/interactions/${interactionId}/verdicts`,
       { verdicts },
     ),
-  getComment: (id: string, commentId: string) =>
-    api.get<IssueComment>(`/issues/${id}/comments/${commentId}`),
+  getComment: (id: string, commentId: string, options?: RequestOptions) =>
+    api.get<IssueComment>(`/issues/${id}/comments/${encodeURIComponent(commentId)}`, options),
   listFeedbackVotes: (id: string) =>
     api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
   getCostSummary: (id: string, options: { excludeRoot?: boolean } = {}) => {

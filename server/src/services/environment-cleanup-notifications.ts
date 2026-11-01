@@ -1,14 +1,38 @@
+import { and, eq, or, sql } from "drizzle-orm";
+import { environmentLeases } from "@paperclipai/db";
+import { notifyLiveResourceRecovery } from "./live-run-recovery-notifications.js";
 import { notifyNativeEnvironmentSettlement, type NativeEnvironmentSettlementScope } from "./native-environment-settlement-notifications.js";
 import type { Db } from "@paperclipai/db";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
-export async function notifyEnvironmentCleanup(transaction: object, scope?: NativeEnvironmentSettlementScope): Promise<void> {
+export type EnvironmentCleanupWorkScope = NativeEnvironmentSettlementScope & { leaseId?: string };
+
+export async function notifyEnvironmentCleanup(transaction: object, scope?: EnvironmentCleanupWorkScope): Promise<void> {
+  await notifyLiveResourceRecovery(transaction, scope);
+  if (scope && (scope.runId || scope.leaseId) && typeof (transaction as Db).select === "function") {
+    // A stopped/released allocation can still owe shutdown workspace preservation.
+    // Its peer's owning release must reactivate that exact marker as well.
+    const pendingShutdown = sql<boolean>`${environmentLeases.metadata}#>>'{legacyShutdownWorkspaceSettlement,schema}' = 'paperclip.legacy-shutdown-workspace-settlement.v1'
+      and ${environmentLeases.metadata}#>>'{legacyShutdownWorkspaceSettlement,state}' = 'pending'
+      and ${environmentLeases.metadata}#>>'{legacyShutdownWorkspaceSettlement,runId}' = ${environmentLeases.heartbeatRunId}::text`;
+    const peers = await (transaction as Db).select({ id: environmentLeases.id, companyId: environmentLeases.companyId,
+      status: environmentLeases.status, pendingShutdown }).from(environmentLeases).where(and(
+      or(eq(environmentLeases.status, "active"), pendingShutdown),
+      sql`exists (select 1 from environment_leases changed where changed.company_id = ${scope.companyId}
+        and ${scope.leaseId ? sql`changed.id = ${scope.leaseId}` : sql`changed.heartbeat_run_id = ${scope.runId}`} and changed.provider_lease_id is not null
+        and changed.provider = ${environmentLeases.provider} and changed.provider_lease_id = ${environmentLeases.providerLeaseId})`));
+    for (const peer of peers) {
+      const hint = JSON.stringify({ companyId: peer.companyId, leaseId: peer.id });
+      if (peer.status === "active") await notifyDeliveryWork(transaction, DELIVERY_QUEUES.orphanActiveLeases, hint);
+      if (peer.pendingShutdown) await notifyDeliveryWork(transaction, DELIVERY_QUEUES.legacyShutdownSettlement, hint);
+    }
+  }
   await notifyNativeEnvironmentSettlement(transaction, scope);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.environmentCleanup);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.historicalCleanup);
 }
 
-export function writeEnvironmentCleanup<T>(db: Db, write: (tx: Db) => PromiseLike<T>, scope?: NativeEnvironmentSettlementScope): Promise<T> {
+export function writeEnvironmentCleanup<T>(db: Db, write: (tx: Db) => PromiseLike<T>, scope: EnvironmentCleanupWorkScope): Promise<T> {
   return db.transaction(async tx => {
     await notifyEnvironmentCleanup(tx, scope);
     return write(tx as unknown as Db);

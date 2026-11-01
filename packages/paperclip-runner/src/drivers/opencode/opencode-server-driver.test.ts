@@ -894,6 +894,8 @@ describe("OpenCodeServerDriver", () => {
       environment: {
         PATH: process.env.PATH,
         OPENROUTER_API_KEY: "test-openrouter-key",
+        PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT: join(root, "runtime-notifications.json"),
+        PAPERCLIP_RUNTIME_NOTIFICATION_HELPER: join(root, "runnerd"),
         PAPERCLIP_API_KEY: "must-not-leak",
         UNRELATED_SECRET: "must-not-leak",
         PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
@@ -1037,6 +1039,8 @@ describe("OpenCodeServerDriver", () => {
         "utf8",
       ),
     );
+    expect(environment.notificationContext).toBe(join(root, "runtime-notifications.json"));
+    expect(environment.notificationHelper).toBe(join(root, "runnerd"));
     expect(environment.keys).not.toContain("OPENROUTER_API_KEY");
     expect(environment.keys).not.toContain("PAPERCLIP_API_KEY");
     expect(environment.keys).not.toContain("UNRELATED_SECRET");
@@ -1795,7 +1799,7 @@ describe("OpenCodeServerDriver", () => {
     await recovered!.session!.close({ reason: "recovery-test" });
   });
 
-  it("normalizes native question.asked events and replies with ordered OpenCode answer arrays", async () => {
+  it("preserves omitted native custom defaults and replies with ordered OpenCode answer arrays", async () => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-question-"));
     const workspace = await mkdtemp(
@@ -2745,6 +2749,10 @@ describe("OpenCodeServerDriver", () => {
       send({ type: "message.part.updated", properties: { part: {
         id: "prt_oversized", messageID: "msg_oversized", sessionID, type: "tool", callID: "call_oversized", tool: "bash",
         state: { status: "completed", input: { command: "pnpm test" }, output, title: "pnpm test", metadata: { exit: 1, output }, time: { start: 1, end: 2 } },
+      } } });
+      send({ type: "message.part.updated", properties: { part: {
+        id: "prt_final", messageID: "msg_oversized", sessionID, type: "text",
+        text: "The suite completed: one test failed; 812 passed.", time: { start: 3, end: 4 },
       } } });
       send({ type: "session.idle", properties: { sessionID } });
       const observed = await events;

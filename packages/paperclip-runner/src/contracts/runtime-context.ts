@@ -5,6 +5,7 @@ import {
   PAPERCLIP_EXECUTION_PROMPT,
   PAPERCLIP_INSTRUCTION_SIBLING_ROOT_PROMPT,
 } from "./runtime-context-prompts.js";
+import { GENERATED_RUNTIME_CONTEXT_FIELDS } from "./generated-runtime-context-contract.js";
 
 export { PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION } from "./runtime-context-prompts.js";
 
@@ -49,7 +50,7 @@ const object = (value: unknown, path: string): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new NativeRuntimeContextError(`${path} must be an object`);
   return value as Record<string, unknown>;
 };
-const exact = (value: Record<string, unknown>, keys: string[], path: string) => {
+const exact = (value: Record<string, unknown>, keys: readonly string[], path: string) => {
   const allowed = new Set(keys);
   const unknown = Object.keys(value).find((key) => !allowed.has(key));
   if (unknown) throw new NativeRuntimeContextError(`${path} contains unknown field ${unknown}`);
@@ -77,7 +78,7 @@ const safeRelativePath = (value: unknown, path: string) => {
 
 function parseAsset(value: unknown, path: string): NativeRuntimeAssetReference {
   const asset = object(value, path);
-  exact(asset, ["schema", "digest", "manifestDigest", "rootPath", "fileCount", "totalBytes"], path);
+  exact(asset, GENERATED_RUNTIME_CONTEXT_FIELDS.asset, path);
   if (asset.schema !== NATIVE_RUNTIME_ASSET_SCHEMA) throw new NativeRuntimeContextError(`${path}.schema is unsupported`);
   return {
     schema: NATIVE_RUNTIME_ASSET_SCHEMA,
@@ -112,9 +113,9 @@ export function nativeRuntimePromptDigest(): string { return sha256(PAPERCLIP_EX
 
 export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextSnapshot {
   const context = object(value, "input.runtimeContext");
-  exact(context, ["prompt", "instructions", "skills", "mcp", "connectionInstructions", "aggregateDigest"], "input.runtimeContext");
+  exact(context, GENERATED_RUNTIME_CONTEXT_FIELDS.runtimeContext, "input.runtimeContext");
   const prompt = object(context.prompt, "input.runtimeContext.prompt");
-  exact(prompt, ["revision", "text", "digest"], "input.runtimeContext.prompt");
+  exact(prompt, GENERATED_RUNTIME_CONTEXT_FIELDS.prompt, "input.runtimeContext.prompt");
   // New runs use the current constants. Recovery uses the immutable saved
   // snapshot; its revision is metadata, not a lookup in this release's source.
   const promptRevision = text(prompt.revision, "input.runtimeContext.prompt.revision");
@@ -124,14 +125,14 @@ export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextS
     throw new NativeRuntimeContextError("input.runtimeContext.prompt.digest does not match prompt text");
   }
   const instructions = object(context.instructions, "input.runtimeContext.instructions");
-  exact(instructions, ["entryPath", "bundle", "workingCopy"], "input.runtimeContext.instructions");
+  exact(instructions, GENERATED_RUNTIME_CONTEXT_FIELDS.instructions, "input.runtimeContext.instructions");
   const workingCopy = instructions.workingCopy === undefined ? undefined : object(instructions.workingCopy, "input.runtimeContext.instructions.workingCopy");
-  if (workingCopy) exact(workingCopy, ["rootPath", "entryPath", "kind"], "input.runtimeContext.instructions.workingCopy");
+  if (workingCopy) exact(workingCopy, GENERATED_RUNTIME_CONTEXT_FIELDS.workingCopy, "input.runtimeContext.instructions.workingCopy");
   if (workingCopy?.kind !== undefined && workingCopy.kind !== "agent_files") throw new NativeRuntimeContextError("Unknown agent file contract");
   if (!Array.isArray(context.skills)) throw new NativeRuntimeContextError("input.runtimeContext.skills must be an array");
   const skills = context.skills.map((value, index) => {
     const skill = object(value, `input.runtimeContext.skills[${index}]`);
-    exact(skill, ["key", "runtimeName", "versionId", "bundle"], `input.runtimeContext.skills[${index}]`);
+    exact(skill, GENERATED_RUNTIME_CONTEXT_FIELDS.skill, `input.runtimeContext.skills[${index}]`);
     return {
       key: text(skill.key, `input.runtimeContext.skills[${index}].key`),
       runtimeName: safeRelativePath(skill.runtimeName, `input.runtimeContext.skills[${index}].runtimeName`),
@@ -143,11 +144,11 @@ export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextS
     throw new NativeRuntimeContextError("input.runtimeContext.skills contains duplicate identities");
   }
   const mcp = object(context.mcp, "input.runtimeContext.mcp");
-  exact(mcp, ["assignmentSetId", "digest", "bindingId"], "input.runtimeContext.mcp");
+  exact(mcp, GENERATED_RUNTIME_CONTEXT_FIELDS.mcp, "input.runtimeContext.mcp");
   let connectionInstructions: NativeRuntimeContextSnapshot["connectionInstructions"];
   if (context.connectionInstructions !== undefined) {
     const block = object(context.connectionInstructions, "input.runtimeContext.connectionInstructions");
-    exact(block, ["text", "digest"], "input.runtimeContext.connectionInstructions");
+    exact(block, GENERATED_RUNTIME_CONTEXT_FIELDS.connectionInstructions, "input.runtimeContext.connectionInstructions");
     const content = text(block.text, "input.runtimeContext.connectionInstructions.text");
     const contentDigest = digest(block.digest, "input.runtimeContext.connectionInstructions.digest");
     if (sha256(content) !== contentDigest) throw new NativeRuntimeContextError("Connection instruction digest does not match text");
