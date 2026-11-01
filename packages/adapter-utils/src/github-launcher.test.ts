@@ -348,8 +348,10 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     await exec("git", ["-C", root, "config", "user.email", "local@example.test"]);
     await writeFile(path.join(bin, "git"), githubLauncherSource({ accountHome }), { mode: 0o700 });
     // Managed environment nulls the global config and redirects HOME, like an agent run.
+    // The launcher reads Git settings from XDG_CONFIG_HOME too: pin it so a developer's own
+    // signing setup cannot turn the unsigned case into a signed one.
     const env = { ...process.env, ...githubBrokerEnvironment({}, { url: "", token: "" }),
-      HOME: path.join(root, "agent-home"), PATH: `${bin}:${process.env.PATH}` };
+      HOME: path.join(root, "agent-home"), XDG_CONFIG_HOME: path.join(root, "xdg-empty"), PATH: `${bin}:${process.env.PATH}` };
     await exec(path.join(bin, "git"), ["commit", "--allow-empty", "-m", "Managed work"], { cwd: root, env });
     const commit = (await exec("git", ["cat-file", "commit", "HEAD"], { cwd: root })).stdout;
     expect(/^gpgsig /m.test(commit)).toBe(signing);
@@ -434,6 +436,10 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
       await expect(git(["ci", "--allow-empty", "-m", "Managed work"])).rejects.toThrow(/signing configuration/);
       await expect(exec("git", ["-C", repo, "rev-parse", "--verify", "HEAD"])).rejects.toThrow();
       expect((await git(["status", "--porcelain"])).stdout).toBe(""); // commands that create no objects still work
+      // Snapshot plumbing creates no commit or tag, so an unreadable policy must not block it.
+      await git(["symbolic-ref", "HEAD"]);
+      await git(["write-tree"]);
+      await git(["diff-files", "--quiet"]);
     }, 15_000);
 
     it("points OpenPGP signing at the account's GnuPG home", async () => {

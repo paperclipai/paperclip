@@ -23,9 +23,9 @@ const SIGNING_KEYS = '^(commit|tag)\\.gpgsign$|^gpg\\.format$|^gpg\\.ssh\\.allow
 // Without the account's signing policy only commands that never create commits or tags may run.
 // Aliases and unknown subcommands can create them, so they are refused too.
 const SAFE_WITHOUT_SIGNING = new Set(['add', 'archive', 'blame', 'branch', 'bundle', 'cat-file', 'check-ignore', 'checkout', 'clean',
-  'clone', 'config', 'describe', 'diff', 'fetch', 'for-each-ref', 'grep', 'help', 'init', 'log', 'ls-files', 'ls-remote',
+  'clone', 'config', 'describe', 'diff', 'diff-files', 'fetch', 'for-each-ref', 'grep', 'help', 'init', 'log', 'ls-files', 'ls-remote',
   'ls-tree', 'merge-base', 'mv', 'push', 'remote', 'reset', 'restore', 'rev-list', 'rev-parse', 'rm', 'show', 'show-ref',
-  'sparse-checkout', 'status', 'submodule', 'switch', 'var', 'version', 'worktree']);
+  'sparse-checkout', 'status', 'submodule', 'switch', 'symbolic-ref', 'var', 'version', 'worktree', 'write-tree']);
 // Finds the subcommand and the options that choose the repository a command runs in, so the
 // signing lookup is evaluated in the same context (includeIf rules depend on it).
 function parseGitInvocation(args) {
