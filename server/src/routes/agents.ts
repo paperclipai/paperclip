@@ -57,7 +57,7 @@ import { selectDashboardRunIds } from "../services/dashboard-run-selection.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { readFile, rm } from "node:fs/promises";
+import { lstat, readFile, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
@@ -114,8 +114,8 @@ import { inheritNativeRunnerAdapterConfig } from "../services/native-runtime/nat
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 import { agentInstructionWorkingCopyService } from "../services/agent-instruction-working-copies.js";
 import { authorizeInstructionRead } from "../services/agent-instruction-authorization.js";
-import { instructionPath } from "../services/agent-instruction-files.js";
-import { agentInstructionsBundleMode, deriveBundleState } from "../services/agent-instructions.js";
+import { assertInstructionPathSafe, instructionPath } from "../services/agent-instruction-files.js";
+import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
 import {
   agentService,
   agentInstructionsService,
@@ -2405,6 +2405,35 @@ export function agentRoutes(
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+    }
+  }
+
+  async function assertAgentInstructionsPathHasNoSymlinkEscape(managedRoot: string, resolvedCandidate: string) {
+    const symlinkEscapeError = "Path traversal detected: instructions path must not traverse a symlink outside the managed instructions directory";
+    const rootStat = await lstat(managedRoot).catch(() => null);
+    if (rootStat?.isSymbolicLink()) {
+      throw forbidden(symlinkEscapeError);
+    }
+    const relative = path.relative(managedRoot, resolvedCandidate);
+    const parts = relative === "" ? [] : relative.split(path.sep);
+    let current = managedRoot;
+    for (const part of parts) {
+      if (!part || part === ".") continue;
+      current = path.join(current, part);
+      const stat = await lstat(current).catch(() => null);
+      if (!stat) break;
+      if (stat.isSymbolicLink()) {
+        throw forbidden(symlinkEscapeError);
+      }
+    }
+    const realTarget = await realpath(resolvedCandidate).catch(() => null);
+    if (realTarget) {
+      const realRoot = await realpath(managedRoot).catch(() => managedRoot);
+      if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) {
+        throw forbidden(
+          "Path traversal detected: resolved path escapes the managed instructions directory",
+        );
+      }
     }
   }
 
@@ -5029,16 +5058,69 @@ export function agentRoutes(
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
-    if (req.actor.type !== "board") {
-      throw forbidden("Only board-authenticated callers can manage instructions path or bundle configuration");
+    if (req.actor.type !== "board" && req.actor.type !== "agent") {
+      throw forbidden("Only board-authenticated callers or the agent itself can manage instructions path or bundle configuration");
     }
 
     const id = req.params.id as string;
+
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      throw forbidden("Agents can only manage their own instructions path");
+    }
+
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
 
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
+
+    let agentManagedRoot: string | null = null;
+    if (req.actor.type === "agent") {
+      const requestedKey = asNonEmptyString(req.body.adapterConfigKey);
+      const defaultKey = resolveInstructionsPathKey(existing.adapterType);
+      const effectiveKey = requestedKey ?? defaultKey;
+      if (effectiveKey && !KNOWN_INSTRUCTIONS_PATH_KEYS.has(effectiveKey)) {
+        throw forbidden(
+          "Agents can only update instructions-path-related adapter configuration",
+        );
+      }
+      if (req.body.path && typeof req.body.path === "string") {
+        const candidatePath: string = req.body.path;
+        if (candidatePath.includes("\0")) {
+          throw forbidden("Agents can only set managed (relative) instructions paths");
+        }
+        if (path.isAbsolute(candidatePath) || /^[a-zA-Z]:[\\/]/.test(candidatePath)) {
+          throw forbidden(
+            "Agents can only set managed (relative) instructions paths",
+          );
+        }
+        const managedRoot = path.resolve(resolveManagedInstructionsRoot(existing));
+        const resolvedCandidate = path.resolve(managedRoot, candidatePath);
+        if (resolvedCandidate !== managedRoot && !resolvedCandidate.startsWith(managedRoot + path.sep)) {
+          throw forbidden(
+            "Path traversal detected: resolved path escapes the managed instructions directory",
+          );
+        }
+        await assertAgentInstructionsPathHasNoSymlinkEscape(managedRoot, resolvedCandidate);
+        try {
+          await assertInstructionPathSafe(managedRoot, resolvedCandidate.slice(managedRoot.length + 1).split(path.sep).join("/") || ".");
+        } catch (error) {
+          if (resolvedCandidate === managedRoot) {
+            void error;
+          } else {
+            const tailStat = await lstat(resolvedCandidate).catch(() => null);
+            if (tailStat?.isDirectory() && !tailStat.isSymbolicLink()) {
+              void error;
+            } else {
+              throw forbidden(
+                "Path traversal detected: instructions path must not traverse a symlink outside the managed instructions directory",
+              );
+            }
+          }
+        }
+        agentManagedRoot = managedRoot;
+      }
+    }
 
     const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
     const explicitKey = asNonEmptyString(req.body.adapterConfigKey);
@@ -5054,6 +5136,8 @@ export function agentRoutes(
     const nextAdapterConfig: Record<string, unknown> = { ...existingAdapterConfig };
     if (req.body.path === null) {
       delete nextAdapterConfig[adapterConfigKey];
+    } else if (req.actor.type === "agent" && agentManagedRoot && typeof req.body.path === "string") {
+      nextAdapterConfig[adapterConfigKey] = path.resolve(agentManagedRoot, (req.body.path as string).trim());
     } else {
       nextAdapterConfig[adapterConfigKey] = resolveInstructionsFilePath(req.body.path, existingAdapterConfig);
     }
