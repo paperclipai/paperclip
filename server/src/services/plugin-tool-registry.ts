@@ -25,6 +25,7 @@ import type {
 } from "@paperclipai/shared";
 import type { ToolRunContext, ToolResult, ExecuteToolParams } from "@paperclipai/plugin-sdk";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { getSharedRepeatToolTracker } from "./plugin-tool-repeat-guard.js";
 import { logger } from "../middleware/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -447,6 +448,22 @@ export function createPluginToolRegistry(
         },
         "tool execution completed",
       );
+
+      // Advisory repeat-call nudge (DeepSeek Harness repeat-tool-reminder
+      // port): consecutive identical plugin calls with identical outcomes
+      // within one run get a reminder appended to string content. Never
+      // blocks, never rewrites data. Adapter-native calls run outside the
+      // host loop and stay invisible to this chain either way.
+      const { notice } = getSharedRepeatToolTracker().observe({
+        agentId: runContext.agentId,
+        runId: runContext.runId,
+        toolName: namespacedName,
+        parameters,
+        result,
+      });
+      if (notice && typeof result.content === "string" && result.content.length > 0) {
+        return { pluginId, toolName, result: { ...result, content: `${result.content}\n\n${notice}` } };
+      }
 
       return { pluginId, toolName, result };
     },
