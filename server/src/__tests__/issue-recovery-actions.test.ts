@@ -3205,4 +3205,74 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
   });
+
+  // A wall-clock budget timeout is never retried by policy. Nothing else queues
+  // a successor for it either, so if the sweeper only escalates a spent retry
+  // budget the issue stays `in_progress` with no run and no live path, and every
+  // later sweep skips it again because the retry count never advances.
+  async function seedTimedOutLegacyRun() {
+    const fixture = await seedCompany();
+    const runId = randomUUID();
+    await seedHeartbeatRun({
+      companyId: fixture.companyId,
+      agentId: fixture.coderId,
+      runId,
+      issueId: fixture.sourceIssueId,
+      status: "timed_out",
+    });
+    await db.update(heartbeatRuns)
+      .set({
+        errorCode: "timeout",
+        runtimeMode: "legacy",
+        // A wall-clock timeout that never reached provider work: reconciliation
+        // has nothing to verify, so the retry lane is the only lane that can own
+        // a successor for this run.
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    return { ...fixture, runId };
+  }
+
+  it("blocks a timed-out legacy issue that is deliberately not retried", async () => {
+    const { companyId, coderId, sourceIssueId, runId } = await seedTimedOutLegacyRun();
+    const recovery = recoveryService(db, {
+      enqueueWakeup: async () => null,
+      scheduleRecoveryRetry: async () => null,
+      transientRetryBudgetSpent: () => false,
+      interventionRequiredNoRetry: (run) => run.errorCode === "timeout",
+    });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    const [saved] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(saved).toMatchObject({ status: "blocked", assigneeAgentId: coderId });
+    expect(result).toMatchObject({ escalated: 1, issueIds: [sourceIssueId] });
+    // Visibly blocked: the escalation publishes a notice on the issue.
+    expect(await db.select().from(issueComments)
+      .where(eq(issueComments.issueId, sourceIssueId))).toHaveLength(1);
+    expect(await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    expect(companyId).toBeTruthy();
+  });
+
+  it("still leaves a no-retry run alone when recovery is not told it needs intervention", async () => {
+    const { companyId, coderId, sourceIssueId, runId } = await seedTimedOutLegacyRun();
+    const recovery = recoveryService(db, {
+      enqueueWakeup: async () => null,
+      scheduleRecoveryRetry: async () => null,
+      transientRetryBudgetSpent: () => false,
+      // Another lane owns this run: recovery must not escalate on its own.
+      interventionRequiredNoRetry: () => false,
+    });
+
+    await recovery.reconcileStrandedAssignedIssues();
+
+    const [saved] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(saved).toMatchObject({ status: "in_progress", assigneeAgentId: coderId });
+    expect(await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId))).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    expect(companyId).toBeTruthy();
+  });
 });
