@@ -1,3 +1,4 @@
+import { loadWatchdogServiceContext, assertWatchdogCommentTarget } from "./watchdog-service-context.js";
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns } from "@paperclipai/db";
@@ -77,6 +78,7 @@ export async function observeCrossIssueInfluence(
     targetIssueId: string;
     targetIssueIdentifier?: string | null;
     kind: CrossIssueInfluenceKind;
+    authenticatedSource?: string;
     now?: Date;
   },
 ): Promise<CrossIssueInfluenceDecision | null> {
@@ -115,6 +117,18 @@ export async function observeCrossIssueInfluence(
     // rejecting these writes as run-less left live heartbeat runs unable to
     // comment or update any task at all.
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+    if (sourceIssueId === null) {
+      // The persistent key of an administratively pinned watchdog service
+      // keeps its narrower contract: it may only comment on its own open
+      // signals. Ordinary unscoped runs fall through and spend the cap.
+      const service = await loadWatchdogServiceContext(tx as unknown as Db, {
+        source: input.authenticatedSource, companyId: input.companyId, agentId: input.agentId, runId: input.runId,
+      });
+      if (service) {
+        if (input.kind !== "comment") throw forbidden("Watchdog service may only comment on its configured signals.");
+        await assertWatchdogCommentTarget(tx as unknown as Db, service, input.targetIssueId);
+      }
+    }
     if (
       sourceIssueId !== null &&
       (sourceIssueId === input.targetIssueId ||

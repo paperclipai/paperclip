@@ -196,6 +196,7 @@ export interface HeartbeatRuntimeExecutionInput {
     onUsageCaptureReady: (persistFailure: () => Promise<void>) => void;
     onNativeDispatchStarted: () => void;
     onLegacyAdapterEntered: () => void;
+    approveFixedProcessEnvironment?: (config: Record<string, unknown>) => void;
     onWorkspaceRestoreFailure: (evidence: Record<string, unknown>) => void;
     onProviderResourceDisposition: (disposition: ProviderResourceDisposition) => void;
     onNativeWorkspaceFinalizeScheduled: () => void;
@@ -835,6 +836,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       const guardedDispatch =
         await dispatchWithTiming(
           (markDispatchStarted) => {
+            input.effects.approveFixedProcessEnvironment?.(runtimeConfig);
             input.effects.onLegacyAdapterEntered();
             return withAdapterExecutionPhase(executionPhaseContext, "adapter_execution", () => adapter.execute({
               getFreshSessionHandoff,

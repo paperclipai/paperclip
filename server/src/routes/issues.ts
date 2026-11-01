@@ -35,6 +35,8 @@ import { retryNativeWorkspaceExport } from "../services/native-runtime/native-wo
 import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from "../services/native-runtime/native-workspace-reconstruction.js";
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
+import { listWatchdogSignals } from "../services/watchdog-service-context.js";
+import { trustedWatchdogOrigin, trustedWatchdogContext } from "../middleware/watchdog-service-request.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { assertOnboardingFirstTaskDependenciesAllowed } from "../services/onboarding-first-task-admission.js";
 import { resolveChatTaskAssignment } from "../services/chat-task-assignment.js";
@@ -3714,6 +3716,7 @@ export function issueRoutes(
       responsibleUserId: req.actor.onBehalfOfUserId ?? null,
       targetIssueId: issue.id,
       targetIssueIdentifier: issue.identifier ?? null,
+      authenticatedSource: req.actor.source,
       kind,
     });
     if (!decision || decision.allowed) return true;
@@ -4960,6 +4963,11 @@ export function issueRoutes(
 
   async function assertCanReuseCreatedIssue(req: Request, issue: typeof issueRows.$inferSelect) {
     if (req.actor.type !== "agent") return;
+    const watchdogOrigin = trustedWatchdogOrigin(req);
+    if (watchdogOrigin.originKind && (issue.originKind !== watchdogOrigin.originKind
+      || issue.originId !== watchdogOrigin.originId || issue.createdByAgentId !== req.actor.agentId)) {
+      throw conflict("Idempotency key belongs to an issue that is not a signal of this watchdog");
+    }
     await assertCanAssignTasks(req, issue.companyId, {
       issueId: issue.id,
       projectId: issue.projectId,
@@ -8387,6 +8395,13 @@ export function issueRoutes(
   });
 
   router.get("/companies/:companyId/issues", async (req, res) => {
+    const watchdog = trustedWatchdogContext(req);
+    if (watchdog) {
+      const query = typeof req.query.q === "string" ? req.query.q : "";
+      res.json(await listWatchdogSignals(db, watchdog, await issueReadSqlCondition(db, req.actor), query));
+      return;
+    }
+
     const startedAt = Date.now();
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -12721,6 +12736,7 @@ export function issueRoutes(
         ...(taskBridgeOriginForActor(req) ?? {}),
         id: issueId,
         originRunId: createBody.originRunId ?? actor.runId,
+        ...trustedWatchdogOrigin(req),
         originIdentityContextId: req.actor.identityContextId ?? null,
         executionPolicy,
         ...(sourceTrust ? { sourceTrust } : {}),
@@ -19038,6 +19054,7 @@ export function issueRoutes(
         currentIssue.executionPolicy ?? null,
       );
       const shouldAutoApproveReviewComment =
+        !trustedWatchdogContext(req) &&
         currentIssue.status === "in_review" &&
         currentExecutionState?.status === "pending" &&
         actorMatchesExecutionParticipant(
@@ -19213,6 +19230,7 @@ export function issueRoutes(
           clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           mirrorToSlack: actor.actorType === "user",
           authorizationReason: commentAuthorizationReason,
+          watchdogContext: trustedWatchdogContext(req),
           sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
         };
         const add = (dbOrTx: Db = db) =>
