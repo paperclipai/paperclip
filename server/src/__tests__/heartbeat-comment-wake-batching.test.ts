@@ -79,6 +79,9 @@ async function createControlledGatewayServer(beforeComplete?: (turn: number) => 
     firstWaitRelease = resolve;
   });
   let waitCount = 0;
+  // Runs stopped with sessions.abort; their agent.wait ends as an error, as on
+  // a real OpenClaw gateway.
+  const abortedRunIds = new Set<string>();
 
   wss.on("connection", (socket) => {
     socket.send(
@@ -111,7 +114,7 @@ async function createControlledGatewayServer(beforeComplete?: (turn: number) => 
               protocol: 3,
               server: { version: "test", connId: "conn-1" },
               features: {
-                methods: ["connect", "agent", "agent.wait"],
+                methods: ["connect", "agent", "agent.wait", "sessions.abort"],
                 events: ["agent"],
               },
               snapshot: { version: 1, ts: Date.now() },
@@ -148,12 +151,20 @@ async function createControlledGatewayServer(beforeComplete?: (turn: number) => 
         return;
       }
 
+      if (frame.method === "sessions.abort") {
+        if (typeof frame.params?.runId === "string") abortedRunIds.add(frame.params.runId);
+        socket.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { ok: true, aborted: true } }));
+        firstWaitRelease?.();
+        return;
+      }
+
       if (frame.method === "agent.wait") {
         waitCount += 1;
         if (waitCount === 1) {
           await firstWaitGate;
         }
         await beforeComplete?.(waitCount);
+        const aborted = typeof frame.params?.runId === "string" && abortedRunIds.has(frame.params.runId);
         socket.send(
           JSON.stringify({
             type: "res",
@@ -161,7 +172,8 @@ async function createControlledGatewayServer(beforeComplete?: (turn: number) => 
             ok: true,
             payload: {
               runId: frame.params?.runId,
-              status: "ok",
+              status: aborted ? "error" : "ok",
+              ...(aborted ? { error: "aborted" } : {}),
               startedAt: 1,
               endedAt: 2,
             },

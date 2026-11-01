@@ -8,6 +8,12 @@ const websocketState = vi.hoisted(() => ({
   failAgentRequests: 0,
   events: [] as string[],
   messages: [] as string[],
+  acceptOnly: false,
+  holdAgent: false,
+  abortFails: false,
+  pendingAgentId: null as string | null,
+  pendingWaitId: null as string | null,
+  abortParams: [] as Record<string, unknown>[],
 }));
 
 vi.mock("ws", async () => {
@@ -37,7 +43,7 @@ vi.mock("ws", async () => {
     }
 
     send(payload: string) {
-      const request = JSON.parse(payload) as { id: string; method: string; params?: { message?: string } };
+      const request = JSON.parse(payload) as { id: string; method: string; params?: Record<string, unknown> & { message?: string } };
       if (request.method === "agent") websocketState.messages.push(request.params?.message ?? "");
       websocketState.events.push(`send:${request.method}`);
       if (request.method === "agent" && websocketState.failAgentRequests > 0) {
@@ -47,17 +53,51 @@ vi.mock("ws", async () => {
         });
         return;
       }
-      const responsePayload = request.method === "connect"
+      const respond = (id: string, responsePayload: Record<string, unknown>) => {
+        queueMicrotask(() => {
+          this.emit("message", JSON.stringify({ type: "res", id, ok: true, payload: responsePayload }));
+        });
+      };
+      // holdAgent: the gateway starts the run but does not answer the agent
+      // request yet (a slow reply); sessions.abort ends it.
+      if (websocketState.holdAgent && request.method === "agent") {
+        websocketState.pendingAgentId = request.id;
+        return;
+      }
+      // acceptOnly: the gateway accepts the run and holds agent.wait until
+      // sessions.abort ends it, like a long-running OpenClaw turn.
+      if (websocketState.acceptOnly && request.method === "agent") {
+        respond(request.id, { status: "accepted", runId: "remote-run-1" });
+        return;
+      }
+      if (websocketState.acceptOnly && request.method === "agent.wait") {
+        websocketState.pendingWaitId = request.id;
+        return;
+      }
+      if (request.method === "sessions.abort") {
+        websocketState.abortParams.push(request.params ?? {});
+        if (websocketState.abortFails) {
+          queueMicrotask(() => {
+            this.emit("message", JSON.stringify({
+              type: "res", id: request.id, ok: false, error: { code: "UNAVAILABLE", message: "abort failed" },
+            }));
+          });
+        } else {
+          respond(request.id, { ok: true, aborted: true });
+        }
+        if (websocketState.pendingWaitId) {
+          respond(websocketState.pendingWaitId, { status: "error", error: "aborted" });
+          websocketState.pendingWaitId = null;
+        }
+        if (websocketState.pendingAgentId) {
+          respond(websocketState.pendingAgentId, { status: "error", summary: "aborted" });
+          websocketState.pendingAgentId = null;
+        }
+        return;
+      }
+      respond(request.id, request.method === "connect"
         ? { protocol: 3 }
-        : { status: "ok", runId: "remote-run-1", summary: "done" };
-      queueMicrotask(() => {
-        this.emit("message", JSON.stringify({
-          type: "res",
-          id: request.id,
-          ok: true,
-          payload: responsePayload,
-        }));
-      });
+        : { status: "ok", runId: "remote-run-1", summary: "done" });
     }
 
     close() {}
@@ -109,6 +149,90 @@ describe("openclaw_gateway execute dispatch boundary", () => {
     websocketState.failAgentRequests = 0;
     websocketState.events = [];
     websocketState.messages = [];
+    websocketState.acceptOnly = false;
+    websocketState.holdAgent = false;
+    websocketState.abortFails = false;
+    websocketState.pendingAgentId = null;
+    websocketState.pendingWaitId = null;
+    websocketState.abortParams = [];
+  });
+
+  it("aborts the gateway session when Paperclip cancels the run", async () => {
+    websocketState.acceptOnly = true;
+    const controller = new AbortController();
+    const ctx = createContext();
+    ctx.signal = controller.signal;
+    ctx.onCancellationReady = vi.fn(async () => {});
+    ctx.onProviderStopped = vi.fn(async () => {});
+
+    const run = execute(ctx);
+    await vi.waitFor(() => expect(websocketState.events).toContain("send:agent.wait"));
+    controller.abort(new Error("Cancelled by a board operator"));
+    const result = await run;
+
+    expect(ctx.onCancellationReady).toHaveBeenCalledTimes(1);
+    expect(websocketState.abortParams).toEqual([
+      expect.objectContaining({ key: expect.any(String), runId: "remote-run-1", clearQueued: true }),
+    ]);
+    expect(result.errorCode).toBe("cancelled");
+    expect(result.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged", forced: false });
+    expect(ctx.onProviderStopped).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not acknowledge the cancel when the gateway refuses sessions.abort", async () => {
+    websocketState.acceptOnly = true;
+    websocketState.abortFails = true;
+    const controller = new AbortController();
+    const ctx = createContext();
+    ctx.signal = controller.signal;
+    ctx.onCancellationReady = vi.fn(async () => {});
+    ctx.onProviderStopped = vi.fn(async () => {});
+
+    const run = execute(ctx);
+    await vi.waitFor(() => expect(websocketState.events).toContain("send:agent.wait"));
+    controller.abort(new Error("Cancelled by a board operator"));
+    const result = await run;
+
+    expect(websocketState.abortParams).toHaveLength(1);
+    expect(result.resultJson?.executionCancellation).toBeUndefined();
+    expect(ctx.onProviderStopped).not.toHaveBeenCalled();
+  });
+
+  it("aborts the gateway session when the cancel arrives before the agent reply", async () => {
+    websocketState.holdAgent = true;
+    const controller = new AbortController();
+    const ctx = createContext();
+    ctx.signal = controller.signal;
+    ctx.onCancellationReady = vi.fn(async () => {});
+
+    const run = execute(ctx);
+    await vi.waitFor(() => expect(websocketState.events).toContain("send:agent"));
+    controller.abort(new Error("Cancelled by a board operator"));
+    const result = await run;
+
+    // The gateway has not named its run yet, so the adapter uses the run id it sent.
+    expect(websocketState.abortParams).toEqual([
+      expect.objectContaining({ key: expect.any(String), runId: "run-1", clearQueued: true }),
+    ]);
+    expect(result.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged" });
+  });
+
+  it("does not send the run to the gateway when it was cancelled before dispatch", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("Run stopped before provider startup"));
+    const ctx = createContext();
+    ctx.signal = controller.signal;
+    ctx.onCancellationReady = vi.fn(async () => {});
+
+    const result = await execute(ctx);
+
+    expect(result).toMatchObject({
+      exitCode: null,
+      errorCode: "cancelled",
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      resultJson: { executionCancellation: { state: "acknowledged" } },
+    });
+    expect(websocketState.events).not.toContain("send:agent");
   });
 
   afterEach(() => {
