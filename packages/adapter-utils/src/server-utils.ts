@@ -91,6 +91,7 @@ interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
   processGroupId: number | null;
+  markStopRequested?: () => void;
 }
 
 interface SpawnTarget {
@@ -122,9 +123,10 @@ function resolveProcessGroupId(child: ChildProcess) {
 
 // Exported so the direct-child fallback branch can be unit-tested directly.
 export function signalRunningProcess(
-  running: Pick<RunningProcess, "child" | "processGroupId">,
+  running: Pick<RunningProcess, "child" | "processGroupId" | "markStopRequested">,
   signal: NodeJS.Signals,
 ) {
+  running.markStopRequested?.();
   if (
     process.platform !== "win32" &&
     running.processGroupId &&
@@ -4793,10 +4795,29 @@ export async function runChildProcess(
                 })
             : Promise.resolve();
 
+        let stopRequested = false;
+        let childExited = false;
+        let closed = false;
+        let closeBoundTimer: ReturnType<typeof setTimeout> | null = null;
+        const armCloseBound = () => {
+          if (!stopRequested || !childExited || closed || closeBoundTimer) return;
+          closeBoundTimer = setTimeout(() => {
+            closeBoundTimer = null;
+            if (closed) return;
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+          }, (Math.max(5, opts.graceSec) + 5) * 1000);
+        };
+        const markStopRequested = () => {
+          stopRequested = true;
+          armCloseBound();
+        };
+
         runningProcesses.set(runId, {
           child,
           graceSec: opts.graceSec,
           processGroupId,
+          markStopRequested,
         });
 
         let timedOut = false;
@@ -4863,6 +4884,7 @@ export async function runChildProcess(
             terminalCleanupTimer = null;
             if (terminalCleanupStarted || timedOut) return;
             terminalCleanupStarted = true;
+            markStopRequested();
             terminalCleanupSignal = "SIGTERM";
             signalRunningProcess({ child, processGroupId }, "SIGTERM");
             terminalCleanupKillTimer = setTimeout(
@@ -4881,6 +4903,7 @@ export async function runChildProcess(
           opts.timeoutSec > 0
             ? setTimeout(() => {
                 timedOut = true;
+                markStopRequested();
                 clearTerminalCleanupTimers();
                 signalRunningProcess({ child, processGroupId }, "SIGTERM");
                 setTimeout(
@@ -4951,13 +4974,18 @@ export async function runChildProcess(
           reject(new Error(msg));
         });
 
-        child.on("exit", () => {
+        child.on("exit", (_code: number | null, signal: NodeJS.Signals | null) => {
           maybeArmTerminalResultCleanup();
+          childExited = true;
+          if (signal !== null) stopRequested = true;
+          armCloseBound();
         });
 
         child.on(
           "close",
           (code: number | null, signal: NodeJS.Signals | null) => {
+            closed = true;
+            if (closeBoundTimer) clearTimeout(closeBoundTimer);
             if (timeout) clearTimeout(timeout);
             clearTerminalCleanupTimers();
             runningProcesses.delete(runId);
