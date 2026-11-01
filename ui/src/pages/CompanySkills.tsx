@@ -96,6 +96,7 @@ import {
   skillAccentColor,
   skillCreateDraftToPayload,
   splitCategoryDraft,
+  updateSkillDraftTagline,
   type SkillCreateDraft,
 } from "../lib/skill-create";
 import { SkillCardIcon } from "../components/SkillCardIcon";
@@ -1481,14 +1482,7 @@ function NewSkillWizard({
           <Textarea
             value={draft.tagline}
             onChange={(event) => {
-              const nextTagline = event.target.value;
-              patchDraft({
-                tagline: nextTagline,
-                description: draft.description ? draft.description : nextTagline,
-                markdown: draft.markdown === defaultSkillMarkdown(draft.name, draft.tagline)
-                  ? defaultSkillMarkdown(draft.name, nextTagline)
-                  : draft.markdown,
-              });
+              setDraft((current) => updateSkillDraftTagline(current, event.target.value));
             }}
             placeholder="One-line promise for the skill"
             className="min-h-20"
