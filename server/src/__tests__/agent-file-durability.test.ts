@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
 import { beforeAll, beforeEach, afterEach, afterAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { agents, agentFileRoots, authUsers, companies, companyMemberships, principalPermissionGrants, heartbeatRuns, createDb, closeFileStorageDb } from "@paperclipai/db";
@@ -14,7 +15,7 @@ import { resolveManagedInstructionsRoot } from "../services/agent-instructions.j
 import { AGENT_FILE_OBJECT_GRACE_MS, collectAgentFileObjects, migrateAgentFiles } from "../services/agent-file-maintenance.js";
 import { getStorageService } from "../storage/index.js";
 
-const objects = vi.hoisted(() => ({ bytes: new Map<string, Buffer>(), rejectWrites: false, corruptReads: false }));
+const objects = vi.hoisted(() => ({ bytes: new Map<string, Buffer>(), rejectWrites: false, corruptReads: false, readDelayMs: 0, activeReads: 0, peakReads: 0 }));
 vi.mock("../storage/index.js", () => ({ getStorageService: () => ({
   provider: "s3",
   async putFile(input: { companyId: string; namespace: string; body: Readable; byteSize: number; sha256: string }) {
@@ -28,11 +29,18 @@ vi.mock("../storage/index.js", () => ({ getStorageService: () => ({
     objects.bytes.set(objectKey, body);
     return { objectKey };
   },
-  async getObject(companyId: string, objectKey: string) {
+  async getObject(companyId: string, objectKey: string, options: { signal?: AbortSignal } = {}) {
     expect(objectKey.startsWith(`${companyId}/`)).toBe(true);
     const body = objects.bytes.get(objectKey);
     if (!body) throw new Error("fixture object missing");
-    return { stream: Readable.from([objects.corruptReads ? Buffer.from("wrong bytes") : body]) };
+    return { stream: Readable.from((async function* () {
+      objects.activeReads++;
+      objects.peakReads = Math.max(objects.peakReads, objects.activeReads);
+      try {
+        if (objects.readDelayMs) await delay(objects.readDelayMs, undefined, { signal: options.signal });
+        yield objects.corruptReads ? Buffer.from("wrong bytes") : body;
+      } finally { objects.activeReads--; }
+    })()) };
   },
   async headObject(_companyId: string, key: string) { return { exists: objects.bytes.has(key), lastModified: new Date(0) }; },
   async deleteObject(companyId: string, key: string, options: { allVersions: boolean }) {
@@ -60,6 +68,7 @@ describe("durable agent file authority", () => {
     home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "durable-agent-files-")));
     vi.stubEnv("PAPERCLIP_HOME", home); vi.stubEnv("PAPERCLIP_DURABLE_AGENT_FILES", "true");
     objects.bytes.clear(); objects.rejectWrites = false; objects.corruptReads = false;
+    objects.readDelayMs = 0; objects.activeReads = 0; objects.peakReads = 0;
     companyId = randomUUID(); agentId = randomUUID(); userId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "File authority", issuePrefix: randomUUID().slice(0, 8) });
     await db.insert(authUsers).values({ id: userId, name: "Editor", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
@@ -96,6 +105,34 @@ describe("durable agent file authority", () => {
     expect(await store().read(companyId, agentId, "empty.txt", actor())).toEqual(Buffer.alloc(0));
     expect((await fs.stat(path.join(root, "script.sh"))).mode & 0o777).toBe(0o755);
     expect((await fs.stat(path.join(root, "empty-folder"))).isDirectory()).toBe(true);
+  });
+
+  it("restores a cold folder with bounded parallel streams and settles all failed work before cleanup", async () => {
+    const contents = Buffer.alloc(128 * 1024, 0x81);
+    for (let index = 0; index < 40; index++) {
+      await materializeInstructionBytes(root, `nested/file-${index}.bin`, contents);
+    }
+    expect(await migrateAgentFiles(db, { companyId, apply: true, writersStopped: true })).toMatchObject({ pageReady: true });
+    await replaceFilesystem();
+    objects.readDelayMs = 25;
+    expect(await store().read(companyId, agentId, "nested/file-39.bin", actor())).toEqual(contents);
+    expect(objects.peakReads).toBeGreaterThan(1);
+    expect(objects.peakReads).toBeLessThanOrEqual(8);
+    expect(objects.activeReads).toBe(0);
+    for (let index = 0; index < 40; index++) {
+      expect(await fs.readFile(path.join(root, `nested/file-${index}.bin`))).toEqual(contents);
+    }
+
+    // A corrupt replacement must preserve the old projection and await every
+    // cancelled sibling stream before deleting its temporary directory.
+    await invalidateAgentFileProjection(root);
+    objects.corruptReads = true;
+    await expect(store().read(companyId, agentId, "nested/file-39.bin", actor())).rejects.toThrow(/committed (size|digest)/);
+    expect(objects.activeReads).toBe(0);
+    expect((await fs.readdir(path.dirname(root))).filter(name => name.startsWith(".agent-files-"))).toEqual([]);
+    expect(await fs.readFile(path.join(root, "nested/file-39.bin"))).toEqual(contents);
+    objects.corruptReads = false;
+    expect(await store().read(companyId, agentId, "nested/file-39.bin", actor())).toEqual(contents);
   });
 
   it("does not promote a rejected first save through subsequent local adoption", async () => {

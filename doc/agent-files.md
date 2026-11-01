@@ -18,6 +18,11 @@ requires the database migration that creates `agent_file_roots` and the existing
 S3 application-storage configuration. Postgres holds the current manifest; S3
 holds immutable file bytes. Saves publish their bytes before committing the
 manifest, and the local `instructions/` directory becomes a disposable projection.
+Cold projections download at most eight files concurrently, verifying every size
+and digest before replacing the previous directory. A failed download cancels
+and awaits its sibling transfers before temporary-file cleanup. The existing
+30-second restore deadline and separate file-transfer database pool still apply.
+
 An existing durable head remains authoritative when the opt-in is disabled.
 Disabling S3 or rolling back to a binary unaware of durable heads is unsupported.
 

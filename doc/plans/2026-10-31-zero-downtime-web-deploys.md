@@ -392,3 +392,53 @@ attempt has been made. Remaining acceptance still includes live Stop/answer/
 follow-up/continuation, packaged overlap with migrated data and large cold
 restoration, ten staging deployments including rollback, repair/sleep/wake and
 idle suspension, and one internal production canary forward/rollback.
+
+
+### 2026-11-01 09:50 UTC qualification update
+
+Merged: Core runtime #18518 (`006d5691a6`), overlap workflow #18526
+(`16787e4167`), prompt native-answer delivery #18530 (`73cd8eb9a5`);
+Cloud shape #1096 and enrollment #1098 (`316163b28d`). The staging controller
+reports `316163b28d` from `/healthz`. Core maintenance #18529 is at
+`a4db955403`; all review findings are resolved and its final CI is running.
+
+The released Linux/amd64 image at Core `16787e4167`, digest
+`sha256:e383df8503e8bf160646d7ec42c3eb2d94979fb10b7ef4e6bf01a5057571166f`,
+passed authenticated private-mode overlap: 130 reads, 26 acknowledged saves,
+zero failures, two full predecessor-container/home deletions, the same browser
+session cookie, shared-file reads and unready replacement rejection. Every
+normal container exited cleanly. Test PostgreSQL and S3 resources were removed.
+Receipt: `/private/tmp/paperclip-zdt-container-eVSi2A/evidence.json`.
+This is HTTP session and storage proof; it does not qualify browser rendering,
+distinct versions or active model execution. Earlier failed fixtures retain
+receipts: local-trusted non-loopback bind refusal, loopback auth-origin rewrite,
+and incomplete public-origin configuration. They reached no overlap assertions.
+
+A 1,024-file, 64 MiB cold directory exposed sequential restoration timing out
+at 30.065s with 25ms added latency per GET. Receipt:
+`/private/tmp/paperclip-zdt-cold-cAEX5q/evidence.json`. The file authority owner
+now restores with eight bounded streams, cancelling and awaiting every sibling
+on failure. The same real PG/S3 experiment passed in 4.180s (1,025 GETs including
+instructions), with the entire predecessor home deleted and local adoption
+disabled. Receipt: `/private/tmp/paperclip-zdt-cold-C0DRZV/evidence.json`;
+tested source patch: `/private/tmp/paperclip-zdt-cold-restore-tested.patch`.
+Eight durable-file regressions passed, including corruption, cancellation,
+retained previous projection and successful retry. This qualifies the recorded
+size and latency; the unchanged upper storage limits are not a performance claim.
+
+The existing staging volume E2E target was selected after browser access and
+idle-agent checks. Its active fleet campaign was allowed to finish; the target
+was then pinned through the audited user-managed API. Exact private target,
+prior version, audit and resulting version are recorded in
+`/private/tmp/paperclip-zdt-staging-pin.json`. No volume has been detached or
+hosted overlap sequence started by this chat. Deploy and qualify the merged
+maintenance image before calling enrollment; the enrollment/campaign owners
+must continue to hold their normal operation leases.
+
+The local paid-run gate is still the saved E2E OpenAI credential returning 401.
+The credential file has not changed since August; a refresh request is pending.
+No paid model ran and no attempt-specific Daytona credential was minted through
+the new launcher. Existing live failure/cleanup receipts remain unchanged.
+Still required: active execution and continuation, cross-process follow-up,
+migrated packaged overlap, ten staging replacements including rollback, browser
+and sleep/wake/idle verification there, and one internal production canary.
