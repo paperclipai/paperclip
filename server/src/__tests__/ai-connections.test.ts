@@ -37,7 +37,7 @@ import { execute as executeGemini, testEnvironment as testGeminiEnvironment } fr
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
 import { resolveExecutionRunAdapterConfig } from "../services/heartbeat.js";
-import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible, isAiConnectionManagedAdapter } from "@paperclipai/shared";
 import { openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -2284,6 +2284,20 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect(isAiConnectionCompatible(binding, "paperclip_runner", "same-model", "acpx", "claude")).toBe(true);
     expect(isAiConnectionCompatible(binding, "paperclip_runner", "same-model", "acpx", "codex")).toBe(false);
     expect(isAiConnectionCompatible({ provider: "openrouter", method: "api_key" }, "opencode_local", "anthropic/model")).toBe(false);
+    expect(isAiConnectionManagedAdapter("hermes_gateway")).toBe(false);
+    expect(isAiConnectionCompatible({ provider: "anthropic", method: "api_key" }, "hermes_gateway")).toBe(true);
+    expect(isAiConnectionCompatible({ provider: "anthropic", method: "api_key" }, "openclaw_gateway")).toBe(true);
+    expect(isAiConnectionCompatible({ provider: "anthropic", method: "api_key" }, "unknown_adapter")).toBe(false);
+  });
+  it("keeps self-authenticated adapters out of the managed runtime", async () => {
+    await expect(prepareManagedAiRuntime(db, {
+      companyId,
+      agentId,
+      responsibleUserId: "alice",
+      adapterType: "hermes_gateway",
+      binding,
+      config: {},
+    })).rejects.toMatchObject({ details: { code: "ai_connection_incompatible" } });
   });
   it("does not let a forged delegation bypass human access or accept an expired subscription attempt", async () => {
     const selected = await service.select({ ...input, userId: "alice" });
