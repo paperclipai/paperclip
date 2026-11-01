@@ -252,6 +252,7 @@ import { buildIssueChanges } from "./issue-change-receipt.js";
 import { ensurePersonalPrivateProject } from "./projects.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
+import { admitRunlessAgentComment } from "./cross-issue-influence-limit.js";
 
 const ALL_ISSUE_STATUSES = [
   "backlog",
@@ -12962,7 +12963,7 @@ export function issueService(db: Db) {
       if (dbOrTx === db) {
         const append = () =>
           measureRunTransaction(db, "response", async (tx) => {
-            // Serialize run-authored comments on the issue so a provider retry
+            // Serialize keyed or run-authored comments on the issue so retries
             // cannot publish the same visible result twice. This needs no schema
             // change: the issue row is the transaction fence, and the recursive
             // call below performs the lookup and insert while holding it.
@@ -12985,8 +12986,8 @@ export function issueService(db: Db) {
         .from(issues)
         .where(eq(issues.id, issueId));
       // Caller-owned transactions (including chat and review comments) must
-      // serialize with question creation before inserting the human comment.
-      const issue = await (actor.userId || (actor.runId && dbOrTx !== db) ? issueQuery.for("update") : issueQuery)
+      // serialize with question creation before inserting a keyed comment.
+      const issue = await (actor.userId || ((actor.runId || (actor.agentId && options?.clientRequestId)) && dbOrTx !== db) ? issueQuery.for("update") : issueQuery)
         .then((rows: Array<{ companyId: string; conversationAgentId: string | null }>) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
@@ -13002,9 +13003,12 @@ export function issueService(db: Db) {
           .censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
-      if (actor.userId && options?.clientRequestId) {
+      if ((actor.userId || actor.agentId) && options?.clientRequestId) {
+        const authorCondition = actor.userId
+          ? eq(issueComments.authorUserId, actor.userId)
+          : eq(issueComments.authorAgentId, actor.agentId!);
         const [existing] = await dbOrTx.select().from(issueComments).where(and(eq(issueComments.issueId, issueId),
-          eq(issueComments.authorUserId, actor.userId), eq(issueComments.clientRequestId, options.clientRequestId)));
+          authorCondition, eq(issueComments.clientRequestId, options.clientRequestId)));
         if (existing) {
           if (existing.body !== redactedBody) throw conflict("Message request ID was already used for different content");
           return existing;
@@ -13018,6 +13022,19 @@ export function issueService(db: Db) {
       }
       if (issue.conversationAgentId && actor.agentId && !actor.runId) {
         throw forbidden("Agent chat messages require an authenticated run");
+      }
+      if (
+        actor.agentId &&
+        !actor.userId &&
+        !actor.runId &&
+        options?.clientRequestId
+      ) {
+        await admitRunlessAgentComment(dbOrTx, {
+          companyId: issue.companyId,
+          agentId: actor.agentId,
+          issueId,
+          responsibleUserId: actor.onBehalfOfUserId,
+        });
       }
       if (issue.conversationAgentId && actor.runId) {
         const [run] = await dbOrTx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, actor.runId));

@@ -64756,6 +64756,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       adapterExecutionControls.set(failed.id, createAdapterExecutionControl());
       await denySource(async () => {}, async () => { adapterExecutionControls.get(failed.id)?.finish(); adapterExecutionControls.delete(failed.id); });
       const idempotencyKey = randomUUID();
+      // Prevent the route's asynchronous nudge from admitting until the accepted source is edited.
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
       const response = await request(app).post(`/api/issues/${issueId}/retry`).send({ idempotencyKey, observedRunId: current!.id }).expect(202);
       expect(response.body).toMatchObject({ accepted: true, observedRunId: current!.id });
       expect(response.body.chatActionId).toBeUndefined();
@@ -64763,9 +64765,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(retry).toMatchObject({ reason: "task_retry", requestedByActorId: "owner-user",
         payload: { issueId, taskRetry: { sourceRunId: current!.id } } });
       expect(await db.select().from(chatActions).where(and(eq(chatActions.companyId, companyId), eq(chatActions.kind, "failed_run_retry")))).toHaveLength(0);
-      await db.update(agents).set({ status: "running" }).where(eq(agents.id, agentId));
-      const [dispatchCapacity] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
       await db.update(issueComments).set({ body: "Changed after Retry acceptance", updatedAt: new Date() }).where(eq(issueComments.id, comment.id));
+      const [dispatchCapacity] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
+      await db.update(agents).set({ status: "running" }).where(eq(agents.id, agentId));
       await heartbeat.resumeExecutionWaitComments();
       expect((await readAgentWakeupRequestsById(retry.id))[0]).toMatchObject({ status: "deferred_issue_execution", runId: null });
       await db.update(issueComments).set({ body: comment.body, updatedAt: sql`${issueComments.createdAt}` }).where(eq(issueComments.id, comment.id));

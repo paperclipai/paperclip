@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -6958,5 +6958,186 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
       .from(issueComments)
       .where(eq(issueComments.createdByRunId, runId));
     expect(duplicates).toHaveLength(1);
+  });
+
+  it("serializes no-run agent request keys by issue and author", async () => {
+    const clientRequestId = randomUUID();
+    const [first, replay] = await Promise.all([
+      svc.addComment(issueId, "poller receipt", { agentId }, { clientRequestId }),
+      svc.addComment(issueId, "poller receipt", { agentId }, { clientRequestId }),
+    ]);
+
+    expect(replay.id).toBe(first.id);
+    await expect(
+      svc.addComment(issueId, "changed receipt", { agentId }, { clientRequestId }),
+    ).rejects.toMatchObject({ status: 409 });
+
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherTestAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const otherAuthor = await svc.addComment(
+      issueId,
+      "other author receipt",
+      { agentId: otherAgentId },
+      { clientRequestId },
+    );
+    expect(otherAuthor.id).not.toBe(first.id);
+    expect(await db.select({ id: issueComments.id }).from(issueComments).where(
+      eq(issueComments.clientRequestId, clientRequestId),
+    )).toHaveLength(2);
+  });
+
+  it("caps concurrent fresh runless agent comment admissions across issues", async () => {
+    await db.delete(activityLog).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.agentId, agentId),
+      eq(activityLog.action, "issue.runless_agent_comment_admitted"),
+    ));
+    const secondIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: secondIssueId,
+      companyId,
+      title: "Second test issue",
+      status: "todo",
+      priority: "medium",
+    });
+    const requestIds = Array.from({ length: 21 }, () => randomUUID());
+    const calls = requestIds.map((clientRequestId, index) =>
+      (index % 2 === 0 ? svc : singleConnectionSvc).addComment(
+        index % 2 === 0 ? issueId : secondIssueId,
+        `fresh runless comment ${index}`,
+        { agentId },
+        { clientRequestId },
+      ),
+    );
+
+    const results = await Promise.allSettled(calls);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(20);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(results.find((result) => result.status === "rejected")).toMatchObject({
+      reason: { status: 429 },
+    });
+    expect(await db.select({ id: issueComments.id }).from(issueComments).where(and(
+      eq(issueComments.authorAgentId, agentId),
+      inArray(issueComments.clientRequestId, requestIds),
+    ))).toHaveLength(20);
+    expect(await db.select({ id: activityLog.id }).from(activityLog).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.agentId, agentId),
+      eq(activityLog.action, "issue.runless_agent_comment_admitted"),
+    ))).toHaveLength(20);
+
+    const acceptedIndex = results.findIndex((result) => result.status === "fulfilled");
+    const accepted = results[acceptedIndex] as PromiseFulfilledResult<Awaited<ReturnType<typeof svc.addComment>>>;
+    const replay = await svc.addComment(
+      acceptedIndex % 2 === 0 ? issueId : secondIssueId,
+      `fresh runless comment ${acceptedIndex}`,
+      { agentId },
+      { clientRequestId: requestIds[acceptedIndex] },
+    );
+    expect(replay.id).toBe(accepted.value.id);
+    await expect(svc.addComment(
+      issueId,
+      "fresh key after saturation",
+      { agentId },
+      { clientRequestId: randomUUID() },
+    )).rejects.toMatchObject({
+      status: 429,
+      details: {
+        code: "runless_agent_comment_rate_limited",
+        limit: 20,
+        windowSeconds: 60,
+        retryAfterSeconds: expect.any(Number),
+      },
+    });
+
+    await db.update(activityLog).set({
+      createdAt: new Date(Date.now() - 61_000),
+    }).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.agentId, agentId),
+      eq(activityLog.action, "issue.runless_agent_comment_admitted"),
+    ));
+    await expect(svc.addComment(
+      issueId,
+      "fresh comment after the rolling window",
+      { agentId },
+      { clientRequestId: randomUUID() },
+    )).resolves.toMatchObject({ body: "fresh comment after the rolling window" });
+
+    const ledgerBeforeValidationFailure = await db.select({ id: activityLog.id }).from(activityLog).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.agentId, agentId),
+      eq(activityLog.action, "issue.runless_agent_comment_admitted"),
+    ));
+    await expect(svc.addComment(
+      issueId,
+      "invalid agent-authored user comment",
+      { agentId },
+      { authorType: "user", clientRequestId: randomUUID() },
+    )).rejects.toMatchObject({ status: 422 });
+    expect(await db.select({ id: activityLog.id }).from(activityLog).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.agentId, agentId),
+      eq(activityLog.action, "issue.runless_agent_comment_admitted"),
+    ))).toHaveLength(ledgerBeforeValidationFailure.length);
+
+    const independentAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: independentAgentId,
+      companyId,
+      name: "Independent agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await expect(svc.addComment(
+      issueId,
+      "independent agent comment",
+      { agentId: independentAgentId },
+      { clientRequestId: randomUUID() },
+    )).resolves.toMatchObject({ body: "independent agent comment" });
+
+    const independentCompanyId = randomUUID();
+    const independentCompanyAgentId = randomUUID();
+    const independentCompanyIssueId = randomUUID();
+    await seedIssueCompany(db, independentCompanyId);
+    await db.insert(agents).values({
+      id: independentCompanyAgentId,
+      companyId: independentCompanyId,
+      name: "Independent company agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: independentCompanyIssueId,
+      companyId: independentCompanyId,
+      title: "Independent company issue",
+      status: "todo",
+      priority: "medium",
+    });
+    await expect(svc.addComment(
+      independentCompanyIssueId,
+      "independent company comment",
+      { agentId: independentCompanyAgentId },
+      { clientRequestId: randomUUID() },
+    )).resolves.toMatchObject({ body: "independent company comment" });
   });
 });

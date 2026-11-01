@@ -1148,6 +1148,38 @@ describe("admitWakeBehindIssueExecution", () => {
     expect(reader.matchesActiveWakeActor).not.toHaveBeenCalled();
   });
 
+  it("retains a keyed agent comment receipt when it merges into an existing deferred wake", async () => {
+    const writer = createFakeAdmissionWriter();
+    const admit = createAdmitWakeBehindIssueExecution({ writer,
+      reader: createFakeAdmissionReader({ findExistingDeferredWake: vi.fn(async () => ({
+        id: "existing-deferred-wake", runId: null, payload: { issueId: "issue-1" }, deferredContext: {}, coalescedCount: 1,
+      })) }), helpers: createFakeAdmissionHelpers({ shouldDeferFollowupWakeForSameIssue: vi.fn(() => true) }) });
+    await admit(SCOPE, admissionInput({ wakeCommentId: "second-comment", requestedByActorType: "agent",
+      requestedByActorId: "author-agent", idempotencyKey: "issue-comment:second-comment:wake-agent",
+      retainCommentReceipt: true,
+      payload: { issueId: "issue-1", commentId: "second-comment" },
+    }));
+    expect(vi.mocked(writer.mergeIntoExistingDeferredWake).mock.calls[0][1].coalescedReceipt)
+      .toEqual(expect.objectContaining({ agentId: "wake-agent", requestedByActorType: "agent",
+        requestedByActorId: "author-agent", idempotencyKey: "issue-comment:second-comment:wake-agent",
+        payload: { issueId: "issue-1", commentId: "second-comment", coalescedIntoWakeupRequestId: "existing-deferred-wake" },
+      }));
+  });
+
+  it.each([
+    { wakeCommentId: null, idempotencyKey: "issue-comment:second-comment:wake-agent" },
+    { wakeCommentId: "second-comment", idempotencyKey: null },
+  ])("does not retain an incomplete keyed-comment receipt", async ({ wakeCommentId, idempotencyKey }) => {
+    const writer = createFakeAdmissionWriter();
+    const admit = createAdmitWakeBehindIssueExecution({ writer,
+      reader: createFakeAdmissionReader({ findExistingDeferredWake: vi.fn(async () => ({
+        id: "existing-deferred-wake", runId: null, payload: { issueId: "issue-1" }, deferredContext: {}, coalescedCount: 1,
+      })) }), helpers: createFakeAdmissionHelpers({ shouldDeferFollowupWakeForSameIssue: vi.fn(() => true) }) });
+    await admit(SCOPE, admissionInput({ wakeCommentId, idempotencyKey, retainCommentReceipt: true,
+      requestedByActorType: "agent", requestedByActorId: "author-agent" }));
+    expect(vi.mocked(writer.mergeIntoExistingDeferredWake).mock.calls[0][1]).not.toHaveProperty("coalescedReceipt");
+  });
+
   it("binds authoritative issue scope when durable merged input omits it from payload", async () => {
     const writer = createFakeAdmissionWriter();
     const durableReceipt = { id: "own-request", requestedAt: new Date("2026-09-10T00:00:00Z") };

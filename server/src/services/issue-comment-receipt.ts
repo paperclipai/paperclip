@@ -17,7 +17,7 @@ export async function completeIssueCommentReceipt(db: Db, references: CommentRef
   activity: (diff: ReferenceDiff) => LogActivityInput;
 }) {
   const publications: ActivityPublication[] = [];
-  await db.transaction(async tx => {
+  const created = await db.transaction(async tx => {
     const connection = tx as unknown as Db;
     // Match task deletion and comment mutation: lock the task before its
     // comment. NO KEY UPDATE still permits references from other tasks.
@@ -47,6 +47,8 @@ export async function completeIssueCommentReceipt(db: Db, references: CommentRef
         details: { ...activity.details, commentId: input.commentId },
       }, publications);
     }
+    return !existing;
   });
   for (const publication of publications) publishActivity(publication);
+  return created;
 }

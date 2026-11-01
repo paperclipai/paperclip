@@ -17,6 +17,8 @@ import { PAPERCLIP_RUNTIME_INFO_FILENAME, readRuntimeInfo } from "../runtime-inf
 
 const execFileAsync = promisify(execFile);
 type ServerProcess = ReturnType<typeof spawn>;
+// This source-level E2E cold-loads the full server in a busy workspace shard.
+const SERVER_START_TIMEOUT_MS = 60_000;
 
 async function reserveRequestedPort(): Promise<{ port: number; release: () => Promise<void> }> {
   return await new Promise((resolve, reject) => {
@@ -256,7 +258,7 @@ async function waitForServer(
   output: { stdout: string[]; stderr: string[] },
 ) {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 30_000) {
+  while (Date.now() - startedAt < SERVER_START_TIMEOUT_MS) {
     if (child.exitCode !== null) {
       throw new Error(
         `paperclipai run exited before healthcheck succeeded.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
@@ -342,7 +344,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       output,
     );
     expect(new URL(apiBase).port).not.toBe(String(port));
-  }, 60_000);
+  }, SERVER_START_TIMEOUT_MS + 30_000);
 
   afterAll(async () => {
     await stopServerProcess(serverProcess);

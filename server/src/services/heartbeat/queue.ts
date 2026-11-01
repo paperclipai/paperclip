@@ -84,6 +84,7 @@ import {
   gt,
   gte,
   inArray,
+  isNotNull,
   isNull,
   lt,
   lte,
@@ -177,6 +178,7 @@ import {
 import { isHeartbeatWakeOnDemandEnabled, supportsUnscopedTimerHeartbeat } from "../heartbeat-policy.js";
 import { isUuidLike } from "@paperclipai/shared";
 import { retryChatControlAdmission } from "../chat-control-admission-retry.js";
+import { isIssueCommentWakeIdempotencyKey } from "../issue-comment-wakeup.js";
 
 import type { HeartbeatServiceOptions } from "../heartbeat.js";
 import type { createHeartbeatRunState } from "./run-state.js";
@@ -2281,6 +2283,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       triggerDetail,
       payload,
     });
+    const durableIssueCommentWake = isIssueCommentWakeIdempotencyKey({
+      idempotencyKey: opts.idempotencyKey,
+      commentId: wakeCommentId,
+      agentId,
+    });
     // Keep each request's own server-derived origin, including coalesced wakes.
     // A run's merged context cannot establish which caller authored one receipt.
     // Overwrite caller-supplied nested context rather than trusting it.
@@ -2554,16 +2561,60 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         finishedAt: new Date(),
         ...patch,
       };
-      if (waitCondition && issueId && isUuidLike(issueId)) {
+      if ((waitCondition || durableIssueCommentWake) && issueId && isUuidLike(issueId)) {
         const waitIssueId = issueId;
         return db.transaction(async (tx) => {
           await tx.execute(sql`select id from issues where id = ${waitIssueId} and company_id = ${agent.companyId} for update`);
           if (durableRequest) await notifyChatInboundWakeNotices(tx, {
             companyId: durableRequest.companyId, issueId: durableRequest.issueId,
           });
-          return recordExecutionWait(tx as unknown as Db, {
+          if (durableIssueCommentWake) {
+            const diagnosticPayload = {
+              ...(request.payload ?? {}),
+              issueId: waitIssueId,
+              ...(waitCondition ? { executionWait: {
+                ...waitCondition,
+                requestedIdempotencyKey: request.idempotencyKey ?? null,
+              } } : {}),
+            };
+            const [existing] = await tx.select({ id: agentWakeupRequests.id })
+              .from(agentWakeupRequests)
+              .where(and(
+                eq(agentWakeupRequests.companyId, agent.companyId),
+                eq(agentWakeupRequests.agentId, agentId),
+                eq(agentWakeupRequests.status, "skipped"),
+                isNull(agentWakeupRequests.runId),
+                eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey!),
+                sql`${agentWakeupRequests.payload}->>'issueId' = ${waitIssueId}`,
+              ))
+              .orderBy(asc(agentWakeupRequests.requestedAt))
+              .limit(1);
+            if (existing) {
+              await tx.update(agentWakeupRequests).set({
+                reason: skipReason,
+                error: request.error ?? null,
+                payload: diagnosticPayload,
+                coalescedCount: sql`${agentWakeupRequests.coalescedCount} + 1`,
+                updatedAt: new Date(),
+              }).where(and(
+                eq(agentWakeupRequests.id, existing.id),
+                eq(agentWakeupRequests.companyId, agent.companyId),
+                eq(agentWakeupRequests.agentId, agentId),
+                eq(agentWakeupRequests.status, "skipped"),
+                isNull(agentWakeupRequests.runId),
+              ));
+              return { created: false };
+            }
+            await tx.insert(agentWakeupRequests).values({
+              ...request,
+              payload: diagnosticPayload,
+            });
+            return { created: true };
+          }
+          if (waitCondition) return recordExecutionWait(tx as unknown as Db, {
             issueId: waitIssueId, request, condition: waitCondition, coalesce: coalesceExecutionWait,
           });
+          return { created: false };
         });
       }
       if (durableRequest) {
@@ -2812,7 +2863,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const wait = await writeSkippedRequest("budget.blocked", { error: budgetBlock.reason }, {
         scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId,
       });
-      if (caseRequest) return null;
+      if (caseRequest || durableIssueCommentWake) return null;
       const details = { scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId };
       throw wait.waitSaved ? new PersistedExecutionWaitRefusal(budgetBlock.reason, details)
         : conflict(budgetBlock.reason, details);
@@ -2829,6 +2880,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         }, { status: agent.status, reason: invokability.reason });
         waitSaved = wait.waitSaved === true;
       }
+      if (durableIssueCommentWake) return null;
       const details = { status: agent.status, reason: invokability.reason,
         invalidOrgChain: invokability.invalidOrgChain, ...invokability.details };
       throw waitSaved ? new PersistedExecutionWaitRefusal(invokability.message, details)
@@ -2929,6 +2981,78 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           await tx.execute(
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
           );
+
+          if (durableIssueCommentWake) {
+            const [existingWake] = await tx
+              .select()
+              .from(agentWakeupRequests)
+              .where(
+                and(
+                  eq(agentWakeupRequests.companyId, agent.companyId),
+                  sql`${agentWakeupRequests.idempotencyKey} = ${`issue-comment:${wakeCommentId}:`} || ${agentWakeupRequests.agentId}::text`,
+                  sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+                  or(
+                    isNotNull(agentWakeupRequests.runId),
+                    notInArray(agentWakeupRequests.status, [
+                      "skipped",
+                      "failed",
+                      "cancelled",
+                    ]),
+                  ),
+                ),
+              )
+              .orderBy(asc(agentWakeupRequests.requestedAt))
+              .limit(1);
+            let replayWake = existingWake;
+            const coalescedIntoWakeupRequestId = readNonEmptyString(
+              existingWake?.payload?.coalescedIntoWakeupRequestId,
+            );
+            if (
+              existingWake &&
+              existingWake.agentId === agentId &&
+              coalescedIntoWakeupRequestId &&
+              isUuidLike(coalescedIntoWakeupRequestId)
+            ) {
+              const [parentWake] = await tx
+                .select()
+                .from(agentWakeupRequests)
+                .where(
+                  and(
+                    eq(agentWakeupRequests.id, coalescedIntoWakeupRequestId),
+                    eq(agentWakeupRequests.companyId, agent.companyId),
+                    eq(agentWakeupRequests.agentId, agentId),
+                    sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+                  ),
+                )
+                .limit(1);
+              if (
+                parentWake?.runId &&
+                wakeCommentId &&
+                queuedCommentIdsFromWakePayload(parentWake.payload).includes(
+                  wakeCommentId,
+                )
+              ) {
+                replayWake = parentWake;
+              }
+            }
+            if (replayWake?.runId && replayWake.agentId === agentId) {
+              const [existingRun] = await tx
+                .select()
+                .from(heartbeatRuns)
+                .where(
+                  and(
+                    eq(heartbeatRuns.companyId, agent.companyId),
+                    eq(heartbeatRuns.agentId, agentId),
+                    eq(heartbeatRuns.id, replayWake.runId),
+                  ),
+                )
+                .limit(1);
+              if (existingRun)
+                return { kind: "replayed" as const, run: existingRun };
+            }
+            if (existingWake)
+              return { kind: "durable" as const, receipt: existingWake };
+          }
 
           if (executionWaitRequestId) {
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(
@@ -3165,6 +3289,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               )
               .limit(1);
             if (held) {
+              if (durableIssueCommentWake)
+                return { kind: "skipped" as const };
               throw conflict(
                 "This task has external chat input that has not been admitted. Check the connection's Activity; let pending input finish, or restore access and send a new authorized message before starting the task.",
                 { code: "chat_inbound_wakeup_unadmitted", issueId },
@@ -4056,21 +4182,40 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 wake.payload?.[followUpPayloadKey] === assignmentId &&
                 wake.requestedByActorType === (opts.requestedByActorType ?? null) &&
                 wake.requestedByActorId === (opts.requestedByActorId ?? null));
-              if (pending) await tx.update(agentWakeupRequests).set({
-                payload: withQueuedCommentIdsInWakePayload(pending.payload,
-                  [...new Set([...queuedCommentIdsFromWakePayload(pending.payload), wakeCommentId!])]),
-                coalescedCount: pending.coalescedCount + 1, updatedAt: new Date(),
-              }).where(and(eq(agentWakeupRequests.id, pending.id), eq(agentWakeupRequests.companyId, agent.companyId),
-                eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
-              else await tx.insert(agentWakeupRequests).values({ companyId: agent.companyId, agentId, source, triggerDetail,
-                reason, payload: withQueuedCommentIdsInWakePayload({ ...payload, issueId: issue.id,
-                  [followUpPayloadKey]: followUp.assignmentId,
-                  [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot }, [wakeCommentId!]),
-                status: followUp.consumed ? "coalesced" : "deferred_issue_execution",
-                runId: followUp.consumed ? activeExecutionRun.id : null,
-                requestedByActorType: opts.requestedByActorType ?? null,
-                requestedByActorId: opts.requestedByActorId ?? null, idempotencyKey: opts.idempotencyKey ?? null,
-                finishedAt: followUp.consumed ? new Date() : null });
+              let carrier = pending;
+              if (pending) {
+                await tx.update(agentWakeupRequests).set({
+                  payload: withQueuedCommentIdsInWakePayload(pending.payload,
+                    [...new Set([...queuedCommentIdsFromWakePayload(pending.payload), wakeCommentId!])]),
+                  coalescedCount: pending.coalescedCount + 1, updatedAt: new Date(),
+                }).where(and(eq(agentWakeupRequests.id, pending.id), eq(agentWakeupRequests.companyId, agent.companyId),
+                  eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+              } else {
+                [carrier] = await tx.insert(agentWakeupRequests).values({ companyId: agent.companyId, agentId, source, triggerDetail,
+                  reason, payload: withQueuedCommentIdsInWakePayload({ ...payload, issueId: issue.id,
+                    [followUpPayloadKey]: followUp.assignmentId,
+                    [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot }, [wakeCommentId!]),
+                  status: followUp.consumed ? "coalesced" : "deferred_issue_execution",
+                  runId: followUp.consumed ? activeExecutionRun.id : null,
+                  requestedByActorType: opts.requestedByActorType ?? null,
+                  requestedByActorId: opts.requestedByActorId ?? null,
+                  idempotencyKey: !followUp.consumed && durableIssueCommentWake ? null : opts.idempotencyKey ?? null,
+                  finishedAt: followUp.consumed ? new Date() : null }).returning();
+              }
+              if (!followUp.consumed && durableIssueCommentWake) {
+                if (!carrier) {
+                  throw new Error("comment follow-up carrier was not persisted");
+                }
+                await tx.insert(agentWakeupRequests).values({
+                  companyId: agent.companyId, agentId, source, triggerDetail, reason,
+                  payload: { ...payload, issueId: issue.id, commentId: wakeCommentId!,
+                    coalescedIntoWakeupRequestId: carrier.id },
+                  status: "coalesced", coalescedCount: 1, runId: activeExecutionRun.id,
+                  requestedByActorType: opts.requestedByActorType ?? null,
+                  requestedByActorId: opts.requestedByActorId ?? null,
+                  idempotencyKey: opts.idempotencyKey ?? null, finishedAt: new Date(),
+                });
+              }
               return { kind: "coalesced" as const, run: activeExecutionRun };
             }
 
@@ -4112,6 +4257,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 requestedByActorType: opts.requestedByActorType ?? null,
                 requestedByActorId: opts.requestedByActorId ?? null,
                 idempotencyKey: opts.idempotencyKey ?? null,
+                retainCommentReceipt: durableIssueCommentWake,
               },
             );
 

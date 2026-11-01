@@ -440,6 +440,8 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
   });
 
+  // This intentionally crosses the 2,000-node cap and runs discovery plus retention checks;
+  // loaded CI can exceed Vitest's 15-second default.
   it.each(["running", "run", "confirmation", "completed"] as const)("filters completed blocker history before bounded %s attention and archive checks", async kind => {
     const root = await insertIssue("blocked"), workspaceId = randomUUID();
     await db.execute(sql`insert into execution_workspaces (id, company_id, name, mode, strategy_type)
@@ -501,7 +503,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(batch.deferredRootIds.size).toBe(0);
     expect(Boolean(batch.attention.get(root.id)?.blockingTreeLive)).toBe(kind !== "completed");
     expect(parameterCounts.length).toBeLessThanOrEqual(100);
-  });
+  }, 30_000);
 
   it("does not archive an unknown truncated blocker tree during its fresh check", async () => {
     const root = await insertIssue("blocked");
