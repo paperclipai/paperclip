@@ -458,7 +458,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ],
         });
         restoreRemoteWorkspace = () =>
-          preparedRemoteRuntime.restoreWorkspace((line) => onLog("stdout", line));
+          preparedRemoteRuntime.restoreWorkspace((line) => onLog("stdout", line), ctx.signal ?? null);
         effectiveExecutionCwd = preparedRemoteRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
         refreshPaperclipWorkspaceEnvForExecution({
           env,
