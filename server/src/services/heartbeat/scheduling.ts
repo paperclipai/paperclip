@@ -1293,6 +1293,28 @@ export function createHeartbeatScheduling(
     return { scanned: pending.length, enqueued, alreadyQueued, invalid };
   }
 
+  // A timer wake with no source issue cannot write to the issue it works on.
+  // Pick the agent's most actionable task by status, priority, and age.
+  async function resolveTimerSourceIssueId(agent: { id: string; companyId: string }) {
+    const [sourceIssue] = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, agent.companyId),
+          eq(issues.assigneeAgentId, agent.id),
+          inArray(issues.status, ["in_progress", "in_review", "todo"]),
+        ),
+      )
+      .orderBy(
+        sql`case ${issues.status} when 'in_progress' then 0 when 'in_review' then 1 else 2 end`,
+        sql`case ${issues.priority} when 'critical' then 0 when 'high' then 1 when 'medium' then 2 else 3 end`,
+        desc(issues.updatedAt),
+      )
+      .limit(1);
+    return sourceIssue?.id ?? null;
+  }
+
   async function eligibleTimerAgents() {
     const cutoff = await getWorktreeExecutionCutoff();
 
@@ -1359,11 +1381,15 @@ export function createHeartbeatScheduling(
       if (!canContinue()) break;
       const timerClaim = await claimDueTimerHeartbeat(agent, now, intervalSec);
       if (!timerClaim) continue;
+      // Null when the agent has nothing to act on: the wake stays contextless
+      // and cannot attribute any issue write it attempts.
+      const timerSourceIssueId = await resolveTimerSourceIssueId(agent);
       const run = await enqueueWakeup(agent.id, {
         source: "timer", triggerDetail: "system", reason: "heartbeat_timer",
         requestedByActorType: "system", requestedByActorId: "heartbeat_scheduler",
         contextSnapshot: { source: "scheduler", reason: "interval_elapsed", now: now.toISOString(),
-          timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat },
+          timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat,
+          ...(timerSourceIssueId ? { issueId: timerSourceIssueId } : {}) },
       });
       if (run) enqueued++; else skipped++;
     }
