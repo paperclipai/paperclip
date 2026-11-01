@@ -85,13 +85,14 @@ test("chaos verification isolates callers that verify the same source commit", (
 test("canary reuses exact-source proof while stable keeps full verification", () => {
   const releaseWorkflow = readWorkflow("release.yml");
   const canary = releaseWorkflow.match(/  verify_canary:\n[\s\S]*?(?=\n  [a-z_]+:)/)[0];
-  assert.match(canary, /github\.repository == 'paperclipai\/paperclip' && github\.event_name == 'push' && github\.ref == 'refs\/heads\/master'/);
+  assert.match(canary, /needs: select_canary/);
+  assert.match(canary, /needs.select_canary.outputs.proceed == 'true'/);
   assert.match(canary, /actions: read/);
   assert.match(canary, /ref: \$\{\{ github\.sha \}\}/);
-  assert.match(canary, /SOURCE_SHA: \$\{\{ github\.sha \}\}/);
+  assert.match(canary, /SOURCE_SHA: \$\{\{ needs.select_canary.outputs.sha \}\}/);
   assert.match(canary, /run: node scripts\/cloud-source-verification\.mjs "\$SOURCE_SHA"/);
   assert.doesNotMatch(canary, /release-verify\.yml|continue-on-error|always\(\)/);
-  assert.match(releaseWorkflow, /publish_canary:\n\s+if: .*github\.event_name == 'push'.*\n\s+needs: \[verify_canary, release_runner_source, release_runner_binaries\]/);
+  assert.match(releaseWorkflow, /publish_canary:\n\s+if: .*needs.select_canary.outputs.proceed == 'true'.*\n\s+needs: \[select_canary, verify_canary, release_runner_source, release_runner_binaries\]/);
   // The stable lane is gated on the stable channel since the nightly lane
   // was added; a `needs:` line (for example a preflight job) may sit between
   // the gate and the delegation.
@@ -111,7 +112,7 @@ function canaryAttachmentScript() {
   const publish = readWorkflow("release.yml").split("  publish_canary:\n")[1].split("  smoke_canary_onboarding:\n")[0];
   const step = publish.split("      - name: Attach verified canary source to local master\n")[1]?.split("\n      - ")[0];
   assert.ok(step, "the trusted publisher must attach its pinned checkout before releasing");
-  assert.match(step, /SOURCE_SHA: \$\{\{ github\.sha \}\}/);
+  assert.match(step, /SOURCE_SHA: \$\{\{ needs.select_canary.outputs.sha \}\}/);
   const script = step.match(/run: \|\n((?: {10}[^\n]*\n)+)/)?.[1];
   assert.ok(script, "missing inline canary branch attachment shell");
   return script.replace(/^ {10}/gm, "");
@@ -144,7 +145,8 @@ function withCanaryGitFixture(check) {
     const env = {
       ...process.env, REPO_ROOT: cwd, SOURCE_SHA: pinned,
       GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: "paperclipai/paperclip",
-      GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/master",
+      GITHUB_EVENT_NAME: "schedule", GITHUB_REF: "refs/heads/master",
+      RELEASE_SCHEDULE: "17 * * * *", RELEASE_CHANNEL: "",
     };
     const attach = (overrides = {}) => spawnSync("bash", ["--noprofile", "--norc", "-c", canaryAttachmentScript()], {
       cwd, env: { ...env, ...overrides }, encoding: "utf8", timeout: 5_000,
@@ -175,10 +177,20 @@ test("canary publisher attaches the exact source while local and remote master a
   });
 });
 
+test("manual canary publication attaches the same verified immutable source", () => {
+  withCanaryGitFixture(({ git, pinned, attach }) => {
+    const result = attach({ GITHUB_EVENT_NAME: "workflow_dispatch", RELEASE_CHANNEL: "canary", RELEASE_SCHEDULE: "" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(git("rev-parse", "HEAD"), pinned);
+    assert.equal(git("symbolic-ref", "--short", "HEAD"), "master");
+  });
+});
+
 for (const [name, overrides] of [
   ["fork repository", { GITHUB_REPOSITORY: "example/paperclip" }],
   ["manual dispatch", { GITHUB_EVENT_NAME: "workflow_dispatch" }],
-  ["scheduled release", { GITHUB_EVENT_NAME: "schedule" }],
+  ["nightly schedule", { GITHUB_EVENT_NAME: "schedule", RELEASE_SCHEDULE: "0 9 * * *" }],
+  ["master push", { GITHUB_EVENT_NAME: "push" }],
   ["non-master push", { GITHUB_REF: "refs/heads/topic" }],
   ["tag push", { GITHUB_REF: "refs/tags/canary/v1" }],
   ["missing source SHA", { SOURCE_SHA: "" }],
@@ -222,8 +234,8 @@ test("canary branch attachment keeps exact-source checkout and artifact order in
   const workflow = readWorkflow("release.yml");
   const publish = workflow.split("  publish_canary:\n")[1].split("  smoke_canary_onboarding:\n")[0];
   assert.equal(workflow.split("name: Attach verified canary source to local master").length, 2);
-  assert.match(publish, /ref: \$\{\{ github\.sha \}\}/);
-  assert.match(publish, /name: canary-smoke-lockfile-\$\{\{ github\.sha \}\}/);
+  assert.match(publish, /ref: \$\{\{ needs.select_canary.outputs.sha \}\}/);
+  assert.match(publish, /name: canary-smoke-lockfile-\$\{\{ needs.select_canary.outputs.sha \}\}/);
   const steps = ["Checkout repository", "Attach verified canary source to local master", "Install dependencies", "Save canary smoke lockfile", "Restore tracked install-time changes", "Publish canary"];
   for (let i = 1; i < steps.length; i++) {
     assert.ok(publish.indexOf(`name: ${steps[i - 1]}`) < publish.indexOf(`name: ${steps[i]}`));
@@ -308,16 +320,16 @@ test("published canaries are gated by the exact-version onboarding browser smoke
   );
   assert.match(
     releaseWorkflow,
-    /smoke_canary_onboarding:\n\s+needs: publish_canary\n\s+if: \$\{\{ !cancelled\(\) && needs\.publish_canary\.result == 'success' \}\}/,
+    /smoke_canary_onboarding:\n\s+needs: publish_canary\n\s+if: \$\{\{ !cancelled\(\) && needs\.publish_canary\.result == 'success' && needs\.publish_canary\.outputs\.canary_version != '' \}\}/,
   );
   const smoke = releaseWorkflow.split("  smoke_canary_onboarding:\n")[1].split(/\n  [a-z_]+:\n/)[0];
   const condition = smoke.match(/^    if: \$\{\{ (.+) \}\}$/m)?.[1];
-  assert.match(condition, /^!cancelled\(\) && needs\.publish_canary\.result == 'success'$/);
+  assert.match(condition, /^!cancelled\(\) && needs\.publish_canary\.result == 'success' && needs\.publish_canary\.outputs\.canary_version != ''$/);
   for (const [result, cancelled, expected] of [
     ["success", false, true], ["failure", false, false],
     ["cancelled", false, false], ["skipped", false, false], ["success", true, false],
   ]) {
-    const needs = { publish_canary: { result }, release_runner_source: { result: "success" },
+    const needs = { publish_canary: { result, outputs: { canary_version: "2026.101.0-canary.0" } }, release_runner_source: { result: "success" },
       select_nightly: { result: "skipped" }, select_beta: { result: "skipped" }, preflight_stable: { result: "skipped" } };
     assert.equal(runInNewContext(condition, { cancelled: () => cancelled, needs }), expected,
       `Canary smoke: publisher=${result}, cancelled=${cancelled}`);
@@ -358,15 +370,15 @@ test("canary smoke consumes its publisher's source-bound lockfile before frozen 
   const publish = workflow.split("  publish_canary:\n")[1].split("  smoke_canary_onboarding:\n")[0];
   const smoke = workflow.split("  smoke_canary_onboarding:\n")[1].split("  # ----- Nightly lane")[0];
   for (const job of [publish, smoke]) {
-    assert.match(job, /name: Checkout repository\n\s+uses: actions\/checkout@[^\n]+\n\s+with:\n\s+ref: \$\{\{ github\.sha \}\}/);
-    assert.match(job, /name: canary-smoke-lockfile-\$\{\{ github\.sha \}\}/);
+    assert.match(job, /name: Checkout repository\n\s+uses: actions\/checkout@[^\n]+\n\s+with:\n\s+ref: \$\{\{ needs\.(?:select_canary\.outputs\.sha|publish_canary\.outputs\.source_sha) \}\}/);
+    assert.match(job, /name: canary-smoke-lockfile-\$\{\{ needs\.(?:select_canary\.outputs\.sha|publish_canary\.outputs\.source_sha) \}\}/);
     assert.match(job, /version: 9\.15\.4/);
   }
-  assert.match(publish, /name: Save canary smoke lockfile\n\s+uses: actions\/upload-artifact@[0-9a-f]{40} # v4\n\s+with:\n\s+name: canary-smoke-lockfile-\$\{\{ github\.sha \}\}\n\s+path: pnpm-lock\.yaml\n\s+if-no-files-found: error\n\s+overwrite: true\n\s+retention-days: 14/);
+  assert.match(publish, /name: Save canary smoke lockfile\n\s+uses: actions\/upload-artifact@[0-9a-f]{40} # v4\n\s+with:\n\s+name: canary-smoke-lockfile-\$\{\{ needs\.(?:select_canary\.outputs\.sha|publish_canary\.outputs\.source_sha) \}\}\n\s+path: pnpm-lock\.yaml\n\s+if-no-files-found: error\n\s+overwrite: true\n\s+retention-days: 14/);
   assert.ok(publish.indexOf("name: Install dependencies") < publish.indexOf("name: Save canary smoke lockfile"));
   assert.ok(publish.indexOf("name: Save canary smoke lockfile") < publish.indexOf("name: Restore tracked install-time changes"));
   assert.ok(publish.indexOf("name: Restore tracked install-time changes") < publish.indexOf("name: Publish canary"));
-  assert.match(smoke, /name: Restore canary smoke lockfile\n\s+uses: actions\/download-artifact@[0-9a-f]{40} # v4\n\s+with:\n\s+name: canary-smoke-lockfile-\$\{\{ github\.sha \}\}/);
+  assert.match(smoke, /name: Restore canary smoke lockfile\n\s+uses: actions\/download-artifact@[0-9a-f]{40} # v4\n\s+with:\n\s+name: canary-smoke-lockfile-\$\{\{ needs\.(?:select_canary\.outputs\.sha|publish_canary\.outputs\.source_sha) \}\}/);
   assert.ok(smoke.indexOf("name: Restore canary smoke lockfile") < smoke.indexOf("name: Install test dependencies"));
   assert.doesNotMatch(smoke, /run-id:|github-token:|repository:|continue-on-error|--no-frozen-lockfile/);
 });
@@ -871,7 +883,7 @@ test("release daemon production uses exact-source native hosts and no publisher 
   const release = readWorkflow("release.yml");
   const source = release.split("  release_runner_source:\n")[1].split(/\n  [a-z_]+:\n/)[0];
   const binaries = release.split("  release_runner_binaries:\n")[1].split(/\n  [a-z_]+:\n/)[0];
-  assert.match(source, /needs: \[verify_canary, select_nightly, select_beta, preflight_stable\]/);
+  assert.match(source, /needs: \[select_canary, verify_canary, select_nightly, select_beta, preflight_stable\]/);
   assert.match(source, /!cancelled\(\)/);
   assert.match(binaries, /needs: release_runner_source/);
   assert.match(binaries, /ref: \$\{\{ needs\.release_runner_source\.outputs\.sha \}\}/);
