@@ -1,5 +1,12 @@
 # Paperclip evaluation guide
 
+The explicit-only [verified API artifact transfer](../tests/runner-e2e/README.md#verified-api-artifact-transfer)
+cell checks a native Codex agent on Daytona installing an authorized saved API
+response and delivering unchanged bytes. The oracle binds the source capture,
+tool completion and independent attachment download, including the complete
+388131-byte synthetic description. Registration and oracle calibration are
+separate from live provider qualification.
+
 The explicit-only [Kimi Code qualification suite](../tests/runner-e2e/README.md#kimi-code-qualification)
 registers twenty candidate cells across local and Daytona. It reuses the
 browser, semantic interaction, file/artifact, Stop and continuation oracles with

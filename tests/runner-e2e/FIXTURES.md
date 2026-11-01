@@ -203,6 +203,19 @@ matrix. Unsupported profile/environment combinations belong in
 
 ## Task cases and matchers
 
+`api-artifact-transfer` is one explicit native Codex/Daytona cell using the
+existing single-turn flow and fixture registry. A synthetic backlog issue is
+created through the public API before the tested task. The task carries its ID
+and requires `download_artifact`; the fixture never preinstalls the output.
+The independent oracle reads the stored source through its authorized asset
+endpoint and verifies the full delivered response against that source and the
+completed installation receipt after production run-log redaction. The existing
+server asset-created audit must prove API-capture origin in the tested run;
+matching bytes from an uploaded substitute are insufficient. It also compares the seeded
+description, so agreeing attachment metadata cannot hide a missing byte.
+The normal run-attributed public attachment download and reloaded browser link
+remain required. No new credential or private provider hook is introduced.
+
 A `RunnerTaskFixture` owns a work mode, a typed flow, expected run count,
 nonce-based title/prompt/marker factories, per-environment attempt deadlines,
 deterministic matchers, and expected terminal state. Single-turn prompts should
