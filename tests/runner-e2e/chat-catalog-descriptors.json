@@ -3956,11 +3956,11 @@
       "chat-catalog-domains/internal-projects.ts",
       "chat-scenarios/projects.yaml",
       "chat-catalog-domains/internal-project-defaults.ts",
-      "chat-catalog-domains/internal-run-brief.ts",
+      "chat-catalog-domains/internal-native-run-brief.ts",
       "../e2e/fetch-allowed-port.ts",
       "run-observations.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.project-defaults.v4",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "minimumRunCount": 3,

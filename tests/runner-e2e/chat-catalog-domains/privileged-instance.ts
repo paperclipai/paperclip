@@ -38,6 +38,11 @@ export const privilegedInstanceCases = [privilegedDefinition("instance-operation
     const initial = await settlePrivilegedChat(ctx), source = ctx.issue()!;
     const history = await ctx.input.api.get<Entity[]>(`/api/issues/${source.id}/comments?order=asc`);
     const url = ctx.input.page.url();
+    const reply = history.filter(row => row.authorAgentId === ctx.input.fixtures.agent.id).at(-1)!;
+    const replyBody = () => ctx.input.page.locator(`[id=${JSON.stringify(`comment-${reply.id}`)}]`).locator(".paperclip-markdown").first();
+    await expect(replyBody()).toBeVisible();
+    const renderedReplyBefore = await replyBody().innerText();
+    if (!renderedReplyBefore.trim()) throw new Error("Pre-restart reply has no visible rendered body");
     state.sourceBefore = source.id; state.runBefore = initial.runs[0]!.id;
     state.expectedRequestId = `chat-${ctx.input.nonce}`; state.restartStartedAt = Date.now();
     const logPath = process.env.PAPERCLIP_RUNNER_E2E_SERVER_LOG!;
@@ -57,8 +62,8 @@ export const privilegedInstanceCases = [privilegedDefinition("instance-operation
     await ctx.refreshIssue(); state.sourceAfter = ctx.issue()?.id;
     const after = await ctx.input.api.get<Entity[]>(`/api/issues/${source.id}/comments?order=asc`);
     state.persistedHistoryRetained = after.length === history.length && history.every(row => after.some(saved => saved.id === row.id && saved.body === row.body && saved.createdByRunId === row.createdByRunId));
-    const reply = history.filter(row => row.authorAgentId === ctx.input.fixtures.agent.id).at(-1)!;
-    await expect(ctx.input.page.locator(`[id=${JSON.stringify(`comment-${reply.id}`)}]`)).toContainText(reply.body!);
+    await expect(replyBody()).toBeVisible();
+    await expect(replyBody()).toHaveText(renderedReplyBefore, { useInnerText: true });
     state.browserHistoryVisible = true;
     await ctx.input.evidence("chat-catalog-owned-service-restart.json", { ...state, retainedCommentIds: after.map(row => row.id) });
   }, grade: gradeRestartService,
