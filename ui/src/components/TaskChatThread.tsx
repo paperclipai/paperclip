@@ -1,6 +1,7 @@
 import type { ScrollingHistory } from "@/components/task-chat/TaskMessageScroller";
 import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
 import { useRunnerSubmission } from "@/hooks/useRunnerSubmission";
+import { TaskChatLoadingShell } from "@/components/task-chat/TaskChatLoadingShell";
 import {
   ISSUE_DETAIL_CONTENT_PAINT_MARK,
   ISSUE_DETAIL_CONTENT_MEASURE,
@@ -121,7 +122,6 @@ import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { useDismissedTaskQuestions } from "@/hooks/useDismissedTaskQuestions";
 import { cn } from "@/lib/utils";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { isRedundantAiRecoveryNotice, latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
@@ -3168,13 +3168,18 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // Readiness is latched per issue: refetches never hide existing conversation.
   useEffect(() => {
     if (historyRevealed || historyPending) return;
-    let previousWidth: number | undefined;
+    let previousGeometry: string | undefined;
     let stableFrames = 0;
     let frame: number;
     const revealWhenSettled = () => {
-      const width = historyShellRef.current?.getBoundingClientRect().width;
-      stableFrames = width === previousWidth ? stableFrames + 1 : 0;
-      previousWidth = width;
+      const shell = historyShellRef.current;
+      const bounds = shell?.getBoundingClientRect();
+      const scroller = shell?.querySelector('[data-testid="task-chat-scroller"]');
+      const composer = shell?.querySelector('[data-testid="task-chat-composer-dock"]');
+      const geometry = JSON.stringify([bounds?.x, bounds?.y, bounds?.width, bounds?.height,
+        scroller?.clientHeight, scroller?.scrollHeight, scroller?.scrollTop, composer?.getBoundingClientRect().height]);
+      stableFrames = geometry === previousGeometry && document.fonts?.status !== "loading" ? stableFrames + 1 : 0;
+      previousGeometry = geometry;
       if (stableFrames >= 2) setRevealedHistoryKey(historyKey);
       else frame = requestAnimationFrame(revealWhenSettled);
     };
@@ -3201,12 +3206,17 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         >
           <div
             className={cn(
-              "flex min-h-0 flex-1 flex-col",
+              "relative flex min-h-0 flex-1 flex-col",
               isMobile && !historyRevealed && "task-chat-history-pending",
             )}
             data-testid="task-chat-thread"
             ref={historyShellRef}
           >
+            {!historyRevealed ? (
+              <div className="absolute inset-0 z-10 overflow-hidden bg-background" data-testid="task-chat-history-loading">
+                <TaskChatLoadingShell mobile={isMobile} streamlined={streamlinedUiEnabled} coordinator={coordinatorEnabled} />
+              </div>
+            ) : null}
             <div
               className={cn(
                 "relative flex min-h-0 flex-1 flex-col",
@@ -3224,21 +3234,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       Retry
                     </Button>
                   ) : null}
-                </div>
-              ) : null}
-              {!historyRevealed ? (
-                <div
-                  className="absolute inset-0 z-10 overflow-hidden bg-background"
-                  data-testid="task-chat-history-loading"
-                  role="status"
-                  aria-label="Loading conversation"
-                >
-                  <div className="mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-4 px-4 py-3">
-                    {threadHeader}
-                    <Skeleton className="h-16 w-3/4 animate-none" />
-                    <Skeleton className="h-24 w-4/5 self-end animate-none" />
-                    <Skeleton className="h-16 w-3/4 animate-none" />
-                  </div>
                 </div>
               ) : null}
               <div

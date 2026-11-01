@@ -59,6 +59,14 @@ Filters → **Routine tasks** selects tasks created by routine runs. The
 
 ### `task-detail`
 
+During a cold chat-style open, one loading frame owns the same viewport and
+composer geometry as the resolved conversation. The real title and monitor
+banner stay concealed until the initial reading position is prepared. The
+[rich loading journey](../../tests/perf/issue-detail/loading-layout.spec.ts)
+checks direct and list-based entry, delayed fonts, and desktop/mobile geometry
+with a long saved thread, cards, a monitor, and a pending confirmation. This
+synthetic local coverage does not establish a deployed staging pass.
+
 Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction, recent exchange and saved cards together. Completed runs with saved replies defer their transcripts until the reader opens history. Live runs, failures, yielded runs and runs without a saved reply still hydrate; an already shown transcript stays available after completion. No URL fragment expands history; older-comment anchors fetch only their target, and document anchors open the pane. **More messages** appears only when earlier comments or runs are omitted and loads that history. Fresh tasks with no omitted history have no disclosure. A single run with deferred output or a truncated legacy log offers **More run output** instead. **More task actions → Show task activity** loads full activity even for a single native run; incoming messages remain visible while the task stays open.
 
 ### `task-sharing`

@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { cn } from "@/lib/utils";
+import { taskChatComposerSurfaceClasses } from "./composer-surface";
 import { useComposerStop } from "@/hooks/useComposerStop";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import {
@@ -1347,12 +1348,7 @@ export function TaskChatComposer({
         </TaskChatComposerBar>
       ) : null}
       <div
-        className={cn(
-        streamlined
-          ? "paperclip-task-chat-composer rounded-(--radius-task-composer) border border-border bg-card p-(--sz-18px) shadow-(--shadow-task-composer) dark:border-0 dark:bg-muted dark:shadow-none"
-          : "paperclip-task-chat-composer rounded-xl bg-card p-(--sz-18px)",
-        mobile && "p-3",
-      )}
+        className={taskChatComposerSurfaceClasses(mobile, streamlined)}
         onKeyDownCapture={(e) => {
         // Capture mode shortcuts on the wrapper so they work while the rich
         // editor is focused and win over Lexical/browser bindings. Match the

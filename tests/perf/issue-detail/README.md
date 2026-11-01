@@ -52,6 +52,16 @@ include completed requests observed during the sample, even after content paint.
 
 ## Task layout stability
 
+`loading-layout.spec.ts` uses a retained synthetic task with a wrapping title,
+200 saved messages, document and PR cards, a monitor, and a pending confirmation.
+It records every animation frame during direct and list-based entry on desktop
+and mobile, including delayed web fonts. It rejects real headers shown before
+the initial conversation is ready, loading-frame movement, different header
+typography, composer displacement, and movement of the initial reading position.
+The fixture requires the disposable PostgreSQL URL described below. Its agent
+has automatic heartbeats disabled and the suite does not start provider work.
+Videos, screenshots, and `frames.json` are retained with each result.
+
 `compact-startup.spec.ts` keeps a synthetic local reproduction with 24 messages,
 a plan, three documents and three saved PR cards. It holds the enriched task
 response, records each visible frame's card count and geometry, and rejects
