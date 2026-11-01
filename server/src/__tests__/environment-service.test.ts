@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, type SQL } from "drizzle-orm";
 import type { UpdateEnvironment } from "@paperclipai/shared";
 import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "../services/environment-custom-image-runtime.js";
@@ -219,6 +219,20 @@ describeEmbeddedPostgres("environmentService leases", () => {
       pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: false, pendingCleanupLeaseExpiresAtMs: 0,
       userNote: "preserve",
     } });
+  });
+
+  it.each(["", " ", "\t\n"])("does not query for a blank lease id %j", async (id) => {
+    const select = vi.spyOn(db, "select");
+    try {
+      await expect(svc.getLeaseById(id)).resolves.toBeNull();
+      expect(select).not.toHaveBeenCalled();
+    } finally {
+      select.mockRestore();
+    }
+  });
+
+  it("returns null for an unknown non-blank lease id", async () => {
+    await expect(svc.getLeaseById(randomUUID())).resolves.toBeNull();
   });
 
   it("acquires and releases a lease for a run", async () => {
