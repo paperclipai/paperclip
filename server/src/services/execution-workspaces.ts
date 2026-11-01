@@ -4751,8 +4751,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           .where(and(eq(executionWorkspaces.id, input.id), eq(executionWorkspaces.companyId, identity.companyId)))
           .for("no key update")
           .then((rows) => rows[0] ?? null));
-        if (!fresh || isClosedExecutionWorkspaceStatus(fresh.status)) {
-          // The row is missing or already closed by a concurrent path. Do not
+        if (!fresh || fresh.status === "archived") {
+          // The row is missing or already archived by a concurrent path. Do not
           // archive again.
           return null;
         }

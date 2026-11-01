@@ -4474,8 +4474,11 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
 
+  const retainsUnownedLocalDirectory =
+    input.workspace.providerType === "local_fs" && !createdByRuntime;
   const cleaned =
     !workspacePath ||
+    retainsUnownedLocalDirectory ||
     !(await directoryExists(workspacePath));
   if (cleaned) warnings.push(...await releaseNestedRepositoryWorktrees(nestedWorktrees));
 
