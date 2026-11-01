@@ -9,7 +9,7 @@ const workflow = readFileSync('.github/workflows/pr-trusted.yml', 'utf8');
 const step = workflow.match(/      - name: Boot the production runtime(?: bundle)?\n        run: \|\n((?:          .*\n|\n)+)/)?.[1];
 const legacyCommand = ['node', '--import', './server/node_modules/tsx/dist/loader.mjs', 'server/dist/index.js'];
 
-function runSmoke(t, { runtime = false, script = true, dockerCommand = legacyCommand, buildExit = 0, smokeExit = 0, built = true, manifest } = {}) {
+function runSmoke(t, { runtime = false, script = true, dockerCommand = legacyCommand, dockerCommands = null, buildExit = 0, smokeExit = 0, built = true, manifest } = {}) {
   assert.ok(step, 'the reusable workflow must contain a source-compatible production runtime smoke');
   const root = mkdtempSync(join(process.env.PAPERCLIP_RUN_SCRATCH_DIR || tmpdir(), 'ci-runtime-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -19,7 +19,8 @@ function runSmoke(t, { runtime = false, script = true, dockerCommand = legacyCom
     writeFileSync(fullPath, content, { mode: executable ? 0o755 : 0o644 });
   };
   write('server/package.json', manifest ?? JSON.stringify({ scripts: runtime ? { 'build:runtime': 'bundle' } : {} }));
-  write('Dockerfile', `FROM node:24\nCMD ${JSON.stringify(dockerCommand)}\n`);
+  const commands = dockerCommands ?? [dockerCommand];
+  write('Dockerfile', `FROM node:24\n${commands.map((cmd) => `CMD ${JSON.stringify(cmd)}`).join('\n')}\n`);
   write('bin/pnpm', '#!/bin/sh\nprintf "build:%s\\n" "$*" >> "$CALL_LOG"\nexit "$BUILD_EXIT"\n', true);
   const harness = (source) => `#!/bin/sh\nprintf "smoke:${source}:%s\\n" "$*" >> "$CALL_LOG"\nexit "$SMOKE_EXIT"\n`;
   if (script) write('scripts/server-boot-smoke.sh', harness('source'), true);
@@ -90,6 +91,17 @@ test('unknown Dockerfile commands cannot silently select legacy boot', (t) => {
   assert.notEqual(result.status, 0);
   assert.equal(result.calls, '');
 });
+
+for (const order of ['recognized-first', 'recognized-second']) {
+  test(`multiple Dockerfile CMD lines cannot silently select legacy boot (${order})`, (t) => {
+    const other = ['node', 'different-prod.js'];
+    const result = runSmoke(t, {
+      dockerCommands: order === 'recognized-first' ? [legacyCommand, other] : [other, legacyCommand],
+    });
+    assert.notEqual(result.status, 0);
+    assert.equal(result.calls, '');
+  });
+}
 
 test('missing legacy build output cannot pass a smoke', (t) => {
   const result = runSmoke(t, { built: false });
