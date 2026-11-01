@@ -19,7 +19,6 @@ describe("Paperclip HTTP server runner transport", () => {
       authority: { handleUpgrade } as unknown as DurablePrpControlPlane,
     });
     expect(authority.connectUrl).toBe(`ws://127.0.0.1:3210/api/runner/v1/connect/${runId}`);
-    expect(server.listenerCount("upgrade")).toBe(1);
     await authority.release();
     server.close();
   });

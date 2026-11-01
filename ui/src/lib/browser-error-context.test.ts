@@ -1,9 +1,17 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildBrowserErrorContext, sanitizeComponentStack } from "./browser-error-context";
+import {
+  __resetPageDiagnostics,
+  buildBrowserErrorContext,
+  readPageLifecycle,
+  sanitizeComponentStack,
+  startPageDiagnostics,
+  takeRejectionEventSnapshot,
+} from "./browser-error-context";
 
 afterEach(() => {
+  __resetPageDiagnostics();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   document.documentElement.className = "";
@@ -62,6 +70,7 @@ unrecognized private content`;
       contexts: {
         react: { componentStack: "\n    at TaskDetail" },
         browser_state: { visibility_state: document.visibilityState },
+        page_lifecycle: expect.objectContaining({ pagehide_seen: false }),
       },
     });
   });
@@ -69,5 +78,74 @@ unrecognized private content`;
   it("does not require a browser document", () => {
     vi.stubGlobal("document", undefined);
     expect(buildBrowserErrorContext({ boundary: "app" }).contexts.browser_state).toEqual({});
+  });
+});
+
+/** A dispatched (untrusted) rejection event; jsdom has no PromiseRejectionEvent. */
+function dispatchRejection(reason: unknown, promise?: unknown) {
+  const event = new Event("unhandledrejection");
+  Object.defineProperty(event, "reason", { value: reason });
+  Object.defineProperty(event, "promise", { value: promise });
+  window.dispatchEvent(event);
+}
+
+describe("page diagnostics", () => {
+  startPageDiagnostics();
+
+  function setNow(ms: number) {
+    vi.spyOn(performance, "now").mockReturnValue(ms);
+  }
+
+  it("records only the latest lifecycle transition with coarse timing", () => {
+    setNow(5_000);
+    expect(readPageLifecycle()).toEqual({ since_load: "1-10s", pagehide_seen: false });
+
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    setNow(65_000);
+    expect(readPageLifecycle()).toEqual({
+      since_load: "1-10m", pagehide_seen: false, last_transition: "hidden", since_transition: "1-10m",
+    });
+
+    document.dispatchEvent(new Event("freeze"));
+    document.dispatchEvent(new Event("resume"));
+    setNow(65_500);
+    expect(readPageLifecycle()).toMatchObject({ last_transition: "resume", since_transition: "<1s" });
+  });
+
+  it("keeps a pagehide marker until the page is shown again", () => {
+    setNow(1_000_000);
+    window.dispatchEvent(new Event("pagehide"));
+    expect(readPageLifecycle()).toEqual({
+      since_load: ">10m", pagehide_seen: true, last_transition: "pagehide", since_transition: "<1s",
+    });
+    window.dispatchEvent(new Event("pageshow"));
+    expect(readPageLifecycle()).toMatchObject({ pagehide_seen: false, last_transition: "pageshow" });
+  });
+
+  it.each([
+    ["native", Promise.resolve()],
+    ["subclass", new (class Custom<T> extends Promise<T> {})(() => {})],
+    ["other", { then() {} }],
+    ["missing", undefined],
+  ])("classifies a %s rejection promise without reading the reason", (kind, promise) => {
+    setNow(100);
+    const reason = { get secret() { throw new Error("must not be read"); } };
+    dispatchRejection(reason, promise);
+    expect(takeRejectionEventSnapshot("object")).toEqual({ trusted: false, promise: kind });
+  });
+
+  it("pairs a snapshot once, with the same rejection kind, inside the pairing window", () => {
+    setNow(100);
+    dispatchRejection(undefined, Promise.resolve());
+    expect(takeRejectionEventSnapshot("undefined")).toEqual({ trusted: false, promise: "native" });
+    expect(takeRejectionEventSnapshot("undefined")).toBeUndefined();
+
+    dispatchRejection(undefined, Promise.resolve());
+    expect(takeRejectionEventSnapshot("string")).toBeUndefined();
+
+    dispatchRejection(undefined, Promise.resolve());
+    setNow(5_101);
+    expect(takeRejectionEventSnapshot("undefined")).toBeUndefined();
   });
 });

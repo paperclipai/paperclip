@@ -11,6 +11,7 @@ export type AgentDetailView =
   | "permissions"
   | "api-keys"
   | "revisions"
+  | "advanced"
   | "run-detail";
 
 export type AgentLocalDetailView = Exclude<AgentDetailView, "run-detail">;
@@ -42,6 +43,7 @@ export const AGENT_DETAIL_NAVIGATION: ReadonlyArray<{
       { value: "permissions", label: "Permissions / Trust" },
       { value: "api-keys", label: "API Keys" },
       { value: "revisions", label: "Revisions" },
+      { value: "advanced", label: "Advanced" },
     ],
   },
 ] as const;
@@ -56,6 +58,7 @@ export function parseAgentDetailView(value: string | null): AgentLocalDetailView
   if (value === "permissions" || value === "trust") return "permissions";
   if (value === "api-keys" || value === "keys") return "api-keys";
   if (value === "revisions" || value === "history") return "revisions";
+  if (value === "advanced") return "advanced";
   return "overview";
 }
 

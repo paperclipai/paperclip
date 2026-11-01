@@ -2,6 +2,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "@playwright/test";
 
+const storybookPort = Number(process.env.STORYBOOK_VISUAL_PORT ?? 6106);
 const testDir = dirname(fileURLToPath(import.meta.url));
 const snapshotDir = process.env.STORYBOOK_VISUAL_SNAPSHOT_DIR
   ? isAbsolute(process.env.STORYBOOK_VISUAL_SNAPSHOT_DIR)
@@ -15,7 +16,9 @@ const snapshotDir = process.env.STORYBOOK_VISUAL_SNAPSHOT_DIR
 export default defineConfig({
   testDir: ".",
   projects: [
-    { name: "stories", testIgnore: "agent-personas.spec.ts" },
+    // The reproduction trial has a dedicated fixed-clock/browser contract and
+    // requires its frozen first-submission PNG via TRIAL_REFERENCE_PNG.
+    { name: "stories", testIgnore: ["agent-personas.spec.ts", "task-list-reproduction-trial.spec.ts"] },
     {
       name: "agent-personas", testMatch: "agent-personas.spec.ts", fullyParallel: false,
       snapshotPathTemplate: `${snapshotDir}/agent-personas/{arg}{ext}`,
@@ -47,11 +50,11 @@ export default defineConfig({
     // JS-driven tickers/timers key off prefers-reduced-motion for
     // deterministic captures (CSS animations are already disabled).
     reducedMotion: "reduce",
-    baseURL: "http://localhost:6106",
+    baseURL: process.env.STORYBOOK_TEST_BASE_URL ?? `http://localhost:${storybookPort}`,
   },
-  webServer: {
-    command: "node ../../scripts/serve-storybook-static.mjs --port 6106",
-    url: "http://localhost:6106/index.json",
+  webServer: process.env.STORYBOOK_TEST_BASE_URL ? undefined : {
+    command: `node ../../scripts/serve-storybook-static.mjs --port ${storybookPort}`,
+    url: `http://localhost:${storybookPort}/index.json`,
     reuseExistingServer: true,
     timeout: 30_000,
   },

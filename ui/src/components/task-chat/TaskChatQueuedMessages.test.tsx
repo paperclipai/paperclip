@@ -80,10 +80,10 @@ describe("TaskChatQueuedMessages", () => {
     return props;
   }
 
-  it("shows the saved message's wait reason and removes it when admission succeeds", () => {
+  it("keeps saved input visible without duplicating the task status", () => {
     const message = "Waiting for the previous environment to stop. Your message will start automatically.";
     render({ queue: { ...queue, executionWait: { reason: "remote_cleanup", message } } });
-    expect(container.querySelector('[role="status"]')?.textContent).toContain(message);
+    expect(container.textContent).not.toContain(message);
     expect(container.textContent).toContain("First queued message");
     render();
     expect(container.textContent).not.toContain(message);
@@ -361,7 +361,8 @@ describe("TaskChatQueuedMessages", () => {
     ).toBeNull();
   });
 
-  it.each(["run-1", null])("delivers legacy queued messages with target %s", async (targetRunId) => {
+  it("delivers legacy queued messages to a live target", async () => {
+    const targetRunId = "run-1";
     const onInterrupt = vi.fn().mockResolvedValue(undefined);
     render({
       queue: {
@@ -393,4 +394,36 @@ describe("TaskChatQueuedMessages", () => {
       ),
     ).toBeNull();
   });
+  it("keeps deferred sends visible and explains their current wait", async () => {
+    const saved = { ...queue, targetRunId: null, executionWait: { reason: "decision_pending", message: "Resolve the pending approval before sending." } };
+    const onInterrupt = vi.fn().mockResolvedValue(saved);
+    render({ queue: saved, onInterrupt });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')!.click(); });
+    expect(container.textContent).toContain("First queued message");
+    expect(container.textContent).toContain(saved.executionWait.message);
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')?.disabled).toBe(false);
+  });
+  it("clears a deferred wait message when a refreshed queue finishes sending", async () => {
+    const saved = { ...queue, targetRunId: null, executionWait: { reason: "decision_pending", message: "Resolve the pending approval before sending." } };
+    render({ queue: saved, onInterrupt: vi.fn().mockResolvedValue(saved) });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')!.click(); });
+    expect(container.textContent).toContain(saved.executionWait.message);
+    render({ queue: { ...saved, queueId: null, entries: [], state: null, executionWait: null } });
+    await act(async () => {});
+    expect(container.textContent).not.toContain(saved.executionWait.message);
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+  });
+  it.each(["legacy", "paperclip_runner_v1"] as const)("sends a saved %s queue explicitly after Stop", async (protocol) => {
+    const onInterrupt = vi.fn().mockResolvedValue(undefined);
+    render({ queue: { ...queue, targetRunId: null, protocol, steeringDisposition: "temporarily_unavailable" }, onInterrupt });
+    expect(onInterrupt).not.toHaveBeenCalled();
+    const send = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]');
+    expect(send?.textContent).toBe("Send");
+    expect(send?.getAttribute("aria-label")).toBe("Send queued messages");
+    expect(send?.disabled).toBe(false);
+    await act(async () => { send!.click(); });
+    expect(onInterrupt).toHaveBeenCalledOnce();
+    expect(container.querySelector('[data-testid="task-chat-queued-steer-comment-1"]')).toBeNull();
+  });
+
 });

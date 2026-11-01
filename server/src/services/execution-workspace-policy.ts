@@ -130,6 +130,7 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
   })();
   return {
     enabled,
+    ...(typeof parsed.storageProviderPluginId === "string" || parsed.storageProviderPluginId === null ? { storageProviderPluginId: parsed.storageProviderPluginId } : {}),
     ...(sharedWorkspaceConcurrency ? { sharedWorkspaceConcurrency } : {}),
     ...(normalizedDefaultMode ? { defaultMode: normalizedDefaultMode } : {}),
     ...(allowIssueOverride !== undefined ? { allowIssueOverride } : {}),
@@ -344,7 +345,7 @@ export function resolveExecutionWorkspaceEnvironmentId(input: {
 export function defaultIssueExecutionWorkspaceSettingsForProject(
   projectPolicy: ProjectExecutionWorkspacePolicy | null,
 ): IssueExecutionWorkspaceSettings | null {
-  if (!projectPolicy?.enabled) return null;
+  if (!projectPolicy?.enabled || projectPolicy.defaultMode === undefined) return null;
   return {
     mode:
       projectPolicy.defaultMode === "isolated_workspace"
@@ -393,6 +394,31 @@ export function resolveExecutionWorkspaceMode(input: {
   return "shared_workspace";
 }
 
+interface ParsedIssueAssigneeAdapterOverrides {
+  adapterConfig: Record<string, unknown> | null;
+  useProjectWorkspace: boolean | null;
+}
+
+export function parseIssueAssigneeAdapterOverrides(
+  raw: unknown,
+): ParsedIssueAssigneeAdapterOverrides | null {
+  const parsed = parseObject(raw);
+  const parsedAdapterConfig = Object.fromEntries(
+    Object.entries(parseObject(parsed.adapterConfig)).filter(([key]) => key !== "homeMode"),
+  );
+  const adapterConfig =
+    Object.keys(parsedAdapterConfig).length > 0 ? parsedAdapterConfig : null;
+  const useProjectWorkspace =
+    typeof parsed.useProjectWorkspace === "boolean"
+      ? parsed.useProjectWorkspace
+      : null;
+  if (!adapterConfig && useProjectWorkspace === null) return null;
+  return {
+    adapterConfig,
+    useProjectWorkspace,
+  };
+}
+
 function parseSharedWorkspaceConcurrency(raw: unknown): SharedWorkspaceConcurrency | undefined {
   return raw === "auto" || raw === "serialize" || raw === "allow" ? raw : undefined;
 }
@@ -408,6 +434,7 @@ export function resolveSharedWorkspaceConcurrency(input: {
 
 export function buildExecutionWorkspaceAdapterConfig(input: {
   agentConfig: Record<string, unknown>;
+  adapterConfigOverrides?: Record<string, unknown> | null;
   projectPolicy: ProjectExecutionWorkspacePolicy | null;
   issueSettings: IssueExecutionWorkspaceSettings | null;
   mode: ParsedExecutionWorkspaceMode;
@@ -423,7 +450,8 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
   const hasWorkspaceControl = projectHasPolicy || issueHasWorkspaceOverrides || input.legacyUseProjectWorkspace === false;
 
   if (hasWorkspaceControl) {
-    if (input.mode === "isolated_workspace") {
+    if (input.mode === "isolated_workspace" ||
+        (projectHasPolicy && input.projectPolicy?.storageProviderPluginId && input.mode !== "agent_default")) {
       const projectStrategy = projectHasPolicy ? input.projectPolicy?.workspaceStrategy : undefined;
       const issueStrategy = input.issueSettings?.workspaceStrategy;
       // An issue that changes its branch still needs the project's setup hooks.
@@ -431,8 +459,8 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
       const strategy = issueStrategy && projectStrategy?.type === issueStrategy.type
         ? { ...projectStrategy, ...issueStrategy }
         : issueStrategy ?? projectStrategy ??
-        parseExecutionWorkspaceStrategy(nextConfig.workspaceStrategy) ??
-        ({ type: "git_worktree" } satisfies ExecutionWorkspaceStrategy);
+        (input.mode === "isolated_workspace" ? parseExecutionWorkspaceStrategy(nextConfig.workspaceStrategy) : undefined) ??
+        ({ type: input.mode === "isolated_workspace" ? "git_worktree" : "project_primary" } satisfies ExecutionWorkspaceStrategy);
       if (issueStrategy?.existingBranch && issueStrategy.branchTemplate === undefined && strategy !== issueStrategy) {
         delete strategy.branchTemplate;
       }
@@ -450,5 +478,21 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
     }
   }
 
-  return nextConfig;
+  return { ...nextConfig, ...input.adapterConfigOverrides };
+}
+
+export function taskWorkspaceRuntimeSelectionEnabled(input: {
+  legacyUiEnabled: boolean;
+  hasTypedSelection: boolean;
+  hasBinding: boolean;
+}): boolean {
+  return input.legacyUiEnabled || input.hasTypedSelection || input.hasBinding;
+}
+
+export function canApplyTaskWorkspaceSelectionAtAdmission(input: {
+  admittedInput: unknown;
+  restarting: boolean;
+  hasLeaseOwner: boolean;
+}): boolean {
+  return input.admittedInput == null && !input.restarting && !input.hasLeaseOwner;
 }

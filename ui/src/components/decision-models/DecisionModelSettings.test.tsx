@@ -6,7 +6,7 @@ import { expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { decisionModelsApi } from "@/api/decision-models";
 import { DecisionModelSettingsSection, DecisionModelSettingsView } from "./DecisionModelSettings";
-import { choices, configured, result } from "../../../storybook/stories/decision-models/fixtures";
+import { choices, configured, result } from "../../../storybook/support/decision-models/fixtures";
 
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company-storybook" }) }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

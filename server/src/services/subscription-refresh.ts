@@ -1,10 +1,11 @@
 import { and, eq, lt, or, isNull } from "drizzle-orm";
 import { aiSubscriptions, aiSubscriptionConnections, type Db } from "@paperclipai/db";
 import { aiConnectionService } from "./ai-connections.js";
-import { subscriptionService, type SubscriptionConnection } from "./subscriptions.js";
+import { subscriptionService, subscriptionSession, type SubscriptionConnection } from "./subscriptions.js";
 import { probeSubscriptionIdentity } from "./subscription-identity.js";
 import { logger } from "../middleware/logger.js";
 import { tooManyRequests } from "../errors.js";
+import { trackIdleWork } from "./task-admission.js";
 
 const jobs = new WeakMap<Db, Map<string, Promise<void>>>();
 const discovery = new WeakMap<Db, Map<string, Promise<void>>>();
@@ -19,7 +20,7 @@ export function refreshSubscriptionConnection(db: Db, input: SubscriptionConnect
   // Bound provider concurrency across all companies on this instance. Dashboard
   // discovery waits below; opportunistic run observations remain due when busy.
   if (active.size >= 4) return Promise.resolve();
-  const task = (async () => {
+  const task = trackIdleWork((async () => {
     const [claimed] = await db.update(aiSubscriptions).set({ lastCheckedAt: new Date() }).where(and(
       eq(aiSubscriptions.companyId, input.companyId), eq(aiSubscriptions.id, id),
       or(isNull(aiSubscriptions.lastCheckedAt), lt(aiSubscriptions.lastCheckedAt, new Date(Date.now() - REFRESH_MS))),
@@ -38,7 +39,7 @@ export function refreshSubscriptionConnection(db: Db, input: SubscriptionConnect
   })().catch(() => {
     // No raw provider/credential errors are logged or returned to a user.
     logger.warn({ companyId: input.companyId, subscriptionId: id }, "Subscription observation could not be saved");
-  }).finally(() => active!.delete(id));
+  }).finally(() => active!.delete(id)));
   active.set(id, task);
   return task;
 }
@@ -50,16 +51,17 @@ export function refreshCompanySubscriptions(db: Db, companyId: string, userId: s
   const existing = active.get(key);
   if (existing) return existing;
   if (active.size >= 20) throw tooManyRequests("Subscription account checks are busy. Try again shortly.");
-  const task = (async () => {
+  const task = trackIdleWork((async () => {
     const service = aiConnectionService(db);
     // Uses the existing credential audience. Being a company admin does not
     // authorize probing another member's personal credentials.
     for (const row of await service.subscriptionAccounts(companyId, userId)) {
       if (row.summary.status !== "connected") continue;
       try {
+        const session = await subscriptionSession(db, companyId, row.grant.credentialSecretRefs);
         const credential = await service.credential(row);
         const input: SubscriptionConnection = { companyId, connectionId: row.connection.id, grantId: row.grant.id,
-          provider: row.summary.provider, name: row.connection.name, ownerUserId: row.grant.subjectUserId, credential };
+          provider: row.summary.provider, name: row.connection.name, ownerUserId: row.grant.subjectUserId, credential, session };
         const id = await subscriptionService(db).register(input);
         // Accepted discovery must not silently skip an account. At most twenty
         // discovery tasks can wait here; never create an unbounded provider queue.
@@ -75,7 +77,7 @@ export function refreshCompanySubscriptions(db: Db, companyId: string, userId: s
       }
     }
   })().catch(() => logger.warn({ companyId }, "Subscription discovery unavailable"))
-    .finally(() => active!.delete(key));
+    .finally(() => active!.delete(key)));
   active.set(key, task);
   return task;
 }

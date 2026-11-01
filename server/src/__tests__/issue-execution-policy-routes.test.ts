@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -19,7 +19,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
-  triggerIssueMonitor: vi.fn(async () => ({ outcome: "triggered" as const })),
+  triggerIssueMonitor: vi.fn(async (): Promise<{ outcome: "triggered" } | { outcome: "skipped"; reason: string }> => ({ outcome: "triggered" })),
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
@@ -200,12 +200,16 @@ async function createApp(actor?: TestActor) {
 }
 
 describe("issue execution policy routes", () => {
-  beforeEach(async () => {
+  beforeAll(async () => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
+    await loadAppModules();
+  });
+
+  beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
@@ -267,9 +271,6 @@ describe("issue execution policy routes", () => {
       };
     });
     mockAccessService.hasPermission.mockResolvedValue(false);
-    // Finish cold imports before a test configures its request-specific mocks.
-    // A timed-out import must not resume a request against the next test's mocks.
-    await loadAppModules();
   });
 
   it.each([
@@ -298,6 +299,91 @@ describe("issue execution policy routes", () => {
     expect(res.status).toBe(422);
     expect(mockIssueService.getById).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale status version before changing or waking a task", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1",
+      status: "backlog", statusVersion: 8, title: "Prepared task", identifier: "TEST-1",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333", assigneeUserId: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockResolvedValue({ ...issue, status: "todo", statusVersion: 9 });
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`).send({ status: "todo", expectedStatusVersion: 7 });
+    expect(res.status).toBe(409);
+    expect(res.body.details).toMatchObject({ code: "issue_status_version_changed" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("does not adopt a checkout when a prepared task became active before promotion", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1",
+      status: "in_progress", statusVersion: 8, title: "Active task", identifier: "TEST-1",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333", assigneeUserId: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.assertCheckoutOwner.mockResolvedValueOnce({ adoptedFromRunId: "previous-run" });
+    const res = await request(await createApp({
+      type: "agent", agentId: issue.assigneeAgentId, companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    })).patch(`/api/issues/${issue.id}`).send({ status: "todo", expectedStatusVersion: 7 });
+    expect(res.status).toBe(409);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("forwards a matching status version to the locked update", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1",
+      status: "backlog", statusVersion: 7, title: "Prepared task", identifier: "TEST-1",
+      assigneeAgentId: null, assigneeUserId: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockResolvedValue({ ...issue, status: "todo", statusVersion: 8 });
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`).send({ status: "todo", expectedStatusVersion: 7 });
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({
+      status: "todo", expectedStatusVersion: 7,
+    });
+  });
+
+  it("does not audit or wake a promotion rejected by the locked version check", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1",
+      status: "backlog", statusVersion: 7, title: "Prepared task", identifier: "TEST-1",
+      assigneeAgentId: null, assigneeUserId: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    const { conflict } = await import("../errors.js");
+    mockIssueService.update.mockRejectedValueOnce(conflict("The task changed", { code: "issue_status_version_changed" }));
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`).send({ status: "todo", expectedStatusVersion: 7 });
+    expect(res.status).toBe(409);
+    expect(res.body.details).toMatchObject({ code: "issue_status_version_changed" });
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: "done" }, { status: "cancelled" }, { title: "Changed" },
+    { assigneeAgentId: "33333333-3333-4333-8333-333333333333" },
+    { comment: "Start work" }, { interrupt: true }, { executionPolicy: null },
+  ])("rejects mixed version-guarded promotions before execution effects: %j", async (fields) => {
+    const res = await request(await createApp()).patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "todo", expectedStatusVersion: 0, ...fields });
+    expect(res.status).toBe(422);
+    expect(mockIssueService.getById).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 
   it("reauthorizes a terminal verdict against the review policy held under the update lock", async () => {
@@ -1071,11 +1157,11 @@ describe("issue execution policy routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("triggers a scheduled monitor immediately from the dedicated route", async () => {
+  it.each(["in_progress", "blocked"])("triggers a scheduled monitor on an %s task from the dedicated route", async (status) => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
-      status: "in_progress",
+      status,
       assigneeAgentId: "33333333-3333-4333-8333-333333333333",
       assigneeUserId: null,
       createdByUserId: "local-board",
@@ -1106,6 +1192,20 @@ describe("issue execution policy routes", () => {
         agentId: null,
       }),
     );
+  });
+
+  it.each(["execution_reconciliation_required", "monitor_dispatch_deferred", "monitor_replaced"])("does not claim success for a skipped monitor check: %s", async (reason) => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", status: "blocked",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333", assigneeUserId: null,
+    });
+    mockHeartbeatService.triggerIssueMonitor.mockResolvedValueOnce({ outcome: "skipped", reason });
+    const res = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/monitor/check-now").send({});
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ details: { code: "issue_monitor_check_deferred", reason } });
+    if (reason === "monitor_replaced") expect(res.body.error).toContain("monitor changed");
+    expect(res.body.ok).toBeUndefined();
   });
 
   it("lets a board user create a child issue with a scheduled monitor", async () => {

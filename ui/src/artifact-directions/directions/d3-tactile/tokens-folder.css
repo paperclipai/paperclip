@@ -1,0 +1,120 @@
+/*
+  3 · Tactile — the folder's custom properties (the board's colours are in
+  tokens.css, the shelf and the opened stack in tokens-gallery.css).
+
+  A stack is a FOLDER: a back board, the stack's real contents tucked in and
+  standing out of the top, more sheet tops behind them when it holds more than
+  it shows, and a front pocket with a label tab (the task identifier) that
+  carries the title, what it holds, the count and the date.
+*/
+
+[data-direction="d3-tactile"] {
+  /* ---- the folder's front: a soft sheen over the board, then the grain ---- */
+  --tac-folder-face: linear-gradient(to bottom, oklch(1 0 0 / 0.42), oklch(1 0 0 / 0) 42%, oklch(0.3 0.04 70 / 0.06)), var(--tac-board-grain);
+  --tac-folder-lip: oklch(1 0 0 / 0.85); /* the lit edge along the tab's shoulder */
+  --tac-folder-tab-edge: inset 0 1px 0 oklch(1 0 0 / 0.7); /* the tab: lit along the top only, so it runs into its shoulder without a seam */
+  --tac-fol-mouth: linear-gradient(to bottom, oklch(0.25 0.03 75 / 0), oklch(0.25 0.03 75 / 0.24)); /* shade where things go into the pocket */
+  --tac-fol-shadow: drop-shadow(0 0 0.5px var(--tac-shadow-hairline)) drop-shadow(0 1px 1.5px var(--tac-shadow-contact)) drop-shadow(2px 9px 14px var(--tac-shadow-ambient));
+  --tac-fol-shadow-lift: drop-shadow(0 0 0.5px var(--tac-shadow-hairline)) drop-shadow(0 1px 1.5px var(--tac-shadow-contact)) drop-shadow(3px 16px 24px var(--tac-shadow-ambient))
+    drop-shadow(2px 9px 14px var(--tac-shadow-ambient));
+  --tac-fol-lift: 0.75rem; /* how far the contents rise out of a hovered folder */
+  --tac-fol-open: perspective(34rem) rotateX(-22deg); /* an opened folder's front, fallen toward the reader */
+  --tac-tp-fan: translate, rotate, filter;
+
+  /* ---- more sheets than the folder shows: separate sheet tops behind the contents,
+     staggered, each with its own edge. One, two, or — from twelve hidden — four. */
+  --tac-pile: oklch(0.962 0.006 88);
+  --tac-pile-edge: inset 0 1px 0 oklch(1 0 0 / 0.95), 0 0 0 1px oklch(0.3 0.02 80 / 0.1), 0 -1px 3px oklch(0.25 0.03 75 / 0.22);
+  --tac-pile-r: 0.25rem;
+  --tac-pile-a-h: 7.375rem;
+  --tac-pile-a-tilt: -2.6deg;
+  --tac-pile-b-h: 7.875rem;
+  --tac-pile-b-tilt: 2deg;
+  --tac-pile-c-h: 8.625rem; /* the two a full folder adds stand highest and lowest */
+  --tac-pile-c-tilt: 0.8deg;
+  --tac-pile-d-h: 6.875rem;
+  --tac-pile-d-tilt: 3.6deg;
+}
+
+.dark [data-direction="d3-tactile"] {
+  --tac-folder-face: linear-gradient(to bottom, oklch(1 0 0 / 0.07), oklch(1 0 0 / 0) 45%, oklch(0 0 0 / 0.1)), var(--tac-board-grain);
+  --tac-folder-lip: oklch(1 0 0 / 0.16);
+  --tac-folder-tab-edge: inset 0 1px 0 oklch(1 0 0 / 0.12);
+  --tac-fol-mouth: linear-gradient(to bottom, oklch(0 0 0 / 0), oklch(0 0 0 / 0.45));
+  --tac-pile: oklch(0.87 0.01 88);
+  --tac-pile-edge: inset 0 1px 0 oklch(1 0 0 / 0.6), 0 0 0 1px oklch(0 0 0 / 0.25), 0 -1px 4px oklch(0 0 0 / 0.5);
+}
+
+/* ---- folder sizes ----------------------------------------------------------
+   shelf  a stack on the Artifacts page: as wide as its grid cell
+   hero   the opened stack's own folder, beside its title: opened and empty
+*/
+[data-direction="d3-tactile"] [data-tac-folder="shelf"] {
+  --tac-fol-h: 15.75rem; /* the whole object, contents included */
+  --tac-fol-rise: 2.5rem; /* how far the tallest contents stand above the back board */
+  --tac-fol-pocket: 6.75rem;
+  --tac-fol-tab-h: 1.5rem;
+  --tac-fol-tab-w: 34%;
+  --tac-fol-shoulder: 1.75rem;
+  --tac-fol-r: 0.875rem;
+  --tac-fol-inset: 0.75rem;
+  --tac-fol-mouth-h: 0.875rem;
+  --tac-fol-flag-x: 1.25rem;
+}
+/*
+  Contents may lean out over the folder's sides above the pocket's mouth;
+  below it nothing shows outside the pocket's walls. Declared on the folder,
+  where --tac-fol-inset is.
+*/
+[data-direction="d3-tactile"] [data-tac-folder] {
+  --tac-clip-contents: polygon(-50% -100%, 150% -100%, 150% 100%, calc(100% + var(--tac-fol-inset) - 2px) 100%, calc(100% + var(--tac-fol-inset) - 2px) 300%, calc(2px - var(--tac-fol-inset)) 300%, calc(2px - var(--tac-fol-inset)) 100%, -50% 100%);
+}
+/* A full folder: its mouth is in deeper shade. */
+[data-direction="d3-tactile"] [data-tac-folder="shelf"][data-tac-full] {
+  --tac-fol-mouth-h: 1.375rem;
+}
+[data-direction="d3-tactile"] [data-tac-folder="hero"] {
+  --tac-fol-h: 9.25rem;
+  --tac-fol-rise: 0.75rem;
+  --tac-fol-pocket: 5rem;
+  --tac-fol-tab-h: 1.375rem;
+  --tac-fol-tab-w: 44%;
+  --tac-fol-shoulder: 1.5rem;
+  --tac-fol-r: 0.75rem;
+  --tac-fol-inset: 0.625rem;
+  --tac-fol-mouth-h: 2.25rem; /* nothing in it but shade */
+  --tac-fol-flag-x: 1rem;
+}
+
+/* ---- where each of a folder's contents stands -----------------------------
+   `data-tac-slot` is "<how many><which>": 3b is the middle of three. A slot
+   sets where along the pocket the object stands, the angle it leans at, the
+   wider angle it fans to when the folder is hovered, and a few px of
+   unevenness. `data-tac-deep` marks a portrait object, which sits deeper.
+
+   --tac-slot-w is the object's own width (set inline, in rem, by the shelf):
+   wherever the slot asks to stand, the object's sides stay --tac-slot-keep
+   inside the folder's edges.
+*/
+[data-direction="d3-tactile"] [data-tac-slot] {
+  --tac-slot-tuck: 1rem;
+  --tac-slot-dy: 0rem;
+  --tac-slot-keep: 0.625rem;
+  --tac-slot-y: calc(var(--tac-slot-tuck) + var(--tac-slot-dy));
+  --tac-slot-y-open: calc(var(--tac-slot-tuck) + var(--tac-slot-dy) - var(--tac-fol-lift));
+  --tac-slot-half: calc(var(--tac-slot-w) * var(--tac-fit, 1) / 2 - var(--tac-fol-inset) + var(--tac-slot-keep));
+  --tac-slot-left: clamp(var(--tac-slot-half), var(--tac-slot-x), calc(100% - var(--tac-slot-half)));
+}
+[data-direction="d3-tactile"] [data-tac-slot][data-tac-deep] {
+  --tac-slot-tuck: 1.6875rem;
+}
+[data-direction="d3-tactile"] [data-tac-slot="1a"] { --tac-slot-x: 50%; --tac-fan: -2deg; --tac-fan-open: -3deg; }
+[data-direction="d3-tactile"] [data-tac-slot="2a"] { --tac-slot-x: 28%; --tac-fan: -4deg; --tac-fan-open: -7deg; }
+[data-direction="d3-tactile"] [data-tac-slot="2b"] { --tac-slot-x: 71%; --tac-fan: 3.5deg; --tac-fan-open: 6.5deg; --tac-slot-dy: 0.375rem; }
+[data-direction="d3-tactile"] [data-tac-slot="3a"] { --tac-slot-x: 19%; --tac-fan: -5deg; --tac-fan-open: -9deg; --tac-slot-dy: 0.25rem; }
+[data-direction="d3-tactile"] [data-tac-slot="3b"] { --tac-slot-x: 50%; --tac-fan: 1.5deg; --tac-fan-open: 2deg; }
+[data-direction="d3-tactile"] [data-tac-slot="3c"] { --tac-slot-x: 81%; --tac-fan: 4deg; --tac-fan-open: 8deg; --tac-slot-dy: 0.5rem; }
+[data-direction="d3-tactile"] [data-tac-slot="4a"] { --tac-slot-x: 15.5%; --tac-fan: -6deg; --tac-fan-open: -10deg; --tac-slot-dy: 0.375rem; }
+[data-direction="d3-tactile"] [data-tac-slot="4b"] { --tac-slot-x: 38.5%; --tac-fan: 2deg; --tac-fan-open: 3.5deg; }
+[data-direction="d3-tactile"] [data-tac-slot="4c"] { --tac-slot-x: 61.5%; --tac-fan: -2deg; --tac-fan-open: -3.5deg; --tac-slot-dy: 0.5rem; }
+[data-direction="d3-tactile"] [data-tac-slot="4d"] { --tac-slot-x: 84.5%; --tac-fan: 4deg; --tac-fan-open: 8deg; --tac-slot-dy: 0.125rem; }

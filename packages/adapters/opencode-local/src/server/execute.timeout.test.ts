@@ -21,6 +21,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) =>
   runAdapterExecutionTargetProcess: mocks.process,
 }));
 import { execute } from "./execute.js";
+import { prepareAdapterExecutionTargetRuntime } from "@paperclipai/adapter-utils/execution-target";
 
 const rawOutput = "private-output-canary";
 const rawError = "<html>504 Gateway Time-out private-provider-token-canary</html>";
@@ -49,7 +50,7 @@ describe("OpenCode timeout reporting", () => {
     config: { command: "opencode", model: "openai/fixture", cwd: dir, timeoutSec,
       env: { OPENCODE_ALLOW_ALL_MODELS: "1" } },
     context: {}, onLog: async () => {},
-    ...(remote ? { executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace" } } : {}),
+    ...(remote ? { executionTarget: { kind: "remote", transport: "sandbox", providerKey: "daytona", remoteCwd: "/workspace" } } : {}),
   });
 
   it.each([
@@ -78,6 +79,55 @@ describe("OpenCode timeout reporting", () => {
     expect(mocks.process).toHaveBeenCalledTimes(1);
     expect(mocks.restore).toHaveBeenCalledTimes(1);
     expect(mocks.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("uploads the sandbox shell plugin and launches with its remote config home", async () => {
+    vi.mocked(prepareAdapterExecutionTargetRuntime).mockImplementationOnce(async (input) => {
+      const asset = input.assets?.find(asset => asset.key === "xdgConfig");
+      expect(asset).toBeDefined();
+      const plugins = await fs.readdir(path.join(asset!.localDir, "opencode", "plugins"));
+      expect(plugins).toHaveLength(1);
+      return { target: input.target!, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null,
+        runtimeRootDir: "/workspace/runtime", workspaceRemoteDir: "/workspace",
+        assetDirs: { xdgConfig: "/workspace/runtime/config" }, restoreWorkspace: mocks.restore };
+    });
+    await execute(context(0));
+    expect(mocks.process.mock.calls[0]![4].env.XDG_CONFIG_HOME).toBe("/workspace/runtime/config");
+    expect(mocks.process.mock.calls[0]![4].env).not.toHaveProperty("BASH_ENV");
+  });
+
+  it("runs the sandbox CLI through the actual process seam with session dispatch and incremental output", async () => {
+    const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>("@paperclipai/adapter-utils/execution-target");
+    mocks.process.mockImplementation(actual.runAdapterExecutionTargetProcess);
+    const logs = vi.fn(async () => {});
+    const runner = {
+      execute: vi.fn(async (input: { useSession?: boolean; onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void> }) => {
+        // A synchronous command can lose its HTTP response before the run's
+        // configured deadline. Session dispatch must keep that request off the
+        // main CLI path; it must not replay the agent to recover the response.
+        if (!input.useSession) return failed;
+        await input.onLog?.("stdout", "streamed fixture output");
+        return { ...failed, timedOut: false, exitCode: 0, stdout: "streamed fixture output", stderr: "" };
+      }),
+    };
+    const ctx = context(0);
+    ctx.onLog = logs;
+    ctx.executionTarget = { kind: "remote", transport: "sandbox", providerKey: "daytona", remoteCwd: "/workspace", runner };
+    const result = await execute(ctx);
+    expect(result).toMatchObject({ timedOut: false, exitCode: 0, errorMessage: null,
+      resultJson: { stdout: "streamed fixture output", adapterExecutionTimeout: { timeoutSec: 14400, source: "sandbox_default" } } });
+    expect(runner.execute).toHaveBeenCalledTimes(1);
+    expect(runner.execute.mock.calls[0]![0]).toMatchObject({ command: "opencode", useSession: true, timeoutMs: 14400000, commandTimeoutMs: 14400000 });
+    expect(logs).toHaveBeenCalledWith("stdout", "streamed fixture output");
+    expect(mocks.restore).toHaveBeenCalledTimes(1);
+    expect(mocks.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps other sandbox providers on their existing command path", async () => {
+    const ctx = context(12);
+    ctx.executionTarget = { kind: "remote", transport: "sandbox", providerKey: "fixture-provider", remoteCwd: "/workspace" };
+    await execute(ctx);
+    expect(mocks.process.mock.calls[0]![4]).not.toHaveProperty("useSession");
   });
 
   it("retains real local deadline and termination behavior without claiming provider origin", async () => {

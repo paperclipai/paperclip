@@ -91,13 +91,56 @@ describe("stable live agent directory observation", () => {
       const baseline = await captureDirectorySnapshot(root);
       runtime = await prepareAdapterExecutionTargetRuntime({ target, runId: "probe-transfer", adapterKey: "agent-files",
         workspaceLocalDir: root, workspaceRemoteDir: remote, syncWorkspace: true, workspaceBaseline: baseline,
-        workspaceGitSnapshot: null, workspaceFileMode: "all", workspaceExclude: [".paperclip-runtime", ".paperclip-runtime/**"] });
+        workspaceGitSnapshot: null, workspaceRepositories: [], workspaceFileMode: "all", workspaceExclude: [".paperclip-runtime", ".paperclip-runtime/**"] });
       expect(fs.readdirSync(`${remote}/.paperclip-runtime`)).toEqual(["agent-files"]);
       expect(fs.readdirSync(`${remote}/.paperclip-runtime/agent-files`)).toEqual([]);
       execFileSync(process.execPath, ["-e", agentDirectoryTransferCleanupProgram, remote], { env: {}, timeout: 10_000 });
       expect(() => probeAgentDirectory(remote)).not.toThrow();
       expect(probeAgentDirectory(remote).digest).toBe(agentDirectoryBaselineDigest(baseline));
     } finally { await runtime?.cleanupWorkspaceSnapshot?.(); fs.rmSync(remote, { recursive: true, force: true }); }
+  });
+  it.each([false, true])("round-trips the raw agent-directory repository namespace without discovery (recovering=%s)", async recovering => {
+    const remoteCwd = `${root}-remote`;
+    const agentHome = join(remoteCwd, ".paperclip-runtime", "agent-files", "agent", "original-run");
+    const scratch = join(remoteCwd, ".paperclip-runtime", "paperclip-runner", "agent-file-transfers", "agent", "original-run");
+    const rawFiles = {
+      ".paperclip-repositories/notes.txt": "Ordinary agent memory\n",
+      ".paperclip-repositories/archive/.git/config": "Raw nested configuration\n",
+      ".paperclip-repositories/archive/.git/hooks/post-commit": "Raw nested hook\n",
+      ".git/HEAD": "Raw root Git metadata\n",
+      "node_modules/memory.bin": "Ordinary cache directory bytes\n",
+    };
+    for (const [relative, contents] of Object.entries(rawFiles)) {
+      fs.mkdirSync(join(root, relative, ".."), { recursive: true });
+      fs.writeFileSync(join(root, relative), contents);
+    }
+    fs.mkdirSync(agentHome, { recursive: true });
+    if (recovering) fs.cpSync(root, agentHome, { recursive: true });
+    const target = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd,
+      runner: { execute: async (input: Parameters<import("@paperclipai/adapter-utils/command-managed-runtime").CommandManagedRuntimeRunner["execute"]>[0]) => ({
+        stdout: execFileSync(input.command, input.args ?? [], { cwd: input.cwd, input: input.stdin, encoding: "utf8",
+          env: { PATH: process.env.PATH, ...input.env }, timeout: input.timeoutMs, maxBuffer: 32 * 1024 * 1024 }),
+        stderr: "", exitCode: 0, signal: null, timedOut: false, pid: null, startedAt: new Date().toISOString(),
+      }) } };
+    let runtime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | undefined;
+    try {
+      runtime = await prepareAdapterExecutionTargetRuntime({ target, runId: "plain-agent-directory", adapterKey: "agent-files",
+        workspaceLocalDir: root, workspaceRemoteDir: agentHome, runtimeRootDir: scratch, syncWorkspace: true,
+        workspaceInboundMode: recovering ? "adopt_remote" : undefined, workspaceBaseline: await captureDirectorySnapshot(root),
+        workspaceGitSnapshot: null, workspaceRepositories: [], workspaceFileMode: "all",
+        workspaceExclude: [".paperclip-runtime", ".paperclip-runtime/**"] });
+      for (const [relative, contents] of Object.entries(rawFiles)) expect(fs.readFileSync(join(agentHome, relative), "utf8")).toBe(contents);
+      expect(probeAgentDirectory(agentHome).digest).toBe(probeAgentDirectory(root).digest);
+      fs.writeFileSync(join(agentHome, ".paperclip-repositories/notes.txt"), "Updated memory\n");
+      fs.writeFileSync(join(agentHome, ".paperclip-repositories/archive/.git/hooks/post-commit"), "Updated raw hook\n");
+      fs.unlinkSync(join(agentHome, "notes/memory.bin"));
+      await runtime.restoreWorkspace();
+      expect(fs.readFileSync(join(root, ".paperclip-repositories/notes.txt"), "utf8")).toBe("Updated memory\n");
+      expect(fs.readFileSync(join(root, ".paperclip-repositories/archive/.git/hooks/post-commit"), "utf8")).toBe("Updated raw hook\n");
+      expect(fs.existsSync(join(root, "notes/memory.bin"))).toBe(false);
+      expect(fs.readFileSync(join(root, ".git/HEAD"), "utf8")).toBe(rawFiles[".git/HEAD"]);
+      expect(probeAgentDirectory(agentHome).digest).toBe(probeAgentDirectory(root).digest);
+    } finally { await runtime?.cleanupWorkspaceSnapshot?.(); fs.rmSync(remoteCwd, { recursive: true, force: true }); }
   });
   it("keeps restart fallback transfer scratch outside the native memory directory", async () => {
     const remoteCwd = `${root}-remote`;
@@ -119,7 +162,7 @@ describe("stable live agent directory observation", () => {
       runtime = await prepareAdapterExecutionTargetRuntime({ target, runId: "restart-transfer", adapterKey: "agent-files",
         workspaceLocalDir: root, workspaceRemoteDir: agentHome, runtimeRootDir: scratch,
         syncWorkspace: true, workspaceInboundMode: "adopt_remote", workspaceBaseline: baseline,
-        workspaceGitSnapshot: null, workspaceFileMode: "all", workspaceExclude: [".paperclip-runtime", ".paperclip-runtime/**"] });
+        workspaceGitSnapshot: null, workspaceRepositories: [], workspaceFileMode: "all", workspaceExclude: [".paperclip-runtime", ".paperclip-runtime/**"] });
       const memory = "0123456789abcdef0123456789abcdef\n";
       fs.writeFileSync(join(agentHome, "notes", "memory.txt"), memory);
       await runtime.restoreWorkspace();

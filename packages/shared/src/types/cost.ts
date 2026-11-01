@@ -3,7 +3,7 @@ import type { BillingType, CostStatus } from "../constants.js";
 
 export interface CostEvent {
   subscriptionId?: string | null;
-  usageKind?: "agent" | "decision" | "fast_response";
+  usageKind?: "agent" | "decision" | "fast_response" | "prompt_injection";
   responsibleUserId?: string | null;
   id: string;
   companyId: string;
@@ -33,12 +33,38 @@ export interface CostSummary {
   pendingRunCount: number;
   unpricedEventCount: number;
   estimatedEventCount?: number;
+  /** Receipts whose API/subscription billing identity was not established. */
+  unknownBillingEventCount?: number;
   pricingComplete: boolean;
   companyId: string;
   spendCents: number;
   spendCentsExact?: string;
   budgetCents: number;
   utilizationPercent: number;
+}
+
+export type CostDataQualityReason = "unknown_billing" | "missing_model" | "missing_price"
+  | "waiting_for_receipt" | "receipt_unavailable" | "retryable";
+
+export interface CostDataQualityItem {
+  id: string;
+  runId: string | null;
+  agentId: string | null;
+  agentName: string | null;
+  agentAppearance?: AgentAppearance | null;
+  occurredAt: string;
+  provider: string | null;
+  model: string | null;
+  reason: CostDataQualityReason;
+}
+
+export interface CostDataQualityReport {
+  canRetry: boolean;
+  /** Each category is bounded independently so one cannot hide another. */
+  events: CostDataQualityItem[];
+  runs: CostDataQualityItem[];
+  hasMoreEvents: boolean;
+  hasMoreRuns: boolean;
 }
 
 export interface IssueCostSummary {
@@ -110,6 +136,9 @@ export interface CostByProviderModel {
   model: string;
   costCents: number;
   costCentsExact?: string;
+  eventCount?: number;
+  estimatedEventCount?: number;
+  unpricedEventCount?: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -124,6 +153,9 @@ export interface CostByBiller {
   biller: string;
   costCents: number;
   costCentsExact?: string;
+  eventCount?: number;
+  estimatedEventCount?: number;
+  unpricedEventCount?: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;

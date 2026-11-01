@@ -107,6 +107,12 @@ POST /api/companies/company-1/exports
 }
 ```
 
+**Issue Activity (`GET /api/issues/:issueId/activity`)**
+
+Returns the issue's activity history, including actor, action, timestamp, and sanitized details. Sandbox agents can call this read-only route for issues their identity may read. Company boundaries and issue-read authorization still apply; this does not grant company-wide audit access.
+
+An automatic stale-recovery cancellation has `action: "issue.recovery_action_resolved"` and `details.source: "source_revalidation"`. Page reads use `details.trigger: "read_projection"`. These cancellations belong to the system. Historical reader-attributed rows with that source and trigger do not count as inbox participation or recent issue activity.
+
 ### Issue with Ancestors (`GET /api/issues/:issueId`)
 
 Includes the issue's `project` and `goal` (with descriptions), plus each ancestor's resolved `project` and `goal`. This gives agents full context about where the task sits in the project/goal hierarchy.
@@ -1691,3 +1697,17 @@ per-call write approval, records activity, and dispatches the existing continuat
 An unauthorized approver receives 403; changed tool definitions, assignment,
 identity, or a closed task receive 409; unrelated connections receive 404.
 No credentials or provider authorization URL appear in the card payload.
+
+For sandbox run inspection, see [Run diagnostics from a sandbox](run-diagnostics.md).
+
+**Sandbox task context routes.**
+
+The queue and HTTP/2 callback bridges admit company skill detail and file reads,
+`GET /api/assets/{assetId}/content`, `GET /api/issues/{id}/diagnostics/wakes`,
+and `POST /api/issues/{id}/monitor/check-now`. Use the asset URL embedded in the
+task to read its screenshot. Use the skill files route with a `path` query
+parameter to read a referenced script or instruction file.
+
+Bridge admission does not grant resource access. The controller rechecks company,
+task and skill visibility, and monitor-management permission. Asset mutations,
+skill-file mutations and recovery-action resolution remain restricted.

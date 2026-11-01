@@ -18,6 +18,7 @@ import {
   confirmAgentConfigNavigation,
 } from "@/pages/AgentDetail";
 import { AgentSkillsTab } from "@/pages/agent-skills/AgentSkillsTab";
+import { AgentAdvancedTab } from "@/pages/AgentAdvancedTab";
 import { AgentToolsTab } from "@/pages/AgentToolsTab";
 import { AgentContextualSidebar } from "@/components/AgentContextualSidebar";
 import { AgentActionButtons } from "@/components/AgentActionButtons";
@@ -36,7 +37,7 @@ import {
   parseAgentDetailView,
   type AgentLocalDetailView,
 } from "@/pages/agent-detail-navigation";
-import { getAdapterDisplay } from "@/adapters/adapter-display-registry";
+import { agentDisplayAdapterType, getAdapterDisplay } from "@/adapters/adapter-display-registry";
 import { cn } from "@/lib/utils";
 import { RuntimeTestCard } from "../RuntimeTestCard";
 import { type TestOutcome } from "../new-agent-fixtures";
@@ -45,6 +46,7 @@ import { storybookIssues } from "../../fixtures/paperclipData";
 import "./settings.css";
 
 const descriptions: Record<AgentLocalDetailView, string> = {
+  advanced: "Edit the agent’s configuration as YAML.",
   overview: "A snapshot of Nova’s work, capabilities, and current setup.",
   instructions: "The files that guide how your agent thinks and works.",
   skills: "Choose the skills your agent brings to each task.",
@@ -77,16 +79,34 @@ export function AgentSettingsPreview({
   /** Storybook-only extension point for reviewing proposed runtime controls in the existing page. */
   runtimeContent?: ReactNode;
 }) {
-  const [fixtures] = useState(() =>
-    createSettingsFixtures(adapterType, testOutcome, saveFails),
-  );
+  const [fixtures] = useState(() => {
+    const fixtures = createSettingsFixtures(adapterType, testOutcome, saveFails);
+    if (adapterType === "codex_local" || adapterType === "paperclip_runner") {
+      fixtures.agent.adapterConfig = { ...fixtures.agent.adapterConfig, model: "gpt-5.6-sol", modelReasoningEffort: "high", ...(adapterType === "paperclip_runner" ? { provider: "codex" } : {}) };
+    }
+    return fixtures;
+  });
   const [ready, setReady] = useState(false);
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   useEffect(() => {
     const uninstall = fixtures.install();
+    const previous = window.fetch;
+    const codexFixture: typeof fetch = async (input, init) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
+      if (url.pathname === "/api/adapters" || url.pathname === "/api/health") {
+        const response = await previous(input, init);
+        const data = await response.json();
+        return Response.json(url.pathname === "/api/health" ? { ...data, status: "ok" }
+          : data.map((adapter: { type: string }) => adapter.type === "codex_local" ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" } : adapter));
+      }
+      return previous(input, init);
+    };
+    if (adapterType === "codex_local" || adapterType === "paperclip_runner") window.fetch = codexFixture;
     const fixtureQueryKeys = [
+      queryKeys.health,
+      queryKeys.adapters.all,
       queryKeys.agents.detail(ID),
       queryKeys.agents.detail(REF),
       queryKeys.agents.skills(ID),
@@ -110,10 +130,11 @@ export function AgentSettingsPreview({
     navigate(`/PAP/agents/${REF}/${initialTab}`, { replace: true });
     setReady(true);
     return () => {
+      if (window.fetch === codexFixture) window.fetch = previous;
       uninstall();
       clearFixtureQueries();
     };
-  }, [fixtures, initialTab, queryClient, setSelectedCompanyId]);
+  }, [adapterType, fixtures, initialTab, queryClient, setSelectedCompanyId]);
   if (!ready || selectedCompanyId !== COMPANY) return null;
   return (
     <Routes>
@@ -216,7 +237,8 @@ function SettingsPage({ runtimeContent }: { runtimeContent?: ReactNode }) {
       : AGENT_DETAIL_NAVIGATION.flatMap((s) => s.items).find(
           (t) => t.value === view,
         )?.label;
-  const display = getAdapterDisplay(agent.adapterType);
+  const displayType = agentDisplayAdapterType(agent);
+  const display = getAdapterDisplay(displayType);
   const Icon = display.icon;
   const callbacks = {
     onDirtyChange: onDirty,
@@ -255,7 +277,7 @@ function SettingsPage({ runtimeContent }: { runtimeContent?: ReactNode }) {
             if (
               dirty &&
               (event.target as HTMLElement).closest("a") &&
-              !confirmAgentConfigNavigation(true)
+              (saving || !confirmAgentConfigNavigation(true))
             ) {
               event.preventDefault();
               event.stopPropagation();
@@ -295,10 +317,10 @@ function SettingsPage({ runtimeContent }: { runtimeContent?: ReactNode }) {
                     {agent.name}
                   </h1>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    {agent.adapterType === "claude_local" ||
-                    agent.adapterType === "codex_local" ? (
+                    {displayType === "claude_local" ||
+                    displayType === "codex_local" ? (
                       <img
-                        src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`}
+                        src={`/brands/${displayType === "claude_local" ? "claude" : "codex"}-color.svg`}
                         className="size-4"
                         alt=""
                       />
@@ -450,6 +472,9 @@ function SettingsPage({ runtimeContent }: { runtimeContent?: ReactNode }) {
               )}
               {view === "revisions" && (
                 <AgentRevisionsTab agent={agent} companyId={COMPANY} />
+              )}
+              {view === "advanced" && (
+                <AgentAdvancedTab key={agent.id} agent={agent} onDirtyChange={onDirty} onSavingChange={setSaving} onSaved={() => {}} />
               )}
             </div>
             {(saveError || permissions.error) && (

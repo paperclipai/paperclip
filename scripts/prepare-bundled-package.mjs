@@ -51,13 +51,14 @@ export function createBundledInstallManifest(publishManifest, bundledDependencie
 }
 
 // npm consumers cannot inherit the workspace's pnpm overrides or patches.
-// Materialize the already-qualified Codex bridge closure in the tarball,
+// Materialize the already-qualified provider bridge closures in the tarball,
 // with overrides confined to the temporary, scripts-disabled producer graph.
 export function configureBundledProviderOverrides(installManifest, bundledDependencies, rootPackage, profileData) {
   const result = structuredClone(installManifest);
   const selected = [];
   for (const [agent, serverPackage, runtimePackage] of [
     ["codex", "@agentclientprotocol/codex-acp", "@openai/codex"],
+    ["claude", "@agentclientprotocol/claude-agent-acp", "@anthropic-ai/claude-agent-sdk"],
   ]) {
     if (!bundledDependencies.includes(serverPackage)) continue;
     const profile = profileData?.profiles?.[agent];
@@ -75,7 +76,9 @@ export function configureBundledProviderOverrides(installManifest, bundledDepend
     if (result.overrides?.[npmSelector] !== undefined) {
       throw new Error(`Bundled ${agent} runtime has a conflicting producer override`);
     }
-    const overrides = { [runtimePackage]: profile.agentRuntimeVersion };
+    const overrides = { [runtimePackage]: profile.agentRuntimeVersion,
+      ...(agent === "claude" ? { "@agentclientprotocol/sdk": "1.4.0", zod: "4.4.3" } : {}),
+    };
     result.overrides = { ...result.overrides, [npmSelector]: overrides };
     selected.push({ agent, ...profile });
   }
@@ -87,88 +90,105 @@ const inside = (root, candidate) => {
   return value !== "" && value !== ".." && !value.startsWith(`..${sep}`) && !isAbsolute(value);
 };
 
-// Bundle the pinned JavaScript closure, never the producer's Codex executable.
+// Bundle the pinned JavaScript closure, never the producer's executable.
 // npm installs the official optional package for the consumer's own platform.
 export function stageBundledProviderOptionalDependencies(destinationDir, publishManifest, profiles) {
   const graphRoot = resolve(destinationDir, "node_modules");
   if (realpathSync(graphRoot) !== graphRoot) throw new Error("Bundled Codex graph must be a canonical owned directory");
   const result = structuredClone(publishManifest), remove = new Set(), optional = {}, normalize = new Map();
-  const profile = profiles.find(value => value.agent === "codex");
-  if (profiles.length !== 1 || !profile) throw new Error("Bundled provider graph must contain its qualified Codex profile");
-  const targets = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64", "win32-arm64"];
-  const declarations = Object.fromEntries(targets.map(target => [`${profile.agentRuntimePackage}-${target}`,
-    `npm:${profile.agentRuntimePackage}@${profile.agentRuntimeVersion}-${target}`]));
-  const ownedDirectory = directory => {
-    const stat = lstatSync(directory);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || !inside(graphRoot, realpathSync(directory))) {
-      throw new Error("Bundled Codex dependency escapes its producer graph");
-    }
-  };
-  const manifestAt = directory => {
-    const path = resolve(directory, "package.json"), stat = lstatSync(path);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 256 * 1024) {
-      throw new Error("Bundled Codex dependency manifest must be a bounded regular file");
-    }
-    return JSON.parse(readFileSync(path, "utf8"));
-  };
-  const bridgeDirectory = resolve(graphRoot, profile.agentServerPackage);
-  ownedDirectory(bridgeDirectory);
-  const bridge = manifestAt(bridgeDirectory);
-  if (bridge.name !== profile.agentServerPackage || bridge.version !== profile.agentServerVersion) throw new Error("Bundled Codex bridge version mismatch");
-  const issuer = createRequire(resolve(bridgeDirectory, "package.json"));
-  const runtimeManifest = realpathSync(issuer.resolve(`${profile.agentRuntimePackage}/package.json`));
-  if (!inside(graphRoot, runtimeManifest)) throw new Error("Bundled Codex runtime escapes its producer graph");
-  let runtimeCount = 0, packageCount = 0;
-  const pending = [{ directory: graphRoot, depth: 0 }];
-  while (pending.length) {
-    const { directory, depth } = pending.pop();
-    if (depth > 64) throw new Error("Bundled Codex graph exceeds its depth limit");
-    const packages = [];
-    for (const entry of readdirSync(directory)) {
-      if (entry.startsWith(".")) continue;
-      const candidate = resolve(directory, entry); ownedDirectory(candidate);
-      if (entry.startsWith("@")) {
-        for (const child of readdirSync(candidate)) {
-          const scoped = resolve(candidate, child); ownedDirectory(scoped); packages.push(scoped);
-        }
-      } else packages.push(candidate);
-    }
-    for (const packageDirectory of packages) {
-      if (++packageCount > 20_000) throw new Error("Bundled Codex graph exceeds its package limit");
-      const metadata = manifestAt(packageDirectory);
-      const binding = basename(dirname(packageDirectory)) === "@openai" ? `@openai/${basename(packageDirectory)}` : null;
-      if (binding?.startsWith("@openai/codex-")) {
-        const target = binding.slice("@openai/codex-".length), [os, cpu] = target.split("-");
-        if (!Object.hasOwn(declarations, binding) || ![binding, profile.agentRuntimePackage].includes(metadata.name)
-          || metadata.version !== `${profile.agentRuntimeVersion}-${target}` || !metadata.os?.includes(os) || !metadata.cpu?.includes(cpu)) {
-          throw new Error("Bundled Codex installed platform identity mismatch");
-        }
-        remove.add(packageDirectory);
-        continue;
-      }
-      const nested = resolve(packageDirectory, "node_modules");
-      if (lstatExists(nested)) { ownedDirectory(nested); pending.push({ directory: nested, depth: depth + 1 }); }
-      if (binding !== profile.agentRuntimePackage) continue;
-      if (metadata.name !== profile.agentRuntimePackage || metadata.version !== profile.agentRuntimeVersion) throw new Error("Bundled Codex runtime version mismatch");
-      runtimeCount++;
-      const delegated = metadata.optionalDependencies === undefined
-        && Object.entries(declarations).every(([name, specifier]) => result.optionalDependencies?.[name] === specifier);
-      if (!delegated && (Object.keys(metadata.optionalDependencies ?? {}).length !== targets.length
-        || targets.some(target => metadata.optionalDependencies?.[`${profile.agentRuntimePackage}-${target}`] !== declarations[`${profile.agentRuntimePackage}-${target}`]))) {
-        throw new Error("Bundled Codex platform declaration is not qualified");
-      }
-      if (!delegated) {
-        const normalized = { ...metadata }; delete normalized.optionalDependencies;
-        normalize.set(resolve(packageDirectory, "package.json"), normalized);
-      }
-      const vendor = resolve(packageDirectory, "vendor");
-      if (lstatExists(vendor)) { ownedDirectory(vendor); remove.add(vendor); }
-    }
+  if (!profiles.length || new Set(profiles.map(profile => profile.agent)).size !== profiles.length) {
+    throw new Error("Bundled provider graph must contain distinct qualified profiles");
   }
-  if (!runtimeCount) throw new Error("Bundled Codex runtime omitted its platform declarations");
-  for (const [name, specifier] of Object.entries(declarations)) {
-    if (result.optionalDependencies?.[name] !== undefined && result.optionalDependencies[name] !== specifier) throw new Error(`Bundled Codex platform conflicts with published dependency: ${name}`);
-    optional[name] = specifier;
+  for (const profile of profiles) {
+    const expected = profile.agent === "codex" ? ["@agentclientprotocol/codex-acp", "@openai/codex"]
+      : profile.agent === "claude" ? ["@agentclientprotocol/claude-agent-acp", "@anthropic-ai/claude-agent-sdk"] : null;
+    if (!expected || profile.agentServerPackage !== expected[0] || profile.agentRuntimePackage !== expected[1]) {
+      throw new Error("Bundled provider graph contains an unknown provider profile");
+    }
+    const label = profile.agent === "codex" ? "Codex" : "Claude";
+    const targets = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64", "win32-arm64",
+      ...(profile.agent === "claude" ? ["linux-x64-musl", "linux-arm64-musl"] : [])];
+    const declarations = Object.fromEntries(targets.map(target => [`${profile.agentRuntimePackage}-${target}`,
+      profile.agent === "codex" ? `npm:${profile.agentRuntimePackage}@${profile.agentRuntimeVersion}-${target}` : profile.agentRuntimeVersion]));
+    const ownedDirectory = directory => {
+      const stat = lstatSync(directory);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || !inside(graphRoot, realpathSync(directory))) {
+        throw new Error(`Bundled ${label} dependency escapes its producer graph`);
+      }
+    };
+    const manifestAt = directory => {
+      const path = resolve(directory, "package.json"), stat = lstatSync(path);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 256 * 1024) {
+        throw new Error(`Bundled ${label} dependency manifest must be a bounded regular file`);
+      }
+      return JSON.parse(readFileSync(path, "utf8"));
+    };
+    const bridgeDirectory = resolve(graphRoot, profile.agentServerPackage);
+    ownedDirectory(bridgeDirectory);
+    const bridge = manifestAt(bridgeDirectory);
+    if (bridge.name !== profile.agentServerPackage || bridge.version !== profile.agentServerVersion) throw new Error(`Bundled ${label} bridge version mismatch`);
+    const issuer = createRequire(resolve(bridgeDirectory, "package.json"));
+    let runtimeManifest;
+    try { runtimeManifest = issuer.resolve(`${profile.agentRuntimePackage}/package.json`); }
+    catch (error) {
+      if (error.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw error;
+      runtimeManifest = resolve(dirname(issuer.resolve(profile.agentRuntimePackage)), "package.json");
+    }
+    runtimeManifest = realpathSync(runtimeManifest);
+    if (!inside(graphRoot, runtimeManifest)) throw new Error(`Bundled ${label} runtime escapes its producer graph`);
+    let runtimeCount = 0, packageCount = 0;
+    const pending = [{ directory: graphRoot, depth: 0 }];
+    while (pending.length) {
+      const { directory, depth } = pending.pop();
+      if (depth > 64) throw new Error(`Bundled ${label} graph exceeds its depth limit`);
+      const packages = [];
+      for (const entry of readdirSync(directory)) {
+        if (entry.startsWith(".")) continue;
+        const candidate = resolve(directory, entry); ownedDirectory(candidate);
+        if (entry.startsWith("@")) {
+          for (const child of readdirSync(candidate)) {
+            const scoped = resolve(candidate, child); ownedDirectory(scoped); packages.push(scoped);
+          }
+        } else packages.push(candidate);
+      }
+      for (const packageDirectory of packages) {
+        if (++packageCount > 20_000) throw new Error(`Bundled ${label} graph exceeds its package limit`);
+        const metadata = manifestAt(packageDirectory);
+        const scope = basename(dirname(packageDirectory));
+        const binding = scope.startsWith("@") ? `${scope}/${basename(packageDirectory)}` : basename(packageDirectory);
+        if (binding.startsWith(`${profile.agentRuntimePackage}-`)) {
+          const target = binding.slice(profile.agentRuntimePackage.length + 1), [os, cpu] = target.split("-");
+          if (!Object.hasOwn(declarations, binding) || !(metadata.name === binding || (profile.agent === "codex" && metadata.name === profile.agentRuntimePackage))
+            || metadata.version !== (profile.agent === "codex" ? `${profile.agentRuntimeVersion}-${target}` : profile.agentRuntimeVersion) || !metadata.os?.includes(os) || !metadata.cpu?.includes(cpu)) {
+            throw new Error(`Bundled ${label} installed platform identity mismatch`);
+          }
+          remove.add(packageDirectory);
+          continue;
+        }
+        const nested = resolve(packageDirectory, "node_modules");
+        if (lstatExists(nested)) { ownedDirectory(nested); pending.push({ directory: nested, depth: depth + 1 }); }
+        if (binding !== profile.agentRuntimePackage) continue;
+        if (metadata.name !== profile.agentRuntimePackage || metadata.version !== profile.agentRuntimeVersion) throw new Error(`Bundled ${label} runtime version mismatch`);
+        runtimeCount++;
+        const delegated = metadata.optionalDependencies === undefined
+          && Object.entries(declarations).every(([name, specifier]) => result.optionalDependencies?.[name] === specifier);
+        if (!delegated && (Object.keys(metadata.optionalDependencies ?? {}).length !== targets.length
+          || targets.some(target => metadata.optionalDependencies?.[`${profile.agentRuntimePackage}-${target}`] !== declarations[`${profile.agentRuntimePackage}-${target}`]))) {
+          throw new Error(`Bundled ${label} platform declaration is not qualified`);
+        }
+        if (!delegated) {
+          const normalized = { ...metadata }; delete normalized.optionalDependencies;
+          normalize.set(resolve(packageDirectory, "package.json"), normalized);
+        }
+        const vendor = resolve(packageDirectory, "vendor");
+        if (profile.agent === "codex" && lstatExists(vendor)) { ownedDirectory(vendor); remove.add(vendor); }
+      }
+    }
+    if (!runtimeCount) throw new Error(`Bundled ${label} runtime omitted its platform declarations`);
+    for (const [name, specifier] of Object.entries(declarations)) {
+      if (result.optionalDependencies?.[name] !== undefined && result.optionalDependencies[name] !== specifier) throw new Error(`Bundled ${label} platform conflicts with published dependency: ${name}`);
+      optional[name] = specifier;
+    }
   }
   // A bundled wrapper's optional edges make npm treat missing platform slots
   // as bundled too. Delegate those exact declarations to the unbundled server
@@ -178,7 +198,7 @@ export function stageBundledProviderOptionalDependencies(destinationDir, publish
   for (const directory of remove) rmSync(directory, { recursive: true, force: true });
   result.optionalDependencies = { ...result.optionalDependencies, ...optional };
   for (const field of ["bundleDependencies", "bundledDependencies"]) {
-    if (Array.isArray(result[field])) result[field] = result[field].filter(name => !Object.hasOwn(declarations, name));
+    if (Array.isArray(result[field])) result[field] = result[field].filter(name => !Object.hasOwn(optional, name));
   }
   delete result.paperclipProviderArtifacts;
   return result;

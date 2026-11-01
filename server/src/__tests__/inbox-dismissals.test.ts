@@ -11,6 +11,9 @@ import {
   heartbeatRuns,
   inboxDismissals,
   invites,
+  issues,
+  issueComments,
+  issueReadStates,
   joinRequests,
 } from "@paperclipai/db";
 import {
@@ -22,6 +25,7 @@ import { inboxDismissalRoutes } from "../routes/inbox-dismissals.js";
 import { inboxDismissalService } from "../services/inbox-dismissals.ts";
 import { sidebarBadgeRoutes } from "../routes/sidebar-badges.js";
 import { sidebarBadgeService } from "../services/sidebar-badges.ts";
+import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -46,6 +50,9 @@ describeEmbeddedPostgres("inbox dismissals", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueReadStates);
+    await db.delete(issueComments);
+    await db.delete(issues);
     await db.delete(inboxDismissals);
     await db.delete(joinRequests);
     await db.delete(invites);
@@ -98,6 +105,49 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     const response = await request(app).get(`/api/companies/${companyId}/sidebar-badges`).expect(200);
     expect(response.body.failedRuns).toBe(expected);
     expect(response.body.inbox).toBe(expected);
+  });
+
+  it("counts only unread Mine tasks without returning their bodies", async () => {
+    const companyId = randomUUID(), issueId = randomUUID(), otherId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Badge fixture", issuePrefix: "BADGE" });
+    const createdAt = new Date("2026-03-11T01:00:00Z");
+    const replyAt = new Date("2026-03-11T02:00:00Z");
+    await db.insert(issues).values([
+      { id: issueId, companyId, title: "Mine", description: "Large body".repeat(10000), createdByUserId: "local-board", createdAt },
+      { id: otherId, companyId, title: "Not mine", createdByUserId: "someone-else", createdAt },
+    ]);
+    await db.insert(issueComments).values([issueId, otherId].map((id) => ({ companyId, issueId: id, authorType: "user" as const, authorUserId: "someone-else", body: "Reply", createdAt: replyAt })));
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "local_implicit", userId: "local-board", companyIds: [companyId], isInstanceAdmin: true };
+      next();
+    });
+    app.use("/api", sidebarBadgeRoutes(db));
+    app.use(errorHandler);
+    const response = await request(app).get(`/api/companies/${companyId}/sidebar-badges`).expect(200);
+    expect(response.body).toMatchObject({ inbox: 1, unreadIssueIds: [issueId] });
+    expect(JSON.stringify(response.body).length).toBeLessThan(300);
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Restricted reviewer", role: "engineer",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: { trustBoundary: { mode: LOW_TRUST_REVIEW_PRESET, rootIssueId: otherId, projectIds: [] } },
+      },
+    });
+    const agentApp = express();
+    agentApp.use((req, _res, next) => {
+      req.actor = { type: "agent", source: "agent_jwt", agentId, companyId, onBehalfOfUserId: "local-board",
+        onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "active" }] };
+      next();
+    });
+    agentApp.use("/api", sidebarBadgeRoutes(db));
+    agentApp.use(errorHandler);
+    const agentResponse = await request(agentApp).get(`/api/companies/${companyId}/sidebar-badges`).expect(200);
+    expect(agentResponse.body).toMatchObject({ inbox: 0, unreadIssueIds: [] });
+    await db.insert(issueReadStates).values({ companyId, issueId, userId: "local-board", lastReadAt: replyAt });
+    const read = await request(app).get(`/api/companies/${companyId}/sidebar-badges`).expect(200);
+    expect(read.body).toMatchObject({ inbox: 0, unreadIssueIds: [] });
   });
 
   it("upserts a single dismissal record per user and inbox item key", async () => {

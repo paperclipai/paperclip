@@ -21,6 +21,22 @@ describe.skipIf(!support.supported)("postgres connection recovery", () => {
   afterAll(async () => { await database?.cleanup(); });
 
   for (const format of ["esm", "cjs"]) {
+    for (const scenario of ["no-pipeline-single", "no-pipeline", "no-pipeline-fairness"]) {
+      it(`${format}: ${scenario} preserves connection ownership and progress`, async () => {
+        const { stdout, stderr } = await run(process.execPath, [fixture], {
+          env: {
+            ...process.env,
+            TEST_DATABASE_URL: database.connectionString,
+            DRIVER_FORMAT: format,
+            RECOVERY_CASE: scenario,
+          },
+          timeout: 15_000,
+        });
+        expect(stdout.trim()).toBe("recovered");
+        expect(stderr).toBe("");
+      }, 20_000);
+    }
+
     for (const scenario of ["transaction", "transaction-closed", "savepoint", "reserve", "transaction-queue", "reserve-queue"]) {
       it(`${format}: rejects disconnected ${scenario} work and recovers the pool`, async () => {
         // A driver timer used to crash the whole process. A child also detects

@@ -8,6 +8,7 @@ import type { DurableRecoveryCommittedEvent, DurableRecoveryIdentity } from "../
 // event pump, registered handler, and request emission below all run unchanged.
 const peer = vi.hoisted(() => ({ current: null as TestPeer | null }));
 interface TestPeer {
+  readonly recoveredSourceSeq: number;
   store: { state: { identity: DurableRecoveryIdentity; committedEvents: DurableRecoveryCommittedEvent[]; commands: Array<Record<string, unknown>> } };
   emit(type: string, payload: Record<string, unknown>): void;
 }
@@ -17,6 +18,7 @@ vi.mock("../control-plane/durable-prp-control-plane.js", async (importOriginal) 
     ...actual,
     spawnRunner: vi.fn(() => ({ child: { exitCode: null }, completion: new Promise(() => {}) })),
     DurablePrpControlPlane: class implements TestPeer {
+      readonly recoveredSourceSeq = 0;
       store: TestPeer["store"];
       connectUrl = "ws://fixture.invalid";
       constructor(options: { identity: DurableRecoveryIdentity }) {
@@ -25,9 +27,13 @@ vi.mock("../control-plane/durable-prp-control-plane.js", async (importOriginal) 
       }
       async start() {}
       async stop() {}
+      async drainPendingConnectionProcessing() {}
       disconnectActiveRunner() {}
       persistRunAttachTemplate() {}
+      persistPreparedLaunchConfiguration() {}
       issueBootstrapTicket() { return {}; }
+      async flushCheckpoint() {}
+      async recoverPendingSemanticInputs() {}
       getCommand(id: string) { return this.store.state.commands.find(c => c.commandId === id); }
       queueCommand(type: string, payload: Record<string, unknown>, id = type) {
         this.store.state.commands.push({ type, commandId: id, status: "completed", result: { result: { providerTurnId: payload.turnId } } });
@@ -158,6 +164,10 @@ it("does not dispatch an expired durable request when its consumer resumes", asy
     fixture.emitPermission();
     peer.current!.emit("runtime_request.expired", { requestId: "permission-7" });
     fixture.emitMarker();
+    expect((await fixture.iterator.next()).value).toMatchObject({
+      method: "paperclip/runtimeRequestExpired",
+      params: { payload: { requestId: "permission-7" } },
+    });
     expect((await fixture.iterator.next()).value?.method).toBe("item/agentMessage/delta");
     expect(handler).not.toHaveBeenCalled();
   } finally { await fixture.close(); }

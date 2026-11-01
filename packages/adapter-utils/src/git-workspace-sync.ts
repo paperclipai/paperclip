@@ -15,6 +15,7 @@ export interface GitCommandResult {
 export interface GitWorkspaceSnapshot {
   headCommit: string;
   branchName: string | null;
+  originUrl?: string | null;
   overlayPaths: WorkspacePaths;
   deletedPaths: WorkspacePaths;
   ignoredPaths: WorkspacePaths;
@@ -94,6 +95,12 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
+/** Refresh restored stat metadata without staging dirty working-tree content. */
+export function buildRefreshWorkspaceGitIndexCommand(directory: string): string {
+  return `if git -C ${shellQuote(directory)} -c core.fsmonitor=false update-index -q --refresh >/dev/null; then :; `
+    + 'else index_status=$?; if [ "$index_status" -ne 1 ]; then exit "$index_status"; fi; fi';
+}
+
 export async function runLocalGit(
   localDir: string,
   args: string[],
@@ -168,6 +175,33 @@ export function workspaceSnapshotTimeoutMs(): number {
   return Number.isFinite(configured) && configured >= 1000 ? Math.min(configured, 86_400_000) : 30 * 60_000;
 }
 
+export async function readManagedWorkspaceRepositories(localDir: string, options: { signal?: AbortSignal } = {}): Promise<NonNullable<GitWorkspaceSnapshot["repositories"]>> {
+  const repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = [];
+  try {
+
+      const root = path.join(localDir, PROJECT_REPOSITORIES_DIR);
+      const rootStat = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (rootStat) {
+        if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("Invalid project repositories directory");
+        for await (const entry of await fs.opendir(root)) {
+          if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]+$/.test(entry.name)) throw new Error("Invalid project repository directory");
+          const relative = `${PROJECT_REPOSITORIES_DIR}/${entry.name}`;
+          const snapshot = await readGitWorkspaceSnapshot(path.join(localDir, relative), false, options);
+          if (!snapshot) throw new Error(`Project repository is not a Git checkout: ${relative}`);
+          repositories.push({ path: relative, snapshot });
+        }
+      }
+
+    return repositories;
+  } catch (error) {
+    for (const repo of repositories) await disposeGitWorkspaceSnapshot(repo.snapshot);
+    throw error;
+  }
+}
+
 export async function readGitWorkspaceSnapshot(localDir: string, includeRepositories = true, options: { signal?: AbortSignal } = {}): Promise<GitWorkspaceSnapshot | null> {
   const repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = [];
   // Only repository discovery may report an ordinary directory. A failed
@@ -205,23 +239,7 @@ export async function readGitWorkspaceSnapshot(localDir: string, includeReposito
   options.signal?.addEventListener("abort", abort, { once: true });
   if (options.signal?.aborted) abort();
   try {
-    if (includeRepositories) {
-      const root = path.join(localDir, PROJECT_REPOSITORIES_DIR);
-      const rootStat = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return null;
-        throw error;
-      });
-      if (rootStat) {
-        if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("Invalid project repositories directory");
-        for await (const entry of await fs.opendir(root)) {
-          if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]+$/.test(entry.name)) throw new Error("Invalid project repository directory");
-          const relative = `${PROJECT_REPOSITORIES_DIR}/${entry.name}`;
-          const snapshot = await readGitWorkspaceSnapshot(path.join(localDir, relative), false, options);
-          if (!snapshot) throw new Error(`Project repository is not a Git checkout: ${relative}`);
-          repositories.push({ path: relative, snapshot });
-        }
-      }
-    }
+    if (includeRepositories) repositories.push(...await readManagedWorkspaceRepositories(localDir, options));
 
     const scan = async (args: string[], operation: string, category: string) => {
       const parser = new WorkspaceNulParser((record) => {
@@ -267,6 +285,7 @@ export async function readGitWorkspaceSnapshot(localDir: string, includeReposito
     const branch = (settled[1] as PromiseFulfilledResult<GitCommandResult>).value.stdout.trim();
     const snapshot: GitWorkspaceSnapshot = {
       headCommit: head, branchName: branch && branch !== "HEAD" ? branch : null,
+      originUrl: await readSanitizedOriginRemoteUrl(localDir),
       overlayPaths: writer.paths("overlay"), deletedPaths: writer.paths("deleted"), ignoredPaths: writer.paths("ignored"),
       ...(repositories.length ? { repositories } : {}),
     };
@@ -573,7 +592,7 @@ export async function readSanitizedOriginRemoteUrl(localDir: string): Promise<st
   }
 }
 
-async function copyCloneTree(source: string, target: string): Promise<void> {
+export async function copyCloneTree(source: string, target: string): Promise<void> {
   await fs.mkdir(target, { recursive: true });
   for await (const entry of await fs.opendir(source)) {
     const from = path.join(source, entry.name);
@@ -594,7 +613,7 @@ export async function withShallowGitWorkspaceClone<T>(
   const cloneDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-workspace-"));
   const tempRef = `refs/paperclip/git-sync/import/${randomUUID()}`;
   try {
-    const originUrl = await readSanitizedOriginRemoteUrl(input.localDir);
+    const originUrl = input.snapshot.originUrl !== undefined ? input.snapshot.originUrl : await readSanitizedOriginRemoteUrl(input.localDir);
     await runLocalGit(input.localDir, ["update-ref", tempRef, input.snapshot.headCommit], {
       timeout: 10_000,
       maxBuffer: 16 * 1024,
@@ -676,22 +695,120 @@ export async function deleteLocalGitRef(input: {
   }).catch(() => undefined);
 }
 
+export const GIT_SHALLOW_METADATA_EXIT_CODE = 47;
+export const GIT_SHALLOW_METADATA_ERROR_CODE = "WORKSPACE_RESTORE_INVALID_GIT_METADATA";
+
+/** Invalid restore metadata is an integrity rejection, not a dropped transfer. */
+export class GitShallowMetadataError extends Error {
+  readonly code = GIT_SHALLOW_METADATA_ERROR_CODE;
+}
+
+export const GIT_SHALLOW_MAX_BYTES = 64 * 1024;
+export const GIT_SHALLOW_MAX_BOUNDARIES = 256;
+
 export async function fetchGitBundleIntoLocalRef(input: {
   localDir: string;
   bundlePath: string;
   exportRef: string;
   importedRef: string;
   baseSha: string;
+  /** Shallow boundaries accompanying a full bundle, which cannot encode them. */
+  shallowPath?: string;
 }): Promise<string> {
   const bundleSize = (await fs.stat(input.bundlePath).catch(() => null))?.size ?? 0;
   if (bundleSize === 0) {
     return input.baseSha;
   }
 
-  await runLocalGit(input.localDir, ["fetch", "--force", input.bundlePath, `${input.exportRef}:${input.importedRef}`], {
-    timeout: 60_000,
-    maxBuffer: 1024 * 1024,
-  });
+  const shallowSize = input.shallowPath ? (await fs.stat(input.shallowPath)).size : 0;
+  if (shallowSize > GIT_SHALLOW_MAX_BYTES) {
+    throw new GitShallowMetadataError(`Git shallow metadata exceeds its byte limit (${shallowSize} > ${GIT_SHALLOW_MAX_BYTES})`);
+  }
+  const shallow = input.shallowPath ? await fs.readFile(input.shallowPath, "utf8") : "";
+  const shallowBytes = Buffer.byteLength(shallow);
+  if (shallowBytes > GIT_SHALLOW_MAX_BYTES)
+    throw new GitShallowMetadataError(`Git shallow metadata exceeds its byte limit (${shallowBytes} > ${GIT_SHALLOW_MAX_BYTES})`);
+  if (shallow.trim()) {
+    const boundaries = [...new Set(shallow.trim().split("\n"))];
+    if (boundaries.length > GIT_SHALLOW_MAX_BOUNDARIES) throw new GitShallowMetadataError(`Git shallow metadata exceeds its boundary limit (${boundaries.length} > ${GIT_SHALLOW_MAX_BOUNDARIES})`);
+    let deadline = Date.now() + 60_000;
+    const importGit = (cwd: string, args: string[], options: NonNullable<Parameters<typeof runLocalGit>[2]> = {}) => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error("Git shallow history import timed out");
+      return runLocalGit(cwd, args, { ...options, timeout: Math.min(options.timeout ?? 15_000, remaining) });
+    };
+    const objectFormat = (await importGit(input.localDir, ["rev-parse", "--show-object-format"])).stdout.trim();
+    const oid = objectFormat === "sha256" ? /^[a-f0-9]{64}$/ : /^[a-f0-9]{40}$/;
+    if (!boundaries.every((boundary) => oid.test(boundary))) throw new GitShallowMetadataError(`Invalid Git shallow boundaries for host object format ${objectFormat}`);
+    const staging = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-bundle-"));
+    try {
+      // Git bundles have no shallow protocol. Unpack into a private repository
+      // carrying the sender's boundaries, then let ordinary Git fetch negotiate
+      // which boundaries the host actually needs. Never overwrite host shallow
+      // metadata or disable connectivity checks.
+      await importGit(input.localDir, ["clone", "--bare", "--shared", input.localDir, staging], { timeout: 60_000 });
+      const advertised = await importGit(staging, ["bundle", "unbundle", input.bundlePath], {
+        timeout: 60_000, maxBuffer: 1024 * 1024,
+      });
+      const head = advertised.stdout.split("\n").find((line) => line.endsWith(` ${input.exportRef}`))?.split(" ")[0];
+      if (!head || !oid.test(head)) throw new Error("Git bundle does not advertise the requested export ref");
+      const retainedBoundaries = (await fs.readFile(path.join(staging, "shallow"), "utf8").catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        return "";
+      })).trim().split("\n").filter(Boolean);
+      // Boundary inspection has its own small budget. It must not consume the
+      // transfer budget needed to save a valid large bundle after the probes.
+      const probeStarted = Date.now(), probeDeadline = probeStarted + 15_000;
+      const probeGit = (args: string[]) => {
+        const remaining = probeDeadline - Date.now();
+        if (remaining <= 0) throw new Error("Git shallow boundary inspection timed out");
+        return runLocalGit(staging, args, { timeout: remaining });
+      };
+      const knownCommits = new Map<string, boolean>();
+      const hasCommit = async (commit: string): Promise<boolean> => {
+        if (knownCommits.has(commit)) return knownCommits.get(commit)!;
+        try {
+          await probeGit(["rev-parse", "--verify", "--quiet", `${commit}^{commit}`]);
+          knownCommits.set(commit, true);
+          return true;
+        } catch (error) {
+          if ((error as { code?: unknown }).code === 1) {
+            knownCommits.set(commit, false);
+            return false;
+          }
+          throw error;
+        }
+      };
+      for (const boundary of boundaries) {
+        // A shallow sender can stop before history the host already holds.
+        // Keep that connection when possible; adding its boundary unconditionally
+        // would hide a real merge-base and reject concurrent host changes.
+        if (!await hasCommit(boundary)) continue; // An unrelated tip is not in this bundle.
+        const parents = await probeGit(["rev-parse", `${boundary}^@`]);
+        let missingParent = false;
+        for (const parent of parents.stdout.trim().split("\n").filter(Boolean)) {
+          if (!await hasCommit(parent)) {
+            missingParent = true;
+            break;
+          }
+        }
+        if (missingParent) retainedBoundaries.push(boundary);
+      }
+      deadline += Date.now() - probeStarted;
+      if (retainedBoundaries.length) await fs.writeFile(path.join(staging, "shallow"), `${[...new Set(retainedBoundaries)].join("\n")}\n`);
+      await importGit(staging, ["update-ref", input.exportRef, head]);
+      await importGit(input.localDir, ["fetch", "--force", "--update-shallow", staging, `${input.exportRef}:${input.importedRef}`], {
+        timeout: 60_000, maxBuffer: 1024 * 1024,
+      });
+    } finally {
+      await fs.rm(staging, { recursive: true, force: true });
+    }
+  } else {
+    await runLocalGit(input.localDir, ["fetch", "--force", input.bundlePath, `${input.exportRef}:${input.importedRef}`], {
+      timeout: 60_000,
+      maxBuffer: 1024 * 1024,
+    });
+  }
   const importedHead = await runLocalGit(input.localDir, ["rev-parse", input.importedRef], {
     timeout: 10_000,
     maxBuffer: 16 * 1024,
@@ -731,6 +848,8 @@ export function buildRemoteGitDeltaBundleScript(input: {
    * failed because the host lacked the bundle's prerequisite.
    */
   forceFullBundle?: boolean;
+  /** Export the sender's shallow boundaries alongside a full bundle. */
+  shallowPath?: string;
 }): string {
   const remoteDir = shellQuote(input.remoteDir);
   const bundlePath = shellQuote(input.bundlePath);
@@ -739,6 +858,7 @@ export function buildRemoteGitDeltaBundleScript(input: {
   const statusPath = input.statusPath ? shellQuote(input.statusPath) : null;
   const cleanupParts = [
     `rm -f ${bundlePath}`,
+    ...(input.shallowPath ? [`rm -f ${shellQuote(input.shallowPath)}`] : []),
     ...(statusPath ? [`rm -f ${statusPath}`] : []),
     `git -C ${remoteDir} update-ref -d ${exportRef} >/dev/null 2>&1 || true`,
   ];
@@ -748,6 +868,13 @@ export function buildRemoteGitDeltaBundleScript(input: {
     input.cleanupBundle ? "trap cleanup EXIT" : "",
     `mkdir -p ${shellQuote(path.posix.dirname(input.bundlePath))}`,
     `rm -f ${bundlePath}`,
+    ...(input.shallowPath ? [
+      `shallow_file=$(git -C ${remoteDir} rev-parse --path-format=absolute --git-path shallow)`,
+      `if [ -f "$shallow_file" ]; then`,
+      `  dd if="$shallow_file" of=${shellQuote(input.shallowPath)} bs=${GIT_SHALLOW_MAX_BYTES + 1} count=1 2>/dev/null`,
+      `else : > ${shellQuote(input.shallowPath)}; fi`,
+      `[ "$(wc -c < ${shellQuote(input.shallowPath)})" -le ${GIT_SHALLOW_MAX_BYTES} ] || { printf '%s\\n' 'Git shallow metadata exceeds its byte limit' >&2; exit ${GIT_SHALLOW_METADATA_EXIT_CODE}; }`,
+    ] : []),
     // Choose the bundle boundary. A thin bundle `HEAD --not <baseSha>` records
     // baseSha as a prerequisite the importer (host) must already hold. That
     // assumption breaks in two real cases, and then `git fetch` on the host

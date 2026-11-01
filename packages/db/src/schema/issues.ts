@@ -21,7 +21,7 @@ import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { projectWorkspaces } from "./project_workspaces.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
-import type { IssueReviewPolicy, IssueUnblockDescriptor, SourceTrustMetadata } from "@paperclipai/shared";
+import type { IssueReviewPolicy, IssueUnblockDescriptor, SourceTrustMetadata, TaskWorkspaceIntent, TaskWorkspacePendingSelection } from "@paperclipai/shared";
 
 export const issues = pgTable(
   "issues",
@@ -81,6 +81,9 @@ export const issues = pgTable(
     monitorScheduledBy: text("monitor_scheduled_by"),
     executionWorkspaceId: uuid("execution_workspace_id")
       .references((): AnyPgColumn => executionWorkspaces.id, { onDelete: "set null" }),
+    workspaceBindingRevision: integer("workspace_binding_revision").notNull().default(0),
+    workspaceSelection: jsonb("workspace_selection").$type<TaskWorkspaceIntent>(),
+    workspacePendingSelection: jsonb("workspace_pending_selection").$type<TaskWorkspacePendingSelection>(),
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),

@@ -1,15 +1,21 @@
-import { Identity } from "@/components/Identity";
+import { SpekoPhoneLine } from "@/components/voice/SpekoPhoneLine";
+import { SpekoIncomingCalls } from "@/components/voice/SpekoIncomingCalls";
+import { SpekoCallActivityItem, SpekoUnapprovedCallActivityItem, useSpekoCallHistory } from "@/components/voice/SpekoCallHistory";
+import { SpekoPhoneCallback } from "@/components/voice/SpekoPhoneCallback";
+import { deriveInitials } from "@/components/Identity";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { agentAvatarUrl } from "@/lib/agent-avatar-url";
+import { resolveAgentAppearance } from "@paperclipai/shared";
+import { SlackTestMessageButton } from "./SlackTestMessageButton";
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { SlackSetupAdvanced } from "./SlackAppDetails";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { SlackToolsSettings, SlackSearchAccess } from "./SlackToolSettings";
-import { defaultSlackAppName } from "./slack-app-name";
 import { ChatCommunicationInstructions } from "./ChatCommunicationInstructions";
-import { SlackAvatarSettings } from "./SlackAvatarStep";
+import { ChatExecutionDefaults } from "./ChatExecutionDefaults";
 import { agentsApi } from "@/api/agents";
-import { agentAvatarUrl } from "@/lib/agent-avatar-url";
-import { resolveAgentAppearance } from "@paperclipai/shared";
-import { AgentAvatar } from "@/components/AgentAvatar";
 import { ChatConversationList } from "./ChatConversationList";
+import { GitHubConnectionRecoveryNotice } from "./GitHubConnectionRecovery";
 import { GitHubBotManagement, GitHubReviews } from "./GitHubBotManagement";
 import { GitHubBotMention, GitHubAppIdentityActions } from "./GitHubAppIdentity";
 import { GitHubConnectionComplete, type GitHubConnectionCompleteLocationState } from "./GitHubConnectionComplete";
@@ -310,13 +316,14 @@ export function ChatEndpointDetail() {
       </div>
     );
   if (endpoint.provider === "agentmail" && activeTab === "settings")
-    return <EmailEndpointSettings key={endpoint.id} endpointId={endpoint.id} companyId={endpoint.companyId} assignedAgentName={endpoint.assignedAgentName} />;
+    return <div className="space-y-7"><EmailEndpointSettings key={endpoint.id} endpointId={endpoint.id} companyId={endpoint.companyId} assignedAgentName={endpoint.assignedAgentName} /><EndpointExecutionDefaults endpoint={endpoint} /></div>;
   const setupIncomplete =
     endpoint.setup?.step !== "complete" &&
     !(endpoint.provider === "slack" && endpoint.setup?.step === "test") &&
     ["draft", "verifying", "attention", "revoked"].includes(endpoint.status);
-  const slackUrl = endpoint.provider === "slack" && endpoint.providerAccountId && endpoint.botExternalId
-    ? `https://app.slack.com/client/${encodeURIComponent(endpoint.providerAccountId)}/user/${encodeURIComponent(endpoint.botExternalId)}`
+  const slackAppId = endpoint.setup?.slackRegistration?.appId;
+  const slackUrl = endpoint.provider === "slack"
+    ? slackAppId ? `https://api.slack.com/apps/${encodeURIComponent(slackAppId)}/oauth` : "https://api.slack.com/apps"
     : null;
 
   return (
@@ -325,8 +332,9 @@ export function ChatEndpointDetail() {
         <div className="flex min-w-0 items-center gap-3">
           <AgentAvatar agent={agentQuery.data ?? { id: endpoint.assignedAgentId, name: endpoint.assignedAgentName }} size={endpoint.provider === "github" ? 64 : 48} />
           <div className="min-w-0">
-          <h1 ref={heading} tabIndex={-1} className="text-xl font-bold">
-            {endpoint.provider === "github" ? (endpoint.botLabel ?? endpoint.assignedAgentName) : endpoint.assignedAgentName}
+          <h1 ref={heading} tabIndex={-1} className={endpoint.provider === "speko" ? "flex items-center gap-3 text-xl font-bold" : "text-xl font-bold"}>
+            {endpoint.provider === "speko" && <AppLogo name="Speko" brandKey="speko" size={36} />}
+            {endpoint.provider === "github" ? (endpoint.botLabel ?? endpoint.assignedAgentName) : endpoint.assignedAgentName}{endpoint.provider === "speko" ? " in Speko" : ""}
           </h1>
           <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
             {endpoint.provider === "github" ? <><AppLogo name="GitHub" brandKey="github" compact className="size-4! rounded-sm bg-transparent" /><Link to={`/agents/${endpoint.assignedAgentId}`} className="hover:underline">{endpoint.assignedAgentName}</Link>{endpoint.providerAccountLabel && <span>· {endpoint.providerAccountLabel}</span>}</> : endpoint.providerAccountLabel ?? (endpoint.provider === "agentmail" ? endpoint.botExternalId ?? "Email connection" : "Chat connection")}
@@ -347,8 +355,9 @@ export function ChatEndpointDetail() {
           )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {slackUrl && <Button asChild variant="outline"><a href={slackUrl} target="_blank" rel="noopener noreferrer">Open Slack <ExternalLink className="size-4" /></a></Button>}
+        <div className="flex flex-wrap items-center gap-2">
+          {endpoint.provider === "speko" && <a href="https://platform.speko.ai/agents" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-primary underline">Open Speko<ExternalLink className="size-3.5" aria-hidden="true" /></a>}
+          {slackUrl && <Button asChild variant="outline"><a href={slackUrl} target="_blank" rel="noopener noreferrer">Open Slack configuration <ExternalLink className="size-4" /></a></Button>}
           {setupIncomplete ? (
             <Button
               variant="outline"
@@ -361,16 +370,27 @@ export function ChatEndpointDetail() {
               Continue setup
             </Button>
           ) : null}
-          {["paused", "attention", "revoked"].includes(endpoint.status) && <StatusBadge status={endpoint.status} />}
+          {endpoint.status !== "active" && <StatusBadge status={endpoint.status} className={endpoint.provider === "speko" ? "text-foreground" : undefined} />}
         </div>
       </header>
+      {endpoint.provider === "github" && <GitHubConnectionRecoveryNotice endpoint={endpoint} />}
+      {activeTab === "settings" && endpoint.provider === "speko" && endpoint.status === "active" && <div className="space-y-6"><SpekoPhoneCallback companyId={endpoint.companyId} endpointId={endpoint.id} /><SpekoPhoneLine companyId={endpoint.companyId} endpointId={endpoint.id} /><SpekoIncomingCalls companyId={endpoint.companyId} endpointId={endpoint.id} agentId={endpoint.assignedAgentId} /></div>}
+      {endpoint.provider === "slack" && <SlackTestMessageButton key={endpoint.id} endpointId={endpoint.id} />}
       {endpoint.provider === "github" && <div hidden={activeTab !== "settings" && activeTab !== "access"}>
         <GitHubBotManagement key={endpoint.id} endpoint={endpoint} view={activeTab === "access" ? "access" : "settings"} />
       </div>}
       {activeTab === "settings" && endpoint.provider !== "github" && <Settings endpointId={endpoint.id} endpoint={endpoint} />}
+      {activeTab === "settings" && <EndpointExecutionDefaults endpoint={endpoint} />}
       {activeTab === "reviews" && endpoint.provider === "github" && <GitHubReviews endpointId={endpoint.id} reviewId={reviewId} />}
+      {activeTab === "access" && endpoint.provider === "speko" && (
+        <section className="max-w-3xl space-y-3">
+          <h2 className="text-lg font-semibold">Private voice access</h2>
+          <p className="text-sm text-muted-foreground">Browser calls use the signed-in Paperclip user’s current company access. Each call stays bound to its selected agent and task.</p>
+          <p className="text-sm text-muted-foreground">Outgoing calls use your saved callback number and opt-in. For a private incoming call, enter the code spoken on the phone in signed-in Paperclip and select a task to approve that live call. Incoming calls can start a new conversation task without sign-in, under a task-scoped low-trust policy. Private mode is optional and requires approval before accessing existing tasks.</p>
+        </section>
+      )}
 {activeTab === "access" && endpoint.provider === "agentmail" && <EmailAccess endpoint={endpoint} />}
-{activeTab === "access" && endpoint.provider !== "github" && endpoint.provider !== "agentmail" && (
+{activeTab === "access" && endpoint.provider !== "speko" && endpoint.provider !== "github" && endpoint.provider !== "agentmail" && (
         <Access
           endpointId={endpoint.id}
           allowUnlinked={endpoint.allowUnlinkedPeople}
@@ -398,6 +418,19 @@ export function ChatEndpointDetail() {
       )}
     </div>
   );
+}
+
+function EndpointExecutionDefaults({ endpoint }: { endpoint: ChatEndpoint }) {
+  const queryClient = useQueryClient();
+  return <section className="max-w-3xl py-5"><ChatExecutionDefaults
+    key={endpoint.id}
+    companyId={endpoint.companyId}
+    value={endpoint.executionDefaults}
+    onSave={async (executionDefaults) => {
+      const next = await chatEndpointsApi.update(endpoint.id, { executionDefaults });
+      queryClient.setQueryData(queryKeys.chatEndpoints.detail(endpoint.id), next);
+    }}
+  /></section>;
 }
 
 function EmailAccess({ endpoint }: { endpoint: ChatEndpoint }) {
@@ -435,16 +468,10 @@ function Settings({
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
-  const [messageCopied, setMessageCopied] = useState(false);
-  const avatarAgent = useQuery({
-    queryKey: queryKeys.agents.detail(endpoint.assignedAgentId),
-    queryFn: () => agentsApi.get(endpoint.assignedAgentId, endpoint.companyId),
-    enabled: endpoint.provider === "slack",
-  });
-  const mentionMessage = `@${(endpoint.botUsername ?? endpoint.botLabel ?? endpoint.assignedAgentName).replace(/^@/, "")} you there?`;
   const resourcesQuery = useQuery({
     queryKey: queryKeys.chatEndpoints.resources(endpointId),
     queryFn: () => chatEndpointsApi.listResources(endpointId),
+    enabled: endpoint.provider !== "speko",
     ...(endpoint.provider === "slack" ? liveChatQueryOptions : {}),
   });
   const saveResources = useMutation({
@@ -476,6 +503,7 @@ function Settings({
         tone: "error",
       }),
   });
+  if (endpoint.provider === "speko") return null;
   const resources = resourcesQuery.data ?? [];
   const destinationResources = resources.filter((resource) =>
     isIndividuallyToggleableResource(endpoint.provider, resource.type),
@@ -512,9 +540,10 @@ function Settings({
             No destinations yet.
           </p>
         ) : (
-          <div className="divide-y divide-border border-y border-border">
+          <div className={endpoint.provider === "slack" ? "space-y-1" : "divide-y divide-border border-y border-border"}>
             {destinationResources.map((resource) => (
-              <div key={resource.id} className="flex items-center gap-3 py-3">
+              <div key={resource.id} className="py-3 space-y-3">
+              <div className="flex items-center gap-3">
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">
                     {resource.label}
@@ -538,6 +567,19 @@ function Settings({
                     toggleResource(resource, enabled)
                   }
                 />
+              </div>
+              <details className="text-sm">
+                <summary className="cursor-pointer text-muted-foreground">Task defaults</summary>
+                <div className="pt-3"><ChatExecutionDefaults
+                  companyId={endpoint.companyId}
+                  value={resource.executionDefaults}
+                  resource
+                  onSave={async (executionDefaults) => {
+                    const next = await chatEndpointsApi.updateResources(endpointId, [{ id: resource.id, executionDefaults }]);
+                    queryClient.setQueryData(queryKeys.chatEndpoints.resources(endpointId), next);
+                  }}
+                /></div>
+              </details>
               </div>
             ))}
             {endpoint.provider === "slack" && (
@@ -566,7 +608,7 @@ function Settings({
           {endpoint.provider === "slack" && (
             <SettingToggle
               label="Require at-mention"
-              detail="Only respond to messages that @mention this bot, including thread replies and direct messages. Direct messages must also be allowed above."
+              detail="In channels, only respond to messages that @mention this bot, including thread replies. Direct messages never require an @mention and must be allowed above."
               checked={endpoint.requireAtMention ?? false}
               pending={updateEndpoint.isPending}
               onChange={(requireAtMention) =>
@@ -595,27 +637,7 @@ function Settings({
           queryClient.setQueryData(queryKeys.chatEndpoints.detail(endpointId), next);
         }}
       />}
-      {endpoint.provider === "slack" && (
-        <SlackSetupAdvanced label="Message in a channel"><div className="space-y-2 text-sm">
-          <p>Invite the bot to a channel, then mention it to start a conversation.</p>
-          <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
-            <code>{mentionMessage}</code>
-            <Button size="icon" variant="ghost" aria-label={messageCopied ? "Message copied" : "Copy message"} onClick={() => {
-              void copyTextToClipboard(mentionMessage).then(() => setMessageCopied(true), () => pushToast({ title: "Couldn’t copy the message", body: "Select and copy it manually.", tone: "error" }));
-            }}>{messageCopied ? <Check className="size-4" /> : <Copy className="size-4" />}</Button>
-          </div>
-        </div></SlackSetupAdvanced>
-      )}
-      {endpoint.provider === "slack" && <SlackSetupAdvanced label="Agent avatar">
-        {avatarAgent.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading agent avatar…</p>
-          : avatarAgent.isError ? <p role="alert" className="text-sm text-destructive">Couldn’t load the agent’s avatar. <button className="underline" onClick={() => void avatarAgent.refetch()}>Try again</button></p>
-          : <SlackAvatarSettings
-              agentName={avatarAgent.data?.name ?? endpoint.assignedAgentName}
-              appName={endpoint.setup?.slackApp?.appName ?? defaultSlackAppName(avatarAgent.data?.name ?? endpoint.assignedAgentName)}
-              avatarUrl={agentAvatarUrl(resolveAgentAppearance(avatarAgent.data?.appearance, endpoint.assignedAgentId), 512, 1, "rest", false, "paperclip-dark")}
-            />}
-      </SlackSetupAdvanced>}
-      {endpoint.provider === "slack" && <SlackSetupAdvanced label="Slack tools"><SlackToolsSettings companyId={endpoint.companyId} endpointId={endpointId} connectionId={endpoint.connectionId} /></SlackSetupAdvanced>}
+      {endpoint.provider === "slack" && <SlackSetupAdvanced label="Slack tools"><SlackToolsSettings companyId={endpoint.companyId} endpointId={endpointId} /></SlackSetupAdvanced>}
     </section>
   );
 }
@@ -634,7 +656,7 @@ function SettingToggle({
   onChange: (value: boolean) => void;
 }) {
   return (
-    <div className="flex items-center gap-3 border-y border-border py-3">
+    <div className="flex items-center gap-3 py-3">
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium">{label}</p>
         {detail && <p className="text-xs text-muted-foreground">{detail}</p>}
@@ -779,13 +801,19 @@ function Access({
                 role="listitem"
                 className="flex flex-wrap items-center gap-3 py-3"
               >
-                <div className="min-w-0 flex-1">
-                  <Identity name={link.paperclipUserLabel ?? link.externalLabel} size="default" className="gap-2" />
-                  {(link.status !== "linked" || link.externalLabel !== link.paperclipUserLabel) && <p className="pl-10 text-xs text-muted-foreground">
-                    {link.status === "revoked" ? "Disconnected" : link.status === "linked"
-                      ? link.externalLabel
-                      : "Waiting for account confirmation"}
-                  </p>}
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <Avatar aria-hidden="true">
+                    {link.paperclipUserImage && <AvatarImage src={link.paperclipUserImage} alt="" />}
+                    <AvatarFallback>{deriveInitials(link.paperclipUserLabel ?? link.externalLabel)}</AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm" title={link.paperclipUserLabel ?? link.externalLabel}>{link.paperclipUserLabel ?? link.externalLabel}</p>
+                    {(link.status !== "linked" || link.externalLabel !== link.paperclipUserLabel) && <p className="text-xs text-muted-foreground">
+                      {link.status === "revoked" ? "Disconnected" : link.status === "linked"
+                        ? link.externalLabel
+                        : "Waiting for account confirmation"}
+                    </p>}
+                  </div>
                 </div>
                 {link.status === "linked" ? (
                   <Button
@@ -841,7 +869,7 @@ function Conversations({
           <p role="alert" className="text-sm text-destructive">Conversations could not be loaded.</p>
           <Button variant="outline" onClick={() => void query.refetch()}>Try again</Button>
         </div>
-      ) : <ChatConversationList rows={query.data} provider={provider} />}
+      ) : <ChatConversationList rows={query.data ?? []} provider={provider} />}
     </section>
   );
 }
@@ -869,6 +897,7 @@ function Activity({
     ...liveChatQueryOptions,
     refetchInterval: cursor ? false : liveChatQueryOptions.refetchInterval,
   });
+  const calls = useSpekoCallHistory(endpoint.companyId, endpointId, endpoint.provider === "speko" && !cursor);
   const replay = useMutation({
     mutationFn: (item: ChatActivityItem) =>
       item.kind === "publication"
@@ -982,6 +1011,14 @@ function Activity({
       }),
   });
   const rows = query.data?.items ?? [];
+  // Calls use their own caller-authorized API and appear once in recent activity.
+  // Older connection-event pages retain the existing cursor contract.
+  const activityEntries = [
+    ...(!query.isError ? rows.map(item => ({ kind: "connection" as const, id: `connection:${item.id}`, createdAt: item.createdAt, item })) : []),
+    ...(!cursor && !calls.error ? calls.entries.map(entry => ({ kind: "call" as const, id: `call:${entry.session.id}`, createdAt: entry.session.createdAt, entry })) : []),
+    ...(!cursor && !calls.incomingError ? calls.unapprovedCalls.map(call => ({ kind: "unapproved_call" as const, id: `unapproved:${call.id}`, createdAt: call.createdAt, call })) : []),
+  ].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
+
   const { status } = endpoint;
   const health = connectionHealthPresentation(endpoint);
   const lifecycleAction = lifecycle.variables;
@@ -993,7 +1030,7 @@ function Activity({
       ] as const)
     : [];
   return (
-    <section className="space-y-5">
+    <section className="space-y-5" aria-label="Connection activity">
       <h2 className="text-lg font-semibold">Connection activity</h2>
       {((status !== "active" && health.message) || health.error) && (
         <div
@@ -1144,9 +1181,10 @@ function Activity({
         </div>
       </details>
       <div className="space-y-2">
-        <h3 className="text-sm font-semibold">
-          Recent activity
-        </h3>
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold">Recent activity</h3>
+          {endpoint.provider === "speko" && !cursor && <Button size="sm" variant="ghost" onClick={() => { void query.refetch(); calls.onRetry(); }} disabled={query.isFetching || calls.loading}>Refresh</Button>}
+        </div>
         {endpoint.provider === "agentmail" && rows.some((item) => item.kind === "publication" && item.status === "delivery_unknown") && (
           <p className="text-sm text-muted-foreground">
             Review unconfirmed email delivery in the{" "}
@@ -1154,7 +1192,7 @@ function Activity({
           </p>
         )}
         <div className="divide-y divide-border border-y border-border">
-          {query.isLoading && (
+          {(query.isLoading || calls.loading) && (
             <div className="flex items-center gap-2 py-5 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
               Loading activity…
@@ -1174,11 +1212,19 @@ function Activity({
               </Button>
             </div>
           )}
-          {!query.isLoading &&
-            !query.isError &&
-            rows.map((item) => (
+          {endpoint.provider === "speko" && !cursor && [
+            calls.error && `Call activity could not be loaded. ${calls.error}`,
+            calls.incomingError && `Unapproved calls could not be loaded. ${calls.incomingError}`,
+            calls.endError && `The call could not be ended. ${calls.endError}`,
+          ].filter(Boolean).map((message) => <div key={String(message)} className="flex flex-wrap items-center justify-between gap-3 py-4"><p role="alert" className="text-sm text-destructive">{message}</p><Button size="sm" variant="outline" onClick={calls.onRetry}>Retry calls</Button></div>)}
+          {activityEntries.map(entry => {
+            if (entry.kind === "call") return <SpekoCallActivityItem key={entry.id} entry={entry.entry} presentation="activity" onEnd={calls.onEnd} ending={calls.endingSessionId === entry.entry.session.id} />;
+            if (entry.kind === "unapproved_call") return <SpekoUnapprovedCallActivityItem key={entry.id} call={entry.call} presentation="activity" />;
+            const item = entry.item;
+            return (
               <div
-                key={item.id}
+                key={entry.id}
+                data-activity-kind="connection"
                 className="flex items-start gap-3 px-2 py-3 transition-colors hover:bg-accent/50"
               >
                 <span className="mt-0.5 text-muted-foreground" aria-hidden="true">
@@ -1234,8 +1280,9 @@ function Activity({
                   </Button>
                 )}
               </div>
-            ))}
-          {!query.isLoading && !query.isError && rows.length === 0 && (
+            );
+          })}
+          {!query.isLoading && !query.isError && !calls.loading && !calls.error && !calls.incomingError && activityEntries.length === 0 && (
             <p className="py-5 text-sm text-muted-foreground">
               No connection activity yet.
             </p>

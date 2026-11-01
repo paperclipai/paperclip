@@ -1,3 +1,8 @@
+import { projectGitAuthorizationService } from "./project-git-authorization.js";
+import { createLiveEventDelivery } from "../realtime/live-event-delivery.js";
+import { createLiveRunEventRedactor } from "./live-run-event-redaction.js";
+import { projectInstanceSecretService } from "./project-instance-secrets.js";
+import { pluginAgentRuntimeState, pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
 import { createAgentLifecycle } from "./agent-lifecycle.js";
 import type { Db } from "@paperclipai/db";
 import {
@@ -532,6 +537,10 @@ const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set([
   "postUploadCommand",
   "session.open",
   "session.close",
+  "plugin.worker", "plugin.host.identity.read", "plugin.host.config.read", "plugin.host.progress.read", "plugin.host.progress.write",
+  "plugin.workspace.prepare", "plugin.storage.queue", "plugin.storage.execute",
+  "plugin.runtime.queue", "plugin.runtime.prepare", "plugin.runtime.reconcile", "plugin.runtime.verify",
+  "plugin.remote.request", "plugin.remote.operation", "plugin.remote.lifecycle",
 ]);
 
 /** Clamp the span name to a closed, namespaced set. A known name maps to
@@ -542,7 +551,7 @@ const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set([
  * `provider` family attribute on the span instead of this literal. */
 function clampProviderSpanName(raw: unknown): string {
   const name = typeof raw === "string" && KNOWN_PROVIDER_SPAN_NAMES.has(raw) ? raw : "other";
-  return `sandbox.daytona.${name}`;
+  return name.startsWith("plugin.") ? name : `sandbox.daytona.${name}`;
 }
 
 /** The closed allowlist of attribute keys a provider span may carry. The host
@@ -555,6 +564,7 @@ const PROVIDER_SPAN_ATTR_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   SPAN_ATTRS.transferWallMs,
   SPAN_ATTRS.transferGuardCount,
   SPAN_ATTRS.transferDirection,
+  "plugin.operation", "plugin.reused", "plugin.item_count", "plugin.bytes", "plugin.call_count",
 ]);
 
 /** The subset of allowed keys that carry a finite number. */
@@ -562,6 +572,7 @@ const PROVIDER_SPAN_NUMERIC_ATTRS: ReadonlySet<string> = new Set<string>([
   SPAN_ATTRS.packWallMs,
   SPAN_ATTRS.transferWallMs,
   SPAN_ATTRS.transferGuardCount,
+  "plugin.item_count", "plugin.bytes", "plugin.call_count",
 ]);
 
 /** The closed value set for the `outcome` attribute. */
@@ -584,6 +595,11 @@ export function clampProviderSpanAttributes(
   if (!raw) return clamped;
   for (const [key, value] of Object.entries(raw)) {
     if (!PROVIDER_SPAN_ATTR_ALLOWLIST.has(key)) continue;
+    if (key === "plugin.operation") {
+      if (typeof value === "string" && ["request", "queue.wait", "launch.wait", "mount.refresh", "guest.setup", "process.execute", "script.workspace", "script.git", "script.settings", "script.publication", "cleanup", "process.start", "hello", "checkpoint.load"].includes(value)) clamped[key] = value;
+      continue;
+    }
+    if (key === "plugin.reused") { if (typeof value === "boolean") clamped[key] = value; continue; }
     if (key === SPAN_ATTRS.provider) {
       clamped[key] = normalizeProviderFamily(typeof value === "string" ? value : undefined);
       continue;
@@ -597,7 +613,7 @@ export function clampProviderSpanAttributes(
       continue;
     }
     if (PROVIDER_SPAN_NUMERIC_ATTRS.has(key)) {
-      if (typeof value === "number" && Number.isFinite(value)) clamped[key] = value;
+      if (typeof value === "number" && Number.isFinite(value) && (!key.startsWith("plugin.") || value >= 0 && value <= 1e12)) clamped[key] = value;
       continue;
     }
   }
@@ -659,12 +675,14 @@ const MAX_PROVIDER_SPAN_END_SKEW_MS = 60 * 1000; // 1 minute
 function validateProviderSpanTimes(
   startTimeMs: unknown,
   endTimeMs: unknown,
+  maxDurationMs = MAX_PROVIDER_SPAN_DURATION_MS,
+  maxAgeMs = MAX_PROVIDER_SPAN_START_AGE_MS,
 ): { startTimeMs: number; endTimeMs: number } | undefined {
   if (typeof startTimeMs !== "number" || !Number.isFinite(startTimeMs)) return undefined;
   if (typeof endTimeMs !== "number" || !Number.isFinite(endTimeMs)) return undefined;
   if (startTimeMs > endTimeMs) return undefined;
-  if (endTimeMs - startTimeMs > MAX_PROVIDER_SPAN_DURATION_MS) return undefined;
-  if (Date.now() - startTimeMs > MAX_PROVIDER_SPAN_START_AGE_MS) return undefined;
+  if (endTimeMs - startTimeMs > maxDurationMs) return undefined;
+  if (Date.now() - startTimeMs > maxAgeMs) return undefined;
   if (endTimeMs - Date.now() > MAX_PROVIDER_SPAN_END_SKEW_MS) return undefined;
   return { startTimeMs, endTimeMs };
 }
@@ -686,20 +704,40 @@ export function recordWorkerProviderSpan(
     status?: { code?: unknown; message?: unknown };
     startTimeMs?: unknown;
     endTimeMs?: unknown;
+    children?: unknown;
+    relationship?: unknown;
   },
   context: WorkerHostCallContext | undefined,
 ): void {
   const parent = parseTraceparent(context?.traceparent);
   if (!parent) return; // reject a missing or malformed traceparent
-  const times = validateProviderSpanTimes(params.startTimeMs, params.endTimeMs);
-  const status = clampSpanStatus(params.status);
-  recordProviderPluginSpan({
-    name: clampProviderSpanName(params.name),
-    parent,
-    attributes: clampProviderSpanAttributes(params.attributes),
-    ...(status ? { status } : {}),
-    ...(times ? { startTimeMs: times.startTimeMs, endTimeMs: times.endTimeMs } : {}),
-  });
+  const budget = context?.providerSpanBudget ?? {remaining:256};
+  const longInvocation = params.name === "plugin.worker";
+  const invocationLimitMs = 24 * 60 * 60 * 1000;
+  const visit = (params: { name: string; attributes?: Record<string, unknown>; status?: { code?: unknown }; startTimeMs?: unknown; endTimeMs?: unknown; children?: unknown; relationship?: unknown }, parent: ParsedTraceparent, depth: number, enclosing?: { startTimeMs: number; endTimeMs: number }) => {
+    if (depth > 12 || budget.remaining-- <= 0) return;
+    const times = validateProviderSpanTimes(params.startTimeMs, params.endTimeMs,
+      depth === 0 && longInvocation ? invocationLimitMs : MAX_PROVIDER_SPAN_DURATION_MS,
+      longInvocation ? invocationLimitMs : MAX_PROVIDER_SPAN_START_AGE_MS);
+    const linked = params.relationship === "linked" && params.name === "plugin.remote.lifecycle";
+    if (params.relationship !== undefined && !linked) return;
+    if (linked && (!times || Date.now() - times.startTimeMs > MAX_PROVIDER_SPAN_DURATION_MS)) return;
+    if (enclosing && (!times || (!linked && times.startTimeMs < enclosing.startTimeMs) || times.endTimeMs > enclosing.endTimeMs)) return;
+    const status = clampSpanStatus(params.status);
+    const childParent = recordProviderPluginSpan({
+      name: clampProviderSpanName(params.name),
+      parent,
+      ...(linked ? { linked: true } : {}),
+      attributes: clampProviderSpanAttributes(params.attributes),
+      ...(status ? { status } : {}),
+      ...(times ? { startTimeMs: times.startTimeMs, endTimeMs: times.endTimeMs } : {}),
+    });
+    if (childParent && times && Array.isArray(params.children)) for (const child of params.children.slice(0, 256)) {
+      if (budget.remaining <= 0) break;
+      if (child && typeof child === "object" && typeof child.name === "string") visit(child, childParent, depth + 1, times);
+    }
+  };
+  try { visit(params, parent, 0); } catch {}
 }
 
 export function buildHostServices(
@@ -1698,7 +1736,7 @@ export function buildHostServices(
 
     events: {
       async listLifecycle(params) {
-        return lifecycleInbox.list(ensureCompanyId(params.companyId), params.limit, params.afterId);
+        return lifecycleInbox.list(ensureCompanyId(params.companyId), params.limit, params.afterId, options.manifest?.resourceLifecycle?.includes("agent_runtime") ? ["agent", "project", "agent_runtime"] : ["agent", "project"]);
       },
       async acknowledgeLifecycle(params) {
         await lifecycleInbox.acknowledge(ensureCompanyId(params.companyId), params.eventId);
@@ -1861,6 +1899,16 @@ export function buildHostServices(
     },
 
     projects: {
+      async resolveGitCredential(params, context) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return projectGitAuthorizationService(db).resolve(params, context.invocationScope?.projectGit);
+      },
+      async getInstanceSecrets(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return projectInstanceSecretService(db, pluginId).read(companyId, params.projectId);
+      },
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
@@ -2995,6 +3043,16 @@ export function buildHostServices(
     },
 
     agents: {
+      async getRuntimeIdentity(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return pluginAgentRuntimeIdentity(db, pluginId, companyId, params.agentId);
+      },
+      async getRuntime(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return pluginAgentRuntimeState(db, pluginId, companyId, params.agentId, params.environmentId, params.installEnvironmentSkills);
+      },
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
@@ -3541,54 +3599,82 @@ export function buildHostServices(
         if (notifyWorker) {
           const TERMINAL_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
 
+          let active = true;
           const cleanup = () => {
-            unsubscribe();
+            stopDelivery();
             clearTimeout(timeoutTimer);
             activeSubscriptions.delete(entry);
           };
-
-          const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
-            const payload = event.payload as Record<string, unknown> | undefined;
-            if (!payload || payload.runId !== run.id) return;
-
-            if (event.type === "heartbeat.run.log" || event.type === "heartbeat.run.event") {
-              notifyWorker("agents.sessions.event", {
-                sessionId: params.sessionId,
-                runId: run.id,
-                seq: (payload.seq as number) ?? 0,
-                eventType: "chunk",
-                stream: (payload.stream as string) ?? null,
-                message: (payload.chunk as string) ?? (payload.message as string) ?? null,
-                payload: payload,
-              });
-            } else if (event.type === "heartbeat.run.status") {
-              const status = payload.status as string;
-              if (TERMINAL_STATUSES.has(status)) {
-                notifyWorker("agents.sessions.event", {
-                  sessionId: params.sessionId,
-                  runId: run.id,
-                  seq: 0,
-                  eventType: status === "succeeded" ? "done" : "error",
-                  stream: "system",
-                  message: status === "succeeded"
-                    ? (typeof payload.finalText === "string" ? payload.finalText : null)
-                    : `Run ${status}`,
-                  payload: payload,
-                });
-                cleanup();
-              } else {
-                notifyWorker("agents.sessions.event", {
-                  sessionId: params.sessionId,
-                  runId: run.id,
-                  seq: 0,
-                  eventType: "status",
-                  stream: "system",
-                  message: `Run status: ${status}`,
-                  payload: payload,
-                });
-              }
+          const failDelivery = () => {
+            if (!active) return;
+            cleanup();
+            try {
+              notifyWorker("agents.sessions.event", { sessionId: params.sessionId, runId: run.id,
+                seq: 0, eventType: "error", stream: "system", message: "Run event delivery unavailable",
+                payload: { reason: "delivery_unavailable" } });
+            } catch (err) {
+              logger.warn({ err, pluginId, runId: run.id }, "plugin session delivery unavailable");
             }
+          };
+          const delivery = createLiveEventDelivery({
+            socket: {
+              get readyState() { return active ? 1 : 3; },
+              send(encoded, callback) {
+                const event = JSON.parse(encoded) as import("@paperclipai/shared").LiveEvent;
+                const payload = event.payload;
+                if (event.type === "heartbeat.run.log" || event.type === "heartbeat.run.event") {
+                  notifyWorker("agents.sessions.event", {
+                    sessionId: params.sessionId,
+                    runId: run.id,
+                    seq: (payload.seq as number) ?? 0,
+                    eventType: "chunk",
+                    stream: (payload.stream as string) ?? null,
+                    message: (payload.chunk as string) ?? (payload.message as string) ?? null,
+                    payload: payload,
+                  });
+                } else if (event.type === "heartbeat.run.status") {
+                  const status = payload.status as string;
+                  if (TERMINAL_STATUSES.has(status)) {
+                    notifyWorker("agents.sessions.event", {
+                      sessionId: params.sessionId,
+                      runId: run.id,
+                      seq: 0,
+                      eventType: status === "succeeded" ? "done" : "error",
+                      stream: "system",
+                      message: status === "succeeded"
+                        ? (typeof payload.finalText === "string" ? payload.finalText : null)
+                        : `Run ${status}`,
+                      payload: payload,
+                    });
+                    cleanup();
+                  } else {
+                    notifyWorker("agents.sessions.event", {
+                      sessionId: params.sessionId,
+                      runId: run.id,
+                      seq: 0,
+                      eventType: "status",
+                      stream: "system",
+                      message: `Run status: ${status}`,
+                      payload: payload,
+                    });
+                  }
+                }
+                callback?.();
+              },
+              close: failDelivery,
+            },
+            authorize: createLiveRunEventRedactor(db),
+            decorate: async event => event,
+            onError: err => {
+              logger.warn({ err, pluginId, runId: run.id }, "plugin session event redaction failed");
+              failDelivery();
+            },
           });
+          const unsubscribe = subscribeCompanyLiveEvents(companyId, event => {
+            if (event.payload.runId === run.id &&
+                ["heartbeat.run.log", "heartbeat.run.event", "heartbeat.run.status"].includes(event.type)) delivery.enqueue(event);
+          });
+          const stopDelivery = () => { active = false; delivery.dispose(); unsubscribe(); };
 
           // Safety-net timeout: if the run never reaches a terminal status,
           // force-cleanup the subscription to prevent unbounded leaks.
@@ -3597,10 +3683,10 @@ export function buildHostServices(
               { pluginId, pluginKey, runId: run.id },
               "session event subscription timed out — forcing cleanup",
             );
-            cleanup();
+            failDelivery();
           }, SESSION_EVENT_SUBSCRIPTION_TIMEOUT_MS);
 
-          const entry = { unsubscribe, timer: timeoutTimer };
+          const entry = { unsubscribe: stopDelivery, timer: timeoutTimer };
           activeSubscriptions.add(entry);
         }
 

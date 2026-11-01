@@ -60,17 +60,15 @@ export function createSshCommandManagedRuntimeRunner(input: {
       const cwd = commandInput.cwd?.trim() || defaultCwd;
       const envEntries = Object.entries(commandInput.env ?? {})
         .filter((entry): entry is [string, string] => typeof entry[1] === "string");
+      for (const [key] of envEntries) {
+        if (!isValidShellEnvKey(key)) {
+          throw new Error(`Invalid SSH environment variable key: ${key}`);
+        }
+      }
       const envPrefix = envEntries.length > 0
-        ? `env ${envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ")} `
+        ? `env ${envEntries.map(([key, value]) => shellQuote(`${key}=${value}`)).join(" ")} `
         : "";
-      const exportPrefix = envEntries.length > 0
-        ? envEntries.map(([key, value]) => `export ${key}=${shellQuote(value)};`).join(" ") + " "
-        : "";
-      const commandScript = command === "sh" || command === "bash"
-        ? (args[0] === "-c" || args[0] === "-lc") && typeof args[1] === "string"
-          ? `${exportPrefix}${args[1]}`
-          : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
-        : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
+      const commandScript = `exec ${envPrefix}${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
       const remoteCommand = `cd ${shellQuote(cwd)} && ${commandScript}`;
 
       try {
@@ -1090,7 +1088,7 @@ async function isLocalGitRepositoryRoot(localDir: string): Promise<boolean> {
   }
 }
 
-async function listLocalProjectRepositories(localDir: string): Promise<string[]> {
+export async function listLocalProjectRepositories(localDir: string): Promise<string[]> {
   const root = path.join(localDir, PROJECT_REPOSITORIES_DIR);
   const rootStat = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;

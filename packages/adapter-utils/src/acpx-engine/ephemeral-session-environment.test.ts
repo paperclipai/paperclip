@@ -162,4 +162,45 @@ describe("ephemeral ACPX session environment", () => {
     const input = freeze(record()); await expect(wrapper.save(input)).rejects.toBe(failure);
     expect(input.acpx?.session_options?.env).toEqual(currentEnvironment);
   });
+
+  it("never overlaps two saves of one record, even across wrappers, and keeps their order", async () => {
+    let active = 0, maxActive = 0;
+    const order: string[] = [];
+    const failure = new Error("fixture rename failure");
+    const backing = stubStore(undefined);
+    backing.save.mockImplementation(async (saved) => {
+      active += 1; maxActive = Math.max(maxActive, active);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      order.push(saved.lastUsedAt);
+      active -= 1;
+      if (saved.lastUsedAt === "checkpoint") throw failure;
+    });
+    const turnStore = createEphemeralSessionEnvironmentStore(backing, currentEnvironment);
+    const closeStore = createEphemeralSessionEnvironmentStore(backing, currentEnvironment);
+    const results = await Promise.allSettled([
+      turnStore.save({ ...record(), lastUsedAt: "checkpoint" }),
+      turnStore.save({ ...record(), lastUsedAt: "turn-end" }),
+      closeStore.save({ ...record(), lastUsedAt: "close" }),
+    ]);
+    expect(maxActive).toBe(1);
+    expect(order).toEqual(["checkpoint", "turn-end", "close"]);
+    expect(results.map(result => result.status)).toEqual(["rejected", "fulfilled", "fulfilled"]);
+    expect((results[0] as PromiseRejectedResult).reason).toBe(failure);
+  });
+
+  it("does not serialize saves of different records", async () => {
+    let active = 0, maxActive = 0;
+    const backing = stubStore(undefined);
+    backing.save.mockImplementation(async () => {
+      active += 1; maxActive = Math.max(maxActive, active);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      active -= 1;
+    });
+    const wrapper = createEphemeralSessionEnvironmentStore(backing, currentEnvironment);
+    await Promise.all([
+      wrapper.save({ ...record(), acpxRecordId: "fixture-record-a" }),
+      wrapper.save({ ...record(), acpxRecordId: "fixture-record-b" }),
+    ]);
+    expect(maxActive).toBe(2);
+  });
 });

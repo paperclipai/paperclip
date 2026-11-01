@@ -1,3 +1,5 @@
+import { itemVerdictHref } from "@/lib/item-verdict-links";
+import { Link } from "@/lib/router";
 import {
   useEffect,
   useMemo,
@@ -60,6 +62,11 @@ import {
 } from "@/lib/issue-thread-interactions";
 import { cn } from "@/lib/utils";
 import { QuestionForm } from "./QuestionForm";
+import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
+import { CoordinatorTaskCommitment } from "@/components/coordinator/CoordinatorTaskCommitment";
+import { CoordinatorInteractionReceipt } from "@/components/coordinator/CoordinatorInteractionReceipt";
+import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
+import { decisionReceiptHref } from "@/lib/decision-receipt-navigation";
 import {
   TaskChatComposerTakeoverControls,
   TaskChatComposerTakeoverHeader,
@@ -275,11 +282,13 @@ function targetLabel(
 ) {
   const target = interaction.payload.target;
   if (!target) return null;
-  const label =
-    target.label ??
-    (target.type === "issue_document" ? target.key : target.key);
+  // A custom target key is a machine identifier for idempotency and stale
+  // detection (e.g. `github:org/repo:pull:16`), not display copy. Only show a
+  // custom target when the agent supplied a human label.
+  if (target.type === "custom" && !target.label) return null;
+  const label = target.label ?? (target.type === "issue_attachment" ? "Attachment" : target.key);
   const revision =
-    target.revisionNumber == null ? null : `v${target.revisionNumber}`;
+    target.type === "issue_attachment" || target.revisionNumber == null ? null : `v${target.revisionNumber}`;
   return [label, revision].filter(Boolean).join(" · ");
 }
 
@@ -294,13 +303,15 @@ function CompactTarget({
   const target = interaction.payload.target;
   const label = targetLabel(interaction);
   if (!target || !label) return null;
-  const href = target.href
-    ? normalizeRequestConfirmationTargetHref(target.href)
-    : null;
+  const href = target.type === "issue_attachment"
+    ? `/api/attachments/${encodeURIComponent(target.attachmentId)}/content`
+    : target.href ? normalizeRequestConfirmationTargetHref(target.href) : null;
   if (href) {
     return (
       <a
         href={href}
+        target={target.type === "issue_attachment" ? "_blank" : undefined}
+        rel={target.type === "issue_attachment" ? "noreferrer" : undefined}
         className="inline-flex rounded-sm border border-border px-2 py-0.5 font-mono text-xs text-foreground hover:bg-muted/60"
       >
         {label}
@@ -321,6 +332,7 @@ function PlanReviewPreview({
   interaction: RequestConfirmationInteraction;
   planDocument?: IssueDocument | null;
 }) {
+  const coordinator = useCoordinatorPresentation();
   const target = interaction.payload.target;
   if (target?.type !== "issue_document" || target.key !== "plan") return null;
 
@@ -342,7 +354,7 @@ function PlanReviewPreview({
         revision: targetRevision,
         fallbackTitle: target.label,
       }}
-      href="#document-plan"
+      href={coordinator ? decisionReceiptHref({ issueHref: `/issues/${interaction.issueId}`, interactionId: interaction.id, target }) : "#document-plan"}
       testId="plan-review-preview"
       ariaLabel={`Open ${target.label ?? (targetRevision == null ? "plan" : `plan revision ${targetRevision}`)}`}
     />
@@ -862,8 +874,8 @@ function ConfirmationCard({
           planDocument={planDocument}
         />
       ) : isPlanConfirmation && rejecting ? null : (
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <p className="min-w-0 flex-1 text-sm leading-5 text-foreground">
+        <div className="space-y-2">
+          <p className="whitespace-pre-line break-words text-sm leading-5 text-foreground">
             {isPlanConfirmation
               ? "Do you accept this plan?"
               : interaction.payload.prompt}
@@ -1152,8 +1164,8 @@ function CheckboxConfirmationCard({
 
   return (
     <div>
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <p className="min-w-0 flex-1 text-sm leading-5 text-foreground">
+      <div className="space-y-2">
+        <p className="whitespace-pre-line break-words text-sm leading-5 text-foreground">
           {interaction.payload.prompt}
         </p>
         <CompactTarget interaction={interaction} />
@@ -1352,12 +1364,14 @@ function SuggestedTasksCard({
   onRejectInteraction,
   errorMessage,
   draftKey,
+  coordinator = false,
 }: {
   interaction: SuggestTasksInteraction;
   onAcceptInteraction?: SharedInteractionProps["onAcceptInteraction"];
   onRejectInteraction?: SharedInteractionProps["onRejectInteraction"];
   errorMessage: (error: unknown) => string;
   draftKey?: string;
+  coordinator?: boolean;
 }) {
   const roots = useMemo(
     () => buildSuggestedTaskTree(interaction.payload.tasks),
@@ -1425,13 +1439,13 @@ function SuggestedTasksCard({
     });
   }
 
-  async function resolve(action: "accept" | "reject") {
+  async function resolve(action: "accept" | "reject", rejectionReason = reason) {
     setWorking(action);
     setActionError(null);
     try {
       if (action === "accept")
         await onAcceptInteraction?.(interaction, [...selected]);
-      else await onRejectInteraction?.(interaction, reason.trim() || undefined);
+      else await onRejectInteraction?.(interaction, rejectionReason.trim() || undefined);
       if (draftKey) clearDraft(draftKey);
     } catch (error) {
       setActionError(errorMessage(error));
@@ -1442,9 +1456,7 @@ function SuggestedTasksCard({
 
   return (
     <div>
-      <p className="text-sm leading-5 text-foreground">
-        Select the tasks to create.
-      </p>
+      {(!coordinator || interaction.payload.tasks.length > 1) ? <p className="text-sm leading-5 text-foreground">Select the tasks to create.</p> : null}
       {interaction.payload.tasks.length > 10 ? (
         <label className="relative mt-3 block">
           <Search
@@ -1479,7 +1491,7 @@ function SuggestedTasksCard({
             htmlFor={`${interaction.id}-reject-reason`}
             className="text-xs font-medium text-foreground"
           >
-            Why should these tasks change? (optional)
+            {coordinator ? "What should change?" : "Why should these tasks change? (optional)"}
           </label>
           <Textarea
             id={`${interaction.id}-reject-reason`}
@@ -1492,8 +1504,11 @@ function SuggestedTasksCard({
         </div>
       ) : null}
       <InteractionActionError message={actionError} />
+      {coordinator && interaction.payload.tasks.length > 1 ? (
+        <p className="mt-3 text-xs text-muted-foreground">{selected.size} of {interaction.payload.tasks.length} selected</p>
+      ) : null}
       <ActionRow
-        hint={`${selected.size} of ${interaction.payload.tasks.length} selected`}
+        hint={coordinator ? null : `${selected.size} of ${interaction.payload.tasks.length} selected`}
       >
         {rejecting ? (
           <>
@@ -1504,23 +1519,25 @@ function SuggestedTasksCard({
               disabled={working !== null}
               onClick={() => setRejecting(false)}
             >
-              Back
+              {coordinator ? "Cancel" : "Back"}
             </Button>
             <Button
               type="button"
               size="sm"
               variant="outline"
-              disabled={working !== null || !onRejectInteraction}
+              disabled={working !== null || !onRejectInteraction || (coordinator && !reason.trim())}
               onClick={() => void resolve("reject")}
             >
               {working === "reject" ? (
                 <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
               ) : null}
-              Send back
+              {coordinator ? "Request revision" : "Send back"}
             </Button>
           </>
         ) : (
           <>
+            {coordinator ? <Button type="button" size="sm" variant="ghost" disabled={working !== null || !onRejectInteraction}
+              onClick={() => { setReason(""); void resolve("reject", ""); }}>Reject</Button> : null}
             <Button
               type="button"
               size="sm"
@@ -1528,7 +1545,7 @@ function SuggestedTasksCard({
               disabled={working !== null || !onRejectInteraction}
               onClick={() => setRejecting(true)}
             >
-              Revise
+              {coordinator ? "Revise…" : "Revise"}
             </Button>
             <Button
               type="button"
@@ -1541,7 +1558,7 @@ function SuggestedTasksCard({
               {working === "accept" ? (
                 <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
               ) : null}
-              Create selected
+              {coordinator ? "Create" : "Create selected"}
             </Button>
           </>
         )}
@@ -1628,9 +1645,7 @@ function ItemVerdictsCard({
     );
   const resolved = resolvedById.get(item.id);
   const draft = drafts.get(item.id);
-  const itemHref = item.href
-    ? normalizeRequestConfirmationTargetHref(item.href)
-    : null;
+  const itemHref = itemVerdictHref(item, interaction);
   const rejectionNeedsConfirmation = Boolean(
     !resolved &&
     draft &&
@@ -1761,9 +1776,13 @@ function ItemVerdictsCard({
             </p>
           ) : null}
         </div>
-        {itemHref ? (
+        {itemHref && !itemHref.startsWith("/api/") && (itemHref.startsWith("/") || itemHref.startsWith("#")) ? (
+          <Link to={itemHref} disableIssueQuicklook className="text-xs font-medium text-primary hover:underline">Open</Link>
+        ) : itemHref ? (
           <a
             href={itemHref}
+            target="_blank"
+            rel="noreferrer"
             className="text-xs font-medium text-primary hover:underline"
           >
             Open
@@ -1892,6 +1911,7 @@ export function TaskChatCompactInteractionCard({
   draftKey,
   mentions,
 }: TaskChatCompactInteractionCardProps) {
+  const { enabled: coordinatorEnabled } = useCoordinatorWorkspaceEnabled();
   const creatorLabel = interaction.createdByAgentId
     ? agentMap?.get(interaction.createdByAgentId)?.name
     : interaction.createdByUserId
@@ -1924,6 +1944,24 @@ export function TaskChatCompactInteractionCard({
     interaction.kind === "request_confirmation" &&
     interaction.payload.target?.type === "issue_document" &&
     interaction.payload.target.key === "plan";
+
+  if (coordinatorEnabled && interaction.kind === "suggest_tasks") {
+    return <CoordinatorTaskCommitment interaction={interaction}>
+      {interaction.status === "pending" ? <div className="p-4 space-y-3">
+        <h3 className="text-sm font-medium text-foreground">Suggested Task</h3>
+        {audienceLabel ? <p className="text-xs text-muted-foreground">{audienceLabel}</p> : null}
+        <SuggestedTasksCard interaction={interaction} onAcceptInteraction={onAcceptInteraction}
+          onRejectInteraction={onRejectInteraction} errorMessage={errorMessage} draftKey={draftKey} coordinator />
+      </div> : <div className="p-4"><ReceiptDisclosure interaction={interaction} externalReferences={externalReferences} compact /></div>}
+    </CoordinatorTaskCommitment>;
+  }
+
+  if (coordinatorEnabled && presentation === "timeline" && ["accepted", "answered", "rejected"].includes(interaction.status)
+    && interaction.kind !== "connection_intent"
+    && interaction.kind !== "request_item_verdicts"
+    && !(interaction.kind === "request_confirmation" && (interaction.payload.toolAction || interaction.payload.secretProposal || interaction.payload.connectionAuthorization))) {
+    return <CoordinatorInteractionReceipt interaction={interaction} />;
+  }
 
   if (interaction.kind === "connection_intent") {
     return (

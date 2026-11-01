@@ -1,7 +1,7 @@
 import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { agentApiKeys, agents, budgetPolicies, companies, costEvents, createDb, pluginCompanySettings, pluginLifecycleAcknowledgments, plugins, projects, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -40,7 +40,7 @@ describePostgres("Resource lifecycle events", () => {
   });
   afterEach(() => { vi.unstubAllEnvs(); });
 
-  const events = () => db.select().from(resourceLifecycleEvents).where(eq(resourceLifecycleEvents.companyId, companyId));
+  const events = () => db.select().from(resourceLifecycleEvents).where(and(eq(resourceLifecycleEvents.companyId, companyId), ne(resourceLifecycleEvents.resourceType, "agent_runtime")));
   const createAgent = async (status: "idle" | "pending_approval" | "terminated" = "idle", database: Db = db) => {
     const agent = await createAgentLifecycle(database).requestHire(companyId, { name: "Lifecycle agent", adapterType: "process", adapterConfig: {}, status });
     await worker.process(agent.id);
@@ -53,7 +53,7 @@ describePostgres("Resource lifecycle events", () => {
 
   it("records direct and approval-free hires once, including concurrent duplicate submissions", async () => {
     const agent = await createAgent();
-    await Promise.all(Array.from({ length: 5 }, () => recordResourceCreationEvent(db, companyId, "agent", agent.id)));
+    await Promise.all(Array.from({ length: 5 }, () => db.transaction(tx => recordResourceCreationEvent(tx as unknown as Db, companyId, "agent", agent.id))));
     expect(await events()).toEqual([expect.objectContaining({ resourceType: "agent", resourceId: agent.id, action: "create" })]);
   });
 
@@ -235,11 +235,11 @@ describePostgres("Resource lifecycle events", () => {
     vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", undefined);
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "fixture-token");
     const id = randomUUID();
-    await recordResourceCreationEvent(db, companyId, "agent", id);
-    await recordResourceCreationEvent(db, companyId, "project", id);
+    await db.transaction(tx => recordResourceCreationEvent(tx as unknown as Db, companyId, "agent", id));
+    await db.transaction(tx => recordResourceCreationEvent(tx as unknown as Db, companyId, "project", id));
     const otherCompanyId = randomUUID();
     await db.insert(companies).values({ id: otherCompanyId, name: "Other company", issuePrefix: "OTHER" });
-    await recordResourceCreationEvent(db, otherCompanyId, "agent", id);
+    await db.transaction(tx => recordResourceCreationEvent(tx as unknown as Db, otherCompanyId, "agent", id));
     expect(await events()).toHaveLength(2);
     expect(await db.select().from(resourceLifecycleEvents).where(eq(resourceLifecycleEvents.companyId, otherCompanyId))).toHaveLength(1);
     await db.delete(companies).where(eq(companies.id, otherCompanyId));
@@ -265,6 +265,23 @@ describePostgres("Resource lifecycle events", () => {
     const beforeArchive = await events();
     expect((await service.getById(project.id))?.workspaces).toHaveLength(2);
     expect(beforeArchive.sort((a, b) => a.id - b.id).map(row => row.action)).toEqual(["create", "update", "update", "update", "update", "update"]);
+  });
+
+  it("records deletion atomically and retains the event after removing the project", async () => {
+    const service = projectService(db);
+    const project = await service.create(companyId, { name: "Delete fixture" });
+    await db.execute(sql`ALTER TABLE resource_lifecycle_events ADD CONSTRAINT fixture_reject_delete CHECK (action <> 'delete') NOT VALID`);
+    try {
+      await expect(service.remove(project.id)).rejects.toThrow();
+      expect(await service.getById(project.id)).not.toBeNull();
+      expect((await events()).map(row => row.action)).toEqual(["create"]);
+    } finally {
+      await db.execute(sql`ALTER TABLE resource_lifecycle_events DROP CONSTRAINT fixture_reject_delete`);
+    }
+    await service.remove(project.id);
+    await service.remove(project.id);
+    expect(await service.getById(project.id)).toBeNull();
+    expect((await events()).map(row => row.action)).toEqual(["create", "delete"]);
   });
 
   it("records archive once per transition and update on restore, retaining repositories", async () => {
@@ -456,6 +473,18 @@ describePostgres("Resource lifecycle events", () => {
       expect(low.id).not.toBe(high.id);
     });
     expect(await inbox.list(companyId)).toEqual([expect.objectContaining({ action: "create" })]);
+  });
+
+  it.each([{ resourceLifecycle: ["project"] }, { resourceLifecycle: ["agent_runtime"] }] as const)("preserves legacy manual streams with automatic subscription %j", async ({ resourceLifecycle }) => {
+    const plugin = await createPlugin();
+    await createAgent();
+    await db.insert(resourceLifecycleEvents).values({ companyId, resourceType: "project", resourceId: randomUUID(), action: "create" });
+    const services = buildHostServices(db, plugin.id, plugin.pluginKey, createPluginEventBus(), undefined, { manifest: { resourceLifecycle } as never });
+    const handlers = createHostClientHandlers({ pluginId: plugin.id, capabilities: ["events.subscribe"], services });
+    try {
+      const rows = await handlers["events.listLifecycle"]({ companyId }, { invocationScope: { companyId } });
+      expect(new Set(rows.map(row => row.resourceType))).toEqual(new Set(resourceLifecycle[0] === "agent_runtime" ? ["agent", "project", "agent_runtime"] : ["agent", "project"]));
+    } finally { services.dispose(); }
   });
 
   it("enforces capability, invocation company, plugin availability, and company boundaries through host RPC", async () => {

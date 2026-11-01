@@ -1,6 +1,11 @@
-import { isValidElement, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { MarkdownWordStreaming, rehypeStreamingWords } from "./MarkdownWordStreaming";
+import { isValidElement, memo, useContext, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, ExternalLink, WrapText } from "lucide-react";
+import { Check, Copy, ExternalLink, MessageCircle, WrapText } from "lucide-react";
+import { useCoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
+import { useCoordinatorChatReference } from "./coordinator/CoordinatorChatReferences";
+import { SidebarDocumentLink } from "./SidebarDocumentLink";
+import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
@@ -37,7 +42,7 @@ import { StatusIcon } from "./StatusIcon";
 import { WorkspaceFileLink } from "./WorkspaceFileLink";
 import { ExternalObjectStatusIcon } from "./ExternalObjectStatusIcon";
 import {
-  externalObjectCategoryLabel,
+  externalObjectDisplayStatusLabel,
   externalObjectLivenessLabel,
   externalObjectProviderLabel,
 } from "../lib/external-objects";
@@ -119,8 +124,10 @@ interface MarkdownBodyProps {
   externalReferences?: MarkdownExternalReferenceMap;
   /** Optional resolver for relative image paths (e.g. within export packages) */
   resolveImageSrc?: (src: string) => string | null;
+  /** Resolve file links to app routes; null leaves the label without a link. */
+  resolveLinkHref?: (href: string) => string | null;
   /** Called when a user clicks an inline image */
-  onImageClick?: (src: string) => void;
+  onImageClick?: (src: string, image: HTMLImageElement) => void;
   /** Keep untrusted decision media inert: image references and diagram source only. */
   mediaMode?: "render" | "reference";
   /**
@@ -140,18 +147,21 @@ function MarkdownIssueLink({
   issuePathId,
   href,
   children,
+  documentLink = false,
 }: {
   issuePathId: string;
   href: string;
   children: ReactNode;
+  documentLink?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const chatReference = useCoordinatorChatReference(issuePathId);
   const [engaged, setEngaged] = useState(false);
   const { data, error } = useQuery({
     queryKey: queryKeys.issues.detail(issuePathId),
     // A transcript can mention dozens of tasks. Their full detail projections
     // are hover information, not prerequisites for reading this conversation.
-    enabled: engaged,
+    enabled: engaged && (!chatReference || documentLink),
     placeholderData: getCachedIssueDetail(queryClient, issuePathId),
     queryFn: () => issuesApi.get(issuePathId),
     staleTime: 60_000,
@@ -161,10 +171,23 @@ function MarkdownIssueLink({
       !(err instanceof ApiError && err.status === 404) && failureCount < 3,
   });
 
+  if (chatReference && !documentLink) {
+    const suffix = href.match(/[?#].*$/)?.[0] ?? "";
+    return <Link to={`${chatReference.href}${suffix}`} disableIssueQuicklook
+      className="font-normal underline" data-mention-kind="chat" aria-label={chatReference.label}>
+      <MessageCircle aria-hidden className="relative -top-px mr-1 inline-block size-4 align-middle" />{chatReference.label}
+    </Link>;
+  }
   // Mention of an issue this viewer can't read → existence-only locked chip
   // (never a title or a link), matching the locked-stub treatment on edges.
   if (error instanceof ApiError && error.status === 404) {
     return <LockedIssueChip identifier={issuePathId} unavailable />;
+  }
+
+  if (documentLink) {
+    return <SidebarDocumentLink href={href} onPointerEnter={() => setEngaged(true)} onFocus={() => setEngaged(true)}>
+      <span className="min-w-0 truncate text-foreground underline underline-offset-4">{children}</span>
+    </SidebarDocumentLink>;
   }
 
   const identifier = data?.identifier ?? issuePathId;
@@ -240,9 +263,10 @@ function MarkdownExternalLink({
 }) {
   const provider = externalObjectProviderLabel(reference.providerKey);
   const displayKey = reference.displayKey?.trim() || provider;
-  const statusLabel = reference.statusLabel ?? externalObjectCategoryLabel(reference.statusCategory);
+  const statusLabel = externalObjectDisplayStatusLabel(reference);
   const livenessLabel = externalObjectLivenessLabel(reference.liveness);
   const livenessSuffix = reference.liveness === "fresh" || reference.liveness === "unknown"
+    || livenessLabel.toLowerCase() === statusLabel.toLowerCase()
     ? ""
     : ` (${livenessLabel})`;
   const titleParts = [
@@ -786,11 +810,14 @@ function MarkdownBodyImpl({
   resolveWikiLinkHref,
   externalReferences,
   resolveImageSrc,
+  resolveLinkHref,
   onImageClick,
   mediaMode = "render",
   resolveWorkspaceFileRef,
 }: MarkdownBodyProps) {
   const { theme } = useTheme();
+  const coordinator = useCoordinatorPresentation();
+  const streamWords = useContext(MarkdownWordStreaming);
   // Read company prefixes non-throwingly: MarkdownBody renders in surfaces that
   // may lack a CompanyProvider. A null context (or no companies yet) leaves
   // knownPrefixes undefined, which keeps issue auto-linking permissive.
@@ -910,9 +937,16 @@ function MarkdownBodyImpl({
       }
 
       const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href) : null;
+      const documentHash = href?.includes("#") ? href.slice(href.indexOf("#")) : null;
+      const documentLink = Boolean(coordinator && documentHash && parseDocumentAnnotationHash(documentHash));
+      if (documentLink && href?.startsWith("#")) {
+        return <SidebarDocumentLink href={href}>
+          <span className="min-w-0 truncate text-foreground underline underline-offset-4">{linkChildren}</span>
+        </SidebarDocumentLink>;
+      }
       if (issueRef) {
         return (
-          <MarkdownIssueLink issuePathId={issueRef.issuePathId} href={issueRef.href}>
+          <MarkdownIssueLink issuePathId={issueRef.issuePathId} href={issueRef.href} documentLink={documentLink}>
             {linkChildren}
           </MarkdownIssueLink>
         );
@@ -967,6 +1001,14 @@ function MarkdownBodyImpl({
         );
       }
 
+      const resolvedHref = href && resolveLinkHref ? resolveLinkHref(href) : href;
+      if (resolveLinkHref && resolvedHref !== href) {
+        return resolvedHref ? (
+          <Link to={resolvedHref} style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}>
+            {linkChildren}
+          </Link>
+        ) : <>{linkChildren}</>;
+      }
       const isGitHubLink = isGitHubUrl(href);
       const isExternal = isExternalHttpUrl(href);
       const leadingIcon = isGitHubLink ? (
@@ -1003,14 +1045,27 @@ function MarkdownBodyImpl({
             {...imgProps}
             src={finalSrc}
             alt={alt ?? ""}
-            onClick={onImageClick && finalSrc ? (e) => { e.preventDefault(); onImageClick(finalSrc); } : undefined}
-            style={onImageClick ? { cursor: "pointer", ...(imgProps.style as React.CSSProperties | undefined) } : imgProps.style as React.CSSProperties | undefined}
+            role={onImageClick && finalSrc ? "button" : undefined}
+            tabIndex={onImageClick && finalSrc ? 0 : undefined}
+            aria-label={onImageClick && finalSrc ? `Open image: ${alt || "Untitled image"}` : undefined}
+            onClick={onImageClick && finalSrc ? (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onImageClick(finalSrc, e.currentTarget);
+            } : undefined}
+            onKeyDown={onImageClick && finalSrc ? (e) => {
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault();
+              e.stopPropagation();
+              onImageClick(finalSrc, e.currentTarget);
+            } : undefined}
+            className={cn(imgProps.className, onImageClick && "cursor-pointer")}
           />
         );
       };
     }
     return map;
-  }, [theme, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, onImageClick, mediaMode]);
+  }, [theme, coordinator, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, resolveLinkHref, onImageClick, mediaMode]);
 
   return (
     <div
@@ -1023,6 +1078,7 @@ function MarkdownBodyImpl({
     >
       <Markdown
         remarkPlugins={remarkPlugins}
+        rehypePlugins={streamWords ? [rehypeStreamingWords] : undefined}
         components={components}
         urlTransform={safeMarkdownUrlTransform}
       >
