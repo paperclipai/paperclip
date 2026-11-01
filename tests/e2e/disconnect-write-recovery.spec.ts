@@ -95,7 +95,7 @@ test("two cached tasks keep separate title saves while the browser is offline", 
   }
 });
 
-test("a queued startup save survives the first session lookup during an API outage", async ({ page, request }) => {
+test("a cold task waits for the first session and retains a title saved during an API outage", async ({ page, request }) => {
   const company = await json(await request.post("/api/companies", { data: { name: `Startup recovery ${Date.now()}` } }));
   const session = await json(await request.get("/api/auth/get-session"));
   let releaseSession!: () => void;
@@ -117,8 +117,17 @@ test("a queued startup save survives the first session lookup during an API outa
       await sessionReady;
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) });
     });
+    const coreReady = page.waitForResponse(response => {
+      const url = new URL(response.url());
+      return url.pathname === `/api/issues/${issue.identifier}` && url.searchParams.get("view") === "core" && response.ok();
+    });
     await page.goto(`/${company.issuePrefix}/issues/${issue.identifier}`);
+    await coreReady;
     const header = page.getByTestId("issue-detail-header");
+    await expect(page.getByTestId("task-chat-loading-frame")).toBeVisible();
+    await expect(header).toHaveCount(0);
+    releaseSession();
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
     await expect(header.getByRole("heading", { name: issue.title, exact: true })).toBeVisible();
     apiUnavailable = true;
     await page.evaluate(() => window.dispatchEvent(new Event("offline")));
@@ -127,7 +136,6 @@ test("a queued startup save survives the first session lookup during an API outa
     await header.locator("textarea").fill(savedTitle);
     await header.locator("textarea").press("Enter");
     expect((await json(await request.get(`/api/issues/${issue.id}`))).title).toBe(issue.title);
-    releaseSession();
     await expect.poll(() => page.evaluate(({ owner, title }) => Object.keys(localStorage).some(key =>
       key.startsWith(`paperclip:inline-draft:v2:${owner}:`) && JSON.parse(localStorage.getItem(key) ?? "null")?.draft === title),
     { owner: session.user.id, title: savedTitle })).toBe(true);
