@@ -6,7 +6,7 @@ import { buildAgentMentionHref, buildProjectMentionHref, parseAgentMentionHref, 
 import { sendChatMessage, readChatOutputDocument, type ChatIssue, type ChatRun } from "../chat-flow.js";
 import { assertChatHire, mutableIssueSnapshot } from "../chat-hardening.js";
 import { ConnectionFailure } from "../connection-config.js";
-import { assertHireAuditCoverage, assertHireBinding, assertHireDocument, assertHireRuns, hireDelegateNames, hireRunIssueId, observedHireResources, readHireConnectionChoice, type HireScope } from "./hire-delegate-evidence.js";
+import { assertHireAuditCoverage, assertHireBinding, assertHireDocument, assertHireRuns, assertHireTaskCreation, hireDelegateNames, hireResultLinkMatches, hireRunIssueId, observedHireResources, readHireConnectionChoice, type HireScope } from "./hire-delegate-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 import { sendHireHandoffMessage } from "./hire-delegate-composer.js";
 
@@ -92,7 +92,8 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
     if (chat.companyId !== context.company.id || chat.assigneeAgentId !== agent.id
       || chat.conversationAgentId !== agent.id || chat.conversationUserId !== context.user.id || chat.createdByUserId !== context.user.id) throw new JourneyError("failed", "hire_chat_scope_mismatch");
     scope ??= { companyId: context.company.id, leadId: agent.id, chatId: chat.id, projectId: project.id, campaignId,
-      model: agent.model, provider: agent.provider, environmentId: context.environmentId!, connectionBinding: lead.runtimeConfig.aiConnection, connectionChoice };
+      model: agent.model, provider: agent.provider, environmentId: context.environmentId!, connectionBinding: lead.runtimeConfig.aiConnection, connectionChoice,
+      origin: api.origin, issuePrefix: context.company.issuePrefix };
     if (chat.id !== scope.chatId) throw new JourneyError("failed", "hire_chat_replaced");
     if (!known.has(chat.id)) { await session.own({ kind: "issue", name: chat.title, id: chat.id, journeyId: "hire-delegate-reuse", freshChat }); known.add(chat.id); }
     const leadProjection = await readRuns(chat.id);
@@ -134,6 +135,7 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
       else if (!isDeepStrictEqual(verified.runtimeConfig.aiConnection, hiredConnectionBinding)) throw new JourneyError("failed", "hire_native_binding_mismatch");
       hiredId = verified.id;
     }
+    assertHireTaskCreation(scope, hiredId, owned.tasks, activity, leadRuns);
     const projectedRuns = [...leadProjection, ...(await Promise.all(owned.tasks.map(task => readRuns(task.id)))).flat()];
     const canonical = new Map<string, Run>();
     for (const run of projectedRuns) {
@@ -217,9 +219,22 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
     connectionId: connectionChoice?.connectionId ?? lead.runtimeConfig.aiConnection.connectionId, binding: hiredConnectionBinding,
     taskIds: [first!.id, second!.id], tasks: state.tasks, runs: state.runs });
   assertHireRuns(scope!, hired.id, state.tasks, state.runs, 7, state.requestIds, state.comments);
-  await page.goto(chatUrl, { waitUntil: "domcontentloaded" }); await page.reload();
   const comments = await api.get<Row[]>(`/api/issues/${state.chat.id}/comments?order=asc`);
-  check("delegated-result-visible-after-reload", await openSavedHireResult(page, api.origin, context.company.issuePrefix, comments, agent.id, second!, options.deadlineAt));
+  assertHireRuns(scope!, hired.id, state.tasks, state.runs, 7, state.requestIds, comments);
+  let resultsVisible = true;
+  for (const task of [first!, second!]) {
+    const callback = state.runs.find(run => {
+      const updates = run.contextSnapshot?.chatCompletionUpdates;
+      return run.contextSnapshot?.wakeReason === "chat_task_completed" && Array.isArray(updates) && updates[0]?.id === task.id;
+    });
+    if (!callback) throw new JourneyError("failed", "hire_completion_binding_mismatch");
+    await page.goto(chatUrl, { waitUntil: "domcontentloaded" }); await page.reload();
+    if (!await openSavedHireResult(page, api.origin, context.company.issuePrefix, comments, agent.id, task,
+      options.deadlineAt, { companyId: scope!.companyId, chatId: scope!.chatId, runId: callback.id })) {
+      resultsVisible = false; break;
+    }
+  }
+  check("delegated-result-visible-after-reload", resultsVisible);
   check("configured-model-and-environment");
   await retain("hire-delegate-completed.json", { hiredId: hired.id, firstTaskId: first!.id, secondTaskId: second!.id,
     firstDocument: firstOutput, reviewDocument: reviewOutput, runIds: state.runs.map(run => run.id),
@@ -231,17 +246,15 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
   await options.capture("hire-delegate-reuse", "Hired teammate completed and reused", "hire-delegate-reuse.png");
 }
 
-export async function openSavedHireResult(page: Page, origin: string, issuePrefix: string, comments: Row[], leadId: string, task: Row, deadlineAt: number) {
+export async function openSavedHireResult(page: Page, origin: string, issuePrefix: string, comments: Row[], leadId: string, task: Row, deadlineAt: number,
+  callback: { companyId: string; chatId: string; runId: string }) {
   while (Date.now() < deadlineAt) {
-    for (const comment of comments.filter(row => row.authorAgentId === leadId)) {
+    for (const comment of comments.filter(row => row.authorAgentId === leadId && !row.authorUserId
+      && row.companyId === callback.companyId && row.issueId === callback.chatId && row.createdByRunId === callback.runId)) {
       const reply = page.locator(`[id=${JSON.stringify(`comment-${comment.id}`)}]`);
       if (!await reply.isVisible()) continue;
       const links = await reply.locator("a[href]").evaluateAll(elements => elements.map(element => element.getAttribute("href")!));
-      const href = links.find(href => {
-        const url = new URL(href, origin), parts = url.pathname.split("/");
-        return url.origin === origin && parts.length === 4 && parts[1] === issuePrefix
-          && parts[2] === "issues" && [task.id, task.identifier].includes(parts[3]);
-      });
+      const href = links.find(href => hireResultLinkMatches({ origin, issuePrefix }, task, href));
       if (!href) continue;
       await reply.locator(`a[href=${JSON.stringify(href)}]`).first().click({ timeout: Math.max(1, deadlineAt - Date.now()) });
       await page.reload();

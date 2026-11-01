@@ -1,4 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
+import { markdownReplyContent } from "../../../ui/src/lib/markdown-reply-content.js";
+import { applyCompanyPrefix } from "../../../ui/src/lib/company-routes.js";
+import { parseIssueReferenceFromHref } from "../../../ui/src/lib/issue-reference.js";
 import { JourneyError } from "./types.js";
 
 type Row = Record<string, any>;
@@ -9,6 +12,7 @@ export function hireDelegateNames(campaignId: string) {
 }
 export interface HireScope {
   companyId: string; leadId: string; chatId: string; projectId: string; campaignId: string;
+  origin: string; issuePrefix: string;
   model: string; provider: string; environmentId: string; connectionBinding: unknown;
   connectionChoice?: HireConnectionChoice;
 }
@@ -92,6 +96,27 @@ export function assertHireBinding(scope: HireScope, agents: Row[], hiredId?: str
   }
   return hired;
 }
+export function assertHireTaskCreation(scope: HireScope, hiredId: string | undefined, tasks: Row[], activity: Row[], leadRuns: Row[]) {
+  for (const task of tasks) {
+    const created = activity.filter(event => event.companyId === scope.companyId && event.actorType === "agent"
+      && event.actorId === scope.leadId && event.agentId === scope.leadId && event.entityType === "issue"
+      && event.entityId === task.id && ["issue.created", "issue.child_created"].includes(event.action)
+      && leadRuns.some(run => run.id === event.runId && run.companyId === scope.companyId && run.agentId === scope.leadId
+        && run.runtimeMode === "native" && hireRunIssueId(run) === scope.chatId));
+    if (!hiredId || task.companyId !== scope.companyId || !created.length
+      || created.some(event => event.details?.assigneeAgentId !== hiredId || event.details?.assigneeUserId !== null)) {
+      throw new JourneyError("failed", "hire_initial_assignee_mismatch");
+    }
+  }
+}
+export function hireResultLinkMatches(scope: Pick<HireScope, "origin" | "issuePrefix">, task: Row, href: string, source = false) {
+  try {
+    const reference = source ? parseIssueReferenceFromHref(href) : null;
+    const url = new URL(reference ? applyCompanyPrefix(reference.href, scope.issuePrefix) : href, scope.origin);
+    return url.origin === scope.origin && [task.id, task.identifier].some(id => typeof id === "string"
+      && url.pathname === `/${scope.issuePrefix}/issues/${id}`);
+  } catch { return false; }
+}
 export function assertHireRuns(scope: HireScope, hiredId: string | undefined, tasks: Row[], runs: Row[], count?: number, requestedCommentIds?: string[], comments?: Row[]) {
   const bindings = new Map([[scope.chatId, scope.leadId], ...tasks.map(task => [task.id, hiredId] as [string, string | undefined])]);
   if (runs.length > 7 || count !== undefined && runs.length !== count || new Set(runs.map(run => run.id)).size !== runs.length) {
@@ -124,7 +149,10 @@ export function assertHireRuns(scope: HireScope, hiredId: string | undefined, ta
             const replies = comments.filter(comment => comment.createdByRunId === run.id);
             if (replies.some(comment => comment.companyId !== scope.companyId || comment.issueId !== scope.chatId
               || comment.authorAgentId !== scope.leadId || comment.authorUserId)) throw new JourneyError("failed", "hire_completion_reply_mismatch");
-            if (!replies.some(comment => typeof comment.body === "string" && comment.body.trim())) completionRepliesReady = false;
+            const task = tasks.find(task => task.id === updates[0].id)!;
+            if (!replies.some(comment => typeof comment.body === "string"
+              && markdownReplyContent(comment.body, [scope.issuePrefix])?.some(part => "href" in part
+                && hireResultLinkMatches(scope, task, part.href, true)))) completionRepliesReady = false;
           }
           completedTasks.add(updates[0].id);
         }

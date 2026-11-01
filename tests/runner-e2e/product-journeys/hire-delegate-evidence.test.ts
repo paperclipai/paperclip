@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { assertHireAuditCoverage, assertHireBinding, assertHireDocument, assertHireRuns, hireDelegateNames, observedHireResources, readHireConnectionChoice, type HireScope } from "./hire-delegate-evidence.js";
+import { assertHireAuditCoverage, assertHireBinding, assertHireDocument, assertHireRuns, assertHireTaskCreation, hireDelegateNames, observedHireResources, readHireConnectionChoice, type HireScope } from "./hire-delegate-evidence.js";
 import { defaultAiConnectionForHire } from "../../../server/src/services/agent-ai-connection-default.js";
 import { agentJourneyRuns, journeyRequiredChecks } from "./success-contract.js";
 
 type Row = Record<string, any>;
 const scope: HireScope = { companyId: "company", leadId: "lead", chatId: "chat", projectId: "project", campaignId: "journey-1-deadbeef",
+  origin: "https://qa.example.test", issuePrefix: "TEST",
   model: "fixed-model", provider: "opencode", environmentId: "daytona", connectionBinding: { connectionId: "connection" } };
 function fixture() {
   const names = hireDelegateNames(scope.campaignId);
@@ -14,9 +15,22 @@ function fixture() {
   const run = (id: string, issueId: string, agentId: string) => ({ id, companyId: scope.companyId, agentId, issueId, status: "succeeded", runtimeMode: "native",
     contextSnapshot: { issueId, paperclipEnvironment: { id: scope.environmentId } }, runnerProfileJson: { nativeExecutionInput: { provider: { kind: scope.provider, model: scope.model } } } });
   const leadRun = run("lead-run", scope.chatId, scope.leadId), taskRun = run("task-run", task.id, agent.id);
-  const event = (action: string, entityId: string) => ({ companyId: scope.companyId, actorType: "agent", actorId: scope.leadId, agentId: scope.leadId, runId: leadRun.id, action, entityId });
+  const event = (action: string, entityId: string): Row => ({ companyId: scope.companyId, actorType: "agent", actorId: scope.leadId, agentId: scope.leadId, runId: leadRun.id, action, entityId, entityType: action.startsWith("agent.") ? "agent" : "issue",
+    details: { assigneeAgentId: agent.id, assigneeUserId: null, status: "todo" } });
   const state = { agents: [agent], tasks: [task], leadRuns: [leadRun], activity: [event("agent.hire_created", agent.id), event("issue.created", task.id)] };
   return { agent, task, leadRun, taskRun, state, event, run };
+}
+function completionFixture() {
+  const f = fixture(), second = { ...f.task, id: "review", identifier: "TEST-2" };
+  const requested = ["message-1", "message-2", "message-3"].map((id, i) => ({ ...f.run(`lead-${i}`, scope.chatId, scope.leadId),
+    contextSnapshot: { ...f.leadRun.contextSnapshot, source: "issue.comment", wakeCommentId: id } }));
+  const callbacks = [f.task, second].map((task, i) => ({ ...f.run(`completion-${i}`, scope.chatId, scope.leadId), invocationSource: "automation", triggerDetail: "system",
+    contextSnapshot: { ...f.leadRun.contextSnapshot, wakeReason: "chat_task_completed", wakeSource: "automation", wakeTriggerDetail: "system",
+      chatCompletionDeliveryIds: [`delivery-${i}`], chatCompletionUpdates: [{ id: task.id, status: "done" }] } }));
+  const runs = [...requested, ...callbacks, f.taskRun, f.run("review-run", second.id, f.agent.id)];
+  const comments = callbacks.map(run => ({ companyId: scope.companyId, issueId: scope.chatId, authorAgentId: scope.leadId, createdByRunId: run.id, body: `Completed [saved result](/TEST/issues/${[f.task, second][callbacks.indexOf(run)]!.identifier})` }));
+  const grade = (value = runs, replies = comments) => assertHireRuns(scope, f.agent.id, [f.task, second], value, 7, ["message-1", "message-2", "message-3"], replies);
+  return { f, second, requested, callbacks, runs, comments, grade };
 }
 describe("deployment hiring qualification", () => {
   it("uses seven bounded native runs and has closed retained-result success requirements", () => {
@@ -142,15 +156,7 @@ describe("deployment hiring qualification", () => {
     expect(() => assertHireRuns(scope, f.agent.id, [f.task], [f.leadRun, f.taskRun])).not.toThrow();
   });
   it("accounts for three requested lead turns, two exact completion callbacks and two child runs", () => {
-    const f = fixture(), second = { ...f.task, id: "review", identifier: "TEST-2" };
-    const requested = ["message-1", "message-2", "message-3"].map((id, i) => ({ ...f.run(`lead-${i}`, scope.chatId, scope.leadId),
-      contextSnapshot: { ...f.leadRun.contextSnapshot, source: "issue.comment", wakeCommentId: id } }));
-    const callbacks = [f.task, second].map((task, i) => ({ ...f.run(`completion-${i}`, scope.chatId, scope.leadId), invocationSource: "automation", triggerDetail: "system",
-      contextSnapshot: { ...f.leadRun.contextSnapshot, wakeReason: "chat_task_completed", wakeSource: "automation", wakeTriggerDetail: "system",
-        chatCompletionDeliveryIds: [`delivery-${i}`], chatCompletionUpdates: [{ id: task.id, status: "done" }] } }));
-    const runs = [...requested, ...callbacks, f.taskRun, f.run("review-run", second.id, f.agent.id)];
-    const comments = callbacks.map(run => ({ companyId: scope.companyId, issueId: scope.chatId, authorAgentId: scope.leadId, createdByRunId: run.id, body: "Completed saved result" }));
-    const grade = (value = runs, replies = comments) => assertHireRuns(scope, f.agent.id, [f.task, second], value, 7, ["message-1", "message-2", "message-3"], replies);
+    const { f, second, callbacks, runs, comments, grade } = completionFixture();
     expect(() => grade()).not.toThrow();
     expect(() => grade(runs, [])).toThrow("hire_completion_reply_missing");
     expect(assertHireRuns(scope, f.agent.id, [f.task, second], runs, undefined, ["message-1", "message-2", "message-3"], [])).toBe(false);
@@ -163,6 +169,44 @@ describe("deployment hiring qualification", () => {
       expect(() => grade(corrupted)).toThrow();
     }
     expect(() => grade([...runs, f.run("extra", scope.chatId, scope.leadId)])).toThrow();
+  });
+  it.each([0, 1])("requires callback %s to save its own completed task link", index => {
+    const { runs, comments, grade } = completionFixture();
+    const changed = comments.map((comment, i) => i === index ? { ...comment, body: "Completed saved result" } : comment);
+    expect(() => grade(runs, changed)).toThrow("hire_completion_reply_missing");
+  });
+  it.each(["foreign", "code", "wrong-task", "earlier-handoff-only"])("rejects a %s completion link despite seven successful native runs", variant => {
+    const { f, requested, runs, comments, grade } = completionFixture();
+    const changed = comments.map((comment, i) => ({ ...comment, body: variant === "foreign"
+      ? `[TEST-${i + 1}](https://foreign.test/TEST/issues/TEST-${i + 1})`
+      : variant === "code" ? `\`[saved result](/TEST/issues/TEST-${i + 1})\``
+        : variant === "wrong-task" ? "[other result](/TEST/issues/TEST-999)" : "Completed saved result" }));
+    if (variant === "earlier-handoff-only") changed.push({ ...comments[0]!, createdByRunId: requested[1]!.id,
+      body: `[first](/TEST/issues/${f.task.identifier}) and [second](/TEST/issues/TEST-2)` });
+    expect(runs).toHaveLength(7);
+    expect(() => grade(runs, changed)).toThrow("hire_completion_reply_missing");
+  });
+  it("requires immutable native creation ownership independently of current assignment and run count", () => {
+    const f = fixture();
+    expect(() => assertHireTaskCreation(scope, f.agent.id, [f.task], f.state.activity, [f.leadRun])).not.toThrow();
+    for (const mutate of [
+      (event: Row) => { event.details.assigneeAgentId = scope.leadId; event.details.status = "backlog"; },
+      (event: Row) => { delete event.details.assigneeAgentId; },
+      (event: Row) => { event.details.assigneeUserId = "user"; },
+      (event: Row) => { event.actorId = "foreign"; },
+      (event: Row) => { event.companyId = "foreign"; },
+      (event: Row) => { event.runId = "foreign"; },
+    ]) {
+      const activity = structuredClone(f.state.activity); mutate(activity[1]!);
+      expect(f.task.assigneeAgentId).toBe(f.agent.id);
+      expect(() => assertHireTaskCreation(scope, f.agent.id, [f.task], activity, [f.leadRun])).toThrow("hire_initial_assignee_mismatch");
+    }
+  });
+  it("accepts the actual UI's task auto-links and reference-style links in each callback", () => {
+    const { runs, comments, grade } = completionFixture();
+    expect(() => grade(runs, comments.map((comment, i) => ({ ...comment, body: `Completed TEST-${i + 1}.` })))).not.toThrow();
+    expect(() => grade(runs, comments.map((comment, i) => ({ ...comment,
+      body: `Completed [saved result][task].\n\n[task]: /TEST/issues/TEST-${i + 1}` })))).not.toThrow();
   });
   it("requires the saved document revision to come from the successful hired-agent work run", () => {
     const f = fixture(), body = "Reference: independent-marker";

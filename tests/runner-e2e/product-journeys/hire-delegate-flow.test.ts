@@ -9,7 +9,7 @@ import { hireDelegateReuse, hireHandoffMentions, openSavedHireResult } from "./h
 import { hireDelegateNames } from "./hire-delegate-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
-vi.mock("@playwright/test", () => ({ expect: (value: unknown) => Object.assign(expect(value), { toBeVisible: async () => {}, toHaveURL: async (predicate: (url: URL) => boolean) => { expect(predicate(new URL("https://qa.example.test/QA/issues/QA-2"))).toBe(true); } }) }));
+vi.mock("@playwright/test", () => ({ expect: (value: unknown) => Object.assign(expect(value), { toBeVisible: async () => {}, toHaveURL: async (predicate: (url: URL) => boolean) => { expect(predicate(new URL((value as Row).currentUrl ?? "https://qa.example.test/QA/issues/QA-2"))).toBe(true); } }) }));
 vi.mock("../chat-flow.js", () => ({ sendChatMessage: vi.fn(), readChatOutputDocument: vi.fn() }));
 vi.mock("./hire-delegate-composer.js", () => ({ sendHireHandoffMessage: (page: any, text: string) => sendChatMessage(page, text) }));
 type Row = Record<string, any>;
@@ -193,17 +193,17 @@ it("waits for reloaded replies and links, then clicks and reloads the exact save
   const page = { locator(selector: string) { expect(selector).toBe('[id="comment-saved"]'); return reply; },
     async reload() { reloads++; }, getByTestId(id: string) { expect(id).toBe("issue-detail-header"); return { getByRole(role: string, options: Row) {
       expect(role).toBe("heading"); expect(options).toEqual({ name: "Saved review", exact: true }); return {}; } }; } };
-  expect(await openSavedHireResult(page as any, "https://qa.example.test", "QA", [{ id: "saved", authorAgentId: "lead" }], "lead",
-    { id: "review", identifier: "QA-2", title: "Saved review" }, Date.now() + 3000)).toBe(true);
+  expect(await openSavedHireResult(page as any, "https://qa.example.test", "QA", [{ id: "saved", authorAgentId: "lead", companyId: "company", issueId: "chat", createdByRunId: "callback" }], "lead",
+    { id: "review", identifier: "QA-2", title: "Saved review" }, Date.now() + 3000, { companyId: "company", chatId: "chat", runId: "callback" })).toBe(true);
   expect(visibleReads).toBe(4); expect(linkReads).toBe(2); expect(clicks).toBe(1); expect(reloads).toBe(1);
 });
 it("ends a missing saved result at the original deadline without a click or replay", async () => {
   const page = { locator() { return { async isVisible() { return false; } }; } };
-  expect(await openSavedHireResult(page as any, "https://qa.example.test", "QA", [{ id: "saved", authorAgentId: "lead" }], "lead",
-    { id: "review", identifier: "QA-2", title: "Saved review" }, Date.now() + 10)).toBe(false);
+  expect(await openSavedHireResult(page as any, "https://qa.example.test", "QA", [{ id: "saved", authorAgentId: "lead", companyId: "company", issueId: "chat", createdByRunId: "callback" }], "lead",
+    { id: "review", identifier: "QA-2", title: "Saved review" }, Date.now() + 10, { companyId: "company", chatId: "chat", runId: "callback" })).toBe(false);
 });
 
-it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activity-linked", "foreign-run", "contradictory-run", "extra-run", "fallback", "fallback-changed", "fallback-subscription", "fallback-subscription-wrong-method"])("re-reads %s callback task state while preserving strict scope and seven-run accounting", async snapshot => {
+it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activity-linked", "foreign-run", "contradictory-run", "extra-run", "fallback", "fallback-changed", "fallback-subscription", "fallback-subscription-wrong-method", "creation-backlog-reassigned"])("re-reads %s callback task state while preserving strict scope and seven-run accounting", async snapshot => {
   const fallback = snapshot.startsWith("fallback"), subscription = snapshot.startsWith("fallback-subscription");
   const provider = subscription ? "codex" : "opencode", accountProvider = subscription ? "openai" : "openrouter", method = subscription ? "subscription" : "api_key";
   const campaignId = "journey-1-deadbeef", names = hireDelegateNames(campaignId), binding = fallback
@@ -225,7 +225,9 @@ it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activit
       runnerProfileJson: { nativeExecutionInput: { provider: { kind: provider, model: "fixed-model" } } } };
     runs.push(value); return value;
   };
-  const audit = (action: string, entityId: string) => activity.push({ companyId: "company", actorType: "agent", actorId: "lead", agentId: "lead", runId: `lead-${sent}`, action, entityId, entityType: action.startsWith("agent.") ? "agent" : "issue" });
+  const audit = (action: string, entityId: string) => activity.push({ companyId: "company", actorType: "agent", actorId: "lead", agentId: "lead", runId: `lead-${sent}`, action, entityId, entityType: action.startsWith("agent.") ? "agent" : "issue",
+    details: { assigneeAgentId: snapshot === "creation-backlog-reassigned" && sent === 2 ? "lead" : "hired", assigneeUserId: null,
+      status: snapshot === "creation-backlog-reassigned" && sent === 2 ? "backlog" : "todo" } });
   vi.mocked(sendChatMessage).mockImplementation(async (_page, text) => {
     stages.push(runs.length); sent++; callbackPoll = 0;
     comments.push({ id: `user-${sent}`, companyId: "company", issueId: "chat", authorUserId: "user", body: text });
@@ -234,7 +236,10 @@ it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activit
     else {
       const task = { id: `task-${sent}`, identifier: `QA-${sent - 1}`, companyId: "company", title: sent === 2 ? names.checklist : names.review,
         assigneeAgentId: "hired", projectId: "project", parentId: null, status: "done" };
-      tasks.push(task); audit("issue.created", task.id); run(`child-${sent}`, task.id, "hired");
+      tasks.push(task); audit("issue.created", task.id);
+      if (snapshot === "creation-backlog-reassigned" && sent === 2) activity.push({ companyId: "company", actorType: "agent", actorId: "lead", agentId: "lead",
+        runId: `lead-${sent}`, action: "issue.reassigned", entityId: task.id, entityType: "issue", details: { previousAssigneeAgentId: "lead", assigneeAgentId: "hired" } });
+      run(`child-${sent}`, task.id, "hired");
       if (snapshot === "extra-run" && sent === 3) run("extra-native", "chat", "lead", { source: "issue.comment", wakeCommentId: `user-${sent}` });
     }
   });
@@ -264,7 +269,7 @@ it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activit
         if (comments.some(comment => comment.createdByRunId === callback.id)) continue;
         const count = (replyPolls.get(callback.id) ?? 0) + 1; replyPolls.set(callback.id, count);
         if (snapshot === "wrong-author" || count > 1) comments.push({ id: `reply-${callback.id}`, companyId: "company", issueId: "chat",
-          authorAgentId: snapshot === "wrong-author" ? "foreign" : "lead", createdByRunId: callback.id, body: "Saved result completed" });
+          authorAgentId: snapshot === "wrong-author" ? "foreign" : "lead", createdByRunId: callback.id, body: `Saved [result](/QA/issues/QA-${Number(callback.id.split("-")[1]) - 1})` });
       }
       return structuredClone(comments);
     }
@@ -272,7 +277,7 @@ it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activit
       const callback = run(`completion-${sent}`, "chat", "lead", { wakeReason: "chat_task_completed", wakeSource: "automation", wakeTriggerDetail: "system",
         chatCompletionDeliveryIds: [`delivery-${sent}`], chatCompletionUpdates: [{ id: `task-${sent}`, status: "done" }] });
       Object.assign(callback, { invocationSource: "automation", triggerDetail: "system" });
-      if (!["late-reply", "wrong-author"].includes(snapshot)) comments.push({ id: `reply-${sent}`, companyId: "company", issueId: "chat", authorAgentId: "lead", createdByRunId: callback.id, body: "Saved result completed" });
+      if (!["late-reply", "wrong-author"].includes(snapshot)) comments.push({ id: `reply-${sent}`, companyId: "company", issueId: "chat", authorAgentId: "lead", createdByRunId: callback.id, body: `Saved [result](/QA/issues/QA-${Number(callback.id.split("-")[1]) - 1})` });
     }
     const issueRuns = /^\/api\/issues\/([^/]+)\/runs$/.exec(route);
     if (issueRuns) return runs.filter(row => row.issueId === issueRuns[1]
@@ -294,21 +299,33 @@ it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activit
     }
     throw new Error(route);
   }, async post() { return { id: "project", companyId: "company", name: names.project }; } };
-  const reply = { async isVisible() { return true; }, locator(selector: string) { return selector === "a[href]"
-    ? { async evaluateAll() { return ["/QA/issues/QA-2"]; } } : { first() { return { async click() {} }; } }; } };
-  const page = { async goto() {}, async reload() {}, locator() { return reply; }, getByTestId() { return { getByRole() { return {}; } }; } };
+  const visited: string[] = [];
+  const page: Row = { currentUrl: "https://qa.example.test/QA/chats/lead", async goto(url: string) { page.currentUrl = url; }, async reload() {},
+    locator(selector: string) {
+      const comment = comments.find(row => selector === `[id=${JSON.stringify(`comment-${row.id}`)}]`);
+      return { async isVisible() { return Boolean(comment); }, locator(selector: string) {
+        const links = [...String(comment?.body ?? "").matchAll(/\]\(([^)]+)\)/g)].map(match => match[1]!);
+        if (selector === "a[href]") return { async evaluateAll() { return links; } };
+        const href = links.find(href => selector === `a[href=${JSON.stringify(href)}]`);
+        return { first() { return { async click() { expect(href).toBeDefined(); visited.push(href!); page.currentUrl = new URL(href!, api.origin).href; } }; } };
+      } };
+    }, getByTestId() { return { getByRole() { return {}; } }; } };
   const context = { api, page, user: { id: "user" }, company: { id: "company", issuePrefix: "QA" },
     agent: { id: "lead", model: "fixed-model", provider, runtimeMode: "native" }, environmentId: "environment" } as unknown as JourneyContext;
   const evidence = { checks: [] } as unknown as JourneyEvidence, owned: Row[] = [];
   const directory = await mkdtemp(path.join(os.tmpdir(), "hire-completion-")); directories.push(directory);
   const execution = hireDelegateReuse(context, { async own(row: Row) { owned.push(row); } } as unknown as TargetSession, campaignId, evidence,
     { deadlineAt: Date.now() + 10_000, directory, capture: async () => {} });
-  if (["foreign", "wrong-author", "foreign-run", "contradictory-run", "extra-run", "fallback-changed", "fallback-subscription-wrong-method"].includes(snapshot)) {
-    const code = snapshot === "foreign" ? "hire_resource_scope_mismatch" : snapshot === "wrong-author" ? "hire_completion_reply_mismatch"
+  if (["foreign", "wrong-author", "foreign-run", "contradictory-run", "extra-run", "fallback-changed", "fallback-subscription-wrong-method", "creation-backlog-reassigned"].includes(snapshot)) {
+    const code = snapshot === "creation-backlog-reassigned" ? "hire_initial_assignee_mismatch" : snapshot === "foreign" ? "hire_resource_scope_mismatch" : snapshot === "wrong-author" ? "hire_completion_reply_mismatch"
       : snapshot === "extra-run" ? "hire_requested_turn_mismatch" : snapshot === "fallback-changed" ? "hire_native_binding_mismatch"
         : snapshot === "fallback-subscription-wrong-method" ? "hire_run_credential_mismatch" : "hire_run_scope_mismatch";
     await expect(execution).rejects.toMatchObject({ code });
     expect(sendChatMessage).toHaveBeenCalledTimes(["extra-run", "fallback-changed"].includes(snapshot) ? 3 : 2);
+    if (snapshot === "creation-backlog-reassigned") {
+      expect(owned.some(row => row.id === "task-2")).toBe(true);
+      expect(runs.filter(run => run.issueId !== "chat").every(run => run.agentId === "hired")).toBe(true);
+    }
     if (snapshot === "fallback-changed") { expect(stages).toEqual([0, 1, 4]); expect(runs).toHaveLength(7); }
     return;
   }
@@ -317,6 +334,24 @@ it.each(["stale", "foreign", "truncated", "late-reply", "wrong-author", "activit
     expect(handoffTargets(text)).toEqual({ agents: ["hired"], projects: ["project"] });
   }
   expect(stages).toEqual([0, 1, 4]); expect(runs).toHaveLength(7); expect(sendChatMessage).toHaveBeenCalledTimes(3);
+  expect(visited).toEqual(["/QA/issues/QA-1", "/QA/issues/QA-2"]);
   expect(evidence.checks).toContainEqual({ id: "delegated-result-visible-after-reload", passed: true });
   expect(owned.find(row => row.id === "chat")?.freshChat).toEqual({ companyId: "company", userId: "user", leadAgentId: "lead", absent: true });
+});
+
+it.each(["earlier-handoff", "foreign-company", "foreign-chat", "wrong-run", "foreign-origin"])("does not use %s as the callback's reloaded result", async mismatch => {
+  const href = mismatch === "foreign-origin" ? "https://foreign.test/QA/issues/QA-2" : "/QA/issues/QA-2";
+  let clicked = false;
+  const comment = { id: "old", companyId: mismatch === "foreign-company" ? "foreign" : "company",
+    issueId: mismatch === "foreign-chat" ? "foreign" : "chat", authorAgentId: "lead",
+    createdByRunId: ["earlier-handoff", "wrong-run"].includes(mismatch) ? "handoff-run" : "callback" };
+  const reply = { async isVisible() { return true; }, locator(selector: string) {
+    return selector === "a[href]" ? { async evaluateAll() { return [href]; } }
+      : { first() { return { async click() { clicked = true; } }; } };
+  } };
+  const page = { locator() { return reply; }, async reload() {}, getByTestId() { return { getByRole() { return {}; } }; } };
+  expect(await openSavedHireResult(page as any, "https://qa.example.test", "QA", [comment], "lead",
+    { id: "review", identifier: "QA-2", title: "Review" }, Date.now() + 10,
+    { companyId: "company", chatId: "chat", runId: "callback" })).toBe(false);
+  expect(clicked).toBe(false);
 });
