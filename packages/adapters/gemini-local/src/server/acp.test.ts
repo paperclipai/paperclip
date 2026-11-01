@@ -311,6 +311,26 @@ describe("gemini_local ACP lane", () => {
     ).resolves.toMatchObject({ engine: "acp", explicit: true, unavailableReason: expect.stringContaining("Node") });
   });
 
+  it("uses the configured PATHEXT to find a Windows command on the configured PATH", async () => {
+    const root = await makeTempRoot("paperclip-gemini-acp-pathext-");
+    const bin = path.join(root, "bin");
+    await fs.mkdir(bin, { recursive: true });
+    await fs.writeFile(path.join(bin, "gemini.ACP"), "", "utf8");
+    setNodeVersion("v24.11.0");
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    try {
+      await expect(
+        resolveGeminiExecutionEngineForRun({
+          config: { env: { PATH: bin, PATHEXT: ".ACP" } },
+          executionTarget: null,
+        }),
+      ).resolves.toEqual({ engine: "acp", explicit: false });
+    } finally {
+      Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
+    }
+  });
+
   it("reports unavailable ACP for non-sandbox remote auto runs", async () => {
     setNodeVersion("v24.11.0");
     await expect(
