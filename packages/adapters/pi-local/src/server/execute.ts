@@ -391,25 +391,39 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onLog,
     });
-    await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, {
-      installCommand: SANDBOX_INSTALL_COMMAND,
-      timeoutSec,
-    });
+    try {
+      await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, {
+        installCommand: SANDBOX_INSTALL_COMMAND,
+        timeoutSec,
+      });
+
+      if (!executionTargetIsRemote) {
+        await ensurePiModelConfiguredAndAvailable({
+          model,
+          command,
+          cwd,
+          env: runtimeEnv,
+        });
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog("stderr", `[paperclip] Pi cannot start: ${reason}\n`);
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        provider,
+        model,
+        errorMessage: `Pi cannot start: ${reason}`,
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      };
+    }
     const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
     let loggedEnv = buildInvocationEnvForLogs(env, {
       runtimeEnv,
       includeRuntimeKeys: ["HOME"],
       resolvedCommand,
     });
-
-    if (!executionTargetIsRemote) {
-      await ensurePiModelConfiguredAndAvailable({
-        model,
-        command,
-        cwd,
-        env: runtimeEnv,
-      });
-    }
 
     const extraArgs = (() => {
       const fromExtraArgs = asStringArray(config.extraArgs);
