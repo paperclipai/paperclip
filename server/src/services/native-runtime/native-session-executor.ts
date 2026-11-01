@@ -1,4 +1,4 @@
-import { nativeCancellationHasRemoteOwner, notifyNativeCancellation, waitForNativeCancellation } from "./native-cancellation-delivery.js";
+import { nativeCancellationHasUnsettledOwner, notifyNativeCancellation, waitForNativeCancellation } from "./native-cancellation-delivery.js";
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
 import { rehydratePinnedSkillAssets } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
@@ -7710,7 +7710,7 @@ async function performNativeCancellation(
     recoveringCancellationIntent = intent.existing;
     priorCoordinatorDecisionIdAtIntent = intent.priorCoordinatorDecisionId;
     if (!activeNativeSessions.has(runId) && !nativeSessionStartups.has(runId)
-      && await nativeCancellationHasRemoteOwner(options.db, runId)) {
+      && await nativeCancellationHasUnsettledOwner(options.db, runId)) {
       const acknowledged = await waitForNativeCancellation(options.db, {
         companyId: cancellationContext.companyId, runId, intentId: intent.intentId,
       });

@@ -5,7 +5,7 @@ import { agents, companies, issues, heartbeatRuns, nativeRunFinalizations, creat
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { deploymentNotifications } from "../services/deployment-notifications.js";
-import { nativeCancellationHasRemoteOwner, notifyNativeCancellation, registerNativeCancellationDelivery, waitForNativeCancellation } from "../services/native-runtime/native-cancellation-delivery.js";
+import { nativeCancellationHasUnsettledOwner, notifyNativeCancellation, registerNativeCancellationDelivery, waitForNativeCancellation } from "../services/native-runtime/native-cancellation-delivery.js";
 import { currentNativeControllerIdentity } from "../services/native-runtime/native-restart-recovery.js";
 import { setNativeExecutionActive } from "../services/native-runtime/native-active-runs.js";
 const provider = vi.hoisted(() => ({ stop: vi.fn() }));
@@ -68,11 +68,28 @@ it("fails closed on a different intent and never accepts a no-op acknowledgement
     acknowledgementAuditId: "not-dispatched" } } }).where(eq(heartbeatRuns.id, runId));
   await expect(waitForNativeCancellation(b, { companyId, runId, intentId }, 50)).rejects.toThrow("pending_recovery");
 });
-it("distinguishes the current controller, a live replacement owner, and an expired owner", async () => {
+it("keeps Stop pending across lease release and delivers after normal ownership resumes", async () => {
   vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
-  expect(await nativeCancellationHasRemoteOwner(b, runId)).toBe(false);
+  expect(await nativeCancellationHasUnsettledOwner(b, runId)).toBe(true);
   await b.update(nativeRunFinalizations).set({ controllerBootId: "another-controller" }).where(eq(nativeRunFinalizations.runId, runId));
-  expect(await nativeCancellationHasRemoteOwner(b, runId)).toBe(true);
+  expect(await nativeCancellationHasUnsettledOwner(b, runId)).toBe(true);
   await b.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, runId));
-  expect(await nativeCancellationHasRemoteOwner(b, runId)).toBe(false);
+  expect(await nativeCancellationHasUnsettledOwner(b, runId)).toBe(true);
+  await b.update(heartbeatRuns).set({ resultJson: { nativeCancellation: { schema: "paperclip.native-cancellation.v1", intentId,
+    scope: "run", dispatchState: "pending" } } }).where(eq(heartbeatRuns.id, runId));
+  const acknowledged = waitForNativeCancellation(b, { companyId, runId, intentId });
+  const identity = await currentNativeControllerIdentity();
+  // Simulate only the normal recovery owner's claim; no test-owned dispatch or
+  // acknowledgement. Production delivery must consume the durable pending Stop.
+  await a.transaction(async tx => {
+    await notifyNativeCancellation(tx);
+    await tx.update(nativeRunFinalizations).set({ controllerBootId: identity.bootId, leaseExpiresAt: new Date(Date.now() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, runId));
+  });
+  await expect(acknowledged).resolves.toMatchObject({ dispatched: true, auditId: "fixture-audit" });
+  expect(provider.stop).toHaveBeenCalledTimes(1);
+  await a.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
+  expect(await nativeCancellationHasUnsettledOwner(b, runId)).toBe(false);
+  vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "false");
+  expect(await nativeCancellationHasUnsettledOwner(b, runId)).toBe(false);
 });

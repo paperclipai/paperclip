@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
@@ -9,12 +9,17 @@ import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 export const notifyNativeCancellation = (tx: object) => notifyDeliveryWork(tx, DELIVERY_QUEUES.nativeCancellation);
 
-export async function nativeCancellationHasRemoteOwner(db: Db, runId: string): Promise<boolean> {
+/** Called only when this process has neither an active handle nor a startup.
+ * Expiry/release authorizes recovery, not a no-op acknowledgement: the remote
+ * execution can still be alive while its next controller is attaching. */
+export async function nativeCancellationHasUnsettledOwner(db: Db, runId: string): Promise<boolean> {
   if (process.env.PAPERCLIP_EPHEMERAL_SERVER !== "true") return false;
-  const identity = await currentNativeControllerIdentity();
-  const [owner] = await db.select({ bootId: nativeRunFinalizations.controllerBootId }).from(nativeRunFinalizations)
-    .where(and(eq(nativeRunFinalizations.runId, runId), gt(nativeRunFinalizations.leaseExpiresAt, sql`clock_timestamp()`))).limit(1);
-  return !!owner?.bootId && owner.bootId !== identity.bootId;
+  const [owner] = await db.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
+      eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId)))
+    .where(and(eq(nativeRunFinalizations.runId, runId), isNull(nativeRunFinalizations.resultId),
+      inArray(heartbeatRuns.status, ["running", "queued"]))).limit(1);
+  return Boolean(owner);
 }
 
 /** The accepting HTTP server waits for the real owner's audited ACK. Subscribe

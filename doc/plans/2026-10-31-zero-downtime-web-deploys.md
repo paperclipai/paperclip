@@ -274,3 +274,37 @@ two report-command timeouts, two process-shutdown races and one host embedded
 Postgres startup failure. The complete shutdown file passed in the focused run;
 other failures still need base-revision classification. No blanket green suite
 or live availability claim is made.
+
+### Current delivery state, 2026-11-01 08:00 UTC
+
+Runtime PR #18518 merged as `006d5691a6245d5a710e25ba3df6d609754e163a` after
+all CI passed and a 5/5 review. The opt-in remains disabled on hosted stacks.
+Qualification PR #18526 remains open; Cloud #1096 remains open. No hosted
+mutation or paid model test has occurred yet.
+
+Fresh browser receipt `paperclip-runner-e2e-tg3nel` passed all 11 checks:
+246 reads, 50 acknowledged/read-back saves, zero failures, 1,058ms browser
+reconnect and zero page errors. Both old homes were deleted; C restored saved
+files with legacy adoption disabled. Unready B left A serving. The admitted
+save and both handoffs now require a graceful exit, not successful forced cleanup.
+Cleanup is confirmed. The receipt uses compiled local server/UI and workspace
+dependencies at `59e6169af6` plus the smoke's strict-exit patch; it is not a
+released-container or live-agent claim.
+
+Qualification exposed an expired/released-lease Stop race: absent a local handle,
+a new server could acknowledge a no-op before recovery attached the execution.
+Stop now remains pending while an unsettled native execution exists, including
+between leases. Three real-PostgreSQL delivery cases pass; the provider edge and
+recovery claim are simulated. Server TypeScript compilation and vendoring pass.
+
+The full harness's two report timeouts passed an isolated 42-test file rerun.
+Onboarding, workflow-security, Pi and accounting files are unchanged by this
+branch versus the inspected master; this is static classification, not a fresh
+full baseline run. The qualification PR's CI has one access-service race failure
+and is being checked in isolation. All other checks passed on `59e6169af6`.
+
+Cloud now gates overlap on identical, provenance-bound package identities.
+Changed or unknown packages use maintenance. Its 376 campaign/compatibility
+cases passed; review identified that failed-deploy rollback also needs the same
+pause. That correction is in verification. Existing-volume enrollment and the
+hosted acceptance sequence remain required work, not deferred scope.
