@@ -176,6 +176,8 @@ const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "execution_approval_requested",
   "execution_changes_requested",
   "approval_approved",
+  "approval_rejected",
+  "approval_revision_requested",
 ]);
 
 type RuntimeConfigSecretResolver = Pick<
