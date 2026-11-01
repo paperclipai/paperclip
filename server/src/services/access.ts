@@ -1067,7 +1067,7 @@ export function accessService(db: Db) {
     permissionKey: PermissionKey,
     enabled: boolean,
     grantedByUserId: string | null,
-    scope: Record<string, unknown> | null = null,
+    scope?: Record<string, unknown> | null,
   ) {
     if (!enabled) {
       await db
@@ -1102,7 +1102,7 @@ export function accessService(db: Db) {
       await db
         .update(principalPermissionGrants)
         .set({
-          scope,
+          ...(scope !== undefined ? { scope } : {}),
           grantedByUserId,
           updatedAt: new Date(),
         })
@@ -1115,7 +1115,7 @@ export function accessService(db: Db) {
       principalType,
       principalId,
       permissionKey,
-      scope,
+      scope: scope ?? null,
       grantedByUserId,
       createdAt: new Date(),
       updatedAt: new Date(),
