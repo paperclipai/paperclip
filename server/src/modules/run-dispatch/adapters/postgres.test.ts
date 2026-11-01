@@ -22,6 +22,7 @@ import {
   issueDocuments,
   issueRelations,
   issueRecoveryActions,
+  issueThreadInteractions,
   issueTreeHolds,
   issues,
   nativeRunFinalizations,
@@ -79,6 +80,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     await db.delete(documents);
     await db.delete(issueTreeHolds);
     await db.delete(issueRelations);
+    await db.delete(issueThreadInteractions);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -1205,6 +1207,94 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       expect(result).toMatchObject({
         outcome: "cancelled",
         errorCode: "issue_assignee_changed",
+      });
+    });
+
+    describe("interaction_pending wake for a pending interaction's addressee", () => {
+      // The assignee asked another agent to answer a card on its issue. That
+      // agent's wake is owned by the card, so the issue assignee must not be
+      // read as a reassignment away from the addressee.
+      async function seedAddresseeWake(input?: {
+        interactionStatus?: string;
+        addressedTo?: "run agent" | "another agent";
+      }) {
+        const { companyId, agentId: assigneeAgentId } = await seedCompanyAndAgent();
+        const addresseeAgentId = randomUUID();
+        await seedAgent({ id: addresseeAgentId, companyId, name: "Reviewer", role: "cto" });
+        const otherAgentId = randomUUID();
+        await seedAgent({ id: otherAgentId, companyId, name: "Bystander" });
+        const issueId = randomUUID();
+        await seedIssue({ companyId, issueId, status: "in_review", assigneeAgentId });
+        const interactionId = randomUUID();
+        await db.insert(issueThreadInteractions).values({
+          id: interactionId,
+          companyId,
+          issueId,
+          kind: "request_confirmation",
+          status: input?.interactionStatus ?? "pending",
+          continuationPolicy: "wake_assignee",
+          createdByAgentId: assigneeAgentId,
+          addresseeAgentId: input?.addressedTo === "another agent" ? otherAgentId : addresseeAgentId,
+          payload: { version: 1, prompt: "Accept the verdict and authorize the gated merge?" },
+        });
+        const runId = await seedRun({
+          companyId,
+          agentId: addresseeAgentId,
+          contextSnapshot: {
+            issueId,
+            taskId: issueId,
+            interactionId,
+            interactionKind: "request_confirmation",
+            wakeReason: "interaction_pending",
+            source: "issue.interaction.created",
+          },
+        });
+        return { companyId, assigneeAgentId, addresseeAgentId, issueId, interactionId, runId };
+      }
+
+      it("admits the addressee's queued run while the interaction is pending", async () => {
+        const f = await seedAddresseeWake();
+        const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+          runId: f.runId,
+          companyId: f.companyId,
+          expectedStatus: "queued",
+          now: new Date(),
+        });
+
+        expect(outcome).toMatchObject({ outcome: "not_stale" });
+        const persisted = await db
+          .select({ status: heartbeatRuns.status, runnerProfileJson: heartbeatRuns.runnerProfileJson })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, f.runId))
+          .then((rows) => rows[0]);
+        expect(persisted?.status).toBe("queued");
+        // The admitted non-assignee authority is recorded for later AI-connection waits.
+        expect(persisted?.runnerProfileJson).toMatchObject({ aiConnectionNonAssigneeCommentWake: true });
+        const issue = await db.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues)
+          .where(eq(issues.id, f.issueId)).then((rows) => rows[0]);
+        expect(issue?.assigneeAgentId).toBe(f.assigneeAgentId);
+      });
+
+      it.each([
+        { label: "resolved", seed: { interactionStatus: "accepted" as const } },
+        { label: "withdrawn", seed: { interactionStatus: "withdrawn" as const } },
+        { label: "addressed to another agent", seed: { addressedTo: "another agent" as const } },
+      ])("cancels the queued run once the interaction is $label, without reporting an assignee change", async ({ seed }) => {
+        const f = await seedAddresseeWake(seed);
+        const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+          runId: f.runId,
+          companyId: f.companyId,
+          expectedStatus: "queued",
+          now: new Date(),
+        });
+
+        expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: "issue_interaction_not_pending" });
+        const persisted = await db
+          .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, f.runId))
+          .then((rows) => rows[0]);
+        expect(persisted).toMatchObject({ status: "cancelled", errorCode: "issue_interaction_not_pending" });
       });
     });
 
