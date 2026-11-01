@@ -1157,13 +1157,40 @@ jobs:
           NODE
 
       - name: Install pinned Claude CLI for setup verification
-        if: matrix.profileId == 'legacy-claude' || matrix.profileId == 'runner-acpx-claude'
+        id: claude_cli
+        if: matrix.profileId == 'legacy-claude' || matrix.profileId == 'runner-acpx-claude' || (needs.catalog.outputs.operations_cadence == '' && steps.manual_cell_route.outputs.route == 'private' && steps.manual_private_verified.outcome == 'success' && matrix.profileId == 'runner-opencode' && matrix.environmentId == 'local' && (matrix.executionId == 'chat-features.runner-opencode.local.onboarding.choose-first-runtime' || matrix.executionId == 'chat-features.runner-opencode.local.agents.hire-claude-code'))
+        env:
+          SECONDARY_CLAUDE: ${{ needs.catalog.outputs.operations_cadence == '' && steps.manual_cell_route.outputs.route == 'private' && steps.manual_private_verified.outcome == 'success' && matrix.profileId == 'runner-opencode' && matrix.environmentId == 'local' && (matrix.executionId == 'chat-features.runner-opencode.local.onboarding.choose-first-runtime' || matrix.executionId == 'chat-features.runner-opencode.local.agents.hire-claude-code') }}
         run: |
           npm install --global --omit=dev --ignore-scripts @anthropic-ai/claude-code@2.1.277
           launcher="$(npm root --global)/@anthropic-ai/claude-code/cli-wrapper.cjs"
           chmod +x "$launcher"
           ln -sf "$launcher" "$(npm prefix --global)/bin/claude"
-          claude --version
+          version="$(claude --version)"
+          printf '%s\n' "$version"
+          if [ "$SECONDARY_CLAUDE" = true ]; then
+            CLAUDE_CLI_PACKAGE_ROOT="$(npm root --global)/@anthropic-ai/claude-code"
+            CLAUDE_CLI_COMMAND="$(command -v claude)"
+            CLAUDE_CLI_VERSION="$version"
+            export CLAUDE_CLI_PACKAGE_ROOT CLAUDE_CLI_COMMAND CLAUDE_CLI_VERSION
+            node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          import { createHash } from "node:crypto";
+          try {
+            const root = fs.realpathSync(process.env.CLAUDE_CLI_PACKAGE_ROOT);
+            const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+            const executable = fs.realpathSync(process.env.CLAUDE_CLI_COMMAND);
+            const info = fs.lstatSync(executable), version = process.env.CLAUDE_CLI_VERSION ?? "";
+            if (manifest.name !== "@anthropic-ai/claude-code" || manifest.version !== "2.1.277"
+              || executable !== path.join(root, "cli-wrapper.cjs") || !info.isFile() || info.isSymbolicLink()
+              || info.size > 16777216 || !path.isAbsolute(executable) || /[\r\n]/.test(executable)
+              || !/^[A-Za-z0-9 .()_-]{1,200}$/.test(version) || version.match(/\b\d+\.\d+\.\d+\b/)?.[0] !== "2.1.277" || !version.includes("Claude Code")) throw new Error();
+            const digest = createHash("sha256").update(fs.readFileSync(executable)).digest("hex");
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\nversion=${manifest.version}\nexecutable_sha256=${digest}\n`);
+          } catch { process.stderr.write("Selected Claude executable preparation failed; details withheld\n"); process.exitCode = 1; }
+          NODE
+          fi
 
       - name: Qualify preinstalled Chrome
         if: needs.authorize.outputs.playwright_channel == 'chrome'
@@ -1298,13 +1325,52 @@ jobs:
           finalization_status=$?
           test "$run_status" = 0 && test "$finalization_status" = 0
 
+      - name: Prepare selected Claude hiring inputs
+        id: claude_feature_inputs
+        if: needs.catalog.outputs.operations_cadence == '' && steps.manual_cell_route.outputs.route == 'private' && steps.manual_private_verified.outcome == 'success' && matrix.profileId == 'runner-opencode' && matrix.environmentId == 'local' && matrix.executionId == 'chat-features.runner-opencode.local.agents.hire-claude-code' && steps.claude_cli.outcome == 'success'
+        env:
+          SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
+          CLAUDE_CLI_COMMAND: ${{ steps.claude_cli.outputs.executable }}
+          CLAUDE_CLI_VERSION: ${{ steps.claude_cli.outputs.version }}
+          CLAUDE_CLI_SHA256: ${{ steps.claude_cli.outputs.executable_sha256 }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          import { createHash } from "node:crypto";
+          let directory;
+          try {
+            if (process.env.SELECTED_EXECUTION_ID !== "chat-features.runner-opencode.local.agents.hire-claude-code" || process.env.CLAUDE_CLI_VERSION !== "2.1.277") throw new Error();
+            const command = process.env.CLAUDE_CLI_COMMAND ?? "", info = fs.lstatSync(command);
+            if (!path.isAbsolute(command) || fs.realpathSync(command) !== command || !info.isFile() || info.isSymbolicLink()
+              || info.size > 16777216 || /[\r\n]/.test(command) || !/^[a-f0-9]{64}$/.test(process.env.CLAUDE_CLI_SHA256 ?? "")
+              || createHash("sha256").update(fs.readFileSync(command)).digest("hex") !== process.env.CLAUDE_CLI_SHA256) throw new Error();
+            const config = { schemaVersion: 1, providers: { claude: { disposable: true,
+              resourceIds: ["fixture.environment"], credentialEnv: [], prerequisites: {
+                targetRef: "fixture.environment", harnessExecutable: command, model: "claude-sonnet-4-6",
+                accountBindingRef: "selected.ANTHROPIC_API_KEY",
+              },
+            } } };
+            const temporary = fs.realpathSync(process.env.RUNNER_TEMP);
+            if (/[\r\n]/.test(temporary)) throw new Error();
+            directory = fs.mkdtempSync(path.join(temporary, "paperclip-claude-feature-"));
+            fs.chmodSync(directory, 0o700);
+            const filename = path.join(directory, "external-config.json");
+            fs.writeFileSync(filename, JSON.stringify(config), { mode: 0o600, flag: "wx" });
+            fs.appendFileSync(process.env.GITHUB_ENV, `PAPERCLIP_CLAUDE_FEATURE_INPUT_ROOT=${directory}\nPAPERCLIP_CHAT_CATALOG_EXTERNAL_CONFIG=${filename}\n`);
+          } catch {
+            if (directory) fs.rmSync(directory, { recursive: true, force: true });
+            process.stderr.write("Selected Claude hiring input preparation failed; details withheld\n"); process.exitCode = 1;
+          }
+          NODE
+
       - name: Run paid cell
         if: needs.catalog.outputs.operations_cadence == '' && (steps.manual_cell_route.outputs.route == 'actions' || steps.manual_private_verified.outcome == 'success')
         env:
           PAPERCLIP_RUNNER_E2E_PRIVATE_PREFLIGHT: ${{ steps.manual_private_verified.outcome == 'success' && format('{0}/preflight.json', steps.manual_private.outputs.root) || '' }}
           PRIVATE_EVIDENCE_ROOT: ${{ steps.manual_private.outputs.root }}
           OPENAI_API_KEY: ${{ matrix.credentialName == 'OPENAI_API_KEY' && secrets.OPENAI_API_KEY || '' }}
-          ANTHROPIC_API_KEY: ${{ matrix.credentialName == 'ANTHROPIC_API_KEY' && secrets.ANTHROPIC_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ (matrix.credentialName == 'ANTHROPIC_API_KEY' || (needs.catalog.outputs.operations_cadence == '' && steps.manual_cell_route.outputs.route == 'private' && steps.manual_private_verified.outcome == 'success' && matrix.profileId == 'runner-opencode' && matrix.environmentId == 'local' && (matrix.executionId == 'chat-features.runner-opencode.local.onboarding.choose-first-runtime' || matrix.executionId == 'chat-features.runner-opencode.local.agents.hire-claude-code') && steps.claude_cli.outcome == 'success' && (matrix.executionId == 'chat-features.runner-opencode.local.onboarding.choose-first-runtime' || steps.claude_feature_inputs.outcome == 'success'))) && secrets.ANTHROPIC_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ matrix.credentialName == 'OPENROUTER_API_KEY' && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ matrix.credentialName == 'XAI_API_KEY' && secrets.XAI_API_KEY || '' }}
           GROK_AUTH_JSON: ${{ matrix.credentialName == 'GROK_AUTH_JSON' && secrets.GROK_AUTH_JSON || '' }}
@@ -1323,6 +1389,23 @@ jobs:
           else
             pnpm test:e2e:runner -- --id "${{ matrix.executionId }}"
           fi
+
+      - name: Remove selected Claude hiring input files
+        if: always() && env.PAPERCLIP_CLAUDE_FEATURE_INPUT_ROOT != ''
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          try {
+            const root = process.env.PAPERCLIP_CLAUDE_FEATURE_INPUT_ROOT;
+            const temporary = fs.realpathSync(process.env.RUNNER_TEMP);
+            const info = root ? fs.lstatSync(root) : undefined;
+            if (!root || path.dirname(root) !== temporary || !path.basename(root).startsWith("paperclip-claude-feature-")
+              || !info?.isDirectory() || info.isSymbolicLink()) throw new Error();
+            fs.rmSync(root, { recursive: true, force: true });
+            fs.appendFileSync(process.env.GITHUB_ENV, "PAPERCLIP_CLAUDE_FEATURE_INPUT_ROOT=\nPAPERCLIP_CHAT_CATALOG_EXTERNAL_CONFIG=\n");
+          } catch { process.stderr.write("Selected Claude hiring input cleanup failed; details withheld\n"); process.exitCode = 1; }
+          NODE
 
       - name: Stage bounded campaign evidence
         id: stage_evidence

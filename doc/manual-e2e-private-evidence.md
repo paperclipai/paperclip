@@ -167,3 +167,41 @@ Authenticated retrieval uses the existing private-history operator machinery
 and approved bucket access. This PR does not grant a reader role or perform an
 upload. Actual deployment, environment approval, compatible target fingerprints,
 private storage access and one exact run approval remain operational gates.
+
+## Secondary Claude feature inputs
+
+The controller stays on `runner-opencode` and its OpenRouter model. Only these
+exact local feature cells also receive `ANTHROPIC_API_KEY` after the private
+preflight and CLI preparation succeed:
+
+- `chat-features.runner-opencode.local.onboarding.choose-first-runtime`
+- `chat-features.runner-opencode.local.agents.hire-claude-code`
+
+The existing Claude-controller selections retain their credential behavior.
+The existing installer pins Claude Code `2.1.277`, uses `--ignore-scripts`, and
+runs before provider keys are assigned. For the two feature cells it records the
+actual canonical executable, package version and executable digest. This proves
+prepared bytes, not account access, model availability or a successful hello.
+Do not substitute OpenRouter credentials for the separate Anthropic key. The
+exact secret name must exist in the protected private-paid environment before
+admission; this workflow does not create or transfer it.
+
+Choose-first uses its declared credential through the existing selected private
+envelope. Its visible Legacy variant belongs only to that fixture. This is not
+a global runner default. Hiring additionally receives an owned `0600` external
+configuration document. The producer uses the actual prepared executable and
+the existing supported `claude-sonnet-4-6` model. `fixture.environment` and
+`selected.ANTHROPIC_API_KEY` are declared reference selectors, not invented
+resource or account UUIDs. The unchanged fixture must independently resolve the
+actual local environment and real personal account connection/grant, then pass
+its public validation. Configuration does not prove runtime qualification.
+
+The launcher stages only the selected descriptor's credential in its owned
+private envelope. It removes the secondary key from ordinary child/server
+environments and keeps it in the private scanner roots. Hiring input staging is
+removed after the paid command, including failure, before evidence transfer.
+Raw selected input files must not become report or archive evidence. Full runtime
+fingerprints must include the selected credential and external-field names;
+source-only fingerprints with an absent envelope do not establish that identity.
+Original work/message counts, deadlines and private evidence rules remain.
+Feature setup/probe usage is unknown unless independently measured.
