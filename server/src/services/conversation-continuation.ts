@@ -3,7 +3,9 @@ import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm"
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { readProcessStartedAt } from "./hot-restart.js";
+import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 
 // These adapters accept a conversation turn. Retrying a process or webhook can
 // replay the action itself, so those adapters retain their recovery contract.
@@ -87,6 +89,40 @@ export function conversationRecoveryActionPredicate() {
           eq(heartbeatRuns.status, "interrupted"),
           inArray(heartbeatRuns.errorCode, ["process_lost", "server_shutdown_interrupted", "execution_reconciliation_required"]),
           and(eq(heartbeatRuns.status, "cancelled"), sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'acknowledged'`),
+          // A legacy conversation turn cancelled while it still prepares never
+          // reached provider dispatch, so an acknowledged stop can never be
+          // recorded for it and this hold would never retire. Require positive
+          // evidence instead of an absent record: the stage never advanced past
+          // 'preparing', which only assertOwned("dispatching") can do and which
+          // commits before the provider handoff; no process identity or session
+          // was ever reserved; the controller lease has elapsed and cannot be
+          // renewed, because renewal requires status 'running'; the lease was
+          // claimed by a previous boot, so this boot holds no executor that
+          // could still be inside an uninterruptible environment acquisition
+          // and insert a lease row after the hold retires; and no retained
+          // dispatch event contradicts any of it. Process liveness and lease
+          // cleanup stay with getConversationOwnershipBlocker.
+          and(eq(heartbeatRuns.status, "cancelled"), sql`${heartbeatRuns.runtimeMode} = 'legacy'
+            and ${heartbeatRuns.executionStage} = 'preparing'
+            and ${heartbeatRuns.processPid} is null
+            and ${heartbeatRuns.processGroupId} is null
+            and ${heartbeatRuns.processStartedAt} is null
+            and ${heartbeatRuns.nativeSessionId} is null
+            and ${heartbeatRuns.nativeIssueId} is null
+            and ${heartbeatRuns.sessionIdAfter} is null
+            and ${heartbeatRuns.controllerBootId} is not null
+            and ${heartbeatRuns.controllerBootId} <> ${legacyControllerBootId}
+            and ${heartbeatRuns.controllerLeaseExpiresAt} <= clock_timestamp()
+            and not exists (
+              select 1 from ${heartbeatRunEvents}
+              where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
+                and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id}
+                and (${heartbeatRunEvents.sourceEventId} is not null
+                  or ${inArray(heartbeatRunEvents.eventType, ["adapter.invoke", PROCESS_START_REQUESTED,
+                    PROCESS_IDENTITY_RECORDED, "harness.ready", "session.started", "session.resumed",
+                    "session.updated", "turn.started", "provider.event", "provider.rpc_result",
+                    "tool.execution.started"])})
+            )`),
         )}
     )`,
   );

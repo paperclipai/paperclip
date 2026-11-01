@@ -431,6 +431,25 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await current(agent.id)).lifecycleState).toBe("terminated");
   });
 
+  // A conversation turn cancelled while it still prepared never dispatched a
+  // provider, so it can never record an acknowledged stop. Without proof that
+  // it never started, a pause or terminate waiting on it never completes, and
+  // the lifecycle sweep re-reads every run of the agent for as long as it waits.
+  it("stops waiting on a conversation turn cancelled before dispatch", async () => {
+    const agent = await hire();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id,
+      status: "cancelled", errorCode: "cancelled", invocationSource: "on_demand",
+      runtimeMode: "legacy", runtimeModeResolvedAt: new Date(), executionStage: "preparing",
+      runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" } },
+      controllerBootId: randomUUID(), controllerLeaseExpiresAt: new Date(0),
+      startedAt: new Date(), finishedAt: new Date() }).returning();
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+    // The stage carries the whole proof. A run that reached dispatching may own
+    // a provider, so it still has to supply stop evidence of its own.
+    await db.update(heartbeatRuns).set({ executionStage: "dispatching" }).where(eq(heartbeatRuns.id, run.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+  });
+
   it("does not cancel a reporting agent when its manager pauses", async () => {
     const parent = await hire();
     const [child] = await db.insert(agents).values({ companyId, name: "Report", reportsTo: parent.id,
